@@ -1,4 +1,5 @@
 import { delegationCommandPrivatePaths } from './native-policy';
+import { getAgentSecretAmbientEnvDir } from '../../lib/paths';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { DARWIN_DELEGATION_SHARED_TEMPORARY_ROOTS } from '@canopy/desktop-shared/node/delegation/command-environment';
 
@@ -66,6 +67,8 @@ function readOnlyFilesystem(
     ...Object.fromEntries(
       entries(delegationCommandPrivatePaths(options.cwd, gitRoots), 'deny'),
     ),
+    // Every chat's Full-access ambient secrets (agent-secrets/ambient-env.ts).
+    [getAgentSecretAmbientEnvDir()]: 'deny',
     ':minimal': 'read',
     [options.cwd]: 'read',
     ...Object.fromEntries(entries(options.readRoots, 'read')),

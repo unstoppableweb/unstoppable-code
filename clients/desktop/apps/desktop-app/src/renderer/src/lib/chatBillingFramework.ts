@@ -19,8 +19,10 @@
 // session-spawn routing already force-routes gateway-only models regardless.
 
 import {
+  buildSignedOutNoBillingSourceError,
   hasHydratedGatewayCatalog,
   type AgentProviderType,
+  type AiCreditsRoutingMode,
   type ChatBillingFramework,
   type ChatModel,
 } from '@canopy/desktop-shared/types';
@@ -54,6 +56,12 @@ export interface ResolveChatBillingInput {
   routingActiveForChat: boolean;
   /** Whether an organization gateway is the member's compliance boundary. */
   modelGatewayEnforced?: boolean;
+  /**
+   * Account-wide AI Credits routing mode (`useAiCreditsUsage().routingMode`).
+   * `null` / `undefined` means preferences have not loaded yet; that keeps the
+   * CAN-5349 `'no-native-login'` lock instead of flashing No billing source.
+   */
+  aiCreditsRoutingMode?: AiCreditsRoutingMode | null;
 }
 
 export interface ChatBillingResolution {
@@ -72,12 +80,17 @@ export interface ChatBillingResolution {
   lockedReason?: string;
   /**
    * When the toggle is locked, which sub-case caused it. Only
-   * `'no-native-login'` is unlockable by the user (sign in to the provider),
-   * so the picker renders a Sign-in CTA solely for that case.
+   * `'no-native-login'` and `'no-billing-source'` are unlockable by signing in
+   * to the provider, so the picker renders a Sign-in CTA solely for those.
+   *
+   * `'no-billing-source'` (CAN-7062) is a confirmed sign-out in routing mode
+   * `off` with no explicit credits choice: `framework` is `null`, no credits
+   * card renders, and the No billing source banner asks the user to choose.
    */
   lockKind?:
     | 'gateway-only-model'
     | 'no-native-login'
+    | 'no-billing-source'
     | 'model-not-routable'
     | 'no-credits';
   /**
@@ -128,7 +141,12 @@ const HIDDEN: ChatBillingResolution = {
  * subscription selection reachable while an auth probe is inconclusive; main
  * owns the eventual attempt and its real recovery outcome. A confirmed
  * sign-out with available credits and no explicit subscription override locks
- * to credits until the user signs in (CAN-5349).
+ * to credits until the user signs in (CAN-5349), but only when the user has
+ * consented to credits: an explicit credits choice for this chat, or routing
+ * mode `on-quota` / `on`. In mode `off` without that choice, missing native
+ * auth is not consent, so the chat resolves to the `'no-billing-source'` lock
+ * with no framework and the No billing source banner offers the choice
+ * (CAN-7062). An unknown mode keeps the CAN-5349 lock until preferences load.
  */
 export function resolveChatBillingFramework(
   input: ResolveChatBillingInput,
@@ -141,6 +159,7 @@ export function resolveChatBillingFramework(
     subscriptionBillingOverride,
     routingActiveForChat,
     modelGatewayEnforced = false,
+    aiCreditsRoutingMode,
   } = input;
 
   // An enforced organization gateway replaces both personal subscriptions and
@@ -214,8 +233,25 @@ export function resolveChatBillingFramework(
         lockedReason: 'This model is only available with AI Credits',
       });
     }
-    // Confirmed sign-out: signing in to this provider is the only unlock, so
-    // the picker offers that remedy and the credits card shows no switch.
+    // Reaching here means a confirmed sign-out, no subscription override, and
+    // a native-capable model. In mode `off` with no explicit credits choice,
+    // nothing has consented to credits: bill nothing, hide the credits card,
+    // and let the No billing source banner offer the choice. Main refuses a
+    // send in this state with the same sentence (CAN-7062).
+    if (aiCreditsRoutingMode === 'off' && !routedCreditsChoice) {
+      return withBannerVisibility({
+        framework: null,
+        toggleVisible: true,
+        toggleDisabled: true,
+        lockKind: 'no-billing-source',
+        lockedReason: buildSignedOutNoBillingSourceError(
+          getProviderLabel(provider),
+        ),
+      });
+    }
+    // Consented sign-out (explicit credits choice, or mode `on-quota` / `on`):
+    // signing in to this provider is the only unlock, so the picker offers that
+    // remedy and the credits card shows no switch.
     return withBannerVisibility({
       framework: 'ai-credits',
       toggleVisible: true,

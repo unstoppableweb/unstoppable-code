@@ -19,7 +19,9 @@ import {
   type CopilotRecipientRefusal,
   type CopilotRecipientResult,
   type CopilotRecipientTurn,
+  type CopilotSdkErrorType,
 } from '@canopy/protocol/copilot-recipient';
+import { CopilotRecipientFailure } from './failure';
 import {
   redactCopilotTextParts,
   redactCopilotToolValue,
@@ -58,6 +60,8 @@ export interface CopilotLocalExecution {
   ): Promise<{ kind: 'token'; accessToken: string; expiresIn: number }>;
   callback(request: CopilotCallbackRequest): Promise<CopilotCallbackReply>;
   emit(event: CopilotProjectedEvent): void;
+  /** Records a classified failure before its runtime closes; only the reason is refused. */
+  failed?(error: unknown): void;
 }
 export interface CopilotLocalRuntime {
   readonly identity: CopilotRecipientIdentity;
@@ -170,14 +174,30 @@ interface Lease {
     { presentation: CopilotLocalPresentation; monotonicExpiry: number }
   >;
   sessionId?: string;
+  /** The first classified failure; runtime exit can abort the lease before it propagates. */
+  failure?: CopilotRecipientFailure;
   presentation?: Promise<string>;
   closePromise?: Promise<void>;
   sendTail: Promise<void>;
 }
-const refused = (reason: CopilotRecipientRefusal): CopilotRecipientOutcome => ({
-  kind: 'refused',
-  reason,
-});
+const refused = (
+  reason: CopilotRecipientRefusal,
+  errorType?: CopilotSdkErrorType,
+): CopilotRecipientOutcome =>
+  errorType
+    ? { kind: 'refused', reason, errorType }
+    : { kind: 'refused', reason };
+/** Only a classified failure's closed reason crosses; never its message. */
+const refusedFor = (
+  error: unknown,
+  fallback: CopilotRecipientRefusal,
+): CopilotRecipientOutcome =>
+  error instanceof CopilotRecipientFailure
+    ? refused(
+        error.reason,
+        error.reason === 'provider_error' ? error.errorType : undefined,
+      )
+    : refused(fallback);
 const failure = (): Error => new Error('Copilot recipient unavailable.');
 const size = (value: unknown): number =>
   Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
@@ -439,6 +459,32 @@ export function createCopilotLocalRecipientHost(
     }
     return lease.access.token;
   }
+  /**
+   * An admitted lease got no access. Only a grant cause that names it is
+   * classified: a thrown refresh, or a grant that needs sign-in again. Vault,
+   * fence and network causes stay unclassified.
+   */
+  function mintFailure(presented: unknown): Error {
+    const reason =
+      typeof presented === 'object' &&
+      presented !== null &&
+      'kind' in presented &&
+      presented.kind === 'blocked' &&
+      'reason' in presented
+        ? presented.reason
+        : undefined;
+    if (reason === 'refresh_failed')
+      return new CopilotRecipientFailure(
+        'Copilot recipient unavailable.',
+        'refresh_failed',
+      );
+    if (reason === 'expired' || reason === 'absent')
+      return new CopilotRecipientFailure(
+        'Copilot recipient unavailable.',
+        'auth',
+      );
+    return failure();
+  }
   async function token(lease: Lease): Promise<string> {
     requireAdmission(lease);
     if (lease.access && lease.access.expiresAt > wallNow())
@@ -457,7 +503,8 @@ export function createCopilotLocalRecipientHost(
         }),
       );
       requireAdmission(lease);
-      if (!lease.access || lease.access.expiresAt <= wallNow()) throw failure();
+      if (!lease.access || lease.access.expiresAt <= wallNow())
+        throw mintFailure(presented);
       if (options.completed) {
         if (
           typeof presented !== 'object' ||
@@ -658,10 +705,10 @@ export function createCopilotLocalRecipientHost(
         handle,
         generation: frozen.publicationGeneration,
       };
-    } catch {
+    } catch (error) {
       abort.abort();
       if (runtime) void runtime.close().catch(() => undefined);
-      return refused('unavailable');
+      return refusedFor(error, 'unavailable');
     } finally {
       clearTimeout(startupTimer);
       openings.delete(abort);
@@ -802,6 +849,10 @@ export function createCopilotLocalRecipientHost(
               };
             },
             callback: (request) => callback(lease, request),
+            failed(error): void {
+              if (error instanceof CopilotRecipientFailure)
+                lease.failure ??= error;
+            },
             emit(event) {
               requireAdmission(lease);
               const parsed = CopilotProjectedEventSchema.parse(event);
@@ -936,8 +987,8 @@ export function createCopilotLocalRecipientHost(
         requireAdmission(lease);
       }
       return outcome;
-    } catch {
-      return refused('channel');
+    } catch (error) {
+      return refusedFor(lease.failure ?? error, 'channel');
     } finally {
       void stop(lease);
     }

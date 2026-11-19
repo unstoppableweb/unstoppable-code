@@ -7,6 +7,7 @@ import {
 import type { ClientInfo } from '@canopy/execution-engine/node/codex-runtime/generated/ClientInfo';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import { getResourceMonitorService } from '../resource-monitor';
+import { codexSandboxDeniedReadPathsFor } from './approval-policy';
 import {
   registerCodexAppServerProcess,
   unregisterCodexAppServerProcess,
@@ -60,4 +61,7 @@ configureCodexRuntimeHostHooks({
   // chat may have several notification admissions pending, so its commits
   // can share a journal sync.
   ownerAdmissionBudget: () => GROUP_COMMIT_OWNER_ADMISSION_BUDGET,
+  // Helper and pipeline threads in a legacy read-only or workspace-write
+  // sandbox can't read any chat's Full-access agent secrets either.
+  sandboxDeniedReadPaths: () => codexSandboxDeniedReadPathsFor(),
 });

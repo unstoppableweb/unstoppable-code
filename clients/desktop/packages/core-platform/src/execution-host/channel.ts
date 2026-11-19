@@ -26,10 +26,12 @@ const MARKER_BYTES = Buffer.from(FRAME_MARKER, 'utf8');
 
 /**
  * Splits a byte stream into lines and decodes frames. Output that is not a
- * frame, or a frame that does not decode, goes to `onOther`; an unterminated
- * line that is not a frame is passed on as it arrives, so only a frame is
- * buffered, and only up to `maxFrameBytes`. A larger frame is dropped and
- * reported to `onOversize`.
+ * frame goes to `onOther`; an unterminated line that is not a frame is passed
+ * on as it arrives, so only a frame is buffered, and only up to
+ * `maxFrameBytes`. A larger frame is dropped and reported to `onOversize`.
+ * A frame that does not decode is dropped and reported to `onCorrupt`, never
+ * to `onOther`: the message a waiting request needed is gone, so the owner
+ * must fail it (CAN-7116).
  */
 export class ExecutionHostFrameReader {
   private pending: Buffer[] = [];
@@ -42,6 +44,7 @@ export class ExecutionHostFrameReader {
     private readonly onOther: (bytes: Buffer) => void,
     private readonly onOversize: () => void = (): void => undefined,
     private readonly maxFrameBytes = MAX_EXECUTION_HOST_FRAME_BYTES,
+    private readonly onCorrupt: () => void = (): void => undefined,
   ) {}
 
   push(chunk: Uint8Array): void {
@@ -54,10 +57,13 @@ export class ExecutionHostFrameReader {
     }
   }
 
-  /** Hands an unterminated last line to `onOther`. */
+  /** Hands an unterminated last line to `onOther`, or a cut frame to `onCorrupt`. */
   end(): void {
+    const frame = this.mode === 'frame';
     const rest = this.reset();
-    if (rest.byteLength > 0) this.onOther(rest);
+    if (rest.byteLength === 0) return;
+    if (frame) this.onCorrupt();
+    else this.onOther(rest);
   }
 
   private take(piece: Buffer, complete: boolean): void {
@@ -111,7 +117,7 @@ export class ExecutionHostFrameReader {
         Buffer.from(text.slice(FRAME_MARKER.length).trimEnd(), 'base64'),
       );
     } catch {
-      this.onOther(line);
+      this.onCorrupt();
       return;
     }
     this.onFrame(message);
@@ -183,18 +189,23 @@ export function createStdioExecutionHostChannel(
   let exiting = false;
   let disconnect: (() => void) | undefined;
   let disconnected = false;
-  const reader = new ExecutionHostFrameReader(
-    (data) => {
-      for (const listener of Array.from(listeners)) listener({ data });
-    },
-    () => undefined,
-  );
   const lost = (): void => {
     if (disconnected) return;
     disconnected = true;
     if (disconnect) disconnect();
     else exitProcess(0);
   };
+  const reader = new ExecutionHostFrameReader(
+    (data) => {
+      for (const listener of Array.from(listeners)) listener({ data });
+    },
+    () => undefined,
+    undefined,
+    undefined,
+    // A launcher frame that does not decode may have been a request the
+    // launcher waits on; ending as for a lost launcher settles it by exit.
+    lost,
+  );
   const flush = (): void => {
     while (!blocked && !failed) {
       const frame = queued.shift();

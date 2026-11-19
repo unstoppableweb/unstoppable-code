@@ -405,13 +405,26 @@ export function workerPipelineRelayConformanceCases(
     });
   });
 
-  it('opens a stream on a run that just finished with its snapshot first', async () => {
+  // CAN-6960: the web core's first stream opens once the run already runs.
+  it('replays a run that just finished to its end on a first stream, and opens a later one with its snapshot', async () => {
     const core = connect();
     await core.start(portableStart('run-done'));
+    await core.runner.output('run-done', 'before any stream');
     await core.runner.finish('run-done', 'success');
-    const stream = await core.events('run-done');
-    await expect(stream.ended).resolves.toMatchObject({ outcome: 'completed' });
-    expect(stream.items).toMatchObject([
+    const first = await core.events('run-done');
+    await expect(first.ended).resolves.toMatchObject({ outcome: 'completed' });
+    // It ends at the terminal item, as a replay after a cursor does.
+    expect(first.items).toMatchObject([
+      { kind: 'output', text: 'before any stream' },
+      {
+        kind: 'execution',
+        event: 'execution.completed',
+        execution: { status: 'success' },
+      },
+    ]);
+    const later = await core.events('run-done');
+    await expect(later.ended).resolves.toMatchObject({ outcome: 'completed' });
+    expect(later.items).toMatchObject([
       {
         kind: 'execution',
         event: 'snapshot',
@@ -460,7 +473,17 @@ export function workerPipelineRelayConformanceCases(
     await core.start(portableStart('run-count'));
     await core.runner.update('run-count', { pendingPauseCount: 2 });
     const stream = await core.events('run-count');
-    expect(stream.items[0]).toMatchObject({
+    // As the journal's first stream, the change itself comes first.
+    expect(stream.items).toMatchObject([
+      { kind: 'execution', execution: { pendingPauseCount: 2 } },
+      {
+        kind: 'execution',
+        event: 'snapshot',
+        execution: { status: 'running', pendingPauseCount: 2 },
+      },
+    ]);
+    const later = await core.events('run-count');
+    expect(later.items[0]).toMatchObject({
       kind: 'execution',
       event: 'snapshot',
       execution: { status: 'running', pendingPauseCount: 2 },

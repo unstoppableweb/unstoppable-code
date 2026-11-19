@@ -234,10 +234,10 @@ export class CoreSummarySchedule {
     const key = scopeKey(scope);
     return this.withScopeLock(key, async () => {
       if (receipt) {
-        const lookup = await this.operations.write((ledger) => ({
-          value: ledger.lookupReceipt(CORE_SUMMARY_REGENERATE_KIND, receipt),
-          events: [],
-        }));
+        const lookup = await this.operations.lookupReceipt(
+          CORE_SUMMARY_REGENERATE_KIND,
+          receipt,
+        );
         if (lookup.status === 'key-reused')
           throw new OperationLedgerRefusedError(
             'key-reused',
@@ -478,10 +478,9 @@ export class CoreSummarySchedule {
       const mode = summaryModeOf(operation);
       if (!scope || !mode || !host.isAutomaticSchedulingEnabled())
         return { status: 'cancelled' };
-      const before = await this.operations.write((ledger) => ({
-        value: ledger.statusBeforeRestart(operation.operationId),
-        events: [],
-      }));
+      const before = await this.operations.statusBeforeRestart(
+        operation.operationId,
+      );
       if (before !== 'queued') return { status: 'lost' };
       const key = scopeKey(scope);
       return this.withScopeLock(key, (): Promise<OperationRecovery> => {

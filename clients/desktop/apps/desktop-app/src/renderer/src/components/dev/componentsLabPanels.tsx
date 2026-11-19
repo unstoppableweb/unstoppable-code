@@ -80,11 +80,8 @@ const CODE_BLOCK_VARIANTS: readonly {
   { variant: 'document', label: 'Document' },
   { variant: 'command', label: 'Command' },
   { variant: 'output-preview', label: 'Output preview' },
-  { variant: 'compact-document', label: 'Compact document' },
-  { variant: 'file-document', label: 'File document' },
   { variant: 'command-preview', label: 'Command preview' },
   { variant: 'log-tail', label: 'Log tail' },
-  { variant: 'activity-command', label: 'Activity command' },
   { variant: 'catalog-source', label: 'Catalog source' },
   { variant: 'approval-document', label: 'Approval document' },
   { variant: 'approval-preview', label: 'Approval preview' },
@@ -145,6 +142,23 @@ export function CodeBlockSpecimen(): JSX.Element {
             </div>
           </SpecimenCell>
         ))}
+      </SpecimenPanel>
+      <SpecimenPanel title="Plain: insets">
+        <SpecimenCell label="Compact document">
+          <CodeBlock variant="document" inset="compact">
+            {CODE_SAMPLE}
+          </CodeBlock>
+        </SpecimenCell>
+        <SpecimenCell label="Roomy document">
+          <CodeBlock variant="document" inset="roomy">
+            {CODE_SAMPLE}
+          </CodeBlock>
+        </SpecimenCell>
+        <SpecimenCell label="Compact command">
+          <CodeBlock variant="command" inset="compact">
+            {CODE_SAMPLE}
+          </CodeBlock>
+        </SpecimenCell>
       </SpecimenPanel>
       <SpecimenPanel title="Plain: long lines">
         {CODE_BLOCK_WRAPS.map((wrap) => (

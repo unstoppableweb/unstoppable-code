@@ -1,11 +1,9 @@
-import type { BrowserWindow } from 'electron';
 import type { CodexRuntimeService } from '@canopy/execution-engine/node/codex-runtime';
 import {
   createCodexRuntimeService,
   resetCanonicalCodexHomeForTests,
 } from '@canopy/execution-engine/node/codex-runtime';
 import {
-  IPC_CHANNELS,
   type AgentProviderType,
   type ChatIngestionLagEventData,
   type ChatModel,
@@ -14,8 +12,8 @@ import '../codex/runtime-host-adapter';
 import { getDesktopCodexCapabilityStore } from '../codex/capability-store';
 import { resolveDesktopCodexMcpLauncher } from '../codex/mcp-launcher-command';
 import type { CodexCompatibleInvocation } from '../agents/codex-session';
+import type { AgentInterfacePort } from '../agents/agent-interface-port';
 import type { AgentProvider } from '../agents/types';
-import { sendToWindow } from '../lib/window-send';
 import { currentHelperWorkerContext } from '../helper-runs/helper-worker-context';
 import {
   assertAgentWorkerContext,
@@ -120,7 +118,7 @@ class DesktopCodexWorkerRuntime implements CodexWorkerRuntime {
 
   async providerFor(
     providerType: AgentProviderType,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): Promise<AgentProvider> {
     assertAgentWorkerContext('CodexWorkerRuntime.providerFor');
     // Keep this local import lazy to break the session-manager ↔ codex-session
@@ -130,7 +128,7 @@ class DesktopCodexWorkerRuntime implements CodexWorkerRuntime {
       target: { projectId: string; worktreeId: string; chatId: string },
       data: ChatIngestionLagEventData,
     ): void => {
-      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
+      interfacePort.publishIngestionLag(target, data);
     };
     if (providerType === 'ollama') {
       // Keep the Ollama adapter lazy with the Codex provider to preserve the

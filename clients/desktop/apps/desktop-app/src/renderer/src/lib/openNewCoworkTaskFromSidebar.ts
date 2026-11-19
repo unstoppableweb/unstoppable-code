@@ -37,10 +37,12 @@ export function openNewCoworkTaskFromSidebar(
       : store.createWorkEntryInProject(projectId, {
           sidebarItemGroupId: options.sidebarItemGroupId,
         });
-  void creating.catch(() => {
+  void creating.catch((error: unknown) => {
     useGitHubStore
       .getState()
-      .addToast("Couldn't create the task. Try again.", 'error');
+      .addToast("Couldn't create the task. Try again.", 'error', undefined, {
+        caught: error,
+      });
   });
   useNavigationStore.getState().navigate('chat');
 }

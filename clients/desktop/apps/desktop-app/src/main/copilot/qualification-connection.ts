@@ -20,6 +20,7 @@ export function createCopilotQualificationConnection(options: {
   async function vaultSelected(): Promise<boolean> {
     const custody = await options.handoff.custody();
     if (custody === 'unused') return false;
+    if (await options.handoff.ordinarySetup()) return true;
     const phase = await options.handoff.phase();
     if (
       COPILOT_VAULT_IMPORT_PATHS[phase].open !== 'vault' ||
@@ -39,6 +40,7 @@ export function createCopilotQualificationConnection(options: {
       return vaultRouted;
     },
     vault: () => options.vault,
+    shutdownVault: () => options.vault.shutdownCopilotRuntimes(),
     assertEnabled: () => {
       if (vaultRouted && !options.agreed())
         throw new CopilotVaultUnavailableError();
@@ -76,6 +78,18 @@ export function createCopilotQualificationConnection(options: {
       signal.throwIfAborted();
       if (custody === 'unused')
         return options.legacy.connectCopilot(signal, progress, changeAccount);
+      if (await options.handoff.ordinarySetup()) {
+        return options.vault.connectCopilot(
+          signal,
+          progress,
+          changeAccount,
+          async (): Promise<void> => {
+            // Release only the exactly retired receipt before P4 prepares its successor.
+            if (!(await options.handoff.ordinarySetup()))
+              throw new CopilotVaultUnavailableError();
+          },
+        );
+      }
       if (custody === 'selected' && options.agreed() && !changeAccount)
         return options.vault.connectCopilot(signal, progress, changeAccount);
       const phase = await options.handoff.phase();
@@ -83,11 +97,18 @@ export function createCopilotQualificationConnection(options: {
       const path = COPILOT_VAULT_IMPORT_PATHS[phase][entry];
       if (path === 'unavailable') throw new CopilotVaultUnavailableError();
       options.closeAdmission();
-      await participate(
-        () => options.handoff.connect(changeAccount || path === 'cancel'),
-        signal,
-      );
+      try {
+        await participate(
+          () => options.handoff.connect(changeAccount || path === 'cancel'),
+          signal,
+        );
+      } catch {
+        signal.throwIfAborted();
+        throw new CopilotVaultUnavailableError();
+      }
       signal.throwIfAborted();
+      if (await options.handoff.ordinarySetup())
+        return options.vault.connectCopilot(signal, progress);
       if (!options.agreed()) throw new CopilotVaultUnavailableError();
       const status = await options.vault.copilotConnectionStatus();
       progress(status);
@@ -97,15 +118,18 @@ export function createCopilotQualificationConnection(options: {
       options.closeAdmission();
       const custody = await options.handoff.custody();
       if (custody === 'unused') return options.legacy.disconnectCopilot();
+      if (await options.handoff.ordinarySetup())
+        return options.vault.disconnectCopilot();
       const phase = await options.handoff.phase();
       if (COPILOT_VAULT_IMPORT_CANCEL_PATHS[phase].disconnect !== 'cancel')
         throw new CopilotVaultUnavailableError();
       await options.handoff.connect(true);
     },
     async recoverCopilotAtStartup() {
-      // Startup is a read-only custody projection; only Connect may drive recovery.
+      // Startup may reap process receipts, never present grants or clean credentials.
       const custody = await options.handoff.custody();
       if (custody === 'unused') await options.legacy.recoverCopilotAtStartup();
+      else await options.vault.recoverCopilotAtStartup();
     },
     async revokeCopilotRuntimes() {
       options.closeAdmission();
@@ -117,11 +141,9 @@ export function createCopilotQualificationConnection(options: {
     },
     async shutdownCopilotRuntimes() {
       options.closeAdmission();
-      const unusedVault = !vaultRouted;
       await Promise.all([
         options.handoff.close(),
         routed.shutdownCopilotRuntimes(),
-        ...(unusedVault ? [options.vault.shutdownCopilotRuntimes()] : []),
       ]);
     },
   };

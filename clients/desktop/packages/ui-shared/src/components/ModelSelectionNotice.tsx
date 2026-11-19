@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Notice } from './Notice';
 
 export interface ModelSelectionFailure {
@@ -23,7 +24,8 @@ export function ModelSelectionNotice({
         failure.reported ? 'Model change failed' : 'Model change not confirmed'
       }
     >
-      {failure.message}
+      {/* A caught message can quote paths: replay skips it (CAN-7102). */}
+      <span className={REPLAY_BLOCK_CLASS}>{failure.message}</span>
     </Notice>
   );
 }

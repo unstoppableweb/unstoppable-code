@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  useId,
   useLayoutEffect,
   useRef,
   type ForwardedRef,
@@ -278,9 +279,9 @@ export type ChoiceFieldProps = CheckboxProps & {
   /** A quieter line under the label. */
   readonly description?: ReactNode;
   /**
-   * Content in the text column after the label, aligned under the label
-   * text but outside the clickable label, so links in it stay links and
-   * never toggle the choice (the legal consent row's document links).
+   * Text that continues the label's sentence on the same line but sits
+   * outside the clickable label, so links in it stay links and never toggle
+   * the choice (the legal consent row's document links).
    */
   readonly trailing?: ReactNode;
   /**
@@ -330,45 +331,60 @@ export const ChoiceField = forwardRef<HTMLInputElement, ChoiceFieldProps>(
     },
     ref,
   ): JSX.Element {
-    const row = (
-      <label
-        className={`flex items-start gap-2 text-s ${FIELD_LAYOUT_CLASS[layout]} ${disabled ? 'cursor-not-allowed fg-disabled' : 'cursor-pointer fg-primary'} ${trailing === undefined ? className : ''}`}
+    const generatedId = useId();
+    const inputId = props.id ?? generatedId;
+    const cursorClass = disabled ? 'cursor-not-allowed' : 'cursor-pointer';
+    const toneClass = disabled ? 'fg-disabled' : 'fg-primary';
+    /* The 16px mark sits on the first 20px line of the label. */
+    const mark = (
+      <span className="flex h-5 shrink-0 items-center">
+        {kind === 'radio' ? (
+          <Radio ref={ref} disabled={disabled} {...props} id={inputId} />
+        ) : (
+          <Checkbox
+            ref={ref}
+            disabled={disabled}
+            indeterminate={indeterminate}
+            {...props}
+            id={inputId}
+          />
+        )}
+      </span>
+    );
+    const descriptionLine = description ? (
+      <span className="block text-xs text-pretty fg-secondary">
+        {description}
+      </span>
+    ) : null;
+    if (trailing === undefined) {
+      return (
+        <label
+          className={`flex items-start gap-2 text-s ${FIELD_LAYOUT_CLASS[layout]} ${cursorClass} ${toneClass} ${className}`}
+        >
+          {mark}
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span>{label}</span>
+            {descriptionLine}
+          </span>
+          {end}
+        </label>
+      );
+    }
+    // The label text toggles the input through `htmlFor`; the trailing text
+    // after it in the same sentence does not.
+    return (
+      <div
+        className={`flex items-start gap-2 text-s ${FIELD_LAYOUT_CLASS[layout]} ${toneClass} ${className}`}
       >
-        {/* The 16px mark sits on the first 20px line of the label. */}
-        <span className="flex h-5 shrink-0 items-center">
-          {kind === 'radio' ? (
-            <Radio ref={ref} disabled={disabled} {...props} />
-          ) : (
-            <Checkbox
-              ref={ref}
-              disabled={disabled}
-              indeterminate={indeterminate}
-              {...props}
-            />
-          )}
-        </span>
-        <span className="flex min-w-0 flex-col gap-0.5">
-          <span>{label}</span>
-          {description ? (
-            <span className="text-xs text-pretty fg-secondary">
-              {description}
-            </span>
-          ) : null}
+        {mark}
+        <span className="min-w-0 text-pretty">
+          <label htmlFor={inputId} className={cursorClass}>
+            {label}
+          </label>{' '}
+          <span data-choice-field-trailing="">{trailing}</span>
+          {descriptionLine}
         </span>
         {end}
-      </label>
-    );
-    if (trailing === undefined) return row;
-    return (
-      <div className={className}>
-        {row}
-        {/* Under the label text: the 16px mark and the 8px gap. */}
-        <div
-          data-choice-field-trailing=""
-          className={`pl-6 text-s text-pretty ${disabled ? 'fg-disabled' : 'fg-primary'}`}
-        >
-          {trailing}
-        </div>
       </div>
     );
   },

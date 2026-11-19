@@ -84,10 +84,26 @@ export async function clearScenario(baseUrl, key) {
     throw new Error('clearScenario requires a non-empty string key');
   }
 
-  const response = await fetch(
-    `${origin}/__mock/state/${encodeURIComponent(key)}`,
-    { method: 'DELETE' },
-  );
+  const url = `${origin}/__mock/state/${encodeURIComponent(key)}`;
+  const options = {
+    method: 'DELETE',
+    headers: { connection: 'close' },
+    signal: AbortSignal.timeout(10_000),
+  };
+  let response;
+  try {
+    response = await fetch(url, options);
+  } catch (error) {
+    // An idle pooled socket can reset on reuse. Only this idempotent DELETE
+    // gets one retry; retire its connection and keep the original deadline.
+    if (
+      options.signal.aborted ||
+      (error?.code !== 'ECONNRESET' && error?.cause?.code !== 'ECONNRESET')
+    ) {
+      throw error;
+    }
+    response = await fetch(url, options);
+  }
 
   if (!response.ok) {
     throw new Error(

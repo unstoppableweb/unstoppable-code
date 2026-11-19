@@ -11,6 +11,7 @@
     "types": ["node"]
   },
   "references": [
+    { "path": "../agent-transcript" },
     { "path": "../core-transport" },
     { "path": "../pipeline-interop" },
     { "path": "../protocol" }

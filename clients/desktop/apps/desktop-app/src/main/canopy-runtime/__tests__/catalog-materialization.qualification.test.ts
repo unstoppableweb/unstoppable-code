@@ -41,7 +41,6 @@ import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
 } from '../desktop-runtime';
-import { CatalogSelectionUnavailableError } from '@canopy/core-runtime/node/catalog';
 import {
   readPluginCatalog,
   readPluginCacheIndex,
@@ -274,7 +273,7 @@ describe('desktop catalog materialization (CAN-4123)', () => {
       ),
     ),
   )(
-    '$stage refuses $file becoming $state during awaited resolution',
+    '$stage keeps resolving when $file becomes $state during awaited resolution',
     async ({ file, state, stage }) => {
       const f = fakes(root);
       const catalogPath = join(root, 'plugins-cache.json');
@@ -291,10 +290,11 @@ describe('desktop catalog materialization (CAN-4123)', () => {
       f.deps.loadMarketplacesCacheOnly = (): ReturnType<
         DesktopMaterializationDeps['loadMarketplacesCacheOnly']
       > => {
+        // CAN-4481: a damaged or newer file is read as-is, never refused.
         const catalog = readPluginCatalog(catalogPath);
-        const index = readPluginCacheIndex(indexPath);
+        expect(readPluginCacheIndex(indexPath).state).toBe('valid');
         return Promise.resolve(
-          catalog.state === 'valid' && index.state === 'valid'
+          catalog.state === 'valid'
             ? { success: true, data: catalog.data }
             : { success: false, error: 'Plugin persistence unavailable' },
         );
@@ -310,7 +310,9 @@ describe('desktop catalog materialization (CAN-4123)', () => {
         };
         await expect(
           createDesktopMaterializationResolver(f.deps).resolve(scope),
-        ).rejects.toBeInstanceOf(CatalogSelectionUnavailableError);
+        ).resolves.toMatchObject({
+          items: [expect.objectContaining({ kind: 'plugin', pluginName: 'g' })],
+        });
       } else {
         f.deps.realpath = (path): Promise<string> => {
           writeFileSync(changedPath, bytes);
@@ -318,7 +320,7 @@ describe('desktop catalog materialization (CAN-4123)', () => {
         };
         await expect(
           createDesktopWorkerCatalogHost(f.deps).lookupPlugin('m', 'g'),
-        ).rejects.toBeInstanceOf(CatalogSelectionUnavailableError);
+        ).resolves.toHaveProperty('pluginRevision');
       }
       expect(await readFile(changedPath, 'utf8')).toBe(bytes);
     },

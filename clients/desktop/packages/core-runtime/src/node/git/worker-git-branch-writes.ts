@@ -31,6 +31,7 @@ import {
   type GitBranchWritePort,
   type GitBranchWriteRefusalReason,
 } from './branch-writes';
+import { gitWriteDetailsOf, gitWriteOperationError } from './repository-writes';
 import { WorkerGitScopeError } from './worker-git-branch-list';
 import {
   assertWorkerGitServedSelection,
@@ -186,8 +187,8 @@ const REFRESH = {
 } as const;
 
 // The host's own error stays the runtime cause, so in-process projections can
-// rethrow it with its exact message. Unclassified failures stay untyped and
-// the dispatcher reports them as `internal`.
+// rethrow it with its exact message. Unclassified failures are `internal`,
+// with the write host's value-free details when it has them (CAN-7113).
 function typedError<Code extends WorkerGitWriteErrorCode>(
   error: unknown,
   codes: FamilyCodes<Code>,
@@ -217,6 +218,7 @@ function typedError<Code extends WorkerGitWriteErrorCode>(
           {
             kind: 'unavailable',
             message: error.message.slice(0, 4_096),
+            ...gitWriteDetailsOf(error.hostCause),
             retry: REFRESH,
           },
           error.hostCause ?? error,
@@ -233,7 +235,7 @@ function typedError<Code extends WorkerGitWriteErrorCode>(
       error,
     );
   }
-  return error;
+  return gitWriteOperationError(error);
 }
 
 function assertWriteCaller<Code extends WorkerGitWriteErrorCode>(

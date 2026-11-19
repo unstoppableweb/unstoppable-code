@@ -320,7 +320,17 @@ export function FieldError({
       <span aria-hidden="true" className="flex h-4.5 shrink-0 items-center">
         <WarningIcon size={12} exactSize drawnStrokeWidth={1.5} />
       </span>
-      <span>{copy}</span>
+      {/* A string child can be a caught message quoting paths and command
+          output, so replay skips it (CAN-7102). Catalog copy stays recorded. */}
+      <span
+        className={
+          !error && typeof children === 'string'
+            ? REPLAY_BLOCK_CLASS
+            : undefined
+        }
+      >
+        {copy}
+      </span>
       {action ? <span className="shrink-0 fg-primary">{action}</span> : null}
     </p>
   );

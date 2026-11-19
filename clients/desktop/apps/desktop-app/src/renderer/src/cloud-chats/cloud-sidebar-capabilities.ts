@@ -4,6 +4,19 @@ import type { WorkspaceSettingsDangerCopy } from '@canopy/ui-shared/components';
 /** What a cloud row in the desktop sidebar is: a project of either kind, or a task. */
 export type CloudSidebarRowKind = 'cowork' | 'git' | 'task';
 
+export interface CloudSidebarRowOptions {
+  /**
+   * The web core serves deleting a task to the Trash and cloud chats are
+   * online (CAN-7052). Without it a task only archives.
+   */
+  readonly taskDelete?: boolean;
+  /**
+   * Cloud chats are offline: the row is the last listing, read-only, so a
+   * project is neither dragged nor dropped on (CAN-6374).
+   */
+  readonly offline?: boolean;
+}
+
 /**
  * What the desktop can do with one cloud row, over the web core. Every
  * affordance the shared sidebar would otherwise reach through local stores or
@@ -13,13 +26,18 @@ export type CloudSidebarRowKind = 'cowork' | 'git' | 'task';
 export function cloudSidebarRowCapabilities(
   base: CanopyCapabilities,
   kind: CloudSidebarRowKind,
+  options: CloudSidebarRowOptions = {},
 ): CanopyCapabilities {
-  // A cloud task only archives here: the host's Archive-or-Delete would offer
-  // a Delete that the cloud path refuses, in a selection's menu too (CAN-6511).
+  // The host's own Archive-or-Delete never carries over: a cloud task offers
+  // Delete beside Archive only while the web core serves it (CAN-6511,
+  // CAN-7052), in a selection's menu too.
   const { worktreeRetention: _removed, ...host } = base;
   void _removed;
   return {
     ...host,
+    ...(kind === 'task' && options.taskDelete === true
+      ? { worktreeRetention: 'archive-or-delete' as const }
+      : {}),
     localExecution: false,
     terminalPty: false,
     fileSystemAccess: 'none',
@@ -28,7 +46,7 @@ export function cloudSidebarRowCapabilities(
     nativeWorktreeOpen: false,
     workspaceCreation: false,
     // Projects reorder through `core.workspace.reorder`; tasks keep recency.
-    workspaceReordering: kind !== 'task',
+    workspaceReordering: kind !== 'task' && options.offline !== true,
     workspaceMoveToOrganization: false,
     // A project's name, colour and delete to Trash go through the web core;
     // its instructions and scripts don't, so its settings show only those.

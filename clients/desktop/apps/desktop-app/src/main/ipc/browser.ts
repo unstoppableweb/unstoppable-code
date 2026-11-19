@@ -653,7 +653,11 @@ export function registerBrowserHandlers(
           rehydrate: channel === IPC_CHANNELS.browserCreate,
         },
       );
-      if (channel !== IPC_CHANNELS.browserSetVisible) return targeted;
+      if (
+        channel !== IPC_CHANNELS.browserSetVisible &&
+        channel !== IPC_CHANNELS.browserScreenshot
+      )
+        return targeted;
       return targeted.catch((error: unknown): never => {
         if (
           error instanceof BrowserProfileError &&

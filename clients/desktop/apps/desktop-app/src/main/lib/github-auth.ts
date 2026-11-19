@@ -25,6 +25,9 @@ import {
 } from './secure-storage-policy';
 import { migrateSecureStorageFile } from './secure-storage-migration';
 import { isMissingFileError } from './fs-utils';
+import { createAppError } from '@canopy/protocol/app-errors';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
+import { reportSecureStorageFailure } from '../observability/secure-storage-failure-reporter';
 import {
   getBundledGhBinaryPath,
   getEnhancedEnv,
@@ -40,6 +43,27 @@ let cachedToken: string | null = null;
 let cachedSource: GitHubTokenSource = 'none';
 let cachedAt = 0;
 let cachedBackend: string | null = null;
+/**
+ * Whether the latest credential resolution found a token. Read
+ * synchronously by the local-only egress guard (docs/local-only-build.md),
+ * which allows the GitHub hosts only while GitHub is connected.
+ */
+let lastResolutionHadToken = false;
+/**
+ * Bumped by `invalidateTokenCache()`, so a resolution that was in flight when
+ * GitHub was disconnected can't set `lastResolutionHadToken` back to true.
+ */
+let credentialGeneration = 0;
+
+export function hasResolvedGitHubCredential(): boolean {
+  return lastResolutionHadToken;
+}
+
+function noteResolution(generation: number, token: string): void {
+  if (generation === credentialGeneration) {
+    lastResolutionHadToken = token !== '';
+  }
+}
 
 type StoredTokenRead = StoredSecretReadResult<string> & {
   migrationDeferred?: boolean;
@@ -59,7 +83,26 @@ export async function readStoredPatWithStatus(): Promise<
   };
 }
 
+/**
+ * The PAT read returns a secure-storage failure as a result, so the user just
+ * appears signed out of GitHub. Report it: the closed storage record for a
+ * storage failure, and a static source (never the error) for an unreadable file.
+ */
 async function readStoredPatResult(): Promise<StoredTokenRead> {
+  const result = await readStoredPatUnreported();
+  if (result.status === 'storage-error') {
+    reportSecureStorageFailure('github-pat', result.failure);
+  } else if (result.status === 'error') {
+    reportMainAppError(
+      createAppError('external.service_unavailable', {
+        source: 'secure-storage.github-pat.read.unreadable',
+      }),
+    );
+  }
+  return result;
+}
+
+async function readStoredPatUnreported(): Promise<StoredTokenRead> {
   const policy = getSecretStoragePolicy();
   const filePath = getGitHubPatFilePath();
   try {
@@ -194,7 +237,10 @@ async function resolveGitHubCredential(): Promise<{
           source: cachedSource,
           storedCredential: 'present',
         };
-    } catch {
+    } catch (error) {
+      // The cached PAT is no longer readable: the user appears signed out.
+      const failure = getSecureStorageFailure(error);
+      if (failure) reportSecureStorageFailure('github-pat', failure);
       const token = await loadGhCliToken();
       return {
         token,
@@ -231,7 +277,9 @@ export async function resolveGitHubTokenWithSource(): Promise<{
   token: string;
   source: GitHubTokenSource;
 }> {
+  const generation = credentialGeneration;
   const { token, source } = await resolveGitHubCredential();
+  noteResolution(generation, token);
   return { token, source };
 }
 
@@ -240,11 +288,15 @@ export async function resolveGitHubTokenWithSource(): Promise<{
  * resolution and cache as `resolveGitHubToken`; the token is dropped here.
  */
 export async function describeGitHubCredential(): Promise<GitHubCredentialDescription> {
-  const { source, storedCredential } = await resolveGitHubCredential();
+  const generation = credentialGeneration;
+  const { token, source, storedCredential } = await resolveGitHubCredential();
+  noteResolution(generation, token);
   return { tokenSource: source, storedCredential };
 }
 
 export function invalidateTokenCache(): void {
+  credentialGeneration += 1;
+  lastResolutionHadToken = false;
   cachedToken = null;
   cachedSource = 'none';
   cachedAt = 0;

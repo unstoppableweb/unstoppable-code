@@ -41,6 +41,11 @@ import {
   isRequestSecretsToolName,
   requestSecretsToolDisplay,
 } from './request-secrets-display';
+import {
+  isRunWithSecretsToolName,
+  isWriteSecretsFileToolName,
+  secretUseToolDisplay,
+} from './secret-use-display';
 import { normalizeCommandReadToolBlock } from '@canopy/agent-transcript/lib/command-read-display';
 
 // ---------------------------------------------------------------------------
@@ -2766,6 +2771,12 @@ const PREDICATE_MATCHERS: ToolDisplayMatcher[] = [
   {
     match: isRequestSecretsToolName,
     render: (_parsed, input) => requestSecretsToolDisplay(input),
+  },
+  {
+    match: (toolName) =>
+      isRunWithSecretsToolName(toolName) ||
+      isWriteSecretsFileToolName(toolName),
+    render: (_parsed, input, toolName) => secretUseToolDisplay(toolName, input),
   },
   { match: isGetScriptOutputToolName, render: renderGetScriptOutput },
   { match: isSetAutoArchiveToolName, render: renderSetAutoArchive },

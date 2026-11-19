@@ -1,10 +1,7 @@
 import { installRoutedW5GoldenStore } from '../lib/__tests__/fixtures/w5-routed-golden-store';
 // CAN-3233: current Cowork creation must remain independent of user Git policy.
-jest.mock('../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../agents/session-manager', () => ({}));
 jest.mock('../pipelines/execution-runtime', () => ({}));

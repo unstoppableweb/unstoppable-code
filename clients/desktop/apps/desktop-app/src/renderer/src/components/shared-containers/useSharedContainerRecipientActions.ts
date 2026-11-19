@@ -138,8 +138,10 @@ export function useSharedContainerRecipientActions(
         }
         addToast(SHARED_CONTAINER_REMOVE_FAILED, 'error');
         return 'failed';
-      } catch {
-        addToast(SHARED_CONTAINER_REMOVE_FAILED, 'error');
+      } catch (error) {
+        addToast(SHARED_CONTAINER_REMOVE_FAILED, 'error', undefined, {
+          caught: error,
+        });
         return 'failed';
       } finally {
         dismissingRef.current = false;

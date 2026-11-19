@@ -628,7 +628,7 @@ it.each([false, true])(
   },
 );
 
-it('R14: omission is scoped even when cached worktrees share an accepted terminal ID', () => {
+it('R14: save forget is scoped even when cached worktrees share an accepted terminal ID', () => {
   seed();
   const other = fixture();
   other.terminals.forEach((t) => {
@@ -637,7 +637,7 @@ it('R14: omission is scoped even when cached worktrees share an accepted termina
   seed(other, workerPath('other'));
   const store = open();
   store.loadWorktreeState('p', 'other');
-  save(store, { groups: [] });
+  save(store, { groups: [], forgetTerminalIds: ['a', 'b'] });
   store.flushAllSync();
   expect(
     new TerminalPersistenceStore().loadWorktreeState('p', 'other').terminals,
@@ -651,7 +651,7 @@ it('R14: omission is scoped even when cached worktrees share an accepted termina
   ).toEqual(['b']);
 });
 
-it.each(['omission', 'cleanup', 'exit'])(
+it.each(['save forget', 'cleanup', 'exit'])(
   'R14: %s in one worktree preserves another worktree shared-ID UTF8 stream',
   (action) => {
     seed();
@@ -664,7 +664,8 @@ it.each(['omission', 'cleanup', 'exit'])(
     store.registerLiveSession(session('a', 'other'));
     const bytes = Buffer.from('€');
     store.appendTerminalOutput('p', 'other', 'a', bytes.subarray(0, 1));
-    if (action === 'omission') save(store, { groups: [] });
+    if (action === 'save forget')
+      save(store, { groups: [], forgetTerminalIds: ['a'] });
     else if (action === 'cleanup') store.forgetWorktree('p', 'w');
     else store.markTerminalExited('p', 'w', 'a', 0, null);
     store.appendTerminalOutput('p', 'other', 'a', bytes.subarray(1));
@@ -752,7 +753,7 @@ it.each(['¢', '€', '😀'])(
   },
 );
 
-it('R14: repeated omission/rebind discards forgotten bytes without disturbing a shared-ID stream', () => {
+it('R14: repeated save forget/rebind discards forgotten bytes without disturbing a shared-ID stream', () => {
   seed();
   const other = fixture();
   other.terminals.forEach((t) => {
@@ -766,7 +767,7 @@ it('R14: repeated omission/rebind discards forgotten bytes without disturbing a 
   for (let round = 1; round <= 2; round++) {
     store.appendTerminalOutput('p', 'w', 'a', bytes.subarray(0, 1));
     store.appendTerminalOutput('p', 'other', 'a', bytes.subarray(0, 2));
-    save(store, { groups: [] });
+    save(store, { groups: [], forgetTerminalIds: ['a', 'b'] });
     store.registerLiveSession(session('a'));
     store.appendTerminalOutput('p', 'w', 'a', Buffer.from('ignored'));
     expect(load(store).terminals).toEqual([]);
@@ -1027,15 +1028,60 @@ it('internal worker key collisions damage the record; presentation repeats/stale
   expect(read().terminals).toEqual([]);
 });
 
-it('all-cached omission forgets ungrouped history; explicit rebind clears live suppression', () => {
+it('a layout save keeps the ungrouped history it omits', () => {
+  seed(fixture(true));
+  const store = open();
+  save(store, { drawerCollapsed: true });
+  store.flushAllSync();
+  expect(
+    load(open()).terminals.find((t) => t.session.id === 'u')?.scrollbackLines,
+  ).toEqual(['ungrouped']);
+});
+
+it('a stale snapshot that omits a grouped live terminal keeps its history and name', () => {
+  seed();
+  const store = open();
+  store.registerLiveSession(session('a'));
+  save(store, {
+    groups: [
+      { id: 'g', terminalIds: ['b'], focusedTerminalId: 'b', splitSizes: [1] },
+    ],
+    terminalCustomNames: {},
+  });
+  expect(load(store).liveTerminalIds).toEqual(['a']);
+  store.flushAllSync();
+  const restarted = load(open());
+  expect(
+    restarted.terminals.find((t) => t.session.id === 'a')?.scrollbackLines,
+  ).toEqual(['A0']);
+  // The omitted terminal keeps its name; the listed one takes the request's clear.
+  expect(restarted.terminalCustomNames).toEqual({ a: 'API' });
+});
+
+it('terminal:save-worktree-state forgets only its forgetTerminalIds history; explicit rebind clears live suppression', () => {
   seed(fixture(true));
   const store = open();
   store.registerLiveSession(session('a'));
-  save(store, { groups: [] });
-  expect(load(store).terminals).toEqual([]);
+  save(store, { groups: [], forgetTerminalIds: ['a', 'u'] });
+  expect(load(store).terminals.map((t) => t.session.id)).toEqual(['b']);
+  expect(load(store).liveTerminalIds).toEqual([]);
   save(store, { groups: fixture().groups });
-  expect(load(store).terminals.map((t) => t.session.id)).toEqual(['a']);
+  expect(load(store).terminals.map((t) => t.session.id)).toEqual(['b', 'a']);
   expect(load(store).liveTerminalIds).toEqual(['a']);
+});
+
+it('a terminal still listed in groups ignores its forgetTerminalIds entry', () => {
+  seed();
+  const store = open();
+  store.registerLiveSession(session('a'));
+  save(store, { forgetTerminalIds: ['a'] });
+  expect(load(store).liveTerminalIds).toEqual(['a']);
+  store.flushAllSync();
+  const restarted = load(open());
+  expect(
+    restarted.terminals.find((t) => t.session.id === 'a')?.scrollbackLines,
+  ).toEqual(['A0']);
+  expect(restarted.terminalCustomNames.a).toBe('API');
 });
 
 it('UTF8 streaming, decoder finalization, 5000 lines and shutdown signal precedence survive restart', () => {

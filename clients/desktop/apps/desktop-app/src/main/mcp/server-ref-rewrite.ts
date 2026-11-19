@@ -1,5 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 import type {
   McpServerRef,
@@ -12,7 +13,7 @@ import {
   readChatStorageDiscoveryIndex,
 } from '../lib/chat-storage-discovery';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import { getWorkspacesRootDir } from '../lib/paths';
+import { getAppWorkspacesRootDir, getWorkspacesRootDir } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import {
@@ -227,8 +228,9 @@ async function rewriteWorkspaceChats(
 
 /**
  * Points desktop global defaults, project and cowork defaults, and saved
- * chat selections at `to` instead of the servers in `from`. Cloud project
- * defaults and cloud chats are not on this device and are left alone.
+ * chat selections (including Bot Work Entries) at `to` instead of the servers
+ * in `from`. Cloud project defaults and cloud chats are not on this device
+ * and are left alone.
  */
 export async function rewriteMcpServerRefs(
   request: RewriteMcpServerRefsRequest,
@@ -283,6 +285,24 @@ export async function rewriteMcpServerRefs(
         error,
       });
     }
+  }
+  // Bots live outside the project registry. They still retain selected MCP
+  // refs, and must be rewritten before the caller can retire the old server.
+  const appRoot = getAppWorkspacesRootDir();
+  for (const botProjectId of await inMcpRefRewritePhase(
+    'workspaceEnumeration',
+    () => workspaceIds(appRoot),
+  )) {
+    if (!isBotProjectId(botProjectId)) continue;
+    const result = await rewriteWorkspaceChats(
+      join(appRoot, botProjectId),
+      botProjectId,
+      from,
+      request.to,
+    );
+    chats += result.rewritten;
+    failures += result.failedScopes;
+    errors.push(...result.errors);
   }
   // A caller removes the old server once this resolves, so a reference left
   // behind must fail the rewrite rather than dangle.

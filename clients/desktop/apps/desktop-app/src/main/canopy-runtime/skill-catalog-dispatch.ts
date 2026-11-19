@@ -8,7 +8,10 @@ import {
   type CanopyCallerDescriptor,
   type CanopyJsonValue,
 } from '@canopy/protocol/canopy-core';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type {
+  IPCResult,
+  IPCResultWithAppError,
+} from '@canopy/execution-engine/types/pipeline';
 import type {
   FetchAvailableSkillsResponse,
   SaveCustomSkillRequest,
@@ -58,12 +61,18 @@ export function isPlainJsonValue(value: unknown): value is CanopyJsonValue {
  * text, a guard throw rejects with the guard error, and a typed error without
  * a cause (schema rejection, ledger unavailable) resolves with its fixed text.
  */
-async function toIpcResult<T>(run: () => Promise<T>): Promise<IPCResult<T>> {
+async function toIpcResult<T>(
+  run: () => Promise<T>,
+): Promise<IPCResultWithAppError<T>> {
   try {
     return { success: true, data: await preserveRuntimeCauseError(run()) };
   } catch (error) {
     if (error instanceof SkillServiceResultError)
-      return { success: false, error: error.message };
+      return {
+        success: false,
+        error: error.message,
+        ...(error.appError ? { appError: error.appError } : {}),
+      };
     if (error instanceof CanopyOperationError)
       return { success: false, error: error.message };
     throw error;
@@ -81,7 +90,7 @@ const isWireSkillName = (name: string): boolean =>
 export async function installSkillsThroughCore(
   source: string,
   skillNames: string[],
-): Promise<IPCResult<void>> {
+): Promise<IPCResultWithAppError<void>> {
   const names = skillNames.filter(isWireSkillName);
   if (names.length > CATALOG_SKILL_SOURCE_MAX_SKILLS)
     return {
@@ -115,7 +124,7 @@ export function removeSkillThroughCore(
 export function updateSkillThroughCore(
   sourceId: string,
   skillName: string,
-): Promise<IPCResult<void>> {
+): Promise<IPCResultWithAppError<void>> {
   return toIpcResult(async () => {
     const meta = keyed();
     await getDesktopCanopyRuntime().instruction(
@@ -190,7 +199,7 @@ function customSaveRefusal(
 
 export async function saveCustomSkillThroughCore(
   payload: SaveCustomSkillRequest,
-): Promise<IPCResult<{ name: string }>> {
+): Promise<IPCResultWithAppError<{ name: string }>> {
   const preservedMetadata =
     payload.preservedMetadata === undefined
       ? null

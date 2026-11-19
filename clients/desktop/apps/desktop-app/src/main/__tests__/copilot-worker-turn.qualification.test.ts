@@ -39,6 +39,7 @@ import type {
   AgentSessionOptions,
   AgentSessionSendOptions,
 } from '../agents/types';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 type DelegationSessionOptions = Parameters<
   typeof createManagedDelegationSession
@@ -335,7 +336,7 @@ describe('Copilot turns on the local worker (CAN-4119)', () => {
     const session = await runInAgentWorker(TURN, async () => {
       const provider = await getCopilotWorkerRuntime().providerFor(
         'copilot',
-        () => null,
+        windowAgentInterfacePort(() => null),
       );
       return provider.createSession(
         {
@@ -347,7 +348,7 @@ describe('Copilot turns on the local worker (CAN-4119)', () => {
           ...options,
         },
         onEvent,
-        () => null,
+        windowAgentInterfacePort(() => null),
       );
     });
     return { session };
@@ -1003,7 +1004,10 @@ describe('Copilot turns on the local worker (CAN-4119)', () => {
 
   it('a session outside a worker run is refused before any runtime opens', async () => {
     await expect(
-      getCopilotWorkerRuntime().providerFor('copilot', () => null),
+      getCopilotWorkerRuntime().providerFor(
+        'copilot',
+        windowAgentInterfacePort(() => null),
+      ),
     ).rejects.toThrow(
       new AgentOutsideWorkerError('CopilotWorkerRuntime.providerFor'),
     );

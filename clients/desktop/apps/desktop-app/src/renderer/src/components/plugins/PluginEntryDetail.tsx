@@ -1,3 +1,7 @@
+import {
+  useCustomizeDiscoveryEnabled,
+  useCustomizeEntryIdentity,
+} from '@canopy/ui-app/capability';
 import { Stack } from '@canopy/ui-shared/components';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useCloudOrigin } from '@/lib/cloud-origin';
@@ -9,7 +13,14 @@ import {
 } from '@canopy/ui-app/sharing';
 import { useMarketplaceCopyLinkMenuItem } from '@canopy/ui-app/capability';
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
-import { type JSX, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { CuratedMcpConnectionDetail } from './CuratedMcpConnectionDetail';
 import { MarketplaceSkillDetail } from '../share/MarketplaceSkillDetail';
 import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
@@ -22,13 +33,20 @@ import {
 } from '../pages/CollectionsTab';
 import { CapabilityRelatedSections } from './CapabilityRelatedSections';
 import { DetailBackButton } from '../shared/DetailBackButton';
-import { DialogModal } from '../shared';
+import { CloseButton, DialogModal } from '../shared';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import {
   MarketplaceDetailPageShell,
-  McpAccountConnectionPicker,
+  McpAccountControls,
+  type McpAccountDeviceEffect,
+  type McpAccountSelection,
   MarketplaceUnshareAction,
+  PluginCatalogAddAction,
   PluginCatalogDetail,
+  CustomizeRelatedSection,
+  customizeWorkflowAvailability,
+  customizeWorkflowSource,
+  type CustomizeWorkflowActions,
   useMarketplaceUnshare,
   useResourceContext,
   type MarketplaceDetailPageHeader,
@@ -55,14 +73,30 @@ import {
   SHARED_AGENTS_CHANGED_EVENT,
   SHARED_PLUGINS_CHANGED_EVENT,
 } from '@/hooks/useSharedMarketplaceShares';
-import { DetailEntityTypeProvider } from '@canopy/ui-shared/components';
+import { WORKFLOW_RUN_UNAVAILABLE_HERE } from '@canopy/ui-app/workflows';
+import {
+  AgentReadDetail,
+  DetailRelatedProvider,
+  Button as LayoutButton,
+  CenteredLoadingSpinner,
+  CustomizeEntryLogo,
+  CustomizeEntryWorksWith,
+  CustomizePublisher,
+  DelayedLoadingPlaceholder,
+  DetailEntityTypeProvider,
+  DetailFactError,
+} from '@canopy/ui-shared/components';
+import { TrashIcon } from '@canopy/ui-shared';
 import {
   DetailActionBar,
   DetailActionSlotsProvider,
+  DetailHeaderActionsProvider,
+  useDetailHeaderActionsHost,
   DetailMoreItemsContributionProvider,
   DetailMoreItemsProvider,
   DetailMoreMenu,
   DetailPageActions,
+  ErrorBanner,
   ExecutionActionButton,
   MarketplaceShareButton,
   useDetailActionSlots,
@@ -72,12 +106,14 @@ import {
   type DetailMoreMenuItem,
 } from '@canopy/ui-shared/components';
 import {
+  marketplaceDisplayName,
   pluginStandInCandidate,
   type MarketplaceShareAction,
 } from '@canopy/ui-shared/lib';
 import { applyPluginUpdateToMarketplaceCaches } from '../../hooks/useMarketplaceList';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import type { PipelineEditDeepLink } from '@/stores/navigationStore';
+import type { PipelineLookupRequest } from '@canopy/execution-engine/types/pipeline';
 import type {
   UnifiedEntryRef,
   UnifiedPluginEntry,
@@ -107,11 +143,9 @@ import type {
 } from '@canopy/desktop-shared/types/skills';
 import { ProviderConnectorDetail } from './ProviderConnectorDetail';
 import { TryItPrimaryCta } from './TryItPrimaryCta';
+import { useDesktopMcpAccountActions } from '../mcp/useDesktopMcpAccountActions';
 import type { AccountMcpDetailSignIn } from '../mcp/useAccountMcpActionRequests';
-import {
-  accountMcpConnectionKey,
-  accountMcpConfigurationKey,
-} from '@/hooks/useAccountMcpActions';
+import { accountMcpConnectionKey } from '@/hooks/useAccountMcpActions';
 import { pluginHarnessSupport } from '@/lib/tryItRuntime';
 import {
   buildTryItPrompt,
@@ -127,14 +161,19 @@ import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import {
   AutomationCatalogDetail,
   CuratedAutomationMarketplaceDetail,
+  LocalAutomationLayoutDetail,
   SharedAutomationMarketplaceDetail,
+  type AutomationDetailIdentity,
 } from '../automations/AutomationCatalogDetail';
 import type { CuratedAutomationsController } from '@/hooks/useCuratedAutomations';
 import type {
   AgentModelDefinition,
   SharedAgentSummary,
 } from '@canopy/execution-engine/types/agent-models';
-import { LocalAgentMarketplaceDetail } from './LocalAgentMarketplaceDetail';
+import {
+  LocalAgentInstalledAction,
+  LocalAgentMarketplaceDetail,
+} from './LocalAgentMarketplaceDetail';
 import {
   getShareablePluginRefKey,
   type SharedPluginSummary,
@@ -142,6 +181,7 @@ import {
 import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol/workspace-templates';
 import {
+  SharedAgentLayoutDetail,
   SharedAgentMarketplaceDetail,
   SharedBlueprintMarketplaceDetail,
   SharedPluginMarketplaceDetail,
@@ -255,11 +295,19 @@ export interface PluginEntryDetailProps {
    * Open another entry's detail in place (related-item navigation,
    * CAN-2382). The host swaps the selected entry and keeps a back stack.
    */
-  onOpenEntry?: (entryId: string) => void;
+  /** `add` opens the entry with its Add started, as its tile's Add does. */
+  onOpenEntry?: (entryId: string, intent?: 'view' | 'add') => void;
   /** Opens a marketplace source's page, to manage what it installed. */
   onOpenMarketplaceSource?: (sourceId: string) => void;
   /** Open a related pipeline while preserving host-owned detail history. */
   onOpenPipeline?: (link: PipelineEditDeepLink) => void;
+  /**
+   * New Customize: the Workflows rows' actions, so a workflow page offers
+   * the tile's Run with the same availability.
+   */
+  workflowActions?: CustomizeWorkflowActions;
+  /** New Customize: the list's entries, which Related reads. */
+  relatedEntries?: readonly UnifiedPluginEntry[];
   returnToMarketplace?: CapabilityMarketplaceReturnTarget;
   /**
    * Where Back goes, whatever the host decides that is: pop its detail stack
@@ -366,7 +414,10 @@ function DetailShell({
   fluid = false,
   header,
   moreItems,
+  privateTitle = false,
 }: {
+  /** A user-authored title (a workflow's file name): replay masks it. */
+  privateTitle?: boolean;
   fluid?: boolean;
   /**
    * A page's item header (CAN-4266): the shell shows the title, this
@@ -410,10 +461,20 @@ function DetailShell({
       dataTestId="plugins-entry-detail-share"
     />
   ) : undefined;
+  const modalBar = (
+    <DetailActionBar
+      more={fallbackMore}
+      share={shareButton}
+      primary={primaryAction}
+      slots={slots}
+    />
+  );
+  const headerActionsHost = useDetailHeaderActionsHost(modalBar);
   if (presentation === 'page') {
     return (
       <MarketplaceDetailPageShell
         title={title}
+        privateTitle={privateTitle}
         onNavigateBack={onNavigateBack}
         share={shareButton}
         width={fluid ? 'fluid' : 'constrained'}
@@ -432,7 +493,70 @@ function DetailShell({
     );
   }
 
-  return (
+  const modalBody = (
+    <>
+      {/* DialogModal pads only its header; body content pads itself (px to
+          match the header's 24px inset, bottom padding to keep the scroll end off
+          the rounded edge). */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto px-6 pb-6">
+        {/* New Customize: a layout in the body draws the title and the
+            action bar, so the dialog draws no header and this row keeps Back
+            and Close. */}
+        {headerActionsHost.claimed ? (
+          <div className="flex items-start justify-between gap-2 pt-5">
+            {onNavigateBack ? (
+              <DetailBackButton onNavigateBack={onNavigateBack} />
+            ) : (
+              <span />
+            )}
+            <CloseButton onClick={onClose} />
+          </div>
+        ) : (
+          (onNavigateBack ||
+            shareButton ||
+            primaryAction ||
+            fallbackMore ||
+            slots.declared > 0) && (
+            <div className="flex items-start justify-between gap-2">
+              {onNavigateBack ? (
+                <DetailBackButton onNavigateBack={onNavigateBack} />
+              ) : (
+                <span />
+              )}
+              {modalBar}
+            </div>
+          )
+        )}
+        <DetailActionSlotsProvider slots={slots}>
+          <DetailMoreItemsContributionProvider
+            contribute={contributedMore.contribute}
+          >
+            <DetailMoreItemsProvider items={contributedMore.items}>
+              {/* New Customize: a layout in the body draws this bar on its
+                  title row instead. */}
+              <DetailHeaderActionsProvider host={headerActionsHost.host}>
+                {children}
+              </DetailHeaderActionsProvider>
+            </DetailMoreItemsProvider>
+          </DetailMoreItemsContributionProvider>
+        </DetailActionSlotsProvider>
+      </div>
+    </>
+  );
+  return headerActionsHost.claimed ? (
+    <DialogModal
+      header="content"
+      // Named by the layout's own title.
+      titleId="plugin-detail-title"
+      inset="flush"
+      onClose={onClose}
+      maxWidth="3xl"
+      dataTestId="plugins-entry-detail"
+      scrollableBody={false}
+    >
+      {modalBody}
+    </DialogModal>
+  ) : (
     <DialogModal
       inset="flush"
       onClose={onClose}
@@ -443,39 +567,7 @@ function DetailShell({
       dataTestId="plugins-entry-detail"
       scrollableBody={false}
     >
-      {/* DialogModal pads only its header; body content pads itself (px to
-          match the header's 24px inset, bottom padding to keep the scroll end off
-          the rounded edge). */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto px-6 pb-6">
-        {(onNavigateBack ||
-          shareButton ||
-          primaryAction ||
-          fallbackMore ||
-          slots.declared > 0) && (
-          <div className="flex items-start justify-between gap-2">
-            {onNavigateBack ? (
-              <DetailBackButton onNavigateBack={onNavigateBack} />
-            ) : (
-              <span />
-            )}
-            <DetailActionBar
-              more={fallbackMore}
-              share={shareButton}
-              primary={primaryAction}
-              slots={slots}
-            />
-          </div>
-        )}
-        <DetailActionSlotsProvider slots={slots}>
-          <DetailMoreItemsContributionProvider
-            contribute={contributedMore.contribute}
-          >
-            <DetailMoreItemsProvider items={contributedMore.items}>
-              {children}
-            </DetailMoreItemsProvider>
-          </DetailMoreItemsContributionProvider>
-        </DetailActionSlotsProvider>
-      </div>
+      {modalBody}
     </DialogModal>
   );
 }
@@ -550,10 +642,28 @@ function SharedDetailShellWithUnshare({
 }
 
 export function PluginEntryDetail(props: PluginEntryDetailProps): JSX.Element {
-  return (
+  const discoveryEnabled = useCustomizeDiscoveryEnabled();
+  const { relatedEntries, onOpenEntry } = props;
+  const content = (
     <DetailEntityTypeProvider kind={props.entry.kind}>
       <PluginEntryDetailContent {...props} />
     </DetailEntityTypeProvider>
+  );
+  // New Customize: Related on every entity's page, from the list's entries.
+  if (!discoveryEnabled || !relatedEntries) return content;
+  return (
+    <DetailRelatedProvider
+      related={
+        <CustomizeRelatedSection
+          subject={props.entry}
+          entries={relatedEntries}
+          McpServerLogoComponent={McpServerLogo}
+          onOpenEntry={(entry) => onOpenEntry?.(entry.id)}
+        />
+      }
+    >
+      {content}
+    </DetailRelatedProvider>
   );
 }
 
@@ -608,7 +718,27 @@ function PluginEntryDetailContent({
   providerConnectors,
   providerConnectorsLoading,
   onProviderConnectorsChanged,
+  workflowActions,
 }: PluginEntryDetailProps): JSX.Element | null {
+  // New Customize's logo rule (curated logos, the logo chain); off, the
+  // entry's own logo.
+  const shownLogo = useCustomizeEntryIdentity(entry);
+  // Customize's light logo plate, only while New Customize is on.
+  const customizeLogoPlate = useCustomizeDiscoveryEnabled();
+  // New Customize's automation and agent pages wear the tile's identity.
+  const layoutIdentity: AutomationDetailIdentity | undefined =
+    customizeLogoPlate
+      ? {
+          entry: shownLogo,
+          logo: (
+            <CustomizeEntryLogo
+              entry={shownLogo}
+              McpServerLogoComponent={McpServerLogo}
+            />
+          ),
+          publisher: <CustomizePublisher entry={shownLogo} />,
+        }
+      : undefined;
   // Local overrides: an install or compatibility toggle re-renders the
   // detail immediately, while the shared cache write below keeps every other
   // surface (row states, install counters) in agreement.
@@ -828,6 +958,15 @@ function PluginEntryDetailContent({
   const selectedAccountConnection = accountConnections.find(
     (connection) => connection.id === selectedAccountConnectionId,
   );
+  // Add another account, Rename and Make default (CAN-6226): offered once the
+  // person holds an account connection to this curated key.
+  const accountControls = useDesktopMcpAccountActions({
+    serverKey:
+      ref.type === 'curated-mcp' && accountConnections.length > 0
+        ? ref.key
+        : null,
+    refresh: onServersChanged,
+  });
 
   // Account rows carry no device file, so only a device-backed row (or a
   // device copy nested under an account row) may be loaded by the local
@@ -896,10 +1035,51 @@ function PluginEntryDetailContent({
         onClose={onClose}
         onNavigateBack={onNavigateBack}
         shareAction={enabledShareAction}
+        privateTitle={customizeLogoPlate}
       >
         <PipelineCatalogDetail
           pipeline={pipeline}
           onOpenEntry={onOpenEntry}
+          // New Customize: the shared workflow page, with the tile's Run.
+          {...(customizeLogoPlate
+            ? {
+                layout: {
+                  title: entry.name,
+                  description: entry.description,
+                  logo: (
+                    <CustomizeEntryLogo
+                      entry={shownLogo}
+                      McpServerLogoComponent={McpServerLogo}
+                    />
+                  ),
+                  publisher: <CustomizePublisher entry={shownLogo} />,
+                  ...(customizeWorkflowSource(shownLogo)
+                    ? {
+                        source: customizeWorkflowSource(shownLogo),
+                        ...(shownLogo.workflow?.sourceIsPerson
+                          ? { sourceIsPerson: true }
+                          : {}),
+                      }
+                    : {}),
+                  lookupFor: (
+                    cwd: string | null,
+                  ): PipelineLookupRequest | null =>
+                    ref.source === 'project'
+                      ? ref.filePath && cwd
+                        ? { id: ref.pipelineId, cwd, filePath: ref.filePath }
+                        : null
+                      : ref.source === 'shared'
+                        ? ref.remoteId
+                          ? {
+                              source: 'shared' as const,
+                              remoteId: ref.remoteId,
+                            }
+                          : null
+                        : { id: ref.pipelineId, source: ref.source },
+                  run: workflowRun(entry, workflowActions),
+                },
+              }
+            : {})}
           onOpenEditor={() =>
             onOpenPipeline?.({
               pipelineId: ref.pipelineId,
@@ -941,13 +1121,25 @@ function PluginEntryDetailContent({
         onClose={onClose}
         onNavigateBack={onNavigateBack}
         shareAction={enabledShareAction}
+        // An automation's name is its author's own.
+        privateTitle={layoutIdentity !== undefined}
       >
-        <AutomationCatalogDetail
-          activity={activity}
-          summary={entry.description}
-          updateAvailable={entry.updateAvailable === true}
-          onOpenInAutomations={() => onOpenAutomation(activity.id)}
-        />
+        {layoutIdentity ? (
+          <LocalAutomationLayoutDetail
+            activity={activity}
+            identity={layoutIdentity}
+            updateAvailable={entry.updateAvailable === true}
+            onOpenInAutomations={() => onOpenAutomation(activity.id)}
+            {...(workflowActions ? { workflowActions } : {})}
+          />
+        ) : (
+          <AutomationCatalogDetail
+            activity={activity}
+            summary={entry.description}
+            updateAvailable={entry.updateAvailable === true}
+            onOpenInAutomations={() => onOpenAutomation(activity.id)}
+          />
+        )}
       </DetailShell>
     );
   }
@@ -959,15 +1151,120 @@ function PluginEntryDetailContent({
         presentation={presentation}
         onClose={onClose}
         onNavigateBack={onNavigateBack}
+        privateTitle={layoutIdentity !== undefined}
       >
         <SharedAutomationMarketplaceDetail
           automationId={ref.automationId}
           activities={automationActivities}
           onOpenInAutomations={onOpenAutomation}
+          {...(layoutIdentity
+            ? { layout: layoutIdentity, workflowActions }
+            : {})}
           // A share opened by id before the inventory lists it (a public-link
           // share outside "Shared by me") learns its name from the detail.
           onNameLoaded={(name): void => onDisplayNameChangeRef.current?.(name)}
         />
+      </DetailShell>
+    );
+  }
+
+  if (ref.type === 'local-agent' && layoutIdentity) {
+    const agent = localAgents.find((item) => item.id === ref.agentId);
+    const loadFailed = Boolean(localAgentsError) && !localAgentsLoading;
+    // A settled inventory without the agent means it is gone.
+    if (!agent && !loadFailed && !localAgentsLoading) {
+      return (
+        <MissingEntryDetail
+          name={entry.name}
+          presentation={presentation}
+          onNavigateBack={onNavigateBack}
+          onClose={onClose}
+        />
+      );
+    }
+    return (
+      <DetailShell
+        title={entry.name}
+        presentation={presentation}
+        onClose={onClose}
+        onNavigateBack={onNavigateBack}
+        {...(agent ? { shareAction: enabledShareAction } : {})}
+        // An agent's name is its author's own.
+        privateTitle
+        moreItems={
+          agent
+            ? [
+                {
+                  id: 'delete',
+                  label: 'Delete',
+                  icon: <TrashIcon />,
+                  testId: 'local-agent-detail-delete',
+                  onSelect: (): void => onDeleteLocalAgent?.(agent),
+                  destructive: true,
+                },
+              ]
+            : []
+        }
+      >
+        {agent ? (
+          <LocalAgentMarketplaceDetail
+            agent={agent}
+            onEdit={(): void => onEditLocalAgent?.(agent)}
+            onDelete={(): void => onDeleteLocalAgent?.(agent)}
+            // A cached definition may predate the agent while the list loads
+            // or after its read failed; Edit waits for a fresh one.
+            editDisabled={localAgentsLoading || Boolean(localAgentsError)}
+            layout={{
+              ...layoutIdentity,
+              loadFailed,
+              ...(onRetryLocalAgents ? { onRetry: onRetryLocalAgents } : {}),
+            }}
+          />
+        ) : (
+          // A deep link can land before the inventory hydrates: the page
+          // keeps its layout, with the state in Plugins and skills.
+          <AgentReadDetail
+            dataTestId="local-agent-marketplace-detail"
+            name={layoutIdentity.entry.name}
+            description={layoutIdentity.entry.description}
+            logo={layoutIdentity.logo}
+            publisher={layoutIdentity.publisher}
+            actions={
+              <DetailActionBar
+                primary={
+                  <LocalAgentInstalledAction entry={layoutIdentity.entry} />
+                }
+              />
+            }
+            source={layoutIdentity.entry.sourceLabel}
+            items={[]}
+            instructions=""
+            contentsNotice={
+              loadFailed ? (
+                <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+                  <DetailFactError
+                    error="Couldn't load your agents"
+                    testId="local-agent-detail-error"
+                  />
+                  {onRetryLocalAgents && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <LayoutButton variant="link" onClick={onRetryLocalAgents}>
+                        Try again
+                      </LayoutButton>
+                    </>
+                  )}
+                </span>
+              ) : (
+                <div data-testid="local-agent-detail-loading">
+                  <DelayedLoadingPlaceholder slowNote="Still loading agent…">
+                    <CenteredLoadingSpinner spacing="section" />
+                  </DelayedLoadingPlaceholder>
+                </div>
+              )
+            }
+          />
+        )}
       </DetailShell>
     );
   }
@@ -1066,6 +1363,43 @@ function PluginEntryDetailContent({
       agent,
       personalOrganizationId,
     );
+    const agentUnshare = unshareOptions({
+      kind: 'agent',
+      shareId: agent.id,
+      name: agent.name,
+      owner: agent.owner,
+      canDelete: agent.canDelete,
+    });
+    const agentSharedByYou = (
+      <SharedByYou
+        kind="agent"
+        shareId={agent.id}
+        name={agent.name}
+        facts={agent}
+        onUnshared={sharedByYouUnshared('agent', agent.id, agent.name)}
+      />
+    );
+    if (layoutIdentity) {
+      return (
+        <SharedDetailShell
+          title={entry.name}
+          presentation={presentation}
+          onClose={onClose}
+          // The shared layout draws the header; the shell's ⋯ menu (copy
+          // link, Unshare) joins its title row.
+          privateTitle
+          unshare={agentUnshare}
+          audienceCount={agentAudienceCount}
+          copyTarget={{ kind: 'agent', itemId: agent.id, facts: agent }}
+        >
+          <SharedAgentLayoutDetail
+            agent={agent}
+            identity={layoutIdentity}
+            settings={agentSharedByYou}
+          />
+        </SharedDetailShell>
+      );
+    }
     return (
       <SharedDetailShell
         title={entry.name}
@@ -1074,25 +1408,13 @@ function PluginEntryDetailContent({
         header={sharedAgentDetailHeader(agent, personalOrganizationId, {
           audienceListedBelow: agentAudienceCount > 0,
         })}
-        unshare={unshareOptions({
-          kind: 'agent',
-          shareId: agent.id,
-          name: agent.name,
-          owner: agent.owner,
-          canDelete: agent.canDelete,
-        })}
+        unshare={agentUnshare}
         audienceCount={agentAudienceCount}
         copyTarget={{ kind: 'agent', itemId: agent.id, facts: agent }}
       >
         <Stack gap="section">
           <SharedAgentMarketplaceDetail agent={agent} />
-          <SharedByYou
-            kind="agent"
-            shareId={agent.id}
-            name={agent.name}
-            facts={agent}
-            onUnshared={sharedByYouUnshared('agent', agent.id, agent.name)}
-          />
+          {agentSharedByYou}
         </Stack>
       </SharedDetailShell>
     );
@@ -1204,6 +1526,9 @@ function PluginEntryDetailContent({
           onRetry={() => curatedAutomations.onSelectKey(ref.key)}
           activities={automationActivities}
           onOpenInAutomations={onOpenAutomation}
+          {...(layoutIdentity
+            ? { layout: layoutIdentity, workflowActions }
+            : {})}
         />
       </DetailShell>
     );
@@ -1321,7 +1646,24 @@ function PluginEntryDetailContent({
           onClose={onClose}
           onNavigateBack={onNavigateBack}
           shareAction={shareAction}
-          primaryAction={pluginTryIt()}
+          // New Customize: the page offers the tile's main action, Add.
+          primaryAction={
+            customizeLogoPlate ? (
+              <PluginCatalogAddAction
+                entry={entry}
+                // This row's own Add opens here; another provider's copy
+                // opens its own page with its Add started, as the tile's
+                // "Add from …" does.
+                onAdd={(listing) =>
+                  listing.id === entry.id
+                    ? setPluginAddOpen(true)
+                    : onOpenEntry?.(listing.id, 'add')
+                }
+              />
+            ) : (
+              pluginTryIt()
+            )
+          }
         >
           <PluginCatalogDetail
             entry={{
@@ -1333,12 +1675,40 @@ function PluginEntryDetailContent({
                 entry.authorName ?? (pluginOverride ?? resolved.plugin).author,
               description: entry.description,
               homepage: (pluginOverride ?? resolved.plugin).homepage,
-              logoUrl: entry.logoUrl,
-              bundledLogo: entry.bundledLogo,
-              brandMark: entry.brandMark,
+              logoUrl: shownLogo.logoUrl,
+              bundledLogo: shownLogo.bundledLogo,
+              brandMark: shownLogo.brandMark,
               categories: entry.categories,
               components: entry.components,
+              ...(customizeLogoPlate
+                ? {
+                    publisher: <CustomizePublisher entry={shownLogo} />,
+                    marketplace: {
+                      name: marketplaceDisplayName(resolved.marketplace.name),
+                      onOpen: openSource(resolved.marketplace.id),
+                    },
+                  }
+                : {}),
             }}
+            {...(customizeLogoPlate
+              ? {
+                  layout: true,
+                  logo: (
+                    <CustomizeEntryLogo
+                      entry={shownLogo}
+                      McpServerLogoComponent={McpServerLogo}
+                    />
+                  ),
+                  // A partial removal's notice, as on the Portal.
+                  status: (
+                    <InstalledEntryStatusSection
+                      entry={entry}
+                      onUninstalled={onClose}
+                      onManageSource={openSource(resolved.marketplace.id)}
+                    />
+                  ),
+                }
+              : {})}
             alternatives={entry.alsoAvailableFrom}
             onOpenEntryId={onOpenEntry}
             McpServerLogoComponent={McpServerLogo}
@@ -1390,20 +1760,54 @@ function PluginEntryDetailContent({
             ) : undefined
           }
           headerIcon={
-            <McpServerLogo
-              logoUrl={entry.logoUrl}
-              bundledLogo={entry.bundledLogo}
-              brandMark={entry.brandMark}
-              name={entry.name}
-              size={40}
-              fallback="monogram"
-              fit="contain"
-            />
+            customizeLogoPlate ? (
+              <CustomizeEntryLogo
+                entry={shownLogo}
+                McpServerLogoComponent={McpServerLogo}
+              />
+            ) : (
+              <McpServerLogo
+                logoUrl={shownLogo.logoUrl}
+                bundledLogo={shownLogo.bundledLogo}
+                brandMark={shownLogo.brandMark}
+                name={entry.name}
+                size={40}
+                fallback="monogram"
+                fit="contain"
+              />
+            )
           }
+          // New Customize: the page names the publisher its tile does.
+          {...(customizeLogoPlate
+            ? {
+                publisher: <CustomizePublisher entry={shownLogo} />,
+                // As on the tile: a changed shared source reads "Update
+                // available"; plugins have no update to run from here yet,
+                // so neither offers the button.
+                ...(entry.shareUpdateAvailable === true
+                  ? { versionUpdate: { version: entry.version } }
+                  : {}),
+              }
+            : {})}
           marketplace={resolved.marketplace}
           shareAction={shareAction}
           renderPrimaryAction={({ onInstall, busy }) =>
-            pluginTryIt(onInstall, busy)
+            // New Customize: Add until it is added, as on the tile.
+            customizeLogoPlate && entry.state === 'available' ? (
+              <PluginCatalogAddAction
+                entry={entry}
+                busy={busy}
+                // This row's own Add installs here; another provider's copy
+                // opens its own page.
+                onAdd={(listing) =>
+                  listing.id === entry.id
+                    ? onInstall()
+                    : onOpenEntry?.(listing.id)
+                }
+              />
+            ) : (
+              pluginTryIt(onInstall, busy)
+            )
           }
           alternatives={entry.alsoAvailableFrom}
           onOpenSource={openSource(resolved.marketplace.id)}
@@ -1477,13 +1881,37 @@ function PluginEntryDetailContent({
         onEditingChange={onSkillEditingChange}
         onSharedSkillsChanged={onSharedSkillsChanged}
         onOpenAccountSettings={onOpenAccountSettings}
+        // New Customize: the tile's identity, and Status as the first fact.
+        {...(customizeLogoPlate
+          ? {
+              identity: {
+                logo: (
+                  <CustomizeEntryLogo
+                    entry={shownLogo}
+                    McpServerLogoComponent={McpServerLogo}
+                  />
+                ),
+                publisher: <CustomizePublisher entry={shownLogo} />,
+                worksWith: <CustomizeEntryWorksWith entry={shownLogo} />,
+              },
+              statusContent: (
+                <InstalledEntryStatusSection
+                  entry={entry}
+                  onUninstalled={onClose}
+                  headerOwnsRemoval
+                />
+              ),
+            }
+          : {})}
         relatedContent={
           <>
-            <InstalledEntryStatusSection
-              entry={entry}
-              onUninstalled={onClose}
-              headerOwnsRemoval
-            />
+            {!customizeLogoPlate && (
+              <InstalledEntryStatusSection
+                entry={entry}
+                onUninstalled={onClose}
+                headerOwnsRemoval
+              />
+            )}
             <CapabilityRelatedSections
               presentation="list"
               subject={{
@@ -1625,6 +2053,20 @@ function PluginEntryDetailContent({
         onDeleted={onClose}
         onEditorOpenChange={setEditingCollection}
         onShare={enabledShareAction?.onShare}
+        // New Customize: the page wears the tile's logo and publisher.
+        {...(customizeLogoPlate
+          ? {
+              identity: {
+                logo: (
+                  <CustomizeEntryLogo
+                    entry={shownLogo}
+                    McpServerLogoComponent={McpServerLogo}
+                  />
+                ),
+                publisher: <CustomizePublisher entry={shownLogo} />,
+              },
+            }
+          : {})}
       />
     );
   }
@@ -1727,17 +2169,20 @@ function PluginEntryDetailContent({
   // The account connection backs the card only when the card resolved to
   // the account: a device file for the key keeps status, Connect, and the
   // editor on that one device server. A desktop-only card passes its account
-  // connection whatever backs it, only so the detail can disconnect it.
+  // connection whatever backs it, only so the detail can disconnect it; it
+  // lists no accounts, so it passes one still holding credentials first.
   const accountConnection =
     selectedAccountConnection ??
     localServer?.accountConnection ??
-    (ref.type === 'curated-mcp' &&
-    (accountServerId !== null || curatedDesktopOnly)
-      ? flattenMcpServerRows(mcpServers).find(
-          (server) =>
-            server.scope === 'account' && server.curatedKey === ref.key,
-        )?.accountConnection
-      : undefined);
+    (ref.type !== 'curated-mcp'
+      ? undefined
+      : curatedDesktopOnly
+        ? (accountConnections.find(
+            (connection) => connection.status !== 'DISCONNECTED',
+          ) ?? accountConnections[0])
+        : accountServerId !== null
+          ? accountConnections[0]
+          : undefined);
   const accountConnectionBehindDevice =
     ref.type === 'curated-mcp' &&
     installedCurated.deviceId !== null &&
@@ -1747,6 +2192,37 @@ function PluginEntryDetailContent({
             server.scope === 'account' && server.curatedKey === ref.key,
         )?.accountConnection
       : undefined;
+  // The row the accounts list opens, as the card resolves: the account
+  // picked, else the device copy when there is one, else the account behind
+  // the card.
+  const accountSelection: McpAccountSelection | null = selectedAccountConnection
+    ? { kind: 'account', id: selectedAccountConnection.id }
+    : installedCuratedServerId !== null
+      ? { kind: 'device' }
+      : accountConnection
+        ? { kind: 'account', id: accountConnection.id }
+        : null;
+  // A device file named after the connector key comes first for every pick
+  // of an account by that key (resolveStandaloneMcpServers): a chat here runs
+  // the file's configuration with the account's id, or leaves the server out
+  // when the file has no such enabled configuration. That holds whichever
+  // device copy the card shows.
+  const keyNamedDeviceServer =
+    ref.type === 'curated-mcp'
+      ? flattenMcpServerRows(mcpServers).find(
+          (server) => server.scope !== 'account' && server.id === ref.key,
+        )
+      : undefined;
+  let deviceAccountEffects: Record<string, McpAccountDeviceEffect> | undefined;
+  if (keyNamedDeviceServer) {
+    deviceAccountEffects = {};
+    for (const connection of accountConnections)
+      deviceAccountEffects[connection.id] = keyNamedDeviceServer.configs.some(
+        (config) => config.id === connection.configId && config.enabled,
+      )
+        ? 'replaced'
+        : 'skipped';
+  }
 
   const connectionSource = curatedEntry
     ? { entry: curatedEntry }
@@ -1808,33 +2284,74 @@ function PluginEntryDetailContent({
       fluid={mcpSignInOpen}
     >
       <>
-        <McpAccountConnectionPicker
-          connections={accountConnections}
-          value={
-            selectedAccountConnection?.id ??
-            (installedCuratedServerId ? null : (accountConnection?.id ?? null))
-          }
-          onChange={setSelectedAccountConnectionId}
-          deviceAvailable={installedCuratedServerId !== null}
-          disabled={
-            curatedDetailBusy ||
-            accountSignIn?.isPending(
-              accountConnection
-                ? accountMcpConnectionKey(accountConnection)
-                : (installedCuratedServerId ??
-                    (curatedEntry
-                      ? accountMcpConfigurationKey(curatedEntry.key)
-                      : '')),
-            )
-          }
-        />
+        {accountControls.signIn.dialogs}
         <CuratedMcpConnectionDetail
+          // A desktop-only server's accounts bind nothing (REG-3035): the card
+          // stays on its device server and offers only the leftover cloud
+          // connection's Disconnect, so it lists no accounts.
+          renderAccounts={
+            accountConnections.length > 0 && !curatedDesktopOnly
+              ? (accountDetails): ReactNode => (
+                  <>
+                    {/* The device copy is one more row of the accounts list:
+                        opening a row is how the page picks what it shows. */}
+                    <McpAccountControls
+                      serverName={mcpName}
+                      connections={accountConnections}
+                      selected={accountSelection}
+                      actions={accountControls.actions}
+                      onSelect={(selection): void =>
+                        setSelectedAccountConnectionId(
+                          selection.kind === 'device' ? null : selection.id,
+                        )
+                      }
+                      details={accountDetails}
+                      device={installedCuratedServerId !== null}
+                      deviceEffects={deviceAccountEffects}
+                      disabled={
+                        curatedDetailBusy ||
+                        accountControls.signIn.setupOpen ||
+                        (installedCuratedServerId !== null &&
+                          accountSignIn?.isPending(
+                            accountConnection
+                              ? accountMcpConnectionKey(accountConnection)
+                              : installedCuratedServerId,
+                          ) === true)
+                      }
+                      addPending={accountControls.addPending}
+                    />
+                    <ErrorBanner
+                      className=""
+                      error={accountControls.signIn.error}
+                      errorSource="mcp-account-add"
+                      testId="mcp-account-add-error"
+                      onDismiss={accountControls.signIn.clearError}
+                    />
+                  </>
+                )
+              : undefined
+          }
           // Keyed by the entry that was opened (an account row's id carries its
           // configuration), never by the binding behind it: the connection Add
           // creates must not remount the detail and replay its Add (REG-3033).
           key={`${entry.id}:${selectedAccountConnection?.id ?? 'primary'}`}
           {...connectionSource}
           onSignInBrowserChange={setMcpSignInOpen}
+          // New Customize: the page wears the tile's logo and publisher.
+          {...(customizeLogoPlate
+            ? {
+                identity: {
+                  logo: (
+                    <CustomizeEntryLogo
+                      entry={shownLogo}
+                      McpServerLogoComponent={McpServerLogo}
+                    />
+                  ),
+                  publisher: <CustomizePublisher entry={shownLogo} />,
+                  worksWith: <CustomizeEntryWorksWith entry={shownLogo} />,
+                },
+              }
+            : {})}
           statusContent={
             <InstalledEntryStatusSection
               entry={entry}
@@ -1918,6 +2435,25 @@ function PluginEntryDetailContent({
       </>
     </DetailShell>
   );
+}
+
+/** A workflow page's Run: the tile's Run, with its availability and reason. */
+function workflowRun(
+  entry: UnifiedPluginEntry,
+  actions: CustomizeWorkflowActions | undefined,
+): {
+  available: boolean;
+  reason?: string;
+  onRun: () => void | Promise<void>;
+} {
+  const state = actions
+    ? customizeWorkflowAvailability(entry, actions).run
+    : { available: false, reason: WORKFLOW_RUN_UNAVAILABLE_HERE };
+  return {
+    available: state.available,
+    ...(state.reason ? { reason: state.reason } : {}),
+    onRun: () => actions?.onRun?.(entry),
+  };
 }
 
 /**

@@ -127,7 +127,7 @@ export class ExecutionSecretGrants implements ExecutionSecretSource {
       try {
         reads = await this.options.reader.read(grant.bindings, signal);
       } catch {
-        throw executionSecretUnavailableError();
+        throw executionSecretUnavailableError('source_failed');
       }
       if (reads.some((read) => read.status === 'unsupported'))
         throw executionSecretUnsupportedError();

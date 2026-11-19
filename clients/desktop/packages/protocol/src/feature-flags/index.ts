@@ -22,6 +22,13 @@ import type { LabsExperimentAvailability } from '../experiments';
  *   configured for the current runtime.
  * - `launchDarklyEnabledUnavailableValue` applies when LaunchDarkly is
  *   configured but has not returned a live value yet.
+ * - `localOnlyDefaultValue` applies in a local-only desktop build
+ *   (docs/local-only-build.md), whatever LaunchDarkly is configured to. A flag
+ *   whose feature needs our cloud, relay, gateway, LaunchDarkly or PostHog is
+ *   hosted and takes its off value; every other flag copies
+ *   `launchDarklyDisabledDefaultValue`. It is listed after the two
+ *   LaunchDarkly values because scripts/browser-profiles-build-config.py
+ *   matches that adjacent pair in bundled output.
  *
  * Desktop keeps the last live value after LaunchDarkly returns data at least
  * once. Web server evaluation intentionally does not cache live values: a
@@ -30,35 +37,48 @@ import type { LabsExperimentAvailability } from '../experiments';
  *
  * To add a new client-visible flag:
  *
- * 1. Confirm the intended values for both LaunchDarkly default modes.
- * 2. Add a new entry to this object with typed defaults for both modes.
+ * 1. Confirm the intended values for both LaunchDarkly default modes and
+ *    for local-only builds (required: typecheck fails without it).
+ * 2. Add a new entry to this object with typed defaults for every mode.
  * 3. Extend {@link ClientFeatureFlagValues} so the value type is pinned per
  *    key (TypeScript will surface every missed update site).
  * 4. Add the matching entries to the default maps below.
  */
+interface ClientFeatureFlagDefinition {
+  readonly key: string;
+  readonly launchDarklyDisabledDefaultValue: boolean | number | string;
+  readonly launchDarklyEnabledUnavailableValue: boolean | number | string;
+  readonly localOnlyDefaultValue: boolean | number | string;
+  readonly description: string;
+}
+
 export const CLIENT_FEATURE_FLAGS = {
   canopyAiGatewaySettingsEnabled: {
     key: 'canopy-ai-gateway-settings-enabled',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description: 'Personal and organization AI gateway setup.',
   },
   canopyDesktopLabsEarlyAccess: {
     key: 'canopy-desktop-labs-early-access',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the account Early access experiment.',
   },
   canopyDesktopLabsSidebar: {
     key: 'canopy-desktop-labs-sidebar',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Sidebar experiment.',
   },
   canopyDesktopLabsActivityCard: {
     key: 'canopy-desktop-labs-activity-card',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Chat activity card experiment.',
   },
   // Historical UI rollout keys remain reserved for older client snapshots.
@@ -67,54 +87,63 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-minimal-layout',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Minimal workspace layout experiment.',
   },
   canopyDesktopLabsCometSpinners: {
     key: 'canopy-desktop-labs-comet-spinners',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Comet spinners experiment.',
   },
   canopyDesktopLabsChatTabPreviews: {
     key: 'canopy-desktop-labs-chat-tab-previews',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Tab previews experiment.',
   },
   canopyDesktopLabsSubagentsView: {
     key: 'canopy-desktop-labs-subagents-view',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Subagents view experiment.',
   },
   canopyDesktopLabsArchivedChatsCard: {
     key: 'canopy-desktop-labs-archived-chats-card',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Archived chats card experiment.',
   },
   canopyDesktopLabsCompactQueue: {
     key: 'canopy-desktop-labs-compact-queue',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Compact queue experiment.',
   },
   canopyDesktopLabsProxyAccountCards: {
     key: 'canopy-desktop-labs-proxy-account-cards',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Proxy account cards experiment.',
   },
   canopyDesktopLabsPrHoverCards: {
     key: 'canopy-desktop-labs-pr-hover-cards',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Pull request cards experiment.',
   },
   canopyDesktopLabsSmoothStreaming: {
     key: 'canopy-desktop-labs-smooth-streaming',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Smooth streaming experiment.',
   },
   // Retired Labs selector; preserve its wire key and availability values.
@@ -122,6 +151,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-daemon-files-reads',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete Files Labs selector. Retained only for wire compatibility.',
   },
@@ -130,6 +160,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-daemon-terminals',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete terminal Labs selector. Retained only for wire compatibility.',
   },
@@ -138,6 +169,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-daemon-code-graph',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete code graph Labs selector. Retained only for wire compatibility.',
   },
@@ -146,6 +178,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-daemon-scripts',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete daemon scripts Labs selector. Retained only for wire compatibility.',
   },
@@ -154,6 +187,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-daemon-pipelines',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete daemon workflows Labs selector. Retained only for wire compatibility.',
   },
@@ -162,12 +196,22 @@ export const CLIENT_FEATURE_FLAGS = {
     // Off until opted in: the Orchestrator opens as a page in the main window.
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Orchestrator page Labs experiment.',
+  },
+  canopyDesktopLabsBots: {
+    key: 'canopy-desktop-labs-bots',
+    // Hidden in both modes until LaunchDarkly serves it.
+    launchDarklyDisabledDefaultValue: 'hidden',
+    launchDarklyEnabledUnavailableValue: 'hidden',
+    localOnlyDefaultValue: 'hidden',
+    description: 'Availability of the Bots Labs experiment.',
   },
   canopyDesktopLabsPromptSuggestions: {
     key: 'canopy-desktop-labs-prompt-suggestions',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description:
       'Obsolete next prompt suggestions Labs selector. Retained only for wire compatibility.',
   },
@@ -175,24 +219,28 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-labs-overview-page',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Overview page Labs experiment.',
   },
   canopyDesktopLabsKanbanPage: {
     key: 'canopy-desktop-labs-kanban-page',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Kanban page Labs experiment.',
   },
   canopyDesktopLabsStatisticsPage: {
     key: 'canopy-desktop-labs-statistics-page',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Statistics page Labs experiment.',
   },
   canopyDesktopLabsAuditTrailPage: {
     key: 'canopy-desktop-labs-audit-trail-page',
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the Audit Trail page Labs experiment.',
   },
   canopyDesktopLabsCustomizeDiscovery: {
@@ -200,12 +248,15 @@ export const CLIENT_FEATURE_FLAGS = {
     // Off until opted in: Customize keeps its current tabs (CAN-6809).
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
     description: 'Availability of the New Customize Labs experiment.',
   },
   canopyPostHogCaptureEnabled: {
     key: 'canopy-desktop-posthog-capture-enabled',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (PostHog): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Allows desktop PostHog capture only within the bundled instrumentation settings.',
   },
@@ -214,6 +265,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // A percentage ceiling: 100 leaves the build-time rate unchanged.
     launchDarklyDisabledDefaultValue: 100,
     launchDarklyEnabledUnavailableValue: 0,
+    // Hosted (PostHog): off in a local-only build.
+    localOnlyDefaultValue: 0,
     description:
       'Caps desktop PostHog replay sampling at a percentage from 0 to 100; never enables replay by itself.',
   },
@@ -224,6 +277,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // limit covers the added click events.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (PostHog): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Allows desktop PostHog click autocapture, rage clicks, dead clicks, and heatmaps while capture is enabled; never enables capture by itself.',
   },
@@ -231,20 +286,16 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-release-notes-enabled',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (release notes are read from our cloud): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls release-note reads, changelog access, and desktop highlights.',
-  },
-  canopyPortalEnabled: {
-    key: 'canopy-portal-enabled',
-    launchDarklyDisabledDefaultValue: true,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Controls whether Canopy Portal is visible and usable in web and desktop.',
   },
   canopyLedgerEnabled: {
     key: 'canopy-ledger-enabled',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Gates the Agent Ledger local store and core handlers, agent tools, Feed panel, and Feed page.',
   },
@@ -252,6 +303,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-claude-model-fable5',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Controls whether the shared Claude Fable 5 model is visible and usable.',
   },
@@ -259,8 +311,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-digests-enabled',
     // No LaunchDarkly configuration at all means local development, tests, and
     // the E2E harness — where the digest settings, list, detail, and share
-    // surfaces need to be reachable without standing up LaunchDarkly. Same
-    // choice, for the same reason, as `canopyPortalEnabled`.
+    // surfaces need to be reachable without standing up LaunchDarkly.
     launchDarklyDisabledDefaultValue: true,
     // Configured but unreachable stays FAIL-CLOSED, and the asymmetry is the
     // point: every deployed environment sets `LAUNCHDARKLY_SDK_KEY`, so an
@@ -268,6 +319,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // above. That matters more for this flag than for a purely visual one —
     // it also gates fan-out, which spends model budget and sends email.
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (Work Digests are generated and delivered by our cloud): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls periodic Work Digest generation, delivery, and settings surfaces.',
   },
@@ -275,6 +328,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-custom-agents',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether shared custom agent UI surfaces are visible in desktop and web.',
   },
@@ -286,6 +340,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // is configured but has not returned a live value yet. The flag is retained
     // as a per-environment release gate (staging targeted true, prod off).
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (cloud account sign-in): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Requires a connected Canopy Cloud account before the desktop app shell is usable; shows a blocking sign-in splash when disconnected.',
   },
@@ -293,94 +349,32 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-guest-mode-enabled',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (guest sessions are minted by our cloud): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls whether desktop first-run shows the guest-mode consent screen (guest session, no account required) instead of the blocking Cloud sign-in gate.',
-  },
-  canopyPortalSseCommands: {
-    key: 'canopy-portal-sse-commands',
-    // Dark-launched: off in every mode until the SSE command channel is
-    // validated by live pairing QA (see CAN-762). When off, the desktop keeps
-    // using the existing HTTP long-poll command transport, so behavior is
-    // byte-identical to today. Enable explicitly in LaunchDarkly to route
-    // server→desktop command delivery over the persistent SSE stream (with
-    // automatic long-poll fallback on any SSE failure).
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Routes server→desktop portal command delivery over a persistent SSE stream (TS-02) instead of HTTP long-poll, with automatic long-poll fallback. Off by default; upstream event delivery stays batched POST regardless.',
-  },
-  canopyPortalSseEvents: {
-    key: 'canopy-portal-sse-events',
-    // Dark-launched: off in every mode until the browser SSE event channel is
-    // validated. When off, the web Portal `CanopyClient` adapter keeps
-    // delivering events over the existing HTTP long-poll transport, so behavior
-    // is byte-identical to today. Enable explicitly in LaunchDarkly to route
-    // server→browser Portal event delivery over the persistent SSE stream (with
-    // automatic long-poll fallback on any SSE failure). The adapter itself does
-    // not evaluate LaunchDarkly — the future consumer (CAN-742) resolves this
-    // flag and passes the boolean into `createHttpCanopyClient`.
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Routes browser Portal event delivery over SSE (TS-07) instead of HTTP long-poll, with automatic long-poll fallback; off by default.',
-  },
-  canopyPortalAsyncSnapshots: {
-    key: 'canopy-portal-async-snapshots',
-    // Dark-launched: off in every mode until the async snapshot lane is
-    // validated against production-sized workspaces (CAN-2360). When off,
-    // `portal.state.request` snapshot builds stay inline in the serial
-    // command loop, so behavior is byte-identical to today. Enable explicitly
-    // in LaunchDarkly to run builds on keyed async lanes that no longer block
-    // chat/terminal commands queued behind a slow build.
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Runs desktop portal.state.request snapshot builds on keyed async lanes instead of inline in the serial command loop, so slow builds do not delay other portal commands. Off by default; the serial build path is unchanged when off.',
-  },
-  canopyPortalDestructiveActions: {
-    key: 'canopy-portal-destructive-actions',
-    // Off in every mode until explicitly enabled in LaunchDarkly. Gates the
-    // browser Remote Control sidebar's flag-gated destructive action — worktree
-    // archive — which runs an irreversible operation on the paired desktop.
-    // Fails closed: the archive control is hidden unless LaunchDarkly returns
-    // true, so a missing/unavailable evaluator never exposes it. NOTE: whole-
-    // workspace removal is NOT gated by this flag — it is a first-class,
-    // always-available portal action guarded by an in-browser confirmation
-    // dialog (see PORTAL_DESTRUCTIVE_COMMAND_TYPES).
-    launchDarklyDisabledDefaultValue: false,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Gates the browser Remote Control sidebar worktree-archive action on the paired desktop. Off by default; fails closed. Workspace removal is not gated by this flag.',
-  },
-  canopyWebDirectRemoteControl: {
-    key: 'canopy-web-direct-remote-control',
-    launchDarklyDisabledDefaultValue: true,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Gates new browser and hosted Remote Control admissions over the encrypted device relay.',
-  },
-  canopyDeviceRemoteControl: {
-    key: 'canopy-device-remote-control',
-    // Unconfigured (local development, tests, the E2E harness) keeps the
-    // surface reachable, matching `canopyPortalEnabled`. Configured but
-    // unavailable fails closed: the feature lets a paired computer run
-    // commands on this one, so an evaluator outage must not expose it.
-    launchDarklyDisabledDefaultValue: true,
-    launchDarklyEnabledUnavailableValue: false,
-    description:
-      'Controls device-to-device remote control: pairing computers on one account and opening a paired computer from the sidebar machine picker. The desktop also requires the Remote access switch in Settings → Labs. Fails closed when LaunchDarkly is unavailable.',
   },
   canopyDesktopPrSplit: {
     key: 'canopy-desktop-pr-split',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether desktop PR Split entry points are visible and usable.',
+  },
+  canopyDesktopSharedAutomationsWorkflowForm: {
+    key: 'canopy-desktop-shared-automations-workflow-form',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
+    description:
+      "Controls whether desktop shares chat automations that it would otherwise share in chat form (packaged installs, native chat automations, container automations) as workflows (CAN-6455). Off until recipients run a desktop that binds a workflow's project input.",
   },
   canopyDesktopChatFormat4Promotion: {
     key: 'canopy-desktop-chat-format4-promotion',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Controls whether desktop promotes writable chat scopes to storage format 4. Turning it off stops new promotions and never demotes a promoted scope.',
   },
@@ -388,6 +382,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-cursor-harness',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls desktop Cursor settings, model selection, and interactive runtime access.',
   },
@@ -395,6 +390,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-cursor-harness-released',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Promotes Cursor out of Labs into Accounts and harness discovery when the Cursor harness gate is also enabled.',
   },
@@ -402,6 +398,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-antigravity-harness',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls desktop Antigravity setup, model discovery, and runtime access.',
   },
@@ -409,6 +406,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-antigravity-harness-released',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Promotes Antigravity setup from Labs to Providers when the Antigravity harness gate is also enabled.',
   },
@@ -416,6 +414,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-copilot-harness',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Controls desktop GitHub Copilot setup, model selection, and runtime access.',
   },
@@ -423,6 +422,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-copilot-harness-released',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Promotes GitHub Copilot setup out of Labs into Accounts when the Copilot harness gate is also enabled.',
   },
@@ -430,6 +430,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-opencode-harness',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls desktop OpenCode setup, model selection, and runtime access.',
   },
@@ -437,6 +438,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-opencode-harness-released',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Promotes OpenCode setup out of Labs into Accounts when the OpenCode harness gate is also enabled.',
   },
@@ -448,6 +450,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // worker mode preferences are treated as read-only `canopy` overrides.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether desktop Claude Worker terminal-mode settings and execution paths are visible and usable.',
   },
@@ -460,6 +463,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // overrides.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether desktop Claude Code chat terminal-mode settings and composer controls are visible and usable.',
   },
@@ -470,6 +474,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // so users get it only where the flag is enabled there.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls personal Claude Mod admission before desktop Claude launches.',
   },
@@ -479,6 +484,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // off when it is configured but unavailable. Needs admission on too.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether an admitted Claude Mod draws its toasts, status lines and log lines in desktop Claude chats.',
   },
@@ -486,6 +492,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-workspace-code-graph',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether desktop code-graph generation (worktree-create and agent-invoked builds) and the nine code-graph injected tools are advertised, executed, and mentioned in agent prompts. Desktop-only; the SEA CLI is a separate surface and is not gated.',
   },
@@ -496,6 +503,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // when LaunchDarkly is configured but unavailable.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether desktop chat visuals are offered to agents and whether new visual tool calls can execute.',
   },
@@ -508,6 +516,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // until the flag is explicitly enabled.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (billing): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Gates all Canopy billing surfaces (Stripe payment collection, pricing tiers/trials, native AI credits, billing panels, public pricing page, admin billing API). Off by default; every billing surface checks this one flag server-side.',
   },
@@ -518,6 +528,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // enabled and LaunchDarkly can turn it off remotely if needed.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: true,
+    localOnlyDefaultValue: true,
     description:
       'Controls whether MCP-aware suggested prompts render on the desktop New Task and blank chat empty states.',
   },
@@ -525,6 +536,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-start-page',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls project start-page persistence, publication, and first-open behavior on desktop.',
   },
@@ -538,6 +550,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // The asymmetry is the release sequencing, not an oversight.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (shared containers are hosted): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls whether desktop shared-container invite, manage, and revoke entry points are visible and usable on code worktrees and Cowork Work Entries.',
   },
@@ -545,6 +559,8 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-container-external-sharing',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (shared containers are hosted): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls direct shared-container grants and email invitations outside an organization.',
   },
@@ -561,6 +577,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // LAUNCHDARKLY_SDK_KEY, so this branch is unreachable there.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (cloud agents): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Shows cloud (agentic-core) workspaces in the web Chat tab and enables the /api/cloud endpoints.',
   },
@@ -571,6 +589,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // and a LaunchDarkly outage must not be the reason a user gets a nudge.
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (lifecycle campaigns are hosted): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls whether the post-install activation notification journey schedules and delivers campaigns on desktop.',
   },
@@ -585,6 +605,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // visible UI.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (organization projects are hosted): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Gates organization projects: the Personal/organization context switcher, org project catalog and setup, and the organization admin Projects surface across desktop and web.',
   },
@@ -592,6 +614,8 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-auto-model-routing',
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (Auto routing runs in our cloud): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Controls Jev-powered per-turn Auto model routing, its organization Statistics attribution, and the automatic model routing backtest (Statistics and profile).',
   },
@@ -599,6 +623,8 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-shared-mcp-account-connections',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (web vault and hosted MCP proxy): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Account-scoped MCP connections (web vault + proxy) in the cloud picker and desktop MCP tab',
   },
@@ -610,6 +636,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // writes; saved choices are still read and enforced either way.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Shows the per-space notification choices and accepts changes to them; never disables reading or enforcing saved choices.',
   },
@@ -617,6 +644,8 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-cloud-durable-terminals',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (cloud terminals): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Cloud terminals on durable sandbox terminals through the web core (worker.terminal.*), surviving a page reload',
   },
@@ -624,6 +653,8 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-cloud-chats',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (cloud chats): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Temporary: cloud cowork chats in the desktop sidebar and chat view through the web core (CAN-4185); remove at CAN-4186 rollout.',
   },
@@ -643,6 +674,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // evaluation only changes what those older clients render.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (billing (deprecated)): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Deprecated: retained for shipped builds. Makes every app feature free for signed-in users in older clients; no current code reads it.',
   },
@@ -654,6 +687,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // every surface.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls the desktop account proxy (CLIProxyAPI): the Labs opt-in, its settings, and routing agents through it.',
   },
@@ -661,6 +695,7 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-memory-learn-from-chats',
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description: 'Learn local memory from eligible completed chat turns.',
   },
   canopyDesktopSkillSuggestions: {
@@ -670,6 +705,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // first fetch cannot bypass the kill switch.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Controls desktop repeat-task skill suggestions: recording repeated requests, the idle scan, the composer banner, and the Settings section. The Settings toggle opts out on top of this flag.',
   },
@@ -678,6 +714,7 @@ export const CLIENT_FEATURE_FLAGS = {
     // Obsolete boolean retained for wire compatibility; no longer selects Files routing.
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
     description:
       'Obsolete Files selector. Retained only for wire compatibility.',
   },
@@ -687,6 +724,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // (CAN-6092 to CAN-6094); the /chat route evaluates it per user.
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (web core): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Web /chat opens and holds a shared-protocol connection to the web core (CAN-6091); no feature uses it yet.',
   },
@@ -697,6 +736,8 @@ export const CLIENT_FEATURE_FLAGS = {
     // own server gate.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    // Hosted (opens a hosted page through the Portal): off in a local-only build.
+    localOnlyDefaultValue: false,
     description:
       'Shows the External agents (MCP) row in the desktop account menu, which opens the hosted page through the authenticated Portal.',
   },
@@ -707,10 +748,11 @@ export const CLIENT_FEATURE_FLAGS = {
     // production stays off until the flag serves true there.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: true,
     description:
       'Agent secret requests: the RequestSecrets, RunWithSecrets and WriteSecretsFile tools, the secret request form, and the secret_requests capability cloud clients advertise.',
   },
-} as const;
+} as const satisfies Record<string, ClientFeatureFlagDefinition>;
 
 /**
  * Convenience union of every registered flag's TypeScript handle (the
@@ -771,6 +813,7 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage
@@ -787,20 +830,15 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyPostHogSessionReplaySampleRate.key]: number;
   [CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDigestsEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyPortalSseCommands.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyPortalSseEvents.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]: boolean;
-  [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
+    .key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
@@ -921,6 +959,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
         .launchDarklyDisabledDefaultValue,
@@ -954,8 +995,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled
         .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalEnabled.launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]:
@@ -973,26 +1012,11 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled
         .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalSseCommands.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalSseCommands
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalSseEvents.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalSseEvents
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]:
-      CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl
-        .launchDarklyDisabledDefaultValue,
-    [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]:
-      CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl
-        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
@@ -1168,6 +1192,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
         .launchDarklyEnabledUnavailableValue,
@@ -1201,9 +1228,6 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled
         .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalEnabled
-        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyLedgerEnabled
         .launchDarklyEnabledUnavailableValue,
@@ -1222,26 +1246,11 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled
         .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalSseCommands.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalSseCommands
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalSseEvents.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalSseEvents
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalAsyncSnapshots
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions.key]:
-      CLIENT_FEATURE_FLAGS.canopyPortalDestructiveActions
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key]:
-      CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl
-        .launchDarklyEnabledUnavailableValue,
-    [CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key]:
-      CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl
-        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit
+        .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
@@ -1354,6 +1363,203 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
   };
 
 /**
+ * Values used in a local-only desktop build (docs/local-only-build.md),
+ * whatever LaunchDarkly is configured to. Only hosted flags differ from
+ * {@link CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS}. Web never reads
+ * this map.
+ *
+ * The object is `readonly` at the type level but consumers MUST NOT mutate
+ * it directly. Use {@link getLocalOnlyClientFeatureFlagDefaults}.
+ */
+export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
+  {
+    [CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsEarlyAccess.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsEarlyAccess.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSidebar.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSidebar.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsActivityCard.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsActivityCard.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsMinimalLayout.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsMinimalLayout.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCometSpinners.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCometSpinners.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatTabPreviews.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsChatTabPreviews
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSubagentsView.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSubagentsView.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsArchivedChatsCard
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCompactQueue.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsProxyAccountCards
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPrHoverCards.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSmoothStreaming
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonFilesReads
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonTerminals
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonCodeGraph
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsAuditTrailPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsAuditTrailPage
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyPostHogSessionReplaySampleRate.key]:
+      CLIENT_FEATURE_FLAGS.canopyPostHogSessionReplaySampleRate
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyLedgerEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedClaudeModelFable5.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDigestsEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyDigestsEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.key]:
+      CLIENT_FEATURE_FLAGS.canopyCloudSignInRequired.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyGuestModeEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarnessReleased
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarnessReleased
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarnessReleased
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiWorkers.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeTuiChats.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModSurface.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModSurface.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopWorkspaceCodeGraph
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatVisuals.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatVisuals.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyBillingEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyBillingEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSuggestedPrompts.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSuggestedPrompts.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopStartPage.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopStartPage.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSharedContainers.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSharedContainers.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedContainerExternalSharing.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedContainerExternalSharing
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyCloudAgents.key]:
+      CLIENT_FEATURE_FLAGS.canopyCloudAgents.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyActivationJourneyEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyActivationJourneyEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedAutoModelRouting.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedAutoModelRouting.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedMcpAccountConnections
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedSpaceNotificationSettings
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.key]:
+      CLIENT_FEATURE_FLAGS.canopyCloudDurableTerminals.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]:
+      CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSkillSuggestions.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSkillSuggestions.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyWebCoreClient.key]:
+      CLIENT_FEATURE_FLAGS.canopyWebCoreClient.localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]:
+      CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests
+        .localOnlyDefaultValue,
+  };
+
+/** A fresh copy of {@link CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS}. */
+export function getLocalOnlyClientFeatureFlagDefaults(): ClientFeatureFlagValues {
+  return { ...CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS };
+}
+
+/**
  * Backward-compatible alias for defaults used when LaunchDarkly is not
  * configured. Prefer the explicit default maps in new code so call sites make
  * the LaunchDarkly mode clear.
@@ -1381,6 +1587,7 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonScripts.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsDaemonPipelines.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsPromptSuggestions.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsOverviewPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsKanbanPage.key,
@@ -1494,16 +1701,4 @@ export function getDefaultFeatureFlagSnapshot(
     updatedAt: new Date(0).toISOString(),
     error,
   };
-}
-
-/**
- * Protocol 17 hosts predate this hosted-only rollout flag. Its absence must
- * fail closed without making their otherwise compatible IPC snapshot invalid.
- * This adds no controller authority or host security capability.
- */
-export function restoreOptionalRemoteControlFlag(
-  values: Record<string, unknown>,
-): void {
-  const key = CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key;
-  if (values[key] === undefined) values[key] = false;
 }

@@ -35,10 +35,12 @@ import {
   WORKER_PIPELINE_LIST_LIMIT_DEFAULT,
 } from '@canopy/protocol/canopy-core';
 
+import type { PipelineHostErrorFacts } from '../host/protocol';
 import {
   CanopyOperationError,
   canopyInternalError,
   canopyInvalidArgumentError,
+  type SpawnFailureDetails,
 } from '../../../runtime/errors';
 import type {
   CanopyHandlerContext,
@@ -314,11 +316,15 @@ export function pipelineModelStepsUnsupportedError(): CanopyOperationError {
   });
 }
 
-export function pipelineHostUnavailableError(): CanopyOperationError {
+export function pipelineHostUnavailableError(
+  /** Why the host process never started, when it did not (CAN-7113). */
+  details?: SpawnFailureDetails,
+): CanopyOperationError {
   return new CanopyOperationError({
     kind: 'unavailable',
     code: 'worker.pipeline.hostUnavailable',
     message: 'The background workflow service could not start.',
+    ...(details && { details: { ...details } }),
     retry: { kind: 'never' },
   });
 }
@@ -466,12 +472,16 @@ export function pipelineDrainTimedOutError(
 }
 
 /** A start the executor refused; its message stays in host diagnostics. */
-export function pipelineStartFailedError(cause: unknown): CanopyOperationError {
+export function pipelineStartFailedError(
+  cause: unknown,
+  details?: PipelineHostErrorFacts,
+): CanopyOperationError {
   return new CanopyOperationError(
     {
       kind: 'failed_precondition',
       code: 'worker.pipeline.startFailed',
       message: 'The workflow run could not start.',
+      ...(details && { details: { ...details } }),
       retry: { kind: 'never' },
     },
     cause,
@@ -481,12 +491,34 @@ export function pipelineStartFailedError(cause: unknown): CanopyOperationError {
 /** A control the executor refused; its message stays in host diagnostics. */
 export function pipelineControlFailedError(
   cause: unknown,
+  details?: PipelineHostErrorFacts,
 ): CanopyOperationError {
   return new CanopyOperationError(
     {
       kind: 'failed_precondition',
       code: 'worker.pipeline.controlFailed',
       message: 'The workflow run could not be changed.',
+      ...(details && { details: { ...details } }),
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/**
+ * A cancel the host refused for none of the typed reasons. It stays an
+ * internal error, as a plain error answered, and carries the refusal's
+ * allowlisted facts only.
+ */
+export function pipelineCancelFailedError(
+  cause: unknown,
+  details?: PipelineHostErrorFacts,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'internal',
+      message: 'The operation failed.',
+      ...(details && { details: { ...details } }),
       retry: { kind: 'never' },
     },
     cause,
@@ -496,12 +528,14 @@ export function pipelineControlFailedError(
 /** A shutdown checkpoint that left a live execution unpaused. */
 export function pipelineCheckpointFailedError(
   cause: unknown,
+  details?: PipelineHostErrorFacts,
 ): CanopyOperationError {
   return new CanopyOperationError(
     {
       kind: 'failed_precondition',
       code: 'worker.pipeline.checkpointFailed',
       message: 'Some workflow runs could not be paused.',
+      ...(details && { details: { ...details } }),
       retry: { kind: 'never' },
     },
     cause,
@@ -1077,6 +1111,7 @@ export function createWorkerPipelineHandlers(
           });
         };
         let observed = false;
+        let caughtUp = false;
         const current = await worker.get(executionId);
         if (!current) {
           sink.end('error', pipelineExecutionNotFoundError().payload);
@@ -1092,8 +1127,16 @@ export function createWorkerPipelineHandlers(
         if (ended) return;
         stop = worker.observe(executionId, {
           onExecution: (event, execution) => {
+            // A run that started or resumed between the snapshot and the
+            // subscription first shows it in an update: that update is the
+            // stream's snapshot of it (CAN-6915).
+            const missed =
+              !observed &&
+              !caughtUp &&
+              event === 'execution.updated' &&
+              execution.status !== lastStatus;
             observed = true;
-            onExecution(event, execution);
+            onExecution(missed ? 'snapshot' : event, execution);
           },
           onOutput: ({ jobId, stepId, attempt, iteration, stream, text }) => {
             if (ended) return;
@@ -1157,6 +1200,7 @@ export function createWorkerPipelineHandlers(
         // It may have paused or settled between the snapshot and the
         // subscription; an event the subscription already saw is newer.
         const latest = await worker.get(executionId);
+        caughtUp = true;
         if (latest && !observed && latest.status !== lastStatus)
           onExecution('snapshot', latest);
         if (context.signal.aborted) stop();
@@ -1206,7 +1250,8 @@ const JOURNALED_QUEUE_JOURNALS = 2;
  * `worker.pipeline.execution.events` over the worker's event journal
  * (CAN-6161). Every item goes out at its journal cursor. A stream opened
  * with a cursor replays what followed it; one opened without starts with
- * the notifications no stream received and a journaled snapshot. Replayed
+ * the notifications no stream received and a journaled snapshot, or, as the
+ * journal's first, with all the journal keeps (CAN-6960). Replayed
  * items wait for a slow consumer; live output keeps the output budget, as
  * the stream without a journal does.
  */
@@ -1238,12 +1283,8 @@ async function serveJournaledEvents({
     return;
   }
   if (context.signal.aborted) return;
-  const queue: JournaledDelivery[] =
-    cursor === null
-      ? journal
-          .undelivered(executionId)
-          .map((entry) => ({ entry, live: false }))
-      : [];
+  // Opening without a cursor sends the unsent notifications first.
+  const queue: JournaledDelivery[] = [];
   let ended = false;
   let opening = true;
   let unsubscribe: (() => void) | null = null;

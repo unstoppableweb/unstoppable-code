@@ -7,7 +7,11 @@ import {
 import { DiscoveryError } from '../errors';
 import type { ProjectDiscoveryCaller } from '../index';
 import { getCallerOwner, requireAuthorizedProject } from '../owner-policy';
-import { readProjectEntries, readProjectWorktrees } from '../sources';
+import {
+  readProjectEntries,
+  readProjectWorktree,
+  withProjectWorktreeReadMemo,
+} from '../sources';
 
 async function taskIdentity(
   context: AuthorizedChatReadContext,
@@ -26,9 +30,7 @@ async function taskIdentity(
       pinned: entry.pinned,
     });
   }
-  const task = (await readProjectWorktrees(projectId)).find(
-    (candidate) => candidate.id === taskId,
-  );
+  const task = await readProjectWorktree(projectId, taskId);
   if (!task) throw new DiscoveryError('not_found', 'Task was not found.');
   return JSON.stringify({
     id: task.id,
@@ -42,8 +44,18 @@ async function taskIdentity(
   });
 }
 
-/** Drain account transitions before and after all asynchronous authorization reads. */
-export async function resolveReadBinding(
+/**
+ * Drain account transitions before and after all asynchronous authorization
+ * reads. Chat resolution and the task identity share one worktree list.
+ */
+export function resolveReadBinding(
+  action: ProjectReadAction,
+  caller: ProjectDiscoveryCaller,
+): Promise<{ binding: string; context: AuthorizedChatReadContext }> {
+  return withProjectWorktreeReadMemo(() => readBinding(action, caller));
+}
+
+async function readBinding(
   action: ProjectReadAction,
   caller: ProjectDiscoveryCaller,
 ): Promise<{ binding: string; context: AuthorizedChatReadContext }> {

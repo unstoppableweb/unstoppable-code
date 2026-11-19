@@ -1,5 +1,12 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import { secretFileReadRedirect } from '../agent-secrets/secret-files';
+import {
+  ambientSecretDenyRules,
+  ambientSecretModeChanged,
+  openClaudeAmbientSecretEnv,
+  type ClaudeAmbientSecretEnv,
+} from '../agent-secrets/ambient-env';
 import {
   APPROVAL_CANCELLED_MESSAGE,
   APPROVAL_CHECK_FAILED_MESSAGE,
@@ -43,6 +50,7 @@ import {
 import { isClaudeChainUuid } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import { managedDelegationEnabled } from './delegation/gate';
 import type { ManagedDelegationSession } from './delegation/service';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -80,8 +88,9 @@ import {
   getAiCreditsRoutingContext,
   hasUserSuppliedProviderCredential,
   isAiCreditsChosenOverAccountProxy,
-  resolveAiCreditsRoutingAttempt,
+  resolveAiCreditsRoutingDecision,
   resolveGatewayModelEntry,
+  routingAttemptOf,
   resolveOrgGatewayCredential,
   markOrgGatewayCredentialRejected,
 } from './ai-credits-routing';
@@ -144,9 +153,9 @@ import {
   clampThinkingLevelForModel,
   buildAiCreditsRequiredError,
   buildNoBillingSourceError,
+  buildSignedOutNoBillingSourceError,
   DEFAULT_CLAUDE_MODEL,
   NO_BILLING_SOURCE_ERROR_CODE,
-  IPC_CHANNELS,
   hasAnySelections,
   type ApprovalMode,
   type TrackedPlanData,
@@ -249,7 +258,6 @@ import {
 } from '../pipelines/config-paths';
 import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
 import { buildPlanFileSystemInstruction } from '../lib/plan-system-instructions';
-import { sendToWindow } from '../lib/window-send';
 import {
   readPromptSuggestionsEnabled,
   sendPromptSuggestion,
@@ -288,7 +296,14 @@ import { createE2eClaudeQueryWithPrelude } from '../lib/e2e-claude-query-prelude
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 
 const SUBAGENT_SECRET_REQUEST_DENIAL =
-  'RequestSecrets is not available to subagents. Ask from the main conversation instead.';
+  'RequestSecrets, RunWithSecrets and WriteSecretsFile are not available to subagents. Use them from the main conversation instead.';
+
+/** The Claude names of the three agent secret tools. */
+const CLAUDE_SECRET_TOOL_NAMES: ReadonlySet<string> = new Set([
+  CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName,
+  CANOPY_INJECTED_TOOL_REGISTRY.run_with_secrets.claudeToolName,
+  CANOPY_INJECTED_TOOL_REGISTRY.write_secrets_file.claudeToolName,
+]);
 
 /** Map of session keys to their active Query refs — used by stopTaskForClaudeSession. */
 const queryRefs = new Map<string, Query>();
@@ -649,13 +664,15 @@ async function resolveClaudeAiCreditsRouting(
   if (opts.providerType === 'ollama') {
     return null;
   }
-  const attempt = await resolveAiCreditsRoutingAttempt(
+  const decision = await resolveAiCreditsRoutingDecision(
     opts.aiCreditsRouting,
     'claude',
     () =>
       isProviderNativelyAuthenticatedForRouting('claude', 'ai-credits-routing'),
     opts.subscriptionBillingOverride,
   );
+  const attempt = routingAttemptOf(decision);
+  const signedOutWithoutBillingSource = decision.kind === 'no-billing-source';
   const gatewayCheck = await checkModelGatewayRoute(
     opts.model,
     await resolveSessionWorkOwner(opts),
@@ -669,9 +686,11 @@ async function resolveClaudeAiCreditsRouting(
   // therefore reads as signed out here while having a working provider at spawn
   // time — and routing them would SUPPRESS it, since the proxy env blanks
   // `ANTHROPIC_API_KEY` and is spread after the user environment. Fall through
-  // to the native spawn, which is what `off` mode did before ECW-9091.
+  // to the native spawn, which is what `off` mode did before ECW-9091. The
+  // same holds for an `off`-mode sign-out (CAN-7062): the turn is not refused
+  // when Environments supplies a working credential.
   if (
-    attempt?.reason === 'no-native-auth' &&
+    (attempt?.reason === 'no-native-auth' || signedOutWithoutBillingSource) &&
     !gatewayEnforced &&
     hasUserSuppliedProviderCredential('claude', opts.projectId)
   ) {
@@ -710,6 +729,22 @@ async function resolveClaudeAiCreditsRouting(
   }
   const gatewayOnly = entry?.gatewayOnly === true;
   const enforcedOrgRoute = gatewayEnforced && entry?.origin === 'org-gateway';
+  // Confirmed sign-out, routing mode `off`, no explicit credits choice: missing
+  // native auth is not consent to spend credits, and a native spawn would only
+  // fail with a raw `Please run /login` (CAN-7062). Refuse before spawn with the
+  // typed `no_billing_source` error; the renderer restores the composer and the
+  // No billing source banner offers the choice. This is not the runtime "credits
+  // didn't cover the turn" signal, so `emitAiCreditsNoBillingSource` is not
+  // raised. Gateway-only models and enforced organization routes have no native
+  // path and keep routing below.
+  if (signedOutWithoutBillingSource && !gatewayOnly && !enforcedOrgRoute) {
+    await emit({
+      type: 'error',
+      error_code: NO_BILLING_SOURCE_ERROR_CODE,
+      error: buildSignedOutNoBillingSourceError('Claude'),
+    });
+    return AI_CREDITS_BACKSTOP_ABORT;
+  }
   if (!attempt && !gatewayOnly && !enforcedOrgRoute) {
     return null;
   }
@@ -1083,9 +1118,10 @@ export class ClaudeCodeProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (data: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('ClaudeCodeProvider.createSession');
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const prepareInvocation = this.prepareInvocationImpl;
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const sessionOwner = Symbol();
@@ -2782,7 +2818,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         spawnHostedProcess,
         key,
         ownedKey,
-        getWindow,
+        interfacePort,
         (a) => {
           approvalSessionRef = a;
         },
@@ -2998,6 +3034,12 @@ export class ClaudeCodeProvider implements AgentProvider {
         const previousMode = currentApprovalMode;
         currentApprovalMode = mode;
         approvalSessionRef?.setMode(mode);
+        // Leaving Full access withdraws the chat's ambient values first.
+        await ambientSecretModeChanged({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          chatId: opts.chatId,
+        });
         if (!queryRef) return;
         if (
           mode === 'full-access' &&
@@ -3015,6 +3057,11 @@ export class ClaudeCodeProvider implements AgentProvider {
         } catch (error) {
           currentApprovalMode = previousMode;
           approvalSessionRef?.setMode(previousMode);
+          void ambientSecretModeChanged({
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
+          });
           throw error;
         }
       },
@@ -3118,7 +3165,7 @@ export class ClaudeCodeProvider implements AgentProvider {
     ) => SpawnedProcess,
     key: string,
     ownedKey: OwnedSessionKey,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
     setApprovalSessionRef: (a: ApprovalSessionHandle) => void,
     managedDelegation: ManagedDelegationSession | undefined,
     detachManagedDelegation: () => void,
@@ -3126,6 +3173,7 @@ export class ClaudeCodeProvider implements AgentProvider {
     readLedgerSettings?: () => LedgerChatSettings,
     setAccountProxyConnectionId?: (connectionId: string | undefined) => void,
   ): Promise<void> {
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     let terminalEmitted = false;
     let accountProxyConnectionId: string | undefined;
     /** Ends the transcript's account switch lines for this query (CAN-4021). */
@@ -3174,6 +3222,8 @@ export class ClaudeCodeProvider implements AgentProvider {
     setRunningTurnStartEffect(resetCodeGraphTurnState);
     const invocationProvider = this.providerType;
     let approvalSession: ApprovalSessionHandle | undefined;
+    // Full-access ambient secrets for this CLI process's own commands.
+    let ambientSecrets: ClaudeAmbientSecretEnv | null = null;
     let orgGatewayOrganizationId: string | undefined;
     let orgGatewayCredentialVersion: string | undefined;
     let closeClaudeModSurface: (() => void) | undefined;
@@ -3317,6 +3367,9 @@ export class ClaudeCodeProvider implements AgentProvider {
               sessionId: key,
               ...(opts.packageOverlay
                 ? { packageOverlay: opts.packageOverlay }
+                : {}),
+              ...(opts.accountResolution
+                ? { accountResolution: opts.accountResolution }
                 : {}),
               ...(pluginContext.preferences
                 ? { preferences: pluginContext.preferences }
@@ -4027,10 +4080,30 @@ export class ClaudeCodeProvider implements AgentProvider {
       );
       if (statusAdmission) await statusAdmission;
       const routedSdkModel = aiCreditsRouting?.model ?? invocation.sdkModel;
+      const enhancedEnv = getEnhancedEnv({
+        environment: { runtime: 'agent', workspaceId: opts.projectId },
+      });
+      // Full access in an interactive root Claude chat: the chat's secrets
+      // reach the commands this process runs through a value-free
+      // `CLAUDE_ENV_FILE` stub (agent-secrets/ambient-env.ts).
+      if (
+        invocation.providerType === 'claude' &&
+        opts.executionContext === undefined
+      ) {
+        ambientSecrets = await openClaudeAmbientSecretEnv({
+          scope: {
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
+          },
+          getApprovalMode,
+          ...(enhancedEnv.CLAUDE_ENV_FILE
+            ? { inheritedEnvFile: enhancedEnv.CLAUDE_ENV_FILE }
+            : {}),
+        });
+      }
       const sdkEnv = {
-        ...getEnhancedEnv({
-          environment: { runtime: 'agent', workspaceId: opts.projectId },
-        }),
+        ...enhancedEnv,
         ...(invocation.envOverride ?? {}),
         // AI Credits gateway proxy env wins over native provider auth for this
         // session when fallback routing is active (CAN-838).
@@ -4041,6 +4114,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         ...(invocation.providerType === 'claude'
           ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' }
           : {}),
+        ...(ambientSecrets?.env ?? {}),
       };
 
       const approvalMode = getApprovalMode();
@@ -4088,22 +4162,20 @@ export class ClaudeCodeProvider implements AgentProvider {
           signal?: AbortSignal;
         },
       ): Promise<PermissionResult> => {
-        // Native subagents don't get secret requests in v1 (CONTRACTS.md §5).
+        // Native subagents don't get the secret tools in v1 (CONTRACTS.md §5).
         if (
           authorizationOptions.agentID &&
-          toolName ===
-            CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
+          CLAUDE_SECRET_TOOL_NAMES.has(toolName)
         ) {
           return { behavior: 'deny', message: SUBAGENT_SECRET_REQUEST_DENIAL };
         }
         // The secret request form is not an approval: it needs the person in
-        // every mode, so a tool approval card before it would only ask twice
-        // (CONTRACTS.md §5). The router refuses the call when the session
-        // does not offer secret requests.
-        if (
-          toolName ===
-          CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
-        ) {
+        // every mode, so a tool approval card before it would only ask twice.
+        // RunWithSecrets and WriteSecretsFile raise their own approval, which
+        // names the command or file and the secrets and which no saved rule
+        // answers (CONTRACTS.md §5). The router refuses the calls when the
+        // session does not offer secret requests.
+        if (CLAUDE_SECRET_TOOL_NAMES.has(toolName)) {
           return { behavior: 'allow' };
         }
         // Native Plan mode may still call this fallback after the hook. Honor
@@ -4345,7 +4417,6 @@ export class ClaudeCodeProvider implements AgentProvider {
             // Non-fatal: still fire plan:exit-request without planId
           }
         }
-        const win = getWindow();
         const pendingInstruction = trackedPlan
           ? await buildPlanFileSystemInstruction({
               projectId: opts.projectId,
@@ -4372,9 +4443,7 @@ export class ClaudeCodeProvider implements AgentProvider {
             : {}),
         };
         await commitPendingPlanExit(planExitEvent);
-        if (win && !win.isDestroyed()) {
-          void sendToWindow(win, IPC_CHANNELS.planExitRequest, planExitEvent);
-        }
+        interfacePort.presentPlanExit(planExitEvent);
         // A plan awaiting review is blocked on a human exactly like an approval
         // prompt, and is one of the signals that previously never left the
         // desktop. Cleared when the chat's next turn starts (the user approved,
@@ -4444,11 +4513,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           };
         }
         // Full access skips authorizeClaudeTool, so subagents are refused here.
-        if (
-          input.agent_id &&
-          input.tool_name ===
-            CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.claudeToolName
-        ) {
+        if (input.agent_id && CLAUDE_SECRET_TOOL_NAMES.has(input.tool_name)) {
           return {
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -4456,6 +4521,27 @@ export class ClaudeCodeProvider implements AgentProvider {
               permissionDecisionReason: SUBAGENT_SECRET_REQUEST_DENIAL,
             },
           };
+        }
+        // A file WriteSecretsFile wrote holds secret values: a Read of it, or
+        // a Grep naming it, is sent to RunWithSecrets instead, in every mode.
+        // A nudge only: a shell command or a wider search still reads it, as
+        // the tool's warning says.
+        if (input.tool_name === 'Read' || input.tool_name === 'Grep') {
+          const redirect = await secretFileReadRedirect(
+            input.tool_name === 'Read'
+              ? input.tool_input.file_path
+              : input.tool_input.path,
+            opts.cwd,
+          );
+          if (redirect) {
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason: redirect,
+              },
+            };
+          }
         }
         if (
           (input.tool_name === 'Read' ||
@@ -4668,9 +4754,14 @@ export class ClaudeCodeProvider implements AgentProvider {
           // Pin the selected proxy at the flag tier so ambient provider
           // defaults cannot replace its broker URL or authentication.
           ...(accountProxyRoute ? { env: accountProxyRoute.env } : {}),
-          ...(approvalMode !== 'full-access'
-            ? { permissions: { ask: ['*'] } }
-            : {}),
+          // Native deny rules hold in every mode, Full access included: no
+          // chat's file tools read or write any chat's ambient secrets
+          // (agent-secrets/ambient-env.ts). This chat's own CLI still runs
+          // its CLAUDE_ENV_FILE, which is not a tool call.
+          permissions: {
+            deny: ambientSecretDenyRules(),
+            ...(approvalMode !== 'full-access' ? { ask: ['*'] } : {}),
+          },
           // Claude Code 2.1.310+ gives Plan mode auto-mode semantics by
           // default, where its classifier decides and hooks cannot approve.
           // The session's approval mode stays authoritative while planning.
@@ -5245,7 +5336,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                   messageQueue.length === 0
                 ) {
                   void sendPromptSuggestion(
-                    getWindow,
+                    interfacePort,
                     {
                       projectId: opts.projectId,
                       worktreeId: opts.worktreeId,
@@ -5506,6 +5597,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         }
         clearActiveTurn();
         approvalSession?.dispose();
+        void ambientSecrets?.dispose();
         clearClaudeModAdmissionSessionRecords(key);
         ledger.tools?.dispose();
         ownedKey.release();

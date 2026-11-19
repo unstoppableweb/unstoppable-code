@@ -528,88 +528,118 @@ describe('PipelineHostSupervisor', () => {
   });
 
   // Coordinator ruling: a host lost during a start answers hostLost.
-  it('serves the detail and list reads over the host channel and checks each answer (CAN-6117)', async () => {
-    const h = harness();
-    const { host, result } = await started(h);
-    host.reply(host.last('start').id, projection('running'));
-    await result;
-    const handlers = createWorkerPipelineHandlers(h.supervisor, {
-      secrets: refusingExecutionSecretSource,
-    });
-    const context: CanopyHandlerContext = {
-      requestId: 'reads',
-      caller: {
-        principalId: 'client',
-        clientInstanceId: 'client',
-        authorityId: 'authority',
-        interfaceKind: 'daemon',
-        grants: ['worker.pipeline.read'],
-      },
-      metadata: {},
-      signal: new AbortController().signal,
-    };
+  it.each([false, true])(
+    'serves the detail and list reads over the host channel and checks each answer (CAN-6117, assessed=%s)',
+    async (assessed) => {
+      const h = harness();
+      const { host, result } = await started(h);
+      host.reply(host.last('start').id, projection('running'));
+      await result;
+      const handlers = createWorkerPipelineHandlers(h.supervisor, {
+        secrets: refusingExecutionSecretSource,
+      });
+      const context: CanopyHandlerContext = {
+        requestId: 'reads',
+        caller: {
+          principalId: 'client',
+          clientInstanceId: 'client',
+          authorityId: 'authority',
+          interfaceKind: 'daemon',
+          grants: ['worker.pipeline.read'],
+        },
+        metadata: {},
+        signal: new AbortController().signal,
+      };
+      const execution: WorkerPipelineExecution = {
+        ...projection('running'),
+        ...(assessed && {
+          survival: {
+            version: 1,
+            identity: {
+              executionId: 'run',
+              owner: 'personal',
+              runScope: 'worktree',
+              workspaceId: 'project',
+              worktreeId: 'worktree',
+            },
+            assessedAt: '2026-11-16T00:00:00.000Z',
+            disposition: 'pauses',
+            routes: [],
+            credentialFamilies: [],
+            coveredOwnerKinds: [],
+            startLeaseRefs: [],
+            blockers: [
+              {
+                code: 'configuration-unverified',
+                explanation: 'This workflow still needs the app.',
+              },
+            ],
+            ledgerAfterQuit: 'unavailable',
+            epochs: [],
+          },
+        }),
+      };
 
-    const got = handlers.queries['worker.pipeline.execution.get'](
-      { executionId: 'run', detail: true },
-      context,
-    );
-    await settle();
-    expect(host.last('get').request).toEqual({
-      op: 'get',
-      executionId: 'run',
-      detail: true,
-    });
-    host.reply(host.last('get').id, {
-      execution: projection('running'),
-      detail: detail(),
-    });
-    await expect(got).resolves.toEqual({
-      execution: projection('running'),
-      detail: detail(),
-    });
-
-    const listed = handlers.queries['worker.pipeline.execution.list'](
-      { scope: { worktreeId: 'worktree' }, limit: 1, detail: true },
-      context,
-    );
-    await settle();
-    expect(host.last('list').request).toEqual({
-      op: 'list',
-      query: {
-        worktreeId: 'worktree',
+      const got = handlers.queries['worker.pipeline.execution.get'](
+        { executionId: 'run', detail: true },
+        context,
+      );
+      await settle();
+      expect(host.last('get').request).toEqual({
+        op: 'get',
+        executionId: 'run',
         detail: true,
+      });
+      host.reply(host.last('get').id, {
+        execution,
+        detail: detail(),
+      });
+      await expect(got).resolves.toEqual({
+        execution,
+        detail: detail(),
+      });
+
+      const listed = handlers.queries['worker.pipeline.execution.list'](
+        { scope: { worktreeId: 'worktree' }, limit: 1, detail: true },
+        context,
+      );
+      await settle();
+      expect(host.last('list').request).toEqual({
+        op: 'list',
+        query: {
+          worktreeId: 'worktree',
+          detail: true,
+          after: null,
+          limit: 1,
+        },
+      });
+      host.reply(host.last('list').id, {
+        executions: [{ execution, detail: detail() }],
+        more: true,
+      });
+      const page = await listed;
+      expect(page.executions).toEqual([{ execution, detail: detail() }]);
+      expect(page.nextCursor).toEqual(expect.any(String));
+
+      // A summary without the detail it asked for, or a malformed page, is refused.
+      const bare = h.supervisor.inspect('run');
+      await settle();
+      host.reply(host.last('get').id, { execution: projection('running') });
+      await expect(bare).rejects.toMatchObject({
+        payload: { code: 'worker.pipeline.hostUnavailable' },
+      });
+      const malformed = h.supervisor.list({
+        detail: false,
         after: null,
         limit: 1,
-      },
-    });
-    host.reply(host.last('list').id, {
-      executions: [{ execution: projection('running'), detail: detail() }],
-      more: true,
-    });
-    const page = await listed;
-    expect(page.executions).toEqual([
-      { execution: projection('running'), detail: detail() },
-    ]);
-    expect(page.nextCursor).toEqual(expect.any(String));
-
-    // A summary without the detail it asked for, or a malformed page, is refused.
-    const bare = h.supervisor.inspect('run');
-    await settle();
-    host.reply(host.last('get').id, { execution: projection('running') });
-    await expect(bare).rejects.toMatchObject({
-      payload: { code: 'worker.pipeline.hostUnavailable' },
-    });
-    const malformed = h.supervisor.list({
-      detail: false,
-      after: null,
-      limit: 1,
-    });
-    await settle();
-    host.reply(host.last('list').id, { executions: 'nope', more: false });
-    await expect(malformed).rejects.toMatchObject({
-      payload: { code: 'worker.pipeline.hostUnavailable' },
-    });
-  });
+      });
+      await settle();
+      host.reply(host.last('list').id, { executions: 'nope', more: false });
+      await expect(malformed).rejects.toMatchObject({
+        payload: { code: 'worker.pipeline.hostUnavailable' },
+      });
+    },
+  );
 
   it('a start whose host exits before answering fails with hostLost', async () => {
     const h = harness();

@@ -4,6 +4,7 @@ import {
   safeErrorProperty,
 } from '@canopy/desktop-shared/ipc/app-error-rejection';
 import { CoworkFolderMissingSchema } from '@canopy/protocol/canopy-core';
+import { readRemoteOperationFailure } from '@canopy/protocol/remote-control';
 import { ipcRenderer, type IpcRendererEvent } from 'electron';
 import {
   REMOTE_BRIDGE_CHANNELS,
@@ -58,6 +59,7 @@ ipcRenderer.on(
       (value: unknown) => reply({ id, ok: true, value }),
       (error: unknown) => {
         const decoded = decodeIpcAppError(safeErrorProperty(error, 'message'));
+        const operationFailure = readRemoteOperationFailure(decoded);
         const missing = CoworkFolderMissingSchema.safeParse(
           decoded?.coworkFolderMissing,
         );
@@ -66,6 +68,7 @@ ipcRenderer.on(
           ok: false,
           message: errorMessage(error),
           ...(missing.success ? { coworkFolderMissing: missing.data } : {}),
+          ...(operationFailure ? { operationFailure } : {}),
         });
       },
     );

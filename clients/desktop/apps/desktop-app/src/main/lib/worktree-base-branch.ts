@@ -44,6 +44,8 @@ import { updateWorktree, WorktreeUpdateRefusedError } from './worktree-update';
  * the keyed `core.worktree.update` writer, and the PR base through
  * `core.pullRequest.update`. The "update the PR too" choice is asked through
  * the caller's question path; nobody to ask refuses before any write.
+ * CAN-7222: a pull request already on the new base is never asked about, and
+ * a calling chat with Full access updates the pull request without asking.
  */
 
 export type WorktreeBaseBranchChoice = 'update-pr' | 'local-only';
@@ -98,6 +100,8 @@ export const WORKTREE_BASE_BRANCH_TEXTS = Object.freeze({
     "The worktree's pull request could not be checked, so the base branch was not changed. Try again.",
   baseMovedOn:
     'The base branch changed after this request was first made, so the pull request was not changed. Check the current state.',
+  accessChanged:
+    "The chat's access changed before the pull request was updated, so only the worktree's base branch changed. Change the base branch again to update the pull request too.",
   cancelled: 'Base branch change was cancelled.',
   question: (request: WorktreeBaseBranchConfirmation): string =>
     `${request.repoName} has open PR #${request.prNumber}. Change its PR base branch to ${request.baseBranch} too, or only this worktree's base?`,
@@ -145,6 +149,13 @@ export interface WorktreeBaseBranchDeps {
   confirm(
     request: WorktreeBaseBranchConfirmation,
   ): Promise<WorktreeBaseBranchChoice | null>;
+  /**
+   * CAN-7222: whether the calling chat has Full access as of now. Full access
+   * already lets the chat edit the pull request itself, so the change updates
+   * its base without asking. Synchronous, so a mode switch cannot land
+   * between the check and the choice; absent or unsure means ask.
+   */
+  hasFullAccess?: () => boolean;
   signal?: AbortSignal;
 }
 
@@ -291,6 +302,19 @@ function isSamePullRequest(
   );
 }
 
+/** A pull request base change waits for the worktree's Git action or Split. */
+function requireNoGitOperation(
+  ports: WorktreeBaseBranchPorts,
+  request: WorktreeBaseBranchRequest,
+): void {
+  if (ports.gitOperationActive(request.projectId, request.worktreeId))
+    throw new WorktreeBaseBranchError(
+      'surface_unavailable',
+      WORKTREE_BASE_BRANCH_TEXTS.activeGitOperation,
+      true,
+    );
+}
+
 /** The renderer's `setWorktreeBaseBranch`, in main. */
 export async function setWorktreeBaseBranchInMain(
   request: WorktreeBaseBranchRequest,
@@ -311,16 +335,30 @@ export async function setWorktreeBaseBranchInMain(
   const openPullRequest = found === 'unavailable' ? null : found;
   let choice: WorktreeBaseBranchChoice = 'local-only';
 
-  if (openPullRequest && presence.existsInRemote) {
+  // CAN-7222: a pull request that already targets the new base has nothing
+  // to ask about, under any access level.
+  const pullRequestToRetarget =
+    openPullRequest &&
+    presence.existsInRemote &&
+    openPullRequest.status.baseRefName?.trim() !== baseBranch
+      ? openPullRequest
+      : null;
+
+  let choiceByFullAccess = false;
+  if (pullRequestToRetarget && deps.hasFullAccess?.()) {
+    choice = 'update-pr';
+    choiceByFullAccess = true;
+    requireNoGitOperation(ports, request);
+  } else if (pullRequestToRetarget) {
     let confirmed: WorktreeBaseBranchChoice | null;
     try {
       confirmed = await deps.confirm({
         projectId: request.projectId,
         worktreeId: request.worktreeId,
         ...(request.repoId ? { repoId: request.repoId } : {}),
-        repoName: openPullRequest.repoName,
+        repoName: pullRequestToRetarget.repoName,
         baseBranch,
-        prNumber: openPullRequest.status.prNumber,
+        prNumber: pullRequestToRetarget.status.prNumber,
       });
     } catch (error) {
       if (error instanceof WorktreeBaseBranchConfirmationUnavailableError)
@@ -334,16 +372,11 @@ export async function setWorktreeBaseBranchInMain(
     if (confirmed === null || signal?.aborted) return { status: 'cancelled' };
     choice = confirmed;
     if (choice === 'update-pr') {
-      if (ports.gitOperationActive(request.projectId, request.worktreeId))
-        throw new WorktreeBaseBranchError(
-          'surface_unavailable',
-          WORKTREE_BASE_BRANCH_TEXTS.activeGitOperation,
-          true,
-        );
+      requireNoGitOperation(ports, request);
       if (
         !isSamePullRequest(
           await findOpenPullRequest(ports, request),
-          openPullRequest,
+          pullRequestToRetarget,
         )
       )
         throw new WorktreeBaseBranchError(
@@ -382,13 +415,20 @@ export async function setWorktreeBaseBranchInMain(
 
   if (signal?.aborted) return { status: 'cancelled' };
 
-  if (choice === 'update-pr' && openPullRequest) {
+  if (choice === 'update-pr' && pullRequestToRetarget) {
+    // Full access stands in for the person's answer only while it holds.
+    if (choiceByFullAccess && deps.hasFullAccess?.() !== true)
+      throw new WorktreeBaseBranchError(
+        'surface_unavailable',
+        WORKTREE_BASE_BRANCH_TEXTS.accessChanged,
+        true,
+      );
     try {
       await ports.updatePullRequestBase({
         projectId: request.projectId,
         worktreeId: request.worktreeId,
         ...(request.repoId ? { repoId: request.repoId } : {}),
-        prNumber: openPullRequest.status.prNumber,
+        prNumber: pullRequestToRetarget.status.prNumber,
         baseBranch,
       });
     } catch (error) {

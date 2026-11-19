@@ -6,6 +6,12 @@ import {
   defineCanopyInstructionRegistry,
 } from '../../definitions';
 import { keyedOperationErrorSchema } from '../shared';
+import {
+  CatalogCollectionPublishParamsSchema,
+  CatalogCollectionPublishResultSchema,
+  CatalogCollectionUnpublishParamsSchema,
+  CatalogCollectionUnpublishResultSchema,
+} from './collection-publish';
 import { CATALOG_GRANTS } from './operations';
 import { CatalogEntryKindSchema } from './snapshot';
 
@@ -86,6 +92,12 @@ export const CORE_CATALOG_PUBLISH_CODES = [
   'core.catalog.packageBlocked',
   /** The consented package was analysed over content the entry no longer has. */
   'core.catalog.packageStale',
+  /**
+   * An identical skill the account already has is shared by link, with a
+   * team or with an organization, so a private cloud copy can't use it
+   * (CAN-7037). Nothing uploads.
+   */
+  'core.catalog.audienceWider',
   'core.catalog.revisionConflict',
   'core.catalog.remoteUnavailable',
   'core.catalog.visibilityInvalid',
@@ -124,6 +136,37 @@ export const CORE_CATALOG_UNPUBLISH_CODES = [
   'core.catalog.remoteUnavailable',
 ] as const;
 
+/*
+ * Kind `collection` joins publish and unpublish as its own branch (CAN-4170
+ * PR 5a, decision K1; `collection-publish.ts`). The skill and plugin branch
+ * is the unchanged schema above. Until CAN-4170 5b serves it, every host
+ * refuses the collection branch with `capability_unavailable` before any
+ * read, upload or write.
+ */
+// The collection modes join as flat branches, so each declares its own `_meta`.
+export const CatalogEntryOrCollectionPublishParamsSchema = z.union([
+  CatalogEntryPublishParamsSchema,
+  ...CatalogCollectionPublishParamsSchema.options,
+]);
+export type CatalogEntryOrCollectionPublishParams = z.output<
+  typeof CatalogEntryOrCollectionPublishParamsSchema
+>;
+export const CatalogEntryOrCollectionPublishResultSchema = z.union([
+  CatalogEntryPublishResultSchema,
+  CatalogCollectionPublishResultSchema,
+]);
+export const CatalogEntryOrCollectionUnpublishParamsSchema = z.union([
+  CatalogEntryUnpublishParamsSchema,
+  CatalogCollectionUnpublishParamsSchema,
+]);
+export type CatalogEntryOrCollectionUnpublishParams = z.output<
+  typeof CatalogEntryOrCollectionUnpublishParamsSchema
+>;
+export const CatalogEntryOrCollectionUnpublishResultSchema = z.union([
+  CatalogEntryUnpublishResultSchema,
+  CatalogCollectionUnpublishResultSchema,
+]);
+
 /** Served by the desktop dispatcher only; kept out of the composed registries. */
 export const CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {
@@ -134,9 +177,15 @@ export const CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS =
       placement: 'core-only',
       idempotency: 'keyed',
       requiredGrants: [CATALOG_GRANTS.write],
-      params: CatalogEntryPublishParamsSchema,
-      result: CatalogEntryPublishResultSchema,
-      error: keyedOperationErrorSchema(CORE_CATALOG_PUBLISH_CODES),
+      params: CatalogEntryOrCollectionPublishParamsSchema,
+      result: CatalogEntryOrCollectionPublishResultSchema,
+      // Kind collection's codes that skill and plugin do not already carry.
+      error: keyedOperationErrorSchema([
+        ...CORE_CATALOG_PUBLISH_CODES,
+        'core.catalog.remoteNotFound',
+        'core.catalog.remoteAccessDenied',
+        'core.catalog.remoteVersionConflict',
+      ]),
     }),
     'core.catalog.entry.unpublish': defineCanopyInstruction({
       plane: 'core',
@@ -145,8 +194,12 @@ export const CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS =
       placement: 'core-only',
       idempotency: 'keyed',
       requiredGrants: [CATALOG_GRANTS.write],
-      params: CatalogEntryUnpublishParamsSchema,
-      result: CatalogEntryUnpublishResultSchema,
-      error: keyedOperationErrorSchema(CORE_CATALOG_UNPUBLISH_CODES),
+      params: CatalogEntryOrCollectionUnpublishParamsSchema,
+      result: CatalogEntryOrCollectionUnpublishResultSchema,
+      error: keyedOperationErrorSchema([
+        ...CORE_CATALOG_UNPUBLISH_CODES,
+        'core.catalog.remoteNotFound',
+        'core.catalog.remoteAccessDenied',
+      ]),
     }),
   });

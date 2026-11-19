@@ -1,4 +1,5 @@
 import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
+import { ambientSecretDenyRules } from '../../agent-secrets/ambient-env';
 import {
   classifyAgentFailure,
   AGENT_TRANSIENT_RETRY_CONTINUE_PROMPT,
@@ -479,9 +480,13 @@ export function createClaudeDelegationRunner(options: {
             retryable: false,
           });
         const gatedServers = prepared.providerGatedMcpServers ?? [];
-        const privateReads = DELEGATION_NATIVE_PRIVATE_PATTERNS.map(
-          (pattern) => `Read(${pattern})`,
-        );
+        const privateReads = [
+          ...DELEGATION_NATIVE_PRIVATE_PATTERNS.map(
+            (pattern) => `Read(${pattern})`,
+          ),
+          // Every chat's Full-access agent secrets (ambient-env.ts).
+          ...ambientSecretDenyRules(),
+        ];
         const allowed = prepared.skillNames?.length
           ? [...DELEGATION_NATIVE_CLAUDE_TOOLS, 'Skill']
           : DELEGATION_NATIVE_CLAUDE_TOOLS;

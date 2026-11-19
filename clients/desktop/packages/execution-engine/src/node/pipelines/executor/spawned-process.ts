@@ -35,6 +35,7 @@ import {
   withJsonEscapedVariants,
 } from '@canopy/execution-engine/lib/redaction';
 import { parseOutputFile } from './execution-context';
+import { executionFailureCode } from './execution-failure';
 import type {
   ExecutionResourceMonitor,
   SpawnedProcessResult,
@@ -1969,6 +1970,9 @@ export async function runSpawnedProcessLocally(
         outcome: 'failure',
         exit_code: 1,
         error: String(error),
+        // The process never started (CAN-7118).
+        failure_origin: 'spawn',
+        failure_code: executionFailureCode(error),
       });
       return;
     }
@@ -2033,6 +2037,11 @@ export async function runSpawnedProcessLocally(
         conclusion: options.signal.aborted ? 'cancelled' : 'failure',
         outcome: options.signal.aborted ? 'cancelled' : 'failure',
         error: String(error),
+        // The process could not start, or be signalled (CAN-7118).
+        ...(!options.signal.aborted && {
+          failure_origin: 'spawn',
+          failure_code: executionFailureCode(error),
+        }),
       });
     });
     child.on('close', async (code) => {

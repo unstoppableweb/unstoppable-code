@@ -10,6 +10,7 @@ import {
   withWorktreeGitRead,
 } from './worktree-read-availability';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
 import { worktreeSourceFailure } from '@canopy/core-runtime/node/git';
 import { isNativeError } from 'node:util/types';
 import {
@@ -77,6 +78,7 @@ import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import type { BrowserWindow } from 'electron';
+import { reportGitSetupFailure } from './git-failure-reporting';
 import {
   isDefaultWorktreeBranchName,
   makeDefaultWorktreeBranchName,
@@ -194,7 +196,7 @@ import {
   whenWorkspaceTargetRemovalSettled,
   withWorkspaceTargetArchiveDrain,
 } from './workspace-target-exclusion';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import {
   BrowserRetirementTimeoutError,
   runWithBrowserRetirementDeadlineScope,
@@ -282,7 +284,7 @@ import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
 import {
   elapsedMilliseconds,
   recordWorktreeStatsTiming,
-} from '../portal/portal-performance-diagnostics';
+} from '../remote-projection/worktree-stats-diagnostics';
 import {
   queueOrphanedMacosWorktreeDirectory,
   removeExactMacosWorktreeDirectory,
@@ -380,6 +382,11 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
   allowBaseBranchNetwork?: boolean;
   /** Portal picker intent: only the selected local/origin branch may supply the base. */
   baseBranchResolution?: 'exact-branch';
+  /**
+   * Single-repo only: `existingBranch` names exactly this local branch or this
+   * origin branch. Omitted keeps the local-then-origin lookup.
+   */
+  existingBranchNamespace?: 'local' | 'origin';
   /** The Portal New Task catalogue selected a full ref in the base field. */
   baseBranchIsQualified?: true;
   /** Restrict multi-repo creation to these child repository ids. */
@@ -818,7 +825,13 @@ function createWorktreeForExistingBranchWithPriority(
   worktreePath: string,
   branchName: string,
   options?: { backgroundPriority?: boolean },
+  namespace?: 'local' | 'origin',
 ): Promise<string> {
+  if (namespace)
+    return createWorktreeForExistingBranch(repoPath, worktreePath, branchName, {
+      ...options,
+      namespace,
+    });
   return options
     ? createWorktreeForExistingBranch(
         repoPath,
@@ -1043,9 +1056,11 @@ async function admitDeferredPhaseB<T>(
     });
   } catch (error) {
     if (!started) {
+      const recordedError = reportGitSetupFailure(error);
       options.onGitFailed?.({
         projectId: options.workspaceId,
         worktreeId,
+        ...(recordedError ? { recordedError } : {}),
         error: getErrorMessage(error),
         healthIssue: createSetupFailureHealthIssue(
           worktreePath,
@@ -2501,6 +2516,7 @@ async function ensureExistingBranchIsUsable(
   repoPath: string,
   branchName: string,
   attempt?: W5KeyedAttempt,
+  namespace?: 'local' | 'origin',
 ): Promise<void> {
   attempt?.beforeEffects();
   // The caller is still waiting to leave its composer, so a credential prompt
@@ -2521,12 +2537,25 @@ async function ensureExistingBranchIsUsable(
     doesLocalBranchExist(repoPath, branchName),
     doesRemoteBranchExist(repoPath, branchName),
   ]);
-  if (!localExists && !remoteExists) {
+  const found =
+    namespace === 'local'
+      ? localExists
+      : namespace === 'origin'
+        ? remoteExists
+        : localExists || remoteExists;
+  if (!found) {
     throw new WorktreeCreationRefusedError(
       'branch-not-found',
       originRefreshed
         ? `Branch "${branchName}" was not found`
         : `Branch "${branchName}" was not found, and origin could not be refreshed`,
+    );
+  }
+  // The origin branch is a different identity from a same-named local branch.
+  if (namespace === 'origin' && localExists) {
+    throw new WorktreeCreationRefusedError(
+      'branch-reserved',
+      `Branch "${branchName}" already exists locally`,
     );
   }
   const checkedOut = await listCheckedOutBranches(repoPath);
@@ -3212,6 +3241,7 @@ async function createAdmittedSingleRepoWorktree(
       referenceRepoPath,
       existingBranch,
       attempt,
+      options.existingBranchNamespace,
     );
   }
   if (options.baseBranch) {
@@ -3420,6 +3450,7 @@ async function createAdmittedSingleRepoWorktree(
               worktreePath,
               branchToReuse,
               worktreeGitOptions,
+              options.existingBranchNamespace,
             )
           : baseResolution
             ? await createWorktreeFromStartPointWithPriority(
@@ -3661,9 +3692,14 @@ async function createAdmittedSingleRepoWorktree(
         return undefined;
       });
       if (marked === false && shouldEnforceSetupRef) return null;
+      // A synchronous create rethrows to its caller, which reports it.
+      const recordedError = shouldDeferGitSetup
+        ? reportGitSetupFailure(normalizedError)
+        : undefined;
       options.onGitFailed?.({
         projectId: options.workspaceId,
         worktreeId: reservation.id,
+        ...(recordedError ? { recordedError } : {}),
         error: getErrorMessage(normalizedError),
         failureReason: storageUnavailable
           ? 'storage-unavailable'
@@ -3927,6 +3963,12 @@ async function createAdmittedMultiRepoWorktree(
     refuseWorktreeCreation(
       'invalid-selection',
       `Project ${options.workspaceId} has no source repository; suggestedBranch requires a source-backed multi-repo project`,
+    );
+  }
+  if (options.existingBranchNamespace) {
+    refuseWorktreeCreation(
+      'invalid-selection',
+      'An exact local or origin branch requires a single-repository project',
     );
   }
   if (explicitBranch) {
@@ -4607,9 +4649,14 @@ async function createAdmittedMultiRepoWorktree(
         return undefined;
       });
       if (marked === false && shouldEnforceSetupRef) return null;
+      // A synchronous create rethrows to its caller, which reports it.
+      const recordedError = shouldDeferGitSetup
+        ? reportGitSetupFailure(normalizedError)
+        : undefined;
       options.onGitFailed?.({
         projectId: options.workspaceId,
         worktreeId: reservation.id,
+        ...(recordedError ? { recordedError } : {}),
         error: getErrorMessage(normalizedError),
         failureReason: storageUnavailable
           ? 'storage-unavailable'
@@ -6186,8 +6233,11 @@ async function repairArchiveTurnDiffRefs(
         throw archiveTurnDiffRefusal('turn-diff-repository-replaced');
       if (
         !repository.repositoryStatIdentity ||
-        (await readDirectoryStatIdentity(identity)) !==
-          repository.repositoryStatIdentity
+        !matchesRecordedDirectoryIdentity(
+          repository.repositoryStatIdentity,
+          await readDirectoryStatIdentity(identity),
+          hostOperatingSystem(),
+        )
       )
         throw archiveTurnDiffRefusal('turn-diff-repository-replaced');
       repositories.push(repository.referenceRepoPath);
@@ -6747,7 +6797,7 @@ async function runAdmittedArchiveDeletionLifecycle<T>(
     worktreeId,
   );
   try {
-    schedulePortalStructuralSync();
+    scheduleDesktopStructureChanged('structural.worktree-service');
     return await withLinuxWorktreeWriterTracking(
       () =>
         runMarkedWorktreeArchiveDeletionLifecycle(
@@ -6761,7 +6811,7 @@ async function runAdmittedArchiveDeletionLifecycle<T>(
     // Release before the sync: a failed or rejected archive shows the row
     // again, and a finished one already removed it from the persisted list.
     releaseRemovalPending();
-    schedulePortalStructuralSync();
+    scheduleDesktopStructureChanged('structural.worktree-service');
     publishWorktreeLifecycleChange('worktree-removal-settled');
     trackDetachedWork(async () => {
       const { queueTrackedGitHubWorktreeSync } =
@@ -8079,7 +8129,20 @@ async function computeWorktreeStats(
           worktreeId,
           worktreePath,
           options,
-        );
+        ).catch((error: unknown) => {
+          // An unreadable `repos/` fails the repository listing; the health
+          // check already reported it, so the row keeps that issue (CAN-7114).
+          if (healthIssue?.code === 'unreadable') return null;
+          throw error;
+        });
+        if (result === null)
+          return {
+            projectId: workspaceId,
+            worktreeId,
+            insertions: 0,
+            deletions: 0,
+            healthIssue: healthIssue ?? undefined,
+          };
         const canopyHash = await getCanopyJsonHash(worktreePath).catch(
           () => null,
         );

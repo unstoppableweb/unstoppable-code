@@ -37,6 +37,7 @@ import {
   type CodexResolvedSpawnProfile,
   type CodexSpawnProfileRequest,
 } from './profile';
+import { confineCodexThreadSandbox } from './confined-sandbox';
 import { getCodexMcpBrokerRuntimeDir } from './mcp-runtime-dir';
 import {
   finalAssistantText,
@@ -1832,8 +1833,14 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 
   async startThread(
-    request: CodexStartThreadRequest,
+    unconfinedRequest: CodexStartThreadRequest,
   ): Promise<CodexThreadHandle> {
+    // A legacy read-only or workspace-write sandbox also denies the host's
+    // protected paths (confined-sandbox.ts).
+    const request = {
+      ...unconfinedRequest,
+      params: confineCodexThreadSandbox(unconfinedRequest.params),
+    };
     const profile = resolveCodexSpawnProfile(
       profileForThreadProvider(request.profile, request.params),
     );
@@ -1943,8 +1950,14 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 
   async resumeThread(
-    request: CodexResumeThreadRequest,
+    unconfinedRequest: CodexResumeThreadRequest,
   ): Promise<CodexThreadHandle> {
+    // A legacy read-only or workspace-write sandbox also denies the host's
+    // protected paths (confined-sandbox.ts).
+    const request = {
+      ...unconfinedRequest,
+      params: confineCodexThreadSandbox(unconfinedRequest.params),
+    };
     const profile = resolveCodexSpawnProfile(
       profileForThreadProvider(request.profile, request.params),
     );
@@ -2046,8 +2059,14 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
   }
 
   async forkThread(
-    request: CodexForkThreadRequest,
+    unconfinedRequest: CodexForkThreadRequest,
   ): Promise<CodexThreadHandle> {
+    // A legacy read-only or workspace-write sandbox also denies the host's
+    // protected paths (confined-sandbox.ts).
+    const request = {
+      ...unconfinedRequest,
+      params: confineCodexThreadSandbox(unconfinedRequest.params),
+    };
     const profile = resolveCodexSpawnProfile(
       profileForThreadProvider(request.profile, request.params),
     );

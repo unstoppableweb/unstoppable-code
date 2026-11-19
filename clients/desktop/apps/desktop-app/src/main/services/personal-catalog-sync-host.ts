@@ -27,7 +27,7 @@ import {
   readInstallationGeneration,
   bumpInstallationGeneration,
 } from '../lib/installation-generation';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import { getRemoteUrlStrict } from '../lib/git';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
 import {
@@ -198,7 +198,7 @@ async function sync(): Promise<void> {
     });
   }
   const current = service;
-  const deviceId = (await readPortalStateStore()).clientDeviceId;
+  const deviceId = await getInstallId();
   const installationGeneration = await readInstallationGeneration(deviceId);
   const { items } = await readAllSidebarItems();
   const payloads: PersonalCatalogPayload[] = [];

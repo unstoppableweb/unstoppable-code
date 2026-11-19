@@ -22,6 +22,11 @@ export interface CatalogSelectionRead {
   selections: CatalogSelectionRefs;
   /** Workspace: its rejections of global defaults. Chat: its own tombstones. Global: null. */
   tombstones: CatalogSelectionRefs | null;
+  /**
+   * Chat: items the host loads for this chat that its snapshot does not list
+   * (an organization's skill copies the workspace allows), counted as offered.
+   */
+  offered?: CatalogSelectionRefs;
 }
 
 export interface CatalogSnapshotRead {
@@ -208,6 +213,7 @@ export type CatalogHostRefusal =
   | 'publish-entry-not-found'
   | 'publish-package-stale'
   | 'publish-package-blocked'
+  | 'publish-audience-wider'
   | 'publish-name-taken'
   | 'publish-account-mismatch'
   | 'unpublish-not-found'

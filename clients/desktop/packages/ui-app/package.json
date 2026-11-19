@@ -22,6 +22,7 @@
     "./panel-layout-store": "./src/panel-layout-store.ts",
     "./split-active-tab": "./src/split-active-tab.ts",
     "./pull-request-section-body": "./src/pull-request-section-body.ts",
+    "./review-approval-link": "./src/review-approval-link.ts",
     "./pull-requests": "./src/pull-requests.ts",
     "./pull-request-steps": "./src/pull-request-steps.ts",
     "./plans": "./src/plans.ts",

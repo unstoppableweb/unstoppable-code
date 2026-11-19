@@ -164,6 +164,14 @@ export class LabsExperimentsService {
   getSnapshot(): LabsExperimentsSnapshot {
     return structuredClone(this.snapshot);
   }
+  isExperimentEnabled(id: string): boolean {
+    return (
+      this.snapshot.ready &&
+      this.snapshot.experiments.some(
+        (entry) => entry.id === id && entry.enabled === true,
+      )
+    );
+  }
   onSnapshotChanged(
     listener: (snapshot: LabsExperimentsSnapshot) => void,
   ): () => void {
@@ -300,6 +308,11 @@ export class LabsExperimentsService {
           throw new LabsExperimentError(
             'surface_unavailable',
             'Experiment state is not ready.',
+          );
+        if (request.data.enabled && current.blockedBy !== undefined)
+          throw new LabsExperimentError(
+            'missing_capability',
+            'Experiment is unavailable.',
           );
         if (
           current.availability === 'hidden' ||
@@ -579,6 +592,14 @@ export class LabsExperimentsService {
         earlyAccessEnabled: false,
         requiresEarlyAccess: false,
       }).enabled;
+    const own = (entry: LabsExperiment): boolean =>
+      ready &&
+      resolveLabsExperiment({
+        availability: availability(entry).availability,
+        choice: choice(entry.id),
+        earlyAccessEnabled,
+        requiresEarlyAccess: entry.requiresEarlyAccess,
+      }).enabled;
     return {
       generation: this.generation,
       revision: this.revision,
@@ -589,6 +610,17 @@ export class LabsExperimentsService {
       updatedAt: new Date().toISOString(),
       experiments: this.entries.map((entry) => {
         const resolved = availability(entry);
+        // Prerequisites are single level (validateLabsExperiments), so the
+        // target's own resolution is its effective state.
+        const prerequisite = this.entries.find(
+          (candidate) => candidate.id === entry.requiresExperiment,
+        );
+        const prerequisiteEnabled =
+          entry.requiresExperiment === undefined ||
+          (!!prerequisite && own(prerequisite));
+        const blockedBy = prerequisiteEnabled
+          ? undefined
+          : entry.requiresExperiment;
         return {
           ...entry,
           pages: [...entry.pages],
@@ -603,7 +635,9 @@ export class LabsExperimentsService {
                 choice: choice(entry.id),
                 earlyAccessEnabled,
                 requiresEarlyAccess: entry.requiresEarlyAccess,
+                prerequisiteEnabled,
               })),
+          ...(blockedBy === undefined ? {} : { blockedBy }),
         };
       }),
     };

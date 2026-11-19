@@ -3,9 +3,11 @@ import {
   TERMINAL_RESTORED_REPLAY_MAX_BYTES,
   TRUNCATION_MARKER_BYTES,
   buildRestoreMarker,
+  exitEndsNoCommand,
 } from '../engine';
 import type {
   TerminalEnvironment,
+  TerminalKillAllOptions,
   TerminalPersistencePort,
   TerminalResourceHandle,
   TerminalResourcePort,
@@ -31,7 +33,6 @@ import {
   type WorkerTerminalWriteResult,
 } from '@canopy/protocol/canopy-core';
 import {
-  TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
   TERMINAL_WORKTREE_CLEANUP_SIGNAL,
   type TerminalAttachResponse,
   type TerminalKind,
@@ -231,6 +232,10 @@ interface Mirror {
   running: boolean;
   processName: string | null;
   signalOverride: string | null;
+  /** Kills and releases that end no command, not yet known to have failed. */
+  noCommandKills: number;
+  /** The worker's idle dropped during such a kill; reported if it fails. */
+  heldIdle?: WorkerTerminalEvent;
   resource?: TerminalResourceHandle;
   attachment?: { close(): void };
   /** Writes and resizes reach the worker in order. */
@@ -315,6 +320,9 @@ function withTimeout(promise: Promise<void>, ms: number): Promise<void> {
  */
 export class RemoteTerminals {
   private readonly mirrors = new Map<string, Mirror>();
+
+  /** Set by an app shutdown's kill-all: no exit after it ends a command. */
+  private shuttingDown = false;
 
   /**
    * Terminals ended here as lost whose release the worker did not confirm:
@@ -577,8 +585,15 @@ export class RemoteTerminals {
     const mirror = this.mirrors.get(terminalId);
     if (!mirror) return;
     if (signal) mirror.signalOverride = signal;
-    this.enqueue(mirror, 'kill', () =>
-      this.options.transport.kill({ scope: mirror.scope, terminalId }),
+    const endsNoCommand = exitEndsNoCommand(signal ?? null);
+    if (endsNoCommand) mirror.noCommandKills += 1;
+    this.enqueue(
+      mirror,
+      'kill',
+      () => this.options.transport.kill({ scope: mirror.scope, terminalId }),
+      () => {
+        if (endsNoCommand) this.noCommandKillFailed(mirror);
+      },
     );
   }
 
@@ -589,7 +604,8 @@ export class RemoteTerminals {
   }
 
   /** Kills every terminal and waits, bounded, for their exits. */
-  public killAll(): Promise<void> {
+  public killAll(options?: TerminalKillAllOptions): Promise<void> {
+    if (options) this.shuttingDown = true;
     if (this.killing) return this.killing;
     const mirrors = Array.from(this.mirrors.values());
     for (const mirror of mirrors) this.kill(mirror.session.id);
@@ -624,10 +640,14 @@ export class RemoteTerminals {
     const mirror = this.mirrors.get(terminalId);
     if (!mirror) return;
     mirror.signalOverride ??= TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+    mirror.noCommandKills += 1;
     try {
       await this.options.transport.release({ scope: mirror.scope, terminalId });
     } catch (error) {
-      if (!isGone(error)) throw error;
+      if (!isGone(error)) {
+        this.noCommandKillFailed(mirror);
+        throw error;
+      }
       this.finish(mirror, null, WORKER_TERMINAL_LOST_SIGNAL);
     }
     await mirror.exited;
@@ -681,6 +701,7 @@ export class RemoteTerminals {
     mirror: Mirror,
     operation: string,
     call: () => Promise<unknown>,
+    onFailed?: () => void,
   ): void {
     mirror.queue = mirror.queue.then(async () => {
       const delays = this.options.reattachDelaysMs ?? REATTACH_DELAYS_MS;
@@ -703,6 +724,7 @@ export class RemoteTerminals {
               terminalId: mirror.session.id,
               code: errorCode(error) ?? null,
             });
+            onFailed?.();
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, delay));
@@ -737,6 +759,7 @@ export class RemoteTerminals {
       running: false,
       processName: null,
       signalOverride: null,
+      noCommandKills: 0,
       queue: Promise.resolve(),
       exited,
       finish,
@@ -950,7 +973,7 @@ export class RemoteTerminals {
     ) {
       mirror.running = item.running.running;
       mirror.processName = item.running.processName;
-      this.options.emit({
+      const event: WorkerTerminalEvent = {
         type: 'runningChanged',
         payload: {
           projectId: session.projectId,
@@ -963,7 +986,14 @@ export class RemoteTerminals {
             interruptedByUser: item.running.interruptedByUser,
           }),
         },
-      });
+      };
+      // The worker sends its own idle before the exit item; after a kill
+      // that ends no command, that idle is no completion either.
+      mirror.heldIdle =
+        item.running.running || !this.killEndsNoCommand(mirror)
+          ? undefined
+          : event;
+      if (!mirror.heldIdle) this.options.emit(event);
     }
     if (item.exit) this.finish(mirror, item.exit.code, item.exit.signal);
     mirror.progress?.();
@@ -985,22 +1015,38 @@ export class RemoteTerminals {
     mirror.resource?.unregister();
     mirror.resource = undefined;
     const announce = (): void =>
-      this.announceExit(mirror, exitCode, mirror.signalOverride ?? signal);
+      this.announceExit(
+        mirror,
+        exitCode,
+        mirror.signalOverride ?? signal,
+        // `signal`, not the override: an override can outlive a failed kill.
+        this.killEndsNoCommand(mirror) || exitEndsNoCommand(signal),
+      );
     if (mirror.adopting) mirror.adopting.exit = announce;
     else announce();
+  }
+
+  private killEndsNoCommand(mirror: Mirror): boolean {
+    return this.shuttingDown || mirror.noCommandKills > 0;
+  }
+
+  /** The terminal may have outlived the kill, so a held idle was real. */
+  private noCommandKillFailed(mirror: Mirror): void {
+    mirror.noCommandKills -= 1;
+    const held = mirror.heldIdle;
+    if (!held || mirror.done || this.killEndsNoCommand(mirror)) return;
+    mirror.heldIdle = undefined;
+    this.options.emit(held);
   }
 
   private announceExit(
     mirror: Mirror,
     exitCode: number | null,
     resolvedSignal: string | null,
+    endsNoCommand: boolean,
   ): void {
     const { session } = mirror;
-    if (
-      (mirror.running || mirror.processName !== null) &&
-      resolvedSignal !== TERMINAL_WORKTREE_CLEANUP_SIGNAL &&
-      resolvedSignal !== TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL
-    ) {
+    if ((mirror.running || mirror.processName !== null) && !endsNoCommand) {
       mirror.running = false;
       mirror.processName = null;
       this.options.emit({

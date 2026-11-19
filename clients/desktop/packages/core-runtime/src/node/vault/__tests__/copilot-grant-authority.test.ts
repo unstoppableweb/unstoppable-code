@@ -4,6 +4,7 @@ import {
   CORE_VAULT_INSTRUCTION_DEFINITIONS,
   VaultEntryMetadataSchema,
 } from '@canopy/protocol/canopy-core';
+import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
 import type {
   VaultFamilyWriter,
   VaultPutOutcome,
@@ -37,6 +38,119 @@ import type { VaultStore } from '../repository/store';
 const ACCESS = 'access-secret-sentinel';
 const REFRESH = 'refresh-secret-sentinel';
 const NOW = Date.parse('2026-11-06T10:00:00Z');
+
+describe('P8 terminal family quiescence', () => {
+  it('permanently fences empty setup, reopen and later factories sharing the owner', async () => {
+    const h = harness();
+    const a = h.create();
+    const drained = a.quiesce();
+    expect(a.quiesce()).toBe(drained);
+    a.reopen();
+    expect(a.recipientGeneration()).toBeUndefined();
+    expect((await a.create(grant(), 'setup')).kind).toBe('blocked');
+    const later = h.create();
+    later.reopen();
+    expect(later.recipientGeneration()).toBeUndefined();
+    expect((await later.create(grant(), 'setup')).kind).toBe('blocked');
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.put).not.toHaveBeenCalled();
+    await drained;
+  });
+
+  it('releases only the wait at exactly 2000 ms, preserving a late owned successor without delivery', async () => {
+    jest.useFakeTimers({ now: NOW });
+    try {
+      const h = harness();
+      const a = h.create();
+      const head = ready(await a.create(grant('', 1), 'setup'));
+      const entered = deferred<void>();
+      const response =
+        deferred<
+          Awaited<ReturnType<CopilotGrantAuthorityOptions['refresh']>>
+        >();
+      h.refresh.mockImplementationOnce(() => {
+        entered.resolve();
+        return response.promise;
+      });
+      const first = a.present('recipient', head.epoch);
+      await entered.promise;
+      const mutation = structuredClone(h.state().mutation);
+      let completed = false;
+      const drain = a.quiesce();
+      void drain.then(() => {
+        completed = true;
+      });
+      expect(a.quiesce()).toBe(drain);
+      expect(a.recipientGeneration()).toBeUndefined();
+      await jest.advanceTimersByTimeAsync(1_999);
+      expect(completed).toBe(false);
+      expect(h.state().mutation).toEqual(mutation);
+      await jest.advanceTimersByTimeAsync(1);
+      expect(completed).toBe(true);
+      expect(h.state().mutation).toEqual(mutation);
+      const committed = deferred<void>();
+      const cas = h.journal.compareExchange.bind(h.journal);
+      h.journal.compareExchange = async (sequence, next): Promise<boolean> => {
+        const accepted = await cas(sequence, next);
+        if (accepted && next.head?.pin.revision === head.pin.revision + 1)
+          committed.resolve();
+        return accepted;
+      };
+      response.resolve({ kind: 'success', grant: grant('-after-cap') });
+      expect((await first).kind).toBe('blocked');
+      await committed.promise;
+      expect(h.state().head?.pin.revision).toBe(head.pin.revision + 1);
+      expect(h.state().mutation).toBeNull();
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      expect(h.deliver).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('includes response-created persistence in the owned drain before the cap', async () => {
+    jest.useFakeTimers({ now: NOW });
+    try {
+      const h = harness();
+      const a = h.create();
+      const head = ready(await a.create(grant('', 1), 'setup'));
+      const entered = deferred<void>();
+      const response =
+        deferred<
+          Awaited<ReturnType<CopilotGrantAuthorityOptions['refresh']>>
+        >();
+      h.refresh.mockImplementationOnce(() => {
+        entered.resolve();
+        return response.promise;
+      });
+      const first = a.present('recipient', head.epoch);
+      await entered.promise;
+      const storing = deferred<void>();
+      const release = deferred<void>();
+      h.put.mockImplementationOnce(async (request) => {
+        storing.resolve();
+        await release.promise;
+        return h.raw.put(request);
+      });
+      let completed = false;
+      const drain = a.quiesce().then(() => {
+        completed = true;
+      });
+      response.resolve({ kind: 'success', grant: grant('-during-drain') });
+      await storing.promise;
+      await jest.advanceTimersByTimeAsync(100);
+      expect(completed).toBe(false);
+      release.resolve();
+      await drain;
+      expect((await first).kind).toBe('blocked');
+      expect(h.state().head?.pin.revision).toBe(head.pin.revision + 1);
+      expect(h.deliver).not.toHaveBeenCalled();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
 function expectNoGrantSecrets(value: unknown): void {
   if (ArrayBuffer.isView(value)) {
     const bytes = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
@@ -52,6 +166,78 @@ function expectNoGrantSecrets(value: unknown): void {
     }
   }
 }
+describe('P8 operation-scoped pending removal', () => {
+  it('refuses an identity changed between lookup and the authenticated fence CAS', async () => {
+    const h = harness();
+    const a = h.create();
+    const head = ready(await a.create(grant('', 1), 'setup'));
+    h.nextPut({ kind: 'blocked', reason: 'locked' });
+    await a.present('first', head.epoch);
+    await h.writesSettled();
+    const before = structuredClone(h.state());
+    const id = before.mutation?.operationId;
+    if (!id) throw new Error('Missing pending operation');
+    const cas = h.journal.compareExchange.bind(h.journal);
+    let raced = false;
+    h.journal.compareExchange = async (sequence, next): Promise<boolean> => {
+      if (!raced && next.removal) {
+        raced = true;
+        h.replaceState({
+          ...before,
+          sequence: before.sequence + 1,
+          mutation: before.mutation
+            ? { ...before.mutation, operationId: 'newer-operation' }
+            : null,
+        });
+      }
+      return cas(sequence, next);
+    };
+    expect((await a.removePending(id)).kind).toBe('blocked');
+    expect(h.state().head).toEqual(head);
+    expect(h.state().mutation?.operationId).toBe('newer-operation');
+    expect(h.state().removal).toBeNull();
+    expect(h.disable).not.toHaveBeenCalled();
+    expect(h.deletion).not.toHaveBeenCalled();
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('fences a live provider before exact removal so its late successor cannot resurrect or deliver', async () => {
+    jest.useFakeTimers({ now: NOW });
+    try {
+      const h = harness();
+      const a = h.create();
+      const head = ready(await a.create(grant('', 1), 'setup'));
+      const started = deferred<void>();
+      const response =
+        deferred<
+          Awaited<ReturnType<CopilotGrantAuthorityOptions['refresh']>>
+        >();
+      h.refresh.mockImplementationOnce(() => {
+        started.resolve();
+        return response.promise;
+      });
+      const presenting = a.present('old', head.epoch);
+      await started.promise;
+      const id = h.state().mutation?.operationId;
+      if (!id) throw new Error('Missing live operation');
+      const removing = a.removePending(id);
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(await removing).toEqual({ kind: 'removed' });
+      response.resolve({ kind: 'success', grant: grant('-late') });
+      expect((await presenting).kind).toBe('blocked');
+      await h.writesSettled();
+      expect(h.state().head).toBeNull();
+      expect(h.state().mutation).toBeNull();
+      expect(await h.repository.list()).toEqual([]);
+      expect(h.deliver).not.toHaveBeenCalled();
+      expect(h.deletion).toHaveBeenCalledTimes(1);
+      expect(h.put).toHaveBeenCalledTimes(1);
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
 function grant(suffix = '', expiresIn = 7_200_000): CopilotVaultGrant {
   return {
     version: 1,
@@ -125,6 +311,8 @@ interface Harness {
     Awaited<ReturnType<CopilotAuthorityJournal['reconcile']>>
   >;
   create(): CopilotVaultGrantAuthority;
+  /** Synthetic process restart: fresh boot registry with the harness's exclusive owner capability. */
+  restart(): CopilotVaultGrantAuthority;
   state(): CopilotAuthorityRecord;
   replaceState(next: CopilotAuthorityRecord): void;
   block(reason?: 'locked' | 'corrupt' | 'unavailable'): void;
@@ -206,6 +394,7 @@ function harness(base?: {
     delete: deletion,
   };
   const journal: CopilotAuthorityJournal = {
+    lifetime: { isExclusive: () => true },
     read: () => {
       if (readFails) return Promise.reject(new Error(ACCESS));
       return Promise.resolve(structuredClone(state));
@@ -295,6 +484,12 @@ function harness(base?: {
     revoke,
     resolutions,
     create: () => createCopilotVaultGrantAuthority(options),
+    restart: () =>
+      createCopilotVaultGrantAuthority({
+        ...options,
+        processLifetime: {},
+        journal: { ...journal },
+      }),
     state: () => structuredClone(state),
     replaceState: (next: CopilotAuthorityRecord) => {
       state = next;
@@ -702,6 +897,312 @@ describe('CAN-5851 unselected Copilot grant authority migration golden', () => {
       h.disable.mock.calls[2]?.[0].operationId,
     );
   });
+
+  it.each(['removal', 'rejected refresh', 'mismatched receipt'] as const)(
+    'P8 q-27 retired witness: the %s delete commits only the exact disabled receipt and binds the next setup to it',
+    async (path) => {
+      const h = harness();
+      const a = h.create();
+      const head = ready(
+        await a.create(
+          grant('', path === 'rejected refresh' ? -1 : 7_200_000),
+          'setup',
+        ),
+      );
+      const receipt: CopilotHostSelection = {
+        version: 1,
+        state: 'disabled',
+        identity: {
+          operationId: head.operationId,
+          epoch: head.epoch,
+          account: head.account,
+          origin: head.origin,
+        },
+        pinGeneration: head.pinGeneration,
+        pin: head.pin,
+      };
+      h.disable.mockResolvedValue({
+        kind: 'disabled',
+        receipt:
+          path === 'mismatched receipt'
+            ? { ...receipt, pinGeneration: 'foreign-nonce' }
+            : receipt,
+      });
+      if (path === 'rejected refresh') {
+        h.refresh.mockResolvedValueOnce({ kind: 'rejected' });
+        expect((await a.present('recipient', head.epoch)).kind).toBe('blocked');
+      } else expect(await a.remove(head.epoch)).toEqual({ kind: 'removed' });
+      const retired = h.state();
+      expect(retired).toMatchObject({
+        head: null,
+        mutation: null,
+        removal: null,
+        completed: { kind: 'delete', epoch: head.epoch },
+      });
+      expect(CopilotAuthorityRecordSchema.safeParse(retired).success).toBe(
+        true,
+      );
+      function restarted(
+        predecessor: CopilotHostSelection,
+      ): CopilotVaultGrantAuthority {
+        return createCopilotVaultGrantAuthority({
+          ...h.options,
+          processLifetime: {},
+          journal: { ...h.journal },
+          selection: {
+            ...h.options.selection,
+            setupPredecessor: () => Promise.resolve(predecessor),
+          },
+        });
+      }
+      if (path === 'mismatched receipt') {
+        // A receipt the head never selected is not a witness; v1 stays v1.
+        expect(retired.version).toBe(1);
+        expect(retired.setupLineage).toBeUndefined();
+        expect(await restarted(receipt).create(grant(), 'setup')).toEqual({
+          kind: 'blocked',
+          reason: 'changed',
+        });
+        expect(h.state()).toEqual(retired);
+        return;
+      }
+      expect(retired).toMatchObject({
+        version: 2,
+        setupLineage: {
+          version: 1,
+          phase: 'retired',
+          predecessor: receipt,
+          successor: {
+            operationId: retired.completed?.operationId,
+            epoch: head.epoch,
+          },
+        },
+      });
+      const pin = head.pin;
+      const foreign: Record<string, CopilotHostSelection> = {
+        operation: {
+          ...receipt,
+          identity: { ...receipt.identity, operationId: 'foreign-operation' },
+        },
+        account: {
+          ...receipt,
+          identity: {
+            ...receipt.identity,
+            account: { ...receipt.identity.account, login: 'foreign-login' },
+          },
+        },
+        nonce: { ...receipt, pinGeneration: 'foreign-nonce' },
+        pin: {
+          ...receipt,
+          pin: { ...pin, ref: { ...pin.ref, entryId: 'foreign-entry' } },
+        },
+        revision: { ...receipt, pin: { ...pin, revision: pin.revision + 1 } },
+      };
+      const refused: Record<string, unknown> = {};
+      for (const [field, predecessor] of Object.entries(foreign))
+        refused[field] = await restarted(predecessor).create(grant(), 'setup');
+      expect(refused).toEqual(
+        Object.fromEntries(
+          Object.keys(foreign).map((field) => [
+            field,
+            { kind: 'blocked', reason: 'changed' },
+          ]),
+        ),
+      );
+      expect(h.state()).toEqual(retired);
+      const next = ready(await restarted(receipt).create(grant(), 'setup'));
+      expect(next.epoch).not.toBe(head.epoch);
+    },
+  );
+
+  it.each([
+    ['unprepared probe failure', 'own'],
+    ['committed cancel', 'own'],
+    ['replayed cancel', 'own'],
+    ['unprepared probe failure', 'predecessor'],
+    ['unprepared probe failure', 'foreign'],
+  ] as const)(
+    'P8 q-27 cancelled witness: a %s with a %s survivor binds the next setup to the exact surviving receipt',
+    async (path, survivorKind) => {
+      const h = harness();
+      const lineage: { predecessor?: CopilotHostSelection } = {};
+      let survivor: CopilotHostSelection | undefined;
+      type Survivor = NonNullable<
+        CopilotGrantAuthorityOptions['selection']['cancelledReceipt']
+      >;
+      const cancelledReceipt = jest.fn<
+        ReturnType<Survivor>,
+        Parameters<Survivor>
+      >(() => Promise.resolve(survivor));
+      const options: CopilotGrantAuthorityOptions = {
+        ...h.options,
+        selection: {
+          ...h.options.selection,
+          abandon: () => Promise.resolve(),
+          cancelledReceipt,
+          setupPredecessor: () => Promise.resolve(lineage.predecessor),
+        },
+      };
+      function restarted(
+        receipt: CopilotHostSelection,
+      ): CopilotVaultGrantAuthority {
+        return createCopilotVaultGrantAuthority({
+          ...options,
+          processLifetime: {},
+          journal: { ...h.journal },
+          selection: {
+            ...options.selection,
+            setupPredecessor: () => Promise.resolve(receipt),
+          },
+        });
+      }
+      function disabledReceipt(
+        binding: Pick<CopilotGrantHead, 'operationId' | 'epoch' | 'account'>,
+        pinGeneration: string,
+        pin: CopilotHostSelection['pin'],
+      ): CopilotHostSelection {
+        return {
+          version: 1,
+          state: 'disabled',
+          identity: {
+            operationId: binding.operationId,
+            epoch: binding.epoch,
+            account: binding.account,
+            origin: 'setup',
+          },
+          pinGeneration,
+          pin,
+        };
+      }
+      const a = createCopilotVaultGrantAuthority(options);
+      const head = ready(await a.create(grant(), 'setup'));
+      const retired = disabledReceipt(head, head.pinGeneration, head.pin);
+      h.disable.mockResolvedValue({ kind: 'disabled', receipt: retired });
+      expect(await a.remove(head.epoch)).toEqual({ kind: 'removed' });
+      expect(h.state().setupLineage?.phase).toBe('retired');
+      lineage.predecessor = retired;
+      // The receipt the cancelled witness must bind.
+      let own: CopilotHostSelection;
+      let cancelled: unknown;
+      if (path === 'unprepared probe failure') {
+        h.probe.mockRejectedValueOnce(new Error(ACCESS));
+        // The successor never reached the vault: its own receipt is pin-less.
+        cancelledReceipt.mockImplementationOnce((identity) => {
+          const prepared = disabledReceipt(identity, 'prepared-nonce', null);
+          // The nonce is host-generated, so a foreign survivor is one whose
+          // journal-checked identity differs: here, the account.
+          survivor =
+            survivorKind === 'own'
+              ? prepared
+              : survivorKind === 'predecessor'
+                ? retired
+                : disabledReceipt(
+                    {
+                      ...identity,
+                      account: { ...identity.account, login: 'foreign-login' },
+                    },
+                    'prepared-nonce',
+                    null,
+                  );
+          return Promise.resolve(survivor);
+        });
+        cancelled = await a.create(grant(), 'setup');
+        // Anything but the successor's own receipt keeps the predecessor.
+        own = survivorKind === 'own' && survivor ? survivor : retired;
+      } else {
+        h.confirm.mockResolvedValueOnce({ kind: 'unconfirmed' });
+        expect((await a.create(grant(), 'setup')).kind).toBe('blocked');
+        const successor = h.state().mutation;
+        if (!successor?.committed) throw new Error('Missing committed setup');
+        own = disabledReceipt(
+          successor,
+          `pin-${successor.operationId}`,
+          successor.committed,
+        );
+        if (path === 'committed cancel') {
+          h.disable.mockResolvedValue({ kind: 'disabled', receipt: own });
+          cancelled = await a.cancel(successor.operationId);
+        } else {
+          // Process ends after the deletion intent: no receipt is in hand on replay.
+          h.disable.mockResolvedValue({ kind: 'disabled', receipt: own });
+          h.deletion.mockRejectedValueOnce(new Error(REFRESH));
+          expect((await a.cancel(successor.operationId)).kind).toBe('blocked');
+          expect(h.state().mutation?.operationId).toBe(
+            `${successor.operationId}:cancel`,
+          );
+          h.disable.mockResolvedValue({ kind: 'disabled' });
+          survivor = own;
+          cancelled = await restarted(own).cancel(successor.operationId);
+        }
+      }
+      const after = h.state();
+      const witness = after.setupLineage;
+      if (!witness) throw new Error('Missing cancelled witness');
+      expect({
+        cancelled,
+        phase: witness.phase,
+        completed: after.completed,
+      }).toEqual({
+        cancelled:
+          path === 'unprepared probe failure'
+            ? { kind: 'blocked', reason: 'unavailable' }
+            : { kind: 'removed' },
+        phase: 'cancelled',
+        completed: {
+          operationId: `${witness.successor.operationId}:cancel`,
+          epoch: witness.successor.epoch,
+          kind: 'delete',
+        },
+      });
+      expect(witness.predecessor).toEqual(own);
+      expect(CopilotAuthorityRecordSchema.safeParse(after).success).toBe(true);
+      const foreign: Record<string, CopilotHostSelection> = {
+        operation: {
+          ...own,
+          identity: { ...own.identity, operationId: 'foreign-operation' },
+        },
+        epoch: {
+          ...own,
+          identity: { ...own.identity, epoch: 'foreign-epoch' },
+        },
+        account: {
+          ...own,
+          identity: {
+            ...own.identity,
+            account: { ...own.identity.account, login: 'foreign-login' },
+          },
+        },
+        nonce: { ...own, pinGeneration: 'foreign-nonce' },
+        pin: {
+          ...own,
+          pin: {
+            ref: { vaultId: head.pin.ref.vaultId, entryId: 'foreign-entry' },
+            revision: 9,
+          },
+        },
+        origin: { ...own, identity: { ...own.identity, origin: 'import' } },
+        enabled: { ...own, state: 'selected' },
+        ...(survivorKind === 'own' ? { predecessor: retired } : {}),
+        ...(survivor && survivorKind === 'foreign'
+          ? { 'foreign survivor': survivor }
+          : {}),
+      };
+      const refused: Record<string, unknown> = {};
+      for (const [field, receipt] of Object.entries(foreign))
+        refused[field] = await restarted(receipt).create(grant(), 'setup');
+      expect(refused).toEqual(
+        Object.fromEntries(
+          Object.keys(foreign).map((field) => [
+            field,
+            { kind: 'blocked', reason: 'changed' },
+          ]),
+        ),
+      );
+      expect(h.state()).toEqual(after);
+      const next = ready(await restarted(own).create(grant(), 'setup'));
+      expect(next.epoch).not.toBe(witness.successor.epoch);
+    },
+  );
 
   it('uses keyless, revision-bound explicit removal even for unreadable material', async () => {
     for (const reason of ['locked', 'corrupt', 'unavailable'] as const) {
@@ -1758,7 +2259,7 @@ describe('P4 provider response loss across restart', () => {
         );
       else expect(h.deliver).not.toHaveBeenCalled();
       expect(h.state().mutation?.kind).toBe('refresh');
-      const restarted = h.create();
+      const restarted = h.restart();
       expect((await restarted.present('recipient', head.epoch)).kind).toBe(
         'delivered',
       );
@@ -1847,6 +2348,46 @@ describe('P4 write-ahead presentation identity', () => {
 });
 
 describe('P4 D31 restart demand', () => {
+  it('a fresh boot identity without an exclusive store capability never proves orphanhood', async () => {
+    const h = harness();
+    const a = h.create();
+    const head = ready(await a.create(grant('', 1), 'setup'));
+    h.replaceState({
+      ...h.state(),
+      sequence: h.state().sequence + 1,
+      mutation: {
+        operationId: 'orphan-refresh',
+        epoch: head.epoch,
+        account: head.account,
+        origin: head.origin,
+        kind: 'refresh',
+        from: head.pin,
+        committed: null,
+        probeConfirmed: true,
+        cancelling: false,
+      },
+    });
+    const before = h.state();
+    const journal: CopilotAuthorityJournal = {
+      read: () => h.journal.read(),
+      compareExchange: (sequence, next) =>
+        h.journal.compareExchange(sequence, next),
+      reconcile: (id) => h.journal.reconcile(id),
+    };
+    const restarted = createCopilotVaultGrantAuthority({
+      ...h.options,
+      journal,
+      processLifetime: {},
+    });
+    expect(await restarted.present('recipient', head.epoch)).toEqual({
+      kind: 'blocked',
+      reason: 'unconfirmed',
+    });
+    expect(h.state()).toEqual(before);
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.deletion).not.toHaveBeenCalled();
+    expect(h.deliver).not.toHaveBeenCalled();
+  });
   it.each(['success', 'rejected', 'lost'] as const)(
     'presents the stored grant exactly once after process loss, with next response %s',
     async (kind) => {
@@ -1866,7 +2407,7 @@ describe('P4 D31 restart demand', () => {
       await started.promise;
       const fence = h.state().mutation;
       expect(fence?.kind).toBe('refresh');
-      const restarted = h.create();
+      const restarted = h.restart();
       await restarted.status();
       expect(h.state().mutation).toEqual(fence);
       expect(h.refresh).toHaveBeenCalledTimes(1);
@@ -1933,6 +2474,17 @@ describe('P4 D31 restart demand', () => {
       'blocked',
     );
     restarted.reopen();
+    expect((await restarted.present('recipient', head.epoch)).kind).toBe(
+      'blocked',
+    );
+    expect(h.state().mutation).toEqual(fence);
+    expect(h.refresh).toHaveBeenCalledTimes(1);
+    expect(h.deletion).not.toHaveBeenCalled();
+    expect(h.deliver).not.toHaveBeenCalled();
+    h.readFails(true);
+    lost.resolve({ kind: 'lost' });
+    await interrupted;
+    h.readFails(false);
     h.failCAS();
     expect((await restarted.present('recipient', head.epoch)).kind).toBe(
       'blocked',
@@ -1962,6 +2514,10 @@ describe('P4 orphan fence contention', () => {
     });
     const interrupted = a.present('recipient', head.epoch);
     await started.promise;
+    h.readFails(true);
+    response.resolve({ kind: 'lost' });
+    await interrupted;
+    h.readFails(false);
     const restarted = h.create();
     h.loseCAS();
     expect((await restarted.present('recipient', head.epoch)).kind).toBe(
@@ -1969,6 +2525,14 @@ describe('P4 orphan fence contention', () => {
     );
     expect(h.state().mutation).toBeNull();
     expect(h.refresh).toHaveBeenCalledTimes(1);
+    const committed = deferred<void>();
+    const cas = h.journal.compareExchange.bind(h.journal);
+    h.journal.compareExchange = async (sequence, next): Promise<boolean> => {
+      const accepted = await cas(sequence, next);
+      if (accepted && next.head?.pin.revision === head.pin.revision + 1)
+        committed.resolve();
+      return accepted;
+    };
     const results = await Promise.all([
       restarted.present('recipient', head.epoch),
       restarted.present('recipient', head.epoch),
@@ -1978,6 +2542,7 @@ describe('P4 orphan fence contention', () => {
     expect(h.refresh.mock.calls[1]?.[0]).toEqual(grant('', -1));
     response.resolve({ kind: 'lost' });
     await interrupted;
+    await committed.promise;
     await h.writesSettled();
     expect(h.refresh).toHaveBeenCalledTimes(2);
     expect(h.put).toHaveBeenCalledTimes(2);
@@ -2002,6 +2567,10 @@ describe('P4 orphan fence contention', () => {
       });
       const interrupted = a.present('recipient', head.epoch);
       await started.promise;
+      h.readFails(true);
+      response.resolve({ kind: 'lost' });
+      await interrupted;
+      h.readFails(false);
       const compareExchange = h.journal.compareExchange.bind(h.journal);
       let intercepted = false;
       h.journal.compareExchange = async (sequence, next): Promise<boolean> => {
@@ -3163,6 +3732,10 @@ describe('P4 epoch-owned refresh attempts', () => {
           });
           interrupted = a.present('old-process', head.epoch);
           await started.promise;
+          h.readFails(true);
+          lost.resolve({ kind: 'lost' });
+          await interrupted;
+          h.readFails(false);
           a = h.create();
         } else if (stage === 'local-mutation') {
           h.nextPut({ kind: 'blocked', reason: 'locked' });
@@ -3286,6 +3859,10 @@ describe('P4 epoch-owned refresh attempts', () => {
     await started.promise;
     const fence = h.state().mutation;
     if (!fence) throw new Error('Missing fence');
+    h.readFails(true);
+    response.resolve({ kind: 'lost' });
+    await first;
+    h.readFails(false);
     const cas = h.journal.compareExchange.bind(h.journal);
     let intercepted = false;
     h.journal.compareExchange = async (sequence, next): Promise<boolean> => {

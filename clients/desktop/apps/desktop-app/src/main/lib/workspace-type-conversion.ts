@@ -33,7 +33,6 @@ import type {
   SidebarItem,
   SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { readCanopyJson, writeCanopyJson } from './canopy-json';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import { pathExists } from './fs-utils';
@@ -408,6 +407,5 @@ async function convertAdmittedWorkspaceType(
     });
     // Refresh path registries only after the canonical decision.
     await readAllSidebarItems({ persistRemovalCleanup: false });
-    notifyPortalStructureChanged();
   });
 }

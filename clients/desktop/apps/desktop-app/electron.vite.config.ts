@@ -16,6 +16,7 @@ import {
   linuxSafeStorageHelperPlugin,
   withOneBytePlaceholder,
 } from '../../scripts/lib/desktop-main-entry.mjs';
+import { readLocalOnlyBuildEnv } from '../../scripts/lib/local-only-build-env.mjs';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { randomUUID } from 'node:crypto';
@@ -335,7 +336,16 @@ function formatCanopyCloudBaseUrlLog(value: string, source: string): string {
   return `[desktop dev] CANOPY_CLOUD_BASE_URL=${value || '(not configured)'} (${source})`;
 }
 
+// The local-only build profile (docs/local-only-build.md). When it is on the
+// build forces every hosted service value empty, whatever the environment
+// says, so a production local-only bundle does not even contain the keys.
+// scripts/lib/local-only-build-env.mjs is the one parser every bundler shares.
+const localOnlyBuild = readLocalOnlyBuildEnv(process.env);
+
 function readCanopyCloudBaseUrlForBuild(mode: string): string {
+  if (localOnlyBuild) {
+    return '';
+  }
   const cloudBaseUrl = readEnvString('CANOPY_CLOUD_BASE_URL');
   if (cloudBaseUrl) {
     if (mode !== 'production') {
@@ -406,11 +416,12 @@ function createDependencyVersionDefines(mode: string): Record<string, string> {
       readEnvString('CANOPY_INTERNAL_RELEASE_INDICATOR'),
     ),
     __CANOPY_UPDATE_BASE_URL__: JSON.stringify(
-      readEnvString('CANOPY_UPDATE_BASE_URL'),
+      localOnlyBuild ? '' : readEnvString('CANOPY_UPDATE_BASE_URL'),
     ),
     __CANOPY_SOURCE_BUILD__: JSON.stringify(
       readEnvString('CANOPY_SOURCE_BUILD') === 'true',
     ),
+    __CANOPY_LOCAL_ONLY__: JSON.stringify(localOnlyBuild),
   };
 }
 
@@ -422,10 +433,10 @@ function createDesktopInstrumentationDefines(): Record<string, string> {
       readEnvString('CANOPY_VERSION', pkg.version ?? ''),
     ),
     __CANOPY_POSTHOG_ENABLED__: JSON.stringify(
-      readEnvBoolean('CANOPY_POSTHOG_ENABLED', false),
+      !localOnlyBuild && readEnvBoolean('CANOPY_POSTHOG_ENABLED', false),
     ),
     __CANOPY_POSTHOG_PROJECT_KEY__: JSON.stringify(
-      readEnvString('CANOPY_POSTHOG_PROJECT_KEY'),
+      localOnlyBuild ? '' : readEnvString('CANOPY_POSTHOG_PROJECT_KEY'),
     ),
     __CANOPY_POSTHOG_HOST__: JSON.stringify(
       readEnvString('CANOPY_POSTHOG_HOST', 'https://us.i.posthog.com'),
@@ -438,7 +449,7 @@ function createDesktopInstrumentationDefines(): Record<string, string> {
 
 const desktopFeatureFlagDefines = {
   __CANOPY_LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID__: JSON.stringify(
-    readEnvString('LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID'),
+    localOnlyBuild ? '' : readEnvString('LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID'),
   ),
 };
 
@@ -481,7 +492,9 @@ const e2eDefineUrl = (name: string): string => {
 const desktopE2eDefines = {
   __CANOPY_E2E__: JSON.stringify(isE2eBuild),
   __CANOPY_MOCK_LLM_BASE_URL__: e2eDefineUrl('CANOPY_MOCK_LLM_BASE_URL'),
-  __CANOPY_LINEAR_API_BASE_URL__: e2eDefineUrl('CANOPY_LINEAR_API_BASE_URL'),
+  __CANOPY_LINEAR_API_BASE_URL__: localOnlyBuild
+    ? 'undefined'
+    : e2eDefineUrl('CANOPY_LINEAR_API_BASE_URL'),
   __CANOPY_POSTHOG_STUB_URL__: e2eDefineUrl('CANOPY_POSTHOG_STUB_URL'),
 };
 
@@ -1096,6 +1109,18 @@ export default defineConfig(({ mode }) => {
             repoRoot,
             'apps/desktop-app/src/main/lib/linux-safe-storage-helper.ts',
           ),
+          alias: aliases,
+          define: commonDefines,
+          onInputs: (files): void => {
+            if (isE2eBuild) assertE2eBuildInputs('main', files);
+          },
+        }),
+        linuxSafeStorageHelperPlugin({
+          entryFile: resolve(
+            repoRoot,
+            'apps/desktop-app/scripts/linux-diagnostics.cjs',
+          ),
+          outputFile: 'linux-diagnostics.cjs',
           alias: aliases,
           define: commonDefines,
           onInputs: (files): void => {

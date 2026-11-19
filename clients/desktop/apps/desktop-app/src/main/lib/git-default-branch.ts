@@ -1,3 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import {
+  getGitRequestContext,
+  runWithGitRequestContext,
+} from '@canopy/desktop-shared/node/git-request-context';
 import { logMainProcessError } from './main-process-logging';
 import { withGitReadPath } from './worktree-read-availability';
 import {
@@ -203,8 +208,16 @@ export function revalidateDefaultBranchInBackground(repoPath: string): void {
   if (backgroundRevalidations.has(repoPath)) {
     return;
   }
-  const revalidation = withGitReadPath(repoPath, null, () =>
-    revalidateRepositoryDefaultBranch(repoPath),
+  // Keeps the starting request's ID and tags its own launches (CAN-4397).
+  const revalidation = runWithGitRequestContext(
+    {
+      source: 'default-branch-revalidation',
+      requestId: getGitRequestContext()?.requestId ?? randomUUID(),
+    },
+    () =>
+      withGitReadPath(repoPath, null, () =>
+        revalidateRepositoryDefaultBranch(repoPath),
+      ),
   )
     .then(
       () => undefined,

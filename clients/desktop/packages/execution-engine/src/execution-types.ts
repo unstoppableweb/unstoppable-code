@@ -15,6 +15,7 @@ import type {
   GatewayModelEntry,
 } from '@canopy/protocol/llm-gateway';
 import type { AutoResumeReason } from '@canopy/protocol/portal';
+import type { SelectionRefOwner } from '@canopy/protocol/plugins';
 import type {
   CommandShellDefinition,
   ScriptDevServerPattern,
@@ -290,6 +291,30 @@ export interface CodexSelectedCapabilityRoot {
   };
 }
 
+/**
+ * Selection refs name their item by two fields and, for an organization's
+ * item, its owner (CAN-6235). No owner means the person's own item, which is
+ * what every ref saved before the field existed means. The owner is part of a
+ * ref's identity: see `@canopy/protocol/plugins` `selectionRefOwnerKey`.
+ */
+export interface SelectionSkillRef {
+  sourceId: string;
+  skillName: string;
+  owner?: SelectionRefOwner;
+}
+
+export interface SelectionPluginRef {
+  marketplaceId: string;
+  pluginName: string;
+  owner?: SelectionRefOwner;
+}
+
+export interface SelectionMcpServerRef {
+  serverId: string;
+  configId: string;
+  owner?: SelectionRefOwner;
+}
+
 export interface ChatTabPluginSelections {
   /** Catalog selections awaiting installation/auth; never runtime filesystem refs. */
   unresolvedCapabilities?: TryItCapability[];
@@ -307,9 +332,9 @@ export interface ChatTabPluginSelections {
    * and drops this field on output.
    */
   bundleIds?: string[];
-  skillRefs: { sourceId: string; skillName: string }[];
-  pluginRefs: { marketplaceId: string; pluginName: string }[];
-  mcpServerRefs?: { serverId: string; configId: string }[];
+  skillRefs: SelectionSkillRef[];
+  pluginRefs: SelectionPluginRef[];
+  mcpServerRefs?: SelectionMcpServerRef[];
   /**
    * Per-server overrides for the HTTP MCP auth handler scoped to this
    * chat/worktree's plugin selections. Each entry pairs an
@@ -339,9 +364,9 @@ export interface ChatTabPluginSelections {
  */
 export interface PluginSelectionTombstones {
   collectionIds?: string[];
-  skillRefs?: { sourceId: string; skillName: string }[];
-  pluginRefs?: { marketplaceId: string; pluginName: string }[];
-  mcpServerRefs?: { serverId: string; configId: string }[];
+  skillRefs?: SelectionSkillRef[];
+  pluginRefs?: SelectionPluginRef[];
+  mcpServerRefs?: SelectionMcpServerRef[];
 }
 
 export type TrackedPlanSource =

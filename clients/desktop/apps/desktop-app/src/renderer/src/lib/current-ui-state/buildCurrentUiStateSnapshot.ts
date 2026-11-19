@@ -48,7 +48,6 @@ import {
   normalizeManagedDelegationMaxDepth,
 } from '@canopy/protocol/delegation/discovery';
 import { captureActivePlanContext } from '@/stores/activePlanStore';
-import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useFileLabelsStore } from '@/stores/fileLabelsStore';
@@ -294,10 +293,6 @@ export function buildCurrentUiStateSnapshot(
   const chat = useChatStore.getState();
   const projects = useProjectsStore.getState();
   const pipelineRuns = usePipelineRunsStore.getState();
-  const portal = useCanopyPortalStore.getState().state;
-  const canopyPortalFeatureEnabled = useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key);
 
   const navigationHistory = useNavigationHistoryStore.getState();
   const fileLabels = useFileLabelsStore.getState();
@@ -2368,46 +2363,24 @@ export function buildCurrentUiStateSnapshot(
     snapshot.activePlan = activePlanSlice;
   }
 
-  // -- Canopy Portal (pairing code REDACTED — see plan §Phase 8).
-  //
-  // The desktop app is bound to exactly one Canopy Cloud backend at build
-  // time, so the assistant-visible snapshot intentionally does NOT carry
-  // any server-identity fields (`selectedServerId`, `selectedServerName`,
-  // `selectedServerBaseUrl`). Leaking those into this snapshot would defeat
-  // the single-server UX guarantee.
+  // -- The Remote Control dialog (its slice key predates the rename). The
+  // pairing link and code are never reported.
   const portalModalSlice = readObject(slices['canopyPortal.modal']);
   const portalModalBusy = readString(portalModalSlice?.busy);
-  snapshot.canopyPortal = {
-    featureEnabled: canopyPortalFeatureEnabled,
-    status: portal.status,
-    connectionStatus: portal.connectionStatus,
-    sessionId: portal.sessionId,
-    pairingCodeVisible: portal.pairingCode !== null,
-    pairingCodeExpiresAt: portal.pairingCodeExpiresAt,
-    activatedAt: portal.activatedAt,
-    // No lastSeenAt: it is a heartbeat a connected Portal stamps every few
-    // seconds, and every change advances the revision, so a guarded action
-    // could never match it (CAN-3592). connectionStatus carries liveness.
-    lastErrorAt: portal.lastErrorAt,
-    error: portal.error,
-    ...(portalModalSlice
-      ? {
-          modal: {
-            open: readBoolean(portalModalSlice.open) ?? false,
-            ...(portalModalBusy ? { busy: portalModalBusy } : {}),
-            ...(typeof portalModalSlice.errorVisible === 'boolean'
-              ? { errorVisible: portalModalSlice.errorVisible }
-              : {}),
-            ...(typeof portalModalSlice.viewPortalVisible === 'boolean'
-              ? { viewPortalVisible: portalModalSlice.viewPortalVisible }
-              : {}),
-            ...(typeof portalModalSlice.pairingQrVisible === 'boolean'
-              ? { pairingQrVisible: portalModalSlice.pairingQrVisible }
-              : {}),
-          },
-        }
-      : {}),
-  };
+  if (portalModalSlice) {
+    snapshot.canopyPortal = {
+      modal: {
+        open: readBoolean(portalModalSlice.open) ?? false,
+        ...(portalModalBusy ? { busy: portalModalBusy } : {}),
+        ...(typeof portalModalSlice.errorVisible === 'boolean'
+          ? { errorVisible: portalModalSlice.errorVisible }
+          : {}),
+        ...(typeof portalModalSlice.pairingQrVisible === 'boolean'
+          ? { pairingQrVisible: portalModalSlice.pairingQrVisible }
+          : {}),
+      },
+    };
+  }
 
   const oauthPanelSlice = readObject(slices['plugins.oauthPanel']);
   const connectionSlice = readObject(slices['plugins.connection']);

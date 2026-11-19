@@ -4,6 +4,7 @@
  * :connect, :cancel and :disconnect) and for App Advisor's calls made for the
  * main window through runOpenCodeConnectionForWindow.
  */
+import type * as AgentCatalogCompatibility from '../../remote-projection/agent-catalog-compatibility';
 import { EventEmitter } from 'node:events';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 
@@ -36,8 +37,11 @@ jest.mock('../../lib/web-contents-send', () => ({
 jest.mock('../../models/model-registry', () => ({
   broadcastModelRegistryUpdated: jest.fn(),
 }));
-jest.mock('../../portal/portal-event-bus', () => ({
-  notifyPortalModelCatalogChanged: (): Promise<void> => Promise.resolve(),
+jest.mock('../../remote-projection/agent-catalog-compatibility', () => ({
+  ...jest.requireActual<typeof AgentCatalogCompatibility>(
+    '../../remote-projection/agent-catalog-compatibility',
+  ),
+  notifyModelCatalogChanged: (): Promise<void> => Promise.resolve(),
 }));
 jest.mock('../../opencode/runtime-availability', () => ({
   peekOpenCodeRuntimeAvailability: (): string => 'ready',

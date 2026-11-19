@@ -190,7 +190,7 @@ export async function resolveCreationModelSeed(
   providerType?: AgentProviderType,
 ): Promise<CreateTabSeed | { noDispatchableModel: string }> {
   const { resolveRemoteCreateTabSeed } =
-    await import('../portal/adapters/chat-adapter');
+    await import('../remote-control/host/remote-chat-create');
   const route = parseAgentRouteModelId(model);
   if (route && fromDestinationDefault && !providerType) {
     const defaults = await resolveRemoteCreateTabSeed(projectId);
@@ -221,7 +221,7 @@ export async function assertCreationThinkingLevel(
 ): Promise<void> {
   const [{ buildProjectedModelCatalog }, { resolveCatalogAgentDefaultModel }] =
     await Promise.all([
-      import('../portal/model-catalog-projection'),
+      import('../remote-projection/model-catalog-projection'),
       import('../agents/agent-default-model'),
     ]);
   const owner = await resolveAiCreditsScopeOwner({

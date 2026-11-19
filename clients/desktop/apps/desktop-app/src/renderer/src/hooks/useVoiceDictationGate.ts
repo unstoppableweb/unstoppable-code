@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
 import { DEFAULT_VOICE_DICTATION_ENABLED } from '@canopy/desktop-shared/constants/preferences';
 import { localPlatform } from '@/lib/local-platform';
-import { shouldProbeVoiceSupport } from '@/lib/voice/voice-platform';
+import {
+  shouldProbeVoiceSupport,
+  showsVoiceAffordance,
+} from '@/lib/voice/voice-platform';
 import { onVoiceDictationEnabledChanged } from '@/lib/voice/voice-dictation-pref';
 
 /**
@@ -29,7 +32,7 @@ export function useVoiceDictationGate(): {
     void voiceApi
       .isSupported()
       .then((result) => {
-        if (!cancelled) setVoiceSupported(result.supported);
+        if (!cancelled) setVoiceSupported(showsVoiceAffordance(result));
       })
       .catch(() => {
         if (!cancelled) setVoiceSupported(false);

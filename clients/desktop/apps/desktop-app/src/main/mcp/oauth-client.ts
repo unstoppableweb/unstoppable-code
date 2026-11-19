@@ -1,4 +1,7 @@
 import { isIP } from 'node:net';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
+import { classifyFetchFailure } from '@canopy/desktop-shared/node/lib/app-error-classification';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   createPkceChallenge,
   parseHttpUrl,
@@ -69,6 +72,7 @@ import {
 import { isNonPublicIpAddress } from './network-address';
 import { writeMcpOAuthCallbackPage } from './oauth-callback-page';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
+import { noteMcpEgressHost } from '../local-only/mcp-egress-hosts';
 
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
 
@@ -317,7 +321,8 @@ function startFixedCallbackServer(port: number): Promise<Server> {
             result,
           );
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          reportMainAppError(error, { source: 'mcp.oauth.callback' });
           writeMcpOAuthCallbackPage(response, 500, {
             success: false,
             message: 'OAuth callback failed.',
@@ -451,6 +456,7 @@ async function fetchJsonObject(
       redirects += 1
     ) {
       const e2eFixtureUrl = resolveE2eMcpOAuthFixtureUrl(nextUrl);
+      noteMcpEgressHost(e2eFixtureUrl ?? nextUrl);
       const response = e2eFixtureUrl
         ? await fetch(e2eFixtureUrl, {
             headers: { Accept: 'application/json' },
@@ -658,6 +664,7 @@ async function registerDynamicClient(
       registrationEndpoint,
       'OAuth registration endpoint',
     );
+    noteMcpEgressHost(url);
     const response = await fetchPinnedHttpResponse(
       url,
       await resolveDiscoveredPublicAddresses(
@@ -958,6 +965,7 @@ async function requestToken(
     Accept: 'application/json',
     ...client.headers,
   };
+  noteMcpEgressHost(tokenUrl);
   const response = oauth.tokenUrlRequiresPublicAddress
     ? await fetchPinnedHttpResponse(
         parseDiscoveredPublicHttpsUrl(
@@ -1006,6 +1014,27 @@ class OAuthTokenEndpointError extends Error {
         code ?? '',
       );
   }
+}
+
+/**
+ * Reports a token request failure by stage. The app-error path keeps only the
+ * classification and stack, never the message, so no URL or provider text
+ * leaves the device.
+ */
+function reportTokenFailure(
+  error: unknown,
+  source: 'mcp.oauth.exchange' | 'mcp.oauth.refresh',
+): void {
+  const classified =
+    error instanceof OAuthTokenEndpointError
+      ? classifyError(
+          error,
+          error.requiresReauthorization
+            ? 'external.sign_in_required'
+            : 'external.service_unavailable',
+        )
+      : classifyFetchFailure(error, error);
+  reportMainAppError(classified, { source });
 }
 
 async function adoptCurrentUsableMcpAccessToken(
@@ -1178,6 +1207,7 @@ async function resolveValidMcpAccessToken(
       ? refreshed.accessToken
       : adoptCurrentUsableMcpAccessToken(definition, config);
   } catch (error: unknown) {
+    reportTokenFailure(error, 'mcp.oauth.refresh');
     if (
       error instanceof OAuthTokenEndpointError &&
       error.requiresReauthorization
@@ -1475,6 +1505,7 @@ async function handleMcpOAuthCallbackInternal(
         return { success: false, message: 'Sign-in was canceled.' };
       return { success: true, message: 'OAuth sign-in completed.' };
     } catch (callbackError: unknown) {
+      reportTokenFailure(callbackError, 'mcp.oauth.exchange');
       const message =
         callbackError instanceof Error
           ? callbackError.message

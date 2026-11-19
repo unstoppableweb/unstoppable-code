@@ -1,61 +1,54 @@
+import {
+  CloudAccountSessionStatus,
+  type CloudAccountSessionProbe,
+} from '@canopy/core-runtime/node/cloud-account';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import type { CanopyCloudAccountEntry } from '../lib/canopy-cloud-account-store';
 
 /** Process-local fences. Neither these tokens nor credentials cross IPC. */
-export interface CanopyCloudSessionProbe {
-  readonly generation: number;
-  readonly sequence: number;
-}
+export type CanopyCloudSessionProbe = CloudAccountSessionProbe;
 
 type Credential = Pick<
   CanopyCloudAccountEntry,
   'apiKey' | 'authMode' | 'credentialSource' | 'serverApiKeyId'
 > & { accountId?: string };
 
-let generation = 0;
-let sequence = 0;
-let lastResult = 0;
-let rejected: Credential | null = null;
-const listeners = new Set<() => void>();
-
-function matches(entry: CanopyCloudAccountEntry | null): boolean {
-  return (
-    rejected !== null &&
-    entry !== null &&
-    entry.apiKey.trim().length > 0 &&
-    !isGuestAccount(entry) &&
-    rejected.apiKey === entry.apiKey &&
-    rejected.authMode === entry.authMode &&
-    rejected.credentialSource === entry.credentialSource &&
-    rejected.serverApiKeyId === entry.serverApiKeyId &&
-    rejected.accountId === entry.account?.id
-  );
-}
-
-function notify(): void {
-  listeners.forEach((listener): void => {
-    try {
-      listener();
-    } catch {
-      // A window/subscriber failure must not fail a credential write.
-    }
-  });
-}
+const status = new CloudAccountSessionStatus<
+  CanopyCloudAccountEntry,
+  Credential
+>(
+  (entry) =>
+    entry.apiKey.trim().length > 0 && !isGuestAccount(entry)
+      ? {
+          apiKey: entry.apiKey,
+          authMode: entry.authMode,
+          credentialSource: entry.credentialSource,
+          serverApiKeyId: entry.serverApiKeyId,
+          accountId: entry.account?.id,
+        }
+      : null,
+  (rejected, current) =>
+    rejected.apiKey === current.apiKey &&
+    rejected.authMode === current.authMode &&
+    rejected.credentialSource === current.credentialSource &&
+    rejected.serverApiKeyId === current.serverApiKeyId &&
+    rejected.accountId === current.accountId,
+);
 
 export function beginCanopyCloudSessionProbe(): CanopyCloudSessionProbe {
-  return { generation, sequence: ++sequence };
+  return status.begin();
 }
 
 export function isCurrentCanopyCloudSessionProbe(
   probe: CanopyCloudSessionProbe,
 ): boolean {
-  return probe.generation === generation && probe.sequence > lastResult;
+  return status.isCurrent(probe);
 }
 
 export function isCanopyCloudSessionProbeSuperseded(
   probe: CanopyCloudSessionProbe,
 ): boolean {
-  return probe.generation !== generation || probe.sequence < lastResult;
+  return status.isSuperseded(probe);
 }
 
 /** Called only inside the account store's matched, serialized boundary. */
@@ -64,47 +57,22 @@ export function recordCanopyCloudSessionProbe(
   entry: CanopyCloudAccountEntry,
   outcome: 'accepted' | 'rejected',
 ): void {
-  if (
-    !isCurrentCanopyCloudSessionProbe(probe) ||
-    !entry.apiKey.trim() ||
-    isGuestAccount(entry)
-  )
-    return;
-  lastResult = probe.sequence;
-  const wasExpired = matches(entry);
-  if (outcome === 'rejected') {
-    rejected = {
-      apiKey: entry.apiKey,
-      authMode: entry.authMode,
-      credentialSource: entry.credentialSource,
-      serverApiKeyId: entry.serverApiKeyId,
-      accountId: entry.account?.id,
-    };
-  } else if (wasExpired) {
-    rejected = null;
-  }
-  if (wasExpired !== matches(entry)) notify();
+  status.record(probe, entry, outcome);
 }
 
 /** After readable credential state changes, including same-key replacement. */
 export function resetCanopyCloudSessionCredential(): void {
-  generation++;
-  const changed = rejected !== null;
-  rejected = null;
-  if (changed) notify();
+  status.resetCredential();
 }
 
 export function isCanopyCloudSessionExpired(
   entry: CanopyCloudAccountEntry | null,
 ): boolean {
-  return matches(entry);
+  return status.isExpired(entry);
 }
 
 export function subscribeCanopyCloudSessionStatus(
   listener: () => void,
 ): () => void {
-  listeners.add(listener);
-  return (): void => {
-    listeners.delete(listener);
-  };
+  return status.addListener(listener);
 }

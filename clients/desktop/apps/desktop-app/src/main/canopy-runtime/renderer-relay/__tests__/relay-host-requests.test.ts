@@ -4,6 +4,8 @@ import {
   type InterfaceRelayOperationKind,
 } from '../interface-allowlist.generated';
 import { RENDERER_RELAY_SURFACES, relayAllows } from '../surface-allowlist';
+import { RELAY_DEFINITIONS } from '../definitions';
+import { RENDERER_RELAY_GRANTS } from '../../../ipc/canopy-core-relay';
 
 // CAN-5771: the daemon owner's host request channel stays out of every
 // renderer relay surface, so no renderer, Portal session or bridge client
@@ -41,5 +43,18 @@ describe('renderer relay host requests (CAN-5771)', () => {
 
   it("the relay never initializes on a renderer's behalf", () => {
     expect(relayAllows('main', 'query', 'core.runtime.initialize')).toBe(false);
+  });
+});
+
+// CAN-7197: source-change apply adds the worktree lifecycle grant to its own
+// calls only; the renderer relay, which derives its grants from the
+// definitions it reaches, withholds it while keeping worker.git.write.
+describe('renderer relay worktree lifecycle grant (CAN-7197)', () => {
+  it('no renderer relay caller holds worker.git.worktree.write', () => {
+    expect(
+      RELAY_DEFINITIONS.instructions['worker.git.worktree.add']?.requiredGrants,
+    ).toEqual(['worker.git.worktree.write']);
+    expect(RENDERER_RELAY_GRANTS).not.toContain('worker.git.worktree.write');
+    expect(RENDERER_RELAY_GRANTS).toContain('worker.git.write');
   });
 });

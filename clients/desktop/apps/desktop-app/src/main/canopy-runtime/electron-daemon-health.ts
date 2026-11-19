@@ -1,6 +1,7 @@
 import {
   INITIAL_BACKGROUND_SERVICE_STATUS,
   type BackgroundServiceConsumer,
+  type BackgroundServiceHandoffFailure,
   type BackgroundServiceStatus,
   type BackgroundServiceUnreachableReason,
 } from '@canopy/desktop-shared/lib/background-service-status';
@@ -27,17 +28,20 @@ export interface ElectronDaemonHealth {
   /** The connection service's `onReachability`. */
   observe(event: ElectronDaemonReachability): void;
   /**
-   * Whether a consumer currently reads through the service. With none, the
-   * status is `ok` and connection events are ignored: nothing depends on them.
+   * Whether a consumer currently reads through the service. With none,
+   * connection events are ignored, but a failure already shown stays: a
+   * closed lease is not proof the service recovered (CAN-7061). Only a reach
+   * clears it; a hidden reconnect ends with its last lease.
    */
   setConsumerEnabled(
     consumer: BackgroundServiceConsumer,
     enabled: boolean,
   ): void;
   /**
-   * One bounded Try again; concurrent calls share it. A no-op with no
-   * enabled consumer or after `stop`. `attempt` resolves true only when it
-   * holds a live lease: a reused session can still be reconnecting.
+   * One bounded Try again; concurrent calls share it. A no-op after `stop`,
+   * once a restart is required, or with no enabled consumer and nothing
+   * shown. `attempt` resolves true only when it holds a live lease: a reused
+   * session can still be reconnecting.
    */
   retry(attempt: () => Promise<boolean>): Promise<BackgroundServiceStatus>;
   /**
@@ -57,8 +61,12 @@ export interface ElectronDaemonHealth {
    * failed one re-arms it unless the service was reached meanwhile.
    */
   isLatched(): boolean;
-  /** A degraded startup handoff can recover only on the next app launch. */
-  requireRestart(): void;
+  /**
+   * A degraded startup handoff can recover only on the next app launch.
+   * Shown at once, before any consumer such as Files is enabled, with the
+   * handoff's failure code for diagnostics.
+   */
+  requireRestart(handoff: BackgroundServiceHandoffFailure): void;
   /** Recovery handoff: one-way latch; no Try again or late reach can lift it. */
   beginRecovery(): void;
   /** Quit: ignores every later event and retry. */
@@ -69,6 +77,7 @@ export interface ElectronDaemonHealth {
 const LATCHING_REASONS: ReadonlySet<BackgroundServiceUnreachableReason> =
   new Set<BackgroundServiceUnreachableReason>([
     'start_failed',
+    'endpoint_repair_required',
     'connect_timeout',
     'host_unavailable',
     'reconnect_failed',
@@ -95,6 +104,7 @@ export function createElectronDaemonHealth(
   let reaches = 0;
   let recoveries = 0;
   let restartRequired = false;
+  let handoffFailure: BackgroundServiceHandoffFailure | undefined;
 
   const update = (
     state: BackgroundServiceStatus['state'],
@@ -103,11 +113,13 @@ export function createElectronDaemonHealth(
   ): void => {
     const recovery =
       state === 'unavailable' && restartRequired ? 'restart_app' : undefined;
+    const handoff = recovery ? handoffFailure : undefined;
     if (
       state === status.state &&
       reason === status.reason &&
       retry === status.retry &&
-      recovery === status.recovery
+      recovery === status.recovery &&
+      handoff === status.handoff
     )
       return;
     const previous = status;
@@ -116,6 +128,7 @@ export function createElectronDaemonHealth(
       ...(reason && { reason }),
       retry,
       ...(recovery && { recovery }),
+      ...(handoff && { handoff }),
       sequence: previous.sequence + 1,
     };
     if (status.reason && status.reason !== previous.reason)
@@ -130,13 +143,21 @@ export function createElectronDaemonHealth(
       }
     }
   };
+  const holdForRestart = (): void => {
+    latched = true;
+    update(
+      'unavailable',
+      'idle',
+      status.reason === 'endpoint_repair_required'
+        ? status.reason
+        : 'start_failed',
+    );
+  };
+  // Connection events count while a consumer depends on them or Try again runs.
+  const tracking = (): boolean => consumers.size > 0 || retrying !== undefined;
   const reached = (): void => {
     // A late connection cannot repair the already-settled W5 handoff.
-    if (restartRequired && consumers.size > 0) {
-      latched = true;
-      update('unavailable', 'idle', 'start_failed');
-      return;
-    }
+    if (restartRequired) return holdForRestart();
     if (status.state !== 'ok') recoveries += 1;
     reaches += 1;
     latched = false;
@@ -144,7 +165,13 @@ export function createElectronDaemonHealth(
   };
   const unreachable = (reason: BackgroundServiceUnreachableReason): void => {
     if (LATCHING_REASONS.has(reason)) latched = true;
-    update('unavailable', status.retry, reason);
+    // Later attach failures don't prove the blocking files were repaired.
+    // Keep the command visible until reached() clears the diagnosis.
+    update(
+      'unavailable',
+      status.retry,
+      status.reason === 'endpoint_repair_required' ? status.reason : reason,
+    );
   };
 
   return {
@@ -157,7 +184,7 @@ export function createElectronDaemonHealth(
       };
     },
     observe(event): void {
-      if (stopped || consumers.size === 0) return;
+      if (stopped || !tracking()) return;
       switch (event.kind) {
         case 'reached':
           return reached();
@@ -183,13 +210,13 @@ export function createElectronDaemonHealth(
         update('unavailable', status.retry, reason);
     },
     isLatched: () => latched,
-    requireRestart(): void {
+    requireRestart(handoff): void {
       if (stopped) return;
       restartRequired = true;
-      if (consumers.size > 0) {
-        latched = true;
-        update('unavailable', 'idle', 'start_failed');
-      }
+      // The handoff settles once per launch; its first code stays.
+      handoffFailure ??= handoff;
+      // The failed handoff already closed its lease; Files may never open.
+      holdForRestart();
     },
     beginRecovery(): void {
       latched = true;
@@ -198,11 +225,18 @@ export function createElectronDaemonHealth(
     setConsumerEnabled(consumer, enabled): void {
       if (enabled) consumers.add(consumer);
       else consumers.delete(consumer);
-      if (consumers.size === 0 && !stopped) reached();
-      else if (restartRequired && !stopped) unreachable('start_failed');
+      if (stopped) return;
+      if (restartRequired) holdForRestart();
+      // No lease is left to finish the restart it was hiding.
+      else if (consumers.size === 0 && status.state === 'reconnecting')
+        reached();
     },
     retry(attempt): Promise<BackgroundServiceStatus> {
-      if (stopped || restartRequired || consumers.size === 0)
+      if (
+        stopped ||
+        restartRequired ||
+        (consumers.size === 0 && status.state !== 'unavailable')
+      )
         return Promise.resolve(status);
       if (retrying) return retrying;
       const wasLatched = latched;
@@ -221,7 +255,7 @@ export function createElectronDaemonHealth(
           // refusal from a reached service leaves nothing to show.
         }
         retrying = undefined;
-        if (stopped || restartRequired || consumers.size === 0) return status;
+        if (stopped || restartRequired) return status;
         if (live) reached();
         else {
           if (wasLatched && reaches === reachesBefore) latched = true;

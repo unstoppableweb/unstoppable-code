@@ -204,6 +204,27 @@ export function notSignedInCopy({
   };
 }
 
+/**
+ * Before sending: the provider this chat used is confirmed signed out, routing
+ * mode is `off`, and the chat has no explicit credits choice (CAN-7062). Credits
+ * may be spendable, so unlike {@link notSignedInCopy} this never says there are
+ * none; the user picks a billing source in the banner.
+ *
+ * The message repeats the second sentence of `buildSignedOutNoBillingSourceError`
+ * in `@canopy/desktop-shared`, which this package may not import. Keep the two
+ * identical by hand so the banner and the send refusal say the same thing.
+ */
+export function signedOutCopy({
+  providerLabel,
+}: {
+  readonly providerLabel: string;
+}): CreditsRecoveryCopy {
+  return {
+    title: `Signed out of ${providerLabel}`,
+    message: `Connect ${providerLabel} again, or choose another provider for this chat.`,
+  };
+}
+
 /** An organization pool with nothing in it yet, for someone who can fund it. */
 export const EMPTY_CREDIT_POOL_COPY: CreditsRecoveryCopy = {
   title: 'No credits yet',

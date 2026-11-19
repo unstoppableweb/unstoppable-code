@@ -11,6 +11,11 @@ import type {
 import type { CollectionConfig } from '@canopy/desktop-shared/types/collections';
 import type { PipelinePackageReadiness } from '@canopy/execution-engine/types/pipeline';
 import {
+  linkRecordedError,
+  recordedErrorOf,
+  recordSurfacedError,
+} from '@canopy/ui-shared/lib';
+import {
   formatPipelinePackageInstalledStatus,
   formatPipelinePackageTransferLabel,
 } from '@canopy/ui-shared/lib/pipeline-package-display';
@@ -201,6 +206,11 @@ export interface PublicShareLanding {
   installed: PublicShareInstalledTarget | null;
   installing: boolean;
   installError: string;
+  /**
+   * The `installError` main already recorded, so its banner records nothing;
+   * empty when the failure was not recorded there.
+   */
+  recordedInstallError: string;
   uninstalling: boolean;
   /**
    * Progress label while a packaged install transfers dependencies
@@ -563,6 +573,7 @@ export function usePublicShareLanding(
   const insertInFlightRef = useRef(false);
   const consumedInsertRef = useRef<PublicShareInstalledTarget | null>(null);
   const [installError, setInstallError] = useState('');
+  const [recordedInstallError, setRecordedInstallError] = useState('');
   const [uninstalling, setUninstalling] = useState(false);
   const uninstallInFlightRef = useRef(false);
   const [installProgress, setInstallProgress] = useState('');
@@ -1284,6 +1295,20 @@ export function usePublicShareLanding(
               skills: Array.from(skills.values()),
               plugins: resolved.plugins,
             });
+            // A member main already recorded is linked to this session, not
+            // recorded again.
+            for (const failure of resolved.failures) {
+              if (failure.error === undefined) continue;
+              if (recordedErrorOf(failure.error))
+                linkRecordedError(failure.error, 'shared-collection-import');
+              else
+                recordSurfacedError({
+                  chokePoint: 'notice',
+                  surface: 'inline',
+                  identifier: 'shared-collection-import',
+                  error: failure.error,
+                });
+            }
             unavailable = packageUnavailable + resolved.failures.length;
           } catch {
             unavailable =
@@ -1628,11 +1653,17 @@ export function usePublicShareLanding(
           setNeedsRefresh(true);
           setInstallError(extractIpcErrorMessage(error));
         } else {
-          setInstallError(
+          const message =
             error instanceof Error
               ? error.message
-              : 'Failed to install this share.',
+              : 'Failed to install this share.';
+          // Main recorded it; the banner records nothing but links it to this
+          // session.
+          linkRecordedError(error, 'public-share-install');
+          setRecordedInstallError(
+            recordedErrorOf(error) !== undefined ? message : '',
           );
+          setInstallError(message);
         }
       } finally {
         installInFlightRef.current = false;
@@ -2135,6 +2166,7 @@ export function usePublicShareLanding(
     installed,
     installing,
     installError,
+    recordedInstallError,
     uninstalling,
     installProgress,
     installStatus,

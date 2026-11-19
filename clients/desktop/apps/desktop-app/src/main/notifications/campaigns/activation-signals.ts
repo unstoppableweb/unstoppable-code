@@ -40,7 +40,8 @@ export async function hasSubmittedFirstTask(): Promise<boolean> {
 
 /**
  * Mobile pairing has no backfill: nothing recorded pairing before this signal
- * existed, and a live portal connection is the only observation available.
+ * existed, and a connected mobile Remote Control controller is the only
+ * observation available.
  */
 export async function hasEverPairedMobile(): Promise<boolean> {
   const state = await readActivationJourneyState();

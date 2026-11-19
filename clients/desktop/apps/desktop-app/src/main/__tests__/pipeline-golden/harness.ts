@@ -1,8 +1,7 @@
-// CAN-5061 golden callers: thin drivers for the desktop IPC handlers, Portal
-// commands and agent actions, so every golden reaches pipelines through the
+// CAN-5061 golden callers: thin drivers for the desktop IPC handlers and agent
+// actions, so every golden reaches pipelines through the
 // same entry point a real caller uses.
 import { EventEmitter } from 'node:events';
-import type { PortalCommandEnvelope } from '@canopy/desktop-shared/types';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
 import type { WorktreeActionRuntime } from '../../canopy-tools/worktree-actions';
 import { GOLDEN_WORKSPACE_ID, GOLDEN_WORKTREE_ID } from './world';
@@ -28,62 +27,7 @@ export function invokeIpc(
   return Promise.resolve(handler({ sender: { id: 1 } }, ...args));
 }
 
-let commandSequence = 0;
 let toolUseSequence = 0;
-
-/**
- * Run one Portal command through `handlePortalCommand` and resolve with its
- * terminal `portal.command.completed` or `portal.command.failed` payload,
- * including completions an adapter finishes off the command loop.
- */
-export async function runPortalCommand(
-  type: string,
-  payload: unknown,
-  target: { workspaceLocalId?: string; worktreeLocalId?: string } = {
-    workspaceLocalId: GOLDEN_WORKSPACE_ID,
-    worktreeLocalId: GOLDEN_WORKTREE_ID,
-  },
-): Promise<{ event: string; payload: unknown; updates: unknown[] }> {
-  const { handlePortalCommand } =
-    await import('../../portal/portal-command-handlers');
-  commandSequence += 1;
-  const commandId = `golden-command-${commandSequence}`;
-  const updates: unknown[] = [];
-  return new Promise((resolvePromise, reject) => {
-    const command = {
-      type,
-      commandId,
-      sequenceNumber: commandSequence,
-      payload,
-      target,
-      issuedAt: '2026-10-27T00:00:00.000Z',
-    } as unknown as PortalCommandEnvelope;
-    handlePortalCommand(command, {
-      pairingCode: null,
-      getWindow: () => null,
-      markAuthenticated: () => undefined,
-      stop: () => Promise.resolve(),
-      enqueueEvent: (event) => {
-        const record = event as unknown as {
-          type: string;
-          payload: unknown;
-        };
-        if (
-          record.type === 'portal.command.completed' ||
-          record.type === 'portal.command.failed'
-        ) {
-          resolvePromise({
-            event: record.type,
-            payload: record.payload,
-            updates,
-          });
-        } else {
-          updates.push({ type: record.type, payload: record.payload });
-        }
-      },
-    }).catch(reject);
-  });
-}
 
 export function goldenWorktreeActionRuntime(
   worktreePath: string,

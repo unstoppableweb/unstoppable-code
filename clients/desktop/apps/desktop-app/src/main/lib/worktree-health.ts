@@ -3,6 +3,7 @@ import {
   prepareW5Metadata,
 } from './w5-metadata-preparation';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { lstat, readFile, stat } from 'node:fs/promises';
 import type {
   WorktreeData,
@@ -15,6 +16,12 @@ import {
   type WorktreeHealthSources,
   type WorktreeHealthWorkspace,
 } from '@canopy/core-runtime/node/git';
+import {
+  getGitRequestContext,
+  runWithGitRequestContext,
+  withGitRequestContextEnv,
+} from '@canopy/desktop-shared/node/git-request-context';
+import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import {
@@ -35,7 +42,16 @@ async function runGitBounded(args: string[], cwd: string): Promise<string> {
     const child = execFile(
       executable,
       args,
-      { cwd, timeout: GIT_HEALTH_TIMEOUT_MS, windowsHide: true },
+      {
+        cwd,
+        // The enhanced Git environment main's runGit uses, plus the active
+        // request context for diagnostic attribution (CAN-4397).
+        env: withGitRequestContextEnv(
+          getEnhancedEnv({ includeCanopySecrets: false, environment: false }),
+        ),
+        timeout: GIT_HEALTH_TIMEOUT_MS,
+        windowsHide: true,
+      },
       (error, stdout: string | Buffer, stderr: string | Buffer) => {
         if (error) {
           const stderrText =
@@ -134,7 +150,22 @@ export async function validateWorktreeHealth(
 }
 
 /** Opt-in stats phase: short decodes, enumeration outside bindings, included IDs lazy. */
-export async function validateWorktreeHealthForStats(
+export function validateWorktreeHealthForStats(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeHealthIssue | null> {
+  // Keeps the stats request's ID and tags the health check's own launches
+  // for diagnostic attribution (CAN-4397).
+  return runWithGitRequestContext(
+    {
+      source: 'worktree-health',
+      requestId: getGitRequestContext()?.requestId ?? randomUUID(),
+    },
+    () => validateWorktreeHealthForStatsInContext(projectId, worktreeId),
+  );
+}
+
+async function validateWorktreeHealthForStatsInContext(
   projectId: string,
   worktreeId: string,
 ): Promise<WorktreeHealthIssue | null> {

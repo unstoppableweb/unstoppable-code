@@ -6,7 +6,6 @@ import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { destroyWorktreeSessions } from '../agents/session-manager';
 import {
   listWorkEntries,
-  listWorkEntryChatSummaries,
   removeWorkEntryRow,
   workEntryRegistryExists,
 } from './cowork-work-entries';
@@ -23,7 +22,7 @@ import { resolveContainerRetentionDays } from './archived-container-retention';
 import { captureWorkEntryArchivedContainer } from './archived-container-capture';
 import { getChatStateService } from '../services/chat-state-service';
 import { getChatQueueService } from '../services/chat-queue-service';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { notifyLedgerContainerArchived } from '../ledger/lifecycle';
 import { workEntryLedgerIncarnation } from '../ledger/lifecycle-containers';
 import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
@@ -328,7 +327,6 @@ export async function deleteWorkEntry({
   retirementState.consumed = true;
   const { entry, retentionDays } = retirement;
   let retained = false;
-  let removedChatIds: string[] = [];
   const chatStateService = getChatStateService();
   const scope = {
     projectId: workspaceId,
@@ -363,14 +361,7 @@ export async function deleteWorkEntry({
       await destroyWorktreeSessions(workspaceId, entryId);
       sessionsDestroyed = true;
       await chatStateService.runWithScopeDeletion(scope, async () => {
-        if (!isBotProjectId(workspaceId)) {
-          const summaries = await listWorkEntryChatSummaries(workspaceId);
-          removedChatIds =
-            summaries
-              .find((candidate) => candidate.entryId === entryId)
-              ?.chats.map((chat) => chat.id) ?? [];
-        }
-        // Last checks, after the drain and summary read and right before the
+        // Last checks, after the drain and right before the
         // archive commit: the server confirms the pairing, then the local
         // check runs again. Archive capture, telemetry drain, live-data
         // deletion and row removal then run as one commit sequence, so a
@@ -431,7 +422,7 @@ export async function deleteWorkEntry({
     }
     notifyLedgerOfWorkEntryDeletion(workspaceId, entry, retained);
     try {
-      schedulePortalStructuralSync();
+      scheduleDesktopStructureChanged('structural.work-entry-delete');
     } catch (error) {
       logMainProcessError(
         'Could not schedule the Work Entry removal sync',
@@ -443,7 +434,7 @@ export async function deleteWorkEntry({
         // Load the standalone-chat service only for Cowork removal.
         const { emitStandaloneChatRemovals } =
           await import('../services/standalone-chat-service');
-        emitStandaloneChatRemovals(workspaceId, removedChatIds);
+        emitStandaloneChatRemovals();
       } catch (error) {
         logMainProcessError('Could not publish standalone chat removal', error);
       }

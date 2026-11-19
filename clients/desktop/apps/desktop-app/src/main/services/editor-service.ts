@@ -47,13 +47,13 @@ import {
   resolveInvocableSelection,
 } from '../plugins/invocable-inventory-service';
 import { prepareCodexCompatibilityPlugin } from '../plugins/plugin-service';
-import { fitListResult } from '../portal/adapters/result-budget';
-import { createPortalCaller } from '../portal/portal-caller';
+import { fitListResult } from '../remote-projection/result-budget';
+import { createPortalCaller } from '../remote-projection/portal-caller';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { PortalServiceError } from './portal-service-error';
 import { buildFileIndexes } from './files-service';
-import { selectPortalFileReference } from '../portal/portal-file-reference-selection';
-import type { PortalFileReferenceScope } from '../portal/portal-file-references';
+import { selectPortalFileReference } from '../remote-projection/portal-file-reference-selection';
+import type { PortalFileReferenceScope } from '../remote-projection/portal-file-reference-selection';
 
 const MENTION_DEFAULT_LIMIT = 50;
 const MENTION_MAX_LIMIT = 200;

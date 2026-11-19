@@ -1,4 +1,21 @@
-import type { JSX } from 'react';
+import { type JSX, type ReactNode, useEffect, useState } from 'react';
+import {
+  AgentReadDetail,
+  Button,
+  CenteredLoadingSpinner,
+  CustomizeRowSplitButton,
+  DelayedLoadingPlaceholder,
+  DetailActionBar,
+  DetailFactError,
+  sharedAgentDetailItems,
+} from '@canopy/ui-shared/components';
+import { customizeRowAction } from '@canopy/ui-app/capability';
+import {
+  describeAgentBaseModel,
+  type SharedAgentDetail,
+} from '@canopy/protocol/agents';
+import { toAppError } from '@canopy/protocol/app-errors';
+import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib/unified-plugin-entry';
 import {
   Stack,
   SettingsRowsGroup,
@@ -94,6 +111,135 @@ export function SharedAgentMarketplaceDetail({
         </SettingsRowsSection>
       )}
     </Stack>
+  );
+}
+
+/**
+ * New Customize's page for a team-shared agent: the tile's identity and Add,
+ * and the share's own definition (its plugins and skills, its instructions),
+ * read as the Portal reads it.
+ */
+export function SharedAgentLayoutDetail({
+  agent,
+  identity,
+  settings,
+}: {
+  agent: SharedAgentSummary;
+  identity: {
+    readonly entry: UnifiedPluginEntry;
+    readonly logo: ReactNode;
+    readonly publisher: ReactNode;
+  };
+  /** Shared by you, for the owner. */
+  settings?: ReactNode;
+}): JSX.Element {
+  const [read, setRead] = useState<{
+    readonly id: string;
+    readonly detail: SharedAgentDetail | null;
+    readonly error: string | null;
+  } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    window.agents
+      .getShared(agent.id)
+      .then((detail) => {
+        if (!cancelled) setRead({ id: agent.id, detail, error: null });
+      })
+      .catch((failure: unknown) => {
+        if (cancelled) return;
+        setRead({
+          id: agent.id,
+          detail: null,
+          error:
+            toAppError(failure)?.detail.message.trim() ||
+            'Couldn’t load this agent',
+        });
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [agent.id, attempt]);
+  const current = read?.id === agent.id ? read : null;
+  const link = sharedResourceInstallLink({
+    entity: 'agent',
+    externalId: agent.id,
+    scope: agent.shareScope,
+  });
+  // The tile's primary: Add (the install review), or Installed for the
+  // author's own linked copy.
+  const installed = identity.entry.state === 'installed';
+  const primary = customizeRowAction({
+    entry: identity.entry,
+    installed,
+    ...(link ? { add: (): void => openInstallReview(link) } : {}),
+    statuses: [],
+    pendingKeys: new Set(),
+  });
+  return (
+    <AgentReadDetail
+      dataTestId="shared-agent-marketplace-detail"
+      name={identity.entry.name}
+      description={identity.entry.description}
+      logo={identity.logo}
+      publisher={identity.publisher}
+      actions={
+        <DetailActionBar
+          primary={
+            <CustomizeRowSplitButton
+              // The title names it; labels keep its name out of replay.
+              entryName="this agent"
+              idPrefix={`shared-agent-detail-${agent.id}`}
+              action={{
+                ...primary,
+                accessibleName: installed
+                  ? 'This agent is installed'
+                  : 'Add this agent',
+              }}
+              items={[]}
+            />
+          }
+        />
+      }
+      source={identity.entry.sourceLabel}
+      // The share's own definition once read; the list's summary until then.
+      baseModel={describeAgentBaseModel(
+        current?.detail?.agent.baseModel ?? agent.baseModel,
+      )}
+      items={
+        current?.detail
+          ? sharedAgentDetailItems(current.detail.agent.plugins)
+          : []
+      }
+      instructions={current?.detail?.agent.instructions ?? ''}
+      {...(current?.detail
+        ? {}
+        : {
+            contentsNotice: current?.error ? (
+              <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+                <DetailFactError
+                  error={current.error}
+                  testId="shared-agent-detail-error"
+                />
+                <span aria-hidden>·</span>
+                <Button
+                  variant="link"
+                  onClick={() => {
+                    setRead(null);
+                    setAttempt((count) => count + 1);
+                  }}
+                >
+                  Try again
+                </Button>
+              </span>
+            ) : (
+              <DelayedLoadingPlaceholder slowNote="Still loading agent…">
+                <CenteredLoadingSpinner spacing="section" />
+              </DelayedLoadingPlaceholder>
+            ),
+          })}
+      settings={settings}
+    />
   );
 }
 

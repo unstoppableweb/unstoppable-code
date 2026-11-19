@@ -4,6 +4,7 @@ import {
   AgentOutsideWorkerError,
   runInAgentWorker,
 } from '../agent-worker-context';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 
 const createSession = jest.fn(
   (): Promise<Partial<AgentSession>> =>
@@ -36,7 +37,7 @@ it('refuses a session created outside an agent run', () => {
     getOrCreateSession(
       options,
       () => undefined,
-      () => null,
+      windowAgentInterfacePort(() => null),
     ),
   ).toThrow(AgentOutsideWorkerError);
   expect(createSession).not.toHaveBeenCalled();
@@ -47,7 +48,7 @@ it('creates the session inside a turn run', async () => {
     getOrCreateSession(
       options,
       () => undefined,
-      () => null,
+      windowAgentInterfacePort(() => null),
     ),
   );
   expect(createSession).toHaveBeenCalledTimes(1);

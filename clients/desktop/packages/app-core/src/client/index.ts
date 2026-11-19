@@ -3,6 +3,7 @@ export * from './canopy-client';
 export * from './shell-commands';
 export * from './terminal-client';
 export * from './billing-client';
+export * from './review-approvals-client';
 export * from './external-agents-client';
 export * from './chat-workflow-capabilities';
 export * from './pipeline-cloud-runs';

@@ -24,6 +24,14 @@ export interface CanopyWorkspaceInvalidationPlan {
   readonly manifests: readonly string[];
   /** Workspaces whose worktree list changed. */
   readonly worktreeLists: readonly string[];
+  /**
+   * The commit's id, from a `w5:<id>` commit reference; absent on a broad
+   * plan or another core's reference. A cache already holding every named
+   * resource at or past it can skip its re-read.
+   */
+  readonly commitId?: number;
+  /** Each advanced resource's new revision, by W5 resource key. */
+  readonly revisions?: Readonly<Record<string, number>>;
 }
 
 export const CANOPY_WORKSPACE_BROAD_INVALIDATION: CanopyWorkspaceInvalidationPlan =
@@ -49,8 +57,9 @@ export function planCanopyWorkspaceInvalidation(
   if (event.name !== CORE_WORKSPACE_COMMITTED_EVENT) return null;
   const parsed = CoreWorkspaceCommittedPayloadSchema.safeParse(event.payload);
   if (!parsed.success) return CANOPY_WORKSPACE_BROAD_INVALIDATION;
-  const { changes, files = [], publishedBy } = parsed.data;
+  const { commit, changes, files = [], publishedBy } = parsed.data;
   if (publishedBy !== undefined && isOwnOrigin(publishedBy)) return null;
+  const revisions: Record<string, number> = {};
   let index = false;
   const manifests = new Set<string>();
   const lists = new Set<string>();
@@ -62,6 +71,8 @@ export function planCanopyWorkspaceInvalidation(
   }
   const workspaces = new Set<string>();
   for (const change of changes) {
+    const key = resourceKey(change);
+    if (key !== undefined) revisions[key] = change.revision;
     if (change.kind === 'index') index = true;
     else if (change.workspaceId === undefined) continue;
     else if (change.kind === 'workspace') {
@@ -71,13 +82,32 @@ export function planCanopyWorkspaceInvalidation(
   }
   if (!index && workspaces.size + manifests.size + lists.size === 0)
     return null;
+  const commitId = /^w5:(\d{1,15})$/.exec(commit)?.[1];
   return {
     broad: false,
     index,
     workspaces: Array.from(workspaces),
     manifests: Array.from(manifests),
     worktreeLists: Array.from(lists),
+    ...(commitId !== undefined && { commitId: Number(commitId) }),
+    revisions,
   };
+}
+
+/** The W5 resource key a change advanced (`w5ResourceKey`'s format). */
+function resourceKey(change: {
+  readonly kind: 'index' | 'workspace' | 'worktreeList' | 'worktree';
+  readonly workspaceId?: string;
+  readonly worktreeId?: string;
+}): string | undefined {
+  if (change.kind === 'index') return 'workspaces';
+  const { workspaceId, worktreeId } = change;
+  if (workspaceId === undefined) return undefined;
+  if (change.kind === 'workspace') return `workspace:${workspaceId}`;
+  if (change.kind === 'worktreeList') return `worktrees:${workspaceId}`;
+  return worktreeId === undefined
+    ? undefined
+    : `worktree:${workspaceId}/${worktreeId}`;
 }
 
 export interface CanopyWorkspaceEventBridgeOptions {
@@ -90,6 +120,8 @@ export interface CanopyWorkspaceEventBridgeOptions {
   apply(plan: CanopyWorkspaceInvalidationPlan): Promise<void>;
   /** A failed plan or attachment; the bridge keeps going. */
   onError?(error: unknown): void;
+  /** Each delivered event, own-origin included, before it is planned. */
+  onDelivered?(event: CanopyEvent): void;
   /** Consecutive re-attaches after a failed stream, before waiting for the host. */
   maxReattachAttempts?: number;
   /** The first broad re-read retry delay; doubles per attempt. */
@@ -246,7 +278,14 @@ export function createCanopyWorkspaceEventBridge(
       return Promise.resolve(null);
     },
     handle: async (delivery) => {
-      if (delivery.kind !== 'gap') attempts = 0;
+      if (delivery.kind !== 'gap') {
+        attempts = 0;
+        try {
+          options.onDelivered?.(delivery.event);
+        } catch {
+          // Observing never breaks delivery.
+        }
+      }
       const plan =
         delivery.kind === 'gap'
           ? CANOPY_WORKSPACE_BROAD_INVALIDATION

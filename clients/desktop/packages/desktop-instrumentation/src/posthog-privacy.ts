@@ -259,6 +259,16 @@ function sanitizeProperties(
 const MAX_EXCEPTION_LIST_ENTRIES = 5;
 const MAX_EXCEPTION_FRAMES = 50;
 const MAX_EXCEPTION_TEXT_LENGTH = 2_000;
+const SAFE_EXCEPTION_TYPES = new Set<string>([
+  'Error',
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+  'URIError',
+  'EvalError',
+  'AggregateError',
+]);
 const EXCEPTION_TEXT_FRAME_KEYS = ['function', 'module'] as const;
 const EXCEPTION_PATH_FRAME_KEYS = ['filename', 'abs_path'] as const;
 // Copied verbatim after the generic pass: PostHog symbolicates by `chunk_id`,
@@ -338,12 +348,24 @@ interface SanitizedExceptionEntry extends Record<string, unknown> {
 function sanitizeExceptionEntry(
   entry: unknown,
   handled: boolean,
+  textReplaced: boolean,
 ): SanitizedExceptionEntry | undefined {
   if (!isRecord(entry)) return undefined;
   const result: SanitizedExceptionEntry = {};
-  if (typeof entry.type === 'string') result.type = redactText(entry.type);
-  if (typeof entry.value === 'string')
-    result.value = truncateExceptionText(redactText(entry.value));
+  const isChained =
+    isRecord(entry.mechanism) && entry.mechanism.type === 'chained';
+  if (isChained || textReplaced) {
+    // Pattern redaction cannot make arbitrary cause prose or custom names safe.
+    result.type =
+      typeof entry.type === 'string' && SAFE_EXCEPTION_TYPES.has(entry.type)
+        ? entry.type
+        : 'Error';
+    result.value = isChained ? '[cause]' : '[redacted]';
+  } else {
+    if (typeof entry.type === 'string') result.type = redactText(entry.type);
+    if (typeof entry.value === 'string')
+      result.value = truncateExceptionText(redactText(entry.value));
+  }
   if (isRecord(entry.mechanism)) {
     const mechanism: Record<string, unknown> = {};
     for (const key of EXCEPTION_MECHANISM_KEYS) {
@@ -364,7 +386,7 @@ function sanitizeExceptionEntry(
       // Keep the innermost frames; the SDK orders frames outermost first.
       frames: frames
         .slice(-MAX_EXCEPTION_FRAMES)
-        .map((frame) => sanitizeExceptionFrame(frame, handled))
+        .map((frame) => sanitizeExceptionFrame(frame, handled || textReplaced))
         .filter((frame) => frame !== undefined),
     };
   } else if (handled) {
@@ -379,14 +401,19 @@ function sanitizeExceptionEntry(
  * generic pass, whose output is then overlaid with these fields. */
 function sanitizePostHogExceptionProperties(
   properties: Record<string, unknown>,
+  replaceUncodedExceptionText: boolean,
 ): Record<string, unknown> {
   const exceptionProperties: Record<string, unknown> = {};
   const handled = typeof properties.error_reference_id === 'string';
+  // An uncaught message can quote parsed input, git output or paths that
+  // pattern redaction cannot recognize. The SDK also parses a message line
+  // that starts with `at` into a frame, so frames get the handled policy.
+  const textReplaced = replaceUncodedExceptionText && !handled;
   const list = properties.$exception_list;
   if (Array.isArray(list)) {
     const entries = list
       .slice(0, MAX_EXCEPTION_LIST_ENTRIES)
-      .map((entry) => sanitizeExceptionEntry(entry, handled))
+      .map((entry) => sanitizeExceptionEntry(entry, handled, textReplaced))
       .filter((entry) => entry !== undefined);
     exceptionProperties.$exception_list = entries;
     if (
@@ -399,9 +426,9 @@ function sanitizePostHogExceptionProperties(
   }
   const message = properties.$exception_message;
   if (typeof message === 'string') {
-    exceptionProperties.$exception_message = truncateExceptionText(
-      redactText(message),
-    );
+    exceptionProperties.$exception_message = textReplaced
+      ? '[redacted]'
+      : truncateExceptionText(redactText(message));
   }
   const level = properties.$exception_level;
   if (typeof level === 'string') exceptionProperties.$exception_level = level;
@@ -432,6 +459,9 @@ interface SanitizePostHogEventOptions {
     'appVersion' | 'appBrand' | 'releaseChannel'
   >;
   preserveBrowserProjectToken?: boolean;
+  /** Renderer only: an `$exception` without a catalog `error_reference_id`
+   * gets an allowlisted type, a fixed message and the handled frame policy. */
+  replaceUncodedExceptionText?: boolean;
   /** Recorder payloads are already masked and may contain gzip latin1 bytes. */
   passthroughProperties?: readonly string[];
   /** Current renderer route. Runtime validation is intentional: callers may
@@ -467,7 +497,10 @@ export function sanitizePostHogEvent<
   const passthroughKeys = options.passthroughProperties ?? [];
   const exceptionProperties =
     'event' in event && event.event === '$exception' && event.properties
-      ? sanitizePostHogExceptionProperties(event.properties)
+      ? sanitizePostHogExceptionProperties(
+          event.properties,
+          options.replaceUncodedExceptionText === true,
+        )
       : undefined;
   let propertiesToSanitize: Record<string, unknown> | undefined =
     exceptionProperties && event.properties

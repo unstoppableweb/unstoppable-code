@@ -1,10 +1,9 @@
 import { readWorkspaceManifest } from '../workspace/read-formats';
 import {
   isJsonObject,
-  w5UnreadableMessage,
+  WorkspaceConfigUnreadableError,
   withUnknownFields,
   type W5FileStore,
-  type W5UnreadableUse,
 } from './file-store';
 import { withW5RepositoryLock } from './repository-locks';
 import { equalW5Contents } from './revision-diff';
@@ -71,26 +70,7 @@ export interface WorkspaceManifestRepositoryDeps {
   knownRepoFields: ReadonlySet<string>;
 }
 
-export class WorkspaceConfigUnreadableError extends Error {
-  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
-  declare readonly cause?: unknown;
-  constructor(cause?: unknown, use?: W5UnreadableUse) {
-    super(
-      w5UnreadableMessage(
-        "This project's settings could not be read, so they were not changed. Try again.",
-        cause,
-        use,
-      ),
-    );
-    this.name = 'WorkspaceConfigUnreadableError';
-    if (cause !== undefined)
-      Object.defineProperty(this, 'cause', {
-        value: cause,
-        writable: true,
-        configurable: true,
-      });
-  }
-}
+export { WorkspaceConfigUnreadableError } from './file-store';
 
 function repositoriesById(
   document: Record<string, unknown> | undefined,

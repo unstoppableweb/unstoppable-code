@@ -49,6 +49,19 @@ export type VaultReadOutcome =
     }
   | { readonly kind: 'blocked'; readonly reason: VaultBlockReason };
 
+/** Closed class of a failed storage call; never an errno string or message. */
+export type VaultIoClass =
+  | 'no_space'
+  | 'access_denied'
+  | 'not_permitted'
+  | 'read_only'
+  | 'io'
+  | 'busy'
+  | 'other';
+
+/** Where an `unavailable` mutation failed: its hold point, apply, or a store write. */
+export type VaultMutationStep = 'hold' | 'apply' | 'write';
+
 export type VaultMutationFailure =
   | VaultNotFound
   | {
@@ -76,7 +89,13 @@ export type VaultMutationFailure =
    * commit once the vault key is held (a delete needs none) and no other check
    * refuses it; while the key is not held, a put's retry returns this outcome.
    */
-  | { readonly kind: 'unavailable'; readonly ref: VaultSecretRef };
+  | {
+      readonly kind: 'unavailable';
+      readonly ref: VaultSecretRef;
+      /** Diagnostic only, set when a storage call threw; never a branch. */
+      readonly step?: VaultMutationStep;
+      readonly io?: VaultIoClass;
+    };
 
 export type VaultPutOutcome =
   | { readonly kind: 'committed'; readonly pin: VaultSecretPin }

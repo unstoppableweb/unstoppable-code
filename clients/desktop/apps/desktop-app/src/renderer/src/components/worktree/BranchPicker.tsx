@@ -98,7 +98,17 @@ export function BranchPicker({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const newBranchInputRef = useRef<HTMLInputElement>(null);
   const baseBranchInputRef = useRef<HTMLInputElement>(null);
+  const baseBlurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // A blur schedules the picker's hide. Any later focus, typing or pick must
+  // cancel it, or the stale timer closes the list under the person.
+  const cancelBaseBlurTimer = useCallback(() => {
+    if (baseBlurTimer.current === null) return;
+    clearTimeout(baseBlurTimer.current);
+    baseBlurTimer.current = null;
+  }, []);
+  useEffect(() => cancelBaseBlurTimer, [cancelBaseBlurTimer]);
 
   const consumeCreateDraft = useCallback((failure: InlineFailure | null) => {
     setNewBranchName('');
@@ -551,12 +561,20 @@ export function BranchPicker({
                       setNewBaseBranch(nextBaseSelection.name);
                       setNewBaseBranchIsRemote(nextBaseSelection.isRemote);
                       setNewBaseBranchSource(undefined);
+                      cancelBaseBlurTimer();
                       setShowBasePicker(true);
                     }}
-                    onFocus={() => setShowBasePicker(true)}
+                    onFocus={() => {
+                      cancelBaseBlurTimer();
+                      setShowBasePicker(true);
+                    }}
                     onBlur={() => {
                       // Delay to allow click on picker item
-                      setTimeout(() => setShowBasePicker(false), 150);
+                      cancelBaseBlurTimer();
+                      baseBlurTimer.current = setTimeout(() => {
+                        baseBlurTimer.current = null;
+                        setShowBasePicker(false);
+                      }, 150);
                     }}
                     onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
                       if (e.key === 'Escape') {
@@ -595,6 +613,7 @@ export function BranchPicker({
                       tabIndex={-1}
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        cancelBaseBlurTimer();
                         setNewBaseBranch(b.name);
                         setNewBaseBranchIsRemote(b.hasRemoteRef);
                         setNewBaseBranchSource(

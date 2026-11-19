@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+  <!-- Source for dmg-background.png and dmg-background@2x.png. Icon centers sit at (140, 190) and (400, 190); keep them in sync with build.dmg.contents in package.json. -->
+  <defs>
+    <pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="8" r="0.9" fill="#0B0B0F"/>
+    </pattern>
+    <radialGradient id="fade" cx="270" cy="190" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0.35" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </radialGradient>
+    <mask id="edges">
+      <rect width="540" height="380" fill="url(#fade)"/>
+    </mask>
+  </defs>
+
+  <!-- The website's light page background, the bg-secondary theme token. -->
+  <rect width="540" height="380" fill="#FFFFFF"/>
+  <rect width="540" height="380" fill="url(#dots)" opacity="0.13" mask="url(#edges)"/>
+
+  <!-- #0042FF: the brand accent oklch(0.5039 0.4 263.75), chroma cut to 0.278 to fit sRGB. -->
+  <line x1="222" y1="190" x2="306" y2="190" stroke="#0042FF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M302 178 L322 190 L302 202 Z" fill="#0042FF" stroke="#0042FF" stroke-width="3" stroke-linejoin="round"/>
+</svg>

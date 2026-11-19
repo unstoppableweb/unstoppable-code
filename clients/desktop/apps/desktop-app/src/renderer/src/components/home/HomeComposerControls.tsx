@@ -57,6 +57,7 @@ import {
 import { stageLinearTicketAttachment } from '@/lib/linearTicketStaging';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useProviderAvailability } from '@/hooks/useProviderAvailability';
+import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
 import { resolveChatBillingFramework } from '@/lib/chatBillingFramework';
 import { useVoiceTranscription } from '@/hooks/useVoiceTranscription';
 import { createSlateVoiceTarget } from '@/lib/voice/insert-into-slate';
@@ -273,8 +274,14 @@ export interface HomeComposerControlsProps {
   /** Slate editor instance owned by `HomeSurface`, used only as the voice
    * dictation insertion target. */
   editor: ChatEditor;
-  /** True when there are no workspaces at all (composer fully disabled). */
+  /**
+   * True while there is no send target: nothing selectable, or Personal's
+   * Chats not yet set up or unavailable (CAN-7038). The editor stays
+   * editable; these controls lock.
+   */
   disabled: boolean;
+  /** The send target is still being set up: Send shows its spinner. */
+  targetPending?: boolean;
   /** True only for the standalone Home page that owns global shortcuts. */
   shortcutEnabled: boolean;
   onSend: () => void;
@@ -325,6 +332,7 @@ export function HomeComposerControls({
   composerActionScope,
   editor,
   disabled,
+  targetPending = false,
   shortcutEnabled,
   onSend,
   onEditorExternallyChanged,
@@ -484,6 +492,12 @@ export function HomeComposerControls({
   // Home obeys the same eligibility as an existing chat. A remembered explicit
   // subscription choice stays honored; a fresh signed-out choice cannot bypass
   // the credits lock merely because its chat has not been created (CAN-5349).
+  // In routing mode `off` without a remembered credits choice, a sign-out is
+  // not consent: the picker shows the No billing source lock and its sign-in
+  // remedy, and the chat this creates shows the banner (CAN-7062) unless the
+  // default lane seeds it onto AI Credits (a known gap). Home has no banner of
+  // its own.
+  const { routingMode: aiCreditsRoutingMode } = useAiCreditsUsage();
   const billingProvider = getProviderForModel(effectiveModel) ?? 'claude';
   const billingResolution = resolveChatBillingFramework({
     model: effectiveModel,
@@ -492,6 +506,7 @@ export function HomeComposerControls({
     aiCreditsRoutingActive: nextChatBilling === 'ai-credits',
     subscriptionBillingOverride: nextChatBilling === 'subscription',
     routingActiveForChat: false,
+    aiCreditsRoutingMode,
   });
   // The exact speed the next chat requests: the staged choice, then the
   // Codex default; `undefined` for providers without a Codex speed.
@@ -1051,8 +1066,6 @@ export function HomeComposerControls({
                     recoveryTarget={homeModelRecoveryTarget(
                       useHomeComposerStore.getState,
                     )}
-                    separateAgents
-                    selectionModel={autoSelected ? undefined : model}
                     browserLayout="harnesses"
                     allowAntigravity={Boolean(workspaceId)}
                     allowCursor={Boolean(workspaceId)}
@@ -1071,6 +1084,7 @@ export function HomeComposerControls({
                     ): void => {
                       setModel(selectedModel, billingFramework, harness);
                     }}
+                    aiCreditsRoutingMode={aiCreditsRoutingMode}
                     billing={{
                       value: billingResolution.framework ?? nextChatBilling,
                       provider: billingProvider,
@@ -1190,7 +1204,8 @@ export function HomeComposerControls({
               kind="send"
               onSend={onSend}
               disabled={sendDisabled}
-              pending={false}
+              pending={targetPending}
+              {...(targetPending ? { blockedReason: 'Setting up Chats…' } : {})}
               dataTestId="home-send-button"
             />
           </div>

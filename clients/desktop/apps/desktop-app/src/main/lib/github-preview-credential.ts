@@ -1,10 +1,12 @@
-import { createHash } from 'node:crypto';
 import {
   readCanopyCloudAccountWithStatus,
   subscribeCanopyCloudAccountChanges,
   type CanopyCloudAccountEntry,
 } from './canopy-cloud-account-store';
-import { resolveGitHubTokenWithSource } from './github-auth';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialLease,
+} from './github-broker/credential-port';
 
 function accountIdentity(entry: CanopyCloudAccountEntry | null): string | null {
   return entry
@@ -38,16 +40,6 @@ export function getCloudAccountIdentityGeneration(): number {
   return cloudIdentityGeneration;
 }
 
-export function githubPreviewCredentialScope(
-  accountId: string,
-  token: string,
-): string {
-  return createHash('sha256')
-    .update(`github-reference-preview\0${accountId}\0${token}`)
-    .digest('base64url')
-    .slice(0, 24);
-}
-
 /**
  * The account identity that scopes GitHub previews; `''` when confirmed signed
  * out. Throws when the account cannot be read, which is unknown rather than a
@@ -62,39 +54,27 @@ export async function readGitHubPreviewAccountIdentity(): Promise<string> {
   return githubPreviewAccountIdentity(read.entry);
 }
 
-export function githubTrackingCredentialScope(token: string): string {
-  return createHash('sha256')
-    .update(`github-pr-tracking\0${token}`)
-    .digest('base64url')
-    .slice(0, 24);
-}
-
 /** Tracking needs GitHub authentication; preview provenance is optional. */
 export async function readGitHubTrackingCredential(): Promise<{
-  token: string;
+  credential: GitHubBrokerCredentialLease;
   authenticationScope: string;
   scope: string | undefined;
 } | null> {
-  const token = (await resolveGitHubTokenWithSource().catch(() => null))?.token;
-  if (!token) return null;
+  const port = getGitHubBrokerCredentialPort();
+  const grant = await port.lease('resolved').catch(() => null);
+  if (!grant) return null;
   const accountId = await readGitHubPreviewAccountIdentity().catch(() => null);
   return {
-    token,
-    authenticationScope: githubTrackingCredentialScope(token),
+    credential: grant.lease,
+    authenticationScope: await port.derivedScope(grant.lease, {
+      kind: 'pr-tracking',
+    }),
     scope:
       accountId === null
         ? undefined
-        : githubPreviewCredentialScope(accountId, token),
+        : await port.derivedScope(grant.lease, {
+            kind: 'reference-preview',
+            accountIdentity: accountId,
+          }),
   };
-}
-
-/** `null` when there is no GitHub token or the account state is unknown. */
-export async function readGitHubPreviewCredential(): Promise<{
-  token: string;
-  scope: string;
-} | null> {
-  const credential = await readGitHubTrackingCredential();
-  return credential?.scope
-    ? { token: credential.token, scope: credential.scope }
-    : null;
 }

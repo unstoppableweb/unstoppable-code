@@ -1,13 +1,15 @@
 // CAN-4176 golden: which GitHub credential each broker caller hands the
-// broker today, captured before the broker takes opaque credential leases
-// instead of raw tokens. The callers run unchanged; the broker is a recorder,
-// the token sources return labelled tokens, and the git and cloud account
-// reads the callers need are stubbed. A change here is a behaviour change:
+// broker. Callers hand the broker opaque credential leases from the real
+// credential port; the broker is a recorder that names each lease by its
+// port-issued scope, the token sources return labelled tokens, and the git and
+// cloud account reads the callers need are stubbed. A change here is a behaviour change:
 // re-record deliberately with `pnpm test <this file> -u` and review the diff.
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as BrokerModule from '../lib/github-broker';
+import type * as CredentialPortModule from '../lib/github-broker/credential-port';
 
 const TOKENS: Record<string, string> = {
   ghp_default_token: 'default',
@@ -15,12 +17,32 @@ const TOKENS: Record<string, string> = {
   ghp_stored_pat: 'stored-pat',
   gho_cli_token: 'gh-cli',
 };
-const label = (token: unknown): string =>
-  token === undefined
+const sha256 = (value: string): string =>
+  createHash('sha256').update(value).digest('hex');
+const LABELS_BY_SCOPE: Record<string, string> = Object.fromEntries(
+  Object.entries(TOKENS).map(([token, name]) => [
+    `custom:${sha256(token)}`,
+    name,
+  ]),
+);
+const credentialPort = (): CredentialPortModule.GitHubBrokerCredentialPort =>
+  jest
+    .requireActual<
+      typeof CredentialPortModule
+    >('../lib/github-broker/credential-port')
+    .getGitHubBrokerCredentialPort();
+const label = (
+  credential: CredentialPortModule.GitHubBrokerCredentialLease | undefined,
+): string =>
+  credential === undefined
     ? 'broker-default'
-    : typeof token === 'string' && token in TOKENS
-      ? TOKENS[token]
-      : 'unknown';
+    : (LABELS_BY_SCOPE[credentialPort().scopeId(credential)] ?? 'unknown');
+// Today's derivation of the persisted PR-tracking scope, which must not move.
+const trackingScope = (token: string): string =>
+  createHash('sha256')
+    .update(`github-pr-tracking\0${token}`)
+    .digest('base64url')
+    .slice(0, 24);
 
 jest.mock('../lib/github-auth', () => ({
   ...jest.requireActual<object>('../lib/github-auth'),
@@ -50,7 +72,7 @@ jest.mock('../lib/github-broker', () => {
       options: BrokerModule.GitHubBrokerRequestOptions,
     ): Promise<unknown> => {
       calls.push({
-        credential: label(options.authenticationToken),
+        credential: label(options.credential),
         priority: options.priority,
         operation: options.operation,
         idempotency: options.idempotency,
@@ -116,17 +138,16 @@ describe('broker callers', () => {
       () => Promise.resolve({ status: 200, data: {} }),
       'high',
     );
+    const grant = await credentialPort().lease('resolved');
     await client.enqueue(
       () => Promise.resolve({ status: 200, data: {} }),
       'normal',
-      {
-        authenticationToken: 'ghp_with_source_token',
-      },
+      grant ? { credential: grant.lease } : {},
     );
     expect(calls).toMatchSnapshot();
   });
 
-  it('the permission probe reads with the credential its source names', async () => {
+  it('the permission probe behind settings:github-permissions reads with the credential its source names', async () => {
     const { probeGitHubPermissions } =
       await import('../lib/github-permissions');
     respond = (): unknown => ({});
@@ -214,19 +235,18 @@ describe('broker callers', () => {
   });
 
   it('PR tracking derives one opaque scope per credential, with an account scope when signed out', async () => {
-    const { readGitHubTrackingCredential, githubTrackingCredentialScope } =
+    const { readGitHubTrackingCredential } =
       await import('../lib/github-preview-credential');
     const tracking = await readGitHubTrackingCredential();
     expect({
-      credential: label(tracking?.token),
+      credential: label(tracking?.credential),
       authenticationScopeIsOpaque:
         tracking !== null &&
         !tracking.authenticationScope.includes('ghp_') &&
-        tracking.authenticationScope ===
-          githubTrackingCredentialScope('ghp_with_source_token'),
+        tracking.authenticationScope === trackingScope('ghp_with_source_token'),
       differsPerToken:
-        githubTrackingCredentialScope('ghp_stored_pat') !==
-        githubTrackingCredentialScope('ghp_with_source_token'),
+        trackingScope('ghp_stored_pat') !==
+        trackingScope('ghp_with_source_token'),
       signedOutAccountScopeIsOpaque:
         typeof tracking?.scope === 'string' &&
         tracking.scope.length > 0 &&

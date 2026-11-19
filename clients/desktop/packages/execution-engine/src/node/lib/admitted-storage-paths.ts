@@ -67,7 +67,8 @@ const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
 const PIPELINE_PREFERENCES_DAMAGED =
   /^pipeline-plugin-preferences\.json\.damaged-.+$/;
 const PIPELINE_DEFINITION_FILE =
-  /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml|\.project-share-links\.json)$/;
+  /^(?:index\.json|index\.json\.damaged-\d+|[a-z0-9_-]+\.yaml)$/;
+const PROJECT_SHARE_LINKS_FILE = '.project-share-links.json';
 const VAULT_DATABASE_FILE = /^vault\.sqlite(?:-wal|-shm)?$/;
 const GITHUB_CREDENTIAL_FENCE_FILE = 'github-pat-fence.json';
 const NATIVE_ARTIFACT_FILES = new Set([
@@ -78,6 +79,35 @@ const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 const TERMINAL_RECORD_FILE =
   /^(terminal-state|terminal-presentation)\.json(?:\.damaged-[^/]+)?$/;
+
+function mcpRow(
+  target: string,
+  dataRoot: string | null,
+): AdmittedStorageNamespace | undefined {
+  const parts = (
+    dataRoot === null ? fold(target) : relative(fold(dataRoot), fold(target))
+  ).split(sep);
+  if (
+    parts.some(
+      (part, index) =>
+        (dataRoot === null || index === 0) &&
+        part === 'mcp-servers' &&
+        parts[index + 1] === 'removal-evidence',
+    )
+  )
+    return 'mcp_removal_evidence';
+  if (dataRoot !== null && parts.length !== 2) return undefined;
+  if (parts[parts.length - 2] !== 'mcp-servers') return undefined;
+  const name = parts[parts.length - 1] ?? '';
+  if (name === 'index.json') return 'mcp_servers_index';
+  if (
+    name.startsWith('server-') &&
+    name.endsWith('.json') &&
+    name.length > 'server-.json'.length
+  )
+    return 'mcp_server_configs';
+  return undefined;
+}
 
 function codeReviewRow(
   target: string,
@@ -92,8 +122,12 @@ function codeReviewRow(
   const tail = root === null ? normalized : normalized.slice(root.length);
   if (
     root === null
-      ? /\/code-review-chats(?:\/.*)?$/.test(tail)
-      : /^\/code-review-chats(?:\/.*)?$/.test(tail)
+      ? /\/(?:code-review-chats|\.code-review-namespace-custody)(?:\/.*)?$/.test(
+          tail,
+        )
+      : /^\/(?:code-review-chats|\.code-review-namespace-custody)(?:\/.*)?$/.test(
+          tail,
+        )
   )
     return 'code_review_chats_legacy';
   const prefix = root === null ? '(?:^|/)' : '^/';
@@ -158,6 +192,7 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
   const target = resolve(targetPath);
   const name = basename(target).toLowerCase();
   return (
+    mcpRow(target, null) !== undefined ||
     codeReviewRow(target, null) !== undefined ||
     dataRootFile(name) !== undefined ||
     isPluginCachePath(target, null) ||
@@ -170,7 +205,8 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
       VAULT_DATABASE_FILE.test(name)) ||
     name === 'pipelines' ||
     (basename(dirname(target)).toLowerCase() === 'pipelines' &&
-      PIPELINE_DEFINITION_FILE.test(name))
+      (PIPELINE_DEFINITION_FILE.test(name) ||
+        name === PROJECT_SHARE_LINKS_FILE))
   );
 }
 
@@ -187,6 +223,8 @@ export function admittedStorageRowForPath(
   const target = resolve(targetPath);
   const name = basename(target).toLowerCase();
   const parent = fold(dirname(target));
+  const mcp = mcpRow(target, dataRoot);
+  if (mcp !== undefined) return mcp;
   const review = codeReviewRow(target, dataRoot);
   if (review !== undefined) return review;
   if (isPluginCachePath(target, dataRoot)) return 'plugin_cache';
@@ -219,6 +257,13 @@ export function admittedStorageRowForPath(
         : parent === fold(resolve(dataRoot, 'pipelines'))))
   )
     return 'pipeline_definitions';
+  if (
+    name === PROJECT_SHARE_LINKS_FILE &&
+    (dataRoot === null
+      ? basename(parent) === 'pipelines'
+      : parent === fold(resolve(dataRoot, 'pipelines')))
+  )
+    return 'pipeline_project_share_links';
   const rootFile = dataRootFile(name);
   if (rootFile !== undefined)
     return dataRoot === null || parent === fold(dataRoot)

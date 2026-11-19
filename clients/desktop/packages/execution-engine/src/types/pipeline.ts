@@ -1,8 +1,5 @@
-import type { CuratedPipelineOrigin } from '@canopy/protocol/pipelines';
-import type {
-  PublicShareVersion,
-  ShareFailure,
-} from '@canopy/protocol/sharing';
+import type { WorkerPipelineSurvivalAssessment } from '@canopy/protocol/canopy-core';
+import type { PublicShareVersion } from '@canopy/protocol/sharing';
 // Definition types and semantic helpers have one environment-neutral implementation.
 import type {
   PipelineScalar,
@@ -61,6 +58,13 @@ export type {
   NormalizedPipelineAssetDeclaration,
 } from '@canopy/pipeline-interop/document';
 import { getTriggerTypes } from '@canopy/pipeline-interop/document';
+export type {
+  IPCResult,
+  IPCResultWithAppError,
+  PipelineData,
+  PipelineIndex,
+  PipelineSaveInput,
+} from '@canopy/pipeline-interop/stored-pipelines';
 export {
   parseLogFormatHint,
   getTriggerTypes,
@@ -1166,6 +1170,13 @@ export interface StepResult {
   completed_at?: string;
   exit_code?: number;
   error?: string;
+  /**
+   * What failed this step (CAN-7118); `step` for its own work. With
+   * `engine`, `host_port` or `spawn`, `failure_code` is the closed code of the
+   * error behind it, never its message.
+   */
+  failure_origin?: ExecutionFailureOrigin;
+  failure_code?: ExecutionFailureCode;
   log_file?: string;
   resolved_run?: string;
   log_format_hint?: LogFormatHint;
@@ -1417,7 +1428,67 @@ export interface PipelineAssetExecutionContext {
   assets_dir?: string;
 }
 
+/** The errno codes a closed failure code may carry (CAN-7095, CAN-7118). */
+export type ExecutionErrnoCode =
+  | 'EACCES'
+  | 'EPERM'
+  | 'ENOENT'
+  | 'ENOTDIR'
+  | 'EISDIR'
+  | 'EIO'
+  | 'ENOSPC'
+  | 'EDQUOT'
+  | 'EROFS'
+  | 'EMFILE'
+  | 'ENFILE'
+  | 'EBUSY'
+  | 'EAGAIN'
+  | 'ETIMEDOUT';
+
+/**
+ * What failed a step or a run (CAN-7118): the step's own work (a command that
+ * exited non-zero, a refused host action), the engine, a host port, or the
+ * start of the step's process. The executor stores only `engine`, `host_port`
+ * and `spawn`; an unset origin on a failed step means its own failure.
+ */
+export type ExecutionFailureOrigin = 'step' | 'engine' | 'host_port' | 'spawn';
+
+/**
+ * The error behind an `engine`, `host_port` or `spawn` failure, as a closed
+ * code safe for telemetry (CAN-7118): an allowlisted errno, else a built-in
+ * error class name, else `unknown`. Never the error's message or path.
+ */
+export type ExecutionFailureCode =
+  | ExecutionErrnoCode
+  | 'Error'
+  | 'TypeError'
+  | 'RangeError'
+  | 'ReferenceError'
+  | 'SyntaxError'
+  | 'EvalError'
+  | 'URIError'
+  | 'AggregateError'
+  | 'AbortError'
+  | 'unknown';
+
+/**
+ * A failed run-state save, as a closed code safe for telemetry (CAN-7095):
+ * an allowlisted errno, the store's refusal, its lock timeout, else
+ * `unknown`.
+ */
+export type ExecutionPersistFailureCode =
+  | ExecutionErrnoCode
+  | 'write_refused_owned_by_other_process'
+  | 'write_refused_owner_fenced'
+  | 'write_refused_newer_version'
+  | 'write_refused_unreadable'
+  | 'write_refused_damaged_copy_failed'
+  | 'lock_timeout'
+  | 'unknown';
+
 export interface ExecutionState {
+  /** Daemon admission facts; absence on older runs never means continues. */
+  survival_assessment?: WorkerPipelineSurvivalAssessment;
   /**
    * Serialized owner of the run (`personal` / `org:<uuid>`). Main sets it for
    * every top-level run; children inherit it. Older runs may omit it, which
@@ -1535,6 +1606,24 @@ export interface ExecutionState {
   plan_hash_before?: string;
   plan_hash_after?: string;
   error?: string;
+  /**
+   * Why a save of this run's state failed while this incarnation ran it
+   * (CAN-7095): the first failure's closed code, never its message or path.
+   * Later saves still run; a resumed run starts without it.
+   */
+  persist_failure_code?: ExecutionPersistFailureCode;
+  /**
+   * Set when the engine itself threw and failed the run (CAN-7118), with the
+   * error's closed code; never its message. A run a step failed leaves them
+   * unset: its failed step records why. A retried run starts without them.
+   */
+  failure_origin?: ExecutionFailureOrigin;
+  failure_code?: ExecutionFailureCode;
+  /**
+   * The first failed write of this run's plan (CAN-7118), as a closed code:
+   * the run went on, but its plan may not have been linked or kept.
+   */
+  plan_persist_failure_code?: ExecutionFailureCode;
   report_outputs?: ReportOutputs;
   /** @deprecated Version 1-7 migration input only. */
   pending_input?: ExecutionStatePendingInput;
@@ -1861,6 +1950,9 @@ export interface SpawnedProcessResult {
   outcome: StepResult['outcome'];
   exit_code?: number;
   error?: string;
+  /** Set when the process could not start (CAN-7118). */
+  failure_origin?: StepResult['failure_origin'];
+  failure_code?: StepResult['failure_code'];
   outputs: Record<string, string>;
   dynamic_env: Record<string, string>;
   log_file: string;
@@ -2068,43 +2160,12 @@ export type PipelineQueueEvent =
       error: string;
     };
 
-export interface PipelineIndex {
-  pipelines: PipelineIndexEntry[];
-}
-
 export type PipelineShareScope = ProtocolPipelineShareScope;
 export type CanopyOrganizationSummary = ProtocolCanopyOrganizationSummary;
 export type CanopyTeamSummary = ProtocolCanopyTeamSummary;
 export type PipelineShareOwner = ProtocolPipelineShareOwner;
 export type SharedPipelinePublicShareInfo =
   ProtocolSharedPipelinePublicShareInfo;
-
-export interface PipelineData {
-  info: PipelineInfo;
-  content: Pipeline;
-  /** Exact stored document bytes, when the backing source exposes them. */
-  rawContent?: string;
-  /**
-   * Saved local owner of a user pipeline (`personal` / `org:<uuid>`), set on
-   * the single-pipeline read. Absent for unowned or non-local definitions.
-   * Main-only metadata; never in YAML or shared publication payloads.
-   */
-  localRunOwner?: string;
-  /**
-   * Set instead of `localRunOwner` when saved owners can't be read, so the
-   * pipeline never appears unowned; the Run dialog blocks a run with no
-   * project, and main refuses one.
-   */
-  localRunOwnerUnreadable?: true;
-}
-
-export interface IPCResult<T = void> {
-  success: boolean;
-  data?: T;
-  error?: string;
-  /** Structured share failure, set by share handlers alongside `error`. */
-  failure?: ShareFailure;
-}
 
 export type PipelineExecutionStartResult =
   | { success: true; data: ExecutionState }
@@ -2115,27 +2176,6 @@ export type PipelineExecutionStartResult =
         | 'shared_pipeline_changed'
         | typeof PIPELINE_NOW_OWNED_ERROR_CODE;
     };
-
-export interface PipelineSaveInput {
-  /** Shared source resolved again in main before a local install. */
-  sourceRemoteId?: string;
-  curatedOrigin?: CuratedPipelineOrigin;
-  id?: string;
-  name: string;
-  description: string;
-  icon: string;
-  content: Pipeline;
-  /**
-   * Validated document bytes to persist verbatim. Used when an integrity pin
-   * covers the serialization itself rather than only the parsed pipeline.
-   */
-  rawContent?: string;
-  /**
-   * Revision of the user pipeline the caller loaded. A save of an existing
-   * pipeline whose stored revision differs is refused as a conflict.
-   */
-  expectedRevision?: number;
-}
 
 export interface ProjectPipelineRequest {
   id: string;

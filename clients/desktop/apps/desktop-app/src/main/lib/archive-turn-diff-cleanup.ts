@@ -1,3 +1,7 @@
+import {
+  ArchiveTurnDiffCleanupError,
+  type ArchiveCleanupCheck,
+} from './archive-turn-diff-cleanup-error';
 import { lstat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { readArchiveRecoveryHolds } from './archive-recovery-refs';
@@ -69,7 +73,7 @@ async function absent(path: string): Promise<boolean> {
 type Repository = { path: string; commonDir: string; identity: string };
 type CleanupInspection =
   | { eligible: true; repositories: Repository[] }
-  | { eligible: false; check: string };
+  | { eligible: false; check: ArchiveCleanupCheck; error?: unknown };
 
 /** No historical Git authority: this repairs only the app-owned worktree-id namespace. */
 export async function inspectCompletedTurnDiffCleanup(
@@ -77,7 +81,7 @@ export async function inspectCompletedTurnDiffCleanup(
 ): Promise<CleanupInspection> {
   const { record } = operation;
   const { workspaceId, worktreeId } = record;
-  const refuse = (check: string): CleanupInspection => ({
+  const refuse = (check: ArchiveCleanupCheck): CleanupInspection => ({
     eligible: false,
     check,
   });
@@ -178,8 +182,8 @@ export async function inspectCompletedTurnDiffCleanup(
       });
     }
     return { eligible: true, repositories };
-  } catch {
-    return refuse('cleanup-evidence-unavailable');
+  } catch (error) {
+    return { eligible: false, check: 'cleanup-evidence-unavailable', error };
   }
 }
 
@@ -188,10 +192,12 @@ export async function finishCompletedTurnDiffCleanup(
   operation: ArchiveJournalOperation,
 ): Promise<void> {
   const inspection = await inspectCompletedTurnDiffCleanup(operation);
-  if (!inspection.eligible) throw new Error(inspection.check);
+  if (!inspection.eligible)
+    throw new ArchiveTurnDiffCleanupError(inspection.check, inspection.error);
   const { record } = operation;
   const worktreeId = record.worktreeId;
-  if (!worktreeId) throw new Error('cleanup-worktree-missing');
+  if (!worktreeId)
+    throw new ArchiveTurnDiffCleanupError('cleanup-worktree-missing');
   const journal = exactArchiveJournal(record, operation.names);
   const recheck = async (): Promise<void> => {
     const current = await inspectCompletedTurnDiffCleanup(operation);
@@ -199,8 +205,9 @@ export async function finishCompletedTurnDiffCleanup(
       !current.eligible ||
       !isDeepStrictEqual(current.repositories, inspection.repositories)
     )
-      throw new Error(
+      throw new ArchiveTurnDiffCleanupError(
         current.eligible ? 'cleanup-repositories-changed' : current.check,
+        current.eligible ? undefined : current.error,
       );
   };
   for (const repository of inspection.repositories) {

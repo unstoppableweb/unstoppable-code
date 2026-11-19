@@ -22,6 +22,7 @@ import {
 import { mergePluginSelections } from '../lib/plugin-selection-utils';
 import { resolveAgentDestinationDefaultModel } from './agent-default-model';
 import { getAgentModel } from './agent-model-store';
+import { organizationAgentGateAllows } from '../organization-capabilities/agent-gate';
 
 export interface ResolvedAgentModelRuntime {
   selectedModel: ChatModel;
@@ -43,6 +44,21 @@ function appendAgentInstructions(
   }
   const agentBlock = `You are now a user defined agent with these additional instructions: ${trimmed}`;
   return existing ? `${existing}\n\n${agentBlock}` : agentBlock;
+}
+
+/**
+ * An organization's Agent copy runs only in a workspace whose organization
+ * set holds it (CAN-6237, phase 10a).
+ */
+async function assertAgentAllowedInProject(
+  agent: AgentModelDefinition,
+  projectId: string | undefined,
+): Promise<void> {
+  if (await organizationAgentGateAllows(projectId, agent.id)) return;
+  throw new AgentModelSelectionError(
+    'agent_unavailable',
+    `Agent "${agent.name}" isn't available in this project. Choose another model.`,
+  );
 }
 
 export async function resolveAgentModelRuntime(options: {
@@ -88,6 +104,7 @@ export async function resolveAgentModelRuntime(options: {
       `Agent model "${agentId}" is not defined. Open Agents to create or import it, or choose another model.`,
     );
   }
+  await assertAgentAllowedInProject(agent, options.projectId);
   const inheritsDefault = isAgentDefaultBaseModel(agent.baseModel);
   if (inheritsDefault && !route && !options.inheritDefaultFrom) {
     throw new Error(

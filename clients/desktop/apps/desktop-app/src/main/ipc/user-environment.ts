@@ -5,7 +5,9 @@ import {
   type SaveEnvironmentConfigResponse,
   type SaveEnvironmentConfigSuccessResponse,
 } from '@canopy/desktop-shared/types';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import {
+  EnvironmentConfigValidationError,
   readEnvironmentConfigView,
   writeEnvironmentConfig,
 } from '../lib/user-environment-store';
@@ -45,6 +47,7 @@ export function registerUserEnvironmentHandlers(): void {
       try {
         return await readEnvironmentConfigView();
       } catch (error) {
+        reportMainAppError(error, { source: 'environment_config.load' });
         const secureStorageFailure = getSecureStorageFailure(error);
         return {
           ok: false,
@@ -85,6 +88,10 @@ export function registerUserEnvironmentHandlers(): void {
             error: error.message,
             storedSecretError: error.code,
           };
+        }
+        // Stored-secret and validation failures are fixable input, not defects.
+        if (!(error instanceof EnvironmentConfigValidationError)) {
+          reportMainAppError(error, { source: 'environment_config.save' });
         }
         const secureStorageFailure = getSecureStorageFailure(error);
         return {

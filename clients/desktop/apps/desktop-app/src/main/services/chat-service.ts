@@ -11,7 +11,6 @@ import {
   mergeToolResults,
   reorderMessagesForDisplay,
 } from '@canopy/desktop-shared/lib/message-transforms';
-import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
 import {
   AgentSenderContextError,
   revalidateAgentSenderRequest,
@@ -21,23 +20,17 @@ import {
   getApprovalSettingsRevision,
   getChatApprovalStateRevision,
 } from '../approvals/rule-revisions';
-import {
-  hasPendingApprovalForChat,
-  subscribePendingApprovalChanges,
-} from '../approvals/pending-approvals';
+import { hasPendingApprovalForChat } from '../approvals/pending-approvals';
 import {
   stageTerminalPresentationTurn,
   resolvePresentationSource,
   cancelTerminalPresentationTurn,
-  forgetPresentationChat,
   presentationChatKey,
 } from '../canopy-tools/presentation-state';
-import { browserHandoffs } from '../browser/browser-handoffs';
 import type { ChatQueueDispatchOptions } from './chat-queue-service';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
 import { closeRejectedSplitAgentStartup } from './split-agent-startup';
 import { inputDeliveryViews } from '@canopy/desktop-shared/chat-input-delivery';
-import { isInternalChatRequest } from '@canopy/desktop-shared/lib/internal-chat-row';
 import { getSession as getInputSession } from '../agents/session-manager';
 import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
@@ -55,17 +48,11 @@ import type {
   ChatSendMessageRequest,
   ChatTabPluginSelections,
   ClaudeTerminalScheduledPromptEvent,
-  CoworkWorkEntryMeta,
   PersistedChatMessage,
   PersistedPendingQuestion,
   PersistedChatTab,
-  PortalAppAdvisorChatSummary,
-  PortalAskUserQuestionState,
-  PortalChatMessage,
-  PortalChatMessageAttachment,
   HostPortalChatSendPayload,
   PortalChatSummaryEntity,
-  PortalChatTodoProjection,
   PortalChatSummaryPluginSelections,
   PortalChatTabPluginSelections,
   PortalChatTurnGroup,
@@ -75,10 +62,6 @@ import {
   chatAgentSent,
   type AgentSentInfo,
 } from '@canopy/protocol/portal/external-agent-sender';
-import {
-  portalPromptProvenance,
-  projectTodoItems,
-} from '@canopy/agent-transcript';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -87,7 +70,6 @@ import {
   APP_ADVISOR_WORKTREE_ID,
   CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
   IPC_CHANNELS,
-  STANDALONE_CHAT_PROJECT_ID,
   getExecutionHarnessForModel,
   getModelDisplayName,
   getModelSource,
@@ -98,17 +80,9 @@ import {
   isInheritingAgentModel,
   isTerminalBackedInterfaceMode,
   normalizeAgentModelConfig,
-  resolvePersistedChatExecutionHarness,
 } from '@canopy/desktop-shared/types';
-import {
-  REMOTE_CONTROL_LABEL,
-  worktreeScopedParentLocalId,
-} from '@canopy/protocol';
-import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import {
-  portalChatAssetId,
-  type PortalChatScheduledMessages,
-} from '@canopy/protocol/portal';
+import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import type { PortalChatScheduledMessages } from '@canopy/protocol/portal';
 import { resolveClaudeForkResumePoint } from '@canopy/desktop-shared/lib/claude-fork-resume-point';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
@@ -155,29 +129,10 @@ import {
   clearPersistedUsageLimitBanner,
 } from '../lib/chat-usage-limit-cleanup';
 import { sendToWindow, sendToWindowDetailed } from '../lib/window-send';
-import {
-  capturePortalEmissionContext,
-  createPortalEvent,
-  enqueuePortalEvent,
-  enqueuePortalEventIfCurrent,
-  isPortalEmissionContextCurrent,
-  type PortalEmissionContext,
-  isCanopyPortalActive,
-} from '../portal/portal-event-bus';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
-import { buildProjectedModelCatalog } from '../portal/model-catalog-projection';
-import { isDesktopModelRoutingSupported } from '../portal/worktree-new-task-controls';
-import { getLatestAppAdvisorWindowUiState } from '../app-advisor/window-ui-state';
-import {
-  limitPortalChatTranscriptForSeedWithMetadata,
-  type PortalChatTranscriptSeed,
-  PORTAL_CHAT_SEED_MESSAGE_LIMIT,
-  PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
-  portalChatMessageAttachmentsFromPaths,
-  projectPersistedChatTranscript,
-  createCursorAssistantPatchProjector,
-  runtimeChatEventToPortalMessage,
-} from './chat-transcript-projector';
+import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
+import { isDesktopModelRoutingSupported } from '../remote-projection/worktree-new-task-controls';
+import { PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT } from './chat-transcript-projector';
 import { buildAutomationInfoMessage } from './automation-info-message';
 import { portalChatTabsCache } from './portal-chat-tabs-cache';
 import {
@@ -192,16 +147,8 @@ import {
 import { cancelTransientRetryForChat } from '../lib/transient-error-retry-service';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { isGeneratedInputRequest } from './chat-input-request-kind';
-import {
-  listWorkEntryIds,
-  listWorkEntries,
-  resolveWorkEntryForChat,
-} from '../lib/cowork-work-entries';
+import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import { mapWithConcurrency } from '../lib/concurrency';
-import {
-  listAnsweredAppAdvisorAskUserQuestions,
-  listPendingAppAdvisorAskUserQuestions,
-} from '../ipc/app-advisor';
 import { getChatQueueService } from './chat-queue-service';
 import { applyProviderSwitchToSession } from './chat-provider-sessions';
 import { projectPortalQuestionStates } from '../lib/portal-question-states';
@@ -221,21 +168,18 @@ import { resolvePersistedApprovalMode } from '../lib/approval-mode-resolution';
 import { clampToLiveApprovalMode } from '../approvals/live-approval-modes';
 import {
   chatHasNativeBackgroundWork,
-  getActiveChatIds,
   getActiveSessionInfos,
   getSessionTurnSettings,
 } from '../agents/session-manager';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getChatStateService } from './chat-state-service';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 import {
   normalizeProviderEventIngestResult,
   type ProviderEventIngestResult,
 } from './provider-event-admission';
-import { createPortalPrimaryToolCorrelation } from '../lib/portal-primary-tool-correlation';
 import type { DispatchWorktreeChatTurnOptions } from '../lib/worktree-chat-turn';
 import type { AuthorizedChatDispatch } from './chat-dispatch-authorization';
-import { delegationChildMessages } from '@canopy/agent-transcript';
-import { DELEGATION_TRANSCRIPT_CHAT_LOG } from '@canopy/protocol/delegation';
 import { getStoppedTurnResumeService } from './stopped-turn-resume-service';
 import { assertChatScopeAcceptsTurns } from '../lib/retired-chat-scope-guard';
 import { isDelegationDeliveryActive } from '../agents/delegation/lifecycle';
@@ -243,104 +187,6 @@ import {
   billedProviderFor,
   effectiveTabAiCreditsRouting,
 } from '../agents/effective-ai-credits-routing';
-
-type WorktreePortalEventCommit = ProviderEventIngestResult & {
-  readonly portalEmissionContext?: PortalEmissionContext;
-  readonly acceptedTurnUserMessageId?: string;
-  readonly sequenceNamespace: string;
-  readonly primaryToolEpoch: number;
-};
-
-/** Active dispatch owners, not an event/receipt cache. Settlement removes the entry. */
-const worktreePortalPrimaryTurns = new Map<string, WorktreePortalPrimaryTurn>();
-
-interface WorktreePortalPrimaryTurn {
-  readonly tools: ReturnType<typeof createPortalPrimaryToolCorrelation>;
-  capture(
-    namespace: string,
-    turn: string | undefined,
-    context: PortalEmissionContext | undefined,
-  ): number;
-  isCurrent(epoch: number | undefined): boolean;
-  settle(): void;
-  retire(): void;
-}
-
-function worktreePortalPrimaryTurnKey(target: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): string {
-  return JSON.stringify([target.projectId, target.worktreeId, target.chatId]);
-}
-
-function retireWorktreePortalPrimaryTurn(target: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): void {
-  worktreePortalPrimaryTurns
-    .get(worktreePortalPrimaryTurnKey(target))
-    ?.retire();
-}
-
-function createWorktreePortalPrimaryTurn(target: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): WorktreePortalPrimaryTurn {
-  const key = worktreePortalPrimaryTurnKey(target);
-  worktreePortalPrimaryTurns.get(key)?.retire();
-  const tools = createPortalPrimaryToolCorrelation((reason) =>
-    logMainProcessWarn('[chat-service] Primary tool correlation limit', {
-      reason,
-    }),
-  );
-  let epoch = 0;
-  let stream: string | undefined;
-  let retired = false;
-  const clear = (): void => {
-    epoch++;
-    stream = undefined;
-    tools.clear();
-  };
-  const release = (): void => {
-    if (worktreePortalPrimaryTurns.get(key) === state)
-      worktreePortalPrimaryTurns.delete(key);
-  };
-  const state: WorktreePortalPrimaryTurn = {
-    tools,
-    capture(namespace, turn, context): number {
-      if (retired) return epoch;
-      const owner = worktreePortalPrimaryTurns.get(key);
-      if (owner && owner !== state) {
-        state.retire();
-        return epoch;
-      }
-      worktreePortalPrimaryTurns.set(key, state);
-      const nextStream = JSON.stringify([namespace, turn, context?.generation]);
-      if (stream !== nextStream) {
-        clear();
-        stream = nextStream;
-      }
-      return epoch;
-    },
-    isCurrent(candidate): boolean {
-      return !retired && candidate === epoch;
-    },
-    settle(): void {
-      clear();
-      release();
-    },
-    retire(): void {
-      retired = true;
-      clear();
-      release();
-    },
-  };
-  worktreePortalPrimaryTurns.set(key, state);
-  return state;
-}
 
 export interface ChatServiceOptions {
   /** Host-only funded Retry attempt; preserves prompt identity with fresh event receipts. */
@@ -380,62 +226,6 @@ interface LocalChatDispatchOptions extends ChatServiceOptions {
 
 function getNullWindow(): BrowserWindow | null {
   return null;
-}
-
-type PortalChatEventScope =
-  | {
-      scope: 'standalone';
-      projectLocalId: string;
-      projectId: string;
-      workEntryId: string;
-    }
-  | {
-      scope: 'worktree';
-      workspaceLocalId: string;
-      worktreeLocalId: string;
-    };
-
-function portalChatEventScope(
-  projectId: string,
-  worktreeId: string,
-): PortalChatEventScope {
-  if (isCoworkWorkspace(projectId)) {
-    const coworkWorkspaceId =
-      projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId;
-    return {
-      scope: 'standalone',
-      projectLocalId: coworkWorkspaceId,
-      projectId: coworkWorkspaceId,
-      workEntryId: worktreeId,
-    };
-  }
-  return {
-    scope: 'worktree',
-    workspaceLocalId: projectId,
-    worktreeLocalId: worktreeId,
-  };
-}
-
-/**
- * Projects a live send's `attachmentPaths` into the `attachments` field
- * spread onto a `portal.chat.event` user-message literal, mirroring what
- * `persistedMessageToPortalMessage` already emits for persisted rows.
- * Returns an empty object (no `attachments` key) when there is nothing to
- * project, so a request without attachments does not gain a spurious empty
- * array on the wire.
- */
-function portalUserAttachments(
-  userMessageId: string,
-  attachmentPaths: readonly string[] | undefined,
-): { attachments: PortalChatMessageAttachment[] } | Record<never, never> {
-  if (!attachmentPaths || attachmentPaths.length === 0) return {};
-  const attachments = portalChatMessageAttachmentsFromPaths(
-    attachmentPaths,
-  ).map((attachment, index) => ({
-    ...attachment,
-    assetId: portalChatAssetId(userMessageId, 'attachment', index),
-  }));
-  return attachments.length > 0 ? { attachments } : {};
 }
 
 let getWorktreeChatWindow: () => BrowserWindow | null = getNullWindow;
@@ -752,7 +542,6 @@ export async function resumeStoppedWorktreeChatTurn(
     worktreeId: request.worktreeId,
     chatId: request.chatId,
   };
-  retireWorktreePortalPrimaryTurn(request);
   const queue = getChatQueueService();
   queue.confirmTurnRevived(target, request.userMessageId);
   try {
@@ -782,7 +571,6 @@ async function dispatchLocalWorktreeChatMessageNow(
   // Before the chat or its prompt become durable: covers stopped-turn resume
   // and drains of queue rows written before plan chats were retired.
   assertChatScopeAcceptsTurns(request.projectId);
-  retireWorktreePortalPrimaryTurn(request);
   const getWindow = options.getWindow ?? getNullWindow;
   const hiddenContinuation = options.hiddenContinuation;
   const shouldEmitUserPrompt =
@@ -841,8 +629,6 @@ async function dispatchLocalWorktreeChatMessageNow(
   if (request.watcherFired && request.watcherDeliveryId)
     await assertWatcherDeliveryIngress(request);
   await getChatStateService().ensureChatForTrustedSend(request);
-  // A delegate's message reaches the Portal only once its provider accepts it.
-  let enqueueAcceptedPromptForPortal: (() => void) | undefined;
   if (!hiddenContinuation) {
     const persistedUserMessage = buildPersistedUserMessage(
       request,
@@ -911,37 +697,11 @@ async function dispatchLocalWorktreeChatMessageNow(
       });
     };
     if (committed && shouldEmitUserPrompt) announceUserPrompt();
-    const enqueueUserPromptForPortal = (): void =>
-      enqueuePortalEvent(
-        createPortalEvent('portal.chat.event', {
-          scope: 'worktree',
-          workspaceLocalId: request.projectId,
-          worktreeLocalId: request.worktreeId,
-          chatId: request.chatId,
-          message: {
-            messageId: request.userMessageId,
-            chatId: request.chatId,
-            role: 'user',
-            ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-            status: 'complete',
-            text: request.text,
-            ...portalPromptProvenance(persistedUserMessage),
-            ...portalUserAttachments(
-              request.userMessageId,
-              request.attachmentPaths,
-            ),
-            createdAtMs: Date.now(),
-          },
-        }),
-      );
-    if (isInternalChatRequest(request))
-      enqueueAcceptedPromptForPortal = enqueueUserPromptForPortal;
-    else enqueueUserPromptForPortal();
   }
   const { dispatchWorktreeChatTurn: dispatchTurn } =
     await import('../lib/worktree-chat-turn');
   const dispatchWorktreeChatTurn = (
-    turn: DispatchWorktreeChatTurnOptions<WorktreePortalEventCommit>,
+    turn: DispatchWorktreeChatTurnOptions<ProviderEventIngestResult>,
   ): Promise<void> =>
     request.agentSenderProvenance
       ? withAgentSenderAuthority(
@@ -951,16 +711,6 @@ async function dispatchLocalWorktreeChatMessageNow(
         )
       : dispatchTurn(turn);
   const acceptanceTasks: Promise<void>[] = [];
-  const primaryTurn = createWorktreePortalPrimaryTurn(request);
-  const primaryTools = primaryTurn.tools;
-  // Cursor streams patches against one assistant message; fold them per turn
-  // so the portal sees the growing text under the persisted message id.
-  const cursorPatches = createCursorAssistantPatchProjector({
-    scope: 'worktree',
-    workspaceLocalId: request.projectId,
-    worktreeLocalId: request.worktreeId,
-    chatId: request.chatId,
-  });
   try {
     await dispatchWorktreeChatTurn({
       ...request,
@@ -991,7 +741,6 @@ async function dispatchLocalWorktreeChatMessageNow(
         : {
             onTurnAccepted: (): void => {
               options.onTurnAccepted?.();
-              enqueueAcceptedPromptForPortal?.();
               const consumedInstructionIds =
                 request.pendingSystemInstructions?.map(
                   (instruction) => instruction.id,
@@ -1027,13 +776,6 @@ async function dispatchLocalWorktreeChatMessageNow(
             },
           }),
       onBeforeChatEvent: async (event) => {
-        const portalEmissionContext = capturePortalEmissionContext();
-        const acceptedTurnUserMessageId = event.turnUserMessageId;
-        const primaryToolEpoch = primaryTurn.capture(
-          event.sequenceNamespace,
-          acceptedTurnUserMessageId,
-          portalEmissionContext,
-        );
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
@@ -1051,83 +793,10 @@ async function dispatchLocalWorktreeChatMessageNow(
               ? { onCommitQueued: event.onCommitQueued }
               : {}),
           });
-        return {
-          ...normalizeProviderEventIngestResult(outcome),
-          portalEmissionContext,
-          acceptedTurnUserMessageId,
-          sequenceNamespace: event.sequenceNamespace,
-          primaryToolEpoch,
-        };
-      },
-      onChatEvent: (event) => {
-        const completion = event.beforeChatEventResult;
-        const emissionContext = completion?.portalEmissionContext;
-        const emissionCurrent =
-          emissionContext !== undefined &&
-          isPortalEmissionContextCurrent(emissionContext);
-        const admissionCurrent =
-          emissionCurrent &&
-          primaryTurn.isCurrent(completion?.primaryToolEpoch);
-        if (
-          !emissionCurrent &&
-          primaryTurn.isCurrent(completion?.primaryToolEpoch)
-        )
-          primaryTurn.settle();
-        const cursorMessage = cursorPatches.apply(event.data);
-        let message =
-          cursorMessage ??
-          runtimeChatEventToPortalMessage({
-            scope: 'worktree',
-            workspaceLocalId: event.projectId,
-            worktreeLocalId: event.worktreeId,
-            chatId: event.chatId,
-            data: event.data,
-            fallbackMessageId: `${request.userMessageId}:assistant`,
-          });
-        if (
-          admissionCurrent &&
-          !cursorMessage &&
-          message &&
-          isRecord(event.data) &&
-          (event.data.type === 'codex' ||
-            event.data.type === 'user' ||
-            event.data.type === 'assistant')
-        ) {
-          if (completion?.outcome === 'applied' && completion.admission)
-            primaryTools.retain(message.messageId, completion.admission);
-          const admittedMessage = runtimeChatEventToPortalMessage({
-            scope: 'worktree',
-            workspaceLocalId: event.projectId,
-            worktreeLocalId: event.worktreeId,
-            chatId: event.chatId,
-            data: event.data,
-            fallbackMessageId: `${request.userMessageId}:assistant`,
-            admission: primaryTools.forMessage(message.messageId),
-          });
-          if (admittedMessage)
-            message = { ...message, parts: admittedMessage.parts };
-        }
-        if (message && emissionContext) {
-          enqueuePortalEventIfCurrent(
-            emissionContext,
-            createPortalEvent('portal.chat.event', {
-              scope: 'worktree',
-              workspaceLocalId: event.projectId,
-              worktreeLocalId: event.worktreeId,
-              chatId: event.chatId,
-              message,
-            }),
-          );
-        }
-        if (
-          event.isTerminalEvent &&
-          primaryTurn.isCurrent(completion?.primaryToolEpoch)
-        )
-          primaryTurn.settle();
+        return normalizeProviderEventIngestResult(outcome);
       },
     });
   } catch (error) {
-    primaryTurn.retire();
     if (request.managedDelegationDeliveryId) {
       await getChatStateService().removeUnacceptedUserPrompt({
         projectId: request.projectId,
@@ -2180,21 +1849,6 @@ function detailPluginSelections(
   };
 }
 
-/**
- * 0-based position of a chat tab within the worktree's chat-kind tabs (the tabs
- * the portal renders). This is the authoritative portal tab-bar ordering key —
- * it mirrors the desktop's exact order including manual reorders and never moves
- * on chat activity. Returns -1 when the id is not a chat tab.
- */
-function chatTabOrder(
-  tabs: readonly PersistedChatTab[],
-  chatId: string,
-): number {
-  return tabs
-    .filter((tab) => (tab.kind ?? 'chat') === 'chat')
-    .findIndex((tab) => tab.id === chatId);
-}
-
 type ScheduledMessageChatIdentity = {
   workspaceId: string;
   worktreeId: string;
@@ -2211,8 +1865,7 @@ type ScheduledMessageSummaryContext = {
 /**
  * Read the scheduled-send projection once per summary operation. Automations
  * imports chat-service for dispatch, so keep this edge deferred to avoid a
- * service initialization cycle. Explicit summary listings hydrate the facts
- * even without Portal; emission callers gate this read on Portal activity.
+ * service initialization cycle.
  */
 async function getScheduledMessageSummaryContext(): Promise<ScheduledMessageSummaryContext> {
   const { getAutomationsService, scheduledMessageChatKey } =
@@ -2238,16 +1891,10 @@ function chatSummaryEntity(input: {
    * projects Cursor for (Cowork summaries project it in their own builder).
    * Required (not defaulted) so a future caller cannot silently advertise
    * the managed Cursor runtime on another surface by omitting it.
-   * `emitTargetChatSummary` routes App Advisor and Cowork workspace ids to
-   * their own dedicated summary builders before ever reaching this
-   * function, so it always passes `'worktree'` explicitly.
    * `listAppAdvisorChatSummaries` is the sole caller that passes
    * `'app-advisor'`.
    */
   surface: 'worktree' | 'app-advisor';
-  owner: WorkOwner | undefined;
-  /** See `resolveCatalogAgentDefaultModel`. */
-  agentDefaultModel: string | undefined;
   scheduledMessagesIndex?: ReadonlyMap<string, PortalChatScheduledMessages>;
   scheduledMessageChatKey?: (identity: ScheduledMessageChatIdentity) => string;
 }): PortalChatSummaryEntity {
@@ -2520,23 +2167,6 @@ function chatSummaryEntity(input: {
     // runtime-connected key. Cowork stays native-auth-only (it refuses
     // Cursor), which is why that peek keeps the key out.
     providerAvailability: peekPortalProviderAvailability(),
-    // Deriving the catalog walks the full model + custom-Agent registry, and
-    // this entity is rebuilt on every streaming message upsert. Skip that work
-    // entirely when no portal client is connected (the common desktop-only
-    // case) — the emitted event no-ops on the sink anyway, so the catalog is
-    // only ever consumed while a portal session is active.
-    availableModels: isCanopyPortalActive()
-      ? buildProjectedModelCatalog(undefined, {
-          cursor: true,
-          // Antigravity cannot execute App Advisor turns.
-          antigravity: surface === 'worktree',
-          copilot: true,
-          opencode: true,
-          owner: input.owner,
-          projectId: input.workspaceId,
-          agentDefaultModel: input.agentDefaultModel,
-        })
-      : undefined,
     ...(pluginSelections ? { pluginSelections } : {}),
     ...(pluginSelectionsDetail ? { pluginSelectionsDetail } : {}),
     deferredToolsAllowed: input.tab.deferredToolsAllowed !== false,
@@ -2553,381 +2183,29 @@ function chatSummaryEntity(input: {
   };
 }
 
-function emitChatSummary(summary: PortalChatSummaryEntity): void {
-  if (!summary.workspaceLocalId || !summary.worktreeLocalId) {
-    logMainProcessWarn(
-      '[chat-service] emitChatSummary: skipping summary with missing workspace/worktree id',
-      { chatId: summary.chatId },
-    );
-    return;
-  }
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'chat',
-      target: {
-        workspaceLocalId: summary.workspaceLocalId,
-        worktreeLocalId: summary.worktreeLocalId,
-        chatLocalId: summary.chatId,
-      },
-      entities: [
-        {
-          entityType: 'chat_summary',
-          localId: summary.chatId,
-          parentLocalId: worktreeScopedParentLocalId(
-            summary.workspaceLocalId,
-            summary.worktreeLocalId,
-          ),
-          payload: summary,
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    }),
-  );
-}
-
-const lastEmittedTodoFingerprints = new Map<string, string>();
-
-function chatTodoProjection(input: {
-  workspaceId: string;
-  worktreeId: string;
-  chatId: string;
-  messages: readonly PersistedChatMessage[];
-}): PortalChatTodoProjection {
-  return {
-    localId: input.chatId,
-    workspaceLocalId: input.workspaceId,
-    worktreeLocalId: input.worktreeId,
-    chatId: input.chatId,
-    items: projectTodoItems([...input.messages]),
-  };
-}
-
-function makeTodoKey(
-  workspaceId: string,
-  worktreeId: string,
-  chatId: string,
-): string {
-  return [workspaceId, worktreeId, chatId].join('\u0000');
-}
-
-function emitChatTodo(projection: PortalChatTodoProjection): void {
-  const key = makeTodoKey(
-    projection.workspaceLocalId,
-    projection.worktreeLocalId,
-    projection.chatId,
-  );
-  const fingerprint = JSON.stringify(projection.items);
-  if (lastEmittedTodoFingerprints.get(key) === fingerprint) {
-    return;
-  }
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'chat',
-      target: {
-        workspaceLocalId: projection.workspaceLocalId,
-        worktreeLocalId: projection.worktreeLocalId,
-        chatLocalId: projection.chatId,
-      },
-      entities: [
-        {
-          entityType: 'chat_todo',
-          localId: projection.chatId,
-          parentLocalId: worktreeScopedParentLocalId(
-            projection.workspaceLocalId,
-            projection.worktreeLocalId,
-          ),
-          payload: projection,
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    }),
-  );
-  // Recorded only once enqueued, so a retried failed emit is not deduped away.
-  lastEmittedTodoFingerprints.set(key, fingerprint);
-}
-
-export async function listWorktreeTodoEntities(input: {
-  workspaceId: string;
-  worktreeId: string;
-}): Promise<PortalChatTodoProjection[]> {
-  validateId(input.workspaceId, 'workspaceId');
-  validateId(input.worktreeId, 'worktreeId');
-  const tabsFile = await portalChatTabsCache.read(
-    input.workspaceId,
-    input.worktreeId,
-  );
-  return tabsFile.tabs
-    .filter((tab) => (tab.kind ?? 'chat') === 'chat')
-    .map((tab) => ({
-      ...chatTodoProjection({
-        ...input,
-        chatId: tab.id,
-        messages: tab.transcript ? [] : tab.messages,
-      }),
-      ...(tab.transcript
-        ? {
-            items: [
-              ...(tab.transcript.todos ?? []).map((item) => ({
-                ...item,
-                id: `todo:${item.id}`,
-              })),
-              ...(tab.transcript.taskTodos ?? []),
-            ],
-          }
-        : {}),
-    }));
-}
-
-export async function projectWorktreeChatTodos(input: {
-  workspaceId: string;
-  worktreeId: string;
-}): Promise<void> {
-  try {
-    await projectWorktreeChatTodosStrict(input);
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
-  }
-}
-
 /**
- * {@link projectWorktreeChatTodos} that rejects on failure, for the
- * post-commit projection, which retries failed runs.
+ * A cowork chat's summary changed: stale the desktop session snapshot so its
+ * standalone chat row is re-read. Other scopes have no standalone row.
  */
-export async function projectWorktreeChatTodosStrict(input: {
-  workspaceId: string;
-  worktreeId: string;
-}): Promise<void> {
-  if (!isCanopyPortalActive() || isCoworkWorkspace(input.workspaceId)) {
-    return;
-  }
-  // The summary projection currently reaches this cache path without the
-  // equivalent cowork guard. TODOs deliberately match the live projection
-  // path and exclude cowork workspaces in both entry points.
-  const projections = await listWorktreeTodoEntities(input);
-  for (const projection of projections) {
-    emitChatTodo(projection);
-  }
+function invalidateCoworkChatSummary(workspaceId: string): void {
+  // Default Bot only: App Advisor chats have no standalone chat row.
+  if (workspaceId === APP_ADVISOR_PROJECT_ID) return;
+  if (!isCoworkWorkspace(workspaceId)) return;
+  requestDesktopSessionSnapshotInvalidation('standalone-chat.tab-summary');
 }
 
-export function projectChatTodoFromMessages(input: {
-  workspaceId: string;
-  worktreeId: string;
-  chatId: string;
-  messages: readonly PersistedChatMessage[];
-}): void {
-  if (!isCanopyPortalActive() || isCoworkWorkspace(input.workspaceId)) {
-    return;
-  }
-  emitChatTodo(chatTodoProjection(input));
-}
-
-export function projectWorktreeChatTodoRemovals(input: {
-  workspaceId: string;
-  worktreeId: string;
-  removedChatIds: readonly string[];
-}): void {
-  if (!isCanopyPortalActive() || input.removedChatIds.length === 0) {
-    return;
-  }
-  for (const chatId of input.removedChatIds) {
-    lastEmittedTodoFingerprints.delete(
-      makeTodoKey(input.workspaceId, input.worktreeId, chatId),
-    );
-    enqueuePortalEvent(
-      createPortalEvent('portal.state.delta', {
-        scope: 'chat',
-        target: {
-          workspaceLocalId: input.workspaceId,
-          worktreeLocalId: input.worktreeId,
-          chatLocalId: chatId,
-        },
-        removed: [
-          {
-            entityType: 'chat_todo',
-            localId: chatId,
-            parentLocalId: worktreeScopedParentLocalId(
-              input.workspaceId,
-              input.worktreeId,
-            ),
-          },
-        ],
-        generatedAt: new Date().toISOString(),
-      }),
-    );
-  }
-}
-
-async function emitTargetChatSummary(input: {
-  workspaceId: string;
-  worktreeId: string;
-  tab: PersistedChatTab;
-  active: boolean;
-  order: number;
-  owner?: { value: WorkOwner | undefined };
-}): Promise<void> {
-  // Default Bot only: this summary writer publishes the app_advisor identity.
-  if (input.workspaceId === APP_ADVISOR_PROJECT_ID) {
-    // App Advisor chats project as `app_advisor_chat` entities, never as
-    // worktree-scoped `chat_summary` rows keyed on the sentinel ids
-    // (CAN-2565). Re-read-and-project keeps one summary shape for the send
-    // path and the tab-persist choke point.
-    await projectAppAdvisorChatSummaries(input.worktreeId);
-    return;
-  }
-  if (isCoworkWorkspace(input.workspaceId)) {
-    // Keep this import deferred to avoid the chat-service/standalone-chat-service
-    // cycle while loading the Electron main-process service graph.
-    const { emitStandaloneChatSummaryForTab } =
-      await import('./standalone-chat-service');
-    await emitStandaloneChatSummaryForTab(
-      input.workspaceId,
-      input.worktreeId,
-      input.tab,
-      input.active,
-      input.owner,
-    );
-    return;
-  }
-  const owner = input.owner
-    ? input.owner.value
-    : await resolveAiCreditsScopeOwner({
-        kind: 'work',
-        projectId: input.workspaceId,
-        worktreeId: input.worktreeId,
-        chatId: input.tab.id,
-      });
-  const active =
-    getActiveChatIds(input.workspaceId, input.worktreeId).includes(
-      input.tab.id,
-    ) ||
-    getChatQueueService().isTurnActive({
-      projectId: input.workspaceId,
-      worktreeId: input.worktreeId,
-      chatId: input.tab.id,
-    });
-  const agentDefaultModel = await catalogAgentDefaultModel(input.workspaceId);
-  const scheduledMessageContext = isCanopyPortalActive()
-    ? await getScheduledMessageSummaryContext()
-    : undefined;
-  emitChatSummary(
-    chatSummaryEntity({
-      ...input,
-      active,
-      surface: 'worktree',
-      owner,
-      agentDefaultModel,
-      ...(scheduledMessageContext ?? {}),
-    }),
-  );
-}
-
-export async function emitLatestTargetChatSummary(input: {
-  workspaceId: string;
-  worktreeId: string;
-  chatId: string;
-}): Promise<void> {
-  const latestTabsFile = await readChatTabsFile(
-    input.workspaceId,
-    input.worktreeId,
-  ).catch(() => null);
-  if (!latestTabsFile) {
-    return;
-  }
-  const latestTab = latestTabsFile.tabs.find((tab) => tab.id === input.chatId);
-  if (!latestTab) {
-    return;
-  }
-  await emitTargetChatSummary({
-    workspaceId: input.workspaceId,
-    worktreeId: input.worktreeId,
-    tab: latestTab,
-    active:
-      getActiveChatIds(input.workspaceId, input.worktreeId).includes(
-        input.chatId,
-      ) ||
-      getChatQueueService().isTurnActive({
-        projectId: input.workspaceId,
-        worktreeId: input.worktreeId,
-        chatId: input.chatId,
-      }),
-    order: chatTabOrder(latestTabsFile.tabs, input.chatId),
-  });
-}
-
-function refreshChangedChatSummary(
-  identity: ScheduledMessageChatIdentity,
-): Promise<void> {
-  if (!isCanopyPortalActive()) {
-    return Promise.resolve();
-  }
-  return emitLatestTargetChatSummary(identity).catch(() => undefined);
-}
-
-subscribePendingApprovalChanges((identity) => {
-  void refreshChangedChatSummary({
-    workspaceId: identity.projectId,
-    worktreeId: identity.worktreeId,
-    chatId: identity.chatId,
-  });
-});
-
-// Automations imports chat-service for dispatch. Defer subscriber registration
-// until both modules have initialized, regardless of which service is loaded
-// first; this is an event subscription, not polling.
-void import('../automations/service')
-  .then(({ subscribeScheduledMessageChanges }) => {
-    subscribeScheduledMessageChanges((identities) => {
-      if (!isCanopyPortalActive()) {
-        return;
-      }
-      for (const identity of identities) {
-        void refreshChangedChatSummary(identity);
-      }
-    });
-  })
-  .catch(() => undefined);
-
-/** A host queue update must use the target's actual Portal entity family. */
-export async function projectChatQueueSummary(target: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): Promise<void> {
-  if (!isCanopyPortalActive()) return;
-  try {
-    await emitLatestTargetChatSummary({
-      workspaceId: target.projectId,
-      worktreeId: target.worktreeId,
-      chatId: target.chatId,
-    });
-  } catch {
-    // The canonical queue is durable; a disconnected mirror can hydrate later.
-  }
-}
-
-async function consumeClaudeForkSessionMarkerWithOrder(input: {
-  workspaceId: string;
-  worktreeId: string;
-  chatId: string;
-  sessionId: string;
-}): Promise<{ tab: PersistedChatTab; order: number } | null> {
-  const consumed = await consumePersistedClaudeForkSessionMarker(input);
-  return consumed
-    ? { tab: consumed.tab, order: chatTabOrder(consumed.tabs, input.chatId) }
-    : null;
-}
-
+/** Resolves whether the tab still held any of the consumed instructions. */
 async function consumePersistedPendingSystemInstructions(input: {
   workspaceId: string;
   worktreeId: string;
   chatId: string;
   instructionIds: readonly string[];
-}): Promise<{ tab: PersistedChatTab; order: number } | null> {
+}): Promise<boolean> {
   const consumedIds = new Set(input.instructionIds);
   return enqueueChatTabMutation(
     input.workspaceId,
     input.worktreeId,
-    async () => {
+    async (): Promise<boolean> => {
       const result = await getChatStateService().updateCompatibilityTab(
         { projectId: input.workspaceId, worktreeId: input.worktreeId },
         input.chatId,
@@ -2950,27 +2228,9 @@ async function consumePersistedPendingSystemInstructions(input: {
         `consume-system-instructions:${input.chatId}:${Array.from(consumedIds).sort().join(',')}`,
         { metadataOnly: true },
       );
-      if (!result.updated) return null;
-      const updatedTab = result.tabsFile.tabs.find(
-        (candidate) => candidate.id === input.chatId,
-      );
-      if (!updatedTab) return null;
-      return {
-        tab: updatedTab,
-        order: chatTabOrder(result.tabsFile.tabs, input.chatId),
-      };
+      return result.updated;
     },
   );
-}
-
-/** The catalog Agent default for a projected summary; skipped with no Portal. */
-async function catalogAgentDefaultModel(
-  projectId: string,
-): Promise<string | undefined> {
-  if (!isCanopyPortalActive()) return undefined;
-  const { resolveCatalogAgentDefaultModel } =
-    await import('../agents/agent-default-model');
-  return resolveCatalogAgentDefaultModel(projectId);
 }
 
 export function assertWorktreeChatSendNotSplitLocked(
@@ -3153,8 +2413,6 @@ async function sendWorktreeChatMessageNow(
     await assertWatcherDeliveryIngress(request);
   options.admissionSignal?.throwIfAborted();
   const resumeCleanupBefore = Date.now();
-  if (request.chatId)
-    retireWorktreePortalPrimaryTurn({ ...request, chatId: request.chatId });
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   if (request.chatId) validateId(request.chatId, 'chatId');
@@ -4079,15 +3337,7 @@ async function sendWorktreeChatMessageNow(
       turnUserMessageId: userMessageId,
     });
   });
-
-  await emitTargetChatSummary({
-    workspaceId: request.projectId,
-    worktreeId: request.worktreeId,
-    tab: selectedTab,
-    active: activeTabId === chatId,
-    order: chatTabOrder(nextTabs, chatId),
-    owner: { value: policyOwner },
-  });
+  invalidateCoworkChatSummary(request.projectId);
 
   if (appAdvisorSurfaces) {
     const promptEvent = {
@@ -4185,16 +3435,7 @@ async function sendWorktreeChatMessageNow(
           (instruction) => instruction.id,
         ),
       });
-      if (consumed) {
-        await emitTargetChatSummary({
-          workspaceId: request.projectId,
-          worktreeId: request.worktreeId,
-          tab: consumed.tab,
-          active: true,
-          order: consumed.order,
-          owner: { value: policyOwner },
-        });
-      }
+      if (consumed) invalidateCoworkChatSummary(request.projectId);
     }
     await clearUsageLimitedChat(
       {
@@ -4210,7 +3451,7 @@ async function sendWorktreeChatMessageNow(
   const { dispatchWorktreeChatTurn: dispatchTurn } =
     await import('../lib/worktree-chat-turn');
   const dispatchWorktreeChatTurn = (
-    turn: DispatchWorktreeChatTurnOptions<WorktreePortalEventCommit>,
+    turn: DispatchWorktreeChatTurnOptions<ProviderEventIngestResult>,
   ): Promise<void> =>
     trustedAgentRequest
       ? withAgentSenderAuthority(
@@ -4235,41 +3476,6 @@ async function sendWorktreeChatMessageNow(
       activateTab: false,
     });
   }
-  const portalScope = portalChatEventScope(
-    request.projectId,
-    request.worktreeId,
-  );
-  const emitMessage = (message: PortalChatMessage): void => {
-    enqueuePortalEvent(
-      createPortalEvent('portal.chat.event', {
-        ...portalScope,
-        chatId,
-        message,
-      }),
-    );
-  };
-  emitMessage({
-    messageId: userMessageId,
-    chatId,
-    role: 'user',
-    ...('agentSent' in request && request.agentSent
-      ? { agentSent: request.agentSent }
-      : {}),
-    status: 'complete',
-    text: request.text,
-    ...portalUserAttachments(userMessageId, request.attachmentPaths),
-    ...portalPromptProvenance(userMessage),
-    createdAtMs: now,
-  });
-  // Canonical turn state publishes committed timer rows to the portal.
-  // Cursor streams patches against one assistant message; fold them per turn
-  // so the browser sees the growing text under the persisted message id.
-  const primaryTurn = createWorktreePortalPrimaryTurn({ ...request, chatId });
-  const primaryTools = primaryTurn.tools;
-  const cursorPatches = createCursorAssistantPatchProjector({
-    ...portalScope,
-    chatId,
-  });
   sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
     projectId: request.projectId,
     worktreeId: request.worktreeId,
@@ -4308,7 +3514,6 @@ async function sendWorktreeChatMessageNow(
     turnRequest = requestWithoutStartsNewTrackedChat;
   }
   const forkSessionPersistenceTasks: Promise<void>[] = [];
-  const terminalSummaryTasks: Promise<void>[] = [];
   const acceptanceCleanupTasks: Promise<void>[] = [];
   // Captured before the dispatch so the clear at the end of this function can
   // tell the entry this send is resuming apart from a NEW one the dispatched
@@ -4342,13 +3547,6 @@ async function sendWorktreeChatMessageNow(
       turnDispatchTiming,
       providerEventSequenceNamespace: options.creditRetryAttemptId,
       onBeforeChatEvent: async (event) => {
-        const portalEmissionContext = capturePortalEmissionContext();
-        const acceptedTurnUserMessageId = event.turnUserMessageId;
-        const primaryToolEpoch = primaryTurn.capture(
-          event.sequenceNamespace,
-          acceptedTurnUserMessageId,
-          portalEmissionContext,
-        );
         // The provider that ran wins: lane selection may substitute one.
         const providerType = event.providerType ?? request.providerType;
         const outcome =
@@ -4366,13 +3564,7 @@ async function sendWorktreeChatMessageNow(
               ? { onCommitQueued: event.onCommitQueued }
               : {}),
           });
-        return {
-          ...normalizeProviderEventIngestResult(outcome),
-          portalEmissionContext,
-          acceptedTurnUserMessageId,
-          sequenceNamespace: event.sequenceNamespace,
-          primaryToolEpoch,
-        };
+        return normalizeProviderEventIngestResult(outcome);
       },
       onTurnAccepted: () => {
         options.onTurnAccepted?.();
@@ -4418,16 +3610,8 @@ async function sendWorktreeChatMessageNow(
                 (instruction) => instruction.id,
               ),
             })
-              .then((result) => {
-                if (!result) return;
-                return emitTargetChatSummary({
-                  workspaceId: request.projectId,
-                  worktreeId: request.worktreeId,
-                  tab: result.tab,
-                  active: true,
-                  order: result.order,
-                  owner: { value: policyOwner },
-                });
+              .then((consumed) => {
+                if (consumed) invalidateCoworkChatSummary(request.projectId);
               })
               .catch((error: unknown) => {
                 logMainProcessWarn(
@@ -4444,132 +3628,35 @@ async function sendWorktreeChatMessageNow(
         }
       },
       onChatEvent: (event) => {
-        const completion = event.beforeChatEventResult;
-        const emissionContext = completion?.portalEmissionContext;
-        const emissionCurrent =
-          emissionContext !== undefined &&
-          isPortalEmissionContextCurrent(emissionContext);
-        const admissionCurrent =
-          emissionCurrent &&
-          primaryTurn.isCurrent(completion?.primaryToolEpoch);
-        if (
-          !emissionCurrent &&
-          primaryTurn.isCurrent(completion?.primaryToolEpoch)
-        )
-          primaryTurn.settle();
-        const emitCurrentMessage = (message: PortalChatMessage): void => {
-          if (!emissionContext) return;
-          enqueuePortalEventIfCurrent(
-            emissionContext,
-            createPortalEvent('portal.chat.event', {
-              ...portalScope,
-              chatId,
-              message,
-            }),
-          );
-        };
-        const terminal = event.isTerminalEvent;
         const forkSessionId = claudeForkSessionIdFromInit(event.data);
         if (forkSessionId) {
-          const persistenceTask = consumeClaudeForkSessionMarkerWithOrder({
+          const persistenceTask = consumePersistedClaudeForkSessionMarker({
             workspaceId: request.projectId,
             worktreeId: request.worktreeId,
             chatId,
             sessionId: forkSessionId,
-          }).then((result) => {
-            if (!result) return;
-            return emitTargetChatSummary({
-              workspaceId: request.projectId,
-              worktreeId: request.worktreeId,
-              tab: result.tab,
-              active: true,
-              order: result.order,
-              owner: { value: policyOwner },
-            });
+          }).then((consumed) => {
+            if (consumed) invalidateCoworkChatSummary(request.projectId);
           });
           // Attach a rejection handler immediately; the task is awaited after
           // dispatch so persistence failures still reject the send operation.
           void persistenceTask.catch(() => undefined);
           forkSessionPersistenceTasks.push(persistenceTask);
         }
-        const cursorMessage = cursorPatches.apply(event.data);
-        let message =
-          cursorMessage ??
-          runtimeChatEventToPortalMessage({
-            ...portalScope,
-            chatId: event.chatId,
-            data: event.data,
-            fallbackMessageId: `${userMessageId}:assistant`,
-          });
-        if (
-          admissionCurrent &&
-          !cursorMessage &&
-          message &&
-          isRecord(event.data) &&
-          (event.data.type === 'codex' ||
-            event.data.type === 'user' ||
-            event.data.type === 'assistant')
-        ) {
-          if (completion?.outcome === 'applied' && completion.admission)
-            primaryTools.retain(message.messageId, completion.admission);
-          const admittedMessage = runtimeChatEventToPortalMessage({
-            scope: 'worktree',
-            workspaceLocalId: event.projectId,
-            worktreeLocalId: event.worktreeId,
-            chatId: event.chatId,
-            data: event.data,
-            fallbackMessageId: `${userMessageId}:assistant`,
-            admission: primaryTools.forMessage(message.messageId),
-          });
-          if (admittedMessage)
-            message = { ...message, parts: admittedMessage.parts };
-        }
-        if (message) {
-          // The canonical onBeforeChatEvent ingestion owns persistence and
-          // summary/TODO projections. This display projection is lossy (tool
-          // output is truncated) and must never overwrite the durable transcript
-          // or race a completed timer with an older compatibility snapshot.
-          emitCurrentMessage(message);
-        }
-        if (terminal && primaryTurn.isCurrent(completion?.primaryToolEpoch))
-          primaryTurn.settle();
-        if (terminal && isCoworkWorkspace(request.projectId)) {
-          const pendingPersistenceTasks = [
-            ...forkSessionPersistenceTasks,
-            ...terminalSummaryTasks,
-          ];
-          const terminalSummaryTask = Promise.allSettled(
-            pendingPersistenceTasks,
-          ).then(() =>
-            emitLatestTargetChatSummary({
-              workspaceId: request.projectId,
-              worktreeId: request.worktreeId,
-              chatId,
-            }),
+        if (event.isTerminalEvent && isCoworkWorkspace(request.projectId)) {
+          void Promise.allSettled(forkSessionPersistenceTasks).then(() =>
+            invalidateCoworkChatSummary(request.projectId),
           );
-          void terminalSummaryTask.catch(() => undefined);
-          terminalSummaryTasks.push(terminalSummaryTask);
         }
       },
-    }).catch((error: unknown) => {
-      primaryTurn.retire();
-      throw error;
     });
     await Promise.all(acceptanceCleanupTasks);
     await Promise.all(forkSessionPersistenceTasks);
-    await Promise.all(terminalSummaryTasks);
   } catch (error: unknown) {
     await Promise.allSettled(acceptanceCleanupTasks);
     if (isCoworkWorkspace(request.projectId)) {
-      await Promise.allSettled([
-        ...forkSessionPersistenceTasks,
-        ...terminalSummaryTasks,
-      ]);
-      await emitLatestTargetChatSummary({
-        workspaceId: request.projectId,
-        worktreeId: request.worktreeId,
-        chatId,
-      }).catch(() => undefined);
+      await Promise.allSettled(forkSessionPersistenceTasks);
+      invalidateCoworkChatSummary(request.projectId);
     }
     throw error;
   }
@@ -4591,7 +3678,6 @@ export async function cancelWorktreeChat(
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
   validateId(request.chatId, 'chatId');
-  retireWorktreePortalPrimaryTurn(request);
   const stopContext = captured ?? captureChatTurnStop(request);
   cancelTransientRetryForChat(request, 'stop');
   const { cancelChatTurn } = await import('../lib/chat-turn-cancel');
@@ -4666,119 +3752,6 @@ export async function cancelWorktreeChatTurn(
   return { ok: true, outcome: 'stop_requested' };
 }
 
-export async function listWorktreeChatTranscript(input?: {
-  workspaceId?: string;
-  worktreeId?: string;
-  chatId?: string;
-}): Promise<PortalChatMessage[]> {
-  return (await getWorktreeChatTranscriptSeed(input)).messages;
-}
-
-/**
- * Adds the child rows of cards whose children are in the chat's delegate log
- * (`transcriptStore: 'chat-log-v1'`), so Portal projects them like the rows
- * of cards written before delegate logs.
- */
-async function withLoggedDelegationChildren(
-  scope: { projectId: string; worktreeId: string },
-  chatId: string,
-  messages: readonly PersistedChatMessage[],
-): Promise<PersistedChatMessage[]> {
-  const parents = new Set(
-    messages.flatMap((message) =>
-      message.parentBlockId ? [message.parentBlockId] : [],
-    ),
-  );
-  const cards = messages.flatMap((message) =>
-    message.blocks.filter(
-      (block) =>
-        block.type === 'delegated_agent_call' &&
-        block.transcriptStore === DELEGATION_TRANSCRIPT_CHAT_LOG &&
-        !parents.has(block.agentBlockId),
-    ),
-  );
-  if (cards.length === 0) return [...messages];
-  const children: PersistedChatMessage[] = [];
-  for (const card of cards) {
-    if (card.type !== 'delegated_agent_call') continue;
-    try {
-      const items = await getChatStateService().readDelegationItems({
-        ...scope,
-        chatId,
-        delegationId: card.delegationId,
-        runGeneration: card.runGeneration,
-      });
-      children.push(...delegationChildMessages(card.agentBlockId, items));
-    } catch (error) {
-      // A card without its log still projects; its children are missing.
-      logMainProcessWarn(
-        '[chat-service] Unable to read a delegated task transcript',
-        error,
-      );
-    }
-  }
-  return [...messages, ...children];
-}
-
-export async function getWorktreeChatTranscriptSeed(input?: {
-  workspaceId?: string;
-  worktreeId?: string;
-  chatId?: string;
-}): Promise<PortalChatTranscriptSeed> {
-  if (!input?.workspaceId || !input.worktreeId) {
-    return { messages: [], truncated: false };
-  }
-  validateId(input.workspaceId, 'workspaceId');
-  validateId(input.worktreeId, 'worktreeId');
-  const metadata = await portalChatTabsCache.read(
-    input.workspaceId,
-    input.worktreeId,
-  );
-  const tabs = metadata.tabs.filter(
-    (tab) =>
-      (tab.kind ?? 'chat') === 'chat' &&
-      (!input.chatId || tab.id === input.chatId),
-  );
-  let result: PortalChatTranscriptSeed = { messages: [], truncated: false };
-  for (const tab of tabs) {
-    const selected = await portalChatTabsCache.read(
-      input.workspaceId,
-      input.worktreeId,
-      { chatIds: [tab.id], pageOnly: true },
-    );
-    const loaded = selected.tabs.find((candidate) => candidate.id === tab.id);
-    if (!loaded) continue;
-    const projected = projectPersistedChatTranscript({
-      scope: 'worktree',
-      workspaceLocalId: input.workspaceId,
-      worktreeLocalId: input.worktreeId,
-      chatId: tab.id,
-      messages: await withLoggedDelegationChildren(
-        { projectId: input.workspaceId, worktreeId: input.worktreeId },
-        tab.id,
-        loaded.messages,
-      ),
-      autoRoutedModels: loaded.autoRoutedModels,
-      turnEnds: loaded.turnEnds,
-      unacceptedTurnEnds: loaded.unacceptedTurnEnds,
-      interruptedTurns: loaded.interruptedTurns,
-    });
-    const bounded = limitPortalChatTranscriptForSeedWithMetadata(
-      [...result.messages, ...projected].sort(
-        (left, right) => left.createdAtMs - right.createdAtMs,
-      ),
-    );
-    result = {
-      ...bounded,
-      truncated:
-        result.truncated ||
-        bounded.truncated ||
-        loaded.transcriptWindow?.before !== undefined,
-    };
-  }
-  return result;
-}
-
 export async function listWorktreeChatSummaries(input: {
   workspaceId: string;
   worktreeId: string;
@@ -4792,9 +3765,11 @@ export async function listWorktreeChatSummaries(input: {
   const chatTabs = tabsFile.tabs.filter(
     (tab) => (tab.kind ?? 'chat') === 'chat',
   );
-  const agentDefaultModel = await (
-    await import('../agents/agent-default-model')
-  ).resolveCatalogAgentDefaultModel(input.workspaceId);
+  const { resolveCatalogAgentDefaultModel } =
+    await import('../agents/agent-default-model');
+  const agentDefaultModel = await resolveCatalogAgentDefaultModel(
+    input.workspaceId,
+  );
   const scheduledMessageContext = await getScheduledMessageSummaryContext();
   return mapWithConcurrency(chatTabs, 4, async (tab, index) => {
     const owner = await resolveAiCreditsScopeOwner({
@@ -4814,23 +3789,19 @@ export async function listWorktreeChatSummaries(input: {
       // when no questions remain so the portal can clear stale cards.
       pendingQuestions: tabsFile.pendingQuestions ?? [],
       surface: 'worktree',
-      owner,
-      agentDefaultModel,
       ...scheduledMessageContext,
     });
     return {
       ...summary,
-      availableModels:
-        summary.availableModels ??
-        buildProjectedModelCatalog(undefined, {
-          cursor: true,
-          antigravity: true,
-          copilot: true,
-          opencode: true,
-          owner,
-          projectId: input.workspaceId,
-          agentDefaultModel,
-        }),
+      availableModels: buildProjectedModelCatalog(undefined, {
+        cursor: true,
+        antigravity: true,
+        copilot: true,
+        opencode: true,
+        owner,
+        projectId: input.workspaceId,
+        agentDefaultModel,
+      }),
       lastMessageRole: await readChatLastMessageRole(
         input.workspaceId,
         input.worktreeId,
@@ -4838,531 +3809,4 @@ export async function listWorktreeChatSummaries(input: {
       ),
     };
   });
-}
-
-/**
- * Re-project and emit `chat_summary` deltas for every chat in a worktree
- * (CAN-1217). Called after a desktop-side tab write so composer flips
- * (plan/thinking/fast/model/plugins) reach the portal live instead of waiting
- * for the next full snapshot. No-op — and never touches disk — when no portal
- * session is connected, so desktop-only users pay nothing. Best-effort: a read
- * failure is swallowed so it can never break the originating tab save.
- */
-export async function projectWorktreeChatSummaries(input: {
-  workspaceId: string;
-  worktreeId: string;
-}): Promise<void> {
-  try {
-    await projectWorktreeChatSummariesStrict(input);
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
-  }
-}
-
-/**
- * {@link projectWorktreeChatSummaries} that rejects on failure, for the
- * post-commit projection, which retries failed runs.
- */
-export async function projectWorktreeChatSummariesStrict(input: {
-  workspaceId: string;
-  worktreeId: string;
-}): Promise<void> {
-  if (!isCanopyPortalActive()) {
-    return;
-  }
-  const summaries = await listWorktreeChatSummaries(input);
-  for (const summary of summaries) {
-    emitChatSummary(summary);
-  }
-}
-
-/**
- * Emit `chat_summary` removal deltas so a connected portal evicts chat tabs that
- * were just closed on the desktop. The projection layer is upsert-only — a bare
- * re-projection ({@link projectWorktreeChatSummaries}) never tells the portal a
- * tab is GONE — so the tab-persist choke point diffs the previous and next tab
- * id sets and calls this with the removed ids. No-op when no portal session is
- * connected, so desktop-only users pay nothing.
- */
-export function projectWorktreeChatSummaryRemovals(input: {
-  workspaceId: string;
-  worktreeId: string;
-  removedChatIds: readonly string[];
-}): void {
-  for (const chatId of input.removedChatIds) {
-    browserHandoffs.releaseOrigin({
-      projectId: input.workspaceId,
-      worktreeId: input.worktreeId,
-      chatTabId: chatId,
-    });
-    forgetPresentationChat(
-      presentationChatKey({
-        projectId: input.workspaceId,
-        worktreeId: input.worktreeId,
-        chatTabId: chatId,
-      }),
-    );
-  }
-  if (!isCanopyPortalActive() || input.removedChatIds.length === 0) {
-    return;
-  }
-  for (const chatId of input.removedChatIds) {
-    enqueuePortalEvent(
-      createPortalEvent('portal.state.delta', {
-        scope: 'chat',
-        target: {
-          workspaceLocalId: input.workspaceId,
-          worktreeLocalId: input.worktreeId,
-          chatLocalId: chatId,
-        },
-        removed: [
-          {
-            entityType: 'chat_summary',
-            localId: chatId,
-            parentLocalId: worktreeScopedParentLocalId(
-              input.workspaceId,
-              input.worktreeId,
-            ),
-          },
-        ],
-        generatedAt: new Date().toISOString(),
-      }),
-    );
-  }
-}
-
-/**
- * Armed (status `active`) App Advisor watcher counts keyed by destination
- * chat id (CAN-2569). Best-effort: a watcher-store read failure yields an
- * empty map so summary projection can never break on the watcher file.
- */
-async function countArmedAppAdvisorWatchersByChatId(): Promise<
-  Map<string, number>
-> {
-  const counts = new Map<string, number>();
-  try {
-    const watchers = await getAppAdvisorWatcherService().list();
-    for (const watcher of watchers) {
-      if (
-        watcher.status !== 'active' ||
-        // Default Bot only: this loop projects the Orchestrator watcher list.
-        watcher.destination.projectId !== APP_ADVISOR_PROJECT_ID
-      ) {
-        continue;
-      }
-      const chatId = watcher.destination.chatId;
-      counts.set(chatId, (counts.get(chatId) ?? 0) + 1);
-    }
-  } catch {
-    // Watcher counts are decorative on the summary; the tab data still ships.
-  }
-  return counts;
-}
-
-/**
- * Bounded persisted-transcript seed for the untargeted `app_advisor`
- * snapshot (CAN-2562). Server-side `PortalChatMessage` rows are per portal
- * session, so a freshly paired browser has no history source for
- * pre-existing App Advisor tabs unless the snapshot carries it — the same
- * contract the worktree/standalone snapshot seeds already satisfy. Messages
- * project with the `app_advisor` wire scope and no workspace routing.
- */
-export async function getAppAdvisorChatTranscriptSeed(input?: {
-  chatId?: string;
-  entryId?: string;
-}): Promise<PortalChatTranscriptSeed> {
-  // Failures REJECT rather than degrade: the app_advisor snapshot is an
-  // authoritative replacement, and a partial read mislabeled as a complete
-  // non-truncated seed would let the server prune rows the failed entry
-  // still owns (another entry's messages supplying the prune cutoff).
-  // A selected chat is the latency-critical portal path. Resolve its owning
-  // Work Entry first so opening one transcript never projects every other
-  // persisted App Advisor history. The returned seed is deliberately marked
-  // truncated because an app_advisor snapshot is authoritative for the whole
-  // sentinel scope; a targeted seed must never prune cached rows for siblings.
-  const preferredChatId = input?.chatId;
-  if (preferredChatId) validateId(preferredChatId, 'chatId');
-  if (input?.entryId) validateId(input.entryId, 'entryId');
-  const preferredEntryId = preferredChatId
-    ? (input?.entryId ??
-      (await resolveWorkEntryForChat(APP_ADVISOR_PROJECT_ID, preferredChatId))
-        .entryId)
-    : null;
-  if (preferredChatId && !preferredEntryId) {
-    return { messages: [], truncated: true };
-  }
-
-  // Bounded concurrency mirrors the snapshot builder's summary reads. Cap
-  // each persisted tab BEFORE the comparatively expensive text/tool
-  // projection: no tab can contribute more than the global 300-row wire cap,
-  // so projecting an older prefix cannot affect the final seed. Include the
-  // preceding user row when the cut lands mid-turn so persisted timer rows
-  // retain the same canonical live-wire id.
-  const entryIds = preferredEntryId
-    ? [preferredEntryId]
-    : await listWorkEntryIds(APP_ADVISOR_PROJECT_ID);
-  const transcripts = await mapWithConcurrency(entryIds, 4, async (entryId) => {
-    const tabsFile = await portalChatTabsCache.read(
-      APP_ADVISOR_PROJECT_ID,
-      entryId,
-    );
-    let truncated = false;
-    let messages: PortalChatMessage[] = [];
-    for (const tab of tabsFile.tabs.filter(
-      (candidate) =>
-        (candidate.kind ?? 'chat') === 'chat' &&
-        (!preferredChatId || candidate.id === preferredChatId),
-    )) {
-      const selected = await portalChatTabsCache.read(
-        APP_ADVISOR_PROJECT_ID,
-        entryId,
-        { chatIds: [tab.id], pageOnly: true },
-      );
-      const loaded = selected.tabs.find((candidate) => candidate.id === tab.id);
-      if (!loaded) continue;
-      const bounded = persistedMessagesForPortalSeed(loaded.messages);
-      const projected = projectPersistedChatTranscript({
-        scope: 'app_advisor',
-        chatId: tab.id,
-        messages: bounded.messages,
-        turnEnds: loaded.turnEnds,
-        unacceptedTurnEnds: loaded.unacceptedTurnEnds,
-        interruptedTurns: loaded.interruptedTurns,
-      });
-      const limited = limitPortalChatTranscriptForSeedWithMetadata(
-        [...messages, ...projected].sort(
-          (left, right) => left.createdAtMs - right.createdAtMs,
-        ),
-      );
-      messages = limited.messages;
-      truncated ||=
-        bounded.truncated ||
-        limited.truncated ||
-        loaded.transcriptWindow?.before !== undefined;
-    }
-    return { messages, truncated };
-  });
-  const sourceTruncated = transcripts.some(
-    (transcript) => transcript.truncated,
-  );
-  const seed = limitPortalChatTranscriptForSeedWithMetadata(
-    transcripts
-      .flatMap((transcript) => transcript.messages)
-      .sort((left, right) => left.createdAtMs - right.createdAtMs),
-  );
-  return {
-    ...seed,
-    truncated: preferredChatId ? true : seed.truncated || sourceTruncated,
-  };
-}
-
-function persistedMessagesForPortalSeed(messages: PersistedChatMessage[]): {
-  messages: PersistedChatMessage[];
-  truncated: boolean;
-} {
-  if (messages.length <= PORTAL_CHAT_SEED_MESSAGE_LIMIT) {
-    return { messages, truncated: false };
-  }
-  const start = messages.length - PORTAL_CHAT_SEED_MESSAGE_LIMIT;
-  const retainedIndexes = new Set<number>();
-
-  // A renderer may persist one SDK assistant event as `base`, `base:2`, …;
-  // projection merges those rows only when the base is present. If the raw
-  // cutoff lands inside such a group, retain the omitted base so hydration
-  // neither loses its text nor exposes a duplicate suffixed wire row. The
-  // group collapses again before the final 300-row seed limiter.
-  const tailIds = new Set(messages.slice(start).map((message) => message.id));
-  const requiredBases = new Map<string, PersistedChatMessage['role']>();
-  for (let index = start; index < messages.length; index += 1) {
-    const message = messages[index];
-    if (!message) continue;
-    const match = /^(.+):\d+$/.exec(message.id);
-    if (match && !tailIds.has(match[1])) {
-      requiredBases.set(match[1], message.role);
-    }
-  }
-  if (requiredBases.size > 0) {
-    for (let index = 0; index < start; index += 1) {
-      const message = messages[index];
-      if (!message) continue;
-      const match = /^(.+):\d+$/.exec(message.id);
-      const groupId = match?.[1] ?? message.id;
-      if (requiredBases.get(groupId) === message.role) {
-        retainedIndexes.add(index);
-      }
-    }
-  }
-
-  for (let index = start - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === 'user') {
-      retainedIndexes.add(index);
-      break;
-    }
-  }
-  return {
-    messages: messages.filter(
-      (_message, index) => index >= start || retainedIndexes.has(index),
-    ),
-    truncated: true,
-  };
-}
-
-/**
- * Project one App Advisor Work Entry's chat tabs as `app_advisor_chat`
- * summaries (CAN-2565). Reuses the worktree summary internals with the App
- * Advisor sentinel routing, then strips the worktree-only `scope`/workspace
- * fields — the App Advisor wire shape is deliberately routing-free (`chatId`
- * alone identifies the tab). Pending ask-user questions come from the live
- * renderer-tool registry rather than the tabs file: App Advisor questions
- * never persist, so the in-memory pending map is the only source of truth.
- */
-export interface AppAdvisorWorkEntryProjectionContext {
-  entry: CoworkWorkEntryMeta;
-  order: number;
-}
-
-async function findAppAdvisorWorkEntryProjectionContext(
-  entryId: string,
-  options?: { strictRead?: boolean },
-): Promise<AppAdvisorWorkEntryProjectionContext | undefined> {
-  const entries = await listWorkEntries(APP_ADVISOR_PROJECT_ID, options);
-  const order = entries.findIndex((entry) => entry.id === entryId);
-  const entry = entries[order];
-  return entry ? { entry, order } : undefined;
-}
-
-async function resolveAppAdvisorWorkEntryProjectionContext(
-  entryId: string,
-): Promise<AppAdvisorWorkEntryProjectionContext> {
-  const context = await findAppAdvisorWorkEntryProjectionContext(entryId);
-  if (!context) {
-    throw new Error(`Unknown App Advisor Work Entry ${entryId}`);
-  }
-  return context;
-}
-
-export async function listAppAdvisorChatSummaries(
-  entryId: string,
-  projectionContext?: AppAdvisorWorkEntryProjectionContext,
-): Promise<PortalAppAdvisorChatSummary[]> {
-  validateId(entryId, 'entryId');
-  const { entry, order: workEntryOrder } =
-    projectionContext ??
-    (await resolveAppAdvisorWorkEntryProjectionContext(entryId));
-  const tabsFile = await portalChatTabsCache.read(
-    APP_ADVISOR_PROJECT_ID,
-    entryId,
-  );
-  const pendingQuestions = listPendingAppAdvisorAskUserQuestions();
-  const answeredQuestions = listAnsweredAppAdvisorAskUserQuestions();
-  const armedWatcherCounts = await countArmedAppAdvisorWatchersByChatId();
-  const windowUiState = getLatestAppAdvisorWindowUiState();
-  const agentDefaultModel = await catalogAgentDefaultModel(
-    APP_ADVISOR_PROJECT_ID,
-  );
-  const scheduledMessageContext = await getScheduledMessageSummaryContext();
-  return tabsFile.tabs
-    .filter((tab) => (tab.kind ?? 'chat') === 'chat')
-    .map((tab, index) => {
-      const { scope, workspaceLocalId, worktreeLocalId, ...summary } =
-        chatSummaryEntity({
-          workspaceId: APP_ADVISOR_PROJECT_ID,
-          worktreeId: entryId,
-          tab,
-          active: tab.id === tabsFile.activeTabId,
-          // Already filtered to chat tabs, so the index IS the chat-tab order.
-          order: index,
-          pendingQuestions: [],
-          // App Advisor advertises Cursor only while the managed runtime is
-          // connected (`providerAvailability` on the summary, not the tab).
-          surface: 'app-advisor',
-          owner: { kind: 'personal' },
-          agentDefaultModel,
-          ...scheduledMessageContext,
-        });
-      void scope;
-      void workspaceLocalId;
-      void worktreeLocalId;
-      const armedWatcherCount = armedWatcherCounts.get(tab.id) ?? 0;
-      const hasPersistedRouting =
-        tab.executionHarness !== undefined ||
-        tab.model !== undefined ||
-        tab.providerType !== undefined ||
-        tab.sdkSessionId !== undefined;
-      return {
-        ...summary,
-        // Legacy started tabs may predate the persisted executionHarness
-        // field. Project the same effective lock enforced by set_model so the
-        // portal never advertises an incompatible model as selectable.
-        executionHarness:
-          hasPersistedRouting &&
-          ((summary.messageCount ?? 0) > 0 ||
-            (summary.queuedMessages?.length ?? 0) > 0)
-            ? resolvePersistedChatExecutionHarness(tab)
-            : summary.executionHarness,
-        workEntryId: entry.id,
-        workEntryTitle: entry.title,
-        workEntryCreatedAt: entry.createdAt,
-        ...(entry.lastMessageAt
-          ? { workEntryLastMessageAt: entry.lastMessageAt }
-          : {}),
-        workEntryOrder,
-        desktopCurrent:
-          windowUiState.activeWorkEntryId === entryId &&
-          windowUiState.activeChatId === tab.id,
-        // Omitted at zero: the browser delta projector clears the cached
-        // value on omission, so a count dropping to 0 still propagates.
-        ...(armedWatcherCount > 0 ? { armedWatcherCount } : {}),
-        // Explicit [] when no questions remain so the portal clears stale
-        // cards, matching the worktree file-backed contract.
-        pendingQuestions: [
-          ...pendingQuestions
-            .filter((entry) => entry.chatId === tab.id)
-            .map(
-              (entry): PortalAskUserQuestionState => ({
-                requestId: entry.requestId,
-                questions: [entry.question],
-                answered: false,
-              }),
-            ),
-          // Answered entries let the transcript's ask-user tool rows converge
-          // to the read-only answered card instead of a perpetual pending
-          // spinner — App Advisor questions have no persisted record, so this
-          // capped in-memory projection is the only answered evidence the
-          // portal gets (CAN-2608). Question text is projected verbatim: the
-          // request has no toolUseId, so the browser matches by text.
-          ...answeredQuestions
-            .filter((entry) => entry.chatId === tab.id)
-            .map(
-              (entry): PortalAskUserQuestionState => ({
-                requestId: entry.requestId,
-                questions: [entry.question],
-                answered: true,
-                answers: [entry.answer],
-              }),
-            ),
-        ],
-      };
-    });
-}
-
-/**
- * Re-project and emit `app_advisor_chat` deltas for every chat tab in an App
- * Advisor Work Entry (CAN-2565). Untargeted: `app_advisor` is a session-wide
- * scope, and the browser projector keys rows on `localId` alone. No-op — and
- * never touches disk — when no portal session is connected. Best-effort: a
- * read failure is swallowed so it can never break the originating write.
- */
-export async function projectAppAdvisorChatSummaries(
-  entryId: string,
-): Promise<void> {
-  try {
-    await projectAppAdvisorChatSummariesStrict(entryId);
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
-  }
-}
-
-/**
- * {@link projectAppAdvisorChatSummaries} that rejects on failure, for the
- * post-commit projection, which retries failed runs.
- */
-export async function projectAppAdvisorChatSummariesStrict(
-  entryId: string,
-): Promise<void> {
-  if (!isCanopyPortalActive()) {
-    return;
-  }
-  // An unreadable registry rejects so the projection retries; only a missing
-  // registry or a deleted entry reads as nothing to project.
-  const projectionContext = await findAppAdvisorWorkEntryProjectionContext(
-    entryId,
-    { strictRead: true },
-  );
-  // A deleted entry has nothing left to project, as for cowork entries; a
-  // rejection would retry its scope's final commit forever.
-  if (!projectionContext) return;
-  const summaries = await listAppAdvisorChatSummaries(
-    entryId,
-    projectionContext,
-  );
-  for (const summary of summaries) {
-    enqueuePortalEvent(
-      createPortalEvent('portal.state.delta', {
-        scope: 'app_advisor',
-        entities: [
-          {
-            entityType: 'app_advisor_chat',
-            localId: summary.chatId,
-            payload: summary,
-          },
-        ],
-        generatedAt: new Date().toISOString(),
-      }),
-    );
-  }
-}
-
-/** Re-project every App Advisor Work Entry after registry-order changes. */
-export async function projectAllAppAdvisorChatSummaries(
-  isCurrent: () => boolean = () => true,
-): Promise<void> {
-  if (!isCanopyPortalActive() || !isCurrent()) return;
-  try {
-    const entries = await listWorkEntries(APP_ADVISOR_PROJECT_ID);
-    const groups = await mapWithConcurrency(
-      entries.map((entry, order) => ({ entry, order })),
-      4,
-      ({ entry, order }) =>
-        listAppAdvisorChatSummaries(entry.id, { entry, order }),
-    );
-    for (const summary of groups.flat()) {
-      if (!isCanopyPortalActive() || !isCurrent()) return;
-      enqueuePortalEvent(
-        createPortalEvent('portal.state.delta', {
-          scope: 'app_advisor',
-          entities: [
-            {
-              entityType: 'app_advisor_chat',
-              localId: summary.chatId,
-              payload: summary,
-            },
-          ],
-          generatedAt: new Date().toISOString(),
-        }),
-      );
-    }
-  } catch {
-    // Projection is a best-effort mirror; the registry mutation is durable.
-  }
-}
-
-/**
- * Emit `app_advisor_chat` removal deltas so a connected portal evicts App
- * Advisor tabs that disappeared from an entry's tabs file. Mirrors
- * {@link projectWorktreeChatSummaryRemovals}; the projection layer is
- * upsert-only, so re-projection alone never tells the portal a tab is GONE.
- */
-export function projectAppAdvisorChatSummaryRemovals(input: {
-  removedChatIds: readonly string[];
-}): void {
-  for (const chatId of input.removedChatIds)
-    browserHandoffs.releaseChat(chatId);
-  if (!isCanopyPortalActive() || input.removedChatIds.length === 0) {
-    return;
-  }
-  for (const chatId of input.removedChatIds) {
-    enqueuePortalEvent(
-      createPortalEvent('portal.state.delta', {
-        scope: 'app_advisor',
-        removed: [
-          {
-            entityType: 'app_advisor_chat',
-            localId: chatId,
-          },
-        ],
-        generatedAt: new Date().toISOString(),
-      }),
-    );
-  }
 }

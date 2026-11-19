@@ -96,6 +96,12 @@ export const WorkerFilesystemDirectoryEntrySchema = z
 export const WorkerFilesystemDirectoryListResultSchema = z
   .object({
     entries: z.array(WorkerFilesystemDirectoryEntrySchema),
+    /**
+     * Set when Git's ignore lookup failed, so `isIgnored` comes from a
+     * conservative default list (dependencies, `.env*`, `.git`, build
+     * outputs) rather than the repository's rules. Absent otherwise.
+     */
+    ignoreStateUnknown: z.boolean().optional(),
     catalogRevision: CATALOG_REVISION_SCHEMA.optional(),
   })
   .catchall(CanopyJsonValueSchema);
@@ -111,6 +117,7 @@ export const WorkerFilesystemRootsListErrorSchema =
         'worker.filesystem.roots.invalidState',
         'worker.filesystem.roots.revisionConflict',
         'worker.filesystem.roots.notFound',
+        'worker.filesystem.roots.snapshotUnavailable',
       ])
       .optional(),
     retry: CanopyQueryRetryDirectiveSchema,
@@ -123,6 +130,7 @@ export const WorkerFilesystemDirectoryListErrorSchema =
         'worker.filesystem.directory.invalidState',
         'worker.filesystem.directory.revisionConflict',
         'worker.filesystem.directory.notFound',
+        'worker.filesystem.directory.snapshotUnavailable',
       ])
       .optional(),
     retry: CanopyQueryRetryDirectiveSchema,
@@ -323,6 +331,7 @@ export const WORKER_FILESYSTEM_FILE_READ_ERROR_CODES = [
   'worker.filesystem.file.outsideRoots',
   'worker.filesystem.file.notRegularFile',
   'worker.filesystem.file.tooLarge',
+  'worker.filesystem.file.snapshotUnavailable',
 ] as const;
 
 export const WorkerFilesystemFileReadErrorSchema =
@@ -415,6 +424,8 @@ export const WorkerFilesystemSearchResultSchema = z.object({
   matches: z.array(WorkerFilesystemSearchMatchSchema),
   nextCursor: z.string().min(1).max(2048).nullable(),
   truncated: z.boolean(),
+  /** As on a directory listing: `isIgnored` came from the default list. */
+  ignoreStateUnknown: z.boolean().optional(),
   catalogRevision: CATALOG_REVISION_SCHEMA.optional(),
 });
 
@@ -429,6 +440,7 @@ export const WORKER_FILESYSTEM_SEARCH_ERROR_CODES = [
   'worker.filesystem.search.modeUnavailable',
   'worker.filesystem.search.cursorExpired',
   'worker.filesystem.search.cursorMismatch',
+  'worker.filesystem.search.snapshotUnavailable',
 ] as const;
 
 export const WorkerFilesystemSearchErrorSchema =
@@ -504,6 +516,7 @@ export const WORKER_FILESYSTEM_LINK_RESOLVE_ERROR_CODES = [
   'worker.filesystem.link.outsideRoots',
   'worker.filesystem.link.symlinkEscape',
   'worker.filesystem.link.unsupported',
+  'worker.filesystem.link.snapshotUnavailable',
 ] as const;
 
 export const WorkerFilesystemLinkResolveErrorSchema =

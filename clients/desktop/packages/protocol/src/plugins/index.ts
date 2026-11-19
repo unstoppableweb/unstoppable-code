@@ -27,6 +27,7 @@ import type { MarketplaceInfo, PluginInfo } from './catalog';
 // ---------------------------------------------------------------------------
 
 export * from './catalog';
+export * from './selection-ref-owner';
 export * from './harness-compatibility';
 export * from './harness-installs';
 export * from './stand-ins';

@@ -57,8 +57,34 @@ export function confirmedCloudModelChoices(
   return choices;
 }
 
-function stepLabel(item: CloudModelPreflightItem): string {
-  return item.stepName ?? `${item.jobId}, step ${item.stepIndex + 1}`;
+/**
+ * The step an item names, or for a job's matrix model (CAN-7018) the job and
+ * the variants it reaches, after the child workflows it runs in.
+ */
+function cloudModelItemLabel(item: CloudModelPreflightItem): string {
+  const step =
+    item.matrix === undefined
+      ? (item.stepName ?? `${item.jobId}, step ${item.stepIndex + 1}`)
+      : item.matrix.value === undefined
+        ? `${item.jobId}, every variant`
+        : `${item.jobId}, variants that use ${item.matrix.value}`;
+  // A child workflow's step names the workflows it runs in (CAN-7044).
+  return item.workflows === undefined
+    ? step
+    : [...item.workflows, step].join(' › ');
+}
+
+/** What an item uses and why it needs a cloud model. */
+function itemDescription(item: CloudModelPreflightItem): string {
+  const model = item.model === '' ? 'the default model' : item.model;
+  // A matrix built while the run runs names no model yet.
+  const uses =
+    item.matrix !== undefined && item.matrix.value === undefined
+      ? item.message
+      : `Uses ${model}. ${item.message}`;
+  return item.alternatives.length === 0
+    ? `${uses} Run the workflow on this computer instead.`
+    : uses;
 }
 
 /**
@@ -133,7 +159,6 @@ export function CloudModelReplacementDialog({
         )}
         {preflight.items.map((item) => {
           const fieldId = `${idPrefix}-${item.itemKey}`;
-          const model = item.model === '' ? 'the default model' : item.model;
           return (
             <div
               key={item.itemKey}
@@ -141,13 +166,9 @@ export function CloudModelReplacementDialog({
               data-item-key={item.itemKey}
             >
               <DialogFormField
-                label={stepLabel(item)}
+                label={cloudModelItemLabel(item)}
                 htmlFor={fieldId}
-                description={
-                  item.alternatives.length === 0
-                    ? `Uses ${model}. ${item.message} Run the workflow on this computer instead.`
-                    : `Uses ${model}. ${item.message}`
-                }
+                description={itemDescription(item)}
               >
                 {item.alternatives.length === 0 ? (
                   <SettingsSelect

@@ -19,6 +19,7 @@ export const WORKER_AGENT_GRANTS = {
   execute: 'worker.agent.execute',
   auth: 'worker.agent.auth',
   read: 'worker.agent.read',
+  usageRead: 'worker.agent.usage.read',
 } as const;
 
 export const WORKER_AGENT_HELPER_KINDS = [

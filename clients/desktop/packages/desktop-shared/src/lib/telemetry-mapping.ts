@@ -685,6 +685,11 @@ function buildIngestPiece(
     ...(worktree.sourceClientLocalId !== undefined
       ? { sourceClientLocalId: worktree.sourceClientLocalId }
       : {}),
+    // The uploading computer rides every piece so a push tap can open the
+    // chat on it (CAN-7218).
+    ...(worktree.sourceRelayDeviceId !== undefined
+      ? { sourceRelayDeviceId: worktree.sourceRelayDeviceId }
+      : {}),
     // Space identity rides every piece with the id it describes (CAN-3615).
     ...(worktree.notificationSpace !== undefined
       ? { notificationSpace: worktree.notificationSpace }

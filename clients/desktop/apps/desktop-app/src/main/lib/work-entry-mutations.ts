@@ -1,5 +1,4 @@
 import {
-  APP_ADVISOR_PROJECT_ID,
   type CoworkWorkEntryDeleteRequest,
   type CoworkWorkEntryDeleteResponse,
   type CoworkWorkEntryUpdateRequest,
@@ -54,7 +53,7 @@ export async function updateWorkEntryMutation(
     // work-entry handlers do not need it until Cowork projection runs.
     const { emitStandaloneWorkEntrySummary } =
       await import('../services/standalone-chat-service');
-    await emitStandaloneWorkEntrySummary(workspaceId, request.entryId);
+    emitStandaloneWorkEntrySummary();
   }
 
   // A rename or a mark-done is usually the LAST action on an entry, so no
@@ -67,12 +66,6 @@ export async function updateWorkEntryMutation(
   void getTelemetrySyncService()
     .refreshWorktreeMetadata(workspaceId, request.entryId)
     .catch(() => undefined);
-  // Default Bot only: its summaries use the singleton App Advisor projector.
-  if (workspaceId === APP_ADVISOR_PROJECT_ID) {
-    const { projectAppAdvisorChatSummaries } =
-      await import('../services/chat-service');
-    await projectAppAdvisorChatSummaries(request.entryId);
-  }
 }
 
 /** Delete a Work Entry using the complete existing fenced IPC lifecycle. */

@@ -1,4 +1,3 @@
-import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import type {
   AppAdvisorAction,
   AppAdvisorActionResponse,
@@ -54,10 +53,6 @@ export interface AdvisorCredentialActionHost {
   startCloudOAuthLogin(): Promise<unknown>;
   cancelCloudOAuthLogin(): Promise<void>;
   disconnectCloudAccount(): Promise<unknown>;
-  /** The canopy-portal-enabled flag the window's Portal actions check. */
-  portalEnabled(): boolean;
-  startPortal(): Promise<unknown>;
-  stopPortal(): Promise<unknown>;
   /** Device-to-device remote control; null before it starts. */
   remoteControl(): {
     getState(): Promise<RemoteControlState>;
@@ -75,7 +70,6 @@ export interface AdvisorCredentialActionHost {
 
 type Response = Omit<AppAdvisorActionResponse, 'requestId'>;
 
-const PORTAL_NAME_INLINE = REMOTE_CONTROL_LABEL.toLowerCase();
 const REDACTED = '[redacted]';
 
 /**
@@ -164,11 +158,16 @@ const REMOTE_CONTROL_UNAVAILABLE: Response = {
   },
 };
 
+/**
+ * What a Remote Control action asks for. `canopy_portal.start` and `stop`
+ * keep their names but turn Allow incoming on and off (CAN-5986).
+ */
+type RemoteControlRequest =
+  | { kind: 'get_state' }
+  | { kind: 'set_allow_incoming'; enabled: boolean };
+
 async function remoteControlAction(
-  action: Extract<
-    AdvisorCredentialAction,
-    { type: 'remote_control.get_state' | 'remote_control.set_allow_incoming' }
-  >,
+  request: RemoteControlRequest,
   host: AdvisorCredentialActionHost,
 ): Promise<Response> {
   const remote = host.remoteControl();
@@ -181,9 +180,9 @@ async function remoteControlAction(
   }
   if (!state.available) return REMOTE_CONTROL_UNAVAILABLE;
   try {
-    if (action.type === 'remote_control.get_state')
+    if (request.kind === 'get_state')
       return { ok: true, result: summarizeRemoteControlState(state) };
-    const next = await remote.setAllowIncoming(action.enabled);
+    const next = await remote.setAllowIncoming(request.enabled);
     return { ok: true, result: { allowIncoming: next.allowIncoming } };
   } catch (error) {
     return failure(error, 'Remote control failed.');
@@ -261,27 +260,22 @@ async function run(
         result: toAdvisorJson(await host.disconnectCloudAccount()),
       };
     case 'canopy_portal.start':
-      if (!host.portalEnabled())
-        return {
-          ok: true,
-          result: { skipped: true, reason: 'canopy-portal-disabled' },
-        };
-      try {
-        await host.startPortal();
-        return { ok: true };
-      } catch (error) {
-        return failure(error, `Failed to start ${PORTAL_NAME_INLINE}.`);
-      }
+      return remoteControlAction(
+        { kind: 'set_allow_incoming', enabled: true },
+        host,
+      );
     case 'canopy_portal.stop':
-      try {
-        await host.stopPortal();
-        return { ok: true };
-      } catch (error) {
-        return failure(error, `Failed to stop ${PORTAL_NAME_INLINE}.`);
-      }
+      return remoteControlAction(
+        { kind: 'set_allow_incoming', enabled: false },
+        host,
+      );
     case 'remote_control.get_state':
+      return remoteControlAction({ kind: 'get_state' }, host);
     case 'remote_control.set_allow_incoming':
-      return remoteControlAction(action, host);
+      return remoteControlAction(
+        { kind: 'set_allow_incoming', enabled: action.enabled },
+        host,
+      );
     case 'opencode.connection': {
       const value = await host.openCode(action.operation, signal);
       return { ok: true, result: { value: toAdvisorJson(value ?? null) } };

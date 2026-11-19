@@ -103,6 +103,13 @@ export interface ClaudeWorkerRunRequest<T> {
   mcpServers?: Record<string, unknown>;
   claudeEnvOverride?: Record<string, string>;
   /**
+   * Read right before each launch spawns its terminal, after any queue wait
+   * and again on retry. Its variables sit under the launch config's own env.
+   * A throw refuses that launch: the worker settles as a failure with the
+   * thrown message, so the message must carry no secret values.
+   */
+  launchEnvironment?: () => Record<string, string>;
+  /**
    * A pipeline agent's Ledger tools (role `pipeline_agent`), served on the
    * worker's route. Background-helper workers never pass them (E05).
    */
@@ -806,6 +813,9 @@ export class DefaultClaudeWorkerSessionService {
         server.unregisterMcpProxyRoutesForSession(sessionKey);
         return;
       }
+      // Read after the queue wait, so what it checks is what this launch gets;
+      // a throw settles the worker through the catch below.
+      const launchEnvironment = record.request.launchEnvironment?.();
       const terminal = await spawnPlacedManagedTerminal({
         projectId: record.card.projectId ?? DEFAULT_PROJECT_ID,
         worktreeId: record.card.worktreeId ?? DEFAULT_WORKTREE_ID,
@@ -815,7 +825,9 @@ export class DefaultClaudeWorkerSessionService {
         managedCommand: {
           executable: config.executable,
           args: config.args,
-          env: config.env,
+          env: launchEnvironment
+            ? { ...launchEnvironment, ...config.env }
+            : config.env,
           pathPrepend: config.pathPrepend,
           title: record.request.label,
           kind: 'claude-worker',

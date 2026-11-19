@@ -27,6 +27,15 @@ jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
   getEnhancedEnv: (): NodeJS.ProcessEnv => ({ ...process.env }),
 }));
 
+jest.mock('../../lib/node-runtime', () => ({
+  getDesktopNodeRuntime: (): Promise<{
+    nodeProcess: { command: string };
+  }> =>
+    Promise.resolve({
+      nodeProcess: { command: process.execPath },
+    }),
+}));
+
 import { applyIndexPatch, checkIgnoredPaths } from '../../lib/git';
 import { SharedContainerReplicaStore } from '../../shared-containers/replica/store';
 

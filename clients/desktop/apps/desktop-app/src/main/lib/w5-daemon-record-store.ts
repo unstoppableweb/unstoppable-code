@@ -3,6 +3,7 @@ import {
   createW5CommitLogFileStore,
   type W5CommitLogFileStore,
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+import type { W5CommittedProjection } from '@canopy/core-runtime/node/w5/committed-projection';
 import {
   createW5RecordHostPort,
   type W5RecordPortTransport,
@@ -23,7 +24,10 @@ import {
 } from './w5-pre-effect-retry';
 import { recordW5RecordUnserved } from './w5-record-unserved';
 import { admitW5Storage } from './w5-storage';
-import { countingW5RecordPortTransport } from './w5-work-counters';
+import {
+  countingW5RecordPortTransport,
+  W5_AGGREGATE_KEYS,
+} from './w5-work-counters';
 import { recordW5Work } from '@canopy/desktop-shared/node/work-counters';
 
 /*
@@ -174,14 +178,22 @@ export function createW5DaemonRecordStore(options: {
   readonly transport: W5RecordPortTransport;
   /** Electron's W5 root; defaults to the data root's `workspaces`. */
   readonly root?: string;
+  /**
+   * The read cache (CAN-7155) this store's own decisions feed; the flip
+   * handoff passes Electron main's where the cache is selected.
+   */
+  readonly projection?: Pick<W5CommittedProjection, 'noteOwnDecision'>;
 }): W5CommitLogFileStore {
   const root = options.root ?? getWorkspacesRootDir();
+  const { projection } = options;
   const port = createW5RecordHostPort({
     root,
     transport: countingW5RecordPortTransport(options.transport),
     onConflict: ({ operation, kind }) => recordW5PortConflict(operation, kind),
     onUnserved: ({ operation, reason }) =>
       recordW5RecordUnserved(operation, reason),
+    onRecordDecoded: (bytes) =>
+      recordW5Work(W5_AGGREGATE_KEYS.recordDecodedBytes, bytes),
   });
   return createW5CommitLogFileStore({
     getHost: () => port,
@@ -198,6 +210,9 @@ export function createW5DaemonRecordStore(options: {
     admitWrite: (target, write) => admitStorageWrite(target, write),
     // The authority checks ownership as `daemon`.
     assertWrite: () => undefined,
+    ...(projection && {
+      onApplied: (decision) => projection.noteOwnDecision(root, decision),
+    }),
   });
 }
 

@@ -18,6 +18,7 @@ export async function waitForDelegations(
   request: AgentDelegationWaitRequest,
   source: DelegationWaitSource,
   signal?: AbortSignal,
+  onError?: (error: unknown) => void,
 ): Promise<AgentDelegationResult<AgentDelegationWaitResult>> {
   const parsed = parseAgentDelegationWaitRequest(request);
   if (!parsed.ok) return parsed;
@@ -78,7 +79,8 @@ export async function waitForDelegations(
             ok: true,
             value: { timedOut: timedOut && !completed, snapshots },
           });
-      } catch {
+      } catch (error) {
+        onError?.(error);
         finish({
           ok: false,
           error: {
@@ -102,7 +104,8 @@ export async function waitForDelegations(
       }
       timer = setTimeout(() => inspect(true), parsed.value.timeoutMs);
       inspect(parsed.value.timeoutMs === 0);
-    } catch {
+    } catch (error) {
+      onError?.(error);
       finish({
         ok: false,
         error: {

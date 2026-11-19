@@ -35,6 +35,7 @@ export {
   appendTextAtEnd,
   buildEditorValueFromMessage,
   createChatEditor,
+  editorDocumentGeneration,
   focusEditor,
   insertTextAtCursor,
   replaceInterimRange,

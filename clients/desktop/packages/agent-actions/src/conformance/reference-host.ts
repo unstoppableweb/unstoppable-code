@@ -99,6 +99,7 @@ export const REFERENCE_HOST_CAPABILITIES: AgentActionHostCapabilities = {
   pullRequestStatus: true,
   scheduleWakeup: true,
   memory: 'synced_user',
+  chatHistory: true,
   feed: true,
   managedDelegation: true,
 };

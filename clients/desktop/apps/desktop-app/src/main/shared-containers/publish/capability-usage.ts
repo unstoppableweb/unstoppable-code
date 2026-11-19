@@ -280,6 +280,13 @@ export interface CollectSharedContainerCapabilityUsageInput {
   includedChatIds: readonly string[];
   /** Repository-relative paths actually present in this revision's snapshot, per repository; used for snapshot-aware exclusions. Absent for Cowork. */
   snapshotPaths?: SharedContainerSnapshotPathIndex;
+  /**
+   * Publish automations in workflow form
+   * (`canopy-desktop-shared-automations-workflow-form`, CAN-6455): a
+   * converted chat automation is collected by the container its chat action
+   * targets, and the flag is part of {@link SharedContainerCapabilityUsage.sourceVersion}.
+   */
+  workflowForm?: boolean;
   signal?: AbortSignal;
 }
 
@@ -324,6 +331,15 @@ export interface SharedContainerCapabilityUsageDependencies {
   /** Raw YAML of a file pipeline, or null when it is gone or too large. */
   readPipelineFile: (filePath: string) => Promise<string | null>;
   listAutomations: () => Promise<ScheduledActivity[]>;
+  /**
+   * `records` as the automations list shows them
+   * (`projectOwnedChatAutomation`): a converted chat automation as the chat
+   * action its owned workflow stands for. `all` is every stored record.
+   */
+  projectOwnedChatAutomations: (
+    records: readonly ScheduledActivity[],
+    all: readonly ScheduledActivity[],
+  ) => Promise<ScheduledActivity[]>;
   listAutomationRuns: (
     request: AutomationRunHistoryRequest,
   ) => Promise<AutomationRunHistoryResponse>;
@@ -479,6 +495,11 @@ const DEFAULT_DEPENDENCIES: SharedContainerCapabilityUsageDependencies = {
   listAutomations: async () => {
     const { getAutomationsService } = await import('../../automations/service');
     return (await getAutomationsService().list()).activities;
+  },
+  projectOwnedChatAutomations: async (records, all) => {
+    const { projectOwnedChatAutomation } =
+      await import('../../automations/owned-chat-projection');
+    return records.map((record) => projectOwnedChatAutomation(record, all));
   },
   listAutomationRuns: async (request) => {
     const { getAutomationsService } = await import('../../automations/service');
@@ -1802,6 +1823,46 @@ function automationTargetOf(
   }
 }
 
+/**
+ * Whether the record is a workflow with a `global` target that may own its
+ * pipeline: what a chat automation becomes once converted (CAN-4551). Its
+ * runs record no target, so only its chat action names a container.
+ */
+function isGlobalUserWorkflow(action: AutomationAction): boolean {
+  return (
+    action.type === 'worktree_pipeline' &&
+    action.target?.kind === 'global' &&
+    action.pipelineSource === 'user'
+  );
+}
+
+/**
+ * With the workflow-form flag on (CAN-6455), the container each converted
+ * chat automation's chat action targets, by activity id, as the analysis
+ * reads it from the projected list.
+ */
+async function convertedChatTargets(
+  context: CollectorContext,
+  activities: readonly ScheduledActivity[],
+): Promise<Map<string, { projectId: string; worktreeId: string }>> {
+  const targets = new Map<string, { projectId: string; worktreeId: string }>();
+  if (context.input.workflowForm !== true) return targets;
+  const converted = activities.filter((activity) =>
+    isGlobalUserWorkflow(activity.action),
+  );
+  if (converted.length === 0) return targets;
+  const projected = await context.deps.projectOwnedChatAutomations(
+    converted,
+    activities,
+  );
+  for (const activity of projected) {
+    const chatAction = activity.ownedPipeline?.chatAction;
+    const target = chatAction ? automationTargetOf(chatAction) : null;
+    if (target) targets.set(activity.id, target);
+  }
+  return targets;
+}
+
 /** Recovery automations the app schedules itself; not user capabilities. */
 function isSystemAutomation(action: AutomationAction): boolean {
   return (
@@ -1865,6 +1926,7 @@ function automationDefinitionVersion(activity: ScheduledActivity): string {
 
 async function collectAutomations(context: CollectorContext): Promise<void> {
   const activities = await context.deps.listAutomations();
+  const chatTargets = await convertedChatTargets(context, activities);
   const relevant = await mapWithConcurrency(
     activities,
     SOURCE_READ_CONCURRENCY,
@@ -1873,7 +1935,10 @@ async function collectAutomations(context: CollectorContext): Promise<void> {
         context.diagnostics.automationSystemSkipped += 1;
         return false;
       }
-      const target = automationTargetOf(activity.action);
+      const target =
+        automationTargetOf(activity.action) ??
+        chatTargets.get(activity.id) ??
+        null;
       if (
         target &&
         target.worktreeId === context.input.worktreeId &&
@@ -2019,12 +2084,15 @@ function applyExclusions(
 function computeSourceVersion(
   containerType: SharedContainerCapabilityUsage['containerType'],
   references: readonly SharedContainerCapabilityReference[],
+  workflowForm: boolean,
 ): string {
   return `scu:v${String(SHARED_CONTAINER_CAPABILITY_USAGE_PARSER_VERSION)}:${sha256(
     stableStringify({
       parserVersion: SHARED_CONTAINER_CAPABILITY_USAGE_PARSER_VERSION,
       containerType,
       references,
+      // CAN-6455: the same usage publishes differently in workflow form.
+      ...(workflowForm ? { workflowForm } : {}),
     }),
   )}`;
 }
@@ -2110,7 +2178,11 @@ export async function collectSharedContainerCapabilityUsage(
     containerType: input.containerType,
     references,
     incomplete,
-    sourceVersion: computeSourceVersion(input.containerType, references),
+    sourceVersion: computeSourceVersion(
+      input.containerType,
+      references,
+      input.workflowForm === true,
+    ),
     diagnostics,
   };
 }

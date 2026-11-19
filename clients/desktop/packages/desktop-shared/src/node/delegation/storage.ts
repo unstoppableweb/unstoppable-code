@@ -39,6 +39,8 @@ import {
   isVersionedManagedMessageReceipt,
   type ManagedMessageReceiptV2,
 } from './managed-message-receipt-v2';
+import type { StoredManagedDelegationMessageResult } from '@canopy/core-runtime/node/chat/delegation/managed-message-receipt-v2';
+export type { StoredManagedDelegationMessageResult } from '@canopy/core-runtime/node/chat/delegation/managed-message-receipt-v2';
 import { assertPrivateDirectoryAcl, renameWithRetry } from './private-storage';
 import {
   decodeStoredDelegationV3,
@@ -630,20 +632,6 @@ const storedRecord = z
     'Inconsistent delegation identity',
   );
 const stored = storedRecord.transform(migrateRetainedFileChanges);
-
-export type StoredManagedDelegationMessageResult =
-  | { readonly ok: true; readonly snapshot: AgentDelegationSnapshot }
-  | {
-      readonly ok: false;
-      readonly code:
-        | 'parent_unavailable'
-        | 'busy'
-        | 'not_found'
-        | 'discarded'
-        | 'invalid_request'
-        | 'failed';
-      readonly error: string;
-    };
 
 export interface StoredManagedDelegationMessageReceiptV1 {
   readonly operationId: string;

@@ -562,6 +562,11 @@ export async function installItemForHarnesses(
     return {
       version: ITEM_HARNESS_INSTALLS_VERSION,
       harnesses: { ...kept?.harnesses, ...added },
+      // Companion copies stay linked until an Add links new ones, so an
+      // uninstall still takes them along.
+      ...(existing?.companions !== undefined
+        ? { companions: existing.companions }
+        : {}),
       createdAt: kept?.createdAt ?? now,
       updatedAt: now,
     };
@@ -748,6 +753,14 @@ const uninstallGenerations = new Map<string, number>();
 
 function uninstallGeneration(key: string): number {
   return uninstallGenerations.get(key) ?? 0;
+}
+
+/**
+ * How many uninstalls of this record key this process has seen, so work
+ * that outlives one (a companion copy still installing) can tell.
+ */
+export function itemUninstallGeneration(key: string): number {
+  return uninstallGeneration(key);
 }
 
 /** Marks an item uninstalled, so checks already running discard results. */

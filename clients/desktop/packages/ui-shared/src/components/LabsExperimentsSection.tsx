@@ -13,6 +13,8 @@ export interface LabsExperimentRowView {
   readonly checked: boolean;
   /** True while the state is loading or a save for this row is pending. */
   readonly disabled: boolean;
+  /** Why the switch is unavailable, shown under the description. */
+  readonly disabledReason?: string;
   /**
    * Which section lists the row. `pages` lists experiments that bring back a
    * page hidden by default. Absent means `early-access`.
@@ -139,25 +141,48 @@ function LabsExperimentRows({
 >): JSX.Element {
   return (
     <Group>
-      {rows.map((row) => (
-        <Row
-          key={row.id}
-          label={row.name}
-          htmlFor={toggleIdFor(row.id)}
-          description={row.description}
-          dataTestId={`labs-experiment-row-${row.id}`}
-          control={
-            <ToggleSwitch
-              id={toggleIdFor(row.id)}
-              checked={row.checked}
-              disabled={row.disabled}
-              label={row.name}
-              onChange={(next) => onToggle(row.id, next)}
-              dataTestId={toggleTestIdFor(row.id)}
-            />
-          }
-        />
-      ))}
+      {rows.map((row) => {
+        const disabledReasonId = `labs-experiment-disabled-reason-${row.id}`;
+        return (
+          <Row
+            key={row.id}
+            label={row.name}
+            htmlFor={toggleIdFor(row.id)}
+            description={
+              row.disabledReason === undefined ? (
+                row.description
+              ) : (
+                <>
+                  {row.description}
+                  <span
+                    id={disabledReasonId}
+                    data-testid={disabledReasonId}
+                    className="block text-xs text-pretty fg-tertiary"
+                  >
+                    {row.disabledReason}
+                  </span>
+                </>
+              )
+            }
+            dataTestId={`labs-experiment-row-${row.id}`}
+            control={
+              <ToggleSwitch
+                id={toggleIdFor(row.id)}
+                checked={row.checked}
+                disabled={row.disabled}
+                label={row.name}
+                describedBy={
+                  row.disabledReason === undefined
+                    ? undefined
+                    : disabledReasonId
+                }
+                onChange={(next) => onToggle(row.id, next)}
+                dataTestId={toggleTestIdFor(row.id)}
+              />
+            }
+          />
+        );
+      })}
     </Group>
   );
 }

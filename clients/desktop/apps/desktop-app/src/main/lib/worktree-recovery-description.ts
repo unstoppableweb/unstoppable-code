@@ -1,3 +1,5 @@
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { recordMetadataWork } from '@canopy/desktop-shared/node/work-counters';
 import { readArchiveRecoveryHolds } from './archive-recovery-refs';
 import {
@@ -34,15 +36,16 @@ import {
   canFinishArchiveCleanup,
   canResumeFailedChildArchive,
   canResumeInterruptedArchive,
+  hasUnverifiableProjectIdentity,
   inFlightDestructiveOperationIds,
   isRecoveryProjectUnreplaced,
+  isUnverifiableReleaseCandidate,
   isDestructiveRecoveryOwnerless,
   isVerifiedProtectedPathIdentity,
   journalDirectoryUnreadable,
   areOwnedPathsUnreplaced,
   readBlockingDestructiveRecoveries,
   readDirectoryStatIdentity,
-  statIdentityOf,
   type DestructiveRecoveryRecord,
 } from './w5-destructive-recovery';
 import { findWorktreeArchiveSourceRefusal } from './worktree-service';
@@ -51,6 +54,7 @@ import {
   getArchivedContainerDir,
   getArchivedContainerChatsPath,
   getWorkspaceWorktreeDir,
+  getWorktreeDataDir,
 } from './paths';
 import {
   readWorkspaceConfigDetailed,
@@ -281,6 +285,21 @@ export function describeWorktreeRecovery(
   return describeWorktreeRecoveryFromInspection(request, discard, error);
 }
 
+function discardAction(
+  request: WorktreeRecoveryContext,
+  discard: WorktreeDiscardDescription | undefined,
+): WorktreeRecoveryDescription['actions']['discard'] {
+  if (discard?.refusal?.reason === 'evidence-unreadable')
+    return { eligible: false, reason: 'unavailable' };
+  return request.expectedCreatedAt !== null &&
+    discard?.workspaceId === request.workspaceId &&
+    discard.worktreeId === request.worktreeId &&
+    discard.createdAt === request.expectedCreatedAt &&
+    discard.status === 'discardable'
+    ? { eligible: true }
+    : { eligible: false, reason: 'not-admitted' };
+}
+
 async function describeWorktreeRecoveryFromInspection(
   request: WorktreeRecoveryContext,
   discard: WorktreeDiscardDescription | undefined,
@@ -290,14 +309,7 @@ async function describeWorktreeRecoveryFromInspection(
   const description = recoveryFromRefusal(request, error);
   if (description.destination.kind === 'journal-review') return description;
   // Discard admission is independent of lifecycle evidence and row presence.
-  description.actions.discard =
-    request.expectedCreatedAt !== null &&
-    discard?.workspaceId === request.workspaceId &&
-    discard.worktreeId === request.worktreeId &&
-    discard.createdAt === request.expectedCreatedAt &&
-    discard.status === 'discardable'
-      ? { eligible: true }
-      : { eligible: false, reason: 'not-admitted' };
+  description.actions.discard = discardAction(request, discard);
   try {
     validateId(request.workspaceId, 'workspaceId');
     validateId(request.worktreeId, 'worktreeId');
@@ -369,8 +381,16 @@ async function describeWorktreeRecoveryFromInspection(
     if (
       description.evidence.kind !== 'journal' ||
       description.evidence.attribution !== 'subject'
-    )
+    ) {
+      diagnosis.check =
+        record.workspaceId !== request.workspaceId ||
+        record.worktreeId !== request.worktreeId
+          ? 'operation-subject-mismatch'
+          : !record.createdAt || !request.expectedCreatedAt
+            ? 'created-at-missing'
+            : 'other-incarnation';
       return description;
+    }
     if (record.operation !== 'worktree-archive' || record.state === 'active') {
       diagnosis.check =
         record.state === 'active' ? 'raw-active' : 'not-archive';
@@ -423,14 +443,29 @@ async function describeWorktreeRecoveryFromInspection(
       }
     }
     const { workspaceId, worktreeId, expectedCreatedAt } = request;
-    if (!expectedCreatedAt) return description;
+    if (!expectedCreatedAt) {
+      diagnosis.check = 'created-at-missing';
+      return description;
+    }
     const list = await readWorkspaceWorktreesDetailed(workspaceId, {
       persistRemovalCleanup: false,
     });
-    if (list.authority !== 'ok') return description;
+    if (list.authority !== 'ok') {
+      diagnosis.check = 'list-unreadable';
+      return description;
+    }
     const row = list.worktrees.find((entry) => entry.id === worktreeId);
-    if (row && row.createdAt !== expectedCreatedAt) return description;
-    if (!(await isRecoveryProjectUnreplaced(record))) {
+    if (row && row.createdAt !== expectedCreatedAt) {
+      diagnosis.check = 'other-incarnation';
+      return description;
+    }
+    // A listed unverifiable row keeps Discard; only an unlisted one may reach Release.
+    const unverifiable = hasUnverifiableProjectIdentity(record);
+    if (
+      unverifiable
+        ? row || !isUnverifiableReleaseCandidate(record)
+        : !(await isRecoveryProjectUnreplaced(record))
+    ) {
       diagnosis.check = 'identity-unverified';
       return description;
     }
@@ -440,6 +475,10 @@ async function describeWorktreeRecoveryFromInspection(
     const checkoutIdentity = await readDirectoryStatIdentity(checkout).catch(
       () => undefined,
     );
+    if (unverifiable && checkoutIdentity !== null) {
+      diagnosis.check = 'identity-unverified';
+      return description;
+    }
     const owned = record.ownedPaths.find((entry) => entry.path === checkout);
     if (checkoutIdentity === null)
       description.retained.checkout = {
@@ -450,7 +489,11 @@ async function describeWorktreeRecoveryFromInspection(
       checkoutIdentity !== undefined &&
       owned?.identity &&
       isVerifiedProtectedPathIdentity(owned.identity) &&
-      statIdentityOf(owned.identity) === checkoutIdentity
+      matchesRecordedDirectoryIdentity(
+        owned.identity,
+        checkoutIdentity,
+        hostOperatingSystem(),
+      )
     )
       description.retained.checkout = {
         presence: 'present',
@@ -470,6 +513,11 @@ async function describeWorktreeRecoveryFromInspection(
         return null;
       throw error;
     });
+    // An unverifiable committed archive stays refused: its manifest's files are unproven.
+    if (unverifiable && manifest) {
+      diagnosis.check = 'identity-unverified';
+      return description;
+    }
     const matchingManifest =
       manifest &&
       (manifest.version === 2 || manifest.version === 3) &&
@@ -532,8 +580,15 @@ async function describeWorktreeRecoveryFromInspection(
       config.authority !== 'ok' ||
       config.config.type === 'cowork' ||
       !isWritableScope(workspaceId)
-    )
+    ) {
+      diagnosis.check =
+        config.authority !== 'ok'
+          ? 'configuration-unreadable'
+          : config.config.type === 'cowork'
+            ? 'unsupported-workspace'
+            : 'read-only-scope';
       return description;
+    }
     if (matchingManifest?.version === 2)
       description.retained.gitSnapshot = await snapshotFacts(
         workspaceId,
@@ -588,8 +643,10 @@ async function describeWorktreeRecoveryFromInspection(
         [worktreeId],
         config.config.type,
       ))
-    )
+    ) {
+      diagnosis.check = 'source-refused';
       return description;
+    }
     if (
       matchingManifest &&
       (await canFinishArchiveCleanup(
@@ -613,7 +670,14 @@ async function describeWorktreeRecoveryFromInspection(
             : 'already-completed'
           : 'committed-cleanup-only';
     } else if (!manifest && record.state !== 'completed') {
-      if (!(await areOwnedPathsUnreplaced(record))) {
+      if (
+        !(await areOwnedPathsUnreplaced(
+          record,
+          unverifiable
+            ? getWorktreeDataDir(workspaceId, worktreeId)
+            : undefined,
+        ))
+      ) {
         diagnosis.check = 'identity-unverified';
         return description;
       }
@@ -636,15 +700,21 @@ async function describeWorktreeRecoveryFromInspection(
       );
       if (
         !record.steps.every((step) => preQuarantine.has(step.phase)) ||
-        git?.teardown ||
+        (unverifiable ? git !== null : git?.teardown) ||
         quarantine.presence !== 'absent' ||
         (staged &&
           (staged.createdAt !== expectedCreatedAt ||
             staged.phase !== 'captured' ||
             (checkoutIdentity !== null &&
-              staged.identity !== checkoutIdentity)))
+              !matchesRecordedDirectoryIdentity(
+                staged.identity,
+                checkoutIdentity,
+                hostOperatingSystem(),
+              ))))
       ) {
-        diagnosis.check = 'quarantine-unqualified';
+        diagnosis.check = unverifiable
+          ? 'identity-unverified'
+          : 'quarantine-unqualified';
       } else if (
         row &&
         description.retained.checkout.verification === 'verified'
@@ -657,6 +727,11 @@ async function describeWorktreeRecoveryFromInspection(
       } else diagnosis.check = 'mixed-or-unverified-occupancy';
     }
     if (record.state === 'completed' || record.cleanupRepair !== undefined) {
+      if (diagnosis.check === 'not-admitted')
+        diagnosis.check =
+          record.state === 'completed'
+            ? 'already-completed'
+            : 'cleanup-repair-pending';
       description.actions.retry = { eligible: false, reason: 'not-admitted' };
       description.actions.finishArchive = {
         eligible: false,
@@ -665,7 +740,10 @@ async function describeWorktreeRecoveryFromInspection(
       return description;
     }
     // Execution still uses the current slot. Historical diagnosis must not authorize overwriting it.
-    if (operation.slot !== 'same-operation') return description;
+    if (operation.slot !== 'same-operation') {
+      diagnosis.check = 'slot-not-current';
+      return description;
+    }
     // Desktop/Portal Delete also retains an unlocked archive. Intent is not the lifecycle operation.
     if (
       row &&
@@ -728,6 +806,15 @@ async function describeWorktreeRecoveryFromInspection(
 /** Live operation enumeration is independent of the cold W5 ownership gate and canonical rows. */
 export async function listWorktreeRecovery(
   request: WorktreeRecoveryListParams,
+  // Presentation supplies sidebar admission; Finish needs only the diagnosis reads.
+  describeDiscard?: (
+    workspaceId: string,
+    worktreeId: string,
+    options: {
+      recovery: WorktreeRecoveryRequest;
+      includeRecoveryDiagnosis: false;
+    },
+  ) => Promise<WorktreeDiscardDescription>,
 ): Promise<WorktreeRecoveryListResult> {
   recordMetadataWork('recovery.list');
   // CAN-6948: a running archive is `active` on disk but needs no review. An
@@ -737,6 +824,9 @@ export async function listWorktreeRecovery(
   const scan = await readArchiveJournalOperations(request.workspaceId);
   for (const id of inFlightDestructiveOperationIds()) running.add(id);
   const entries: WorktreeRecoveryDescription[] = [];
+  let discardRows:
+    | ReturnType<typeof readWorkspaceWorktreesDetailed>
+    | undefined;
   for (const operation of scan.operations) {
     // A caller that names the operation still gets its description.
     if (!request.operationId && running.has(operation.record.operationId))
@@ -751,20 +841,58 @@ export async function listWorktreeRecovery(
         (!request.operationId || entry.operationId === request.operationId),
     );
     if (!record?.worktreeId) continue;
-    entries.push(
-      await describeWorktreeRecoveryFromInspection(
-        {
-          workspaceId: request.workspaceId,
-          worktreeId: record.worktreeId,
-          expectedCreatedAt: record.createdAt ?? null,
-          intent: 'archive',
-          operationId: record.operationId,
-        },
-        undefined,
-        undefined,
-        scan,
-      ),
+    const context: WorktreeRecoveryContext = {
+      workspaceId: request.workspaceId,
+      worktreeId: record.worktreeId,
+      expectedCreatedAt: record.createdAt ?? null,
+      intent: 'archive',
+      operationId: record.operationId,
+    };
+    const description = await describeWorktreeRecoveryFromInspection(
+      context,
+      undefined,
+      undefined,
+      scan,
     );
+    entries.push(description);
+    if (
+      !describeDiscard ||
+      !scan.readable ||
+      !operation.consistent ||
+      operation.slot !== 'same-operation' ||
+      !record.createdAt ||
+      description.destination.kind !== 'recovery'
+    )
+      continue;
+    try {
+      discardRows ??= readWorkspaceWorktreesDetailed(request.workspaceId, {
+        persistRemovalCleanup: false,
+      });
+      const list = await discardRows;
+      if (
+        list.authority !== 'ok' ||
+        !list.worktrees.some(
+          (row) =>
+            row.id === record.worktreeId && row.createdAt === record.createdAt,
+        )
+      )
+        continue;
+      const discard = await describeDiscard(
+        request.workspaceId,
+        record.worktreeId,
+        {
+          includeRecoveryDiagnosis: false,
+          recovery: {
+            intent: context.intent,
+            expectedCreatedAt: context.expectedCreatedAt,
+            operationId: context.operationId,
+          },
+        },
+      );
+      description.actions.discard = discardAction(context, discard);
+    } catch {
+      description.actions.discard = { eligible: false, reason: 'unavailable' };
+    }
   }
   try {
     const resolutions = (await readArchiveRecoveryHolds(request.workspaceId))

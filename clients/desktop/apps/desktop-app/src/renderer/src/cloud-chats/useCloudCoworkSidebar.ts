@@ -4,7 +4,10 @@ import { useShallow } from 'zustand/shallow';
 import {
   coreCoworkSidebarRows,
   type CoreCoworkProject,
+  type CoreCoworkProjectPatch,
+  type CoreCoworkProjectSaved,
   type CoreCoworkSidebarRows,
+  type CoreCoworkState,
   type CoreCoworkTask,
 } from '@canopy/app-state/core-cowork';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
@@ -13,11 +16,16 @@ import { useCanopyDesktopCloudChatsEnabled } from '@/hooks/useCanopyDesktopCloud
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type { WorktreeCreateResult } from '@canopy/app-core';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { useSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
 import { webCoreLocalId, webCoreScopeId } from '@/lib/chat-authority';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import { cloudCoworkStore } from './cloud-cowork-store';
 import { createRelayCoreCoworkInvoker } from './relay-invoker';
 import { refreshChatScopeRevisioned } from '@/stores/chat/slices/revisioned';
+import {
+  loadWebCoreServedOperations,
+  useWebCoreServesTaskDelete,
+} from '@/lib/web-core-served-operations';
 import {
   isTaskBeingCreated,
   markTaskCreated,
@@ -114,7 +122,16 @@ export interface CloudCoworkSidebarProject {
 
 export type CloudCoworkSidebarModel =
   | { readonly status: 'disabled' }
-  | { readonly status: 'offline'; readonly reconnect: () => void }
+  | {
+      readonly status: 'offline';
+      readonly reconnect: () => void;
+      /**
+       * The rows last listed online, kept under the offline row as the web
+       * keeps them (CAN-6374); none before any listing on this account.
+       */
+      readonly rows: CoreCoworkSidebarRows;
+      readonly setCollapsed: (projectId: string, collapsed: boolean) => void;
+    }
   | {
       readonly status: 'online';
       /** Rows for the shared sidebar list, ids qualified by their authority. */
@@ -132,13 +149,23 @@ export type CloudCoworkSidebarModel =
         overId: string,
         visibleIds: readonly string[],
       ) => void;
-      /** Renames or recolours the project; rejects so a dialog can show why. */
+      /**
+       * Renames or recolours the project, or changes its sandbox's egress
+       * hosts and host settings; answers the save's warnings and rejects so
+       * a dialog can show why.
+       */
       readonly updateProject: (
         projectId: string,
-        patch: { readonly name?: string; readonly color?: string },
-      ) => Promise<void>;
+        patch: CoreCoworkProjectPatch,
+        options?: { readonly expectedRevision?: number },
+      ) => Promise<CoreCoworkProjectSaved>;
       /** Moves the project to the trash; rejects so a dialog can show why. */
       readonly deleteProject: (projectId: string) => Promise<void>;
+      /**
+       * The web core's manifest serves deleting a task to the Trash, so a
+       * task row may offer Delete beside Archive (CAN-7052).
+       */
+      readonly taskDelete: boolean;
     };
 
 /**
@@ -202,11 +229,46 @@ function connectCloudCowork(): void {
 let mountedHosts = 0;
 let connectedFor: string | null = null;
 
+/** The connection a mount opens for its flag state and account. */
+const connectionKey = (enabled: boolean, accountEpoch: number): string =>
+  enabled ? `on:${accountEpoch}` : 'off';
+
+/**
+ * The web core's last successful listing, and the connection it was listed
+ * on: offline, the sidebar shows exactly this, read-only. The shared store
+ * drops it offline (the web's background chats rely on that); only this
+ * sidebar keeps it, for that account only (CAN-6374).
+ */
+let lastListed: (CoreCoworkState['listed'] & { readonly key: string }) | null =
+  null;
+cloudCoworkStore.subscribe((state) => {
+  if (state.status === 'online' && connectedFor !== null)
+    lastListed = { key: connectedFor, ...state.listed };
+  else if (
+    state.status === 'disabled' ||
+    // Lost authorization (a revoked or expired key) is a sign-out here.
+    // shortcut: a 401 mid-stream arrives as `unavailable` (the relay ends the
+    // session, and an expired connection token answers 401 just as a revoked
+    // key does), so the rows clear only once a reconnect reaches the core and
+    // is refused, and stay while it is unreachable; upgrade if the web core
+    // tells the two apart.
+    state.offlineReason === 'unauthenticated' ||
+    state.offlineReason === 'permission_denied'
+  )
+    lastListed = null;
+});
+const NOT_LISTED: Pick<CoreCoworkState, 'projects' | 'tasksByProject'> = {
+  projects: [],
+  tasksByProject: {},
+};
+
 /** Mounts share one connection, opened per flag state and account. */
 function syncConnection(enabled: boolean, accountEpoch: number): void {
-  const key = enabled ? `on:${accountEpoch}` : 'off';
+  const key = connectionKey(enabled, accountEpoch);
   if (connectedFor === key) return;
   connectedFor = key;
+  // Another account (or none, after a sign-out) never sees these rows.
+  lastListed = null;
   if (enabled) connectCloudCowork();
   else cloudCoworkStore.getState().disconnect('disabled');
 }
@@ -327,12 +389,16 @@ export function retryCloudTask(projectId: string, worktreeId: string): void {
 export function useCloudCoworkSidebar(): CloudCoworkSidebarModel {
   const enabled = useCanopyDesktopCloudChatsEnabled();
   const accountEpoch = useWorkspaceContextStore((s) => s.accountEpoch);
+  const context = useSidebarScopingContext();
   const collapsed = useCloudProjectCollapse((s) => s.collapsed);
   const setCollapsed = useCloudProjectCollapse((s) => s.setCollapsed);
+  // `generation` and `offlineReason` re-render when `lastListed` is dropped.
   const { status, projects, tasksByProject } = useStore(
     cloudCoworkStore,
     useShallow((s) => ({
       status: s.status,
+      generation: s.generation,
+      offlineReason: s.offlineReason,
       projects: s.projects,
       tasksByProject: s.tasksByProject,
     })),
@@ -382,11 +448,14 @@ export function useCloudCoworkSidebar(): CloudCoworkSidebarModel {
   const updateProject = useCallback(
     async (
       projectId: string,
-      patch: { readonly name?: string; readonly color?: string },
-    ): Promise<void> => {
+      patch: CoreCoworkProjectPatch,
+      options?: { readonly expectedRevision?: number },
+    ): Promise<CoreCoworkProjectSaved> => {
       const workspaceId = webCoreLocalId(projectId);
       if (workspaceId === null) throw new Error('Not a cloud project.');
-      await cloudCoworkStore.getState().updateProject(workspaceId, patch);
+      return cloudCoworkStore
+        .getState()
+        .updateProject(workspaceId, patch, options);
     },
     [],
   );
@@ -398,17 +467,39 @@ export function useCloudCoworkSidebar(): CloudCoworkSidebarModel {
     },
     [],
   );
-  const rows = useMemo(
-    () =>
-      coreCoworkSidebarRows(projects, tasksByProject, {
-        scopeId: webCoreScopeId,
-        collapsed,
-      }),
-    [projects, tasksByProject, collapsed],
-  );
+  // Read once cloud chats are online; a task offers Delete only once the
+  // manifest lists it (CAN-7052).
+  const online = enabled && status === 'online';
+  useEffect(() => {
+    if (online) loadWebCoreServedOperations();
+  }, [online]);
+  const taskDelete = useWebCoreServesTaskDelete();
+  // Read in render, so another account's rows never show for a frame: none
+  // until the store's connection is this account's, live or kept.
+  const key = connectionKey(enabled, accountEpoch);
+  const listed =
+    connectedFor !== key
+      ? NOT_LISTED
+      : (status === 'offline' && lastListed?.key === key && lastListed) || {
+          projects,
+          tasksByProject,
+        };
+  const rows = useMemo(() => {
+    // The shared list's scoping rule: a lost organization is never the
+    // context, so its rows never show, whenever its listing landed.
+    const shown = new Set(
+      cloudProjectsForContext(listed.projects, {}, context).map((p) => p.key),
+    );
+    return coreCoworkSidebarRows(
+      listed.projects.filter((project) => shown.has(project.key)),
+      listed.tasksByProject,
+      { scopeId: webCoreScopeId, collapsed },
+    );
+  }, [listed.projects, listed.tasksByProject, collapsed, context]);
 
   if (!enabled || status === 'disabled') return { status: 'disabled' };
-  if (status === 'offline') return { status: 'offline', reconnect };
+  if (status === 'offline')
+    return { status: 'offline', reconnect, rows, setCollapsed };
   return {
     status: 'online',
     rows,
@@ -417,5 +508,6 @@ export function useCloudCoworkSidebar(): CloudCoworkSidebarModel {
     reorder,
     updateProject,
     deleteProject,
+    taskDelete,
   };
 }

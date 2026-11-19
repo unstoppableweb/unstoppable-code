@@ -1,7 +1,6 @@
 import {
   AGENT_STEP_LIMIT,
-  delegateAgentMeta,
-  delegateAgentStatus,
+  delegateTrayAgent,
   type BackgroundTrayAgent,
   type BackgroundTrayAgentStep,
 } from '@canopy/ui-app';
@@ -42,15 +41,20 @@ export function agentSteps(
  * The chat's live background subagents (`selectActiveAgentBlocks`) as the
  * background drawer lists them. A Claude background agent carries its
  * background task, matched by tool use id: the drawer lists it once, as the
- * agent, and stops it through that task. Delegates stop through the host;
- * Codex native children have no Stop (turn-state D10).
+ * agent, and stops it through that task. Delegates stop through the host,
+ * when its scope stops them (`delegationStop`); Codex native children have
+ * no Stop (turn-state D10).
  */
 export function backgroundTrayAgents(
   blocks: readonly DisplayBlock[],
   processes: readonly BackgroundProcess[],
   chatId: string,
-  withLiveDescendants: ReadonlySet<string> = NO_DELEGATION_IDS,
+  options: {
+    readonly withLiveDescendants?: ReadonlySet<string>;
+    readonly canStopDelegates?: boolean;
+  } = {},
 ): BackgroundTrayAgent[] {
+  const withLiveDescendants = options.withLiveDescendants ?? NO_DELEGATION_IDS;
   return blocks.flatMap((block): BackgroundTrayAgent[] => {
     switch (block.type) {
       case 'agent': {
@@ -103,28 +107,15 @@ export function backgroundTrayAgents(
           },
         ];
       }
-      case 'delegated_agent_call': {
-        const title = block.description || SUBAGENT_UNTITLED_LABEL;
+      case 'delegated_agent_call':
         return [
-          {
-            id: `managed:${block.delegationId}`,
-            kind: 'delegate',
-            title,
-            status: delegateAgentStatus(block),
-            activity: null,
+          delegateTrayAgent(block, {
             startedAt: block.createdAt,
             steps: agentSteps(block.subBlocks),
-            prompt: block.prompt || null,
-            meta: delegateAgentMeta(block),
-            taskId: null,
-            canStop: true,
-            target: { kind: 'managed', id: block.delegationId, title },
-            ...(withLiveDescendants.has(block.delegationId)
-              ? { stopsDescendants: true }
-              : {}),
-          },
+            canStop: options.canStopDelegates === true,
+            stopsDescendants: withLiveDescendants.has(block.delegationId),
+          }),
         ];
-      }
       default:
         return [];
     }

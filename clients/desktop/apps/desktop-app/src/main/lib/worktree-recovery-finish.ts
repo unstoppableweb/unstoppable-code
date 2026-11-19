@@ -1,3 +1,4 @@
+import { ArchiveTurnDiffCleanupError } from './archive-turn-diff-cleanup-error';
 import type {
   WorktreeRecoveryFinishParams,
   WorktreeRecoveryFinishResult,
@@ -161,11 +162,18 @@ export function finishWorktreeRecovery(
       );
     } catch (error) {
       logMainProcessWarn('Archive Finish stopped', {
+        error,
+        underlying:
+          error instanceof ArchiveTurnDiffCleanupError
+            ? error.underlying
+            : undefined,
         code: destructiveFailureCode(error),
         check:
-          error instanceof W5CommitRefusedError
-            ? error.details.check
-            : undefined,
+          error instanceof ArchiveTurnDiffCleanupError
+            ? error.check
+            : error instanceof W5CommitRefusedError
+              ? error.details.check
+              : undefined,
       });
       if (error instanceof FinishRefused)
         return { status: 'refused', check: error.check };

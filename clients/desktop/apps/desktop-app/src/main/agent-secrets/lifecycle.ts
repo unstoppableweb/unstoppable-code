@@ -5,13 +5,16 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const FIRST_SWEEP_DELAY_MS = 60 * 1000;
 let sweepTimer: NodeJS.Timeout | null = null;
 
-/** Deletes a closed or archived chat's agent secrets. Never throws. */
+/**
+ * Deletes a closed or archived chat's agent secrets, the revoked and
+ * replaced values it kept for redaction too. Never throws.
+ */
 export async function revokeClosedChatSecrets(
   scope: ChatSecretScope,
 ): Promise<void> {
   try {
     const store = getChatSecretStore();
-    const removed = await store.remove(scope);
+    const removed = await store.endChat(scope);
     if (removed.length)
       await store.audit({
         event: 'revoked',

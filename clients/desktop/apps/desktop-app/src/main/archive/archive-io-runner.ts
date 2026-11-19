@@ -1,3 +1,5 @@
+import { sanitizedDestructiveCode } from '../lib/destructive-failure-context';
+import { archiveErrorWithFrames } from '../lib/archive-error-frames';
 import * as path from 'node:path';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
@@ -187,11 +189,25 @@ function handleMessage(state: WorkerState, message: unknown): void {
       record.result = response.result;
     }
   } else if (response.type === 'error') {
-    record.error = new Error(response.message);
+    record.error = archiveErrorWithFrames(
+      response.message,
+      response.frames ?? [],
+    );
     if (response.code === ARCHIVE_IO_GIT_TIMEOUT_CODE) {
       Object.assign(record.error, { code: 'ETIMEDOUT', killed: true });
     } else if (response.code === ARCHIVE_IO_GIT_RECOVERY_REQUIRED_CODE) {
       Object.assign(record.error, { code: response.code });
+    } else {
+      const diagnostic = sanitizedDestructiveCode(response.failureCode);
+      const code =
+        response.code === 'ARCHIVE_IO_FAILED' &&
+        diagnostic !== 'unknown' &&
+        diagnostic !== 'Error' &&
+        // Transport control classifications must come from the transport itself.
+        !diagnostic.startsWith('ARCHIVE_IO_')
+          ? diagnostic
+          : sanitizedDestructiveCode(response.code);
+      if (code !== 'unknown') Object.assign(record.error, { code });
     }
     recordArchiveIoDiagnostic(record.request, {
       stage: 'failed',

@@ -1,11 +1,15 @@
+import { registeredHostedSettingsClient } from '@/client/hosted-settings-client-registry';
+import { recommendationAudience } from '@/lib/organizationRecommendations';
 import {
   resolveClientAppError,
   reportClientAppError,
 } from '@canopy/desktop-instrumentation/client';
 import { createWorktreeCreationActions } from './projectsStore.worktreeCreation';
 import {
+  AppErrorSchema,
   createAppError,
   toAppError,
+  type AppError,
   type AppErrorCode,
 } from '@canopy/protocol/app-errors';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
@@ -266,6 +270,12 @@ export interface PendingRecommendedPluginPrompt {
   scopeLabel: string;
   items: RecommendedPluginItem[];
   requirements: InspectRecommendedPluginsResponse['requirements'];
+  /**
+   * Set in an organization project (CAN-6241): `items` are the ones its
+   * shared setup still leaves open, offered to an administrator to add for
+   * everyone or dismiss in that setup, not to apply on this computer.
+   */
+  organization?: { readonly setupProjectId: string };
 }
 
 interface WorkspaceDriftEntry {
@@ -432,6 +442,8 @@ export interface PendingWorktreeScroll {
 
 interface WorktreeFailure extends InlineFailure {
   displayErrorCode?: AppErrorCode;
+  /** Main already recorded this failure; the notice shows it instead of recording again. */
+  recordedError?: AppError;
 }
 
 export interface ProjectsState {
@@ -2648,8 +2660,17 @@ function worktreeGitFailedNotice(
           ...(sourceName ? { sourceName } : {}),
           hasDetails: details !== '',
         });
+  // Main recorded this failure; the notice links to that record. The event can
+  // arrive over the remote-control tunnel, so only a well-formed recorded error
+  // stops the notice from recording the failure itself.
+  const recorded = AppErrorSchema.safeParse(event.recordedError);
+  const recordedError =
+    recorded.success && recorded.data.recordedBy !== undefined
+      ? recorded.data
+      : undefined;
   return {
     error,
+    ...(recordedError ? { recordedError } : {}),
     ...(details === '' ? {} : { details: event.error }),
     ...(event.failureReason === 'source-no-commits'
       ? { displayErrorCode: 'external.state_changed' }
@@ -4942,11 +4963,20 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         return;
       }
 
-      if (
-        !response ||
-        ((response.promptItems?.length ?? 0) === 0 &&
-          (response.requirements?.length ?? 0) === 0)
-      ) {
+      if (!response) return;
+      // In an organization project the recommendations are the project's to
+      // decide (CAN-6241): only an administrator is asked, about what its
+      // shared setup leaves open. Environment setup stays per person.
+      const audience = await recommendationAudience(
+        registeredHostedSettingsClient(),
+        get().projects.find((project) => project.id === projectId)?.owner,
+        response.items ?? [],
+      );
+      const items =
+        audience.kind === 'organization'
+          ? audience.items
+          : (response.promptItems ?? []);
+      if (items.length === 0 && (response.requirements?.length ?? 0) === 0) {
         return;
       }
 
@@ -4956,8 +4986,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           worktreeId,
           repoId: options?.repoId,
           scopeLabel: options?.label ?? response.scopeLabel,
-          items: response.promptItems ?? [],
+          items,
           requirements: response.requirements ?? [],
+          ...(audience.kind === 'organization' && items.length > 0
+            ? { organization: { setupProjectId: audience.setupProjectId } }
+            : {}),
         },
       });
     },
@@ -5267,6 +5300,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           }
           // eslint-disable-next-line no-console
           console.error('Failed to load projects:', error);
+          // A failed IPC call is already reported by the main handler.
+          if (settlementStage !== 'ipc')
+            reportClientAppError(error, { source: 'projects.load_settlement' });
           const current = get();
           set({
             isLoading: false,
@@ -5978,13 +6014,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           activeWorktreeId,
           overWorktreeId,
         });
-      } catch {
+      } catch (error) {
         if (get().projects === updatedProjects) {
           set({ projects: previousProjects });
         }
         useGitHubStore
           .getState()
           .addToast('Try reordering the items again', 'error', undefined, {
+            caught: error,
             projectId,
             worktreeId: activeWorktreeId,
           });
@@ -6383,13 +6420,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           worktreeId,
           pausedHookKeys: uniqueKeys,
         });
-      } catch {
+      } catch (error) {
         if (get().projects === nextProjects) {
           set({ projects: previousProjects });
         }
         useGitHubStore
           .getState()
           .addToast('Failed to update paused hooks', 'error', undefined, {
+            caught: error,
             category: 'Hook',
             projectId,
             worktreeId,
@@ -6434,7 +6472,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           worktreeId,
           hidden,
         });
-      } catch {
+      } catch (error) {
         // Only this row's flag: a selection's Hide runs several at once.
         set((state) => ({
           projects: state.projects.map((project) => {
@@ -6463,6 +6501,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         useGitHubStore
           .getState()
           .addToast('Failed to update hidden state', 'error', undefined, {
+            caught: error,
             projectId,
             worktreeId,
           });
@@ -6507,13 +6546,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           worktreeId,
           ...(nextLabel !== undefined ? { label: nextLabel } : {}),
         });
-      } catch {
+      } catch (error) {
         if (get().projects === nextProjects) {
           set({ projects: previousProjects });
         }
         useGitHubStore
           .getState()
           .addToast('Failed to update label', 'error', undefined, {
+            caught: error,
             projectId,
             worktreeId,
           });
@@ -6554,7 +6594,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       set({ projects: nextProjects });
       try {
         await window.api.setWorktreePinned({ projectId, worktreeId, pinned });
-      } catch {
+      } catch (error) {
         set((state) => ({
           projects: state.projects.map((project) => {
             if (project.id !== projectId || project.type === 'cowork') {
@@ -6585,7 +6625,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             pinned ? 'Failed to pin' : 'Failed to unpin',
             'error',
             undefined,
-            { projectId, worktreeId },
+            { caught: error, projectId, worktreeId },
           );
       }
     },
@@ -6616,7 +6656,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       set({ projects: nextProjects });
       try {
         await window.api.updateWorkspaceMetadata({ workspaceId, pinned });
-      } catch {
+      } catch (error) {
         set((state) => ({
           projects: state.projects.map((project) => {
             if (
@@ -6635,7 +6675,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         }));
         useGitHubStore
           .getState()
-          .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
+          .addToast(
+            pinned ? 'Failed to pin' : 'Failed to unpin',
+            'error',
+            undefined,
+            { caught: error },
+          );
       }
     },
 
@@ -6663,7 +6708,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           workspaceId,
           itemSortMode: mode,
         });
-      } catch {
+      } catch (error) {
         set((state) => ({
           projects: state.projects.map((project) => {
             if (
@@ -6680,7 +6725,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             return next;
           }),
         }));
-        useGitHubStore.getState().addToast('Failed to change order', 'error');
+        useGitHubStore
+          .getState()
+          .addToast('Failed to change order', 'error', undefined, {
+            caught: error,
+          });
       }
     },
 
@@ -6742,13 +6791,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         // optimistic override while IPC was pending. Reconcile from main after
         // acknowledgement, superseding older in-flight loads before returning.
         await get().loadProjects({ silent: true });
-      } catch {
+      } catch (error) {
         if (get().projects === nextProjects) {
           set({ projects: previousProjects });
         }
         useGitHubStore
           .getState()
           .addToast('Failed to update branch grouping', 'error', undefined, {
+            caught: error,
             projectId,
             worktreeId,
           });

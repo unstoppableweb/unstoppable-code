@@ -8,6 +8,7 @@ import { closeWebCoreChatBackend } from '@/stores/chat/web-core';
 import { splitWorktreeKey } from '@/stores/chat/utils';
 import { useChatStore } from '@/stores/chatStore';
 import { installWebCoreAgentTasksPublisher } from './web-core-agent-tasks-publisher';
+import { installCloudDelegationTranscripts } from './cloud-delegation-transcripts';
 import {
   deletedChatsKeptThroughOffline,
   deletedTasksKeptThroughOffline,
@@ -32,6 +33,7 @@ export function ensureCloudScopeLifecycle(): void {
   installed = true;
   installWebCoreAgentTasksPublisher();
   installCloudTaskDeletionHandler();
+  installCloudDelegationTranscripts();
   subscribeWebCoreCoworkDirectory(() => {
     if (isWebCoreCoworkOnline()) return;
     // A task deleted on another device can't be read again: its chat, with

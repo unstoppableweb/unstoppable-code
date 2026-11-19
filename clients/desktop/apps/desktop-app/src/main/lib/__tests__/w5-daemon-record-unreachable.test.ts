@@ -1,9 +1,17 @@
+import { createW5RecordHostPort } from '@canopy/core-runtime/node/w5/record-port';
+import { WorkspaceConfigUnreadableError } from '@canopy/core-runtime/node/w5/file-store';
 // GB4 (CAN-5542) PR 1: Electron main's daemon-backed W5 store when its
 // record-port connection drops, on a real commit-log worker and real files.
 // The record port runs through the unreachable guard, as the production
 // lease's does; the daemon side is the core-runtime authority served through
 // the daemon control-stream code.
-import { readFileSync, realpathSync, rmSync } from 'node:fs';
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type * as WorkerThreads from 'node:worker_threads';
 import type * as CoreStorage from '@canopy/core-runtime/storage';
@@ -52,11 +60,8 @@ jest.mock('../../observability', () => ({
     recordUsageMetricEvent: jest.fn(),
   })),
 }));
-jest.mock('../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -268,4 +273,65 @@ it('keeps acknowledged A, refuses B, leaves C outcome-unknown and admits indepen
   ]);
   expect(sent[0]).toBe('recovery');
   expect(await host.revision(resource)).toBeGreaterThan(revisionC);
+});
+
+// CAN-7070/7071: the real framed decoder must preserve this refusal rather
+// than turn unreadability into the fingerprint-conflict replay exception.
+it('refuses unreadable preflight without a new decision and keeps decided receipts queryable', async () => {
+  const client = await harness.connect();
+  const port = createW5RecordHostPort({
+    root,
+    transport: w5RecordPortTransportOver((call) => call.run(client)),
+  });
+  const path = listPath();
+  const original = readFileSync(path, 'utf8');
+  const request = {
+    operation: 'w5.worktree_list.write',
+    receipt: {
+      caller: 'can-7071',
+      operation: 'w5.worktree_list.write',
+      idempotencyKey: 'read-fence',
+      fingerprint: 'same',
+    },
+    advance: [],
+    files: [{ path, contents: original, previousFingerprint: null }],
+    outcome: null,
+  };
+  rmSync(path);
+  mkdirSync(path);
+  await expect(port.commit(request)).rejects.toBeInstanceOf(
+    WorkspaceConfigUnreadableError,
+  );
+  expect(await host.lookupReceipt(request.receipt)).toMatchObject({
+    status: 'none',
+  });
+  rmSync(path, { recursive: true });
+  expect(await port.commit(request)).toMatchObject({ status: 'applied' });
+  const receipt = await port.lookupReceipt(request.receipt);
+  rmSync(path);
+  mkdirSync(path);
+  await expect(port.commit(request)).rejects.toMatchObject({
+    name: 'WorkspaceConfigUnreadableError',
+    cause: { code: 'EISDIR' },
+  });
+  expect(await port.lookupReceipt(request.receipt)).toEqual(receipt);
+  rmSync(path, { recursive: true });
+  writeFileSync(path, original);
+  expect(await port.commit(request)).toMatchObject({ status: 'replayed' });
+  expect(readFileSync(path, 'utf8')).toBe(original);
+});
+
+it('keeps safe SQLite startup diagnostics after a real worker open failure', async () => {
+  const dbPath = join(dir, 'database-is-a-directory');
+  mkdirSync(dbPath);
+  const failed = new W5CommitLogHost({ dbPath, root, workerEntry: WORKER });
+  try {
+    await expect(failed.recoveryReport()).rejects.toMatchObject({
+      name: 'W5CommitLogError',
+      code: 'STORAGE_UNAVAILABLE',
+      underlying: { name: 'Error', code: 'ERR_SQLITE_ERROR', errcode: 14 },
+    });
+  } finally {
+    await failed.shutdown();
+  }
 });

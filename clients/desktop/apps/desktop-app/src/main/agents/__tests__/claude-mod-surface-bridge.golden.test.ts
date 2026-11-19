@@ -1,6 +1,5 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
-  parseClaudeModSurfacePushEvent,
   validateExtensionUiTree,
   type ClaudeModSurfacePushEvent,
 } from '@canopy/protocol/extension-ui';
@@ -20,11 +19,6 @@ jest.mock('../../lib/window-send', () => ({ sendToAllWindows: jest.fn() }));
 jest.mock('../../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
 jest.mock('../../ipc/preferences', () => ({
   broadcastCommittedPreferences: jest.fn(),
-}));
-const mockRelayed: unknown[] = [];
-jest.mock('../../portal/portal-claude-mod-surface', () => ({
-  relayClaudeModSurfaceUpdate: (event: unknown): void =>
-    void mockRelayed.push(event),
 }));
 jest.mock('../../lib/claude-mod-admission-service', () => ({
   getClaudeModsState: jest.fn(),
@@ -53,7 +47,6 @@ const TOAST = {
 
 beforeEach(() => {
   sent.mockClear();
-  mockRelayed.length = 0;
   mockSurfaceFlag = true;
 });
 
@@ -634,31 +627,6 @@ describe('the desktop surface (M2)', () => {
     ]);
   });
 
-  it('relays every update to the paired web Portal, in order, as its windows get them', async () => {
-    const cli = fakeCli();
-    const bridge = new ClaudeModSurfaceBridge(CHAT, true, cli.request);
-    bridge.init(INIT);
-    bridge.receive(TOAST);
-    await settle();
-    const windows = pushes().filter(isPushEvent);
-    expect(windows.map((event) => event.push.kind)).toEqual(
-      expect.arrayContaining(['toast', 'panes', 'tree']),
-    );
-    // A tree goes as the CLI rendered it; everything else as the windows got it.
-    expect(mockRelayed).toEqual(
-      windows.map((event) =>
-        // A site the session left drew nothing: its tree goes as `null`.
-        event.push.kind === 'tree' && event.push.tree !== null
-          ? { ...event, push: { ...event.push, tree: BAND } }
-          : event,
-      ),
-    );
-    // What the web draws from the relay is what the desktop drew.
-    for (const [index, event] of windows.entries()) {
-      expect(parseClaudeModSurfacePushEvent(mockRelayed[index])).toEqual(event);
-    }
-  });
-
   it('sends its current surface again when a client asks, and only what is still up', async () => {
     const cli = fakeCli((request) => {
       if (request.subtype === 'ui_panes') return ROSTER;
@@ -1100,7 +1068,6 @@ describe('composer answers (M3)', () => {
       press_id: ANY_ID,
     });
     sent.mockClear();
-    mockRelayed.length = 0;
 
     const fill = host().promptFill(
       { text: 'hello', mode: 'append', answers_press: press?.press_id },
@@ -1116,13 +1083,6 @@ describe('composer answers (M3)', () => {
     await expect(fill).resolves.toEqual({ filled: true });
     expect(activity()).toEqual([
       { kind: 'composer-activity', action: 'fill', plugin: 'ping-mod' },
-    ]);
-    // The draft never goes to the Portal; the line about it does.
-    expect(mockRelayed).toEqual([
-      {
-        ...CHAT,
-        push: { kind: 'composer-activity', action: 'fill', plugin: 'ping-mod' },
-      },
     ]);
 
     // A hook's fill names no Mod; a refused fill shows nothing.

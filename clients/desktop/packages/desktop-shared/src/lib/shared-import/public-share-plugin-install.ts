@@ -221,7 +221,10 @@ export async function installSharedPluginRefWithOutcome(
       ref.skill_name,
     ]);
     if (!result.success) {
-      throw new Error(result.error ?? 'Failed to install the shared skill.');
+      throw Object.assign(
+        new Error(result.error ?? 'Failed to install the shared skill.'),
+        { appError: result.appError },
+      );
     }
     const installed = await findInstalledSkill(port, ref);
     if (!installed) {
@@ -255,8 +258,11 @@ export async function installSharedPluginRefWithOutcome(
         !installed.data ||
         pluginNeedsInstall(installed.data)
       ) {
-        throw new Error(
-          installed.error ?? 'The shared Codex plugin was not installed.',
+        throw Object.assign(
+          new Error(
+            installed.error ?? 'The shared Codex plugin was not installed.',
+          ),
+          { appError: installed.appError },
         );
       }
     }
@@ -301,8 +307,11 @@ export async function installSharedPluginRefWithOutcome(
               ?.installed !== true,
         )
       ) {
-        throw new Error(
-          installed.error ?? 'The shared built-in plugin was not installed.',
+        throw Object.assign(
+          new Error(
+            installed.error ?? 'The shared built-in plugin was not installed.',
+          ),
+          { appError: installed.appError },
         );
       }
     }

@@ -429,6 +429,7 @@ export async function readClaudeOauthCredentialsResult(): Promise<ClaudeOauthCre
     );
   }
 
+  let keychainResult: ClaudeOauthCredentialsReadResult;
   try {
     const { stdout } = await runExecFile(
       'security',
@@ -445,20 +446,26 @@ export async function readClaudeOauthCredentialsResult(): Promise<ClaudeOauthCre
         env: getEnhancedEnv({ environment: false }),
       },
     );
-    return withOauthTokenFallback(
-      parseClaudeOauthCredentialsJson(stdout, 'credential_store'),
-      oauthToken,
+    keychainResult = parseClaudeOauthCredentialsJson(
+      stdout,
+      'credential_store',
     );
   } catch {
-    return withOauthTokenFallback(
-      {
-        status: 'failure',
-        reason: 'credential_read_failed',
-        source: 'credential_store',
-      },
-      oauthToken,
-    );
+    keychainResult = {
+      status: 'failure',
+      reason: 'credential_read_failed',
+      source: 'credential_store',
+    };
   }
+  if (keychainResult.status === 'failure') {
+    // Claude Code keeps the login in `.credentials.json` when it does not use
+    // the keychain; keep the keychain result unless the file yields a login.
+    const fileResult = await readClaudeOauthCredentialsFile();
+    if (fileResult.status === 'success') {
+      keychainResult = fileResult;
+    }
+  }
+  return withOauthTokenFallback(keychainResult, oauthToken);
 }
 
 /**

@@ -4,6 +4,11 @@ import {
   statusBadgeClassName,
   type StatusBadgeTone,
 } from '@canopy/ui-shared/lib';
+import type { WorkerPipelineSurvivalAssessment } from '@canopy/protocol/canopy-core';
+import type {
+  PipelineStepBillingOwnerKind,
+  PipelineStepBillingRoute,
+} from './PipelineStepBillingLine';
 
 /**
  * View model for the shared pipeline run detail surface (CAN-3020).
@@ -29,6 +34,11 @@ export interface PipelineRunDetailStep {
    * workflow's name and its status, once the host read it.
    */
   readonly child?: PipelineRunDetailChild;
+  /**
+   * How the step's last finished attempt was billed (CAN-7256); absent when
+   * native, unknown or still running. Cloud runs supply none.
+   */
+  readonly billing_route?: PipelineStepBillingRoute;
 }
 
 /** A step's child run, as the host last read it. */
@@ -84,6 +94,10 @@ export interface PipelineRunDetailPauseCheckpoint {
 }
 
 export interface PipelineRunDetailView {
+  readonly survival?: WorkerPipelineSurvivalAssessment;
+  readonly paused_at?: string;
+  /** Personal or organization owner of the run, for the billing line. */
+  readonly owner_kind?: PipelineStepBillingOwnerKind;
   readonly id: string;
   readonly pipeline_name: string;
   readonly jobs: readonly PipelineRunDetailJob[];

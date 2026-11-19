@@ -1,3 +1,5 @@
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { readFile, realpath } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -153,7 +155,9 @@ export async function projectInternalRootJournal(
     const moved = movedOwnedPath(transition, path);
     if (moved === path || identity === null) return identity;
     // A replaced/absent/unverifiable identity must never acquire new deletion rights.
-    if (actual !== identity)
+    if (
+      !matchesRecordedDirectoryIdentity(identity, actual, hostOperatingSystem())
+    )
       return identity.startsWith('unverifiable:')
         ? identity
         : `unverifiable:${identity}`;
@@ -165,12 +169,13 @@ export async function projectInternalRootJournal(
   let directoryIdentity = record.directoryIdentity;
   if (directoryIdentity !== null) {
     const parts = directoryIdentity.split(':');
-    const statIdentity = parts.slice(0, 3).join(':');
     const marker = parts.slice(3).join(':');
     const actual = evidence.workspaceIdentity;
-    const matches = marker
-      ? actual === directoryIdentity
-      : actual?.split(':').slice(0, 3).join(':') === statIdentity;
+    const matches = matchesRecordedDirectoryIdentity(
+      directoryIdentity,
+      actual,
+      hostOperatingSystem(),
+    );
     if (matches) {
       const copied = await directoryStatIdentity(
         physical(movedOwnedPath(transition, directory)),

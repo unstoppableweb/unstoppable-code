@@ -135,6 +135,7 @@ export function useWorktreeScriptActions({
           .getState()
           .addToast(runFailureMessage(action, error), 'error', undefined, {
             category: 'Terminal',
+            caught: error,
             ...(projectId !== null ? { projectId } : {}),
             ...(worktreeId !== null ? { worktreeId } : {}),
           });

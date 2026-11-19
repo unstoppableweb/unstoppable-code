@@ -35,6 +35,11 @@ import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
 //   5. When the gateway offers the chat's own model under another id, its
 //      row stays on that model and holds the only primary button, and
 //      Continue sends the gateway's own route id.
+//   6. A confirmed sign-out with spendable credits, routing mode `off` and no
+//      explicit credits choice is not consent (CAN-7062): the composer shows
+//      the signed-out No billing source notice and no "Using AI Credits"
+//      card, a send is refused before any provider or gateway request, and
+//      Continue with credits shows the card and the next turn bills credits.
 //
 // Deviation from the plan: it named the mock `usage-limit-reached` scenario
 // and `seedUsageLimitedChats.mjs`, but those model a Claude/Codex provider
@@ -110,7 +115,14 @@ function markWorkspaceOrganizationOwned(userDataDir, organizationId) {
  * Seed one chat, launch with signed-out providers and billing opening in the
  * (captured) browser, and open the chat's worktree.
  */
-async function openChat({ prefix, providerType, model, flags, prepare }) {
+async function openChat({
+  prefix,
+  providerType,
+  model,
+  flags,
+  prepare,
+  blocks,
+}) {
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), `canopy-${prefix}-`));
   seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
   seedWorktreeChat({
@@ -118,7 +130,14 @@ async function openChat({ prefix, providerType, model, flags, prepare }) {
     workspaceId: WORKSPACE_ID,
     worktreeId: WORKTREE_ID,
     providerType,
-    tabs: [{ id: `${prefix}-chat`, title: 'Credits notice', model }],
+    tabs: [
+      {
+        id: `${prefix}-chat`,
+        title: 'Credits notice',
+        model,
+        ...(blocks ? { blocks } : {}),
+      },
+    ],
   });
   prepare?.(userDataDir);
   const authKey = `${prefix}-unauthenticated-${randomUUID()}`;
@@ -261,6 +280,14 @@ async function openGatewayChat({ prefix, model }) {
     await close();
     throw error;
   }
+}
+
+/** Count a marker's provider and gateway requests (`llmModel:` / `llmProxy:`). */
+async function llmActivity(marker, prefix) {
+  const { activity } = await getScenarioActivity(DEFAULT_MOCK_BASE_URL, marker);
+  return Object.entries(activity ?? {})
+    .filter(([key]) => key.startsWith(prefix))
+    .reduce((sum, [, count]) => sum + count, 0);
 }
 
 /** Send one turn and expect it to reach the gateway under `gatewayId`. */
@@ -600,6 +627,97 @@ test.describe('Credits notice', () => {
       });
     } finally {
       await fixture.close();
+    }
+  });
+
+  test('a signed-out chat with credits nobody chose shows No billing source and refuses the send', async () => {
+    test.setTimeout(180_000);
+    const cloudKey = `csk_credits_notice_signed_out_${randomUUID()}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, cloudKey, {
+      cloud: { aiCreditsBalance: { credits: 1234, eligible: true } },
+    });
+    const fixture = await openChat({
+      prefix: 'credits-notice-signed-out',
+      providerType: 'claude',
+      model: 'opus[1m]',
+      // A used chat, so it is never re-stamped as an empty default tab.
+      blocks: [{ type: 'text', text: 'Earlier reply on the subscription.' }],
+    });
+    const refusedMarker = `Canopy-Ccredits-signed-out-${randomUUID()}`;
+    const creditsMarker = `Canopy-Ccredits-signed-out-ok-${randomUUID()}`;
+    const reply = 'Running on AI Credits now.';
+    try {
+      const { window, app } = fixture;
+      // `off` is the default; set it so a fixture default change cannot make
+      // this pass for the wrong reason. The sign-in below refreshes the
+      // composer's cached read.
+      await window.evaluate(async () =>
+        window.api.savePreferences({ aiCreditsRoutingMode: 'off' }),
+      );
+      await signIn(window, cloudKey);
+      const panel = await showWorktree(window, app);
+      const notice = panel.getByTestId('chat-input-no-billing-source-banner');
+      const card = panel.getByTestId('chat-input-ai-credits-active');
+
+      // Before send: the signed-out notice, and no card claiming credits.
+      await expect(notice).toBeVisible({ timeout: 30_000 });
+      await expect(notice).toContainText('Signed out of Claude');
+      await expect(card).toHaveCount(0);
+
+      // The send is refused before any provider or gateway request, and the
+      // prompt comes back to the composer.
+      await registerScenario(DEFAULT_MOCK_BASE_URL, refusedMarker, {
+        llm: { steps: [{ text: 'Should never run.', stopReason: 'end_turn' }] },
+      });
+      const composer = panel.getByRole('textbox').first();
+      await composer.click();
+      await composer.fill(`[${refusedMarker}] Keep going.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect(
+        panel.getByText("You're signed out of Claude.").first(),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(composer).toContainText(refusedMarker, {
+        timeout: 15_000,
+      });
+      expect(await llmActivity(refusedMarker, 'llmModel:')).toBe(0);
+      expect(await llmActivity(refusedMarker, 'llmProxy:')).toBe(0);
+      await expect(card).toHaveCount(0);
+      await expect(notice).toBeVisible();
+
+      // Credits are the one ready source: Continue with credits is the
+      // user's choice, and the card replaces the notice.
+      const choose = notice.getByTestId(
+        'chat-input-no-billing-source-provider-choice',
+      );
+      await choose.click();
+      const continueWithCredits = window.getByTestId(
+        'chat-input-no-billing-source-provider-choice-continue',
+      );
+      await expect(continueWithCredits).toHaveText('Continue with credits');
+      await continueWithCredits.click();
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await expect(notice).toHaveCount(0);
+
+      // The next turn bills AI Credits through the gateway.
+      await registerScenario(DEFAULT_MOCK_BASE_URL, creditsMarker, {
+        llm: { steps: [{ text: reply, stopReason: 'end_turn' }] },
+      });
+      await composer.click();
+      await composer.fill(`[${creditsMarker}] Keep going.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect
+        .poll(() => llmActivity(creditsMarker, 'llmProxy:'), {
+          timeout: 60_000,
+        })
+        .toBeGreaterThan(0);
+      await expect(panel.getByText(reply).first()).toBeVisible({
+        timeout: 30_000,
+      });
+    } finally {
+      await fixture.close();
+      await clearScenario(DEFAULT_MOCK_BASE_URL, cloudKey);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, refusedMarker);
+      await clearScenario(DEFAULT_MOCK_BASE_URL, creditsMarker);
     }
   });
 });

@@ -50,7 +50,8 @@ export function deriveChatWorkflowCapabilities(input: {
     provider === 'ollama' ||
     provider === 'cursor' ||
     provider === 'copilot' ||
-    provider === 'opencode';
+    provider === 'opencode' ||
+    provider === 'antigravity';
   const knownInterface =
     interfaceMode === 'canopy' ||
     interfaceMode === 'auto' ||
@@ -72,10 +73,12 @@ export function deriveChatWorkflowCapabilities(input: {
   const existingWorkflows =
     provider === 'claude' || provider === 'codex' || provider === 'ollama';
   const openCodePlans = provider === 'opencode' && target !== 'cloud';
+  const antigravityPlans = provider === 'antigravity' && target !== 'cloud';
   const supportedWorkflows =
     existingWorkflows ||
     (provider === 'cursor' && target !== 'cloud') ||
-    openCodePlans;
+    openCodePlans ||
+    antigravityPlans;
   const host = capabilities.chatWorkflows;
   const independentFork =
     native &&
@@ -93,12 +96,12 @@ export function deriveChatWorkflowCapabilities(input: {
     planImplementation:
       native &&
       host?.planReview === true &&
-      (existingWorkflows || openCodePlans),
+      (existingWorkflows || openCodePlans || antigravityPlans),
     planPipeline:
       native &&
       host?.planReview === true &&
       capabilities.pipelines === 'execute' &&
-      (existingWorkflows || openCodePlans),
+      (existingWorkflows || openCodePlans || antigravityPlans),
     deferredCapabilities:
       native && host?.deferredCapabilities === true && existingWorkflows,
     independentFork,

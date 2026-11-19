@@ -38,7 +38,7 @@ import {
   type RemoteVersion,
   type RemoteSessionEndReason,
 } from '../remote-protocol';
-import { RpcPeer } from '../transport/rpc-peer';
+import { RpcPeer, RpcPublicError } from '../transport/rpc-peer';
 import type {
   SecureSession,
   SessionCloseReason,
@@ -55,6 +55,11 @@ import {
   negotiateHello,
 } from './controller-profile';
 import type { HostFileReader } from './file-reads';
+import { controllerInvokeRefusal } from './controller-invoke-refusals';
+import {
+  projectControllerPush,
+  projectControllerResult,
+} from './controller-remote-urls';
 import type { MainWindowPushSource } from './main-window-pushes';
 import { createPushForwarder, type PushForwarder } from './push-forwarder';
 import { RemotePushSummaryAccumulator } from './push-summary';
@@ -262,7 +267,7 @@ export class RemoteHostSession {
       (created) => {
         if (this.closed) {
           created.destroy();
-          throw new Error('The remote session ended.');
+          throw new RpcPublicError('The remote session ended.');
         }
         this.startedBridges.set(surface, created);
         // CAN-5823: a desktop controller's window behind this bridge serves
@@ -372,11 +377,12 @@ export class RemoteHostSession {
     )
       return;
     let bytes = 0;
+    const controllerArgs = projectControllerPush(channel, args);
     const wireArgs =
       this.options.kind !== 'desktop' &&
       channel === IPC_CHANNELS.accountProxyChanged
-        ? args.map(projectControllerAccountProxyStatus)
-        : args;
+        ? controllerArgs.map(projectControllerAccountProxyStatus)
+        : controllerArgs;
     const sent = this.rpc.notify(
       REMOTE_EVENTS.push,
       surface === undefined
@@ -451,7 +457,9 @@ export class RemoteHostSession {
     params: unknown,
   ): Promise<unknown> {
     if (!this.ensureAuthorized()) {
-      throw new Error('This computer no longer allows remote control.');
+      throw new RpcPublicError(
+        'This computer no longer allows remote control.',
+      );
     }
     switch (method) {
       case REMOTE_METHODS.hello:
@@ -462,13 +470,19 @@ export class RemoteHostSession {
         if (!this.allowsInvoke(channel, args)) {
           throw new RemoteChannelUnavailableError(channel);
         }
+        const refusal = controllerInvokeRefusal(channel, args);
+        if (refusal !== undefined)
+          throw new RemoteControllerRefusedError(refusal);
         if (this.servesHostedChat(channel)) {
           return this.dispatchHostedChat(channel, args[0]);
         }
         if (!this.exactWorktreeBaseBranch)
           assertLegacyWorktreeBaseRequest(channel, args[0]);
         const bridge = await this.bridgeFor(surface ?? 'main');
-        const result = await bridge.invoke(channel, args);
+        const result = projectControllerResult(
+          channel,
+          await bridge.invoke(channel, args),
+        );
         return this.options.kind !== 'desktop' &&
           channel === IPC_CHANNELS.accountProxyStatus
           ? projectControllerAccountProxyStatus(result)
@@ -750,6 +764,7 @@ export class RemoteHostSession {
     if (!parsed.success) return;
     const { channel, args, surface } = parsed.data;
     if (!this.allowsInvoke(channel, args)) return;
+    if (controllerInvokeRefusal(channel, args) !== undefined) return;
     if (this.servesHostedChat(channel)) {
       this.dispatchHostedChat(channel, args[0]).catch(() => undefined);
       return;

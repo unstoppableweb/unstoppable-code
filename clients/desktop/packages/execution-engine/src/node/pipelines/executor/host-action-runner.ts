@@ -44,6 +44,30 @@ import {
   emptyWaitForAgentReplyOutputs,
   parseWaitForAgentReplyInputs,
 } from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
+import {
+  emptyPublishReviewOutputs,
+  parsePublishReviewInputs,
+  PUBLISH_REVIEW_DIFF_FILE_MAX_BYTES,
+  PUBLISH_REVIEW_JSON_FILE_MAX_BYTES,
+  PUBLISH_REVIEW_PAYLOAD_MAX_BYTES,
+  publishReviewOutputs,
+  type PublishReviewParsedInputs,
+} from '@canopy/execution-engine/pipelines/host-publish-review';
+import {
+  fitReviewPayload,
+  hasDiffLineEntries,
+  normalizeReviewContent,
+  parseDiffLineIndex,
+  splitInvalidLineCommentsForRetry,
+  type ReviewInlineComment,
+  type ReviewThreadReply,
+} from '@canopy/pipeline-interop/github-review-payload';
+import {
+  REVIEW_PUBLISH_BODY_MAX_CHARS,
+  REVIEW_PUBLISH_COMMENT_BODY_MAX_CHARS,
+  REVIEW_PUBLISH_MAX_COMMENTS,
+  REVIEW_PUBLISH_MAX_REPLIES,
+} from '@canopy/protocol/canopy-core';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import type { ChatTabPluginSelections } from '@canopy/execution-engine/execution-types';
 import type { UsageInitiationSource } from '@canopy/execution-engine/types/observability';
@@ -59,6 +83,7 @@ import {
   stepTimedOutMessage,
 } from '@canopy/execution-engine/node/pipelines/step-timeout';
 import type { RunStepOptions, StepLogMetadata } from './step-runner';
+import { reportExecutionEngineError } from './execution-failure';
 import type {
   ExecutionRuntime,
   PipelineHostActionCaller,
@@ -118,7 +143,12 @@ type HostRequestBuild =
       request: PipelineHostActionRequest;
       emptyOutputs: Record<string, string>;
     }
-  | { ok: false; message: string; emptyOutputs: Record<string, string> };
+  | { ok: false; message: string; emptyOutputs: Record<string, string> }
+  /**
+   * The step succeeds with these outputs and raises no request: a review
+   * too large to send answers `failed: payload_too_large` itself.
+   */
+  | { ok: 'settled'; outputs: Record<string, string> };
 
 interface HostRequestOptions {
   cwd?: string;
@@ -383,6 +413,217 @@ async function buildSendAgentMessageRequest(
   };
 }
 
+type RegularFileRead =
+  | { ok: true; bytes: Buffer }
+  | { ok: false; reason: 'missing' | 'not_file' | 'too_large' | 'unreadable' };
+
+/**
+ * Reads a regular file of at most `maxBytes` (one byte over the cap is read,
+ * so the cap holds on the bytes and not only on `stat`). A relative path is
+ * resolved from the step's working folder. Unlike `text_file`, it is not held
+ * to that folder: these files are ones earlier steps wrote in the run's output
+ * folder. Never logs the path or the contents.
+ */
+async function readRegularFileCapped(
+  cwd: string | undefined,
+  value: string,
+  maxBytes: number,
+): Promise<RegularFileRead> {
+  let realPath: string;
+  try {
+    realPath = await fsp.realpath(
+      cwd === undefined ? path.resolve(value) : path.resolve(cwd, value),
+    );
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+  let handle: fsp.FileHandle;
+  try {
+    handle = await fsp.open(realPath, 'r');
+  } catch {
+    return { ok: false, reason: 'unreadable' };
+  }
+  try {
+    const stats = await handle.stat();
+    if (!stats.isFile()) return { ok: false, reason: 'not_file' };
+    if (stats.size > maxBytes) return { ok: false, reason: 'too_large' };
+    const buffer = Buffer.alloc(Math.min(stats.size, maxBytes) + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        total,
+        buffer.length - total,
+        total,
+      );
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    return total > maxBytes
+      ? { ok: false, reason: 'too_large' }
+      : { ok: true, bytes: buffer.subarray(0, total) };
+  } catch {
+    return { ok: false, reason: 'unreadable' };
+  } finally {
+    await handle.close();
+  }
+}
+
+const REVIEW_JSON_FILE_REFUSALS: Readonly<
+  Record<Exclude<RegularFileRead, { ok: true }>['reason'], string>
+> = {
+  missing:
+    'github-publish-review "review_json_file" names a file that can\'t be found',
+  not_file:
+    'github-publish-review "review_json_file" must name a file, not a folder',
+  too_large: `github-publish-review "review_json_file" must be at most ${PUBLISH_REVIEW_JSON_FILE_MAX_BYTES} bytes`,
+  unreadable: 'github-publish-review "review_json_file" could not be read',
+};
+
+const REVIEW_COMMENT_PATH_MAX = 4096;
+const REVIEW_LINE_MAX = 10_000_000;
+
+/** Whether one comment fits the publish request's bounds. */
+function commentWithinBounds(comment: ReviewInlineComment): boolean {
+  const lineOk = (line: number | undefined): boolean =>
+    line === undefined ||
+    (Number.isInteger(line) && line > 0 && line <= REVIEW_LINE_MAX);
+  return (
+    comment.path.length <= REVIEW_COMMENT_PATH_MAX &&
+    comment.body.length <= REVIEW_PUBLISH_COMMENT_BODY_MAX_CHARS &&
+    lineOk(comment.line) &&
+    lineOk(comment.start_line)
+  );
+}
+
+/** A reply as the publish request takes it, or null when it can't cross. */
+function boundedReply(reply: ReviewThreadReply): ReviewThreadReply | null {
+  const commentId = reply.comment_id ?? reply.commentId;
+  const threadId = reply.thread_id ?? reply.threadId;
+  if (reply.body.length > REVIEW_PUBLISH_COMMENT_BODY_MAX_CHARS) return null;
+  if (
+    commentId !== undefined &&
+    (!Number.isSafeInteger(commentId) || commentId <= 0)
+  )
+    return null;
+  if (
+    threadId !== undefined &&
+    (threadId.length === 0 || threadId.length > 256)
+  )
+    return null;
+  return {
+    body: reply.body,
+    ...(commentId !== undefined ? { comment_id: commentId } : {}),
+    ...(threadId !== undefined ? { thread_id: threadId } : {}),
+    ...(reply.resolve !== undefined ? { resolve: reply.resolve } : {}),
+    ...(reply.action !== undefined && reply.action.length <= 64
+      ? { action: reply.action }
+      : {}),
+  };
+}
+
+/**
+ * The diff prefilter `builtin/github-post-review-comment` applies: inline
+ * comments outside the diff become file-level comments. A diff that is
+ * absent, unreadable or over its cap is no diff (no prefilter; the server's
+ * 422 fallbacks cover it).
+ */
+async function prefilteredComments(
+  comments: ReviewInlineComment[],
+  diffFile: string | undefined,
+  cwd: string | undefined,
+): Promise<ReviewInlineComment[]> {
+  if (diffFile === undefined) return comments;
+  const read = await readRegularFileCapped(
+    cwd,
+    diffFile,
+    PUBLISH_REVIEW_DIFF_FILE_MAX_BYTES,
+  );
+  if (!read.ok) return comments;
+  const index = parseDiffLineIndex(read.bytes.toString('utf8'));
+  if (!hasDiffLineEntries(index)) return comments;
+  const split = splitInvalidLineCommentsForRetry(comments, index);
+  return [...split.reviewComments, ...split.fileLevelComments];
+}
+
+/**
+ * Reads the review, normalizes it as the `gh` poster does, applies the diff
+ * prefilter, and fits it within {@link PUBLISH_REVIEW_PAYLOAD_MAX_BYTES} so
+ * the diff never crosses. Comments that can't cross go last, so fitting
+ * omits them first.
+ */
+async function buildPublishReviewRequest(
+  parsed: PublishReviewParsedInputs,
+  options: HostRequestOptions,
+): Promise<HostRequestBuild> {
+  const emptyOutputs = emptyPublishReviewOutputs();
+  const refuse = (message: string): HostRequestBuild => ({
+    ok: false,
+    message,
+    emptyOutputs,
+  });
+  const read = await readRegularFileCapped(
+    options.cwd,
+    parsed.reviewJsonFile,
+    PUBLISH_REVIEW_JSON_FILE_MAX_BYTES,
+  );
+  if (!read.ok) return refuse(REVIEW_JSON_FILE_REFUSALS[read.reason]);
+  let content: ReturnType<typeof normalizeReviewContent>;
+  try {
+    content = normalizeReviewContent(JSON.parse(read.bytes.toString('utf8')));
+  } catch {
+    return refuse(
+      'github-publish-review "review_json_file" must be review JSON with a non-empty body',
+    );
+  }
+  const comments = await prefilteredComments(
+    content.comments,
+    parsed.diffFile,
+    options.cwd,
+  );
+  const ordered = [
+    ...comments.filter(commentWithinBounds),
+    ...comments.filter((comment) => !commentWithinBounds(comment)),
+  ];
+  const crossable = ordered.filter(commentWithinBounds).length;
+  const replies = content.replies
+    .map(boundedReply)
+    .filter((reply): reply is ReviewThreadReply => reply !== null)
+    .slice(0, REVIEW_PUBLISH_MAX_REPLIES);
+  const fitted = fitReviewPayload(
+    { body: content.body, comments: ordered, replies },
+    PUBLISH_REVIEW_PAYLOAD_MAX_BYTES,
+    REVIEW_PUBLISH_BODY_MAX_CHARS,
+    Math.min(crossable, REVIEW_PUBLISH_MAX_COMMENTS),
+  );
+  if (fitted === null)
+    return {
+      ok: 'settled',
+      outputs: publishReviewOutputs({
+        status: 'failed',
+        reason: 'payload_too_large',
+      }),
+    };
+  return {
+    ok: true,
+    request: {
+      action: 'github-publish-review',
+      inputs: {
+        pr: parsed.pr,
+        reviewedHead: parsed.reviewedHead,
+        reviewedUncommitted: parsed.reviewedUncommitted,
+        payload: {
+          body: fitted.body,
+          comments: fitted.comments,
+          replies: fitted.replies,
+        },
+        approvalFacts: parsed.approvalFacts,
+      },
+    },
+    emptyOutputs,
+  };
+}
+
 async function buildHostRequest(
   actionId: PipelineHostActionId,
   inputValues: Record<string, string>,
@@ -445,6 +686,16 @@ async function buildHostRequest(
             emptyOutputs,
           }
         : { ok: false, message: parsed.message, emptyOutputs };
+    }
+    case 'github-publish-review': {
+      const parsed = parsePublishReviewInputs(inputValues);
+      return parsed.ok
+        ? buildPublishReviewRequest(parsed.value, options)
+        : {
+            ok: false,
+            message: parsed.message,
+            emptyOutputs: emptyPublishReviewOutputs(),
+          };
     }
   }
 }
@@ -734,8 +985,15 @@ export async function runHostAction(
       ? { pluginCollectionSelections: options.pluginCollectionSelections }
       : {}),
   });
-  if (!build.ok) {
+  if (build.ok === false) {
     return typedFailure('validation_failed', build.message, build.emptyOutputs);
+  }
+  if (build.ok === 'settled') {
+    await appendHostLog(options.logFile, `${label} success`);
+    return finish({
+      status: 'success',
+      outputs: { ...build.outputs, [PIPELINE_HOST_FAILURE_REASON_OUTPUT]: '' },
+    });
   }
 
   const caller: PipelineHostActionCaller = {
@@ -821,7 +1079,16 @@ export async function runHostAction(
     case 'threw': {
       const message = errorMessage(outcome.error);
       await appendHostLog(options.logFile, `${label} failed: ${message}`);
-      return finish({ status: 'failure', error: message, outputs: {} });
+      // The host port threw, rather than answer with a result (CAN-7118).
+      return {
+        ...finish({ status: 'failure', error: message, outputs: {} }),
+        failure_origin: 'host_port',
+        failure_code: reportExecutionEngineError(
+          options.runtime,
+          outcome.error,
+          'host_action',
+        ),
+      };
     }
     case 'result':
       return fromHostResult(outcome.result);

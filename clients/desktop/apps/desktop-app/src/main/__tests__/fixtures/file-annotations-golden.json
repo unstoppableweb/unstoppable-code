@@ -3582,55 +3582,27 @@
     }
   },
   {
-    "label": "a save replaces corrupt state",
+    "label": "a save refuses corrupt state and leaves it unchanged",
+    "outcome": {
+      "error": "This worktree's file comments could not be read, so they were left unchanged."
+    },
+    "events": [],
+    "state": {
+      "unparsed": "{\"version\":1,\"files\":["
+    }
+  },
+  {
+    "label": "an unknown state version reads as empty",
     "outcome": {
       "result": {
         "filePath": "/workspace/src/a.ts",
-        "annotations": [
-          {
-            "id": "ann-1",
-            "repoId": "repo",
-            "filePath": "/workspace/src/a.ts",
-            "side": "new",
-            "lineStart": 2,
-            "lineEnd": 3,
-            "kind": "context",
-            "title": "Title ann-1",
-            "body": "Body ann-1"
-          }
-        ],
+        "annotations": [],
         "commentThreads": []
       }
     },
-    "events": [
-      {
-        "target": "main-window",
-        "channel": "file-annotations:updated",
-        "payload": {
-          "projectId": "p3",
-          "worktreeId": "w3",
-          "document": {
-            "filePath": "/workspace/src/a.ts",
-            "annotations": [
-              {
-                "id": "ann-1",
-                "repoId": "repo",
-                "filePath": "/workspace/src/a.ts",
-                "side": "new",
-                "lineStart": 2,
-                "lineEnd": 3,
-                "kind": "context",
-                "title": "Title ann-1",
-                "body": "Body ann-1"
-              }
-            ],
-            "commentThreads": []
-          }
-        }
-      }
-    ],
+    "events": [],
     "state": {
-      "version": 1,
+      "version": 2,
       "files": [
         {
           "filePath": "/workspace/src/a.ts",
@@ -3646,20 +3618,15 @@
               "title": "Title ann-1",
               "body": "Body ann-1"
             }
-          ],
-          "commentThreads": []
+          ]
         }
       ]
     }
   },
   {
-    "label": "an unknown state version reads as empty",
+    "label": "a write refuses an unknown state version and leaves it unchanged",
     "outcome": {
-      "result": {
-        "filePath": "/workspace/src/a.ts",
-        "annotations": [],
-        "commentThreads": []
-      }
+      "error": "This worktree's file comments could not be read, so they were left unchanged."
     },
     "events": [],
     "state": {

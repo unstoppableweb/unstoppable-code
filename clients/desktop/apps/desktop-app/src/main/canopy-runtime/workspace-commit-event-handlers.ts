@@ -1,7 +1,6 @@
 import { W5AuthorityUnreachableError } from '../lib/w5-file-store';
 import { getElectronDaemonHealth } from './electron-daemon-health';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { refreshWorkspaceRegistries } from '../lib/sidebar-items';
 import { readWorkspaceWorktreesUnlocked } from '../lib/workspace-persistence';
 import { reconcileManifestPluginDefaults } from '../lib/workspace-plugin-defaults';
@@ -32,8 +31,8 @@ export function createDesktopWorkspaceCommitEventHandlers(): WorkspaceCommitEven
       throw new W5AuthorityUnreachableError('refused', 'held');
   };
   return {
-    schedulePortalStructuralSync,
-    notifyPortalStructureChanged,
+    scheduleDesktopStructureChanged: (): void =>
+      scheduleDesktopStructureChanged('structural.w5-commit-event'),
     refreshWorkspaceRegistries: async () => {
       requireReachable();
       await refreshWorkspaceRegistries();

@@ -4,11 +4,16 @@ import { useRef, useState, type JSX, type RefObject } from 'react';
 import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
 import { SettingsConfirmDialog, useSettingsBrand } from '../host';
 import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
-import type { GitHubCloudConnectionDto } from '@canopy/protocol/settings/account-github';
+import type {
+  GitHubCloudConnectIntent,
+  GitHubCloudConnectionDto,
+} from '@canopy/protocol/settings/account-github';
+import type { ReviewApprovalOwner } from '@canopy/protocol/settings/github-review-approvals';
 import type {
   GitHubCloudConnectionController,
   GitHubCloudControllerError,
 } from './use-github-cloud-connection';
+import { CodeReviewApprovalsSection } from './code-review-approvals-section';
 import {
   ActionButton,
   asksToReconnect,
@@ -28,19 +33,27 @@ import {
 } from './github-cloud-view-parts';
 
 // ---------------------------------------------------------------------------
-// The "GitHub for cloud work" Settings card (REG-3020).
+// The "GitHub account" Settings card (REG-3020; reframed by CAN-7162).
+//
+// It serves two things: the linked GitHub account, which review approvals
+// need, and the App install, which cloud projects need. It reads as the
+// linked account first, with the install as the cloud projects step, and
+// says "link", not "connect" (local `gh`/git sign-in isn't this).
 //
 // A pure view of the page's one controller (`useGitHubCloudConnection`): it
 // owns no request, no generation and no navigation. Every message it shows
 // about a failure is the controller's fixed local copy, never text from a
 // response. Its actions are:
 //
-// - Connect / Reconnect: `connect()`; Install GitHub app / Add account:
-//   `connect({ intent: 'install' })`; Check again: `verify()`; Disconnect:
-//   a SettingsConfirmDialog, closed only once `disconnect()` resolves true.
-// - Reconnect also leads beside a stored ACTIVE or NEEDS_INSTALL state when
+// - Link GitHub / Link again: `connect({ intent: 'identity' })` (no install
+//   step); Install GitHub app / Install on another account:
+//   `connect({ intent: 'install' })`; Check again: `verify()`; Unlink: a
+//   SettingsConfirmDialog, closed only once `disconnect()` resolves true.
+// - Link again also leads beside a stored ACTIVE or NEEDS_INSTALL state when
 //   the last action answered `github-cloud-needs-reauth` (not persisted):
-//   the error asks to reconnect, so the button must be there.
+//   the error asks to sign in again, so the button must be there.
+// - Linked without the App (NEEDS_INSTALL, nothing blocked) has no primary
+//   action: the install stays available but isn't the emphasized step.
 // - A target awaiting Core ("Finishing setup") offers Check again, never an
 //   invitation to reinstall: the installation is fine, adoption is pending.
 // - Busy buttons stay in the tab order (`aria-disabled`, not `disabled`) so a
@@ -50,10 +63,12 @@ import {
 // the reusable Connect step: see `github-cloud-view-parts.tsx`.
 // ---------------------------------------------------------------------------
 
-const CARD_TITLE = 'GitHub for cloud work';
+const CARD_TITLE = 'GitHub account';
 
-const DISCONNECT_MESSAGE =
-  "Cloud projects can't use your GitHub repositories until you connect again. Signing in with GitHub isn't affected. Worktrees that are already running in the cloud keep working.";
+const PERSONAL_OWNER: ReviewApprovalOwner = { kind: 'personal' };
+
+const UNLINK_MESSAGE =
+  "Your reviews won't approve pull requests and cloud projects can't use your repositories until you link it again. Signing in with GitHub isn't affected. Worktrees already running in the cloud keep working.";
 
 function primaryAction(
   connection: GitHubCloudConnectionDto,
@@ -66,7 +81,8 @@ function primaryAction(
     case 'NEEDS_REAUTH':
       return 'connect';
     case 'NEEDS_INSTALL':
-      return isBlockedOnGitHub(connection) ? 'check' : 'install';
+      // Linked is enough for review approvals: the install isn't emphasized.
+      return isBlockedOnGitHub(connection) ? 'check' : null;
     case 'ACTIVE':
       return connection.readyForProjects && !stale ? null : 'check';
   }
@@ -83,7 +99,7 @@ interface CardActionsProps {
 /**
  * The state's actions. Each is keyed by its own identity: React would
  * otherwise reuse the DOM button of a vanished action for the next one
- * (Connect GitHub becoming Add account), leaving focus on a control with a
+ * (Link GitHub becoming Install on another account), leaving focus on a control with a
  * different meaning.
  */
 function CardActions({
@@ -98,7 +114,7 @@ function CardActions({
   const connectAction = (
     testId: string,
     label: string,
-    install: boolean,
+    intent: GitHubCloudConnectIntent,
   ): JSX.Element => (
     <ConnectAction
       key={testId}
@@ -106,8 +122,8 @@ function CardActions({
       press={press}
       testId={testId}
       label={label}
-      install={install}
-      primary={primary === (install ? 'install' : 'connect')}
+      intent={intent}
+      primary={primary === (intent === 'install' ? 'install' : 'connect')}
     />
   );
   const checkAgain = (
@@ -120,13 +136,13 @@ function CardActions({
   );
   // Only where the state has no Connect of its own.
   const reconnectAction = reconnect
-    ? [connectAction('github-cloud-connect', 'Reconnect GitHub', false)]
+    ? [connectAction('github-cloud-connect', 'Link again', 'identity')]
     : [];
   const disconnect = (
     <ActionButton
       key="github-cloud-disconnect"
       testId="github-cloud-disconnect"
-      label="Disconnect"
+      label="Unlink"
       primary={false}
       busy={false}
       blocked={controller.busy === 'disconnect'}
@@ -139,12 +155,12 @@ function CardActions({
   switch (connection.state) {
     case 'DISCONNECTED':
       actions = [
-        connectAction('github-cloud-connect', 'Connect GitHub', false),
+        connectAction('github-cloud-connect', 'Link GitHub', 'identity'),
       ];
       break;
     case 'NEEDS_REAUTH':
       actions = [
-        connectAction('github-cloud-connect', 'Reconnect GitHub', false),
+        connectAction('github-cloud-connect', 'Link again', 'identity'),
         disconnect,
       ];
       break;
@@ -154,7 +170,7 @@ function CardActions({
       // reordered by the result of its own press.
       actions = [
         ...reconnectAction,
-        connectAction('github-cloud-install', 'Install GitHub app', true),
+        connectAction('github-cloud-install', 'Install GitHub app', 'install'),
         checkAgain,
         disconnect,
       ];
@@ -162,7 +178,11 @@ function CardActions({
     case 'ACTIVE':
       actions = [
         ...reconnectAction,
-        connectAction('github-cloud-add-account', 'Add account', true),
+        connectAction(
+          'github-cloud-add-account',
+          'Install on another account',
+          'install',
+        ),
         checkAgain,
         disconnect,
       ];
@@ -187,7 +207,7 @@ interface DisconnectDialogProps {
 }
 
 /**
- * Confirms Disconnect. It closes only once `disconnect()` resolves true; a
+ * Confirms Unlink. It closes only once `disconnect()` resolves true; a
  * failure keeps it open with the error inside, still actionable.
  */
 function DisconnectDialog({
@@ -205,10 +225,10 @@ function DisconnectDialog({
   };
   return (
     <SettingsConfirmDialog
-      title="Disconnect GitHub?"
+      title="Unlink GitHub?"
       message={
         <div className="flex flex-col gap-3">
-          <p>{DISCONNECT_MESSAGE}</p>
+          <p>{UNLINK_MESSAGE}</p>
           {/* Fixed local copy from the controller, never server text. */}
           <ErrorBanner
             errorSource="github-cloud-disconnect-error"
@@ -218,8 +238,8 @@ function DisconnectDialog({
           />
         </div>
       }
-      confirmLabel="Disconnect"
-      busyLabel="Disconnecting…"
+      confirmLabel="Unlink"
+      busyLabel="Unlinking…"
       busy={controller.busy === 'disconnect'}
       destructive
       onConfirm={() => void confirm()}
@@ -244,7 +264,7 @@ export function GitHubCloudConnectionCard({
   const press = useSettleFocus(controller, headingRef);
 
   const { connection, error } = controller;
-  const status = describeStatus(controller, brand.displayName);
+  const status = describeStatus(controller, brand.displayName, 'account');
   const dialogError =
     confirming && error?.source === 'disconnect' ? error : null;
   const cardError = error === dialogError ? null : error;
@@ -261,7 +281,7 @@ export function GitHubCloudConnectionCard({
           {CARD_TITLE}
         </Heading>
       }
-      subtitle={`Connect GitHub so cloud projects in ${brand.displayName} can use your repositories.`}
+      subtitle={`Link GitHub to ${brand.displayName} for review approvals and cloud projects.`}
       testId="github-cloud-card"
     >
       <div className="flex flex-col gap-4">
@@ -274,7 +294,7 @@ export function GitHubCloudConnectionCard({
           <ErrorView controller={controller} error={cardError} press={press} />
         ) : null}
         {connection?.githubLogin ? (
-          <Identity login={connection.githubLogin} />
+          <Identity login={connection.githubLogin} labelled={false} />
         ) : null}
         {showTargets ? <TargetList targets={connection.targets} /> : null}
         {connection ? (
@@ -284,6 +304,9 @@ export function GitHubCloudConnectionCard({
             press={press}
             onDisconnect={() => setConfirming(true)}
           />
+        ) : null}
+        {connection?.state === 'ACTIVE' ? (
+          <CodeReviewApprovalsSection owner={PERSONAL_OWNER} />
         ) : null}
       </div>
 

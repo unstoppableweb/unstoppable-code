@@ -16,7 +16,10 @@ import {
   type ChatSendMessageRequest,
   type ChatSendTurnOverride,
 } from '@canopy/desktop-shared/types';
-import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import {
+  botIdForProjectId,
+  isBotProjectId,
+} from '@canopy/protocol/chat-targets';
 import {
   buildAgentSenderRequest,
   buildPipelineSenderRequest,
@@ -33,6 +36,10 @@ import type { ChatReadScope } from '../project-discovery/chat-target';
 import type { PersistedChatTab } from '@canopy/desktop-shared/types';
 import type { ProjectDiscoveryCaller } from '../project-discovery';
 import { DiscoveryError } from '../project-discovery/errors';
+import {
+  ensureBotRegistryLoaded,
+  requireBotWorkspace,
+} from '../project-discovery/bots/registry';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import {
@@ -40,7 +47,11 @@ import {
   dispatchTrustedChatCommand,
 } from '../canopy-runtime/core-chat-command-adapter';
 import { withLegacyChatMessageCommand } from '../canopy-runtime/core-chat-message-command-adapter';
-import { automationDispatchRequestFields } from './automation-dispatch';
+import {
+  automationDispatchRequestFields,
+  isCreationSeed,
+  withAutomationInitiation,
+} from './automation-dispatch';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import {
@@ -67,6 +78,32 @@ export type TrustedSendCaller =
   | { kind: 'project_root'; source: AgentSenderRuntimeSource }
   | { kind: 'app_advisor'; source: AgentSenderRuntimeSource }
   | { kind: 'pipeline'; source: PipelineSenderSource };
+
+async function requireBotWorkspaceForProjectId(
+  projectId: string,
+): Promise<void> {
+  const botId = botIdForProjectId(projectId);
+  if (botId) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(botId);
+  }
+}
+
+async function requireSendBotWorkspaces(
+  action: ChatSendAction,
+  caller: TrustedSendCaller,
+): Promise<void> {
+  if (action.type === 'bots.send_message') {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(action.botId);
+  } else await requireBotWorkspaceForProjectId(action.projectId);
+
+  const sourceProjectId =
+    caller.kind === 'pipeline'
+      ? caller.source.agentOrigin?.projectId
+      : caller.source.projectId;
+  if (sourceProjectId) await requireBotWorkspaceForProjectId(sourceProjectId);
+}
 
 /**
  * A pipeline creation's new-chat seed. Any field present forces a new chat,
@@ -268,8 +305,12 @@ export async function dispatchAgentChatSend(
       throw new AgentChatSendError(
         error.code === 'advisor_access_disabled'
           ? 'advisor_access_disabled'
-          : 'not_found',
-        'The target chat is not available.',
+          : error.code === 'unsupported_action'
+            ? 'unsupported_action'
+            : 'not_found',
+        error.code === 'unsupported_action'
+          ? error.message
+          : 'The target chat is not available.',
       );
     throw error;
   }
@@ -284,6 +325,7 @@ async function send(
     throw new AgentChatSendError('validation_failed', parsed.message);
   const action = parsed.action;
   const trusted = context.caller;
+  await requireSendBotWorkspaces(action, trusted);
   const pipeline = trusted.kind === 'pipeline' ? trusted.source : undefined;
   let source: AgentSenderRuntimeSource | undefined;
   let caller: ProjectDiscoveryCaller;
@@ -318,16 +360,25 @@ async function send(
       'validation_failed',
       'Only a pipeline send carries per-turn settings.',
     );
-  const automationDispatch = context.automationDispatch;
   // A step in a run an automation started carries them too (CAN-4551).
   if (
-    automationDispatch &&
+    context.automationDispatch &&
     (pipeline === undefined || !isAutomationRunSource(pipeline))
   )
     throw new AgentChatSendError(
       'validation_failed',
       'Only an automation’s own send carries automation dispatch facts.',
     );
+  const automationDispatch =
+    context.automationDispatch && pipeline
+      ? withAutomationInitiation(
+          context.automationDispatch,
+          pipeline,
+          action.type === 'bots.send_message' ? 'bot' : 'project',
+          // Only a creation's first message carries its new chat's seed.
+          isCreationSeed(context.newChatSeed),
+        )
+      : context.automationDispatch;
   // An automation's own session prompt kept its model, runtime and plugins
   // on an Orchestrator chat before CAN-4549, and so does a step in a run an
   // automation started (CAN-4551); an agent-originated one never.
@@ -873,9 +924,8 @@ async function resolveBotTarget(
 }> {
   const { requireBotAccess, readBotEntries } =
     await import('../project-discovery/bots/target');
+  const bot = requireBotWorkspace(action.botId);
   await requireBotAccess(caller);
-  const { requireBot } = await import('../project-discovery/bots/registry');
-  const bot = requireBot(action.botId);
   if (
     !(await readBotEntries(bot.botId)).some(
       (entry) => entry.id === action.taskId,

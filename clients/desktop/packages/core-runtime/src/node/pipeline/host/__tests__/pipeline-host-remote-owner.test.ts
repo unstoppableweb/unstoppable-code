@@ -20,6 +20,7 @@ import {
   type PipelineHostProcess,
   type PipelineHostRequest,
   type PipelineHostRequestMessage,
+  type PipelineHostSupervisorOptions,
 } from '..';
 
 class FakeHost extends EventEmitter implements PipelineHostProcess {
@@ -162,7 +163,9 @@ const context = {} as CanopyHandlerContext;
 
 const LEASE_TTL_MS = 10 * 60_000;
 
-function harness(): {
+function harness(
+  prepareOwnerRun?: PipelineHostSupervisorOptions['prepareOwnerRun'],
+): {
   hosts: FakeHost[];
   supervisor: PipelineHostSupervisor;
   channel: ReturnType<typeof createPipelineOwnerChannel>;
@@ -187,6 +190,7 @@ function harness(): {
     idleStopMs: 3_600_000,
     owner: channel,
     remoteOwner: { leaseTtlMs: LEASE_TTL_MS },
+    ...(prepareOwnerRun && { prepareOwnerRun }),
   });
   return { hosts, supervisor, channel, launch };
 }
@@ -238,6 +242,39 @@ afterEach(() => {
 });
 
 describe('pipeline host supervisor with a remote owner (CAN-6102)', () => {
+  it('never substitutes local daemon answers for a remote owner or exposes the local Ledger folder', async () => {
+    const answer = jest.fn(() => Promise.resolve(undefined));
+    const h = harness(answer);
+    const owner = await subscribeOwner(h.channel);
+    const host = await startRun(h, 'run-1', true);
+    const request: WorkerPipelineHostRequest = {
+      ...hostRequest('run-1', 'ledger-1'),
+      request: {
+        action: 'owner.ledger.operation',
+        attemptKey: 'a',
+        cwd: '/local/work/tree',
+        operation: 'core.ledger.entries.search',
+        params: {},
+      },
+    };
+    host.send({ kind: 'hostRequest', request });
+    await settle();
+    expect(answer).not.toHaveBeenCalled();
+    expect(owner.items).toEqual([
+      {
+        ...request,
+        request: {
+          action: 'owner.ledger.operation',
+          attemptKey: 'a',
+          operation: 'core.ledger.entries.search',
+          params: {},
+        },
+      },
+    ]);
+    owner.stop();
+    expect(host.of('ledgerOwnerAvailability')).toEqual([]);
+    await h.supervisor.stop();
+  });
   it('keeps owner-bound runs going through a five-minute owner outage and holds its host requests', async () => {
     const h = harness();
     const owner = await subscribeOwner(h.channel);

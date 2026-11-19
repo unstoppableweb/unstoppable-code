@@ -15,6 +15,10 @@ export function mergeFileReviewComments(
   }));
   return {
     ...file,
+    isThreadReadOnly: (id) =>
+      legacyIds.has(id)
+        ? review.readOnly
+        : (file.isThreadReadOnly?.(id) ?? false),
     // Legacy threads are retained in the archived drawer group until they have
     // a comparison identity; they must not inflate the active-view indicator.
     otherViewCount: file.otherViewCount,
@@ -29,7 +33,7 @@ export function mergeFileReviewComments(
           ? [...file.document.commentThreads, ...legacyThreads]
           : file.document.commentThreads,
     },
-    stagedCount: file.stagedCount + review.stagedCount,
+    stagedCount: file.stagedCount + (review.readOnly ? 0 : review.stagedCount),
     addReply: (id, body) =>
       (legacyIds.has(id) ? review : file).addReply(id, body),
     editStagedComment: (id, commentId, body) =>
@@ -43,7 +47,7 @@ export function mergeFileReviewComments(
     toggleResolved: (id) =>
       (legacyIds.has(id) ? review : file).toggleResolved(id),
     submit: async (send): Promise<void> => {
-      if (!review.stagedCount) return file.submit(send);
+      if (review.readOnly || !review.stagedCount) return file.submit(send);
       if (!file.stagedCount) return review.submit(send);
       // One ordinary-chat dispatch; both hooks retain their own captured draft
       // snapshots and only publish them after that same dispatch is accepted.

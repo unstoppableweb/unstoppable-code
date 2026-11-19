@@ -65,7 +65,13 @@ export {
   getUserPipelineIndexPath,
   getUserPipelinesDir,
   hasBundledPlugins,
+  noteSpawnEnvironmentFailure,
+  noteSpawnEnvironmentSuccess,
   registerSecretsEnvInjector,
+  registerSpawnEnvironmentFailureReporter,
   registerUserEnvironmentInjector,
   resetLoginShellPathCache,
+  type SpawnEnvironmentFailure,
+  type SpawnEnvironmentFailureCode,
+  type SpawnEnvironmentSource,
 } from '@canopy/execution-engine/pipelines/config-paths';

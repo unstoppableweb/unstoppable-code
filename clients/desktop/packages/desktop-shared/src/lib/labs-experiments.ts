@@ -2,6 +2,8 @@ import { z } from 'zod';
 import {
   CUSTOMIZE_DISCOVERY_EXPERIMENT,
   EARLY_ACCESS_EXPERIMENT_ID,
+  ORCHESTRATOR_PAGE_EXPERIMENT_ID,
+  BOTS_EXPERIMENT_ID,
   isLabsExperimentId,
   isLabsExperimentAvailability,
   LABS_EXPERIMENT_AVAILABILITIES,
@@ -14,6 +16,7 @@ import {
   isLabsExperimentFlagKey,
 } from '@canopy/protocol/feature-flags';
 import { SIDEBAR_NAV_ITEM_KEYS } from '@canopy/protocol/sidebar';
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol/ui-labels';
 import { NAVIGATION_PAGE_MAP, type NavigationPage } from '../types';
 
 export interface LabsExperiment {
@@ -25,6 +28,8 @@ export interface LabsExperiment {
   flagKey: string;
   /** When true the experiment is listed and enabled only while Early access is on. */
   requiresEarlyAccess: boolean;
+  requiresExperiment?: string;
+  requiresExperimentReason?: string;
   fixtureAvailability?: (typeof LABS_EXPERIMENT_AVAILABILITIES)[number];
 }
 
@@ -63,14 +68,25 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   },
   {
     // Desktop only, so not in WEB_LABS_EXPERIMENTS.
-    id: 'orchestrator-page',
+    id: ORCHESTRATOR_PAGE_EXPERIMENT_ID,
     name: 'Orchestrator page',
-    description:
-      'Open the Orchestrator as a page beside the sidebar, like other chats, with its chats under its sidebar row.',
+    description: `Open the ${ORCHESTRATOR_LABEL} as a page beside the sidebar, like other chats, with its chats under its sidebar row.`,
     pages: [],
     sidebarKeys: [],
     flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsOrchestratorPage.key,
     requiresEarlyAccess: false,
+  },
+  {
+    // Desktop only, so not in WEB_LABS_EXPERIMENTS.
+    id: BOTS_EXPERIMENT_ID,
+    name: 'Bots',
+    description: `Create more Bots like the ${ORCHESTRATOR_LABEL}, each with its own instructions and chats, and pin them to projects.`,
+    pages: [],
+    sidebarKeys: [],
+    flagKey: CLIENT_FEATURE_FLAGS.canopyDesktopLabsBots.key,
+    requiresEarlyAccess: false,
+    requiresExperiment: ORCHESTRATOR_PAGE_EXPERIMENT_ID,
+    requiresExperimentReason: `Turn on ${ORCHESTRATOR_LABEL} page to use Bots.`,
   },
 
   {
@@ -181,6 +197,27 @@ export function validateLabsExperiments(
       keys.add(key);
     }
   }
+  for (const entry of entries) {
+    const requiresExperiment = entry.requiresExperiment;
+    const reason = entry.requiresExperimentReason;
+    if (
+      (requiresExperiment === undefined) !== (reason === undefined) ||
+      (reason !== undefined && !reason.trim())
+    )
+      throw new Error('Invalid experiment prerequisite.');
+    if (requiresExperiment === undefined) continue;
+    if (
+      requiresExperiment === entry.id ||
+      !ids.has(requiresExperiment) ||
+      entry.id === EARLY_ACCESS_EXPERIMENT_ID
+    )
+      throw new Error('Invalid experiment prerequisite.');
+    const target = entries.find(
+      (candidate) => candidate.id === requiresExperiment,
+    );
+    if (target?.requiresExperiment !== undefined)
+      throw new Error('Experiment prerequisites must be single-level.');
+  }
 }
 validateLabsExperiments(LABS_EXPERIMENTS);
 export function findLabsExperimentForPage(
@@ -206,6 +243,8 @@ const experimentMetadataSchema = z.strictObject({
   ),
   flagKey: z.string().min(1).max(200),
   requiresEarlyAccess: z.boolean(),
+  requiresExperiment: labsExperimentIdSchema.optional(),
+  requiresExperimentReason: z.string().min(1).max(500).optional(),
   fixtureAvailability: z.enum(LABS_EXPERIMENT_AVAILABILITIES).optional(),
 });
 export const labsExperimentsSnapshotSchema = z
@@ -228,6 +267,7 @@ export const labsExperimentsSnapshotSchema = z
           choice: z.boolean().nullable(),
           listed: z.boolean(),
           enabled: z.boolean(),
+          blockedBy: labsExperimentIdSchema.optional(),
         }),
       )
       .max(100),
@@ -250,12 +290,32 @@ export const labsExperimentsSnapshotSchema = z
         message: 'Invalid Early access projection.',
       });
     for (const entry of snapshot.experiments) {
+      const prerequisiteEnabled =
+        entry.requiresExperiment === undefined ||
+        snapshot.experiments.find(
+          (candidate) => candidate.id === entry.requiresExperiment,
+        )?.enabled === true;
+      const blockedBy =
+        entry.requiresExperiment !== undefined && !prerequisiteEnabled;
+      const hasBlockedBy = Object.prototype.hasOwnProperty.call(
+        entry,
+        'blockedBy',
+      );
+      if (
+        (blockedBy && entry.blockedBy !== entry.requiresExperiment) ||
+        (!blockedBy && hasBlockedBy)
+      )
+        context.addIssue({
+          code: 'custom',
+          message: 'Invalid experiment prerequisite state.',
+        });
       const resolved = snapshot.ready
         ? resolveLabsExperiment({
             availability: entry.availability,
             choice: entry.choice,
             earlyAccessEnabled: snapshot.earlyAccessEnabled,
             requiresEarlyAccess: entry.requiresEarlyAccess,
+            prerequisiteEnabled,
           })
         : { listed: false, enabled: false };
       if (

@@ -1,3 +1,4 @@
+import { WorkspaceConfigUnreadableError } from '../file-store';
 import { W5FileWriteRefusedError } from './errors';
 import {
   isCleanConflictEvidence,
@@ -118,7 +119,13 @@ export async function preflightW5CommitFiles(
 ): Promise<void> {
   for (const file of files) {
     await assertInsideRoot(file.path, root);
-    if ((await readFingerprint(file.path)) !== file.previousFingerprint)
+    let fingerprint: string | null;
+    try {
+      fingerprint = await readFingerprint(file.path);
+    } catch (error) {
+      throw new WorkspaceConfigUnreadableError(error);
+    }
+    if (fingerprint !== file.previousFingerprint)
       throw new W5FileWriteRefusedError(file.path);
   }
 }

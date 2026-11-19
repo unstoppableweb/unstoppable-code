@@ -1,6 +1,7 @@
 import { registerWorkEntryAutoDeleteHandlers } from './work-entry-auto-delete';
 import { registerScriptActionsHandlers } from './script-actions';
 import { registerLabsExperimentsHandlers } from './labs-experiments';
+import { registerOrganizationCapabilitiesHandlers } from './organization-capabilities';
 import { registerSidebarItemGroupHandlers } from './sidebar-item-groups';
 import { registerRepoRulesHandlers } from './repo-rules';
 import { registerCanopyCoreRelayHandlers } from './canopy-core-relay';
@@ -53,12 +54,12 @@ import { registerChatPersistenceHandlers } from './chat-persistence';
 import { registerChatStateHandlers } from './chat-state';
 import { remoteBridgeWindows } from '../remote-control/host/bridge-window';
 import { registerChatEventOutputHandlers } from './chat-event-output';
-import { registerPortalComposerCommandHandlers } from './portal-composer-command';
 import { registerSessionTransferHandlers } from './session-transfer';
 import { registerSettingsHandlers } from './settings';
 import { registerDailyCreditDripHandlers } from './daily-credit-drip';
 import { registerStandaloneChatHandlers } from './standalone-chat';
 import { registerWorkEntryHandlers } from './work-entries';
+import { registerArchivedWorkEntryHandlers } from './work-entries-archived';
 import { registerActivityPanelHandlers } from './activity-panel';
 import { registerPlansHandlers } from './plans';
 import { registerRunsHandlers } from './runs';
@@ -106,11 +107,16 @@ import {
   registerOllamaHandlers,
 } from './ollama';
 import { registerModelHarnessAssignmentHandlers } from './model-harness-assignments';
+import { registerProviderUsageLimitsHandlers } from './provider-usage-limits';
 import { registerGitExecutableHandlers } from './git-executable';
 import { registerDeepLinkHandlers } from './deep-link';
 import { registerFilePreviewHandlers } from './file-preview';
 import { registerOsNotificationHandlers } from './os-notifications';
 import { registerVoiceHandlers } from '../voice/preload-bridge';
+import {
+  registerSpeechModelHandlers,
+  scheduleSpeechModelLaunchPrefetch,
+} from './voice-speech-model';
 import { registerTerminalHandlers } from './terminal';
 import { registerPanelLayoutHandlers } from './panel-layout';
 import { panelLayoutModePersistenceStore } from '../panels/layout-mode-persistence';
@@ -129,7 +135,8 @@ import { registerTerminalSettingsHandlers } from './terminal-settings';
 import { registerMemoryDiagnosticsHandlers } from './memory-diagnostics';
 import { registerRecommendedPluginHandlers } from './recommended-plugins';
 import { registerInvocableInventoryHandlers } from './invocable-inventory';
-import { registerCanopyPortalHandlers } from './canopy-portal';
+import { setDesktopChatWaitPresence } from '../chat-waits/desktop-chat-waits';
+import { getRemoteControlRuntime } from '../remote-control/electron-remote-control';
 import { registerFeatureFlagHandlers } from './feature-flags';
 import { registerCodeGraphBuildStatusBroadcast } from './code-graph-build-status';
 import { registerCodeGraphHandlers } from './code-graph';
@@ -140,6 +147,7 @@ import {
   type AppAdvisorWorkspaceOperations,
 } from './app-advisor';
 import { registerAppAdvisorWatcherHandlers } from './app-advisor-watchers';
+import { registerInitiatedPresentation } from '../app-advisor/initiated-presentation-registration';
 import { registerPipelineEditorHandlers } from './pipeline-editor';
 import { registerAutomationsHandlers } from './automations';
 import { registerSlowActionHandlers } from './slow-actions';
@@ -170,6 +178,14 @@ import { registerArchivedContainerHandlers } from './archived-containers';
 import { initTransientErrorRetryService } from '../lib/transient-error-retry-service';
 import { broadcastPipelineExecutionEvent } from '../pipelines/pipeline-execution-event-broadcaster';
 import { initTransientErrorRetryScheduler } from '../pipelines/transient-error-retry-scheduler';
+import {
+  listPipelineExecutionControls,
+  listPipelineExecutionInitiatedRuns,
+} from '../pipelines/pipeline-worker-dispatch';
+import {
+  listPausedPipelineExecutions,
+  readStoredPipelineExecution,
+} from '../pipelines/pipeline-worker-host';
 import { resumePipelineExecutionFromMain } from '../pipelines/pipeline-resume-service';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { registerReferencePreviewHandlers } from './reference-previews';
@@ -267,12 +283,19 @@ export function registerAllIpcHandlers(
     canopyRuntime.resolveCaller,
   );
   let closeChatStatePush: () => void = () => undefined;
+  let stopInitiatedPresentation: () => void = () => undefined;
 
   initTransientErrorRetryService(getMainWindow);
   initTransientErrorRetryScheduler({
     emitEvent: broadcastPipelineExecutionEvent,
     resume: resumePipelineExecutionFromMain,
     readPreferences: readPreferencesFile,
+    engine: canopyRuntime.dispatcher.initiatedWork,
+    listRetryRuns: listPipelineExecutionInitiatedRuns,
+    listExecutionControls: listPipelineExecutionControls,
+    readExecution: readStoredPipelineExecution,
+    listPausedExecutions: listPausedPipelineExecutions,
+    getWindow: getMainWindow,
   });
 
   registerProjectHandlers(
@@ -302,7 +325,11 @@ export function registerAllIpcHandlers(
   registerClaudeModsHandlers();
   registerUserEnvironmentHandlers();
   registerActivityPanelHandlers(getMainWindow, canopyRuntime);
-  registerPlansHandlers(getMainWindow);
+  registerPlansHandlers(
+    getMainWindow,
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerRunsHandlers();
   registerSharedContainerHandlers(canopyRuntime);
   registerDetectedPlansHandlers(getMainWindow);
@@ -381,7 +408,12 @@ export function registerAllIpcHandlers(
       },
     );
   }
-  registerPortalComposerCommandHandlers();
+  // CAN-4174: an automation's accepted send opens the Orchestrator window.
+  const initiatedPresentation = registerInitiatedPresentation({
+    dispatcher: canopyRuntime.dispatcher,
+    surfaces: { ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow },
+  });
+  stopInitiatedPresentation = (): void => initiatedPresentation.stop();
   registerSessionTransferHandlers(getMainWindow);
   registerSettingsHandlers(canopyRuntime);
   registerDailyCreditDripHandlers();
@@ -390,6 +422,7 @@ export function registerAllIpcHandlers(
   registerDeepLinkHandlers();
   registerStandaloneChatHandlers();
   registerWorkEntryHandlers();
+  registerArchivedWorkEntryHandlers();
   registerWorkEntryAutoDeleteHandlers();
   registerSidebarItemGroupHandlers();
   registerGitHubHandlers(getMainWindow, canopyRuntime);
@@ -413,12 +446,18 @@ export function registerAllIpcHandlers(
   );
   registerUpdateHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
   registerModelRegistryHandlers(getMainWindow, canopyRuntime);
+  registerProviderUsageLimitsHandlers(canopyRuntime);
   registerModelHarnessAssignmentHandlers();
   if (isOllamaSupportedOnPlatform()) {
     registerOllamaHandlers(getMainWindow);
   }
   registerOsNotificationHandlers(getMainWindow);
   registerVoiceHandlers();
+  registerSpeechModelHandlers(
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
+  scheduleSpeechModelLaunchPrefetch(canopyRuntime.dispatcher);
   registerTerminalHandlers(accessors);
   registerPanelLayoutHandlers(panelLayoutModePersistenceStore);
   setBrowserService(
@@ -434,6 +473,7 @@ export function registerAllIpcHandlers(
   );
   registerFeatureFlagHandlers(getMainWindow);
   registerLabsExperimentsHandlers();
+  registerOrganizationCapabilitiesHandlers();
   registerCodeGraphBuildStatusBroadcast();
   registerCodeGraphHandlers(canopyRuntime, accessors);
   registerAuthTerminalHandlers(getMainWindow);
@@ -447,7 +487,12 @@ export function registerAllIpcHandlers(
       overlayLayerHost: accessors.overlayLayerHost,
     });
   }
-  registerCanopyPortalHandlers(accessors, canopyRuntime.dispatcher);
+  // Once, before any chat wait can start.
+  setDesktopChatWaitPresence({
+    getMainWindow,
+    remoteControllerAttached: (): boolean =>
+      getRemoteControlRuntime()?.service.hasConnectedController() === true,
+  });
   registerAppAdvisorHandlers(
     accessors,
     accessors.appAdvisorWorkspaceOperations,
@@ -514,6 +559,7 @@ export function registerAllIpcHandlers(
     closeSkillShareNudge();
     closeSkillSuggestions();
     closeChatStatePush();
+    stopInitiatedPresentation();
     closeCostHandlers();
     void closeScriptActions();
     closeAccountOrganizationSettings();

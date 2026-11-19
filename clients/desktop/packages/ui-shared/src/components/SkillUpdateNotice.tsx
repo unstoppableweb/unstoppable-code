@@ -3,9 +3,16 @@ import { RefreshIcon } from '../icons/AppIcons';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import type { SkillUpdateAction } from '../lib/skill-update-action';
 import { useMinuteClock } from '../lib/useMinuteClock';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { DetailMoreMenuItem } from './DetailMoreMenu';
 import { RefreshSpinner } from './RefreshSpinner';
 import { Notice, NoticeButton } from './Notice';
+import { Button } from './Button';
+import { DetailFact } from './DetailFact';
+import {
+  DetailFactError,
+  DetailVersionUpdateFact,
+} from './CapabilityDetailLayout';
 
 export interface SkillUpdateNoticeProps {
   /** Omitted when the skill is not updatable: nothing renders. */
@@ -71,6 +78,9 @@ export function SkillUpdateNotice({
     return (
       <Notice
         errorSource="skill-update-notice"
+        errorRecordingDisabled={
+          error.kind === 'update-failed' && error.recorded === true
+        }
         intent="destructive"
         title={
           checkFailed
@@ -215,4 +225,130 @@ export function skillUpdateMenuItem(
     onSelect: action.onCheck,
     disabled: action.pending !== 'none',
   };
+}
+
+/**
+ * New Customize's Version row for an installed skill: the update notice's
+ * states on one fact row. It shows while an update is available, applying
+ * or failed; otherwise nothing, so the version stays hidden. A check's
+ * progress belongs beside the header action that started it.
+ */
+export function SkillVersionFact({
+  action,
+  version,
+  name,
+  onRemove,
+  refreshError,
+}: {
+  readonly action: SkillUpdateAction | undefined;
+  /** From SKILL.md: shown under session replay's block. */
+  readonly version?: string;
+  /** The skill's name, for the Update button's accessible name. */
+  readonly name: string;
+  readonly onRemove?: () => void;
+  /** A failure after an update (reading the new content), on this row. */
+  readonly refreshError?: string;
+}): JSX.Element | null {
+  const versionText = version ? (
+    <>
+      <span className={REPLAY_BLOCK_CLASS}>{version}</span>
+      <span aria-hidden>·</span>
+    </>
+  ) : null;
+  if (refreshError) {
+    return (
+      <DetailFact label="Version" testId="skill-version-fact">
+        <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+          {versionText}
+          <DetailFactError
+            error={refreshError}
+            testId="skill-version-fact-refresh-error"
+          />
+        </span>
+      </DetailFact>
+    );
+  }
+  if (!action) return null;
+  if (action.status === 'blocked') {
+    return action.updateAvailable ? (
+      <DetailVersionUpdateFact
+        name={name}
+        update={{ version, note: action.reason, versionReplay: 'block' }}
+        testId="skill-version-fact"
+      />
+    ) : null;
+  }
+  const { error } = action;
+  if (error) {
+    const missing = error.kind === 'missing-source';
+    const label = missing
+      ? 'No longer in its source'
+      : error.kind === 'check-failed'
+        ? 'Couldn’t check for updates'
+        : 'Couldn’t update this skill';
+    const retry = missing
+      ? onRemove
+      : error.kind === 'check-failed'
+        ? action.onCheck
+        : action.onApply;
+    return (
+      <DetailFact label="Version" testId="skill-version-fact">
+        <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+          {versionText}
+          <DetailFactError
+            error={
+              error.kind !== 'missing-source' && error.detail
+                ? `${label}: ${error.detail}`
+                : label
+            }
+            tone={missing ? 'attention' : 'failed'}
+            testId="skill-version-fact-error"
+          />
+          {retry && (
+            <>
+              <span aria-hidden>·</span>
+              <Button
+                variant="link"
+                onClick={retry}
+                disabled={action.pending !== 'none'}
+                data-testid="skill-version-fact-retry"
+              >
+                {missing ? 'Remove' : 'Try again'}
+              </Button>
+            </>
+          )}
+        </span>
+      </DetailFact>
+    );
+  }
+  if (action.pending === 'applying') {
+    return (
+      <DetailFact label="Version" testId="skill-version-fact">
+        <span
+          className="inline-flex min-w-0 flex-wrap items-center gap-1.5"
+          role="status"
+          data-state="applying"
+        >
+          {versionText}
+          <RefreshSpinner spinning size="sm" tone="secondary" />
+          Updating…
+        </span>
+      </DetailFact>
+    );
+  }
+  if (action.updateAvailable) {
+    return (
+      <DetailVersionUpdateFact
+        name={name}
+        update={{
+          version,
+          versionReplay: 'block',
+          busy: action.pending !== 'none',
+          run: action.onApply,
+        }}
+        testId="skill-version-fact"
+      />
+    );
+  }
+  return null;
 }

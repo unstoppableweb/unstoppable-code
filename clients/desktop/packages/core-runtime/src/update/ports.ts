@@ -37,7 +37,7 @@ export type DesktopUpdateSupport =
   | { readonly supported: true }
   | {
       readonly supported: false;
-      /** `source_build`, `not_packaged`, `linux_package_manager`, ... */
+      /** `local_only_build`, `source_build`, `not_packaged`, `linux_package_manager`, ... */
       readonly reason: string;
       readonly message: string;
       readonly manualInstructions?: string;

@@ -165,7 +165,7 @@ export const DESKTOP_CONTROL_RECIPES = {
         : 'group hover:bg-subtle focus-visible:bg-subtle'
     }`,
   'editor-selection-confirmation':
-    'flex items-center gap-1.5 rounded-md bg-card/95 px-2 py-1 text-2xs font-medium fg-success shadow-md backdrop-blur transition-colors hover:bg-accent-subtle',
+    'flex items-center gap-1.5 rounded-md bg-card px-2 py-1 text-2xs font-medium fg-success shadow-md transition-colors hover:bg-accent-subtle',
   'scheduled-send-edit': `focus-ring flex h-8 items-center gap-1.5 rounded-full pl-2.5 pr-1 whitespace-nowrap disabled:cursor-default ${CAPSULE_TOUCH_FLOOR_CLASS}`,
   'scheduled-send-clear':
     'focus-ring flex h-8 items-center rounded-full pl-1 pr-2.5',
@@ -277,7 +277,7 @@ export const DESKTOP_CONTROL_RECIPES = {
   // A Customize row's split action (CAN-6813): the state segment and its
   // caret, each lighting up alone on the Add button's secondary surface.
   'customize-row-action': `focus-ring flex min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-2 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} aria-disabled:cursor-default disabled:cursor-default disabled:opacity-70`,
-  // New Customize's status-line "Sign in" and "Retry": plain text; only the
+  // New Customize's status-line "Sign in" and "Try again": plain text; only the
   // triangle beside it carries the warning color (Sergii's QA).
   'customize-row-sign-in':
     'focus-ring rounded font-medium fg-primary hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60',

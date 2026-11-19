@@ -32,6 +32,7 @@ export type OrganizationSettingsPage = OrganizationSettingsNavTab;
 export const ORGANIZATION_SETTINGS_SUBTABS = [
   'general',
   'policies',
+  'project-defaults',
   'integrations',
   'usage',
   'ai-gateway',

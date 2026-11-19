@@ -12,12 +12,13 @@
  */
 
 /**
- * Voice dictation is currently a macOS-only feature. The voice IPC handlers
- * remain registered on every platform so the renderer can call them safely,
- * but they short-circuit to unsupported responses on non-`darwin` hosts.
+ * Voice dictation runs on macOS (the system's speech recognizer) and Linux
+ * (the bundled helper with a downloaded speech model). The voice IPC
+ * handlers stay registered on every platform so the renderer can call them
+ * safely, but they short-circuit to unsupported responses elsewhere.
  */
 export const UNSUPPORTED_VOICE_DICTATION_MESSAGE =
-  'Voice dictation is only available on macOS.';
+  'Voice dictation is available on macOS and Linux.';
 
 export const UNSUPPORTED_VOICE_DICTATION_RESPONSE = {
   supported: false,
@@ -25,6 +26,18 @@ export const UNSUPPORTED_VOICE_DICTATION_RESPONSE = {
 } as const;
 
 export function isVoiceDictationPlatform(platform: NodeJS.Platform): boolean {
+  return platform === 'darwin' || platform === 'linux';
+}
+
+/**
+ * Whether dictation needs the operating system's microphone and Speech
+ * Recognition permissions (macOS TCC). Linux has no such prompt: Chromium
+ * grants audio-only capture, and getUserMedia reports a missing or busy
+ * device.
+ */
+export function isVoiceSystemAccessPlatform(
+  platform: NodeJS.Platform,
+): boolean {
   return platform === 'darwin';
 }
 

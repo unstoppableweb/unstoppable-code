@@ -34,6 +34,7 @@ import type {
   InitiatedWorkClientPresence,
   InitiatedWorkRequest,
   InitiatedWorkRunControl,
+  InitiatedWorkSkipCode,
   LiveHookRun,
 } from '@canopy/core-runtime/node/initiated-work';
 import {
@@ -797,13 +798,20 @@ function toHookRunResponseFromFiring(
   }
 }
 
-/** Tells the window a paused hook's firing was recorded as skipped. */
+/**
+ * Tells the window a paused hook's firing was recorded as skipped. A skip
+ * that carries a code was not a pause (the pause state could not be read,
+ * CAN-7094), so the window is not told the hook is paused.
+ */
 export function announceHookSkippedPaused(args: {
   projectId: string;
   worktreeId: string;
   hook: HookDescriptor;
   window: BrowserWindow | null;
+  /** The skip's code, from its submission or its acceptance. */
+  skipCode: InitiatedWorkSkipCode | undefined;
 }): void {
+  if (args.skipCode !== undefined) return;
   sendToWindow(args.window, IPC_CHANNELS.hookSkippedPaused, {
     projectId: args.projectId,
     worktreeId: args.worktreeId,
@@ -982,6 +990,7 @@ export function fireHook(
           worktreeId: request.worktreeId,
           hook: request.describedHook,
           window: request.getWindow(),
+          skipCode: result.code,
         });
       return toHookRunResponseFromFiring(result);
     })

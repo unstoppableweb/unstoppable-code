@@ -2,6 +2,7 @@ export * from './agent-helpers';
 export * from './agent-sign-in';
 export * from './agent-turns';
 export * from './agent-providers';
+export * from './agent-usage-limits';
 export * from './catalog';
 export * from './code-graph';
 export * from './code-graph-reads';

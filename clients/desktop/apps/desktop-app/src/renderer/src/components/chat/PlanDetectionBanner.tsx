@@ -139,7 +139,7 @@ export function PlanDetectionBanner({
         err instanceof Error ? err.message : 'Failed to import plan',
         'error',
         undefined,
-        { projectId, worktreeId },
+        { projectId, worktreeId, caught: err },
       );
     } finally {
       importingRef.current = false;

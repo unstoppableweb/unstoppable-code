@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { damagedCopyPath, pruneDamagedCopies } from '../damaged-copies';
 
 /*
  * The v1 file-annotations state file of one worktree. Electron main is its
@@ -42,22 +43,48 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
-/** The raw state text, or null before the first write. */
-export async function readAnnotationStateText(
+/** The state file's bytes, or null before the first write. */
+export async function readAnnotationStateBytes(
   statePath: string,
-): Promise<string | null> {
+): Promise<Buffer | null> {
   try {
-    return await readFile(statePath, 'utf8');
+    return await readFile(statePath);
   } catch (error) {
     if (isMissingFile(error)) return null;
     throw error;
   }
 }
 
+/** The raw state text, or null before the first write. */
+export async function readAnnotationStateText(
+  statePath: string,
+): Promise<string | null> {
+  return (await readAnnotationStateBytes(statePath))?.toString('utf8') ?? null;
+}
+
+/**
+ * Keeps a copy of a state file's bytes beside it (`<file>.damaged-<ms>`), and
+ * only the newest few copies. The bytes are written as they were read, so a
+ * file that is not valid UTF-8 is copied exactly. Best effort: answers
+ * whether the copy was written, and never throws.
+ */
+export async function keepDamagedAnnotationStateCopy(
+  statePath: string,
+  content: Uint8Array,
+): Promise<boolean> {
+  try {
+    await writeAnnotationStateText(damagedCopyPath(statePath), content);
+  } catch {
+    return false;
+  }
+  await pruneDamagedCopies(statePath);
+  return true;
+}
+
 /** Replaces the state file atomically through a sibling temporary file. */
 export async function writeAnnotationStateText(
   statePath: string,
-  content: string,
+  content: string | Uint8Array,
 ): Promise<void> {
   await mkdir(dirname(statePath), { recursive: true });
   const tempPath = join(

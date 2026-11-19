@@ -14,6 +14,7 @@ import {
   WEB_CORE_HOST_DEFINITIONS,
   WEB_CORE_RELAY_DEFINITIONS,
 } from '../../canopy-runtime/renderer-relay/web-core-relay-definitions';
+import { CLOUD_WORKSPACE_FILE_WRITER_DEFINITIONS } from '../cloud-workspace-files';
 
 interface CloudChatsWorld {
   readonly state: {
@@ -67,12 +68,16 @@ interface Definition {
   readonly error?: ZodType;
 }
 
-/** What the renderer may call on the web core, and what main itself calls. */
+/**
+ * What the renderer may call on the web core, what main itself calls, and
+ * what main's workspace file writer calls on its own connection (CAN-7008).
+ */
 const DEFINITIONS = {
   ...WEB_CORE_RELAY_DEFINITIONS.queries,
   ...WEB_CORE_RELAY_DEFINITIONS.instructions,
   ...WEB_CORE_RELAY_DEFINITIONS.streams,
   ...WEB_CORE_HOST_DEFINITIONS.instructions,
+  ...CLOUD_WORKSPACE_FILE_WRITER_DEFINITIONS.instructions,
 } as Record<string, Definition>;
 
 const SCOPE = {
@@ -1307,6 +1312,79 @@ describe('the fake web core for desktop cloud chats (CAN-6280)', () => {
       scope: { workspaceId },
     }) as { result: { items: { worktreeId: string }[] } };
     expect(tasks.result.items.map((item) => item.worktreeId)).toEqual([taskId]);
+  });
+
+  it('deletes a task to the Trash through its own chat, lists it unlocked, and restores it in place (CAN-7052)', () => {
+    const other = createCloudChatsWorld({ accountId: 'acct-1' });
+    const answer = (
+      method: string,
+      params: Record<string, unknown>,
+    ): { result?: unknown; error?: { code?: string } } => {
+      const shape = definition(method);
+      expect(shape.params.safeParse(params).error).toBeUndefined();
+      const reply = other.call(method, params) as {
+        result?: unknown;
+        error?: { code?: string };
+      };
+      if (reply.result !== undefined)
+        expect(shape.result?.safeParse(reply.result).error).toBeUndefined();
+      if (reply.error !== undefined)
+        expect(shape.error?.safeParse(reply.error).error).toBeUndefined();
+      return reply;
+    };
+    const workspaceId = SEEDED_CLOUD_CHATS.workspaceId;
+    const taskId = SEEDED_CLOUD_CHATS.taskId;
+    const remove = (commandId: string, mode = 'discard'): unknown =>
+      answer('core.chat.delete', {
+        commandId,
+        projectId: workspaceId,
+        worktreeId: taskId,
+        _meta: { idempotencyKey: commandId },
+        action: { type: 'chat.close_tab', tabId: taskId, mode },
+      }).result;
+    // Archive mode is core.chat.archive's; this fake serves discard only.
+    expect(
+      answer('core.chat.delete', {
+        commandId: 'cmd-archive-mode',
+        projectId: workspaceId,
+        worktreeId: taskId,
+        _meta: { idempotencyKey: 'cmd-archive-mode' },
+        action: { type: 'chat.close_tab', tabId: taskId, mode: 'archive' },
+      }).error,
+    ).toBeDefined();
+    expect(remove('cmd-delete')).toMatchObject({ outcome: 'applied' });
+    // A retry under another command id finds it in the Trash already.
+    expect(remove('cmd-delete-again')).toMatchObject({
+      outcome: 'already_applied',
+    });
+    const tasks = other.call('core.chat.task.list', {
+      scope: { workspaceId },
+    }) as { result: { items: unknown[] } };
+    expect(tasks.result.items).toEqual([]);
+    const listed = answer('core.archive.container.list', { workspaceId })
+      .result as {
+      containers: { revision: number; expiresAt: string | null }[];
+    };
+    expect(listed.containers).toEqual([
+      expect.objectContaining({
+        archiveId: `work-entry:${taskId}`,
+        locked: false,
+        lockedAt: null,
+      }),
+    ]);
+    // Restorable until it expires, unlike an archived task.
+    expect(typeof listed.containers[0].expiresAt).toBe('string');
+    expect(
+      answer('core.archive.container.restore', {
+        archiveId: `work-entry:${taskId}`,
+        expectedRevision: listed.containers[0].revision,
+        destinationScope: { workspaceId },
+        conflictPolicy: 'fail',
+        _meta: { idempotencyKey: 'restore-trash' },
+      }).result,
+    ).toMatchObject({ operation: { status: 'completed' } });
+    // Restored, it can be deleted again.
+    expect(remove('cmd-delete-later')).toMatchObject({ outcome: 'applied' });
   });
 
   it('raises a chat’s tool approval, lists its card at revision 2 and settles it once answered (CAN-6515)', () => {

@@ -1,10 +1,12 @@
 import { IPC_PRIVATE_CHANNELS } from './channel-policy';
 import { toIpcRejection } from './app-error-rejection';
 import { ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import { recordIpcInvoke } from '@canopy/desktop-shared/node/work-counters';
+import {
+  recordIpcInvoke,
+  runWithW5Caller,
+} from '@canopy/desktop-shared/node/work-counters';
 import { trackSlowAction } from '../lib/slow-action-tracker';
 import { runRendererDeliveryBarriers } from '../lib/web-contents-send';
 
@@ -35,8 +37,6 @@ const SLOW_ACTION_LABELS: Record<string, string> = {
   [IPC_CHANNELS.automationsListRuns]: 'Loading automation run history',
   [IPC_CHANNELS.resourceMonitorGetSnapshot]: 'Loading resource diagnostics',
   [IPC_CHANNELS.memoryDiagnosticsCreateReport]: 'Creating a memory report',
-  [IPC_CHANNELS.canopyPortalStart]: `Starting ${REMOTE_CONTROL_LABEL.toLowerCase()}`,
-  [IPC_CHANNELS.canopyPortalStop]: `Stopping ${REMOTE_CONTROL_LABEL.toLowerCase()}`,
   [IPC_CHANNELS.listUsageLimitedIdleChats]: 'Listing usage-limited chats',
   [IPC_CHANNELS.resumeUsageLimitedChats]: 'Resuming usage-limited chats',
   [IPC_CHANNELS.listUsageLimitedIdleSessions]: 'Listing usage-limited sessions',
@@ -71,7 +71,9 @@ export function registerIpcHandler<Args extends unknown[], Result>(
     recordIpcInvoke(channel);
     let settled: Promise<Result>;
     try {
-      settled = Promise.resolve(handler(event, ...args));
+      settled = Promise.resolve(
+        runWithW5Caller(channel, () => handler(event, ...args)),
+      );
     } catch (error) {
       settled = Promise.reject(toIpcRejection(channel, error, true));
     }

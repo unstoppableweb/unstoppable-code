@@ -96,6 +96,11 @@ export interface AgentVisualFrameProps {
    * document by message. Absent, the frame is built inline around it.
    */
   frameUrl?: string;
+  /**
+   * Whether the visual may load CDN scripts, styles and fonts. Defaults to
+   * true; hosts pass `allowsAgentVisualRemoteAssets(capabilities)`.
+   */
+  remoteAssets?: boolean;
   testIds: AgentVisualFrameTestIds;
 }
 
@@ -213,6 +218,7 @@ export function AgentVisualFrame(
     theme: AgentVisualTheme;
     title: string;
     frameUrl: string | undefined;
+    remoteAssets: boolean;
     /** Counts rebuilds, so a served frame is loaded again for each. */
     version: number;
     agentSrcDoc: string;
@@ -234,6 +240,7 @@ export function AgentVisualFrame(
     status !== 'unresponsive' &&
     status !== 'navigated';
 
+  const remoteAssets = props.remoteAssets !== false;
   // A live frame takes theme changes by message, without reloading; a frame
   // that is not mounted is rebuilt so its next mount starts in the current theme.
   if (
@@ -241,15 +248,19 @@ export function AgentVisualFrame(
     source.current.document !== props.document ||
     source.current.retry !== retry ||
     source.current.frameUrl !== props.frameUrl ||
+    source.current.remoteAssets !== remoteAssets ||
     (!mounted && source.current.theme !== props.theme)
   ) {
-    const agentSrcDoc = buildAgentVisualSrcDoc(props.document, props.theme);
+    const agentSrcDoc = buildAgentVisualSrcDoc(props.document, props.theme, {
+      remoteAssets,
+    });
     source.current = {
       document: props.document,
       retry,
       theme: props.theme,
       title: props.title,
       frameUrl: props.frameUrl,
+      remoteAssets,
       version: (source.current?.version ?? 0) + 1,
       agentSrcDoc,
       srcDoc:
@@ -257,6 +268,7 @@ export function AgentVisualFrame(
           ? buildAgentVisualWrapperSrcDoc(agentSrcDoc, {
               title: props.title,
               appearance: props.theme.appearance,
+              remoteAssets,
             })
           : undefined,
     };

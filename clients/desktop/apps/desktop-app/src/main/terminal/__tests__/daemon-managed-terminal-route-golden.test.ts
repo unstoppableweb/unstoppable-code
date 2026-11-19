@@ -498,10 +498,35 @@ describe('Claude terminals on the daemon terminal route (CAN-5097)', () => {
     const savedLifecycleScript = process.env.npm_lifecycle_script;
     mockState.enhancedEnv.ELECTRON_RUN_AS_NODE = '1';
     mockState.enhancedEnv.NODE_OPTIONS = '--x';
+    mockState.enhancedEnv.Node_Options = '--require inherited';
+    mockState.enhancedEnv.LD_PRELOAD = '/inherited';
+    mockState.enhancedEnv.dyld_insert_libraries = '/inherited';
+    const authorizedEnv = {
+      NODE_EXTRA_CA_CERTS: '/ca',
+      NODE_USE_ENV_PROXY: '1',
+      SSL_CERT_FILE: '/cert',
+      SSL_CERT_DIR: '/certs',
+      OPENSSL_CONF: '/openssl',
+      PYTHONPATH: '/python',
+      NODE_ENV: 'production',
+    };
+    Object.assign(mockState.enhancedEnv, authorizedEnv);
     process.env.npm_lifecycle_script = 'x'.repeat(40_000);
     try {
-      await spawnPlacedManagedTerminal(request(), { fromRemoteBridge: true });
-      await spawnPlacedManagedTerminal(request());
+      const contaminated = request({
+        managedCommand: {
+          ...CLAUDE,
+          env: {
+            ...CLAUDE.env,
+            NODE_PATH: '/final-merge',
+            BASH_ENV: '/final-merge',
+          },
+        },
+      });
+      await spawnPlacedManagedTerminal(contaminated, {
+        fromRemoteBridge: true,
+      });
+      await spawnPlacedManagedTerminal(contaminated);
       const inProcess = mockState.spawned[0]?.env;
       const daemonEnv: TerminalEnvironment = Object.fromEntries(
         Object.entries(mockState.creates[0]?.env ?? {}).map(([name, value]) => [
@@ -546,13 +571,22 @@ describe('Claude terminals on the daemon terminal route (CAN-5097)', () => {
 
       expect(hosted).toEqual(inProcess);
       expect(hosted).toMatchObject({
+        ...authorizedEnv,
+        NODE_PATH: '/final-merge',
+        BASH_ENV: '/final-merge',
         [DESKTOP_INTEGRATION_TOKEN_ENV_VAR]: 'tok-secret',
         [brandEnvName('DESKTOP_INTEGRATION_SESSION_KEY')]: 'key-1',
       });
       expect(hosted?.PATH?.startsWith('/opt/canopy/bin')).toBe(true);
       for (const env of [hosted, inProcess]) {
         expect(env).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
-        expect(env).not.toHaveProperty('NODE_OPTIONS');
+        for (const key of [
+          'NODE_OPTIONS',
+          'Node_Options',
+          'LD_PRELOAD',
+          'dyld_insert_libraries',
+        ])
+          expect(env).not.toHaveProperty(key);
       }
     } finally {
       if (savedLifecycleScript === undefined)
@@ -560,6 +594,27 @@ describe('Claude terminals on the daemon terminal route (CAN-5097)', () => {
       else process.env.npm_lifecycle_script = savedLifecycleScript;
     }
   });
+
+  it.each(['Node_Options', 'LD_PRELOAD', 'dyld_insert_libraries'])(
+    'rejects a caller-supplied %s override before either terminal route starts',
+    async (name) => {
+      for (const fromRemoteBridge of [true, false]) {
+        await expect(
+          spawnPlacedManagedTerminal(
+            request({
+              managedCommand: {
+                ...CLAUDE,
+                env: { ...CLAUDE.env, [name]: '/blocked' },
+              },
+            }),
+            { fromRemoteBridge },
+          ),
+        ).rejects.toThrow(`Invalid managed terminal env: blocked key ${name}`);
+      }
+      expect(mockState.creates).toEqual([]);
+      expect(mockState.spawned).toEqual([]);
+    },
+  );
 
   it('an unreachable daemon opens the terminal in process; another refusal fails the launch', async () => {
     mockState.failure = Object.assign(new Error('setup failed'), {});

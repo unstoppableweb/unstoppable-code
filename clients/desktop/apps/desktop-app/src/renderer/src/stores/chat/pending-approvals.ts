@@ -59,7 +59,9 @@ function isApprovalRequestDetails(value: unknown): boolean {
         typeof value.server === 'string' &&
         typeof value.tool === 'string' &&
         isOptionalString(value.paramsDisplay) &&
-        isOptionalString(value.reason)
+        isOptionalString(value.reason) &&
+        isOptionalString(value.connector) &&
+        isOptionalString(value.account)
       );
     case 'network':
       return typeof value.host === 'string' && isOptionalString(value.reason);
@@ -90,6 +92,16 @@ function isApprovalRequestDetails(value: unknown): boolean {
         isOptionalString(value.topOrigin) &&
         isOptionalString(value.purpose) &&
         typeof value.multiple === 'boolean'
+      );
+    case 'agent-secret-use':
+      return (
+        (value.tool === 'RunWithSecrets' ||
+          value.tool === 'WriteSecretsFile') &&
+        isOptionalString(value.command) &&
+        isOptionalString(value.cwd) &&
+        isOptionalString(value.path) &&
+        Array.isArray(value.secretNames) &&
+        value.secretNames.every((name) => typeof name === 'string')
       );
     default:
       return false;

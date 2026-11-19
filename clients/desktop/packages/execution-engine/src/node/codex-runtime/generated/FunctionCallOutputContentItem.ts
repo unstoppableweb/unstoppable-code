@@ -13,5 +13,5 @@ export type FunctionCallOutputContentItem =
       | { image_url: string }
       | { file_id: string }
     ))
-  | { type: 'input_audio'; audio_url: string }
+  | ({ type: 'input_audio' } & ({ audio_url: string } | { file_id: string }))
   | { type: 'encrypted_content'; encrypted_content: string };

@@ -16,9 +16,11 @@ import { runWithGitRequestContext } from '@canopy/desktop-shared/node/git-reques
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
+  type SidebarItemsFile,
   type WorktreeBranchChangedEvent,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
+import type { CoreWorkspaceReadDetail } from '../canopy-runtime/core-workspace-adapter';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { getCurrentBranchDisplayName, getGitHeadWatchState } from './git';
@@ -32,7 +34,10 @@ import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservatio
 import { invalidateWorktreeStats } from './worktree-service';
 import { observeWorktreeGit } from './worktree-git-observations';
 import { registerWorktreeGitReadyHook } from './worktree-git-ready-hooks';
-import { subscribeWorktreeLifecycleChanges } from './worktree-lifecycle-signals';
+import {
+  subscribeWorktreeLifecycleChanges,
+  worktreeLifecycleSequence,
+} from './worktree-lifecycle-signals';
 import { WorktreeRecordRefusedError } from './worktree-repair';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
 import { sendToWindow } from './window-send';
@@ -124,11 +129,38 @@ async function collectWorktreeCheckouts(
   }));
 }
 
+/** A `projects:load` read, taken before its `projects-loaded` publish. */
+export interface LoadedProjectionOffer {
+  /** `worktreeLifecycleSequence()` captured before the read began. */
+  sequence: number;
+  /** Never stale: a stale load offers nothing. */
+  file: SidebarItemsFile;
+  authority?: CoreWorkspaceReadDetail;
+}
+
+let offered: LoadedProjectionOffer | undefined;
+
+/** The observer's next listing reuses it unless a list changed since. */
+export function offerLoadedProjection(offer: LoadedProjectionOffer): void {
+  if (active) offered = offer;
+}
+
+function takeLoadedProjection(): LoadedProjectionOffer | undefined {
+  const offer = offered;
+  offered = undefined;
+  return offer?.sequence === worktreeLifecycleSequence() ? offer : undefined;
+}
+
 async function listCheckouts(
   dispatcher: DesktopCanopyDispatcher,
 ): Promise<BranchCheckoutListing<DesktopBranchCheckout>> {
-  const { legacyResult, legacyAuthority } =
-    await dispatcher.queryWorktreeListForLegacyIpc({}, { caller: LIST_CALLER });
+  const offer = takeLoadedProjection();
+  const { legacyResult, legacyAuthority } = offer
+    ? { legacyResult: offer.file, legacyAuthority: offer.authority }
+    : await dispatcher.queryWorktreeListForLegacyIpc(
+        {},
+        { caller: LIST_CALLER },
+      );
   // Per-workspace faults use preservedWorkspaceIds without blocking healthy enrollment.
   if (legacyAuthority?.indexAuthority === 'unreadable') {
     throw workspaceStorageUnavailable();
@@ -306,7 +338,9 @@ export interface WorktreeBranchObserverOptions {
  * starts a checkout's watch at any time. Membership enrollment starts at the
  * first `projects:load`, or at `startWorktreeBranchEnrollment()` if that comes
  * first; lifecycle signals, later loads included, then reread membership on a
- * debounce.
+ * debounce. A load offers its own read first, so its sync lists without
+ * another read unless a list write or membership signal landed after the
+ * read began.
  */
 export function startWorktreeBranchObserver(
   options: WorktreeBranchObserverOptions,
@@ -353,5 +387,6 @@ export function startWorktreeBranchEnrollment(): void {
 export function stopWorktreeBranchWatchers(): void {
   const current = active;
   active = null;
+  offered = undefined;
   current?.dispose();
 }

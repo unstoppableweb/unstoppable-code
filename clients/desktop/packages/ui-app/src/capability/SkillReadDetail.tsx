@@ -8,7 +8,10 @@ import type {
 } from '@canopy/protocol';
 import {
   Button,
+  CapabilityDetailLayout,
+  DetailFact,
   DetailHeader,
+  DetailHostRelated,
   DetailMoreMenu,
   DetailPageActions,
   ExecutionActionButton,
@@ -19,7 +22,10 @@ import {
   SkillMarkdownBody,
   SkillUpdateNotice,
   SkillUpdateStatus,
+  SkillVersionFact,
+  DetailVersionUpdateFact,
   hasSkillUpdateStatus,
+  useItemStateMarks,
   skillUpdateMenuItem,
   visibleFrontmatterEntries,
   type DetailMoreMenuItem,
@@ -72,6 +78,15 @@ export interface SkillReadDetailHeader {
   /** From SKILL.md: the first meta fact, under session replay's block. */
   version?: string;
   meta?: readonly ReactNode[];
+  /**
+   * New Customize's fact rows: where the skill came from (the meta's
+   * source, or a shared copy's attribution and status) and when it changed.
+   */
+  facts?: { source?: readonly ReactNode[]; updated?: string };
+  /** New Customize: the tile's 40px logo. */
+  logo?: ReactNode;
+  /** New Customize: the tile's publisher line. */
+  publisher?: ReactNode;
 }
 
 const UPDATED_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
@@ -140,11 +155,12 @@ export function installedSkillDetailHeader(
       : installed?.source;
   const updatedDate = headerDate(installed?.updatedAt);
   const updatedFact = updatedDate ? `Updated ${updatedDate}` : undefined;
+  const installedDate = headerDate(
+    installed?.installedAt,
+    installed?.updatedAt,
+  );
   const statusFact = shared
-    ? installedShareStatusFact(
-        shared.updateAvailable,
-        headerDate(installed?.installedAt, installed?.updatedAt),
-      )
+    ? installedShareStatusFact(shared.updateAvailable, installedDate)
     : null;
   return {
     title: displayName?.trim() || marketplaceTitleCase(name),
@@ -162,6 +178,20 @@ export function installedSkillDetailHeader(
       : [source, updatedFact].filter(
           (fact): fact is string => typeof fact === 'string' && fact !== '',
         ),
+    facts: {
+      // New Customize says an available update on the Version row only, so
+      // the Source row keeps just when the copy was installed.
+      source: shared
+        ? [
+            ...shared.facts,
+            ...(installedDate ? [`Installed ${installedDate}`] : []),
+            ...(shared.sourceLink ? [shared.sourceLink] : []),
+          ]
+        : source
+          ? [source]
+          : [],
+      ...(updatedDate ? { updated: updatedDate } : {}),
+    },
   };
 }
 
@@ -239,6 +269,22 @@ export interface SkillReadDetailProps {
   /** Leading chrome, such as Back, sharing one row with the actions. */
   leadingContent?: ReactNode;
   relatedContent?: ReactNode;
+  /**
+   * New Customize: the installed item's Status row, the first fact under the
+   * header (elsewhere hosts show it with the related content).
+   */
+  statusContent?: ReactNode;
+  /** New Customize: a failure after an update, on the Version row. */
+  versionError?: string;
+  /** New Customize: the Works with table, as the tile's chips read it. */
+  worksWith?: ReactNode;
+  /**
+   * New Customize: a shared copy whose source changed, updated from the
+   * Version row (Try it stays the primary).
+   */
+  shareUpdate?: { run: () => void };
+  /** New Customize: a ⋯ action's failure, beside the header actions. */
+  actionsNotice?: ReactNode;
   onViewStateChange?: (state: SkillReadDetailViewState) => void;
 }
 
@@ -391,8 +437,15 @@ export function SkillReadDetail({
   updateAction,
   leadingContent,
   relatedContent,
+  statusContent,
+  versionError,
+  actionsNotice,
+  worksWith,
+  shareUpdate,
   onViewStateChange,
 }: SkillReadDetailProps): JSX.Element {
+  // New Customize draws the header and facts through the shared layout.
+  const layout = useItemStateMarks();
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [showTree, setShowTree] = useState(false);
@@ -545,7 +598,77 @@ export function SkillReadDetail({
           {primary}
         </>
       ) : undefined;
-    topRow = (
+    const sourceFacts = header.facts?.source ?? [];
+    topRow = layout ? (
+      <>
+        {leadingContent}
+        <div className="pb-6">
+          <CapabilityDetailLayout
+            dataTestId="skill-read-detail-header"
+            includeHostRelated={false}
+            logo={header.logo}
+            title={header.title}
+            titleId={header.titleId}
+            publisher={header.publisher}
+            actions={headerActions}
+            actionsNotice={
+              actionsNotice ??
+              (hasSkillUpdateStatus(updateAction) ? (
+                <SkillUpdateStatus action={updateAction} />
+              ) : undefined)
+            }
+            description={header.description}
+            descriptionReplay="block"
+            facts={{
+              status: statusContent,
+              source:
+                sourceFacts.length > 0 ? (
+                  <DetailFact label="Source" testId="skill-detail-source">
+                    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5">
+                      {sourceFacts.map((fact, index) => (
+                        <span
+                          key={index}
+                          className="inline-flex items-center gap-1.5"
+                        >
+                          {index > 0 ? <span aria-hidden="true">·</span> : null}
+                          {fact}
+                        </span>
+                      ))}
+                    </span>
+                  </DetailFact>
+                ) : undefined,
+              // No Plugin row: a skill a plugin bundles has no page of its
+              // own and opens its plugin on both hosts (CAN-4844).
+              updated: header.facts?.updated ? (
+                <DetailFact label="Updated" testId="skill-detail-updated">
+                  {header.facts.updated}
+                </DetailFact>
+              ) : undefined,
+              version: shareUpdate ? (
+                <DetailVersionUpdateFact
+                  name={header.title}
+                  update={{
+                    version: header.version,
+                    versionReplay: 'block',
+                    run: shareUpdate.run,
+                  }}
+                />
+              ) : (
+                <SkillVersionFact
+                  action={updateAction}
+                  version={header.version}
+                  name={header.title}
+                  onRemove={onRemove}
+                  refreshError={versionError}
+                />
+              ),
+            }}
+            factsFooter={notice}
+            worksWith={worksWith}
+          />
+        </div>
+      </>
+    ) : (
       <>
         {leadingContent}
         <div className="pb-6">
@@ -705,6 +828,7 @@ export function SkillReadDetail({
             </div>
           )}
           {relatedContent}
+          <DetailHostRelated />
         </div>
       </div>
     );
@@ -804,6 +928,7 @@ export function SkillReadDetail({
                 </p>
               )}
               {relatedContent}
+              <DetailHostRelated />
             </>
           ) : (
             <SkillFilePreview

@@ -218,7 +218,13 @@ describe('shared imports through the window and through Electron main (CAN-6003 
       ],
       plugins: [],
       failures: [
-        { label: 'gone', required: true, message: 'Repository not found.' },
+        {
+          label: 'gone',
+          required: true,
+          message: 'Repository not found.',
+          // The member's thrown error, kept for the caller to record.
+          error: new Error('Repository not found.'),
+        },
       ],
     });
     expect(fromWindow.calls).toContain(

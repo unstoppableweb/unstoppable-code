@@ -3,9 +3,20 @@ import { statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
-import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import type {
+  PlatformOperatingSystem,
+  PlatformExecutionProcessServices,
+  PlatformExecutionOutput,
+} from '@canopy/core-runtime';
 import { createChildServices } from '../supervision/child';
+import {
+  createExecutionProcessServices,
+  ExecutionProcessError,
+  type ExecutionProcessOperations,
+  type ExecutionProcessRootExit,
+} from '../supervision/execution-process';
 import { killProcessTree } from '../supervision/kill-tree';
+import { createJobLauncher } from '../supervision/owned-child';
 import {
   captureWindowsClosureContext,
   observeWindowsClosure,
@@ -22,6 +33,7 @@ import {
   type GitReadEnvironment,
   type GitReadPlan,
   isHostAbsolute,
+  isRepositoryCommand,
   planGitReadCommand,
   readsWorkingTree,
   searchPath,
@@ -59,6 +71,15 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 
 export interface GitReadRunnerOptions {
   readonly os: PlatformOperatingSystem;
+  /**
+   * The staged CAN-5140 addon that holds Windows repository commands in jobs.
+   * A command its launch does not start runs uncontained through Node spawn.
+   */
+  readonly nativePath?: string;
+  /** Host-only custody seam; production always creates native job services. */
+  readonly createWindowsProcesses?: (
+    onRootTreeEmpty: NonNullable<ExecutionProcessOperations['onRootTreeEmpty']>,
+  ) => PlatformExecutionProcessServices;
   /** Aborting it stops every in-flight request and refuses new ones. */
   readonly hostSignal?: AbortSignal;
   /** Test seams; production uses NODE_SUPERVISION. */
@@ -336,6 +357,11 @@ export function createGitReadRunner(
     lifetime: 'owned',
   });
   const activity = createActivity();
+  // The addon owns native instances until host exit; reuse its lazy load across reads.
+  const windowsLauncher =
+    os === 'win32' && options.nativePath !== undefined
+      ? createJobLauncher({ os, nativePath: options.nativePath })
+      : undefined;
 
   function reportKill(outcome: 'failed' | 'cleanup_unconfirmed'): void {
     try {
@@ -375,6 +401,8 @@ export function createGitReadRunner(
         plan.timeoutMs !== undefined && startedAt + plan.timeoutMs <= stopBy;
 
       const closure = os === 'win32' ? observeWindowsClosure('git') : undefined;
+      // A Windows repository read spawns here only when no job holds it.
+      if (isRepositoryCommand(kind)) closure?.unsafe();
       // check-ignore may start an fsmonitor daemon that outlives it (E3)
       // unless its plan carries the discharge, which planning adds only for
       // an audited Git for Windows version. That version vouches only for
@@ -664,6 +692,246 @@ export function createGitReadRunner(
     return settlement.output;
   }
 
+  /**
+   * Repository helpers stay in an uncommitted, no-breakaway Windows job. A
+   * launch that does not start the command (no addon, or a job, pipe or
+   * process creation failure) runs it uncontained, as desktop's execFile did,
+   * rather than refusing the read; its closure evidence is then unsafe.
+   */
+  async function executeWindowsRepository(
+    kind: GitReadCommand['kind'],
+    plan: GitReadPlan,
+    request: GitReadRequest,
+  ): Promise<GitReadOutput> {
+    const signals = signalsOf(request);
+    signals.forEach((signal) => signal.throwIfAborted());
+    const startedAt = performance.now();
+    const stopBy = request.deadlineAt - timing.cleanupReserveMs;
+    if (stopBy <= startedAt) throw new GitReadError('deadline_exceeded');
+    // POSIX registers the request timer first, so it wins an exact tie.
+    const probeLimited =
+      plan.timeoutMs !== undefined && startedAt + plan.timeoutMs < stopBy;
+    const closure = observeWindowsClosure('git');
+    const custodyEnded = activity.begin();
+    let recordExit: (exit: ExecutionProcessRootExit) => void = () => undefined;
+    const rootExited = new Promise<ExecutionProcessRootExit>((resolve) => {
+      recordExit = resolve;
+    });
+    const observe = (empty: boolean, exit: ExecutionProcessRootExit): void => {
+      // Even successful later cleanup cannot upgrade a surviving helper's evidence.
+      if (!empty) closure?.unsafe();
+      recordExit(exit);
+    };
+    const processes =
+      options.createWindowsProcesses?.(observe) ??
+      createExecutionProcessServices(
+        { os: 'win32', nativePath: options.nativePath, windowsLauncher },
+        { onRootTreeEmpty: observe },
+      );
+    const stdout = new StreamCapture(plan.maxBuffer);
+    const stderr = new StreamCapture(plan.maxBuffer);
+    const capture = async (
+      stream: PlatformExecutionOutput | null,
+      sink: StreamCapture,
+      name: 'stdout' | 'stderr',
+    ): Promise<void> => {
+      if (!stream) return;
+      for (;;) {
+        const chunk = await stream.read();
+        if (chunk === null) {
+          if (sink.end())
+            throw new GitReadError('output_limit', { stream: name });
+          return;
+        }
+        const overflow = sink.write(Buffer.from(chunk));
+        stream.acknowledge(chunk.byteLength);
+        if (overflow) throw new GitReadError('output_limit', { stream: name });
+      }
+    };
+    type CapturedRoot = {
+      readonly outcome: ExecutionProcessRootExit;
+      readonly captured: Promise<void>;
+    };
+    type NotStarted = { readonly notStarted: ExecutionProcessError };
+    const running = activity.track(
+      processes
+        .start({
+          executable: plan.file,
+          args: plan.args,
+          cwd: request.cwd,
+          environment: plan.env,
+          stdin: 'ignore',
+        })
+        .then(
+          async (child): Promise<CapturedRoot> => {
+            const captured = activity.track(
+              Promise.all([
+                capture(child.stdout, stdout, 'stdout'),
+                capture(child.stderr, stderr, 'stderr'),
+              ]).then(() => undefined),
+            );
+            // The execution outcome itself waits for credited output, not just exit.
+            const completed = child.outcome.then(
+              (outcome): ExecutionProcessRootExit => {
+                if (outcome.kind === 'lost' || outcome.output !== 'complete') {
+                  closure?.unsafe();
+                  throw new GitReadError('cleanup_unconfirmed');
+                }
+                return outcome;
+              },
+            );
+            const outcome = await Promise.race([
+              rootExited,
+              completed,
+              captured.then(() => rootExited),
+            ]);
+            if (
+              outcome.kind !== 'exited' ||
+              outcome.code === null ||
+              outcome.code === 259
+            )
+              closure?.unsafe();
+            return { outcome, captured };
+          },
+          // Every typed start failure, a refused request shape included,
+          // precedes the child's resume: nothing ran.
+          (error: unknown): NotStarted => {
+            if (error instanceof ExecutionProcessError)
+              return { notStarted: error };
+            throw error;
+          },
+        ),
+    );
+    const probeEnd =
+      plan.timeoutMs === undefined ? stopBy : startedAt + plan.timeoutMs;
+    const exited = await waitWithin(
+      running,
+      Math.min(stopBy, probeEnd),
+      signals,
+    );
+    let result: Waited<GitReadOutput | NotStarted>;
+    if (!('value' in exited)) result = exited;
+    else if ('notStarted' in exited.value) {
+      closure?.unsafe();
+      result = { value: exited.value };
+    } else {
+      const root = exited.value;
+      // Like POSIX, exit ends the command cap; only the drain window remains.
+      const drained = await waitWithin(
+        root.captured,
+        Math.min(performance.now() + timing.drainMs, request.deadlineAt),
+        signals,
+      );
+      if ('value' in drained || 'expired' in drained) {
+        const pipes = 'value' in drained ? 'closed' : 'abandoned';
+        if (pipes === 'abandoned') closure?.unsafe();
+        result = {
+          value: Object.freeze({
+            code: root.outcome.code,
+            signal: root.outcome.signal,
+            stdout: stdout.text(),
+            stderr: stderr.text(),
+            pipes,
+          }),
+        };
+      } else result = drained;
+    }
+    const failure =
+      'aborted' in result
+        ? result.aborted
+        : 'expired' in result
+          ? new GitReadError(probeLimited ? 'timeout' : 'deadline_exceeded')
+          : 'error' in result
+            ? result.error
+            : undefined;
+    if (!('value' in result)) closure?.unsafe();
+    let cleanupAbort: { readonly reason: unknown } | undefined;
+    const listeners = signals.map((signal): [AbortSignal, () => void] => [
+      signal,
+      (): void => {
+        closure?.unsafe();
+        cleanupAbort ??= { reason: signal.reason };
+      },
+    ]);
+    listeners.forEach(([signal, listener]) => {
+      signal.addEventListener('abort', listener, { once: true });
+      if (signal.aborted) listener();
+    });
+    // Always stop, including after root exit: closed pipes are not tree closure.
+    const cleanup = activity.track(
+      processes.shutdown().then(
+        () => {
+          custodyEnded();
+          closure?.close();
+        },
+        (error: unknown) => {
+          closure?.unsafe();
+          // Failed proof latches non-idle; only host exit can discharge lost custody.
+          reportKill('failed');
+          throw error;
+        },
+      ),
+    );
+    const cleaned = await waitWithin(
+      cleanup,
+      Math.min(request.deadlineAt, performance.now() + timing.cleanupReserveMs),
+      [],
+    );
+    listeners.forEach(([signal, listener]) =>
+      signal.removeEventListener('abort', listener),
+    );
+    const confirmed = 'value' in cleaned;
+    if (!confirmed) {
+      closure?.unsafe();
+      reportKill('cleanup_unconfirmed');
+    }
+    if ('value' in result) {
+      const { value } = result;
+      if ('notStarted' in value) {
+        if (cleanupAbort) throw cleanupAbort.reason;
+        // Unconfirmed launch records keep the runner non-idle; the read still runs.
+        return outputOf(
+          execute(
+            kind,
+            // NUL stdin, as in the job: end the pipe at once.
+            { ...plan, input: plan.input ?? new Uint8Array() },
+            request,
+          ),
+        );
+      }
+      // An abort during cleanup still rejects a success, as on POSIX.
+      if (cleanupAbort)
+        throw confirmed
+          ? cleanupAbort.reason
+          : new GitReadError('cleanup_unconfirmed', {
+              failure: 'error' in cleaned ? cleaned.error : cleanupAbort.reason,
+            });
+      // Git's own result stands (q-28); unconfirmed custody stays non-idle,
+      // is reported above, and leaves the closure evidence unsafe.
+      return value;
+    }
+    if (!confirmed)
+      throw new GitReadError('cleanup_unconfirmed', {
+        failure: 'error' in cleaned ? cleaned.error : failure,
+      });
+    if ('aborted' in result) throw result.aborted;
+    if ('expired' in result) throw failure;
+    // Failures after the start; a start failure ran uncontained above.
+    if (result.error instanceof ExecutionProcessError) {
+      switch (result.error.code) {
+        case 'invalid_argument':
+          throw new GitReadError('invalid_request');
+        case 'failed_precondition':
+          throw new GitReadError('command_not_found');
+        case 'unavailable':
+          throw new GitReadError('cleanup_unconfirmed', {
+            failure: result.error,
+          });
+      }
+    }
+    throw result.error;
+  }
+
   /** `work`'s outcome, the first abort, or expiry at `at`; `work` runs on. */
   function waitWithin<T>(
     work: Promise<T>,
@@ -838,6 +1106,8 @@ export function createGitReadRunner(
       planGitReadCommand(os, command, environment),
       checked,
     );
+    if (os === 'win32' && isRepositoryCommand(command.kind))
+      return executeWindowsRepository(command.kind, plan, checked);
     return outputOf(
       execute(
         command.kind,

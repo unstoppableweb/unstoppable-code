@@ -92,6 +92,48 @@ function publishScrollbarMode(
   }
 }
 
+/**
+ * One probe per document per task. Each probe forces a layout of the whole
+ * document, and every scroll area resolves the behavior on mount and on every
+ * window focus, so without sharing one focus costs one layout per scroll area.
+ * An entry lives until the end of the task that measured it, so the scroll
+ * areas mounting in one React flush share it. A focus clears it first (see
+ * `installFocusInvalidation`), because a hidden window's timers can be
+ * throttled for seconds and the setting usually changes while unfocused.
+ */
+interface SharedScrollbarWidth {
+  width: number;
+}
+
+const sharedScrollbarWidths = new WeakMap<Document, SharedScrollbarWidth>();
+const focusInvalidatedDocuments = new WeakSet<Document>();
+
+function sharedNativeScrollbarWidth(ownerDocument: Document): number {
+  const shared = sharedScrollbarWidths.get(ownerDocument);
+  if (shared !== undefined) return shared.width;
+  const entry: SharedScrollbarWidth = { width: measureNativeScrollbarWidth() };
+  sharedScrollbarWidths.set(ownerDocument, entry);
+  ownerDocument.defaultView?.setTimeout(() => {
+    if (sharedScrollbarWidths.get(ownerDocument) === entry) {
+      sharedScrollbarWidths.delete(ownerDocument);
+    }
+  }, 0);
+  return entry.width;
+}
+
+/** Once per document, ahead of every scroll area's own focus listener. */
+function installFocusInvalidation(ownerDocument: Document, view: Window): void {
+  if (focusInvalidatedDocuments.has(ownerDocument)) return;
+  focusInvalidatedDocuments.add(ownerDocument);
+  view.addEventListener(
+    'focus',
+    (event) => {
+      if (event.target === view) sharedScrollbarWidths.delete(ownerDocument);
+    },
+    true,
+  );
+}
+
 function resolveScrollbarBehavior(
   ownerDocument: Document = document,
 ): ResolvedScrollbarBehavior {
@@ -101,7 +143,7 @@ function resolveScrollbarBehavior(
     return explicit;
   }
 
-  const nativeWidth = measureNativeScrollbarWidth();
+  const nativeWidth = sharedNativeScrollbarWidth(ownerDocument);
   const resolved = nativeWidth > 0 ? 'always' : 'scroll';
   publishScrollbarMode(resolved, nativeWidth, ownerDocument);
   return resolved;
@@ -254,6 +296,7 @@ export function useScrollbarBehavior(
     const sync = (): void => {
       setBehavior(resolveScrollbarBehavior(ownerDocument));
     };
+    installFocusInvalidation(ownerDocument, view);
     sync();
     view.addEventListener('focus', sync);
     const observer = new view.MutationObserver((records) => {

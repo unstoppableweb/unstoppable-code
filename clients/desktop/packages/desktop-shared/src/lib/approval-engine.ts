@@ -2633,6 +2633,14 @@ export function evaluateApproval(
   if (check.kind === 'browser-file-request') {
     return { outcome: 'prompt' };
   }
+  // Handing secrets to a command or file: Full Access allows it, every other
+  // mode asks each time, and no rule answers it, so an "always allow" never
+  // skips it.
+  if (check.kind === 'agent-secret-use') {
+    return ctx.mode === 'full-access'
+      ? { outcome: 'allow' }
+      : { outcome: 'prompt' };
+  }
   if (ctx.mode !== 'full-access' && check.kind === 'command') {
     const safetyReason =
       safetyDeniedCommandReason(check.command, check.shellPlatform) ??

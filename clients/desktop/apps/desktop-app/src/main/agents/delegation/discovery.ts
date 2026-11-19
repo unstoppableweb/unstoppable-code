@@ -1,4 +1,5 @@
 import { toAppError } from '@canopy/protocol/app-errors';
+import { organizationAgentGateAllows } from '../../organization-capabilities/agent-gate';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { isOpenCodeHarnessEnabled } from '../../opencode/feature-flag';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
@@ -32,7 +33,10 @@ import {
   peekProviderAccountIdentity,
 } from '../../auth/provider-auth-state';
 import { resolveCodexRuntimeEnvironmentProfile } from '../../lib/user-environment-runtime';
-import { resolveAiCreditsRoutingAttempt } from '../ai-credits-routing';
+import {
+  resolveAiCreditsRoutingDecision,
+  routingAttemptOf,
+} from '../ai-credits-routing';
 import { isSelectableAgentOverrideModel } from '@canopy/execution-engine/model-catalog';
 import { getExecutionHarnessForModel } from '@canopy/desktop-shared/types';
 import { agentModelPluginIncompatibility } from '../../plugins/agent-model-compatibility';
@@ -111,6 +115,8 @@ export async function discoverManagedDelegationModels(
             const agent = await getAgentModel(agentId, owner.projectId);
             if (
               !agent ||
+              // An organization copy its workspace's set does not hold.
+              !(await organizationAgentGateAllows(owner.projectId, agentId)) ||
               (await agentModelPluginIncompatibility(
                 agent.pluginSelections,
                 harness,
@@ -328,11 +334,15 @@ export async function discoverManagedDelegationModels(
         // cache miss. Launch-time validation performs the authoritative probe.
         const auth = (): Promise<boolean> =>
           Promise.resolve(cachedNativeAuth ?? true);
-        const routing = await resolveAiCreditsRoutingAttempt(
-          owner.aiCreditsRouting,
-          runtime.providerType,
-          auth,
-          owner.subscriptionBillingOverride,
+        // An `off`-mode sign-out (`no-billing-source`) is not a route: the
+        // launch refuses it, so it is not advertised as a credits route here.
+        const routing = routingAttemptOf(
+          await resolveAiCreditsRoutingDecision(
+            owner.aiCreditsRouting,
+            runtime.providerType,
+            auth,
+            owner.subscriptionBillingOverride,
+          ),
         );
         // Credit/org routes need launch-time authorization. Do not advertise native readiness
         // or allocate an ephemeral route simply to populate discovery.

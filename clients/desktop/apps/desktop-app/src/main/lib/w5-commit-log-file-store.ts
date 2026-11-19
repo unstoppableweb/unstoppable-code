@@ -26,7 +26,7 @@ import { markE2eStartup } from './e2e-startup-marks';
 import { admitStorageWrite } from '@canopy/execution-engine/node/lib/storage-admission';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { readWorkspaceIndex } from '@canopy/core-runtime/node';
-import { w5RecordFileClass } from './w5-work-counters';
+import { W5_AGGREGATE_KEYS, w5RecordFileClass } from './w5-work-counters';
 import {
   isW5CaptureWorkspaceId,
   type W5CaptureRequest,
@@ -91,6 +91,11 @@ export function __setDesktopW5FileStoreForTests(
   store: W5FileStore | undefined,
 ): void {
   testStore = store;
+}
+
+/** A test store shadows the production slot; the read cache stands aside. */
+export function isDesktopW5TestStoreInstalled(): boolean {
+  return testStore !== undefined;
 }
 
 /**
@@ -213,6 +218,7 @@ export async function runW5ReadView<T>(
   request: W5CaptureRequest,
   work: (view: W5ReadViewOutcome) => Promise<T>,
 ): Promise<T> {
+  recordW5Work(W5_AGGREGATE_KEYS.queryReadView);
   if (currentW5CommitScope()) {
     recordW5Work('readView.uncaptured.mutation-scope');
     return work({ status: 'uncaptured', reason: 'mutation-scope' });
@@ -265,6 +271,7 @@ function discoverySkippedReads(
   const index = capture.files.find((file) => file.kind === 'index');
   if (index?.state !== 'present') return undefined;
   const bytes = Buffer.from(index.base64, 'base64');
+  recordW5Work(W5_AGGREGATE_KEYS.indexDecodedBytes, bytes.byteLength);
   // The repositories' own lenient decoding, as the captured view serves it.
   const { entries } = readWorkspaceIndex(
     { state: 'present', raw: bytes.toString('utf8') },
@@ -323,6 +330,7 @@ export type W5PreparationBinding =
 export async function prepareW5ReadBinding(
   request: W5CaptureRequest,
 ): Promise<W5PreparationBinding> {
+  recordW5Work(W5_AGGREGATE_KEYS.queryPreparation);
   if (currentW5CommitScope())
     return { status: 'fallback', reason: 'mutation-scope' };
   const store = currentStore();

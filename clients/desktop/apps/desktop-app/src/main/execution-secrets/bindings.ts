@@ -48,6 +48,18 @@ async function environmentBindings(
     throw executionSecretUnavailableError();
   }
 }
+/**
+ * Whether a GitHub PAT should be bound. `refuse` turns an unreadable stored
+ * PAT into the fixed unavailable error; `omit` leaves the binding out.
+ */
+function githubPatConfigured(onUnreadable: 'omit' | 'refuse'): boolean {
+  try {
+    return readGitHubPatForExecution() !== null;
+  } catch {
+    if (onUnreadable === 'omit') return false;
+    throw executionSecretUnavailableError();
+  }
+}
 function checkedBindings(
   bindings: Iterable<ExecutionSecretBinding>,
 ): ExecutionSecretBinding[] {
@@ -106,7 +118,9 @@ export async function buildScriptSecretBindings(args: {
       ? { workspaceId: args.workspaceId }
       : {}),
   });
-  if (readGitHubPatForExecution() !== null)
+  // Scripts keep their best-effort GH_TOKEN: an unreadable PAT omits the
+  // binding (the read already reported it) instead of refusing the script.
+  if (githubPatConfigured('omit'))
     bindings.push({
       name: 'GH_TOKEN',
       source: { kind: 'integration-token', provider: 'github-pat' },
@@ -118,7 +132,8 @@ export async function buildPipelineSecretBindings(args: {
   workspaceId: string | undefined;
 }): Promise<ExecutionSecretBinding[]> {
   const bindings: ExecutionSecretBinding[] = [];
-  if (readGitHubPatForExecution() !== null)
+  // A stored but unreadable PAT refuses the run before any step starts.
+  if (githubPatConfigured('refuse'))
     bindings.push({
       name: 'GH_TOKEN',
       source: { kind: 'integration-token', provider: 'github-pat' },

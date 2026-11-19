@@ -313,19 +313,6 @@ export function useKeepHomeSelectionInScope(
   }, [workspaceId, scope, rebindSelection, readCurrentWorkspaceId]);
 }
 
-/**
- * Whether Home should (re)try seeding its selection: nothing is selected and
- * no attempt has run against this many projects. An attempt made before the
- * projects store loaded found nothing, so a new project count retries it.
- */
-export function shouldAttemptHomeSeed(
-  workspaceId: string | null,
-  lastAttemptProjectCount: number | null,
-  projectCount: number,
-): boolean {
-  return workspaceId === null && lastAttemptProjectCount !== projectCount;
-}
-
 /** The same scope read outside React, for async seeding. */
 export function getHomeScope(): HomeScope {
   const context = getSidebarScopingContext();

@@ -1,10 +1,15 @@
+import { CANOPY_DAEMON_EXIT_ENDPOINT_REPAIR_REQUIRED } from '@canopy/core-transport';
 import { CANOPY_CLIENT_PROTOCOL_VERSIONS, CanopyClientError } from '../errors';
 import { toCanopyInitializeError } from '../handshake';
 import type {
   CanopyRuntimeDescriptor,
   CanopyRuntimeDescriptorSource,
 } from './daemon-ports';
-import { canopyDaemonRefusalError } from './daemon-refusal';
+import {
+  canopyDaemonRefusalError,
+  canopyEndpointRepairRequiredError,
+  canopyLaunchDetails,
+} from './daemon-refusal';
 import { classifyCanopyDescriptor } from './descriptor';
 import {
   canopyConnectError,
@@ -102,17 +107,29 @@ const RESERVED_SWITCHES = [
   '--w5-host',
 ];
 
-const ambiguousClaim = (): CanopyClientError =>
-  canopyConnectError(
+/** `claim` is not a refusal: readers that treat `details.refusal` specially stay unaffected. */
+const ambiguousClaim = (
+  acquisition?: Extract<CanopyStartupClaimAcquisition, { kind: 'ambiguous' }>,
+): CanopyClientError => {
+  const { cause, errno } = canopyLaunchDetails(acquisition);
+  return canopyConnectError(
     'failed_precondition',
     'Core startup claim state is ambiguous.',
+    cause ? { claim: 'ambiguous', cause, ...(errno && { errno }) } : undefined,
   );
-const exitedBeforeReady = (): CanopyClientError =>
-  canopyDaemonRefusalError(
-    'exited_before_ready',
-    'Core exited before it was ready.',
-    'unavailable',
-  );
+};
+const exitedBeforeReady = (
+  exit?: Awaited<CanopySpawnedDaemon['exited']>,
+): CanopyClientError =>
+  exit?.code === CANOPY_DAEMON_EXIT_ENDPOINT_REPAIR_REQUIRED &&
+  exit.signal === null
+    ? canopyEndpointRepairRequiredError()
+    : canopyDaemonRefusalError(
+        'exited_before_ready',
+        'Core exited before it was ready.',
+        'unavailable',
+        canopyLaunchDetails({ exitCode: exit?.code, signal: exit?.signal }),
+      );
 
 function invalid(message: string): never {
   throw canopyConnectError('invalid_argument', message);
@@ -197,6 +214,13 @@ export async function attachOrStartCanopyDaemon<T>(
   const deadline = new Deadline(config.timeoutMs, options.signal);
   let child: CanopySpawnedDaemon | undefined;
   let exited = false;
+  let exitResult: Awaited<CanopySpawnedDaemon['exited']> | undefined;
+  const observeExit = (
+    result: Awaited<CanopySpawnedDaemon['exited']>,
+  ): void => {
+    exitResult = result;
+    exited = true;
+  };
   let committed = false;
   let cleaned = false;
   let spawnCleanupUnconfirmed = false;
@@ -213,8 +237,7 @@ export async function attachOrStartCanopyDaemon<T>(
           (signal) => supervisor.terminateDaemon(owned, signal),
           failed,
         );
-        await cleanup.run(() => owned.exited, failed);
-        exited = true;
+        observeExit(await cleanup.run(() => owned.exited, failed));
         cleaned = true;
       } finally {
         cleanup.dispose();
@@ -322,7 +345,10 @@ export async function attachOrStartCanopyDaemon<T>(
         } else if (child) {
           // Without a claim, a sibling launcher's daemon may hold the endpoint
           // our child lost; probe for its descriptor until the deadline.
-          if (exitSeen && claim) throw exitedBeforeReady();
+          if (exitSeen && claim) {
+            observeExit(await child.exited);
+            throw exitedBeforeReady(exitResult);
+          }
         } else if (acquired) {
           const { beforeSpawn } = config;
           if (beforeSpawn)
@@ -370,10 +396,10 @@ export async function attachOrStartCanopyDaemon<T>(
                     error.cleanupUnconfirmed === true;
                   throw error;
                 })),
-            fixed('Core launch failed.'),
+            fixed('Core launch failed.', canopyLaunchDetails),
           );
-          child.exited.then(() => {
-            exited = true;
+          child.exited.then((result) => {
+            observeExit(result);
             if (!claim && deadline.isBeforeExpiration())
               unclaimedExitBeforeDeadline = true;
           }, ignore);
@@ -385,7 +411,8 @@ export async function attachOrStartCanopyDaemon<T>(
             (signal) => (acquiring = claim.tryAcquire(signal)),
             fixed('Core startup claim failed.'),
           );
-          if (acquisition.kind === 'ambiguous') throw ambiguousClaim();
+          if (acquisition.kind === 'ambiguous')
+            throw ambiguousClaim(acquisition);
           if (acquisition.kind === 'acquired') {
             handle = acquisition.handle;
             recoveredEndpointBind =
@@ -470,8 +497,10 @@ export async function attachOrStartCanopyDaemon<T>(
       failure !== undefined &&
       error === failure &&
       failure.payload.kind === 'deadline_exceeded'
-    )
-      throw exitedBeforeReady();
+    ) {
+      if (child) observeExit(await child.exited);
+      throw exitedBeforeReady(exitResult);
+    }
     throw error;
   } finally {
     try {

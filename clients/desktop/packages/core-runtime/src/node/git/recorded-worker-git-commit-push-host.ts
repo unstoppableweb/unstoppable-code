@@ -3,6 +3,8 @@ import type { CanopyHandlerContext } from '../../runtime/types';
 import type { WorkerGitCheckoutScope } from '@canopy/protocol/canopy-core';
 import {
   GitRepositoryWriteError,
+  gitWriteDetailsOf,
+  gitWriteExitError,
   type GitRepositoryWrite,
   type GitRepositoryWriteOutput,
   type GitRepositoryWritePort,
@@ -47,14 +49,16 @@ export function createRecordedWorkerGitCommitPushHost<
               message: 'There are no changes to commit.',
               retry: { kind: 'never' },
             });
+          const failure = gitWriteExitError(result);
           if (write.kind === 'push-head')
             throw new CanopyOperationError({
               kind: 'failed_precondition',
               code: 'worker.git.push.rejected',
               message: 'The remote rejected the push; the commits are kept.',
+              ...gitWriteDetailsOf(failure),
               retry: { kind: 'never' },
             });
-          throw new GitRepositoryWriteError('exit_status');
+          throw failure;
         }
         return result.stdout.trim();
       };

@@ -1,6 +1,5 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
-import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import { logMainProcessError } from './main-process-logging';
 import { sendToAllWindows } from './window-send';
 import type { SessionStopCause } from '../agents/session-manager';
@@ -55,9 +54,9 @@ function summaryForStopCause(cause: SessionStopCause): string {
 /**
  * Build the `system`/`task_notification` event Canopy emits for a background
  * task whose owning provider session went away without a terminal bookend.
- * The shape is deliberately the one the renderer, the observability transcript
- * sidecar, and the portal tracker already reduce for real SDK notifications;
- * only `reason` and `canopy_synthetic` are additions.
+ * The shape is deliberately the one the renderer and the observability
+ * transcript sidecar already reduce for real SDK notifications; only `reason`
+ * and `canopy_synthetic` are additions.
  */
 export function buildSessionEndedTaskNotification(
   task: SessionEndedBackgroundTask,
@@ -83,9 +82,9 @@ export function buildSessionEndedTaskNotification(
 }
 
 /**
- * Deliver a synthetic terminal notification to the three consumers a live
- * provider event reaches: the observability transcript sidecar, the portal
- * background-process tracker, and every renderer window.
+ * Deliver a synthetic terminal notification to the consumers a live provider
+ * event reaches: the observability transcript sidecar and every renderer
+ * window.
  *
  * It deliberately does not go through the per-turn session event route. That
  * route drops any `system` event arriving after its turn settled — which is
@@ -119,19 +118,6 @@ export function emitSessionEndedBackgroundTaskNotification(
       'Session-ended background task observability record failed',
       error,
     );
-  }
-
-  try {
-    recordBackgroundProcessChatEvent(
-      {
-        workspaceLocalId: target.projectId,
-        worktreeLocalId: target.worktreeId,
-        chatId: target.chatId,
-      },
-      data,
-    );
-  } catch (error: unknown) {
-    logMainProcessError('Background-process tracking failed', error);
   }
 
   try {

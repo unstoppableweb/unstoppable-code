@@ -1,0 +1,599 @@
+{
+  "pattern": "(url|uri)$",
+  "projected": {
+    "chat:session-cloud-export-list": ["remoteUrl"],
+    "chat:session-import-inspect": ["remoteUrl"],
+    "clone-jobs:changed": ["remoteUrl"],
+    "clone-jobs:list": ["remoteUrl"],
+    "repo:get-remote-url": ["remoteUrl"],
+    "workspace:read-settings-data": ["remoteUrl"],
+    "workspace:reference-repo-status-event": ["remoteUrl"]
+  },
+  "exempt": [
+    {
+      "field": "url",
+      "reason": "Account proxy endpoint. normalizeAccountProxyUrl refuses userinfo, query and fragment, and the management key travels separately.",
+      "channels": [
+        "account-proxy:changed",
+        "account-proxy:connect",
+        "account-proxy:control-local",
+        "account-proxy:disconnect",
+        "account-proxy:remove-account",
+        "account-proxy:set-account-disabled",
+        "account-proxy:set-routing-strategy",
+        "account-proxy:set-up-local",
+        "account-proxy:sign-in",
+        "account-proxy:status",
+        "preferences:load",
+        "preferences:save",
+        "preferences:set-approval-default",
+        "preferences:set-pipeline-disabled",
+        "preferences:synced"
+      ]
+    },
+    {
+      "field": "url",
+      "reason": "External link an agent recommended in chat (agent artifact external_url). normalizeCapabilityHttpsUrl accepts only https without userinfo, and it is chat content the controller already shows.",
+      "channels": ["approval:auto-resolved", "chat:get-transcript-page"]
+    },
+    {
+      "field": "url",
+      "reason": "Pull request, issue, workflow and repository web URLs returned by GitHub or Linear APIs; public hosting URLs without credentials.",
+      "channels": [
+        "app-advisor:watcher-create",
+        "app-advisor:watchers-changed",
+        "app-advisor:watchers-completed-list",
+        "app-advisor:watchers-list",
+        "archived-containers:list",
+        "archived-containers:set-locked",
+        "desktop:session-snapshot",
+        "github:get-merge-queue",
+        "github:get-pr-state",
+        "github:list-pull-requests",
+        "github:resolve-pull-request",
+        "github:search-pull-requests",
+        "reference-preview:github",
+        "reference-preview:linear-issue",
+        "settings:search-linear-issues"
+      ]
+    },
+    {
+      "field": "url",
+      "reason": "Curated MCP catalog entry URL published by the service, not user configuration.",
+      "channels": ["mcp-servers:list-curated", "mcp-servers:refresh-curated"]
+    },
+    {
+      "field": "url",
+      "reason": "Share link the controller manages through these channels; showing it is their purpose. A hosted link, not a Git remote.",
+      "channels": [
+        "shared-containers:get-link",
+        "shared-containers:reset-link",
+        "shared-containers:set-link"
+      ]
+    },
+    {
+      "field": "htmlUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": [
+        "app-advisor:watcher-create",
+        "app-advisor:watchers-changed",
+        "app-advisor:watchers-completed-list",
+        "app-advisor:watchers-list",
+        "approval:auto-resolved",
+        "archived-containers:read-chat",
+        "chat:event",
+        "chat:get-state",
+        "chat:get-transcript-page",
+        "chat:hook-tab-started",
+        "chat:load-tabs",
+        "chat:read-archive",
+        "chat:reset-to-point",
+        "chat:restore-archive",
+        "chat:session-imported",
+        "chat:state-changed",
+        "claude-terminal:sync-transcript",
+        "desktop:session-snapshot",
+        "github:list-user-repos",
+        "standalone-chat:read-archive",
+        "standalone-chat:resume-archive"
+      ]
+    },
+    {
+      "field": "prUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": [
+        "app-advisor:get-state",
+        "archived-containers:refresh-pull-requests",
+        "desktop:session-snapshot",
+        "github:create-pr",
+        "github:merge-pr",
+        "github:pr-status-event",
+        "github:split-pr-get-map",
+        "github:split-pr-plan",
+        "github:split-workflow-approve",
+        "github:split-workflow-start",
+        "github:update-pr-base-branch",
+        "workspace:add-from-folder",
+        "workspace:add-from-remote",
+        "workspace:combine-worktree-with-existing-worktree",
+        "workspace:combine-worktree-with-workspace",
+        "workspace:create",
+        "workspace:create-new",
+        "workspace:create-temporary-from-repos",
+        "workspace:create-temporary-worktree-from-repos",
+        "workspace:create-temporary-worktree-from-workspaces",
+        "workspace:import-from-repo",
+        "workspace:promote-temporary",
+        "workspace:set-private-memory",
+        "workspace:worktrees-updated",
+        "worktree:health-check"
+      ]
+    },
+    {
+      "field": "detailsUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": [
+        "archived-containers:refresh-pull-requests",
+        "desktop:session-snapshot",
+        "github:get-pr-state",
+        "github:pr-status-event",
+        "workspace:combine-worktree-with-existing-worktree",
+        "workspace:combine-worktree-with-workspace",
+        "workspace:worktrees-updated",
+        "worktree:health-check"
+      ]
+    },
+    {
+      "field": "integrationPrUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": [
+        "github:split-pr-get-map",
+        "github:split-workflow-approve",
+        "github:split-workflow-start"
+      ]
+    },
+    {
+      "field": "originalPrUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": [
+        "github:split-pr-get-map",
+        "github:split-workflow-approve",
+        "github:split-workflow-start"
+      ]
+    },
+    {
+      "field": "cloneUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": ["github:list-user-repos"]
+    },
+    {
+      "field": "sshUrl",
+      "reason": "Web, clone or check URL returned by the GitHub API for a pull request, workflow run, check or repository; no credentials.",
+      "channels": ["github:list-user-repos"]
+    },
+    {
+      "field": "dataUrl",
+      "reason": "data: URI holding image or file content already in the payload, not a location.",
+      "channels": [
+        "approval:auto-resolved",
+        "archived-containers:read-chat",
+        "chat:event",
+        "chat:get-state",
+        "chat:get-transcript-page",
+        "chat:hook-tab-started",
+        "chat:load-tabs",
+        "chat:read-archive",
+        "chat:reset-to-point",
+        "chat:restore-archive",
+        "chat:session-imported",
+        "chat:state-changed",
+        "claude-terminal:sync-transcript",
+        "standalone-chat:read-archive",
+        "standalone-chat:resume-archive"
+      ]
+    },
+    {
+      "field": "darkDataUrl",
+      "reason": "data: URI holding image or file content already in the payload, not a location.",
+      "channels": [
+        "preferences:load",
+        "preferences:save",
+        "preferences:set-approval-default",
+        "preferences:set-pipeline-disabled",
+        "preferences:synced",
+        "terminal:get-settings",
+        "terminal:update-settings"
+      ]
+    },
+    {
+      "field": "lightDataUrl",
+      "reason": "data: URI holding image or file content already in the payload, not a location.",
+      "channels": [
+        "preferences:load",
+        "preferences:save",
+        "preferences:set-approval-default",
+        "preferences:set-pipeline-disabled",
+        "preferences:synced",
+        "terminal:get-settings",
+        "terminal:update-settings"
+      ]
+    },
+    {
+      "field": "newDataUrl",
+      "reason": "data: URI holding image or file content already in the payload, not a location.",
+      "channels": [
+        "activity:file-diff",
+        "activity:turn-file-diff",
+        "archived-containers:read-change-diff"
+      ]
+    },
+    {
+      "field": "oldDataUrl",
+      "reason": "data: URI holding image or file content already in the payload, not a location.",
+      "channels": [
+        "activity:file-diff",
+        "activity:turn-file-diff",
+        "archived-containers:read-change-diff"
+      ]
+    },
+    {
+      "field": "logoUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "mcp-servers:list-curated",
+        "mcp-servers:load-index",
+        "mcp-servers:load-server",
+        "mcp-servers:refresh-curated",
+        "mcp-servers:save-server",
+        "pipelines:curated-import",
+        "pipelines:discover-project",
+        "pipelines:duplicate",
+        "pipelines:get",
+        "pipelines:list",
+        "pipelines:save",
+        "pipelines:shared-create",
+        "pipelines:shared-create-packaged",
+        "pipelines:shared-get",
+        "pipelines:shared-list",
+        "pipelines:shared-organizations-list",
+        "pipelines:shared-teams-list",
+        "pipelines:shared-update",
+        "plugins:addMarketplace",
+        "plugins:install-built-in-plugin",
+        "plugins:install-plugin",
+        "plugins:load",
+        "plugins:loadCacheOnly",
+        "plugins:prepare-codex-compatibility",
+        "plugins:refreshMarketplaces",
+        "plugins:removeMarketplace",
+        "plugins:set-codex-compat-disabled",
+        "plugins:updateMarketplace",
+        "settings:load-canopy-cloud-account",
+        "settings:refresh-canopy-cloud-enforced-settings",
+        "settings:save-canopy-cloud-api-key",
+        "settings:start-canopy-guest-session",
+        "settings:validate-canopy-cloud-api-key",
+        "workspace-context:changed",
+        "workspace-context:get",
+        "workspace-context:set"
+      ]
+    },
+    {
+      "field": "docsUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "automations:curated:get",
+        "automations:curated:list",
+        "mcp-servers:await-account",
+        "mcp-servers:list-curated",
+        "mcp-servers:load-server",
+        "mcp-servers:refresh-curated",
+        "mcp-servers:save-server",
+        "mcp-servers:start-account",
+        "mcp-servers:update-account",
+        "pipelines:curated-get",
+        "pipelines:curated-list"
+      ]
+    },
+    {
+      "field": "authorUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "automations:curated:get",
+        "automations:curated:list",
+        "mcp-servers:list-curated",
+        "mcp-servers:load-server",
+        "mcp-servers:refresh-curated",
+        "mcp-servers:save-server",
+        "pipelines:curated-get",
+        "pipelines:curated-list"
+      ]
+    },
+    {
+      "field": "privacyPolicyUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "mcp-servers:list-curated",
+        "mcp-servers:load-server",
+        "mcp-servers:refresh-curated",
+        "mcp-servers:save-server"
+      ]
+    },
+    {
+      "field": "supportUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "mcp-servers:list-curated",
+        "mcp-servers:load-server",
+        "mcp-servers:refresh-curated",
+        "mcp-servers:save-server"
+      ]
+    },
+    {
+      "field": "installUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["mcp-servers:list-provider-connectors"]
+    },
+    {
+      "field": "pricingUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "observability:event",
+        "observability:load-history",
+        "observability:load-snapshot",
+        "settings:load-native-ai-credits-availability"
+      ]
+    },
+    {
+      "field": "codexPricingUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "observability:event",
+        "observability:load-history",
+        "observability:load-snapshot"
+      ]
+    },
+    {
+      "field": "codexSpeedUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": [
+        "observability:event",
+        "observability:load-history",
+        "observability:load-snapshot"
+      ]
+    },
+    {
+      "field": "manageUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["settings:load-canopy-cloud-ai-credits"]
+    },
+    {
+      "field": "purchaseUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["settings:load-canopy-cloud-ai-credits"]
+    },
+    {
+      "field": "avatarUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["desktop:session-snapshot"]
+    },
+    {
+      "field": "authorAvatarUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["reference-preview:github"]
+    },
+    {
+      "field": "assigneeAvatarUrl",
+      "reason": "Display link (logo, documentation, author, policy, support, pricing, install or avatar) from a catalog or service, or one a user saved with a server or pipeline; shown, never used to authenticate or clone.",
+      "channels": ["reference-preview:linear-issue"]
+    },
+    {
+      "field": "sourceUrl",
+      "reason": "Curated MCP catalog link to where an OAuth client id or secret is issued; published by the service, not the credential itself.",
+      "channels": ["mcp-servers:list-curated", "mcp-servers:refresh-curated"]
+    },
+    {
+      "field": "authorizationUrl",
+      "reason": "OAuth authorization endpoint published in the curated MCP catalog; the client secret and tokens travel separately.",
+      "channels": ["mcp-servers:list-curated", "mcp-servers:refresh-curated"]
+    },
+    {
+      "field": "tokenUrl",
+      "reason": "OAuth token endpoint published in the curated MCP catalog; the client secret and tokens travel separately.",
+      "channels": ["mcp-servers:list-curated", "mcp-servers:refresh-curated"]
+    },
+    {
+      "field": "redirectUri",
+      "reason": "OAuth loopback redirect URI for the sign-in in progress; carries no credential.",
+      "channels": [
+        "mcp-servers:await-account",
+        "mcp-servers:start-account",
+        "mcp-servers:update-account"
+      ]
+    },
+    {
+      "field": "verificationUri",
+      "reason": "Device-flow verification page published by the provider; the user code travels separately.",
+      "channels": [
+        "copilot-connection:change-account",
+        "copilot-connection:connect",
+        "copilot-connection:progress",
+        "copilot-connection:status"
+      ]
+    },
+    {
+      "field": "baseUrl",
+      "reason": "Canopy Cloud base URL from hosted policy; the API key travels separately.",
+      "channels": [
+        "settings:load-canopy-cloud-account",
+        "settings:refresh-canopy-cloud-enforced-settings",
+        "settings:save-canopy-cloud-api-key",
+        "settings:start-canopy-guest-session",
+        "settings:validate-canopy-cloud-api-key"
+      ]
+    },
+    {
+      "field": "serverBaseUrl",
+      "reason": "Legacy Cloud backend origin kept on old shared-pipeline state (protocol pipelines comment); no credentials.",
+      "channels": [
+        "pipelines:curated-import",
+        "pipelines:discover-project",
+        "pipelines:duplicate",
+        "pipelines:get",
+        "pipelines:list",
+        "pipelines:save"
+      ]
+    }
+  ],
+  "ticketed": [
+    {
+      "field": "manifestUrl",
+      "reason": "(a) canopy.json manifest URL. Some readers already apply sanitizeRemoteUrl (projects-list.ts, workspace-metadata-host.ts, core-workspace-adapter.ts), but not every channel is verified, and it travels back on write channels such as projects:save, so redacting it here could overwrite the stored value.",
+      "ticket": "CAN-7082",
+      "channels": [
+        "projects:load",
+        "projects:save",
+        "workspace:add-from-folder",
+        "workspace:add-from-remote",
+        "workspace:add-repo",
+        "workspace:combine-worktree-with-existing-worktree",
+        "workspace:combine-worktree-with-workspace",
+        "workspace:create",
+        "workspace:create-new",
+        "workspace:create-temporary-from-repos",
+        "workspace:create-temporary-worktree-from-repos",
+        "workspace:create-temporary-worktree-from-workspaces",
+        "workspace:import-from-repo",
+        "workspace:promote-temporary",
+        "workspace:read-settings-data",
+        "workspace:set-private-memory"
+      ]
+    },
+    {
+      "field": "url",
+      "reason": "(a) canopy.json repo entry URL can hold a token and round-trips through workspace:init-git.",
+      "ticket": "CAN-7082",
+      "channels": ["canopy-json:read", "workspace:init-git"]
+    },
+    {
+      "field": "sourceUrl",
+      "reason": "(b) Plugin marketplace source URL can hold a token and may round-trip through updateMarketplace.",
+      "ticket": "CAN-7082",
+      "channels": [
+        "app-advisor:settings-view",
+        "plugin-catalog:list",
+        "plugins:addMarketplace",
+        "plugins:load",
+        "plugins:loadCacheOnly",
+        "plugins:refreshMarketplaces",
+        "plugins:removeMarketplace",
+        "plugins:updateMarketplace"
+      ]
+    },
+    {
+      "field": "remoteUrl",
+      "reason": "(c) app-advisor:tool-request carries a Git remote URL as action input, unredacted.",
+      "ticket": "CAN-7082",
+      "channels": ["app-advisor:tool-request"]
+    },
+    {
+      "field": "url",
+      "reason": "(d) MCP server URL in a user-configured or plugin-bundled server can carry a credential in the URL.",
+      "ticket": "CAN-7082",
+      "channels": [
+        "app-advisor:settings-view",
+        "mcp-servers:list-detected",
+        "mcp-servers:load-server",
+        "mcp-servers:save-server",
+        "plugin-catalog:list",
+        "plugins:addMarketplace",
+        "plugins:install-built-in-plugin",
+        "plugins:install-plugin",
+        "plugins:load",
+        "plugins:loadCacheOnly",
+        "plugins:prepare-codex-compatibility",
+        "plugins:refreshMarketplaces",
+        "plugins:removeMarketplace",
+        "plugins:set-codex-compat-disabled",
+        "plugins:updateMarketplace"
+      ]
+    },
+    {
+      "field": "remoteUrl",
+      "reason": "Shared container preview. share-preview.ts passes each repository remote through sanitizeRemoteUrl (plan-share-repos.ts), which clears userinfo, query and fragment and drops file: URLs and absolute paths, but no existing test covers the userinfo or token-query case.",
+      "ticket": "CAN-7082",
+      "channels": ["shared-containers:preview"]
+    },
+    {
+      "field": "displayUrl",
+      "reason": "(g, new) In-app browser page URL in the resource monitor; a page URL can carry tokens in its query.",
+      "ticket": "CAN-7082",
+      "channels": ["resource-monitor:get-snapshot", "resource-monitor:snapshot"]
+    },
+    {
+      "field": "url",
+      "reason": "(g, new) In-app browser page URLs: an open dialog's page and the agent's browser.wait_for target; a page URL can carry tokens in its query.",
+      "ticket": "CAN-7082",
+      "channels": ["app-advisor:get-state", "app-advisor:tool-request"]
+    },
+    {
+      "field": "url",
+      "reason": "User-entered project start page URL (ProjectStartPage kind url); it can carry a token in its query and round-trips through projects:save.",
+      "ticket": "CAN-7082",
+      "channels": [
+        "chat-project:blueprints-list",
+        "chat-project:blueprints-refresh",
+        "chat-project:create",
+        "chat-project:create-from-template",
+        "chat-project:list",
+        "chat-project:template-build",
+        "projects:load",
+        "projects:save",
+        "standalone-chat:import-project",
+        "start-page:resolve",
+        "workspace:add-from-folder",
+        "workspace:add-from-remote",
+        "workspace:combine-worktree-with-existing-worktree",
+        "workspace:combine-worktree-with-workspace",
+        "workspace:create",
+        "workspace:create-new",
+        "workspace:create-temporary-from-repos",
+        "workspace:create-temporary-worktree-from-repos",
+        "workspace:create-temporary-worktree-from-workspaces",
+        "workspace:import-from-repo",
+        "workspace:promote-temporary",
+        "workspace:read-settings-data",
+        "workspace:set-private-memory"
+      ]
+    },
+    {
+      "field": "authorizationUrl",
+      "reason": "OAuth authorization endpoint on a user-saved MCP server; user-entered, so it can carry a token in its query.",
+      "ticket": "CAN-7082",
+      "channels": [
+        "mcp-servers:load-server",
+        "mcp-servers:save-server",
+        "mcp-servers:start-account"
+      ]
+    },
+    {
+      "field": "tokenUrl",
+      "reason": "OAuth token endpoint on a user-saved MCP server; user-entered, so it can carry a token in its query.",
+      "ticket": "CAN-7082",
+      "channels": ["mcp-servers:load-server", "mcp-servers:save-server"]
+    },
+    {
+      "field": "baseUrl",
+      "reason": "Model gateway base URL; user-configurable, and it is not verified that it cannot carry a credential.",
+      "ticket": "CAN-7082",
+      "channels": ["model-registry:get", "model-registry:updated"]
+    }
+  ],
+  "refused": [
+    {
+      "field": "embeddedUrl",
+      "reason": "An embedded mcp-servers:start-account mints an authenticated portal link for this computer's cloud account. The host session refuses every controller request on the channel that is not the external sign-in, before it reaches main, so no link is minted or sent; the external sign-in returns no embeddedUrl.",
+      "channels": ["mcp-servers:start-account"]
+    }
+  ]
+}

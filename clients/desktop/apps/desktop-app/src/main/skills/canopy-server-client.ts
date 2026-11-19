@@ -190,6 +190,7 @@ export async function createSharedSkill(
     organizationId?: string;
     capabilityPackage?: CreateSharedSkillRequest['capabilityPackage'];
     committedPackageUploadId?: string;
+    expectedAudience?: CreateSharedSkillRequest['expectedAudience'];
   } = { rawSkill };
   if (request.shareScope !== undefined) body.shareScope = request.shareScope;
   if (request.shareScope === 'team' && request.teamId)
@@ -205,6 +206,8 @@ export async function createSharedSkill(
   if (request.committedPackageUploadId) {
     body.committedPackageUploadId = request.committedPackageUploadId;
   }
+  if (request.expectedAudience)
+    body.expectedAudience = request.expectedAudience;
   return requestCanopyCloudJson<SharedSkillDetail>(`${API_PREFIX}/skills`, {
     method: 'POST',
     body: JSON.stringify(body),

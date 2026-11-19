@@ -1,3 +1,4 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
   execFile,
   spawn,
@@ -13,6 +14,7 @@ import { BRAND } from '@canopy/brand/current';
 import {
   UNSUPPORTED_VOICE_DICTATION_RESPONSE,
   isVoiceDictationPlatform,
+  isVoiceSystemAccessPlatform,
 } from '@canopy/desktop-shared/platform-capabilities';
 import type {
   VoiceEventPayload,
@@ -42,7 +44,42 @@ function isJsonObject(value: unknown): value is Record<string, unknown> {
 function isDictateMacOSVersionSupported(): boolean {
   // Darwin 25 is macOS 26. Older hosts can fail in dyld before Swift's
   // availability checks run, including in probe and authorization modes.
+  // Only the macOS helper has a version floor.
+  if (hostPlatformOperatingSystem() !== 'darwin') return true;
   return Number(release().split('.')[0]) >= 25;
+}
+
+/**
+ * The Linux helper's `--probe` codes, as Settings and the composer say them.
+ * Its own reason stays for any other code.
+ */
+const LINUX_PROBE_REASONS: Readonly<
+  Record<NonNullable<VoiceIsSupportedResponse['code']>, string>
+> = {
+  'model-missing': 'Download the speech model to use dictation.',
+  'cpu-unsupported':
+    "This computer's processor doesn't support dictation. It needs AVX.",
+};
+
+/** The Linux helper's probe code, when it is one the app knows. */
+function linuxProbeCode(value: unknown): VoiceIsSupportedResponse['code'] {
+  if (hostPlatformOperatingSystem() !== 'linux') return undefined;
+  return value === 'model-missing' || value === 'cpu-unsupported'
+    ? value
+    : undefined;
+}
+
+/**
+ * Arguments that point the Linux helper at the verified speech model. With
+ * none installed it gets no model, and its probe reports `model-missing`.
+ */
+async function helperArgs(): Promise<string[]> {
+  if (hostPlatformOperatingSystem() !== 'linux') return [];
+  const { resolveInstalledSpeechModel } = await import('./speech-model-source');
+  const model = await resolveInstalledSpeechModel();
+  return model
+    ? ['--model-dir', model.directory, '--model-arch', model.architecture]
+    : [];
 }
 
 export class VoiceService {
@@ -64,7 +101,7 @@ export class VoiceService {
   }
 
   async isSupported(): Promise<VoiceIsSupportedResponse> {
-    if (!isVoiceDictationPlatform(process.platform)) {
+    if (!isVoiceDictationPlatform(hostPlatformOperatingSystem())) {
       return UNSUPPORTED_VOICE_RESPONSE;
     }
     if (!isDictateMacOSVersionSupported()) {
@@ -81,8 +118,12 @@ export class VoiceService {
     }
     this.supportProbePromise = this.probe();
     try {
-      this.cachedSupport = await this.supportProbePromise;
-      return this.cachedSupport;
+      const support = await this.supportProbePromise;
+      // On Linux the answer follows the speech model, which can be
+      // downloaded or removed at any time, so every check probes again.
+      if (hostPlatformOperatingSystem() === 'darwin')
+        this.cachedSupport = support;
+      return support;
     } finally {
       this.supportProbePromise = null;
     }
@@ -94,11 +135,15 @@ export class VoiceService {
   }
 
   async requestSpeechRecognitionAccess(): Promise<VoiceSpeechRecognitionAccess> {
-    if (!isVoiceDictationPlatform(process.platform)) {
+    if (!isVoiceDictationPlatform(hostPlatformOperatingSystem())) {
       return 'unavailable';
     }
     if (!isDictateMacOSVersionSupported()) {
       return 'unavailable';
+    }
+    if (!isVoiceSystemAccessPlatform(hostPlatformOperatingSystem())) {
+      // Linux has no speech-recognition permission to ask for.
+      return 'authorized';
     }
     const binary = resolveBinary();
     if (!binary) {
@@ -111,7 +156,7 @@ export class VoiceService {
         {
           env: getEnhancedEnv({ environment: { runtime: 'canopy' } }),
           timeout: 30_000,
-          windowsHide: process.platform === 'win32',
+          windowsHide: hostPlatformOperatingSystem() === 'win32',
         },
         (_error, stdout) => {
           const line = stdout
@@ -165,8 +210,16 @@ export class VoiceService {
     }
     this.pendingStartIds.add(sessionId);
     let support: VoiceIsSupportedResponse;
+    let args: string[];
     try {
-      support = await this.isSupported();
+      // On Linux the model is resolved once, and the probe and the session
+      // use the same arguments, so a model removed in between can't start
+      // the helper without one.
+      args = await helperArgs();
+      support =
+        hostPlatformOperatingSystem() === 'linux'
+          ? await this.probe(args)
+          : await this.isSupported();
     } finally {
       this.pendingStartIds.delete(sessionId);
     }
@@ -184,10 +237,10 @@ export class VoiceService {
       );
     }
     const binary = resolveBinary();
-    const child = spawn(binary, [], {
+    const child = spawn(binary, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: getEnhancedEnv({ environment: { runtime: 'canopy' } }),
-      windowsHide: process.platform === 'win32',
+      windowsHide: hostPlatformOperatingSystem() === 'win32',
     });
     const session: ActiveSession = {
       sessionId,
@@ -374,26 +427,32 @@ export class VoiceService {
     });
   }
 
-  private probe(): Promise<VoiceIsSupportedResponse> {
-    if (!isVoiceDictationPlatform(process.platform)) {
-      return Promise.resolve(UNSUPPORTED_VOICE_RESPONSE);
+  private async probe(knownArgs?: string[]): Promise<VoiceIsSupportedResponse> {
+    if (!isVoiceDictationPlatform(hostPlatformOperatingSystem())) {
+      return UNSUPPORTED_VOICE_RESPONSE;
     }
+    const args = knownArgs ?? (await helperArgs());
     return new Promise((resolvePromise) => {
       const binary = resolveBinary();
       if (!binary) {
         resolvePromise({
           supported: false,
-          reason: `${BRAND.dictation.binaryName} binary not found`,
+          // Linux builds stage the helper only once dictation ships there;
+          // say so instead of naming a file.
+          reason:
+            hostPlatformOperatingSystem() === 'linux'
+              ? "Dictation isn't included in this build."
+              : `${BRAND.dictation.binaryName} binary not found`,
         });
         return;
       }
       execFile(
         binary,
-        ['--probe'],
+        ['--probe', ...args],
         {
           env: getEnhancedEnv({ environment: { runtime: 'canopy' } }),
           timeout: 5_000,
-          windowsHide: process.platform === 'win32',
+          windowsHide: hostPlatformOperatingSystem() === 'win32',
         },
         (_error, stdout) => {
           const line = stdout
@@ -415,9 +474,15 @@ export class VoiceService {
               return;
             }
             const supported = parsed.supported === true;
+            const code = linuxProbeCode(parsed.code);
             const reason =
-              typeof parsed.reason === 'string' ? parsed.reason : undefined;
-            resolvePromise(reason ? { supported, reason } : { supported });
+              (code ? LINUX_PROBE_REASONS[code] : undefined) ??
+              (typeof parsed.reason === 'string' ? parsed.reason : undefined);
+            resolvePromise({
+              supported,
+              ...(reason ? { reason } : {}),
+              ...(code ? { code } : {}),
+            });
           } catch {
             resolvePromise({
               supported: false,

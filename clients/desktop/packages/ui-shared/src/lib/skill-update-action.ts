@@ -5,7 +5,8 @@
  */
 export type SkillUpdateError =
   | { kind: 'check-failed'; detail?: string }
-  | { kind: 'update-failed'; detail?: string }
+  /** `recorded`: the host already recorded the failure, so the notice records nothing. */
+  | { kind: 'update-failed'; detail?: string; recorded?: true }
   | { kind: 'missing-source' };
 
 /**

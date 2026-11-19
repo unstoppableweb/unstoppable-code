@@ -1,4 +1,8 @@
-import { recordProviderConnectionFailure } from '../lib/provider-connection-events';
+import {
+  classifyConnectionFailure,
+  recordProviderConnectionFailure,
+  type ConnectionFailureReason,
+} from '../lib/provider-connection-events';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -80,6 +84,8 @@ export class CodexLoginManager {
   private abandoning: Promise<void> | null = null;
   private lastFailedAttemptId: string | null = null;
   private attemptTimedOut = false;
+  /** Set when the attempt failed inside Canopy rather than at the provider. */
+  private internalFailureReason: ConnectionFailureReason | null = null;
   private readonly listeners = new Set<(state: CodexLoginState) => void>();
   private enterRun: (<R>(fn: () => R) => R) | null = null;
   private attemptDone: {
@@ -132,7 +138,7 @@ export class CodexLoginManager {
           ? 'cancelled'
           : this.attemptTimedOut
             ? 'timeout'
-            : 'authentication',
+            : (this.internalFailureReason ?? 'authentication'),
       );
     }
     for (const listener of Array.from(this.listeners)) listener(this.state);
@@ -149,8 +155,8 @@ export class CodexLoginManager {
           if (this.cancelled || this.settling) return;
           await this.startLogin(session, request.method);
         });
-        void this.launch.catch(() => {
-          void this.finish('failed');
+        void this.launch.catch((error: unknown) => {
+          this.failInternally(error);
         });
         return this.state;
       }
@@ -170,8 +176,8 @@ export class CodexLoginManager {
           if (this.cancelled) return;
           await this.startLogin(session, request.method);
         });
-        void this.launch.catch(() => {
-          void this.finish('failed');
+        void this.launch.catch((error: unknown) => {
+          this.failInternally(error);
         });
       }
       return this.state;
@@ -212,6 +218,7 @@ export class CodexLoginManager {
     this.releaseSessions = pause.release;
     this.cancelled = false;
     this.attemptTimedOut = false;
+    this.internalFailureReason = null;
     this.settling = null;
     this.state = {
       attemptId,
@@ -253,7 +260,10 @@ export class CodexLoginManager {
     }
     const refused = entered.promise.then(
       () => false,
-      () => true,
+      (error: unknown) => {
+        this.internalFailureReason = classifyConnectionFailure(error);
+        return true;
+      },
     );
     this.launch = (async (): Promise<void> => {
       if (await refused) {
@@ -288,10 +298,19 @@ export class CodexLoginManager {
         await this.startLogin(session, request.method);
       });
     })();
-    void this.launch.catch(() => {
-      void this.finish('failed');
+    void this.launch.catch((error: unknown) => {
+      this.failInternally(error);
     });
     return this.state;
+  }
+
+  /** Classify before finishing, so an internal failure is not "authentication". */
+  private failInternally(error: unknown): void {
+    // A rejection after the attempt already finished (provider result, cancel
+    // or timeout) is a consequence of that outcome, not its cause.
+    if (!this.cancelled)
+      this.internalFailureReason = classifyConnectionFailure(error);
+    void this.finish('failed');
   }
 
   private async startLogin(

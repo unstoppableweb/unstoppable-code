@@ -8,6 +8,10 @@ import { dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { withGitRequestContextEnv } from '../node/git-request-context';
 import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
+import {
+  readMaxBufferPartialStdout,
+  rejectGitDiffFailure,
+} from './git-diff-failure';
 import { getGitExecutableCommand } from './git-executable';
 
 const execFileAsync = promisify(execFile);
@@ -597,13 +601,91 @@ export async function getCanopyJsonHash(
   }
 }
 
+/**
+ * Best-effort unborn-branch check. `rev-parse --verify --quiet HEAD` exits 1
+ * for an unborn branch (and also for an unresolvable ref); any other failure
+ * is not evidence of an unborn branch and rejects.
+ */
+async function isHeadUnborn(repoPath: string): Promise<boolean> {
+  try {
+    await runGitRaw(['rev-parse', '--verify', '--quiet', 'HEAD'], repoPath);
+    return false;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 1
+    ) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Output of a read whose result is only used up to a bound. A `maxBuffer`
+ * overflow means there is more output than the caller needs, so the captured
+ * prefix stands in for it, provided `usePartial` finds it already holds all
+ * the caller would read (it returns `null` otherwise). Any other failure, or
+ * an overflow that did not capture enough (for example stderr overflowing),
+ * rejects.
+ */
+async function readBoundedOutput(
+  read: () => Promise<string>,
+  usePartial: (partial: string) => string | null,
+): Promise<string> {
+  try {
+    return await read();
+  } catch (error) {
+    const partial = readMaxBufferPartialStdout(error);
+    const usable = partial === null ? null : usePartial(partial);
+    if (usable !== null) {
+      return usable;
+    }
+    throw error;
+  }
+}
+
+function usableDiffPrefix(partial: string): string | null {
+  return partial.length >= MAX_UNCOMMITTED_DIFF_CHARS
+    ? partial.slice(0, MAX_UNCOMMITTED_DIFF_CHARS)
+    : null;
+}
+
+/** Complete lines of an overflowed listing; the last line may be cut mid-name. */
+function usableUntrackedListing(partial: string): string | null {
+  const complete = partial.slice(0, partial.lastIndexOf('\n') + 1);
+  return complete.split('\n').filter(Boolean).length >= MAX_UNTRACKED_FILES
+    ? complete
+    : null;
+}
+
+/**
+ * Uncommitted changes as a diff, capped for prompt use. A failed git read
+ * rejects with `GitDiffUnavailableError` instead of returning an empty diff
+ * that reads as "no changes". A read that overflows the output buffer is not
+ * a failure: only the first `MAX_UNCOMMITTED_DIFF_CHARS` are used, so the
+ * captured prefix is truncated like any other oversized diff. An unborn
+ * branch has no tracked diff, so only its untracked files are listed.
+ */
 export async function getUncommittedDiff(repoPath: string): Promise<string> {
-  const [trackedDiff, untrackedOutput] = await Promise.all([
-    runGitRaw(['diff', 'HEAD'], repoPath).catch(() => ''),
-    runGit(['ls-files', '--others', '--exclude-standard'], repoPath).catch(
-      () => '',
-    ),
-  ]);
+  const [trackedDiff, untrackedOutput] = await rejectGitDiffFailure(() =>
+    Promise.all([
+      isHeadUnborn(repoPath).then((unborn) =>
+        unborn
+          ? ''
+          : readBoundedOutput(
+              () => runGitRaw(['diff', 'HEAD'], repoPath),
+              usableDiffPrefix,
+            ),
+      ),
+      readBoundedOutput(
+        () => runGit(['ls-files', '--others', '--exclude-standard'], repoPath),
+        usableUntrackedListing,
+      ),
+    ]),
+  );
 
   let result = trackedDiff;
 

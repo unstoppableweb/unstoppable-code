@@ -6,12 +6,28 @@ import {
   type BackgroundServiceUnreachableReason,
 } from '../lib/background-service-status';
 import {
-  recordChatStorageScopeCommit,
+  BoundedCounters,
+  chatStorageWorkCounters,
+  WORK_COUNTER_OVERFLOW_KEY,
   recordChatStorageScopeMutations,
-  recordChatStorageScopeSync,
-  recordChatStorageScopeWrite,
-  type ChatStorageCommitTiming,
-} from './chat-storage-activity';
+} from '@canopy/core-runtime/node/chat/chat-storage-activity';
+export {
+  WORK_COUNTER_KEY_LIMIT,
+  WORK_COUNTER_OVERFLOW_KEY,
+  classifyChatStorageFile,
+  isChatStoragePath,
+  recordChatStorageFileWrite,
+  recordChatStorageFileSync,
+  recordChatStorageDirectorySync,
+  recordChatStorageAtomicReplacement,
+  recordChatStorageDeltaJournalCheckpoint,
+  recordChatStorageCommit,
+  recordChatStorageIndexSerializations,
+  recordChatStorageIndexParses,
+  recordChatStoragePayloadPass,
+  recordChatStorageArtifactPublished,
+  type ChatStorageFileClass,
+} from '@canopy/core-runtime/node/chat/chat-storage-activity';
 
 /**
  * Process-wide work counters for the desktop performance harness.
@@ -39,7 +55,9 @@ export type WorkCounterSource =
   | 'provider'
   | 'route'
   | 'w5'
-  | 'metadata';
+  | 'metadata'
+  | 'stale'
+  | 'w5Caller';
 
 export interface WorkCountersSnapshot {
   /** Changes on every reset, so a reader can tell counts were cleared. */
@@ -63,6 +81,17 @@ export interface WorkCountersSnapshot {
    * reads by the caller that asked, and archive recovery journal scans.
    */
   metadata: Record<string, number>;
+  /**
+   * The broad session-stale signal (CAN-6970): requests by the source that
+   * asked, broadcasts actually sent, session snapshot builds, and the chat
+   * session activity notifications by reason.
+   */
+  stale: Record<string, number>;
+  /**
+   * W5 daemon captures and store reads by the IPC channel whose handler
+   * asked (CAN-6944), `other` outside any handler. E2E builds only.
+   */
+  w5Caller: Record<string, number>;
 }
 
 export interface WorkCountersResetOptions {
@@ -90,77 +119,15 @@ declare global {
 
 export const WORK_COUNTERS_QUERY_KEY = '__CANOPY_WORK_COUNTERS__';
 
-/** Distinct counter names kept per source; later names fold into overflow. */
-export const WORK_COUNTER_KEY_LIMIT = 4096;
-
-/** Counts increments that arrived after a source reached its key limit. */
-export const WORK_COUNTER_OVERFLOW_KEY = 'overflow';
-
-export type ChatStorageFileClass =
-  /** The version 2 metadata write-ahead journal. */
-  | 'journal'
-  /** The delta journal of a version 3 scope (`delta-journal.log`). */
-  | 'deltaJournal'
-  /** A delta-journal checkpoint's progress marker (`delta-checkpoint.json`). */
-  | 'checkpointMarker'
-  | 'liveIndex'
-  | 'archiveIndex'
-  | 'recoveryIndex'
-  | 'payload'
-  | 'transcript'
-  | 'appendStaging'
-  | 'activeSidecar'
-  | 'transcriptIndex'
-  | 'turnIndex'
-  | 'messageIndex'
-  | 'artifact'
-  /** A delegated agent's transcript log (`transcripts/delegations/`). */
-  | 'delegationLog'
-  /** The per-chat delegation result and generation registry. */
-  | 'delegationRegistry'
-  | 'childTranscript'
-  | 'childActiveSidecar'
-  | 'childAppendStaging'
-  | 'childStreamMetadata'
-  | 'childMessageIndex'
-  | 'manifest'
-  | 'other';
-
-class BoundedCounters {
-  private readonly values = new Map<string, number>();
-
-  public add(key: string, delta: number): void {
-    const current = this.values.get(key);
-    if (current !== undefined) {
-      this.values.set(key, current + delta);
-      return;
-    }
-    if (this.values.size >= WORK_COUNTER_KEY_LIMIT) {
-      this.values.set(
-        WORK_COUNTER_OVERFLOW_KEY,
-        (this.values.get(WORK_COUNTER_OVERFLOW_KEY) ?? 0) + 1,
-      );
-      return;
-    }
-    this.values.set(key, delta);
-  }
-
-  public snapshot(): Record<string, number> {
-    return Object.fromEntries(this.values);
-  }
-
-  public clear(): void {
-    this.values.clear();
-  }
-}
-
 const counters: Record<WorkCounterSource, BoundedCounters> = {
   ipc: new BoundedCounters(),
-  chatStorage: new BoundedCounters(),
+  chatStorage: chatStorageWorkCounters,
   provider: new BoundedCounters(),
   route: new BoundedCounters(),
   w5: new BoundedCounters(),
   metadata: new BoundedCounters(),
+  stale: new BoundedCounters(),
+  w5Caller: new BoundedCounters(),
 };
 let generation = 0;
 let estimateIpcBytes = false;
@@ -179,6 +146,8 @@ export function snapshotWorkCounters(): WorkCountersSnapshot {
     route: counters.route.snapshot(),
     w5: counters.w5.snapshot(),
     metadata: counters.metadata.snapshot(),
+    stale: counters.stale.snapshot(),
+    w5Caller: counters.w5Caller.snapshot(),
   };
 }
 
@@ -192,6 +161,8 @@ export function resetWorkCounters(
   counters.route.clear();
   counters.w5.clear();
   counters.metadata.clear();
+  counters.stale.clear();
+  counters.w5Caller.clear();
   generation += 1;
   estimateIpcBytes = options.estimateIpcBytes === true;
   estimateDelegationBytes = options.estimateDelegationBytes === true;
@@ -231,178 +202,6 @@ export function recordIpcSend(
   }
 }
 
-function pathSegments(path: string): string[] {
-  return path.split(/[\\/]+/);
-}
-
-/** Drops the `.<uuid>.tmp` suffix atomic writers give their staging files. */
-function publishedName(name: string): string {
-  return name.replace(/\.[0-9a-f-]{36}\.tmp$/i, '');
-}
-
-function classifyTranscriptFile(name: string): ChatStorageFileClass {
-  if (name.endsWith('.append.tmp')) return 'appendStaging';
-  if (name.endsWith('.rewrite.tmp')) return 'transcript';
-  const published = publishedName(name);
-  if (published.endsWith('.active.json')) return 'activeSidecar';
-  if (published.endsWith('.index.json')) return 'transcriptIndex';
-  if (published.endsWith('.turns.json')) return 'turnIndex';
-  if (published.endsWith('.jsonl')) return 'transcript';
-  return 'other';
-}
-
-function classifyDelegationFile(path: readonly string[]): ChatStorageFileClass {
-  if (path[1] === 'registry') return 'delegationRegistry';
-  const v2 = path.indexOf('v2');
-  const name = path[path.length - 1] ?? '';
-  const published = publishedName(name).replace(/\.checkpoint$/, '');
-  if (published === 'stream-catalog.json' && path.length === 1)
-    return 'childStreamMetadata';
-  if (v2 < 0) return 'delegationLog';
-  if (
-    published === 'descriptor.json' ||
-    published === 'registry.jsonl' ||
-    published === 'registry.index.json'
-  )
-    return 'childStreamMetadata';
-  if (
-    path.includes('message-index') ||
-    published.includes('sequence-index') ||
-    published.endsWith('.index.json') ||
-    published.endsWith('.turns.json')
-  )
-    return 'childMessageIndex';
-  if (name.endsWith('.append.tmp')) return 'childAppendStaging';
-  if (published.endsWith('.active.json')) return 'childActiveSidecar';
-  if (published.endsWith('.jsonl')) return 'childTranscript';
-  return 'delegationLog';
-}
-
-/**
- * The role a file plays in canonical chat storage
- * (`chat-storage-v2/<scope>/…` and its authority manifests), or `undefined`
- * for files outside it. Temporary files take the class of their target.
- */
-export function classifyChatStorageFile(
-  path: string,
-): ChatStorageFileClass | undefined {
-  const segments = pathSegments(path);
-  const root = segments.lastIndexOf('chat-storage-v2');
-  if (root === -1) {
-    return segments.includes('chat-storage-manifests') ? 'manifest' : undefined;
-  }
-  const [area, entry] = segments.slice(root + 2);
-  if (area === undefined) return 'other';
-  if (area.startsWith('metadata-journal.jsonl')) return 'journal';
-  if (area.startsWith('delta-journal.log')) return 'deltaJournal';
-  if (area.startsWith('delta-journal-v2.log')) return 'deltaJournal';
-  if (area.startsWith('delta-checkpoint.json')) return 'checkpointMarker';
-  if (area.startsWith('live-index.json')) return 'liveIndex';
-  if (area.startsWith('archive-index.json')) return 'archiveIndex';
-  if (area.startsWith('recovery-index.json')) return 'recoveryIndex';
-  if (area === 'pending-transcripts') return 'payload';
-  if (area !== 'transcripts' || entry === undefined) return 'other';
-  if (entry === 'tool-output' || entry === 'visuals') return 'artifact';
-  if (entry === 'delegations')
-    return classifyDelegationFile(segments.slice(root + 4));
-  if (entry === 'message-index') return 'messageIndex';
-  return classifyTranscriptFile(entry);
-}
-
-/** Where a synced chat-storage directory sits, for sync attribution. */
-function classifyChatStorageDirectory(path: string): string {
-  const segments = pathSegments(path).filter(Boolean);
-  const root = segments.lastIndexOf('chat-storage-v2');
-  if (root === -1) return 'manifest';
-  const [area, entry, ...rest] = segments.slice(root + 2);
-  if (area === undefined) return 'scope';
-  if (area !== 'transcripts')
-    return area === 'pending-transcripts' ? 'payload' : 'other';
-  if (entry === undefined) return 'transcripts';
-  if (entry === 'tool-output' || entry === 'visuals') return 'artifact';
-  if (entry === 'message-index') return 'messageIndex';
-  if (entry !== 'delegations') return 'other';
-  if (rest[1] === 'registry') return 'delegationRegistry';
-  return rest.includes('v2') ? 'childStream' : 'delegations';
-}
-
-/** Whether a file or directory belongs to canonical chat storage. */
-export function isChatStoragePath(path: string): boolean {
-  const segments = pathSegments(path);
-  return (
-    segments.includes('chat-storage-v2') ||
-    segments.includes('chat-storage-manifests')
-  );
-}
-
-/**
- * Bytes a chat-storage writer put in `path`. `serialized` marks bytes it also
- * produced by JSON serialization rather than by copying existing bytes.
- */
-export function recordChatStorageFileWrite(
-  path: string,
-  bytes: number,
-  serialized: boolean,
-): void {
-  const fileClass = classifyChatStorageFile(path);
-  if (fileClass === undefined) return;
-  if (serialized)
-    counters.chatStorage.add(`serialized.${fileClass}.bytes`, bytes);
-  counters.chatStorage.add(`written.${fileClass}.bytes`, bytes);
-  recordChatStorageScopeWrite(
-    path,
-    bytes,
-    fileClass === 'transcript' || fileClass === 'appendStaging',
-  );
-}
-
-export function recordChatStorageFileSync(path: string): void {
-  if (!isChatStoragePath(path)) return;
-  counters.chatStorage.add('syncs.file', 1);
-  // Subsets of `syncs.file` by file role, such as delta-journal commits.
-  counters.chatStorage.add(
-    `syncs.file.${classifyChatStorageFile(path) ?? 'other'}`,
-    1,
-  );
-  recordChatStorageScopeSync(path, 'file');
-}
-
-export function recordChatStorageDirectorySync(path: string): void {
-  if (!isChatStoragePath(path)) return;
-  counters.chatStorage.add('syncs.directory', 1);
-  counters.chatStorage.add(
-    `syncs.directory.${classifyChatStorageDirectory(path)}`,
-    1,
-  );
-  recordChatStorageScopeSync(path, 'directory');
-}
-
-/** A rename that atomically published or replaced `path`. */
-export function recordChatStorageAtomicReplacement(path: string): void {
-  if (!isChatStoragePath(path)) return;
-  counters.chatStorage.add('atomicReplacements', 1);
-  counters.chatStorage.add(
-    `atomicReplacements.${classifyChatStorageFile(path) ?? 'other'}`,
-    1,
-  );
-}
-
-/** One delta-journal checkpoint that published its index files. */
-export function recordChatStorageDeltaJournalCheckpoint(): void {
-  counters.chatStorage.add('deltaJournal.checkpoints', 1);
-}
-
-/**
- * One scope transaction that published its journal record. `timing` also
- * attributes it, with its duration, to its scope's local diagnostics.
- */
-export function recordChatStorageCommit(
-  timing?: ChatStorageCommitTiming,
-): void {
-  counters.chatStorage.add('commits', 1);
-  recordChatStorageScopeCommit(timing);
-}
-
 /** Canonical mutations carried by one commit, in `scopeDirectory` if known. */
 export function recordChatStorageMutations(
   count: number,
@@ -412,36 +211,9 @@ export function recordChatStorageMutations(
   recordChatStorageScopeMutations(count, scopeDirectory);
 }
 
-/** Whole live, archive, or recovery indexes serialized to disk. */
-export function recordChatStorageIndexSerializations(count: number): void {
-  counters.chatStorage.add('indexSerializations', count);
-}
-
 /** One `structuredClone` of a whole index or index set. */
 export function recordChatStorageIndexClone(): void {
   counters.chatStorage.add('indexClones', 1);
-}
-
-/** Whole live, archive, or recovery indexes parsed from disk. */
-export function recordChatStorageIndexParses(count: number): void {
-  counters.chatStorage.add('indexParses', count);
-}
-
-/**
- * One pass that reads a staged transcript payload back from disk and parses
- * its rows. `hashed` marks a pass that also recomputed the payload digest to
- * verify it. The digest a commit computes while writing the payload is not a
- * read and is not counted.
- */
-export function recordChatStoragePayloadPass(hashed: boolean): void {
-  counters.chatStorage.add('payloadReads', 1);
-  counters.chatStorage.add('payloadParses', 1);
-  if (hashed) counters.chatStorage.add('payloadHashes', 1);
-}
-
-/** One tool-output artifact file newly published. */
-export function recordChatStorageArtifactPublished(): void {
-  counters.chatStorage.add('artifactsPublished', 1);
 }
 
 export function recordProviderEventIngested(): void {
@@ -525,6 +297,7 @@ export function recordFilesRouteOutcome(
  */
 export function recordW5Work(key: string, delta = 1): void {
   counters.w5.add(key, delta);
+  if (isE2eBuild()) chargeW5Caller(key);
 }
 
 /** Names the caller that metadata reads made inside `work` are counted under. */
@@ -558,6 +331,63 @@ export function recordMetadataRead(key: string): void {
 /** One unit of metadata work that has no caller attribution. */
 export function recordMetadataWork(key: string, delta = 1): void {
   counters.metadata.add(key, delta);
+}
+
+/**
+ * One unit of session-stale signal work, or `delta` of a `.us` total. Keys
+ * are documented with the `stale` source in `docs/desktop-app-performance.md`.
+ */
+export function recordStaleWork(key: string, delta = 1): void {
+  counters.stale.add(key, delta);
+}
+
+/** The W5 work an IPC handler's caller is charged with (CAN-6944). */
+type W5CallerWork = 'capture' | 'storeRead';
+
+interface W5CallerKeys {
+  readonly capture: string;
+  readonly storeRead: string;
+}
+
+const W5_OTHER_CALLER = 'other';
+const w5Caller = new AsyncLocalStorage<string>();
+const w5CallerKeys = new Map<string, W5CallerKeys>();
+
+function keysForW5Caller(caller: string): W5CallerKeys {
+  let keys = w5CallerKeys.get(caller);
+  if (!keys) {
+    keys = { capture: `${caller}.capture`, storeRead: `${caller}.storeRead` };
+    w5CallerKeys.set(caller, keys);
+  }
+  return keys;
+}
+
+/**
+ * Runs `work` charging its W5 captures and store reads to `caller`, an IPC
+ * channel. Only E2E builds track the caller, so production pays nothing.
+ */
+export function runWithW5Caller<T>(caller: string, work: () => T): T {
+  return isE2eBuild() ? w5Caller.run(caller, work) : work();
+}
+
+/**
+ * Charges a W5 store key to the caller whose work recorded it. Both keys are
+ * recorded on the caller's own async path, before the record port batches
+ * reads: a record read that reached the daemon (`read.backend.capture`) or a
+ * whole query's capture (`readView.captured`) is one capture request, and
+ * `read.<file>.store` is a read the query's view did not serve.
+ */
+function chargeW5Caller(key: string): void {
+  let kind: W5CallerWork | undefined;
+  if (key === 'read.backend.capture' || key === 'readView.captured')
+    kind = 'capture';
+  else if (key.startsWith('read.') && key.endsWith('.store'))
+    kind = 'storeRead';
+  if (!kind) return;
+  counters.w5Caller.add(
+    keysForW5Caller(w5Caller.getStore() ?? W5_OTHER_CALLER)[kind],
+    1,
+  );
 }
 
 /**

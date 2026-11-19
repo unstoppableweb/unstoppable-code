@@ -1,5 +1,12 @@
 import { logMainProcessError } from '../lib/main-process-logging';
 import { saveGitHubPat } from '../lib/github-pat-save';
+import { createAppError } from '@canopy/protocol/app-errors';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
+import {
+  classifyFetchFailure,
+  classifySystemError,
+} from '@canopy/desktop-shared/node/lib/app-error-classification';
+import { reportSecureStorageFailure } from '../observability/secure-storage-failure-reporter';
 import { probeModelGateway } from '../services/model-gateway-probe';
 import { createHash } from 'node:crypto';
 import {
@@ -91,7 +98,10 @@ import { resetGitHubPullRequestReadModel } from '../lib/github-pr-read-model';
 import { resetGitHubMergeQueueReadModel } from '../lib/github-merge-queue-read-model';
 import { getSharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { organizationSnapshotTransition } from '../shared-containers/organization-snapshot-transition';
-import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
+import {
+  getCanopyCloudBaseUrl,
+  isCloudOffInLocalOnlyBuild,
+} from '../canopy-cloud/config';
 import {
   beginCanopyCloudSessionProbe,
   isCurrentCanopyCloudSessionProbe,
@@ -372,6 +382,40 @@ async function readErrorResponse(response: Response): Promise<string> {
   return `${response.status} ${response.statusText}`.trim();
 }
 
+/**
+ * The probe returns failures as a status, so nothing rejects into the IPC
+ * reporter. Only a static source and an HTTP status leave: never the response
+ * body, error text or key. A rejected credential (401/403) is not a failure.
+ */
+function reportCanopyCloudProbeRefusal(
+  stage: 'well-known' | 'account',
+  status: number,
+): void {
+  if (status === 401 || status === 403) return;
+  reportMainAppError(
+    createAppError(
+      status === 429 ? 'external.rate_limited' : 'external.service_unavailable',
+      { source: `canopy-cloud.probe.${stage}.${status}` },
+    ),
+  );
+}
+
+function reportCanopyCloudProbeThrown(
+  stage: 'well-known' | 'account',
+  error: unknown,
+): void {
+  const source = `canopy-cloud.probe.${stage}`;
+  reportMainAppError(
+    isAbortError(error)
+      ? createAppError('external.service_unavailable', {
+          source: `${source}.timeout`,
+        })
+      : // A bare "fetch failed" is the user being offline, not a defect.
+        classifyFetchFailure(error, error),
+    { source },
+  );
+}
+
 async function probeCanopyCloud(
   apiKey: string,
 ): Promise<DesktopCanopyServerStatus> {
@@ -401,6 +445,7 @@ async function probeCanopyCloud(
       },
     );
     if (!wellKnownResponse.ok) {
+      reportCanopyCloudProbeRefusal('well-known', wellKnownResponse.status);
       return {
         authenticated: false,
         capabilities: [],
@@ -421,6 +466,7 @@ async function probeCanopyCloud(
         )
       : [];
   } catch (error) {
+    reportCanopyCloudProbeThrown('well-known', error);
     return {
       authenticated: false,
       capabilities: [],
@@ -461,6 +507,7 @@ async function probeCanopyCloud(
     });
 
     if (!accountResponse.ok) {
+      reportCanopyCloudProbeRefusal('account', accountResponse.status);
       return {
         ...(accountResponse.status === 401 ? { credentialRejected: true } : {}),
         authenticated: false,
@@ -541,6 +588,7 @@ async function probeCanopyCloud(
           : null,
     };
   } catch (error) {
+    reportCanopyCloudProbeThrown('account', error);
     return {
       authenticated: false,
       capabilities,
@@ -1230,7 +1278,20 @@ export async function loadNativeAiCreditsAvailability(
 ): Promise<NativeAiCreditsAvailability> {
   // `pricingUrl` keeps its name on this tunneled DTO for remote peers, but
   // names the AI Credits page: there is no pricing page.
-  const pricingUrl = `${getCanopyCloudBaseUrl()}/account/billing`;
+  let pricingUrl: string;
+  try {
+    pricingUrl = `${getCanopyCloudBaseUrl()}/account/billing`;
+  } catch (error) {
+    if (!isCloudOffInLocalOnlyBuild(error)) throw error;
+    // A local-only build has no AI Credits: nothing can pay, conclusively.
+    return {
+      personalEligible: false,
+      inOrg: false,
+      orgCreditPoolCovered: false,
+      orgSpendable: false,
+      pricingUrl: '',
+    };
+  }
   // `inconclusive` marks the payload as defaults rather than observations. A
   // signed-out account is a real answer (nothing can pay), so only the failure
   // paths set it.
@@ -1652,6 +1713,25 @@ function credentialStorageFailure(
         secureStorageFailure,
       }
     : null;
+}
+
+/**
+ * A save returns its failure as a result, so report it here. A secure-storage
+ * failure reports its closed record; anything else reports only the error's
+ * stack frames, never its message, which can carry a path or the credential.
+ */
+function reportCredentialSaveFailure(
+  store: 'github-pat' | 'linear-token',
+  error: unknown,
+  storageFailure: CredentialReadFailure | null,
+): void {
+  if (storageFailure?.secureStorageFailure) {
+    reportSecureStorageFailure(store, storageFailure.secureStorageFailure);
+    return;
+  }
+  reportMainAppError(classifySystemError(error), {
+    source: `settings.${store}.save`,
+  });
 }
 
 async function loadGitHubPat(): Promise<string | CredentialReadFailure> {
@@ -2370,6 +2450,14 @@ export async function startCanopyCloudOAuthLoginForWindow(): Promise<{
     }
     const response = await startCanopyCloudOAuthLogin({ guestLinkTicket });
     invalidateMobileActivationCache();
+    if (response.guestDataMerged === false) {
+      // The sign-in succeeded but the guest's work stayed on the guest account.
+      reportMainAppError(
+        createAppError('external.service_unavailable', {
+          source: 'canopy-cloud.guest-merge.not-merged',
+        }),
+      );
+    }
     if (response.guestDataMerged === true) {
       // The server merged the guest into this account, its mirrored
       // Ledger scopes included, so the guest's local scopes follow (LD02).
@@ -2510,6 +2598,7 @@ export function registerSettingsHandlers(runtime: {
         await saveGitHubPat(token);
       } catch (error) {
         const failure = credentialStorageFailure(error);
+        reportCredentialSaveFailure('github-pat', error, failure);
         return (
           failure ?? { success: false, error: "Couldn't save credentials." }
         );
@@ -2547,6 +2636,7 @@ export function registerSettingsHandlers(runtime: {
         await saveLinearToken(token);
       } catch (error) {
         const failure = credentialStorageFailure(error);
+        reportCredentialSaveFailure('linear-token', error, failure);
         return (
           failure ?? { success: false, error: "Couldn't save credentials." }
         );
@@ -2749,6 +2839,8 @@ export function registerSettingsHandlers(runtime: {
         if (!active) stop();
       } catch (error) {
         close();
+        // A local-only build has no hosted model library to watch.
+        if (isCloudOffInLocalOnlyBuild(error)) return;
         throw error;
       }
     },

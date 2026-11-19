@@ -31,7 +31,11 @@ export interface W5WorkspaceManifestView {
   scripts?: ScriptOverrides;
   privateMemoryManagedBy?: 'organization';
   /** Organization ownership; absent means Personal. */
-  owner?: { readonly type?: string };
+  owner?: { readonly type?: string; readonly organizationId?: string };
+  repoPath?: string;
+  sourceRepoPath?: string;
+  /** A multi-repo's only. */
+  temporary?: boolean;
 }
 
 /**

@@ -4,6 +4,7 @@ import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels
 import type { ExecutionEvent } from '@canopy/execution-engine/types/pipeline';
 import { sendToAllWindows } from '../lib/window-send';
 import { syncPipelineAttention } from './pipeline-attention';
+import { latchNativeQuotaFromPipelineReasons } from './pipeline-quota-latch';
 
 export const PIPELINE_EXECUTION_UPDATE_BROADCAST_INTERVAL_MS = 100;
 
@@ -100,9 +101,12 @@ const rendererEventBroadcaster = new PipelineExecutionEventBroadcaster(
 
 export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
   // Main-process seam shared by interactive runs, retries, and replayed events.
-  // The attention tracker owns the 15-second self-suppression timer.
+  // The attention tracker owns the 15-second self-suppression timer. A native
+  // usage-limit status reason sets the account-wide quota latch, so on-quota
+  // AI Credits routing applies when the paused step resumes (CAN-7256).
   publishForeignPipelineActivity(event);
   syncPipelineAttention(event);
+  latchNativeQuotaFromPipelineReasons(event.state.status_reasons);
   rendererEventBroadcaster.publish(event);
 }
 

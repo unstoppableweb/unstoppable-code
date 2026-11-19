@@ -178,7 +178,7 @@ export function ActivityGalleryToolbar(
   return (
     <div
       {...props}
-      className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-base/95 p-2 shadow-sm backdrop-blur"
+      className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-base p-2 shadow-sm"
     />
   );
 }

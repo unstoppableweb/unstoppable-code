@@ -26,7 +26,6 @@ import type {
   ChatStateSnapshot,
 } from '@canopy/desktop-shared/types';
 import { getProviderForModel } from '@canopy/desktop-shared/types';
-import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
 import { MAX_DECLARED_CHAT_STATE_SCOPES } from '@canopy/desktop-shared/lib/chat-state-cadence';
 import { chatStoreApi } from '../store-ref';
 import { requestTabDiscovery } from '../discovery';
@@ -91,6 +90,7 @@ import { sanitizePluginSelectionsWithCachedSupport } from '../plugin-provider-su
 import type { PendingQuestion } from '../types';
 import type { ChatRevisionedSlice, ChatState, ChatStateNotice } from '../state';
 import { pendingTabCreation } from '../pending-tab-creation';
+import { recoverUntrackedPlanProposals } from '../plan-proposal-recovery';
 import {
   isTaskBeingCreated,
   taskCreationSettled,
@@ -618,36 +618,6 @@ function reconcilePlanExitRequests(
   return next;
 }
 
-function recoverUntrackedPlanProposals(
-  projectId: string,
-  worktreeId: string,
-): void {
-  const state = chatStoreApi().getState();
-  for (const tab of state.worktreeChats[chatScopeKey(projectId, worktreeId)]
-    ?.tabs ?? []) {
-    const input = tab.pendingPlanExit;
-    const source = input?.source;
-    if (
-      tab.pendingPlanExitRequestId &&
-      input &&
-      (source === 'cursor' || source === 'codex') &&
-      isPlanProposal(input)
-    ) {
-      state.handlePlanExitRequest(
-        {
-          projectId,
-          worktreeId,
-          chatId: tab.id,
-          requestId: tab.pendingPlanExitRequestId,
-          source,
-          toolInput: input,
-        },
-        'recover',
-      );
-    }
-  }
-}
-
 /**
  * Install a canonical snapshot as the scope's client projection. On
  * Renderer-only presentation state (composer attachments, local queue rows,
@@ -897,6 +867,7 @@ function applyCommittedEventToStore(event: ChatStateChangedEvent): void {
         commitChatIds.add(change.archive.chatId);
         break;
       case 'tab.order_changed':
+      case 'chat.initiated':
         break;
     }
   }

@@ -18,6 +18,9 @@ export const CHAT_FORMAT4_EVENTS = [
   'retries_exhausted',
   'newer_format_refused',
   'slow_checkpoint',
+  'sweep_pass_completed',
+  'sweep_paused',
+  'sweep_scope_backed_off',
 ] as const;
 export type ChatFormat4Event = (typeof CHAT_FORMAT4_EVENTS)[number];
 
@@ -31,6 +34,31 @@ export const CHAT_FORMAT4_REASONS = [
   'other',
 ] as const;
 export type ChatFormat4Reason = (typeof CHAT_FORMAT4_REASONS)[number];
+
+/** Why the background sweep (CAN-7178) is waiting, from its own checks only. */
+export const CHAT_FORMAT4_PAUSE_REASONS = [
+  'none',
+  'activity',
+  'battery',
+  'disk',
+  'switch_off',
+] as const;
+export type ChatFormat4PauseReason = Exclude<
+  (typeof CHAT_FORMAT4_PAUSE_REASONS)[number],
+  'none'
+>;
+
+/** Scopes a sweep pass left below format 4, bucketed; never a count or name. */
+export const CHAT_FORMAT4_REMAINING_BUCKETS = [
+  'none',
+  '0',
+  '1_5',
+  '6_20',
+  '21_100',
+  'gt_100',
+] as const;
+export type ChatFormat4RemainingBucket =
+  (typeof CHAT_FORMAT4_REMAINING_BUCKETS)[number];
 
 /** Format 4 checkpoints faster than the first bucket are not sent. */
 export const CHAT_FORMAT4_SLOW_CHECKPOINT_MS = 1_000;
@@ -55,13 +83,21 @@ export type ChatFormat4Outcome =
     }
   | { readonly event: 'retries_exhausted'; readonly attempt: number }
   | { readonly event: 'newer_format_refused' }
-  | { readonly event: 'slow_checkpoint'; readonly durationMs: number };
+  | { readonly event: 'slow_checkpoint'; readonly durationMs: number }
+  | { readonly event: 'sweep_pass_completed'; readonly remaining: number }
+  | { readonly event: 'sweep_paused'; readonly reason: ChatFormat4PauseReason }
+  | {
+      readonly event: 'sweep_scope_backed_off';
+      readonly reason: ChatFormat4Reason;
+    };
 
 export type ChatFormat4Labels = {
   readonly format4_event: ChatFormat4Event;
   readonly format4_reason: ChatFormat4Reason;
   readonly format4_attempt: number;
   readonly format4_duration_bucket: ChatFormat4DurationBucket;
+  readonly format4_remaining_bucket: ChatFormat4RemainingBucket;
+  readonly format4_pause_reason: (typeof CHAT_FORMAT4_PAUSE_REASONS)[number];
 };
 
 const OPERATION = 'canopy.chat_storage_format4';
@@ -89,13 +125,28 @@ export function chatFormat4DurationBucket(
   return 'gte_30s';
 }
 
+export function chatFormat4RemainingBucket(
+  remaining: number,
+): ChatFormat4RemainingBucket {
+  if (!Number.isFinite(remaining) || remaining <= 0) return '0';
+  if (remaining <= 5) return '1_5';
+  if (remaining <= 20) return '6_20';
+  if (remaining <= 100) return '21_100';
+  return 'gt_100';
+}
+
+const SWEEP_NONE = {
+  format4_remaining_bucket: 'none',
+  format4_pause_reason: 'none',
+} as const;
+
 function attemptLabel(attempt: number): number {
   if (!Number.isInteger(attempt) || attempt < 1) return 1;
   return Math.min(attempt, CHAT_FORMAT4_MAX_ATTEMPT);
 }
 
 /**
- * The labels one outcome sends: exactly the four declared keys, each a fixed
+ * The labels one outcome sends: exactly the six declared keys, each a fixed
  * code or a bounded number, whatever the caller passed.
  */
 export function chatFormat4Labels(
@@ -109,6 +160,7 @@ export function chatFormat4Labels(
         format4_reason: 'none',
         format4_attempt: attemptLabel(outcome.attempt),
         format4_duration_bucket: 'none',
+        ...SWEEP_NONE,
       };
     case 'promotion_failed':
       return {
@@ -116,6 +168,7 @@ export function chatFormat4Labels(
         format4_reason: chatFormat4FailureReason(outcome.error),
         format4_attempt: attemptLabel(outcome.attempt),
         format4_duration_bucket: 'none',
+        ...SWEEP_NONE,
       };
     case 'newer_format_refused':
       return {
@@ -123,6 +176,7 @@ export function chatFormat4Labels(
         format4_reason: 'none',
         format4_attempt: 0,
         format4_duration_bucket: 'none',
+        ...SWEEP_NONE,
       };
     case 'slow_checkpoint':
       return {
@@ -130,8 +184,46 @@ export function chatFormat4Labels(
         format4_reason: 'none',
         format4_attempt: 0,
         format4_duration_bucket: chatFormat4DurationBucket(outcome.durationMs),
+        ...SWEEP_NONE,
+      };
+    case 'sweep_pass_completed':
+      return {
+        format4_event: outcome.event,
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: chatFormat4RemainingBucket(outcome.remaining),
+        format4_pause_reason: 'none',
+      };
+    case 'sweep_paused':
+      return {
+        format4_event: outcome.event,
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: pauseLabel(outcome.reason),
+      };
+    case 'sweep_scope_backed_off':
+      return {
+        format4_event: outcome.event,
+        format4_reason: reasonLabel(outcome.reason),
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       };
   }
+}
+
+function pauseLabel(
+  reason: unknown,
+): (typeof CHAT_FORMAT4_PAUSE_REASONS)[number] {
+  return CHAT_FORMAT4_PAUSE_REASONS.find((value) => value === reason) ?? 'none';
+}
+
+function reasonLabel(reason: unknown): ChatFormat4Reason {
+  return CHAT_FORMAT4_REASONS.find((value) => value === reason) ?? 'other';
 }
 
 /**

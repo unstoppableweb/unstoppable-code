@@ -1,3 +1,4 @@
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import {
   LEDGER_GRANTS,
   type CanopyCallerDescriptor,
@@ -148,6 +149,9 @@ export const DESKTOP_LEDGER_TOOLS_HOST: LedgerToolsHost = {
     resolveLedgerContainerCreatedAt(container),
   chatTitle: readChatTitle,
   databaseMayExist: ledgerDatabaseMayExist,
+  onUnexpectedError: (error) => {
+    reportMainAppError(error, { source: 'ledger_tool' });
+  },
 };
 
 /**

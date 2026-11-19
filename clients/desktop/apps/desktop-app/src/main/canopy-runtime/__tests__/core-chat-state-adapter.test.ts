@@ -2,8 +2,8 @@ import {
   initialChatTurnState,
   serializeChatTurnState,
 } from '@canopy/agent-transcript/turn';
-import { queryPortalChatState } from '../../portal/adapters/chat-state-query';
-import type { PortalAdapterContext } from '../../portal/adapters/types';
+import { queryPortalChatState } from '../../remote-projection/chat-state-query';
+import type { PortalAdapterContext } from '../../remote-projection/adapter-context';
 import type {
   ChatStateCommandPort,
   ChatStateSnapshot,

@@ -118,6 +118,74 @@ function settledEvent(state: ExecutionState): ExecutionEvent['type'] {
   }
 }
 
+/** A projection status a run ends in. */
+function terminalStatus(
+  value: unknown,
+): 'success' | 'failure' | 'cancelled' | null {
+  switch (value) {
+    case 'success':
+    case 'failure':
+    case 'cancelled':
+      return value;
+    default:
+      return null;
+  }
+}
+
+/** The owner incarnation a run's state records (CAN-6198). */
+type RunOwner = Pick<
+  ExecutionState,
+  'owner_pid' | 'owner_start_identity' | 'owner_lease_epoch'
+>;
+
+function ownerOf(state: ExecutionState): RunOwner {
+  return {
+    owner_pid: state.owner_pid,
+    owner_start_identity: state.owner_start_identity,
+    owner_lease_epoch: state.owner_lease_epoch,
+  };
+}
+
+/** Whether the stored state records the same owner incarnation. */
+function hasSameOwner(stored: ExecutionState, owner: RunOwner): boolean {
+  return (
+    stored.owner_pid === owner.owner_pid &&
+    stored.owner_start_identity === owner.owner_start_identity &&
+    stored.owner_lease_epoch === owner.owner_lease_epoch
+  );
+}
+
+/**
+ * The run as the daemon reported its end, when the store still holds it
+ * unsettled under `owner`, the owner it had when main began following it
+ * (CAN-7095). The daemon reports an end only after saving it, or when the
+ * save failed, so the store being behind means the end was never saved: the
+ * stream is then its only record, and without it the mirror would follow a
+ * run nobody is running. A state another owner stored since stands: that
+ * owner runs it, and the store refused the daemon's end (CAN-6198). The
+ * daemon's pipeline host still reports that end, because the daemon holds a
+ * run until its host does, so the owner is what tells the two apart. A pause
+ * is not taken this way, because a run resumed since leaves the store ahead
+ * of an older pause. Null when the stored state stands.
+ */
+function unsavedEnd(
+  stored: ExecutionState,
+  owner: RunOwner,
+  reported: WorkerPipelineExecution,
+): ExecutionState | null {
+  if (isSettled(stored) || !hasSameOwner(stored, owner)) return null;
+  const status = terminalStatus(reported.status);
+  if (status === null) return null;
+  return {
+    ...stored,
+    status,
+    completed_at: reported.completedAt ?? new Date().toISOString(),
+    ...(typeof reported.error === 'string' && { error: reported.error }),
+    // A save failed, and the stream does not say why: the settle reports it.
+    persist_failure_code: stored.persist_failure_code ?? 'unknown',
+  };
+}
+
 /** A projection status the run has not paused or ended in. */
 const UNSETTLED_PROJECTION: ReadonlySet<string> = new Set([
   'pending',
@@ -173,6 +241,12 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
   /** The daemon's pipeline host is not running it: follow the store only (CAN-5869). */
   private storeOnly: boolean;
 
+  /** Whether the last reload read the run's stored state. */
+  private storeRead = false;
+
+  /** The run's owner when main began following it (CAN-7095). */
+  private readonly owner: RunOwner;
+
   private queue: Promise<void> = Promise.resolve();
 
   private readonly completion: Promise<ExecutionState>;
@@ -185,6 +259,7 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
   constructor(private readonly options: DaemonPipelineExecutionHandleOptions) {
     this.id = options.executionId;
     this.state = options.initialState;
+    this.owner = ownerOf(options.initialState);
     this.storeOnly = options.openEvents === undefined;
     this.commitHooks =
       options.commitHooks &&
@@ -289,6 +364,7 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
       this.options.executionsDir,
     ).catch(() => null);
     if (stored) this.state = stored;
+    this.storeRead = stored !== null;
     this.runCommitHooks();
     return this.state;
   }
@@ -348,6 +424,12 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
     const { item } = frame;
     if (item.kind === 'execution') {
       await this.reload();
+      // Only over a state the store just gave: one it could not read may
+      // already hold the end.
+      const ended = this.storeRead
+        ? unsavedEnd(this.state, this.owner, item.execution)
+        : null;
+      if (ended) this.state = ended;
       if (isSettled(this.state)) {
         this.deliver(settledEvent(this.state));
         // The store can be ahead of the stream: keep it for what precedes
@@ -357,9 +439,15 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
         });
         return;
       }
-      // The run's start was delivered when main began following it.
+      // The run's start was delivered when main began following it. An end
+      // the stored state does not have is not the run's: another owner runs
+      // it, or the store could not be read, and it is followed on (CAN-7095).
       if (item.event !== 'execution.started')
-        this.deliver(eventType(item.event));
+        this.deliver(
+          terminalStatus(item.execution.status) === null
+            ? eventType(item.event)
+            : 'execution.updated',
+        );
       return;
     }
     if (item.kind === 'notification') {

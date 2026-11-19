@@ -193,11 +193,14 @@ export function DesktopMcpManagementSections({
     try {
       await onChanged();
       if (mounted.current) setRefreshError('');
-    } catch {
+    } catch (error) {
       const message =
         'The action finished, but the server list could not refresh. Reopen the detail to try again.';
       if (mounted.current) setRefreshError(message);
-      else useGitHubStore.getState().addToast(message, 'error');
+      else
+        useGitHubStore
+          .getState()
+          .addToast(message, 'error', undefined, { caught: error });
     }
   }, [onChanged]);
   useEffect(() => {

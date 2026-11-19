@@ -11,6 +11,8 @@ import {
 import type { SidebarItem } from '@canopy/desktop-shared/types';
 import {
   Button,
+  ProjectlessChatOption,
+  PROJECTLESS_CHAT_OPTION_KEY,
   FloatingPickerMenu,
   PickerMenuFooter,
   PickerMenuList,
@@ -77,6 +79,28 @@ type WorkspaceDropdownEntry =
       readonly kind: 'cloud';
       readonly option: WorkspaceDropdownCloudOption;
     };
+
+/**
+ * The reserved keyboard key and option id of the no-project row. No workspace
+ * id contains a colon, so it never collides with a project row.
+ */
+const NO_PROJECT_ROW_ID = PROJECTLESS_CHAT_OPTION_KEY;
+
+/**
+ * A row for a chat with no project (CAN-7038), listed above every project.
+ * The caller decides what choosing it selects and when it is offered.
+ */
+export interface WorkspaceDropdownNoProjectOption {
+  readonly label: string;
+  readonly selected: boolean;
+  /** Choosing it is in progress; repeat activation is ignored meanwhile. */
+  readonly pending?: boolean;
+  readonly onSelect: () => void;
+}
+
+type WorkspaceDropdownRow =
+  | WorkspaceDropdownEntry
+  | { readonly id: typeof NO_PROJECT_ROW_ID; readonly kind: 'no-project' };
 
 function entryName(entry: WorkspaceDropdownEntry): string {
   return entry.kind === 'local'
@@ -173,6 +197,11 @@ export interface WorkspaceDropdownProps {
    * selection has nothing to clear back to.
    */
   onClear?: () => void;
+  /**
+   * A leading "chat without a project" row, filtered and navigated like the
+   * project rows. Omit to offer projects only.
+   */
+  noProjectOption?: WorkspaceDropdownNoProjectOption;
   /** Placeholder shown when no workspace is selected. */
   placeholder?: string;
   /** Placeholder shown in the typeahead search input. */
@@ -214,6 +243,7 @@ export function WorkspaceDropdown({
   allowUnset = false,
   onClear,
   onSelect,
+  noProjectOption,
   onAddWorkspace,
   addWorkspaceLabel = 'New project',
   pendingWorkspace,
@@ -277,16 +307,41 @@ export function WorkspaceDropdown({
     [entries, unlistedWorkspaceIds],
   );
 
+  const noProjectLabel = noProjectOption?.label;
+  const noProjectSelected = noProjectOption?.selected === true;
+  // Every offered row in menu order: the no-project row first, then projects.
+  const listedRows = useMemo(
+    (): readonly WorkspaceDropdownRow[] =>
+      noProjectLabel === undefined
+        ? listedWorkspaces
+        : [{ id: NO_PROJECT_ROW_ID, kind: 'no-project' }, ...listedWorkspaces],
+    [listedWorkspaces, noProjectLabel],
+  );
+  const rowName = (row: WorkspaceDropdownRow): string =>
+    row.kind === 'no-project' ? (noProjectLabel ?? '') : entryName(row);
+  const isRowSelected = (row: WorkspaceDropdownRow): boolean =>
+    row.kind === 'no-project'
+      ? noProjectSelected
+      : row.id === selectedWorkspaceId;
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return listedWorkspaces;
-    return listedWorkspaces.filter((workspace) =>
-      entryName(workspace).toLowerCase().includes(needle),
+    if (!needle) return listedRows;
+    return listedRows.filter((row) =>
+      (row.kind === 'no-project' ? (noProjectLabel ?? '') : entryName(row))
+        .toLowerCase()
+        .includes(needle),
     );
-  }, [listedWorkspaces, query]);
+  }, [listedRows, noProjectLabel, query]);
 
   const activeWorkspace =
     activeIndex === null ? undefined : filtered[activeIndex];
+
+  useEffect(() => {
+    setActiveIndex((index) =>
+      filtered.length === 0 ? null : Math.min(index ?? 0, filtered.length - 1),
+    );
+  }, [filtered]);
 
   // Imperative open (⌥W). Seeded with the mount-time value so the first
   // render never counts as a request; every later change opens the picker.
@@ -304,14 +359,16 @@ export function WorkspaceDropdown({
   useEffect(() => {
     if (!isOpen) return;
     setQuery('');
-    const selectedIndex = listedWorkspaces.findIndex(
-      (w) => w.id === selectedWorkspaceId,
+    const selectedIndex = listedRows.findIndex((row) =>
+      row.kind === 'no-project'
+        ? noProjectSelected
+        : row.id === selectedWorkspaceId,
     );
     // Target the restored row: this effect and the scroll effect below are
     // flushed together, so an untargeted intent would be consumed against the
     // stale `activeIndex` of 0 and the selected workspace would never scroll.
     markActiveOptionScrollIntent(
-      selectedIndex >= 0 ? listedWorkspaces[selectedIndex]?.id : undefined,
+      selectedIndex >= 0 ? listedRows[selectedIndex]?.id : undefined,
     );
     setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
     searchRef.current?.focus();
@@ -373,6 +430,12 @@ export function WorkspaceDropdown({
   }
 
   function handleSelect(workspaceId: string): void {
+    if (workspaceId === NO_PROJECT_ROW_ID) {
+      if (!noProjectOption || noProjectOption.pending === true) return;
+      noProjectOption.onSelect();
+      closePicker();
+      return;
+    }
     onSelect(workspaceId);
     closePicker();
   }
@@ -530,9 +593,11 @@ export function WorkspaceDropdown({
             }}
             listId={`${testIdPrefix}-listbox`}
             activeDescendant={
-              activeWorkspace
-                ? `${testIdPrefix}-option-${activeWorkspace.id}`
-                : undefined
+              activeWorkspace === undefined
+                ? undefined
+                : activeWorkspace.kind === 'no-project'
+                  ? `${testIdPrefix}-option-no-project`
+                  : `${testIdPrefix}-option-${activeWorkspace.id}`
             }
           />
         </PickerMenuSearchHeader>
@@ -545,15 +610,38 @@ export function WorkspaceDropdown({
           {filtered.length === 0 ? (
             // Nothing listed and nothing searched: "New project" below is the
             // whole menu, so no absence message above it.
-            listedWorkspaces.length === 0 && !query.trim() ? null : (
+            listedRows.length === 0 && !query.trim() ? null : (
               <PickerMenuState data-testid={`${testIdPrefix}-empty`}>
                 No projects match
               </PickerMenuState>
             )
           ) : (
             filtered.map((workspace, index) => {
-              const isSelected = workspace.id === selectedWorkspaceId;
+              const isSelected = isRowSelected(workspace);
               const isActive = index === activeIndex;
+              if (workspace.kind === 'no-project') {
+                return (
+                  <ProjectlessChatOption
+                    key={workspace.id}
+                    role="option"
+                    id={`${testIdPrefix}-option-no-project`}
+                    availability={
+                      noProjectOption?.pending ? 'pending' : 'available'
+                    }
+                    label={rowName(workspace)}
+                    tabIndex={-1}
+                    onClick={() => handleSelect(workspace.id)}
+                    onMouseEnter={() => {
+                      clearActiveOptionScrollIntent();
+                      setActiveIndex(index);
+                    }}
+                    data-option-id={workspace.id}
+                    data-testid={`${testIdPrefix}-option-no-project`}
+                    active={isActive}
+                    selected={isSelected}
+                  />
+                );
+              }
               return (
                 <PickerMenuOption
                   key={workspace.id}
@@ -580,7 +668,7 @@ export function WorkspaceDropdown({
                         <span
                           className={`${POSTHOG_REPLAY_MASK_CLASS} truncate`}
                         >
-                          {entryName(workspace)}
+                          {rowName(workspace)}
                         </span>
                         <CloudMark entry={workspace} />
                       </span>

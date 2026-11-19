@@ -16,22 +16,38 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import * as fsPromises from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   IPC_CHANNELS,
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_DIAGRAM_SCHEMA_VERSION,
+  buildCodeReviewScopeKey,
+  emptyCodeReviewFile,
   type CodeReviewFile,
+  type CodeReviewGetResponse,
   type CodeReviewGenerationResult,
   type ReviewCommentThread,
 } from '@canopy/desktop-shared/types';
 import type * as Scheduler from '../lib/code-review-scheduler';
 import type * as Persistence from '../lib/code-review-persistence';
+import type * as ReviewDiff from '../lib/code-review-diff';
+import type * as Generator from '../lib/code-review-generator';
+import type * as Registry from '../lib/code-review-registry';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type * as MainProcessLogging from '../lib/main-process-logging';
-import { getCodeReviewStateFilePath } from '../lib/paths';
+import {
+  getCodeReviewRegistryFilePath,
+  getCodeReviewStateFilePath,
+} from '../lib/paths';
 import { withReviewStateLock } from '@canopy/core-runtime/node/review';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
+
+// Share function mocks across the host and core-runtime interop namespaces.
+jest.mock('node:fs/promises', () => {
+  const fs = jest.requireActual<typeof fsPromises>('node:fs/promises');
+  return { ...fs, readFile: jest.fn(fs.readFile), rename: jest.fn(fs.rename) };
+});
 
 jest.setTimeout(60_000);
 
@@ -276,17 +292,581 @@ function invoke<T>(channel: string, request: unknown): Promise<T> {
   return Promise.resolve(handler({ sender: { id: 1 } }, request)) as Promise<T>;
 }
 
-it('registration IPC preserves a historical key owner instead of replacing it', async () => {
-  await invoke(IPC_CHANNELS.codeReviewRegister, {
-    projectId: 'ipc-project--part',
-    worktreeId: 'tree',
+describe('associated-state recovery admission', () => {
+  const recoveryScope = { projectId: WORKSPACE_ID, worktreeId: 'recovery-wt' };
+  const { projectId, worktreeId } = recoveryScope;
+  const statePath = (): string =>
+    getCodeReviewStateFilePath(projectId, worktreeId);
+  const rawBytes = (): string => readFileSync(statePath(), 'utf8');
+  const stored = (): { commentThreads: unknown } => {
+    const parsed: unknown = JSON.parse(rawBytes());
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !('commentThreads' in parsed)
+    ) {
+      throw new Error('Stored review is missing commentThreads');
+    }
+    return parsed;
+  };
+  const get = (): Promise<CodeReviewGetResponse> =>
+    invoke(IPC_CHANNELS.codeReviewGet, recoveryScope);
+  const arm = (): Promise<CodeReviewFile> =>
+    persistence.setCodeReviewArmed(projectId, worktreeId);
+  const save = (commentThreads: unknown[] = []): Promise<unknown> =>
+    invoke(IPC_CHANNELS.codeReviewSaveComments, {
+      ...recoveryScope,
+      commentThreads,
+    });
+  const envelope = {
+    data: null,
+    status: 'generating' as const,
+    derivedFromFingerprint: 'old',
+  };
+  const thread: ReviewCommentThread = {
+    id: 'replace-me',
+    status: 'open',
+    createdAt: '2026-11-17',
+    anchorState: 'matched',
+    anchor: { source: 'code', quote: '', unanchored: true },
+    comments: [],
+  };
+  const rawState = (fields: object): string =>
+    JSON.stringify({ ...emptyCodeReviewFile(), ...fields });
+  const install = (raw: string): void => {
+    writeJson(statePath(), emptyCodeReviewFile());
+    writeFileSync(statePath(), raw);
+  };
+  const rawCases = [
+    ['invalid JSON', '{incomplete', 'invalid_json'],
+    ['empty file', '', 'invalid_json'],
+    ['unsupported version', rawState({ version: 2 }), 'unsupported_version'],
+    ['missing version', '{}', 'unsupported_version'],
+    ['non-object state', 'null', 'lossy_state'],
+    ['array state', '[]', 'lossy_state'],
+  ];
+  const lossyFields: [string, object][] = [
+    ['thread container', { commentThreads: {} }],
+    ['null threads', { commentThreads: null }],
+    ['missing threads', { commentThreads: undefined }],
+    ['missing armed', { armed: undefined }],
+    ['missing diagrams', { diagrams: undefined }],
+    ['armed value', { armed: 'yes' }],
+    ['armed timestamp', { armedAt: 42 }],
+    ['diagram container', { diagrams: [] }],
+    ['null diagram container', { diagrams: null }],
+    ['annotation envelope', { annotations: { status: 'ready' } }],
+    [
+      'annotation payload',
+      { annotations: { ...envelope, data: { damaged: true } } },
+    ],
+    ['logic envelope', { diagrams: { logicDiff: null } }],
+    ['logic payload', { diagrams: { logicDiff: { ...envelope, data: {} } } }],
+    [
+      'model payload',
+      { diagrams: { dataModelDiff: { ...envelope, data: [] } } },
+    ],
+    ['envelope status', { annotations: { ...envelope, status: 'unknown' } }],
+    ['envelope metadata', { annotations: { ...envelope, generatedAt: 42 } }],
+    ['unknown extension', { future: { evidence: true } }],
+    ['diagram extension', { diagrams: { future: envelope } }],
+    ['artifact extension', { annotations: { ...envelope, future: true } }],
+  ];
+  const mutations = [
+    arm,
+    save,
+    (): Promise<unknown> =>
+      persistence.appendReviewCommentReply({
+        ...recoveryScope,
+        threadId: thread.id,
+        body: 'reply',
+      }),
+    (): Promise<unknown> =>
+      persistence.setCodeReviewArtifact(
+        projectId,
+        worktreeId,
+        'logicDiff',
+        envelope,
+      ),
+    (): Promise<unknown> =>
+      persistence.removeCodeReviewDiagramArtifact(
+        projectId,
+        worktreeId,
+        'dataModelDiff',
+        'old',
+      ),
+    (): Promise<unknown> =>
+      persistence.reevaluateReviewAnchors(projectId, worktreeId),
+    (): Promise<unknown> => invoke(IPC_CHANNELS.codeReviewArm, recoveryScope),
+    (): Promise<unknown> =>
+      invoke(IPC_CHANNELS.codeReviewGenerate, recoveryScope),
+  ];
+  it.each([
+    ...rawCases,
+    ...lossyFields.map(([label, fields]) => [
+      label,
+      rawState(fields),
+      'lossy_state',
+    ]),
+  ])('preserves %s and refuses every mutation', async (_label, raw, reason) => {
+    install(raw);
+    const failure = { code: 'code_review_state_unavailable', reason };
+    for (const mutate of mutations) {
+      await expect(mutate()).rejects.toMatchObject(failure);
+      expect(rawBytes()).toBe(raw);
+    }
+    const projection = await get();
+    expect(projection.mutationFailure).toMatchObject(failure);
+    expect(calls).toEqual([]);
+    expect(sends).toEqual([]);
   });
+  it.each(['EIO', 'EACCES'])(
+    'refuses %s instead of treating it as absence',
+    async (code) => {
+      const raw = rawState({ armed: true });
+      install(raw);
+      const error = Object.assign(new Error(code), { code });
+      const reader = jest.mocked(fsPromises.readFile).mockRejectedValue(error);
+      try {
+        await expect(arm()).rejects.toMatchObject({
+          code: 'code_review_state_unavailable',
+          reason: 'read_failed',
+          underlyingError: error,
+        });
+        await expect(get()).resolves.toMatchObject({
+          mutationFailure: {
+            code: 'code_review_state_unavailable',
+            reason: 'read_failed',
+          },
+        });
+      } finally {
+        reader.mockImplementation(
+          jest.requireActual<typeof fsPromises>('node:fs/promises').readFile,
+        );
+      }
+      expect(rawBytes()).toBe(raw);
+      expect(sends).toEqual([]);
+    },
+  );
+  it('refuses a directory at the state-file path without replacing it', async () => {
+    rmSync(statePath(), { force: true });
+    mkdirSync(statePath(), { recursive: true });
+    const evidence = join(statePath(), 'evidence');
+    writeFileSync(evidence, 'keep');
+    try {
+      await expect(arm()).rejects.toMatchObject({
+        code: 'code_review_state_unavailable',
+        reason: 'read_failed',
+      });
+      expect(readFileSync(evidence, 'utf8')).toBe('keep');
+      expect(sends).toEqual([]);
+    } finally {
+      rmSync(statePath(), { recursive: true, force: true });
+    }
+  });
+  it.each(['{broken', rawState({ armed: true, diagrams: null })])(
+    'skips refused activity until repair (%s)',
+    async (raw) => {
+      install(raw);
+      const warn = jest.mocked(logMainProcessWarn).mockClear();
+      jest.useFakeTimers({
+        doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+      });
+      try {
+        scheduler.setCodeReviewModalOpen(recoveryScope, true, getWindow);
+        for (let i = 0; i < 2; i += 1) {
+          scheduler.noteWorktreeActivityForCodeReview(
+            projectId,
+            worktreeId,
+            getWindow,
+          );
+          await settle();
+          await jest.advanceTimersByTimeAsync(
+            scheduler.CODE_REVIEW_POLL_INTERVAL_MS,
+          );
+          await settle();
+        }
+        expect(warn).not.toHaveBeenCalled();
+        expect(calls).toEqual([]);
+        expect(sends).toEqual([]);
+        expect(rawBytes()).toBe(raw);
+        scheduler.setCodeReviewModalOpen(recoveryScope, false, getWindow);
+        install(rawState({ armed: true }));
+        scheduler.noteWorktreeActivityForCodeReview(
+          projectId,
+          worktreeId,
+          getWindow,
+        );
+        await settle();
+        await jest.advanceTimersByTimeAsync(
+          scheduler.CODE_REVIEW_IDLE_DEBOUNCE_MS,
+        );
+        await waitFor(ran, 'the repaired review');
+        expect(calls).toContain('annotations');
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        scheduler.__testing.reset();
+        jest.useRealTimers();
+        warn.mockReset();
+      }
+    },
+  );
+  it('logs unexpected background failures with scope and preserves awaited rejection', async () => {
+    install(rawState({ armed: true }));
+    const error = new Error('fingerprint unavailable');
+    const reviewDiff = jest.requireMock<typeof ReviewDiff>(
+      '../lib/code-review-diff',
+    );
+    const fingerprint = jest
+      .spyOn(reviewDiff, 'computeReviewFingerprint')
+      .mockRejectedValue(error);
+    const warn = jest.mocked(logMainProcessWarn).mockClear();
+    try {
+      scheduler.noteWorktreeActivityForCodeReview(
+        projectId,
+        worktreeId,
+        getWindow,
+      );
+      await settle();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[code-review] background review failed',
+        { ...recoveryScope, error },
+      );
+      await expect(
+        scheduler.requestManualCodeReviewRefresh(recoveryScope, getWindow),
+      ).rejects.toBe(error);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual([]);
+      expect(sends).toEqual([]);
+    } finally {
+      fingerprint.mockRestore();
+      scheduler.__testing.reset();
+      warn.mockReset();
+    }
+  });
+  it('keeps readable comment projections available while refusing agent mutations', async () => {
+    install(rawState({ armed: 'damaged', commentThreads: [thread] }));
+    await expect(
+      persistence.readReviewCommentThread(recoveryScope),
+    ).resolves.toMatchObject({ ok: true, threads: [thread] });
+    await expect(mutations[2]()).rejects.toMatchObject({
+      code: 'code_review_state_unavailable',
+      reason: 'lossy_state',
+    });
+  });
+  it('creates only on ENOENT and admits repaired state without a cached failure', async () => {
+    rmSync(statePath(), { force: true });
+    await expect(get()).resolves.not.toHaveProperty('mutationFailure');
+    await save([thread]);
+    expect(stored().commentThreads).toEqual([thread]);
+    install('{broken');
+    await expect(arm()).rejects.toMatchObject({ reason: 'invalid_json' });
+    await expect(
+      persistence.setCodeReviewArmed(projectId, 'healthy-recovery-wt'),
+    ).resolves.toMatchObject({ armed: true });
+    install(rawState({}));
+    await expect(arm()).resolves.toMatchObject({ armed: true });
+  });
+  it('carries unreadable members and supersedes only a matching ID', async () => {
+    const unreadable = [
+      { id: thread.id, comments: ['evidence'] },
+      null,
+      { id: 'keep-me' },
+    ];
+    const readable = {
+      ...thread,
+      id: 'readable',
+      extension: { keep: true },
+      comments: [
+        {
+          id: 'c1',
+          author: 'user',
+          body: 'keep',
+          createdAt: '',
+          extension: true,
+        },
+      ],
+      anchor: { ...thread.anchor, extension: true },
+    };
+    install(rawState({ commentThreads: [readable, ...unreadable] }));
+    await arm();
+    expect(stored().commentThreads).toEqual([readable, ...unreadable]);
+    await expect(get()).resolves.toMatchObject({ skippedCommentThreads: 3 });
+    await save([readable, thread]);
+    expect(stored().commentThreads).toEqual([
+      readable,
+      thread,
+      null,
+      { id: 'keep-me' },
+    ]);
+    await expect(get()).resolves.toMatchObject({ skippedCommentThreads: 2 });
+  });
+  it('publishes skipped threads while a concurrent projection is still reading', async () => {
+    install(rawState({ commentThreads: [null] }));
+    const broadcastEntered = gate();
+    const broadcastBlocked = gate();
+    const readEntered = gate();
+    const readBlocked = gate();
+    const reviewDiff = jest.requireMock<typeof ReviewDiff>(
+      '../lib/code-review-diff',
+    );
+    const fingerprint = jest
+      .spyOn(reviewDiff, 'computeReviewFingerprint')
+      .mockImplementationOnce(async () => {
+        broadcastEntered.release();
+        await broadcastBlocked.promise;
+        return diff.fingerprint;
+      });
+    const saving = save();
+    await broadcastEntered.promise;
+    const readFile =
+      jest.requireActual<typeof fsPromises>('node:fs/promises').readFile;
+    const reader = jest
+      .mocked(fsPromises.readFile)
+      .mockImplementationOnce(async (...args) => {
+        readEntered.release();
+        await readBlocked.promise;
+        return readFile(...args);
+      });
+    const reading = persistence.readCodeReviewStateProjection(
+      projectId,
+      worktreeId,
+    );
+    try {
+      await readEntered.promise;
+      broadcastBlocked.release();
+      await saving;
+      expect(sentPayloads.at(-1)?.payload).toMatchObject({
+        skippedCommentThreads: 1,
+      });
+      expect(stored().commentThreads).toEqual([null]);
+      readBlocked.release();
+      await expect(reading).resolves.toMatchObject({
+        skippedCommentThreads: 1,
+      });
+    } finally {
+      broadcastBlocked.release();
+      readBlocked.release();
+      await Promise.allSettled([saving, reading]);
+      reader.mockImplementation(readFile);
+      fingerprint.mockRestore();
+    }
+  });
+  it.each(['invalid_json', 'lossy_state', 'read_failed'])(
+    'ends observed helper lifetimes on %s during generation',
+    async (reason) => {
+      scheduler.__testing.reset();
+      install(rawState({ armed: true, diagrams: { dataModelDiff: envelope } }));
+      const blocked = gate();
+      hold = blocked;
+      const generators = jest.requireMock<typeof Generator>(
+        '../lib/code-review-generator',
+      );
+      const model = jest
+        .spyOn(generators, 'generateReviewDataModelDiff')
+        .mockImplementation(async () => {
+          calls.push('dataModelDiff');
+          await blocked.promise;
+          return {
+            value: {
+              schemaVersion: PLAN_DIAGRAM_SCHEMA_VERSION,
+              applicable: true,
+              diagram: {
+                schemaVersion: PLAN_DIAGRAM_SCHEMA_VERSION,
+                current: { entities: [], relationships: [] },
+                planned: { entities: [], relationships: [] },
+                changes: [],
+              },
+            },
+            usage: {},
+          };
+        });
+      const readFile =
+        jest.requireActual<typeof fsPromises>('node:fs/promises').readFile;
+      const refreshing = scheduler.requestManualCodeReviewRefresh(
+        recoveryScope,
+        getWindow,
+      );
+      const rejection = expect(refreshing).rejects.toMatchObject({
+        code: 'code_review_state_unavailable',
+        reason,
+      });
+      try {
+        await waitFor(() => calls.length === 3, 'all review generators');
+        const raw =
+          reason === 'invalid_json'
+            ? '{damaged during generation'
+            : rawState({ armed: reason === 'read_failed' ? true : 'yes' });
+        install(raw);
+        if (reason === 'read_failed') {
+          jest
+            .mocked(fsPromises.readFile)
+            .mockRejectedValue(
+              Object.assign(new Error('read failed'), { code: 'EIO' }),
+            );
+        }
+        sends.length = 0;
+        blocked.release();
+        await rejection;
+        expect(rawBytes()).toBe(raw);
+        expect(sends).toEqual([]);
+        const starts = helperTasks
+          .filter((task) => task.startsWith('start '))
+          .map((task) => task.slice(6))
+          .sort();
+        const failures = helperTasks
+          .filter((task) => task.startsWith('failure '))
+          .map((task) => task.slice(8))
+          .sort();
+        expect(starts).toHaveLength(3);
+        expect(failures).toEqual(starts);
+        expect(helperTasks).toHaveLength(6);
+      } finally {
+        blocked.release();
+        await refreshing.catch(() => undefined);
+        hold = null;
+        model.mockRestore();
+        jest.mocked(fsPromises.readFile).mockImplementation(readFile);
+        scheduler.__testing.reset();
+      }
+    },
+  );
+  it('does not publish a result or update before rename and preserves old bytes on failure', async () => {
+    install(rawState({}));
+    const raw = rawBytes();
+    const entered = gate();
+    const blocked = gate();
+    const rename =
+      jest.requireActual<typeof fsPromises>('node:fs/promises').rename;
+    const writer = jest
+      .mocked(fsPromises.rename)
+      .mockImplementationOnce(async (...args) => {
+        entered.release();
+        await blocked.promise;
+        return rename(...args);
+      });
+    let published = false;
+    const saving = save([thread]).then(() => {
+      published = true;
+    });
+    try {
+      await Promise.race([
+        entered.promise,
+        saving.then(() => {
+          throw new Error('write bypassed rename gate');
+        }),
+      ]);
+      expect(published).toBe(false);
+      expect(sends).toEqual([]);
+      expect(rawBytes()).toBe(raw);
+      blocked.release();
+      await saving;
+      expect(published).toBe(true);
+      expect(sends).toHaveLength(1);
+      expect(stored().commentThreads).toEqual([thread]);
+      sends.length = 0;
+      const installed = rawBytes();
+      writer.mockRejectedValueOnce(new Error('rename failed'));
+      await expect(save()).rejects.toThrow('rename failed');
+      expect(rawBytes()).toBe(installed);
+      expect(sends).toEqual([]);
+    } finally {
+      blocked.release();
+      await saving.catch(() => undefined);
+      writer.mockImplementation(rename);
+    }
+  });
+  it('rechecks the captured file after queueing, not the new routing branch', async () => {
+    const projectId = CODE_REVIEW_CHAT_PROJECT_ID;
+    const worktreeId = 'recovery-routing-wt';
+    registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
+    const captured = getCodeReviewStateFilePath(projectId, worktreeId);
+    writeJson(captured, emptyCodeReviewFile());
+    const entered = gate();
+    const blocked = gate();
+    const locking = withReviewStateLock(captured, async () => {
+      entered.release();
+      await blocked.promise;
+    });
+    await entered.promise;
+    const queued = persistence.setCodeReviewArmed(projectId, worktreeId);
+    writeFileSync(captured, '{damaged while queued');
+    registerWorkspaceTypes(new Map([[projectId, 'single-repo']]));
+    const other = getCodeReviewStateFilePath(projectId, worktreeId);
+    writeJson(other, emptyCodeReviewFile());
+    try {
+      blocked.release();
+      await locking;
+      await expect(queued).rejects.toMatchObject({
+        code: 'code_review_state_unavailable',
+        reason: 'invalid_json',
+        filePath: captured,
+      });
+      expect(readFileSync(captured, 'utf8')).toBe('{damaged while queued');
+      expect(JSON.parse(readFileSync(other, 'utf8'))).toEqual(
+        emptyCodeReviewFile(),
+      );
+    } finally {
+      blocked.release();
+      await locking;
+      registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
+    }
+  });
+});
+
+it('registration IPC keeps colliding targets apart and preserves the historical key owner', async () => {
+  // Both targets built `ipc-project--part--tree` before CAN-6848 PR 4.
+  const legacyKey = 'ipc-project--part--tree';
+  const historical = { projectId: 'ipc-project--part', worktreeId: 'tree' };
+  const other = { projectId: 'ipc-project', worktreeId: 'part--tree' };
+  const registryPath = getCodeReviewRegistryFilePath();
+  const readTargets = (): Record<string, unknown> => {
+    const parsed: unknown = JSON.parse(readFileSync(registryPath, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null || !('targets' in parsed))
+      throw new Error('registry has no targets');
+    const { targets } = parsed;
+    if (typeof targets !== 'object' || targets === null)
+      throw new Error('registry targets are not an object');
+    return { ...targets };
+  };
+  writeJson(registryPath, {
+    version: 1,
+    targets: {
+      ...(existsSync(registryPath) ? readTargets() : {}),
+      [legacyKey]: historical,
+    },
+  });
+  for (const target of [historical, other, other])
+    await invoke(IPC_CHANNELS.codeReviewRegister, target);
+  const historicalKey = buildCodeReviewScopeKey(
+    historical.projectId,
+    historical.worktreeId,
+  );
+  const otherKey = buildCodeReviewScopeKey(other.projectId, other.worktreeId);
+  // The persisted format: changing it orphans registered review chats.
+  expect([historicalKey, otherKey]).toEqual([
+    'cr2-1ipc-0project-0-0part-1tree',
+    'cr2-1ipc-0project-1part-0-0tree',
+  ]);
+  const targets = readTargets();
+  expect(targets[legacyKey]).toEqual(historical);
+  expect(targets[historicalKey]).toMatchObject({
+    ...historical,
+    state: 'active',
+  });
+  expect(targets[otherKey]).toMatchObject({ ...other, state: 'active' });
+  const registry = jest.requireActual<typeof Registry>(
+    '../lib/code-review-registry',
+  );
+  expect(await registry.getCodeReviewTarget(legacyKey)).toEqual(historical);
+  expect(await registry.getCodeReviewTarget(historicalKey)).toEqual(historical);
+  expect(await registry.getCodeReviewTarget(otherKey)).toEqual(other);
+  // A versioned key only ever names the target it encodes.
   await expect(
-    invoke(IPC_CHANNELS.codeReviewRegister, {
-      projectId: 'ipc-project',
-      worktreeId: 'part--tree',
-    }),
+    registry.registerCodeReviewTarget(otherKey, historical),
   ).rejects.toMatchObject({ reason: 'owner_changed' });
+  expect(readTargets()).toEqual(targets);
 });
 
 // The real clock, captured before any case installs fake timers. Scheduler
@@ -364,6 +944,11 @@ function shape(file: CodeReviewFile): unknown {
 }
 
 describe('code review scheduling (CAN-4167 golden)', () => {
+  // A finished run starts its queued rerun fire-and-forget. Left running, it
+  // takes the next case's request as another rerun and writes the review
+  // under that case, so each case waits until the scope has no task left.
+  afterEach(() => scheduler.__testing.idle(scope));
+
   it('arms through IPC and generates every artifact once', async () => {
     const result = await invoke<CodeReviewGenerationResult>(
       IPC_CHANNELS.codeReviewArm,
@@ -524,7 +1109,7 @@ describe('code review scheduling (CAN-4167 golden)', () => {
     hold.release();
     hold = null;
     const firstResult = await first;
-    await settle();
+    await scheduler.__testing.idle(scope);
     expect({ second, third, firstResult, midFlight }).toMatchSnapshot();
     // One run, then one queued rerun that finds the diff fresh.
     expect(calls.filter((c) => c === 'annotations')).toHaveLength(1);

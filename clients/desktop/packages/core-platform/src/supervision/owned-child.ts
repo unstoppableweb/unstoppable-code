@@ -55,15 +55,24 @@ export type OwnedChildErrorCode =
   | 'failed_precondition'
   | 'invalid_argument';
 
+/** Closed native-failure reason; `code` alone cannot tell a missing addon from a blocked one. */
+export type OwnedChildErrorReason = 'load_failed' | 'native_unknown';
+
 /** Fixed messages only: no paths, arguments, environment, or handoff content. */
 export class OwnedChildError extends Error {
   override readonly name = 'OwnedChildError';
   readonly code: OwnedChildErrorCode;
+  readonly reason?: OwnedChildErrorReason;
   nativeDiagnostic?: { readonly stage: string; readonly win32: number };
 
-  constructor(code: OwnedChildErrorCode, message: string) {
+  constructor(
+    code: OwnedChildErrorCode,
+    message: string,
+    reason?: OwnedChildErrorReason,
+  ) {
     super(message);
     this.code = code;
+    if (reason) this.reason = reason;
   }
 }
 
@@ -173,8 +182,11 @@ const field = (value: unknown, key: string): unknown =>
     ? Object.getOwnPropertyDescriptor(value, key)?.value
     : undefined;
 
-const fail = (code: OwnedChildErrorCode, message: string): OwnedChildError =>
-  new OwnedChildError(code, message);
+const fail = (
+  code: OwnedChildErrorCode,
+  message: string,
+  reason?: OwnedChildErrorReason,
+): OwnedChildError => new OwnedChildError(code, message, reason);
 
 // As paths.ts `isFullyQualified`: drive or UNC only. Kept import-free, because
 // native host-exit suites load this module directly under Node type stripping.
@@ -757,7 +769,7 @@ function loadNative(
   try {
     process.dlopen(module, file);
   } catch {
-    throw fail('capability_unavailable', UNSUPPORTED);
+    throw fail('capability_unavailable', UNSUPPORTED, 'load_failed');
   }
   if (!isNative(module.exports))
     throw fail('capability_unavailable', UNSUPPORTED);
@@ -830,7 +842,9 @@ function call(run: () => unknown): unknown {
   } catch (error) {
     const code = field(error, 'code');
     const mapped = typeof code === 'string' ? NATIVE_ERRORS[code] : undefined;
-    throw fail(...(mapped ?? ['unavailable', LOST]));
+    throw mapped
+      ? fail(...mapped)
+      : fail('unavailable', LOST, 'native_unknown');
   }
 }
 

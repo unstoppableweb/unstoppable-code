@@ -104,6 +104,8 @@ export async function runDesktopCopilotPipelinePrompt(
             mcpHttpProxyService: proxy,
             sessionId: sessionKey,
             packageOverlay: request.packageOverlay,
+            // A workflow prompt has no one to pick an account (CAN-6232).
+            accountResolution: 'unattended',
             inheritedCursorCapabilities: inherited,
             inheritedPluginRefs,
           },

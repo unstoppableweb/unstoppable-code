@@ -7,6 +7,7 @@ import {
   getNormalizedTriggerInputDefs,
   resolvePipelineInputs,
 } from './executor/execution-context';
+import { matrixModelAxisOf } from '@canopy/pipeline-interop/cloud-preflight';
 import { MAX_NESTED_STEP_DEPTH } from './executor/nesting-limit';
 import { normalizePipeline } from './executor/normalize-pipeline';
 import { resolvePipelineModelAliasLenient } from '@canopy/execution-engine/pipelines/normalize-pipeline';
@@ -256,6 +257,15 @@ export interface DaemonPipelineClassifierOptions {
    * admission is the gate for every one of them, written or expression.
    */
   readonly expressionModels?: 'refuse' | 'owner';
+  /**
+   * `'refuse'` (default): a model step whose model is `${{ matrix.<axis> }}`
+   * is `dynamic_model` like any expression model. `'owner'`: it is admitted,
+   * for a cloud runner's launch (CAN-7018): cloud model preflight checked
+   * each value a written-out matrix gives the axis, or had the person pick
+   * the model of a matrix built while the run runs, and the owner admits
+   * each model when its step asks for a route.
+   */
+  readonly matrixModels?: 'refuse' | 'owner';
 }
 
 export type DaemonPipelineClassification =
@@ -279,7 +289,19 @@ export type DaemonPipelineClassification =
       readonly uses?: string;
     };
 
+export interface DaemonPipelineModelSelection {
+  readonly harness: DaemonModelHarness;
+  readonly model: string | null;
+  readonly aliasId?: string;
+  readonly action: string;
+  readonly step: Step;
+}
+
 export interface DaemonPipelineClassifierContext {
+  /** Exact static selections found by the same walk that admits the launch. */
+  readonly onModelSelection?: (selection: DaemonPipelineModelSelection) => void;
+  /** Reports Node/TSX requirements, including those nested in composite actions. */
+  readonly onNodeRuntimeRequired?: () => void;
   readonly runtime: Pick<
     ExecutionRuntime,
     | 'bundledActionsDir'
@@ -346,11 +368,27 @@ type StepInputs =
       readonly kind: 'composite';
       /** What the executor passes each input; null when only the run decides it. */
       readonly values: Readonly<Record<string, string | null>>;
+      /** The inputs the composite step passes exactly one matrix axis (CAN-7018). */
+      readonly matrixInputs: ReadonlySet<string>;
     }
   | { readonly kind: 'unknown' };
 
 const RUN_INPUTS: StepInputs = { kind: 'run' };
 const UNKNOWN_INPUTS: StepInputs = { kind: 'unknown' };
+
+/**
+ * Whether a model is exactly `${{ matrix.<axis> }}`, or a composite's
+ * `${{ inputs.<name> }}` that its step passes one (CAN-7018).
+ */
+function namesMatrixAxis(value: string, inputs: StepInputs): boolean {
+  if (matrixModelAxisOf(value) !== null) return true;
+  const name = INPUT_MODEL_EXPRESSION.exec(value.trim())?.[1];
+  return (
+    inputs.kind === 'composite' &&
+    name !== undefined &&
+    inputs.matrixInputs.has(name)
+  );
+}
 
 /** What `${{ inputs.NAME }}` reads in `inputs`, or null when it is not known. */
 function inputValue(
@@ -418,6 +456,13 @@ function compositeInputs(
 ): StepInputs {
   const provided = normalizedWith(step) ?? {};
   const values: Record<string, string | null> = {};
+  const matrixInputs = new Set(
+    Object.entries(provided).flatMap(([name, value]) =>
+      typeof value === 'string' && matrixModelAxisOf(value) !== null
+        ? [name]
+        : [],
+    ),
+  );
   for (const [name, input] of Object.entries(definition.inputs ?? {})) {
     const given = provided[name];
     if (given !== undefined && given !== null)
@@ -428,7 +473,7 @@ function compositeInputs(
   for (const [name, value] of Object.entries(provided))
     if (!Object.prototype.hasOwnProperty.call(values, name))
       values[name] = staticWithValue(value, inputs, context);
-  return { kind: 'composite', values };
+  return { kind: 'composite', values, matrixInputs };
 }
 
 /**
@@ -456,6 +501,7 @@ const BUILTIN_ACTION_PREFIX = 'builtin/';
 function tsxRuntime(
   context: DaemonPipelineClassifierContext,
 ): DaemonPipelineRefusalReason | null {
+  context.onNodeRuntimeRequired?.();
   return context.runtime.tsxCli ? null : 'tsx_runtime';
 }
 
@@ -578,6 +624,7 @@ function classifyStep(
   const shell = step.shell ?? inheritedShell;
   const uses = step.uses;
   if (uses === undefined) {
+    if (shell === 'node') context.onNodeRuntimeRequired?.();
     return shell === 'tsx' ? tsxRuntime(context) : null;
   }
   if (uses.includes('${{')) return 'dynamic_action';
@@ -601,6 +648,8 @@ function classifyStep(
     case 'tsx':
       return tsxRuntime(context);
     case 'node':
+      context.onNodeRuntimeRequired?.();
+      return null;
     case 'python':
       return null;
     case 'composite':
@@ -646,6 +695,8 @@ interface ModelStepTally {
   readonly compositeModels: boolean;
   /** Whether the owner admits an expression model at step time (`expressionModels: 'owner'`). */
   readonly expressionModels: boolean;
+  /** Whether the owner admits a matrix axis model at step time (`matrixModels: 'owner'`). */
+  readonly matrixModels: boolean;
 }
 
 function stepModelValue(
@@ -708,7 +759,11 @@ function classifyModelStep(
         ? null
         : staticWithValue(value, inputs, context);
     if (resolved === null) {
-      if (!tally.expressionModels) return 'dynamic_model';
+      if (
+        !tally.expressionModels &&
+        !(tally.matrixModels && namesMatrixAxis(value, inputs))
+      )
+        return 'dynamic_model';
       // Its owner admits the model it names when the step asks for its route;
       // the step's harness is that model's, known only then.
       tally.count += 1;
@@ -770,6 +825,13 @@ function classifyModelStep(
     return 'plugin_collections';
   tally.count += 1;
   tally.harnesses.add(harness);
+  context.onModelSelection?.({
+    harness,
+    model: model || null,
+    ...(aliasId !== undefined && { aliasId }),
+    action: name,
+    step,
+  });
   return null;
 }
 
@@ -787,6 +849,7 @@ function classifyStepAdmittingModels(
   const uses = step.uses;
   if (uses === undefined) {
     if (step.log_format_hint === 'agent') return 'model_action';
+    if (shell === 'node') context.onNodeRuntimeRequired?.();
     return shell === 'tsx' ? tsxRuntime(context) : null;
   }
   if (uses.includes('${{')) return 'dynamic_action';
@@ -815,6 +878,7 @@ function classifyStepAdmittingModels(
       return tsxRuntime(context);
     case 'node':
     case 'python': {
+      if (definition.runs.using === 'node') context.onNodeRuntimeRequired?.();
       // Case-insensitive volumes resolve `builtin/Condenser` to `condenser`.
       const name = builtinActionName(uses, resolved, context)?.toLowerCase();
       // Its owner's hook reads persisted step results, and a composite keeps
@@ -907,6 +971,7 @@ export function classifyDaemonPipeline(
           : DAEMON_PORTABLE_MODEL_ACTIONS,
     compositeModels: options?.compositeModels === 'resolve',
     expressionModels: options?.expressionModels === 'owner',
+    matrixModels: options?.matrixModels === 'owner',
   };
   const hosts: HostStepTally = {
     admit: options?.hostSteps === 'owner',

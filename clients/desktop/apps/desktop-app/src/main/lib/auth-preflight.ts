@@ -352,11 +352,13 @@ async function resolveMcpBlockers(
  * does not need must never block it, so an axis that cannot be proven from
  * local state contributes nothing:
  *
- *   - PROVIDER. A signed-out Claude/Codex is not a dead end. `resolveAiCredits-
- *     RoutingAttempt` activates credits routing on `no-native-auth` in EVERY
- *     mode, including `off`, so "not natively authenticated" is the normal,
- *     working state of every credits-only account — refusing on it would break
- *     those users entirely. The one state that IS a dead end (no native lane
+ *   - PROVIDER. A signed-out Claude/Codex is not a dead end. A chat that
+ *     chose credits, or any routing mode except `off`, routes it through AI Credits,
+ *     so "not natively authenticated" is the normal, working state of every
+ *     credits-only account — refusing on it here would break those users. In
+ *     `off` mode with no credits choice the session resolver refuses the turn
+ *     itself with `no_billing_source` (CAN-7062), using tab routing and mode
+ *     inputs this module does not have. The one state that IS a dead end (no native lane
  *     AND no credits lane) is a BILLING verdict already owned by
  *     `resolveConcreteModelDispatchability`, and reaching it requires the
  *     provider CLI probe this module may not run. So no provider blocker is

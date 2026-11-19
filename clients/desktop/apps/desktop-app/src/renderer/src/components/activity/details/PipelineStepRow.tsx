@@ -12,6 +12,7 @@ import { Badge, StatusGlyph, Surface } from '@canopy/ui-shared/components';
 import { PipelineTimer } from '../PipelineTimer';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PipelineStepDetail } from './PipelineStepDetail';
+import type { PipelineStepBillingOwnerKind } from '@canopy/ui-app';
 import type { ArchivedPipelineSource } from './pipelineDetailTypes';
 import {
   stepSessionKey,
@@ -34,6 +35,8 @@ interface PipelineStepRowProps {
   logsEnabled?: boolean;
   /** Aggregate cost for this agent step, including all retry attempts. */
   costAmount?: string;
+  /** Personal or organization owner of the run, for the billing line. */
+  ownerKind?: PipelineStepBillingOwnerKind;
 }
 
 function hasTimingData(
@@ -64,6 +67,7 @@ function PipelineStepRowComponent({
   archivedSource,
   logsEnabled,
   costAmount,
+  ownerKind,
 }: PipelineStepRowProps): JSX.Element {
   const sessionKey = stepSessionKey({
     executionId,
@@ -165,6 +169,7 @@ function PipelineStepRowComponent({
             onViewWorker={onViewWorker}
             archivedSource={archivedSource}
             logsEnabled={logsEnabled}
+            ownerKind={ownerKind}
           />
         </Surface>
       )}

@@ -1,3 +1,4 @@
+import { turnAccountResolution } from '../agents/turn-account-resolution';
 import {
   assertAntigravityHarnessEnabled,
   isAntigravityHarnessEnabled,
@@ -30,6 +31,7 @@ import {
   getTurnRootAcceptance,
   isOwnedDelegationEvent,
 } from '../agents/session-event-router';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   beginChatTurnRun,
   deferredReloadEventNamespace,
@@ -259,7 +261,6 @@ import {
   withApprovalModeOperation,
 } from '../approvals/live-approval-modes';
 import { reevaluatePendingApprovalsForChat } from '../approvals/approval-session-registry';
-import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import {
   getDiagnosticEventMetadata,
   getChatTurnAuditStatus,
@@ -298,11 +299,6 @@ import { chatCloseBlockReason } from '../agents/background-work';
 import { dispatchAppAdvisorChatMessage } from '../app-advisor/chat-service';
 
 import { dispatchPipelineEditorChatMessage } from '../pipeline-editor/chat-service';
-import {
-  createPortalEvent,
-  enqueuePortalEvent,
-} from '../portal/portal-event-bus';
-import { runtimeChatEventToPortalMessage } from '../services/chat-transcript-projector';
 import { resetChatToPoint } from '../lib/chat-reset-to-point';
 import { assertWritableScope } from '../lib/read-only-scope';
 import { assertChatScopeAcceptsTurns } from '../lib/retired-chat-scope-guard';
@@ -713,19 +709,6 @@ function sendChatEvent(
     model?: ChatModel;
   },
 ): void {
-  try {
-    recordBackgroundProcessChatEvent(
-      {
-        workspaceLocalId: projectId,
-        worktreeLocalId: worktreeId,
-        chatId,
-      },
-      data,
-    );
-  } catch (error: unknown) {
-    // The tracker is a side channel; it must never block chat delivery.
-    logMainProcessError('Background-process tracking failed', error);
-  }
   const delivery = sendToWindowDetailed(win, IPC_CHANNELS.chatEvent, {
     projectId,
     worktreeId,
@@ -2779,7 +2762,7 @@ export function registerChatHandlers(
       executionHarness !== effectiveExecutionHarness
     ) {
       throw new Error(
-        'Chat execution harness does not match host-owned routing',
+        `Chat execution harness "${executionHarness}" does not match host-owned routing "${effectiveExecutionHarness}"`,
       );
     }
     if (
@@ -3068,6 +3051,8 @@ export function registerChatHandlers(
           // An automation's installed package (CAN-5379), as the worktree
           // dispatch and the native standalone send apply it.
           ...(packageOverlay ? { packageOverlay } : {}),
+          // An automation's turn resolves accounts unattended (CAN-6232).
+          ...turnAccountResolution(req),
           applyGlobalPluginDefaults:
             chatSurfaceUsesGlobalPluginDefaults(projectId),
           deferredToolsAllowed: deferredToolsAllowed !== false,
@@ -3121,24 +3106,6 @@ export function registerChatHandlers(
               (runtimeModel ? getProviderForModel(runtimeModel) : undefined),
             model: runtimeModel,
           });
-          const portalMessage = runtimeChatEventToPortalMessage({
-            scope: 'standalone',
-            chatId,
-            data,
-            fallbackMessageId: `${executionUserMessageId}:assistant`,
-          });
-          if (portalMessage) {
-            enqueuePortalEvent(
-              createPortalEvent('portal.chat.event', {
-                scope: 'standalone',
-                projectLocalId: standaloneProjectId,
-                projectId: standaloneProjectId,
-                workEntryId: worktreeId,
-                chatId,
-                message: portalMessage,
-              }),
-            );
-          }
 
           const eventData = isRecord(data) ? data : null;
           if (
@@ -3394,7 +3361,7 @@ export function registerChatHandlers(
           getOrCreateRoutedSession(
             sessionOptions,
             turnRun.observe(handleSessionEvent),
-            getWindow,
+            windowAgentInterfacePort(getWindow),
             {
               turnUserMessageId: userMessageId,
               acceptTurnRoot: async (turnUserMessageId) => {
@@ -3524,7 +3491,7 @@ export function registerChatHandlers(
                         : undefined,
                   },
                   turnRun.observe(handleSessionEvent),
-                  getWindow,
+                  windowAgentInterfacePort(getWindow),
                   {
                     turnUserMessageId: userMessageId,
                     acceptTurnRoot: async (turnUserMessageId) => {
@@ -3757,23 +3724,6 @@ export function registerChatHandlers(
         await applyAgentSessionCodexSpeed(session, effectiveModelConfig.speed);
         await session.setContextWindow?.(effectiveModelConfig.contextWindow);
 
-        enqueuePortalEvent(
-          createPortalEvent('portal.chat.event', {
-            scope: 'standalone',
-            projectLocalId: standaloneProjectId,
-            projectId: standaloneProjectId,
-            workEntryId: worktreeId,
-            chatId,
-            message: {
-              messageId: userMessageId,
-              chatId,
-              role: 'user',
-              status: 'complete',
-              text,
-              createdAtMs: Date.now(),
-            },
-          }),
-        );
         if (req.startsNewTrackedChat) {
           await notifyCanonicalChatStarted(
             { projectId, worktreeId, chatId },

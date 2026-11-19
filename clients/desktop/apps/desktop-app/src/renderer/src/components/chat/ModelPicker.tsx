@@ -41,6 +41,7 @@ import {
 } from 'react';
 import type {
   AgentProviderType,
+  AiCreditsRoutingMode,
   AiCreditsScopeRequest,
   ChatModel,
   ModelHarness,
@@ -155,16 +156,7 @@ import {
   type ModelCommitOutcome,
   type PendingModelRecovery,
 } from './ModelRecoveryModal';
-import {
-  AgentModelPicker,
-  Button,
-  Divider,
-} from '@canopy/ui-shared/components';
-import {
-  changeSelectedAgent,
-  changeSelectedModel,
-  selectedAgentId,
-} from '@canopy/ui-shared/lib';
+import { Button, Divider } from '@canopy/ui-shared/components';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 
 // Re-exported from its new home in the pure resolver so the seven existing
@@ -176,9 +168,8 @@ interface ModelRow {
   readonly model: ChatModel;
   readonly runtimeModel: ChatModel;
   /**
-   * What picking the row sends when it differs from `runtimeModel`: an Agent
-   * on the default model is described and gated by its pinned route, but each
-   * destination pins the bare Agent to its own default.
+   * The picked identity when runtime metadata describes a pinned default or
+   * stored override. Re-picking an Agent always selects its default model.
    */
   readonly selectionModel?: ChatModel;
   readonly provider: AgentProviderType;
@@ -247,10 +238,6 @@ interface BaseModelPickerProps {
   /** Leaves the capsule trigger's chevron off (see `ModelPickerMenu`). */
   hideTriggerChevron?: boolean;
   hideAgents?: boolean;
-  /** Local composers opt in; aliases and Agent definitions keep concrete-only menus. */
-  separateAgents?: boolean;
-  /** Raw form/Home choice, before display-only default pinning. */
-  selectionModel?: ChatModel;
   workspaceDefaultLabel?: string;
   /**
    * The default model an Agent that inherits the default would run on in this
@@ -266,6 +253,14 @@ interface BaseModelPickerProps {
    */
   triggerTooltip?: string | null;
   providerAvailability?: ProviderAvailability;
+  /**
+   * Account-wide AI Credits routing mode, or `null` / omitted while unknown.
+   * A signed-out harness's rows are tagged AI Credits only in a known mode
+   * that routes a sign-out (`on`, `on-quota`). In `off`, or while unknown,
+   * picking one writes no credits choice and main would not route it to
+   * credits (CAN-7062).
+   */
+  aiCreditsRoutingMode?: AiCreditsRoutingMode | null;
   /**
    * CAN-2349 case H. Open a NEW chat already set to `model`, for a row whose
    * harness pair can never be continued (Ollama in either direction). Passed
@@ -582,134 +577,12 @@ function organizationGatewayEmptyCatalog(
 }
 
 export function ModelPicker(props: ModelPickerProps): JSX.Element {
-  return props.separateAgents ? (
-    <LocalAgentModelPicker {...props} />
-  ) : (
-    <ConcreteModelPicker {...props} />
-  );
-}
-
-interface LocalAgentSelection {
-  selection: ChatModel | undefined;
-  effectiveModel: ChatModel | undefined;
-  onRemoveAgent: (effectiveModel: ChatModel, harness?: ModelHarness) => void;
-}
-
-function LocalAgentModelPicker(props: ModelPickerProps): JSX.Element {
-  // Registry hydration also updates Agent definitions and their display names.
-  useModelCatalogStore((state) => state.snapshot);
-  const selection =
-    'selectionModel' in props ? props.selectionModel : props.currentModel;
-  const agentId = selectedAgentId(selection);
-  const definition = agentId ? resolveAgentModelDefinition(agentId) : undefined;
-  const base = selection && parseAgentRouteModelId(selection)?.baseModel;
-  const inheritedDefaultModel =
-    props.inheritedDefaultModel && !isAgentModel(props.inheritedDefaultModel)
-      ? props.inheritedDefaultModel
-      : undefined;
-  const effective =
-    base ||
-    (agentId
-      ? definition?.baseModel === 'default'
-        ? inheritedDefaultModel
-        : definition?.baseModel
-      : props.currentModel);
-  const commit = (
-    next: string | undefined,
-    billing?: BillingFramework,
-    harness?: ModelHarness,
-  ): void => {
-    if (next !== undefined) props.onModelChange(next, billing, harness);
-    else if (props.allowWorkspaceDefault)
-      props.onModelChange(undefined, billing, harness);
-  };
-  const compose = (next: string): string =>
-    isAgentModel(next)
-      ? next
-      : (changeSelectedModel(definition ? selection : undefined, next) ?? next);
-  const concreteChange = (
-    next: string | undefined,
-    billing?: BillingFramework,
-    harness?: ModelHarness,
-  ): void => {
-    commit(
-      next === undefined ? changeSelectedModel(selection, next) : compose(next),
-      billing,
-      harness,
-    );
-  };
-  const concreteProps: ModelPickerProps =
-    agentId || props.allowWorkspaceDefault
-      ? {
-          ...props,
-          currentModel: effective ?? '',
-          allowWorkspaceDefault: true,
-          onModelChange: concreteChange,
-        }
-      : {
-          ...props,
-          currentModel: effective ?? '',
-          allowWorkspaceDefault: false,
-          onModelChange: concreteChange,
-        };
-  return (
-    <ConcreteModelPicker
-      {...concreteProps}
-      hideAgents
-      agentSelection={{
-        selection,
-        effectiveModel: effective,
-        onRemoveAgent: (next, harness): void =>
-          commit(next, undefined, harness),
-      }}
-      workspaceDefaultLabel={
-        agentId ? 'Use agent default' : props.workspaceDefaultLabel
-      }
-      {...(props.auto && agentId
-        ? {
-            auto: {
-              ...props.auto,
-              unavailableReason: 'Remove the agent to use Auto',
-              unavailableAction: undefined,
-              onSelect: (): void => undefined,
-            },
-          }
-        : {})}
-      {...(props.onRecoveryCommit
-        ? {
-            onRecoveryCommit: (
-              next: ChatModel,
-              billing?: BillingFramework,
-              harness?: ModelHarness,
-              isStillWanted?: ModelRecoveryFreshness,
-              retainContinuation?: () => () => void,
-            ): Promise<boolean> =>
-              (isStillWanted
-                ? props.onRecoveryCommit?.(
-                    compose(next),
-                    billing,
-                    harness,
-                    isStillWanted,
-                    retainContinuation,
-                  )
-                : props.onRecoveryCommit?.(compose(next), billing, harness)) ??
-              Promise.resolve(false),
-          }
-        : {})}
-      {...(props.onStartNewChat
-        ? {
-            onStartNewChat: (
-              next: ChatModel,
-              billing?: BillingFramework,
-            ): void => props.onStartNewChat?.(compose(next), billing),
-          }
-        : {})}
-    />
-  );
+  return <ConcreteModelPicker {...props} />;
 }
 
 interface RecoveryEpisode {
   readonly pending: PendingModelRecovery;
+  readonly selectionModel: ChatModel;
   readonly epoch: number;
   readonly chatKey: string | undefined;
   readonly scope: AiCreditsScopeRequest | undefined;
@@ -731,10 +604,7 @@ interface RecoveryEpisode {
   >;
 }
 
-function ConcreteModelPicker(
-  props: ModelPickerProps & { agentSelection?: LocalAgentSelection },
-): JSX.Element {
-  const { agentSelection } = props;
+function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
   const {
     currentModel,
     lockedProvider,
@@ -758,6 +628,7 @@ function ConcreteModelPicker(
     placeholderLabel,
     triggerTooltip,
     providerAvailability,
+    aiCreditsRoutingMode,
     billing,
     browserLayout,
     openSignal,
@@ -796,7 +667,8 @@ function ConcreteModelPicker(
   // existing provider remedy when confirmed sign-out locks billing to credits.
   const showBillingSignIn =
     billing?.disabled === true &&
-    billing.lockKind === 'no-native-login' &&
+    (billing.lockKind === 'no-native-login' ||
+      billing.lockKind === 'no-billing-source') &&
     (billing.provider === 'claude' || billing.provider === 'codex');
   /**
    * CAN-3026 — is the saved Canopy Cloud credential a guest?
@@ -1037,6 +909,7 @@ function ConcreteModelPicker(
    */
   const rowGroups = useMemo((): {
     agentRows: readonly ModelRow[];
+    selectionRows: readonly ModelRow[];
     recoveryRows: readonly ModelRow[];
     providerGroups: readonly ModelRowGroup[];
     favoriteModelAliases: ReadonlyMap<string, string>;
@@ -1130,49 +1003,14 @@ function ConcreteModelPicker(
      * silently substituting a different model.
      */
     const agents: ModelRow[] = [];
-    for (const model of AGENT_MODELS) {
-      if (agentSelection) {
-        const intended =
-          changeSelectedAgent(
-            agentSelection.selection,
-            model,
-            agentSelection.effectiveModel,
-          ) ?? model;
-        const route = pinInheritingAgentModel(intended, inheritedDefaultModel);
-        const routeBase =
-          parseAgentRouteModelId(route)?.baseModel ??
-          resolveAgentModelDefinition(model)?.baseModel;
-        const provider = getProviderForModel(routeBase ?? route) ?? 'claude';
-        if (provider === 'antigravity' && !antigravityAvailable) continue;
-        if (provider === 'cursor' && !cursorAvailable) continue;
-        if (provider === 'copilot' && !copilotAvailable) continue;
-        if (provider === 'opencode' && !opencodeAvailable) continue;
-        const row = resolveRow(
-          route,
-          provider,
-          !getAgentModelAvailability(route).available,
-        );
-        if (row) agents.push({ ...row, model, selectionModel: intended });
-        continue;
-      }
-      if (isInheritingAgentModel(model) && inheritedDefaultModel) {
-        // Describe and gate the row by the route the chat would store, but
-        // send the Agent itself when it is picked.
-        const route = pinInheritingAgentModel(model, inheritedDefaultModel);
-        const routeProvider = getProviderForModel(route) ?? 'claude';
-        if (routeProvider === 'antigravity' && !antigravityAvailable) continue;
-        if (routeProvider === 'cursor' && !cursorAvailable) continue;
-        if (routeProvider === 'copilot' && !copilotAvailable) continue;
-        if (routeProvider === 'opencode' && !opencodeAvailable) continue;
-        const row = resolveRow(
-          route,
-          routeProvider,
-          !getAgentModelAvailability(route).available,
-        );
-        if (row) agents.push({ ...row, model, selectionModel: model });
-        continue;
-      }
-      const definition = resolveAgentModelDefinition(model);
+    const agentSelectionRows: ModelRow[] = [];
+    const storedAgentRoute =
+      currentModel && parseAgentRouteModelId(currentModel);
+    const resolveAgentRow = (
+      model: ChatModel,
+      route: ChatModel,
+    ): ModelRow | null => {
+      const definition = resolveAgentModelDefinition(route);
       // An inheriting Agent runs on this chat's default, so gate it like the
       // chat's current provider.
       const baseProvider: AgentProviderType = definition
@@ -1180,15 +1018,28 @@ function ConcreteModelPicker(
           (isInheritingAgentModel(model) ? currentProvider : undefined) ??
           'claude')
         : 'claude';
-      if (baseProvider === 'antigravity' && !antigravityAvailable) continue;
-      if (baseProvider === 'cursor' && !cursorAvailable) continue;
-      if (baseProvider === 'copilot' && !copilotAvailable) continue;
-      if (baseProvider === 'opencode' && !opencodeAvailable) continue;
+      if (baseProvider === 'antigravity' && !antigravityAvailable) return null;
+      if (baseProvider === 'cursor' && !cursorAvailable) return null;
+      if (baseProvider === 'copilot' && !copilotAvailable) return null;
+      if (baseProvider === 'opencode' && !opencodeAvailable) return null;
       const row = resolveRow(
-        model,
+        route,
         baseProvider,
-        !getAgentModelAvailability(model).available,
+        !getAgentModelAvailability(route).available,
       );
+      return row && { ...row, model, selectionModel: model };
+    };
+    for (const model of AGENT_MODELS) {
+      const defaultRow = resolveAgentRow(
+        model,
+        pinInheritingAgentModel(model, inheritedDefaultModel),
+      );
+      if (defaultRow) agentSelectionRows.push(defaultRow);
+      // Existing state is described by its stored route; a pick resets to the default.
+      const row =
+        storedAgentRoute && storedAgentRoute.agentId === model && currentModel
+          ? resolveAgentRow(model, currentModel)
+          : defaultRow;
       if (row) agents.push(row);
     }
 
@@ -1327,9 +1178,17 @@ function ConcreteModelPicker(
     const favoriteModelAliases = new Map<string, string>();
     return {
       agentRows: agents,
+      selectionRows: [
+        ...agentSelectionRows,
+        ...groups.flatMap((group) => group.rows),
+      ],
       // Recovery follows exact account routes, including those merged into a
       // canonical display row. Hidden gates were already omitted by resolveRow.
-      recoveryRows: [...agents, ...groups.flatMap((group) => group.rows)],
+      recoveryRows: [
+        ...agentSelectionRows,
+        ...agents,
+        ...groups.flatMap((group) => group.rows),
+      ],
       favoriteModelAliases,
       providerGroups: groups.map((group) => ({
         ...group,
@@ -1349,8 +1208,6 @@ function ConcreteModelPicker(
     };
   }, [
     billing?.value,
-    agentSelection?.selection,
-    agentSelection?.effectiveModel,
     separateVendorTabs,
     managedMappings,
     antigravityAvailable,
@@ -1392,6 +1249,7 @@ function ConcreteModelPicker(
 
   const {
     agentRows,
+    selectionRows,
     recoveryRows,
     providerGroups,
     hiddenRows,
@@ -1443,33 +1301,25 @@ function ConcreteModelPicker(
     }
     return labels;
   }, [catalogSnapshot]);
-  const hasAgentSelection = agentSelection !== undefined;
   const rowById = useMemo<ReadonlyMap<string, ModelRow>>(
     () =>
-      new Map([
-        ...visibleRows.map((row): [string, ModelRow] => [row.model, row]),
-        ...(hasAgentSelection
-          ? agentRows.map((row): [string, ModelRow] => [row.model, row])
-          : []),
-      ]),
-    [visibleRows, agentRows, hasAgentSelection],
+      new Map(visibleRows.map((row): [string, ModelRow] => [row.model, row])),
+    [visibleRows],
   );
-  // Separate Agent controls still need catalog metadata for harness admission.
+  const selectionRowById = useMemo<ReadonlyMap<string, ModelRow>>(
+    () =>
+      new Map(selectionRows.map((row): [string, ModelRow] => [row.model, row])),
+    [selectionRows],
+  );
   const catalogById = useMemo<ReadonlyMap<string, ModelCatalogOption>>(
     () =>
-      new Map([
-        ...catalog.map((option): [string, ModelCatalogOption] => [
+      new Map(
+        catalog.map((option): [string, ModelCatalogOption] => [
           option.id,
           option,
         ]),
-        ...(hasAgentSelection
-          ? agentRows.map((row): [string, ModelCatalogOption] => [
-              row.model,
-              rowToCatalogOption(row),
-            ])
-          : []),
-      ]),
-    [catalog, agentRows, hasAgentSelection],
+      ),
+    [catalog],
   );
   /**
    * One rail tab per connected AI gateway, Personal or organization, listing
@@ -1527,7 +1377,9 @@ function ConcreteModelPicker(
    * warns before send instead of the turn failing after it.
    */
   const currentModelUnavailableReason = useMemo(() => {
-    const gate = currentModel ? rowById.get(currentModel)?.gate : undefined;
+    const gate = currentModel
+      ? rowById.get(getAgentModelSelectionId(currentModel))?.gate
+      : undefined;
     if (gate?.kind !== 'recoverable') return undefined;
     if (gate.recovery.kind === 'needs-billing-source')
       return MODEL_PICKER_ROW_CUE_COPY.needsBillingSourceHint(
@@ -1537,9 +1389,10 @@ function ConcreteModelPicker(
   }, [currentModel, rowById]);
   // A native model can have two billing routes without changing its source
   // identity. Hosted picks use the canonical model, never a Cursor default.
-  const creditsRows = useMemo(() => {
+  const { creditsRows, presentationCreditsRows } = useMemo(() => {
     const rows = new Map<string, ModelRow>();
-    for (const row of visibleRows) {
+    const presentationRows = new Map<string, ModelRow>();
+    const resolveCreditsRow = (row: ModelRow): ModelRow | undefined => {
       const gateModel =
         row.selectionModel === undefined ? row.model : row.runtimeModel;
       if (
@@ -1547,7 +1400,7 @@ function ConcreteModelPicker(
         !isGatewayRoutableModel(gateModel) ||
         orgGatewayOrganizationId(gateModel) !== undefined
       )
-        continue;
+        return undefined;
       const provider = getProviderForModel(gateModel) ?? row.provider;
       const gate =
         providerAvailability === undefined
@@ -1576,17 +1429,21 @@ function ConcreteModelPicker(
               isGuest,
               libraryAccess,
             });
-      if (gate.kind !== 'hidden')
-        rows.set(row.model, {
-          ...row,
-          runtimeModel: gateModel,
-          provider,
-          gate,
-        });
+      return gate.kind === 'hidden'
+        ? undefined
+        : { ...row, runtimeModel: gateModel, provider, gate };
+    };
+    for (const displayed of visibleRows) {
+      const presentation = resolveCreditsRow(displayed);
+      if (presentation) presentationRows.set(displayed.model, presentation);
+      const picked = selectionRowById.get(displayed.model);
+      const row = picked && resolveCreditsRow(picked);
+      if (row) rows.set(row.model, row);
     }
-    return rows;
+    return { creditsRows: rows, presentationCreditsRows: presentationRows };
   }, [
     visibleRows,
+    selectionRowById,
     providerAvailability,
     currentModel,
     lockedProvider,
@@ -1611,7 +1468,11 @@ function ConcreteModelPicker(
    * while the chat pays with credits, otherwise those whose own harness is not
    * signed in. Their rows say AI credits, not nothing. An empty balance does
    * not change the route, only whether it can pay (CAN-5213); an inconclusive
-   * credits read proves neither.
+   * credits read proves neither. A sign-out alone is a route only in a known
+   * mode that promises it (`on`, `on-quota`); in `off`, or while the mode is
+   * unknown (a mount that does not pass it), only the chat's own credits
+   * choice tags rows, so a row never promises a route main won't take
+   * (CAN-7062).
    */
   const creditsRoutedModelIds = useMemo((): ReadonlySet<string> => {
     const routed = new Set<string>();
@@ -1624,7 +1485,9 @@ function ConcreteModelPicker(
           : undefined;
       if (
         billing?.value === 'ai-credits' ||
-        ((billing?.value !== 'subscription' || billing.provider !== harness) &&
+        ((aiCreditsRoutingMode === 'on' ||
+          aiCreditsRoutingMode === 'on-quota') &&
+          (billing?.value !== 'subscription' || billing.provider !== harness) &&
           availability !== undefined &&
           !availability.nativeAuth &&
           !availability.loading &&
@@ -1635,6 +1498,7 @@ function ConcreteModelPicker(
     }
     return routed;
   }, [
+    aiCreditsRoutingMode,
     billing?.value,
     billing?.provider,
     catalog,
@@ -1700,6 +1564,9 @@ function ConcreteModelPicker(
       harness: ModelHarness | undefined,
       harnessExplicitlyChosen = false,
     ): ModelRow | undefined => {
+      const option = isAgentModel(row.model)
+        ? rowToCatalogOption(row)
+        : catalogById.get(row.model);
       const capturedOpenCode = (lockedHarness ?? lockedProvider) === 'opencode';
       if (
         capturedOpenCode &&
@@ -1718,9 +1585,7 @@ function ConcreteModelPicker(
       }
       const selectedOpenCodeChoice =
         executionHarness === 'opencode' &&
-        catalogById
-          .get(row.model)
-          ?.harnessChoices?.some((choice) => choice.harness === 'opencode');
+        option?.harnessChoices?.some((choice) => choice.harness === 'opencode');
       const selectedHarness =
         harness ??
         (capturedOpenCode || selectedOpenCodeChoice ? 'opencode' : undefined);
@@ -1730,7 +1595,6 @@ function ConcreteModelPicker(
         (!managedMappings.opencode[row.model] ||
           (capturedOpenCode && !isOpenCodeModel(currentModel)))
       ) {
-        const option = catalogById.get(row.model);
         const choice = option?.harnessChoices?.find(
           (entry) => entry.harness === 'opencode',
         );
@@ -1854,6 +1718,14 @@ function ConcreteModelPicker(
       ) => void)
     | null
   >(null);
+  const activateAgentRef = useRef<
+    | ((
+        model: ChatModel,
+        billing?: BillingFramework,
+        harness?: ModelHarness,
+      ) => void)
+    | null
+  >(null);
   /**
    * The state of a row that is not hard-disabled: plain, or library-locked
    * (CAN-4028). A locked row stays reachable and shows the shared hint;
@@ -1868,12 +1740,18 @@ function ConcreteModelPicker(
     ): ModelPickerOptionState => {
       const { runtimeModel: model, gate } = row;
       const recover = (recovery: ModelRecovery) => (): void =>
-        handleRecoverRef.current?.(
-          model,
-          recovery,
-          billingFramework,
-          selectedHarness,
-        );
+        isAgentModel(row.model)
+          ? activateAgentRef.current?.(
+              row.model,
+              billingFramework,
+              selectedHarness,
+            )
+          : handleRecoverRef.current?.(
+              model,
+              recovery,
+              billingFramework,
+              selectedHarness,
+            );
       // CAN-5213 — what the row tells a library-locked viewer. It reads the
       // gate and never changes it: selection and recovery stay as they were.
       const cue = resolveDesktopModelRowCue({
@@ -1948,7 +1826,7 @@ function ConcreteModelPicker(
     option: ModelCatalogOption,
     selection?: ModelPickerSelectionContext,
   ): ModelPickerOptionState => {
-    const row = creditsRows.get(option.id);
+    const row = presentationCreditsRows.get(option.id);
     // Credits-only rows have no separate credits route; they always bill to
     // AI Credits, so their normal row state applies. Managed account picks
     // keep their account billing even when the same model has a credits route.
@@ -2012,7 +1890,13 @@ function ConcreteModelPicker(
       const reason =
         auto.unavailableReason ??
         managedOpenCodeAutoUnavailableReason(
-          catalog.find((option) => option.id === currentModel),
+          catalog.find(
+            (option) =>
+              option.id ===
+              (currentModel
+                ? getAgentModelSelectionId(currentModel)
+                : undefined),
+          ),
           catalog.filter((option) => {
             const state = getOptionState(option, { harness: 'opencode' });
             return !state.disabled && !state.locked;
@@ -2128,6 +2012,12 @@ function ConcreteModelPicker(
     };
     const episode: RecoveryEpisode = {
       pending,
+      // Keep the picked row separate from the runtime used to explain its gate.
+      selectionModel:
+        pending.intent === 'enable-ai-credits'
+          ? pending.model
+          : (recoveryRows.find((row) => row.runtimeModel === pending.model)
+              ?.selectionModel ?? pending.model),
       epoch,
       chatKey,
       lease,
@@ -2234,12 +2124,22 @@ function ConcreteModelPicker(
     modelId: string,
     selection?: ModelPickerSelectionContext,
   ): ModelPickerSelectionDisposition => {
-    const listed = rowById.get(modelId);
+    const listed = isAgentModel(modelId)
+      ? selectionRowById.get(modelId)
+      : rowById.get(modelId);
     if (!listed) return 'close';
+    const requestedHarness = toModelHarness(selection?.harness);
+    const pickedSelection =
+      isAgentModel(modelId) &&
+      requestedHarness &&
+      !getChatHarnessOptions(listed.runtimeModel).includes(requestedHarness)
+        ? undefined
+        : selection;
+    const selectedHarness = toModelHarness(pickedSelection?.harness);
     const row = rowForHarness(
       listed,
-      toModelHarness(selection?.harness),
-      selection?.harnessExplicitlyChosen,
+      selectedHarness,
+      pickedSelection?.harnessExplicitlyChosen,
     );
     if (!row) return 'dismiss';
     const selected = row.selectionModel ?? row.runtimeModel;
@@ -2248,7 +2148,7 @@ function ConcreteModelPicker(
         row.runtimeModel,
         row.gate.recovery,
         undefined,
-        toModelHarness(selection?.harness),
+        selectedHarness,
       );
       return 'dismiss';
     }
@@ -2256,9 +2156,10 @@ function ConcreteModelPicker(
     beginSelectionCommand();
     // Cursor's copy and a native model already name where they run; only a
     // hosted or local model is told its harness.
-    const option = catalogById.get(modelId);
+    const option = isAgentModel(modelId)
+      ? rowToCatalogOption(row)
+      : catalogById.get(modelId);
     const source = option?.source;
-    const selectedHarness = toModelHarness(selection?.harness);
     const returningFromOpenCode =
       (hostedHarness === 'opencode' || currentProvider === 'opencode') &&
       !isOpenCodeModel(currentModel);
@@ -2267,7 +2168,7 @@ function ConcreteModelPicker(
     );
     let harness: ModelHarness | undefined;
     if (returningFromOpenCode) {
-      if (selectedHarness) harness = pickedHarness(selection);
+      if (selectedHarness) harness = pickedHarness(pickedSelection);
       else if (!openCodeChoice)
         harness = getExecutionHarnessForModel(row.runtimeModel);
     } else if (
@@ -2278,16 +2179,8 @@ function ConcreteModelPicker(
         source === 'ollama' ||
         selectedHarness === 'opencode')
     ) {
-      harness = pickedHarness(selection);
+      harness = pickedHarness(pickedSelection);
     }
-    // Agent changes name a new route, so the setter cannot infer the old pin.
-    if (
-      agentSelection &&
-      isAgentModel(modelId) &&
-      executionHarnessExplicitlyChosen === true &&
-      selectedHarness
-    )
-      harness = selectedHarness;
     if (harness) props.onModelChange(selected, undefined, harness);
     else props.onModelChange(selected);
     return 'close';
@@ -2315,6 +2208,11 @@ function ConcreteModelPicker(
     // Credits rows are native models, which name their own harness.
     props.onModelChange(row.model, 'ai-credits');
     return 'close';
+  };
+  activateAgentRef.current = (model, framework, harness): void => {
+    const selection = harness ? { harness } : undefined;
+    if (framework === 'ai-credits') handleSelectCredits(model, selection);
+    else handleSelectModel(model, selection);
   };
 
   /**
@@ -2566,11 +2464,10 @@ function ConcreteModelPicker(
    */
   const findRowGate = (model: ChatModel): string | undefined => {
     if (recoveryChatKey !== recoveryChatKeyRef.current) return undefined;
-    const row =
-      agentRows.find((r) => r.model === model || r.runtimeModel === model) ??
-      providerGroups
-        .flatMap((g) => g.rows)
-        .find((r) => r.model === model || r.runtimeModel === model);
+    const row = recoveryRows.find(
+      (candidate) =>
+        candidate.model === model || candidate.runtimeModel === model,
+    );
     return row?.gate.kind === 'hard-disabled' &&
       row.gate.cause === 'locked-provider'
       ? row.gate.reason
@@ -2794,8 +2691,10 @@ function ConcreteModelPicker(
     model: ChatModel,
   ): Promise<boolean> => {
     if (!canApplyRecovery(episode)) return false;
-    if (episode.commit) return episode.commit(model);
-    episode.changeModel(model);
+    const selection =
+      model === episode.pending.model ? episode.selectionModel : model;
+    if (episode.commit) return episode.commit(selection);
+    episode.changeModel(selection);
     return true;
   };
 
@@ -2879,7 +2778,7 @@ function ConcreteModelPicker(
       episode.isCurrent();
     return unlockModels({
       source: 'desktop',
-      modelId: pending.model,
+      modelId: episode.selectionModel,
       ...(chatKey !== undefined ? { chatId: chatKey } : {}),
       ...(onResumed ? { onResumed } : {}),
       isStillWanted,
@@ -3429,7 +3328,8 @@ function ConcreteModelPicker(
                     </div>
                     {billing &&
                     billing.disabled &&
-                    billing.lockKind === 'no-native-login' &&
+                    (billing.lockKind === 'no-native-login' ||
+                      billing.lockKind === 'no-billing-source') &&
                     (billing.provider === 'claude' ||
                       billing.provider === 'codex') ? (
                       <Button
@@ -3528,7 +3428,12 @@ function ConcreteModelPicker(
                     !canApplyRecovery(episode)
                   )
                     return;
-                  episode.startNewChat?.(model, episode.selectedBilling);
+                  episode.startNewChat?.(
+                    model === episode.pending.model
+                      ? episode.selectionModel
+                      : model,
+                    episode.selectedBilling,
+                  );
                   if (recoveryEpochRef.current === episode.epoch)
                     clearPendingRecovery();
                 },
@@ -3555,48 +3460,5 @@ function ConcreteModelPicker(
       ) : null}
     </div>
   );
-  if (!agentSelection) return picker;
-  const agentChangeHarness = (next: ChatModel): ModelHarness | undefined =>
-    executionHarnessExplicitlyChosen === true &&
-    executionHarness &&
-    getChatHarnessOptions(
-      pinInheritingAgentModel(next, inheritedDefaultModel),
-    ).includes(executionHarness)
-      ? executionHarness
-      : undefined;
-  return (
-    <AgentModelPicker
-      agentRoutesSupported={agentSelection !== undefined}
-      selection={agentSelection?.selection}
-      effectiveModel={agentSelection?.effectiveModel}
-      agents={agentRows.map((listed) => {
-        const state = getOptionState(rowToCatalogOption(listed), {
-          harness: agentChangeHarness(
-            listed.selectionModel ?? listed.runtimeModel,
-          ),
-        });
-        return {
-          id: listed.model,
-          label: getModelDisplayName(listed.model),
-          unavailableReason: state.unavailableReason,
-          description: 'locked' in state ? state.locked?.lock.hint : undefined,
-        };
-      })}
-      onAgentChange={(next): void => {
-        if (next === agentSelection?.selection) return;
-        const id = selectedAgentId(next);
-        if (id)
-          handleSelectModel(id, { harness: agentChangeHarness(next ?? id) });
-        // Removal is a complete selection, not a model pick under this Agent.
-        else if (next) {
-          beginSelectionCommand();
-          agentSelection.onRemoveAgent(next, agentChangeHarness(next));
-        }
-      }}
-      disabled={disabled}
-      capsule={capsule}
-    >
-      {picker}
-    </AgentModelPicker>
-  );
+  return picker;
 }

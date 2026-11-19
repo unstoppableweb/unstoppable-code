@@ -8,6 +8,10 @@ import { useMcpServerList } from './useMcpServerList';
 import { useCuratedMcpServers } from './useCuratedMcpServers';
 import { useProviderConnectors } from './useProviderConnectors';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
+import type { OrganizationLayerItem } from '@canopy/desktop-shared/lib/organization-capabilities';
+
+/** The source column of an organization's skill (CAN-6237). */
+const ORGANIZATION_SKILL_SOURCE_LABEL = 'Organization';
 import type {
   PluginInfo,
   PluginProviderSupport,
@@ -265,6 +269,12 @@ export interface UseUnifiedTableDataOptions {
    * configuration refers to is never the one hidden.
    */
   selectedKeys?: ReadonlySet<string>;
+  /**
+   * The organization's shared skills for the chat's workspace (CAN-6237).
+   * Their copies are not in the skill inventory, so each gets a row here,
+   * named as the organization names it.
+   */
+  organizationItems?: readonly OrganizationLayerItem[];
 }
 
 export interface UseUnifiedTableDataReturn {
@@ -605,11 +615,20 @@ export function buildMcpRows(
   mcpServers: McpServerIndexEntry[],
 ): UnifiedTableCatalogRow[] {
   const rows: UnifiedTableCatalogRow[] = [];
+  const flattened = flattenMcpServerRows(mcpServers);
+  // Several accounts of one connector (CAN-6226) are one row each, named by
+  // the account, so two Slack accounts never read as two "Slack" rows.
+  const accountsPerKey = new Map<string, number>();
+  for (const s of flattened)
+    if (s.scope === 'account')
+      accountsPerKey.set(s.id, (accountsPerKey.get(s.id) ?? 0) + 1);
   // Account rows nest the device servers they shadow; pickers must still
   // offer those device copies so a broken account route never strands them.
-  for (const s of flattenMcpServerRows(mcpServers)) {
+  for (const s of flattened) {
     const enabledConfigs = s.configs.filter((c) => c.enabled);
     const singleConfig = enabledConfigs.length <= 1;
+    const namesAccount =
+      s.scope === 'account' && (accountsPerKey.get(s.id) ?? 0) > 1;
     for (const c of enabledConfigs) {
       rows.push({
         rowOrigin: 'catalog',
@@ -620,7 +639,7 @@ export function buildMcpRows(
           serverId: s.id,
           configId: c.id,
         },
-        name: singleConfig ? s.name : `${s.name} — ${c.name}`,
+        name: singleConfig && !namesAccount ? s.name : `${s.name} — ${c.name}`,
         description: s.description,
         source: s.type === 'command' ? 'CLI' : 'HTTP',
         sourceSubtitle: '',
@@ -699,6 +718,45 @@ export function useUnifiedTableData(
       });
     }
 
+    // The organization's skills, which the inventory does not list.
+    const listedSkillKeys = new Set(
+      result.flatMap((row) => (row.kind === 'skill' ? [row.key] : [])),
+    );
+    for (const item of options.organizationItems ?? []) {
+      if (item.ref.kind !== 'skill') continue;
+      const key = `${item.ref.sourceId}/${item.ref.skillName}`;
+      if (listedSkillKeys.has(key)) continue;
+      listedSkillKeys.add(key);
+      const skill: InstalledSkillInfo = {
+        name: item.ref.skillName,
+        sourceId: item.ref.sourceId,
+        description: '',
+        source: ORGANIZATION_SKILL_SOURCE_LABEL,
+        installedAt: '',
+        updatedAt: '',
+        updateAvailable: false,
+      };
+      result.push({
+        rowOrigin: 'catalog',
+        kind: 'skill',
+        installedItemRef: {
+          kind: 'skill',
+          sourceId: item.ref.sourceId,
+          skillName: item.ref.skillName,
+        },
+        key,
+        name: item.name,
+        description: '',
+        source: ORGANIZATION_SKILL_SOURCE_LABEL,
+        sourceSubtitle: '',
+        sourceIcon: 'none',
+        lastUpdated: '',
+        // Its details live with the organization, not in this inventory.
+        viewDisabled: true,
+        original: skill,
+      });
+    }
+
     // Plugins
     if (cache?.marketplaces) {
       for (const m of cache.marketplaces) {
@@ -774,6 +832,7 @@ export function useUnifiedTableData(
     return result;
   }, [
     skills,
+    options.organizationItems,
     cache,
     collections,
     options.includeCollections,

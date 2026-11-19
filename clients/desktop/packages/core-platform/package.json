@@ -16,6 +16,7 @@
     "./host-platform": "./src/host-platform.ts",
     "./internal-migration-filesystem": "./src/internal-migration-filesystem.ts",
     "./directory-flush": "./src/directory-flush.ts",
+    "./owner-lock-file": "./src/owner-lock-file.ts",
     "./windows-shells": "./src/windows-shells.ts",
     "./w5-root-presence": "./src/w5-root-presence.ts",
     "./w5-process-file-lock": "./src/w5-process-file-lock.ts",

@@ -1,3 +1,7 @@
+import {
+  allowlistedErrorCode,
+  allowlistedErrorName,
+} from './telemetry-error-details';
 import type { AppDiagnosticRecord } from './service';
 
 /**
@@ -99,19 +103,29 @@ export function sanitizeAppDiagnosticRecord(
  * dropped because it can quote any worktree or chat identifier, including a
  * bare `<workspaceId>/<worktreeId>` pair no path rule recognizes. A value that
  * is not an Error is described by its type alone.
+ * Main-process producers select bounded metadata; local-only org-fork records
+ * keep their existing custom names and string/numeric codes.
  */
-export function describeErrorForAppDiagnostic(value: unknown): string {
+export function describeErrorForAppDiagnostic(
+  value: unknown,
+  metadata: 'local' | 'bounded' = 'local',
+): string {
   // Runs inside the crash handler on any thrown or rejected value, so a value
   // whose `instanceof`, `name` or `stack` access throws is described by its
   // type instead.
   try {
     if (!(value instanceof Error)) return `non-error ${typeof value} value`;
-    const code: unknown = Reflect.get(value, 'code');
+    const rawCode: unknown = Reflect.get(value, 'code');
+    const code =
+      metadata === 'bounded' ? allowlistedErrorCode(rawCode) : rawCode;
+    const name =
+      metadata === 'bounded' ? allowlistedErrorName(value.name) : value.name;
     const head =
       typeof code === 'string' || typeof code === 'number'
-        ? `${value.name} [${code}]`
-        : value.name;
-    const frames = (value.stack ?? '')
+        ? `${name} [${code}]`
+        : name;
+    const stack: unknown = value.stack;
+    const frames = (typeof stack === 'string' ? stack : '')
       .split('\n')
       .filter((line) => /^\s+at /.test(line));
     return [head, ...frames].join('\n');

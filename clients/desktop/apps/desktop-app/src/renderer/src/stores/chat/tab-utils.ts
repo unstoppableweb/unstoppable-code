@@ -21,6 +21,8 @@ import {
   isTerminalBackedInterfaceMode,
   type ModelHarness,
   type PluginSelectionTombstones,
+  type SidebarItem,
+  STANDALONE_CHAT_PROJECT_ID,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '../projectsStore';
@@ -35,6 +37,11 @@ import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { normalizeAgentArtifactCarryByTurn } from '@canopy/desktop-shared/lib/agent-artifacts';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import {
+  PERSONAL_CONNECTOR_SCOPE,
+  connectorScopeForOwnership,
+  type ConnectorScope,
+} from '@canopy/desktop-shared/lib/connector-scope';
 import {
   DEFAULT_CODEX_SPEED,
   readCodexSpeedRecord,
@@ -760,6 +767,49 @@ export function getProjectPluginTombstones(
     .getState()
     .projects.find((project) => project.id === projectId)
     ?.disabledGlobalPluginSelections;
+}
+
+/**
+ * The workspace whose owner decides a chat's connector scope: a legacy
+ * standalone chat takes its Cowork workspace, as main does. Undefined for
+ * surfaces that inherit no defaults.
+ */
+export function connectorScopeWorkspaceId(
+  projectId: string,
+  worktreeId: string,
+): string | undefined {
+  if (!chatSurfaceUsesGlobalPluginDefaults(projectId)) return undefined;
+  return projectId === STANDALONE_CHAT_PROJECT_ID ? worktreeId : projectId;
+}
+
+/**
+ * Which workspace case a chat is in (CAN-6231), from its project row's owner
+ * binding: in an organization's workspace a person's global connectors do
+ * not load (CAN-6230). Main also treats an owner it cannot read as an
+ * organization's; the renderer never sees one, so its picker can only show a
+ * connector that won't load, never hide one that will.
+ */
+export function connectorScopeForOwner(
+  owner: SidebarItem['owner'] | undefined,
+): ConnectorScope {
+  return connectorScopeForOwnership({
+    authority: 'ok',
+    ...(owner ? { owner } : {}),
+  });
+}
+
+/** {@link connectorScopeForOwner} for a chat at `(projectId, worktreeId)`. */
+export function getProjectConnectorScope(
+  projectId: string,
+  worktreeId: string,
+): ConnectorScope {
+  const workspaceId = connectorScopeWorkspaceId(projectId, worktreeId);
+  if (workspaceId === undefined) return PERSONAL_CONNECTOR_SCOPE;
+  return connectorScopeForOwner(
+    useProjectsStore
+      .getState()
+      .projects.find((project) => project.id === workspaceId)?.owner,
+  );
 }
 
 /**

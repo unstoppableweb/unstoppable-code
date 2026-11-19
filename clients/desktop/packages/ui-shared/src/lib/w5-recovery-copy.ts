@@ -46,7 +46,7 @@ export function w5RecoveryGuidance(reason?: W5RecoveryReason): string {
     case 'cancelled':
       return 'Recovery was cancelled. Any completed decisions remain in the diagnosis.';
     case undefined:
-      return 'Some changes are blocked. Restart for recovery to inspect the records and choose what to do. Archive and deletion journals need support.';
+      return 'Some changes are blocked. Restart for recovery to inspect the records and choose what to do.';
     default:
       return `Recovery could not safely continue (${reason}). ${SUPPORT}`;
   }

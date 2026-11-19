@@ -63,6 +63,8 @@ export interface CopilotConnectionBackend {
     signal: AbortSignal,
     progress: (status: CopilotConnectionStatus) => void,
     changeAccount?: boolean,
+    /** Trusted qualification revalidation, after removal and before successor setup. */
+    afterAccountRemoval?: () => Promise<void>,
   ): Promise<CopilotConnectionStatus>;
   disconnectCopilot(this: void): Promise<void>;
   listCopilotModels(
@@ -95,11 +97,14 @@ export function createCopilotConnectionProxy(options: {
   legacy: CopilotConnectionBackend;
   selected(): Promise<boolean>;
   vault(): CopilotConnectionBackend;
+  /** Stop an already-bound owner even when custody has never been queried. */
+  shutdownVault?(): Promise<void>;
   assertEnabled(): void;
 }): CopilotConnectionProxy {
   let selected = false;
   let generation = 0;
   let shutdown = false;
+  let stopping: Promise<void> | undefined;
   let transitioning: Promise<void> | undefined;
   const handles = new Set<() => Promise<void>>();
   function assert(expected: number): void {
@@ -282,15 +287,24 @@ export function createCopilotConnectionProxy(options: {
     async recoverCopilotAtStartup() {
       return (await backend()).recoverCopilotAtStartup();
     },
-    async shutdownCopilotRuntimes() {
+    shutdownCopilotRuntimes() {
+      if (stopping) return stopping;
       shutdown = true;
       generation++;
-      await Promise.allSettled([...handles].map((close) => close()));
-      await options.legacy.shutdownCopilotRuntimes();
-      if (selected) await options.vault().shutdownCopilotRuntimes();
+      stopping = Promise.allSettled([
+        options.legacy.shutdownCopilotRuntimes(),
+        ...(options.shutdownVault
+          ? [options.shutdownVault()]
+          : selected
+            ? [options.vault().shutdownCopilotRuntimes()]
+            : []),
+        ...[...handles].map((close) => close()),
+      ]).then(() => undefined);
+      return stopping;
     },
     resetCopilotShutdownForTests(): void {
       shutdown = false;
+      stopping = undefined;
     },
   };
 }

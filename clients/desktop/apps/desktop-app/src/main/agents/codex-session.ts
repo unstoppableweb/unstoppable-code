@@ -25,6 +25,7 @@ import {
 } from '@canopy/desktop-shared/lib/app-advisor-tools';
 import { watchCommandSchema } from '../canopy-tools/local-watcher-definitions';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import { managedDelegationEnabled } from './delegation/gate';
 import type { ManagedDelegationSession } from './delegation/service';
 import { randomUUID } from 'node:crypto';
@@ -49,8 +50,9 @@ import {
   getAiCreditsRoutingContext,
   hasUserSuppliedProviderCredential,
   isAiCreditsChosenOverAccountProxy,
-  resolveAiCreditsRoutingAttempt,
+  resolveAiCreditsRoutingDecision,
   resolveGatewayModelEntry,
+  routingAttemptOf,
   resolveOrgGatewayCredential,
   markOrgGatewayCredentialRejected,
 } from './ai-credits-routing';
@@ -80,6 +82,12 @@ import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import { requestSecrets } from '../agent-secrets/request-secrets';
+import { agentSecretUseTools } from '../agent-secrets/secret-tool-runtime';
+import {
+  ambientSecretModeChanged,
+  openCodexAmbientSecretEnv,
+  type CodexAmbientSecretEnv,
+} from '../agent-secrets/ambient-env';
 import {
   clearSessionProxyFailure,
   consumeSessionProxyFailure,
@@ -111,11 +119,11 @@ import { createCodexContractGuard } from './provider-contract-guard';
 import { resolveWorkspaceRecordingSnapshot } from '../lib/resolve-workspace-display-name';
 import {
   hasAnySelections,
-  IPC_CHANNELS,
   CODE_REVIEW_CHAT_PROJECT_ID,
   DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES,
   buildAiCreditsRequiredError,
   buildNoBillingSourceError,
+  buildSignedOutNoBillingSourceError,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CREDITS_CODEX_MODEL,
   resolveModelAlias,
@@ -169,6 +177,7 @@ import {
 } from './provider-turn-lifecycle';
 import { createOwnedTurnState, type OwnedTurnState } from './owned-turn-state';
 import { CodexAppServerClient } from '../codex/app-server-client';
+import { codexThreadSandboxKind } from '../codex/approval-policy';
 import { getDesktopCodexCapabilityStore } from '../codex/capability-store';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 import {
@@ -187,7 +196,6 @@ import { buildLedgerPlanModeInstruction } from '../canopy-tools/prompting';
 import { handleAppAdvisorDynamicToolCall } from '../app-advisor/codex-dynamic-tools';
 import { handlePipelineEditorDynamicToolCall } from '../pipeline-editor/codex-dynamic-tools';
 import { buildCodexSessionDynamicToolSpecs } from '../codex/session-dynamic-tools';
-import { sendToWindow } from '../lib/window-send';
 import {
   readPromptSuggestionsEnabled,
   sendPromptSuggestion,
@@ -685,12 +693,14 @@ async function resolveCodexAiCreditsRouting(
       'codex',
       'ai-credits-routing',
     ));
-  const attempt = await resolveAiCreditsRoutingAttempt(
+  const decision = await resolveAiCreditsRoutingDecision(
     opts.aiCreditsRouting,
     'codex',
     checkNativeAuth,
     opts.subscriptionBillingOverride,
   );
+  const attempt = routingAttemptOf(decision);
+  const signedOutWithoutBillingSource = decision.kind === 'no-billing-source';
   const gatewayCheck = await checkModelGatewayRoute(
     opts.model,
     await resolveSessionWorkOwner(opts),
@@ -701,9 +711,10 @@ async function resolveCodexAiCreditsRouting(
   // the Canopy Environments injector the spawn uses, so a user who supplies
   // `OPENAI_API_KEY` through Environments reads as signed out here while having
   // a working provider at spawn time. Fall through to native rather than
-  // routing (and billing) around their own credential.
+  // routing (and billing) around their own credential, or refusing an
+  // `off`-mode sign-out the credential actually covers (CAN-7062).
   if (
-    attempt?.reason === 'no-native-auth' &&
+    (attempt?.reason === 'no-native-auth' || signedOutWithoutBillingSource) &&
     !gatewayEnforced &&
     hasUserSuppliedProviderCredential('codex', opts.projectId)
   ) {
@@ -750,6 +761,18 @@ async function resolveCodexAiCreditsRouting(
   }
   const gatewayOnly = entry?.gatewayOnly === true;
   const enforcedOrgRoute = gatewayEnforced && entry?.origin === 'org-gateway';
+  // See the matching refusal in `claude-session.ts` (CAN-7062): an `off`-mode
+  // sign-out with no explicit credits choice is refused before spawn instead of
+  // silently billing AI Credits. Gateway-only and enforced organization routes
+  // have no native path and keep routing below.
+  if (signedOutWithoutBillingSource && !gatewayOnly && !enforcedOrgRoute) {
+    await emit({
+      type: 'error',
+      error_code: NO_BILLING_SOURCE_ERROR_CODE,
+      error: buildSignedOutNoBillingSourceError('Codex'),
+    });
+    return AI_CREDITS_BACKSTOP_ABORT;
+  }
   if (!attempt && !gatewayOnly && !enforcedOrgRoute) {
     return null;
   }
@@ -926,8 +949,9 @@ export class CodexProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (data: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -1033,6 +1057,9 @@ export class CodexProvider implements AgentProvider {
     let releaseClientAfterDelegation = false;
     let destroyed = false;
     let client: CodexAppServerClient | null = null;
+    // What the current app-server process got as Full-access ambient
+    // secrets; one per process (agent-secrets/ambient-env.ts).
+    let codexAmbient: CodexAmbientSecretEnv | null = null;
     const ingestionLagTarget = {
       projectId: opts.projectId,
       worktreeId: opts.worktreeId,
@@ -1078,7 +1105,7 @@ export class CodexProvider implements AgentProvider {
         .then((suggestion): Promise<void> | undefined => {
           if (suggestion === null || client !== sampler) return undefined;
           return sendPromptSuggestion(
-            getWindow,
+            interfacePort,
             ingestionLagTarget,
             suggestion,
             turnUserMessageId,
@@ -1296,6 +1323,10 @@ export class CodexProvider implements AgentProvider {
       rootThreadId = disposedClient.getThreadId() ?? rootThreadId;
       retireClientSessionOwners(disposedClient);
       disposedClient.dispose();
+      // Its process is gone; the next client applies the chat's current
+      // secrets.
+      codexAmbient?.dispose();
+      codexAmbient = null;
       if (client === disposedClient) {
         client = null;
         notifySteeringEligibilityChanged(key);
@@ -1456,6 +1487,8 @@ export class CodexProvider implements AgentProvider {
       clearIdleTimer();
       retireClientSessionOwners(client);
       client?.dispose();
+      codexAmbient?.dispose();
+      codexAmbient = null;
       notifySteeringEligibilityChanged(key);
       approvalSession.dispose();
       skillUsage.dispose();
@@ -1623,9 +1656,24 @@ export class CodexProvider implements AgentProvider {
         if (mode !== undefined) managedDelegation?.updatePolicy(mode);
       },
       async setApprovalMode(mode: ApprovalMode): Promise<void> {
+        const previousMode = currentApprovalMode;
         currentApprovalMode = mode;
         approvalSession.setMode(mode);
+        // Leaving Full access restarts a process that holds ambient secrets
+        // once idle; entering it offers Restart to apply.
+        void ambientSecretModeChanged({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          chatId: opts.chatId,
+        });
         await client?.setApprovalMode(mode);
+        // Between Full access and a sandboxed mode the thread changes how it
+        // is sandboxed, which Codex only takes when the thread opens
+        // (approval-policy.ts): reopen it, keeping the thread, once idle.
+        if (
+          codexThreadSandboxKind(previousMode) !== codexThreadSandboxKind(mode)
+        )
+          releaseClientForReload();
       },
       setSpeed(speed: CodexSpeed): Promise<void> {
         setRequestedCodexSpeed(speed);
@@ -2163,7 +2211,7 @@ export class CodexProvider implements AgentProvider {
         skillUsage,
         key,
         pluginRouteOwnerId,
-        getWindow,
+        interfacePort,
         () => rootThreadId,
         () => lastExecutionUserMessageId,
         (userMessageId) => {
@@ -2217,6 +2265,36 @@ export class CodexProvider implements AgentProvider {
         },
         () => unregisterSession(key, session),
         turnState,
+        async (
+          enabled,
+        ): Promise<{
+          env: Readonly<Record<string, string>>;
+          attached: () => void;
+        }> => {
+          codexAmbient?.dispose();
+          codexAmbient = enabled
+            ? await openCodexAmbientSecretEnv({
+                scope: {
+                  projectId: sessionOpts.projectId,
+                  worktreeId: sessionOpts.worktreeId,
+                  chatId: sessionOpts.chatId,
+                },
+                getApprovalMode: () => currentApprovalMode,
+                // Nothing to restart until the client is installed; the
+                // launch re-checks then (`attached`).
+                restart: (): boolean => {
+                  if (!client) return false;
+                  releaseClientForReload();
+                  return true;
+                },
+              })
+            : null;
+          const opened = codexAmbient;
+          return {
+            env: opened?.env ?? {},
+            attached: (): void => opened?.attached(),
+          };
+        },
       );
 
     if (managedDelegationEnabled(sessionOpts)) {
@@ -2333,7 +2411,7 @@ export class CodexProvider implements AgentProvider {
     skillUsage: SkillUsageTracker,
     key: string,
     pluginRouteOwnerId: string,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
     getResumeThreadId: () => string | undefined,
     getLastExecutionUserMessageId: () => string | undefined,
     setLastExecutionUserMessageId: (userMessageId: string) => void,
@@ -2364,7 +2442,17 @@ export class CodexProvider implements AgentProvider {
     setAccountProxyConnectionId: (connectionId: string | undefined) => void,
     unregisterOwnSession: () => void,
     turnState: OwnedTurnState,
+    /**
+     * Opens the Full-access ambient env for the next app-server process and
+     * returns its spawn variables (agent-secrets/ambient-env.ts).
+     */
+    openAmbientSecretEnv: (enabled: boolean) => Promise<{
+      env: Readonly<Record<string, string>>;
+      /** Call once the client is installed. */
+      attached: () => void;
+    }>,
   ): Promise<void> {
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const codeGraphToolsAdvertised =
       opts.codeGraphToolsAdvertised ??
       isCodeGraphAvailableForWorkspace(opts.projectId);
@@ -2702,6 +2790,20 @@ export class CodexProvider implements AgentProvider {
           }
         }
 
+        // A sandboxed turn never runs on a thread that left the confined
+        // profile (opened in Full access, or a Full-access turn's override):
+        // its legacy read-only policy can't deny other chats' ambient
+        // secrets. The reopen leaving Full access asked for may still be
+        // deferred behind a delegation or background work; leaving Full
+        // access wins, as it interrupts a running Full-access turn.
+        const staleSandboxClient = getClient();
+        if (staleSandboxClient?.needsSandboxReopen(getApprovalMode())) {
+          initialThreadId = staleSandboxClient.getThreadId() ?? initialThreadId;
+          retireClientSessionOwners(staleSandboxClient);
+          staleSandboxClient.dispose();
+          setClient(null);
+        }
+
         const existingClient = getClient();
         if (existingClient) {
           return existingClient;
@@ -2824,6 +2926,9 @@ export class CodexProvider implements AgentProvider {
                       sessionId: pluginRouteOwnerId,
                       ...(opts.packageOverlay
                         ? { packageOverlay: opts.packageOverlay }
+                        : {}),
+                      ...(opts.accountResolution
+                        ? { accountResolution: opts.accountResolution }
                         : {}),
                       ...(pluginContext.preferences
                         ? { preferences: pluginContext.preferences }
@@ -2979,6 +3084,15 @@ export class CodexProvider implements AgentProvider {
                     input,
                     requestOptions,
                   ),
+                ...agentSecretUseTools({
+                  scope: {
+                    projectId: opts.projectId,
+                    worktreeId: opts.worktreeId,
+                    chatId: opts.chatId,
+                  },
+                  root: opts.cwd,
+                  agentName: 'Codex',
+                }),
               }
             : {}),
           ...(includeChatVisuals
@@ -3200,6 +3314,16 @@ export class CodexProvider implements AgentProvider {
           contextWindowRoute,
         );
         getTurnPreparationSignal().throwIfAborted();
+        // Full access: the chat's held secrets join this process's spawn
+        // environment, so its own commands get them (Restart to apply picks
+        // up later ones). Never for delegates, pipelines or other modes.
+        const ambient = await openAmbientSecretEnv(includeSecretRequests);
+        const ambientEnv = ambient.env;
+        getTurnPreparationSignal().throwIfAborted();
+        const clientEnv = {
+          ...(preparedInvocationState.extraEnv ?? {}),
+          ...ambientEnv,
+        };
         let constructingClient: CodexAppServerClient | null = null;
         const nextClient = new CodexAppServerClient({
           cwd: opts.cwd,
@@ -3262,14 +3386,11 @@ export class CodexProvider implements AgentProvider {
             handleIngestionLagSample(ingestionLagOwner, sample);
           },
           getWindow,
-          extraEnv:
-            preparedInvocationState.extraEnv &&
-            Object.keys(preparedInvocationState.extraEnv).length > 0
-              ? preparedInvocationState.extraEnv
-              : undefined,
+          extraEnv: Object.keys(clientEnv).length > 0 ? clientEnv : undefined,
           spawnProfile: {
-            ...(preparedInvocationState.extraEnv
-              ? { environment: preparedInvocationState.extraEnv }
+            ...(preparedInvocationState.extraEnv ||
+            Object.keys(ambientEnv).length > 0
+              ? { environment: clientEnv }
               : {}),
             ...(codexConfigArgs ? { configArgs: codexConfigArgs } : {}),
             logicalWorkspaceEnvironmentId:
@@ -3397,10 +3518,17 @@ export class CodexProvider implements AgentProvider {
               : undefined;
             // The secret request form is not an approval: it needs the
             // person in every mode (CONTRACTS.md §5), so it skips the tool
-            // approval card. Unoffered sessions refuse it in the executor.
+            // approval card. RunWithSecrets and WriteSecretsFile raise their
+            // own approval naming the command or file and the secrets, which
+            // no saved rule answers. Unoffered sessions refuse them in the
+            // executor.
             const requestsSecrets =
               toolName ===
-              CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName;
+                CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName ||
+              toolName ===
+                CANOPY_INJECTED_TOOL_REGISTRY.run_with_secrets.codexToolName ||
+              toolName ===
+                CANOPY_INJECTED_TOOL_REGISTRY.write_secrets_file.codexToolName;
             const outcome = requestsSecrets
               ? null
               : await approvalSession.check(
@@ -3592,6 +3720,7 @@ export class CodexProvider implements AgentProvider {
         // construction keeps a failed attempt forcing the rebuild it asked for.
         forceMaterializeOnResume = false;
         setClient(nextClient);
+        ambient.attached();
         return nextClient;
       };
 
@@ -3960,7 +4089,6 @@ export class CodexProvider implements AgentProvider {
           }
 
           if (turnResult.proposedPlanText) {
-            const win = getWindow();
             const planExitEvent: PlanExitRequestEvent = {
               requestId: randomUUID(),
               projectId: opts.projectId,
@@ -3974,7 +4102,7 @@ export class CodexProvider implements AgentProvider {
               },
             };
             await commitPendingPlanExit(planExitEvent);
-            sendToWindow(win, IPC_CHANNELS.planExitRequest, planExitEvent);
+            interfacePort.presentPlanExit(planExitEvent);
             // Mirrors the Claude plan-exit path: a plan awaiting review blocks
             // on a human and is worth a push (CAN-3195).
             getAttentionTracker().mark({

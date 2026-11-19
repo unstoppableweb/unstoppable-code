@@ -90,7 +90,7 @@ export async function openFileInDiff(
         error instanceof Error ? error.message : 'Unable to open changes',
         'error',
         undefined,
-        scope,
+        { ...scope, caught: error },
       );
     return null;
   }

@@ -28,6 +28,10 @@
  * fire and forget after their own local write already succeeded.
  */
 
+import {
+  backgroundFailureCode,
+  reportBackgroundFailure,
+} from '../observability/background-failure-reporter';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
@@ -55,7 +59,7 @@ import {
 } from '../lib/canopy-cloud-account-store';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { getSharedItemUpdateSubscriptionsFilePath } from '../lib/paths';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 
 const BATCH_PATH = '/api/v1/shared-item-subscriptions/batch';
 const BATCH_TIMEOUT_MS = 15_000;
@@ -618,8 +622,7 @@ async function readUploadAccountId(): Promise<string | null> {
 
 async function readSourceKey(): Promise<string | null> {
   try {
-    const state = await readPortalStateStore();
-    const sourceKey = `desktop:${state.clientDeviceId}`;
+    const sourceKey = `desktop:${await getInstallId()}`;
     return isValidSharedItemSourceKey(sourceKey) ? sourceKey : null;
   } catch {
     return null;
@@ -776,6 +779,10 @@ async function sendChunk(
     logMainProcessWarn(`${LOG_PREFIX} Upload failed; will retry later.`, {
       reason: describeError(error),
     });
+    reportBackgroundFailure(
+      'shared-item-subscriptions.upload_failed',
+      backgroundFailureCode(error),
+    );
     return false;
   }
   const results = parseSharedItemSubscriptionBatchResult(response);
@@ -813,6 +820,10 @@ async function flushOnce(): Promise<void> {
       logMainProcessWarn(`${LOG_PREFIX} Backfill failed; will retry later.`, {
         reason: describeError(error),
       });
+      reportBackgroundFailure(
+        'shared-item-subscriptions.backfill_failed',
+        backgroundFailureCode(error),
+      );
     }
   }
 
@@ -857,6 +868,10 @@ export function flushSharedItemSubscriptions(): Promise<void> {
         logMainProcessWarn(`${LOG_PREFIX} Flush failed.`, {
           reason: describeError(error),
         });
+        reportBackgroundFailure(
+          'shared-item-subscriptions.flush_failed',
+          backgroundFailureCode(error),
+        );
       }
     } while (flushRequested);
   };

@@ -64,7 +64,11 @@ import {
   subscribeChatSessionActivity,
 } from '../agents/session-manager';
 import { getAppAdvisorWatcherService } from '../app-advisor/watchers';
-import { projectOwnedChatAutomation } from '../automations/owned-chat-projection';
+import {
+  projectOwnedChatAutomation,
+  withOwnedChatProjectionPass,
+  type OwnedChatProjector,
+} from '../automations/owned-chat-projection';
 import { getAutomationsService } from '../automations/service';
 import {
   getActivePipelineExecutionHandles,
@@ -399,13 +403,24 @@ function addAutomationTarget(
 export function collectScheduledAutomationTargetKeys(
   activities: ScheduledActivity[],
   runningActivityIds: ReadonlySet<string>,
+  project: OwnedChatProjector = projectOwnedChatAutomation,
+): Set<string> {
+  return withOwnedChatProjectionPass(() =>
+    scheduledAutomationTargetKeys(activities, runningActivityIds, project),
+  );
+}
+
+function scheduledAutomationTargetKeys(
+  activities: ScheduledActivity[],
+  runningActivityIds: ReadonlySet<string>,
+  project: OwnedChatProjector,
 ): Set<string> {
   const keys = new Set<string>();
   for (const activity of activities) {
     if (!activity.enabled && !runningActivityIds.has(activity.id)) continue;
     // A converted chat automation stores a global pipeline whose inputs name
     // its destination; read it as the chat action it stands for (CAN-5479).
-    const projected = projectOwnedChatAutomation(activity, activities);
+    const projected = project(activity, activities);
     // CAN-5782: every workflow schedule, owner or not, keeps the task its
     // run values name.
     const destination = workflowScheduleDestination(projected);
@@ -1058,7 +1073,8 @@ const defaultDependencies: AutoArchiveDependencies = {
   readWorkEntries: readWorkEntriesFile,
   listWorkEntryChatSummaries,
   readAppAdvisorSettings: readAppAdvisorWorkspaceSettings,
-  listWatchers: () => getAppAdvisorWatcherService().list(),
+  listWatchers: () =>
+    getAppAdvisorWatcherService().list(undefined, 'autoArchive'),
   listAutomations: () => getAutomationsService().list(),
   archive: (candidate) =>
     removeWorkspaceTarget(

@@ -28,7 +28,6 @@ import { CHAT_TURN_LAB_ENTRIES } from './componentsLabChatTurn';
 import { AgentSentSpecimen } from './componentsLabAgentSent';
 import { ComposerActionsSpecimen } from './componentsLabComposerActions';
 import { AgentAliasModelSpecimen } from './componentsLabAgentAliasModel';
-import { AgentModelPickerSpecimen } from './componentsLabAgentModelPicker';
 import { ModelSelectionSpecimen } from './componentsLabModelSelection';
 import { DisclosuresSpecimen } from './componentsLabDisclosures';
 import { HeadingsSpecimen } from './componentsLabHeadings';
@@ -43,17 +42,22 @@ import { ChatLookSpecimen, PlanChipSpecimen } from './componentsLabChatLook';
 import { SharedASpecimen } from './componentsLabSharedA';
 import { SharedBSpecimen } from './componentsLabSharedB';
 import { SharedCSpecimen } from './componentsLabSharedC';
-import { CustomizePartsSpecimen } from './componentsLabCustomize';
+import {
+  CustomizePartsSpecimen,
+  CustomizeTileBenchmarkSpecimen,
+} from './componentsLabCustomize';
 import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
 import { CreditsNoticesSpecimen } from './componentsLabCredits';
 import { ProviderRowsSpecimen } from './componentsLabProviderRows';
 import { TurnNoticesSpecimen } from './componentsLabTurnNotices';
 import { CopyMcpServerSpecimen } from './componentsLabCopyMcpServer';
+import { McpRemovalSpecimen } from './componentsLabMcpRemoval';
 import {
   CloudReachBackPromptSpecimen,
   CloudReachBackSpecimen,
 } from './componentsLabCloudReachBack';
 import { W5RecoverySpecimen } from './componentsLabW5Recovery';
+import { BackgroundServiceSpecimen } from './componentsLabBackgroundService';
 import {
   ArchiveRecoveryListSpecimen,
   WorktreeRecoverySpecimen,
@@ -69,6 +73,7 @@ import {
 } from './componentsLabSettings';
 import { TablesSpecimen } from './componentsLabTables';
 import { DetailHeaderSpecimen } from './componentsLabDetail';
+import { CustomizeDetailPagesSpecimen } from './componentsLabCustomizeDetail';
 import { FilesAndDiffsSpecimen } from './componentsLabFilesAndDiffs';
 import { DrawerAndEntriesSpecimen } from './componentsLabDrawerAndEntries';
 import { PendingSpecimen } from './componentsLabPending';
@@ -224,15 +229,6 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: FieldsSpecimen,
   },
   {
-    id: 'agent-model-picker',
-    name: 'Agent and model picker',
-    group: 'Unified',
-    note: 'Independent Agent and Model controls: default and explicit models, unavailable agents, disabled and empty states, both sizes and the cloud capability gate.',
-    source: 'packages/ui-shared/src/components/AgentModelPicker.tsx',
-    prs: [],
-    View: AgentModelPickerSpecimen,
-  },
-  {
     id: 'agent-alias-model',
     name: 'Agent alias model fields',
     group: 'Unified',
@@ -370,6 +366,26 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: CustomizePartsSpecimen,
   },
   {
+    id: 'customize-tile-benchmark',
+    name: 'Customize tile benchmark',
+    group: 'Unified',
+    note: 'Every New Customize tile case on one layout: MCP connected, couldn’t connect, sign in needed and disabled; plugin; curated plugin; skill; skill inside a plugin; workflow; collection; ChatGPT app with and without a stand-in; update available; shared with me; and not installed. Also the curated plugin logos.',
+    source:
+      'packages/ui-shared/src/components/{CustomizeInstalledRow,CustomizeRowSplitButton,CustomizeWorksWithChips}.tsx',
+    prs: [],
+    View: CustomizeTileBenchmarkSpecimen,
+  },
+  {
+    id: 'customize-detail-pages',
+    name: 'Customize detail pages',
+    group: 'Unified',
+    note: 'New Customize’s one detail layout: logo, title and type, the tile’s publisher, actions on the title row, a three-line description, facts in the fixed order (Status, Health, Marketplace, Website, Other versions, Updated, Version, then the entity’s rows) with errors on their row, Works with and Contents. Also the plugin page before it is added.',
+    source:
+      'packages/ui-shared/src/components/CapabilityDetailLayout.tsx, packages/ui-app/src/capability/PluginCatalogDetail.tsx',
+    prs: [],
+    View: CustomizeDetailPagesSpecimen,
+  },
+  {
     id: 'curated-workflows',
     name: 'Curated workflows',
     group: 'Unified',
@@ -416,6 +432,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: CopyMcpServerSpecimen,
   },
   {
+    id: 'mcp-removal-repair',
+    name: 'Device MCP removal repair',
+    group: 'Unified',
+    note: 'Interactive device-only repair fixtures: discovery, validation, confirmation, busy, unavailable, errors, saved uninstall and every removal outcome. No live backend calls.',
+    source: 'packages/ui-app/src/capability/McpRemovalRepair.tsx',
+    prs: [],
+    View: McpRemovalSpecimen,
+  },
+  {
     id: 'cloud-reach-back',
     name: 'Cloud chats on a desktop MCP server',
     group: 'Unified',
@@ -451,6 +476,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-shared/src/components/W5RecoveryNotice.tsx',
     prs: [7548],
     View: W5RecoverySpecimen,
+  },
+  {
+    id: 'background-service-notice',
+    name: 'Background service notice',
+    group: 'Unified',
+    note: 'The background service failure above the blocked-changes banner, as desktop and Portal render it: Try again idle, busy and failed, Restart app after a degraded startup handoff (busy and refused), endpoint repair on this or the paired computer, Portal with Copy diagnostics only, and long text.',
+    source: 'packages/ui-shared/src/components/BackgroundServiceNotice.tsx',
+    prs: [9872],
+    View: BackgroundServiceSpecimen,
   },
   {
     id: 'archive-recovery-list',

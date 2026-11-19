@@ -24,6 +24,7 @@ import {
 } from './installed-item-status-service';
 import { pruneInstalledItemRefs } from './installed-item-ref-prune';
 import { notifyInstalledItemsChanged } from './installed-item-events';
+import { logMainProcessError } from '../lib/main-process-logging';
 import {
   readPreferencesFile,
   updatePreferencesFile,
@@ -370,6 +371,7 @@ export const installedItemService = createInstalledItemStatusService({
   setClaudeEnabled: setClaudeInstalledItemEnabled,
   parkCodex: uninstallCodexPlugin,
   restoreCodex,
+  logError: logMainProcessError,
   async setMcpEnabled(ref, enabled) {
     if (ref.kind === 'mcp-config') {
       await setPortalMcpConfigEnabled(ref.serverId, ref.configId, enabled);
@@ -439,6 +441,23 @@ export const installedItemService = createInstalledItemStatusService({
     const { uninstallInstalledDeviceMcpServer } =
       await import('../ipc/mcp-servers');
     await uninstallInstalledDeviceMcpServer(serverId);
+  },
+  async resumeDeviceRemoval(serverId, recovery) {
+    const { forceMcpRemovalThroughCore } =
+      await import('../canopy-runtime/mcp-removal-dispatch');
+    return forceMcpRemovalThroughCore({
+      serverId,
+      mode: 'preserve-evidence',
+      recoveryId: recovery.recoveryId,
+    });
+  },
+  async reconcileDeviceRemoval(serverId, recovery, reconcile) {
+    const { mcpConfigRepository } = await import('../mcp/config-store');
+    return mcpConfigRepository.reconcileRemoved(
+      serverId,
+      recovery.recoveryId,
+      reconcile,
+    );
   },
   async assertAbsent(ref) {
     if (ref.kind === 'skill') {

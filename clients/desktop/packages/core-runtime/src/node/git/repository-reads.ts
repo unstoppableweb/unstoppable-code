@@ -80,6 +80,7 @@ const GIT_REPOSITORY_READ_FAILURE_MESSAGES: Record<
   git_unavailable: 'Git is unavailable.',
   selection_rejected: 'The selected Git executable cannot be accessed.',
   invalid_request: 'The Git repository read was rejected.',
+  environment_invalid: 'The Git host environment is invalid.',
   unsupported_command: 'The Git command is not supported on this host.',
   timeout: 'Git timed out.',
   deadline_exceeded: 'The Git repository read deadline was exceeded.',

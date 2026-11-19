@@ -7,8 +7,8 @@
 export const DEFAULT_MODEL_PICKER_FAVORITES: readonly string[] = [
   'claude::claude-fable-5-1',
   'claude::opus[1m]',
-  'codex::gpt-6-astra',
-  'codex::gpt-6-sol',
+  'codex::gpt-6.2-astra',
+  'codex::gpt-6.2-sol',
   'codex::deepseek-v4-pro',
   'codex::kimi-k3',
   'codex::glm-5.3',

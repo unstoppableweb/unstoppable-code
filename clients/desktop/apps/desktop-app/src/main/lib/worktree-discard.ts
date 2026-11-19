@@ -1,4 +1,9 @@
 import {
+  matchesRecordedDirectoryIdentity,
+  directoryStatIdentity,
+} from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
   captureAutoDeleteAttention,
   resolveAutoDeleteAttention,
 } from './auto-delete-attention';
@@ -62,6 +67,7 @@ import {
   readWorkspaceDestructiveRecoveries,
   retireSupersededDestructiveRecord,
   statIdentityOf,
+  matchesDiscardDirectoryIdentity,
   supersededDiscardOperationId,
   withWorktreeDiscardLifecycle,
   type DestructiveRecoveryRecord,
@@ -567,6 +573,8 @@ async function describeRepositories(
 
 interface WorktreeDiscardDescribeOptions {
   readonly recovery?: WorktreeRecoveryRequest;
+  /** Enumeration already has the diagnosis; it only needs Discard admission. */
+  readonly includeRecoveryDiagnosis?: boolean;
   /**
    * CAN-5337: describe as if the project's interrupted deletion were already
    * superseded; for the project-level description only, after it verified
@@ -658,6 +666,16 @@ async function inspectWorktreeDiscard(
     return refuse('not-found');
   const createdAt = row?.createdAt ?? interrupted?.createdAt ?? '';
   const known = { createdAt };
+  // Non-exact probes retain sidebar admission; only an exact review binds an operation.
+  if (
+    options.recovery?.operationId !== undefined &&
+    options.recovery.expectedCreatedAt !== null
+  ) {
+    if (options.recovery.expectedCreatedAt !== createdAt)
+      return refuse('other-incarnation', known);
+    if (options.recovery.operationId !== journal?.operationId)
+      return refuse('evidence-mismatch', known);
+  }
   if (unfinished && unfinished.createdAt !== createdAt)
     return refuse('other-incarnation', known);
   if (unfinished && !isDestructiveRecoveryOwnerless(unfinished))
@@ -760,17 +778,19 @@ async function inspectWorktreeDiscard(
       }
       if (actual === null && aside === null) continue;
       // Moved aside by the interrupted removal, or still in place; never both.
-      const expected =
-        owned.identity === null ? null : statIdentityOf(owned.identity);
+      const expected = owned.identity;
       if (
         expected === null ||
-        (actual !== null && actual !== expected) ||
-        (aside !== null && aside !== expected)
+        (actual !== null &&
+          !matchesDiscardDirectoryIdentity(expected, actual)) ||
+        (aside !== null && !matchesDiscardDirectoryIdentity(expected, aside))
       )
         return refuse('unverifiable-target', described);
-      if (!kind || !asidePath) continue;
+      const observed = aside ?? actual;
+      if (!kind || !asidePath || observed === null) continue;
       targets.push({
-        ...targetOf(kind, owned.path, expected),
+        // Historical admission is tolerant; execution binds to today's exact observation.
+        ...targetOf(kind, owned.path, observed),
         location: aside !== null ? asidePath : owned.path,
       });
     }
@@ -933,11 +953,16 @@ async function inspectWorktreeDiscard(
     quarantine.isDirectory() &&
     !quarantine.isSymbolicLink() &&
     ((recordedCheckout != null &&
-      statIdentityOf(recordedCheckout) === quarantineIdentity) ||
+      matchesDiscardDirectoryIdentity(
+        recordedCheckout,
+        quarantineIdentity ?? '',
+      )) ||
       (recordedQuarantine !== undefined &&
-        recordedQuarantine.dev === quarantine.dev &&
-        recordedQuarantine.ino === quarantine.ino &&
-        recordedQuarantine.birthtimeMs === quarantine.birthtimeMs &&
+        matchesRecordedDirectoryIdentity(
+          directoryStatIdentity(recordedQuarantine),
+          directoryStatIdentity(quarantine),
+          hostOperatingSystem(),
+        ) &&
         // Q5 A: without a journal, only a quarantine entered by this incarnation.
         (unfinished !== null ||
           (teardown !== undefined &&
@@ -1022,7 +1047,10 @@ async function inspectWorktreeDiscard(
       if (
         recordedCheckoutEntry !== undefined &&
         (recordedCheckout == null ||
-          statIdentityOf(recordedCheckout) !== statIdentity(canonical))
+          !matchesDiscardDirectoryIdentity(
+            recordedCheckout,
+            statIdentity(canonical),
+          ))
       )
         return refuse('unverifiable-target', described);
       targets.push(
@@ -1101,7 +1129,8 @@ export async function describeWorktreeDiscard(
       if (!options?.recovery) throw error;
       return unavailableDiscardDescription(workspaceId, worktreeId);
     });
-  if (!options?.recovery) return description;
+  if (!options?.recovery || options.includeRecoveryDiagnosis === false)
+    return description;
   const request = { workspaceId, worktreeId, ...options.recovery };
   return {
     ...description,

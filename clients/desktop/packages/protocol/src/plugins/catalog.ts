@@ -446,6 +446,8 @@ export interface MarketplaceInfo {
   id: string;
   name: string;
   description?: string;
+  /** The marketplace manifest's `owner.name`, when it declares one. */
+  ownerName?: string;
   sourceType: MarketplaceSourceType;
   sourceUrl: string;
   /**

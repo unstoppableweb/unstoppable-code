@@ -33,6 +33,8 @@ const dependencyCodes = new Set([
 ]);
 const retirementPhases = new Set<McpRefRewritePhase>([
   'retirementRead',
+  'removalPreflight',
+  'removalRevalidation',
   'tokenClear',
   'serverUnlink',
   'indexUpdate',
@@ -90,22 +92,29 @@ export async function inMcpRefRewritePhase<T>(
 function failurePayload(failure?: Failure): CanopyErrorPayload {
   const code = failure?.code;
   const invalid = code === 'invalidRef' || code === 'retireNotRewritten';
+  const refused = code === 'removalRefused';
   const operationCode: CanopyErrorPayload['code'] = code
     ? `core.catalog.mcpServer.${code}`
     : undefined;
   return {
-    kind: !code ? 'internal' : invalid ? 'invalid_argument' : 'unavailable',
+    kind: !code
+      ? 'internal'
+      : invalid || refused
+        ? 'invalid_argument'
+        : 'unavailable',
     message: !code
       ? 'MCP reference rewrite failed.'
-      : invalid
-        ? 'Invalid MCP reference rewrite request.'
-        : 'MCP reference rewrite could not complete.',
+      : refused
+        ? 'Device MCP removal was refused before cleanup. Open Repair device MCP removal and inspect the server.'
+        : invalid
+          ? 'Invalid MCP reference rewrite request.'
+          : 'MCP reference rewrite could not complete.',
     ...(operationCode ? { code: operationCode } : {}),
     details: {
       phase: failure?.phase ?? 'rewrite',
       phases: failure?.phases ?? [],
       // Rejections cannot prove durability or which token clears applied.
-      effects: invalid ? 'none' : 'unknown',
+      effects: invalid || refused ? 'none' : 'unknown',
     },
     retry: { kind: 'never' },
   };

@@ -1,5 +1,4 @@
 import { useBrowserStore } from '@/stores/browserStore';
-import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -101,7 +100,6 @@ export function initCurrentUiStateTracking(): () => void {
   const unsubNav = useNavigationStore.subscribe(recompute);
   const unsubNavigationHistory = useNavigationHistoryStore.subscribe(recompute);
   const unsubChat = useChatStore.subscribe(recompute);
-  const unsubPortal = useCanopyPortalStore.subscribe(recompute);
   const unsubFeatureFlags = useFeatureFlagsStore.subscribe(recompute);
   const unsubLabs = useLabsExperimentsStore.subscribe(
     (state, previousState) => {
@@ -193,7 +191,6 @@ export function initCurrentUiStateTracking(): () => void {
     unsubNav();
     unsubNavigationHistory();
     unsubChat();
-    unsubPortal();
     unsubFeatureFlags();
     unsubLabs();
     unsubWorkspaceContext();

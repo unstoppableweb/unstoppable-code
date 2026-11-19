@@ -24,6 +24,15 @@ function equal(actual: unknown, expected: unknown, message: string): void {
     message,
   );
 }
+/** A failed mutation: kind and ref, at most the closed step/io diagnostic. */
+function failureKeysOnly(result: object): boolean {
+  const keys = Object.keys(result);
+  return (
+    keys.includes('kind') &&
+    keys.includes('ref') &&
+    keys.every((key) => ['kind', 'ref', 'step', 'io'].includes(key))
+  );
+}
 function create(
   idempotencyKey = 'create',
 ): Extract<VaultPutRequest, { entryId: null }> {
@@ -260,10 +269,9 @@ export function runVaultRepositoryConformance(
                 );
               }
             } else {
-              equal(
-                Object.keys(result).sort(),
-                ['kind', 'ref'],
-                'failed mutation must contain only kind and ref',
+              check(
+                failureKeysOnly(result),
+                'failed mutation must contain only kind, ref and diagnostics',
               );
               await closed(subject, pin, deleting);
               await Promise.resolve();
@@ -867,11 +875,7 @@ export function runVaultRepositoryConformance(
             result.kind === 'unavailable' || result.kind === 'outcome_unknown',
             'create must report the failure',
           );
-          equal(
-            Object.keys(result).sort(),
-            ['kind', 'ref'],
-            'failed create must not issue a pin',
-          );
+          check(failureKeysOnly(result), 'failed create must not issue a pin');
           const metadata = (await subject.repository.list())[0];
           check(
             metadata !== undefined,

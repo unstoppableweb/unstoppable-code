@@ -22,6 +22,7 @@ import type { editor as MonacoEditorTypes } from 'monaco-editor';
 import { ReviewLinePopover } from '../code-review/ReviewLinePopover';
 import { useWorktreeReview } from '../code-review/useWorktreeReview';
 import { SkippedCommentThreadsNotice } from '../code-review/SkippedCommentThreadsNotice';
+import { ReviewCommentsNotice } from '../code-review/ReviewCommentsNotice';
 import { submitWorkspaceComments } from './submitWorkspaceComments';
 import {
   lazy,
@@ -93,7 +94,7 @@ import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationSto
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useFileTabUiStore } from '@/stores/fileTabUiStore';
 import { hasActiveSetupRun, useScriptsStore } from '@/stores/scriptsStore';
-import { desktopFileSessionController } from '@/lib/file-viewer/desktop-file-session-controller';
+import { registerFileTab } from '@/lib/file-viewer/follow-moved-file';
 import { resolveDesktopDocumentBytes } from '@/lib/file-viewer/desktop-document-bytes';
 import { createDesktopOfficeWorker } from '@/lib/file-viewer/desktop-office-worker';
 import { resolveDesktopPdfPreviewAssets } from '@/lib/pdf-preview-assets';
@@ -428,6 +429,7 @@ function DesktopSharedFileViewerImpl({
         (thread.anchor.filePath === diffContext?.path &&
           (thread.anchor.repoId ?? 'default') ===
             (diffContext?.repoId ?? 'default'))),
+    artifacts.mutationFailure,
   );
   const comments = mergeFileReviewComments(fileComments, legacyComments);
   const [diffReveal, setDiffReveal] = useState<{
@@ -545,8 +547,9 @@ function DesktopSharedFileViewerImpl({
         // Register this tab against the canonical shared session BEFORE the
         // viewer mounts and opens it. Registration is reference-counted per
         // canonical key and intentionally survives inactive-tab unmounts — the
-        // chat-tab close path (releaseTab) is the sole owner of teardown.
-        desktopFileSessionController.registerTab(tabId, resolvedRequest);
+        // chat-tab close path (releaseTab) is the sole owner of teardown. A
+        // tab with unsaved changes stays on its session.
+        if (!registerFileTab(tabId, resolvedRequest)) return;
         setResolvedRoot(match.root);
         setRequest(resolvedRequest);
       })
@@ -1658,6 +1661,13 @@ function DesktopSharedFileViewerImpl({
       {...fileFind.surfaceProps}
       onMouseUp={commentsAvailable ? handleRichSelection : undefined}
     >
+      {(legacyComments.threads.length > 0 ||
+        legacyComments.hasUnsavedChanges) && (
+        <ReviewCommentsNotice
+          error={legacyComments.error}
+          hasUnsavedChanges={legacyComments.hasUnsavedChanges}
+        />
+      )}
       <div
         className="relative min-h-0 w-full min-w-0 flex-1 overflow-hidden"
         data-testid="file-viewer-annotation-surface"
@@ -1936,6 +1946,7 @@ function DesktopSharedFileViewerImpl({
       {viewMode === 'diff' && commentPopover?.mode === 'line' && (
         <ReviewLinePopover
           anchorRect={commentPopover.anchorRect}
+          isThreadReadOnly={comments.isThreadReadOnly}
           annotations={comments.document.annotations.filter(
             (a) =>
               a.side === commentPopover.side &&
@@ -2018,6 +2029,7 @@ function DesktopSharedFileViewerImpl({
             mode="thread"
             anchorRect={commentPopover.anchorRect}
             thread={activeThread}
+            readOnly={comments.isThreadReadOnly?.(activeThread.id)}
             onReply={(body): void => comments.addReply(activeThread.id, body)}
             onToggleResolved={(): void =>
               comments.toggleResolved(activeThread.id)

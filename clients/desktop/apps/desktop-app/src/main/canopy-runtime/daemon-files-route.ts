@@ -359,11 +359,13 @@ const OPERATION_CODES: Readonly<
     'worker.filesystem.roots.invalidState',
     'worker.filesystem.roots.revisionConflict',
     'worker.filesystem.roots.notFound',
+    'worker.filesystem.roots.snapshotUnavailable',
   ]),
   directory: new Set([
     'worker.filesystem.directory.invalidState',
     'worker.filesystem.directory.revisionConflict',
     'worker.filesystem.directory.notFound',
+    'worker.filesystem.directory.snapshotUnavailable',
   ]),
   file: new Set(WORKER_FILESYSTEM_FILE_READ_ERROR_CODES),
   search: new Set(WORKER_FILESYSTEM_SEARCH_ERROR_CODES),
@@ -1281,6 +1283,7 @@ async function projectDirectory(
         hasChildren: entry.hasChildren,
       };
     }),
+    ...(result.ignoreStateUnknown === true && { ignoreStateUnknown: true }),
   };
 }
 

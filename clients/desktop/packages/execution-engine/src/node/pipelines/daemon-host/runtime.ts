@@ -7,7 +7,6 @@ import {
   getProjectPipelinesDirCandidates,
 } from '@canopy/execution-engine/node/pipelines/config-paths';
 import type {
-  ChildPipelineAdmissionRequest,
   ExecutionResourceMonitor,
   ExecutionRunPlanPersistence,
   ExecutionRuntime,
@@ -34,6 +33,7 @@ export interface DaemonPipelineWorktree {
 }
 
 export interface DaemonPipelineRuntimeOptions {
+  readonly nativeModelPlan?: ExecutionRuntime['nativeModelPlan'];
   readonly executionsDir: string;
   readonly bundledActionsDir: string;
   readonly processEnvironment: Readonly<Record<string, string>>;
@@ -84,9 +84,7 @@ export interface DaemonPipelineRuntimeOptions {
    * A cloud runner's launch admits same-target child workflows and checks
    * each as it starts (CAN-6868); absent, the launch admitted none.
    */
-  readonly admitChildPipeline?: (
-    request: ChildPipelineAdmissionRequest,
-  ) => void;
+  readonly admitChildPipeline?: ExecutionRuntime['admitChildPipeline'];
 }
 
 function noCodexRuntime(): CodexRuntimeService {
@@ -180,6 +178,7 @@ export function createDaemonPipelineRuntime(
       ),
     }),
     // Every model is refused unless the launch's core answers for it (D7).
+    nativeModelPlan: options.nativeModelPlan,
     isModelBlockedByOrgPolicy: () => Promise.resolve(true),
     isOrgModelPolicyActive: () => Promise.resolve(true),
     ...(options.owner && ownerModelPorts(options.owner, options.codexRuntime)),

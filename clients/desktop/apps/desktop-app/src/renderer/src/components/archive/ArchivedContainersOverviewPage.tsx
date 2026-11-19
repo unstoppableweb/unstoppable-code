@@ -522,10 +522,12 @@ export function startArchivedEmptyTrash(
         );
       }
     })
-    .catch(() => {
+    .catch((error: unknown) => {
       addToast(
         "Trash was emptied, but the latest archive state couldn't be loaded. Refresh and check the remaining items.",
         'error',
+        undefined,
+        { caught: error },
       );
     });
 }

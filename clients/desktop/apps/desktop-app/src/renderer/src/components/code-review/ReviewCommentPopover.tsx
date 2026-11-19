@@ -12,6 +12,7 @@ export interface ReviewCommentPopoverProps {
   mode: 'compose' | 'thread' | 'annotation';
   anchorRect: DOMRect;
   thread?: ReviewCommentThread;
+  readOnly?: boolean;
   annotation?: ReviewAnnotation;
   onSubmitComment?: (body: string) => void;
   onReply?: (body: string) => void;
@@ -38,6 +39,7 @@ export function ReviewCommentPopover({
   mode,
   anchorRect,
   thread,
+  readOnly = false,
   annotation,
   onSubmitComment,
   onReply,
@@ -127,6 +129,7 @@ export function ReviewCommentPopover({
       {mode === 'thread' && thread && (
         <ReviewThreadCard
           thread={thread}
+          readOnly={readOnly}
           onReply={(body): void => onReply?.(body)}
           onToggleResolved={(): void => onToggleResolved?.()}
           onEditStagedComment={(commentId, body): void =>

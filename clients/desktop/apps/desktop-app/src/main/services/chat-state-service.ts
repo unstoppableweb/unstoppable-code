@@ -1,5 +1,6 @@
 import type { CapturedTranscriptPreview } from '../lib/chat-transcript-log';
 import { isCodeReviewTargetRetiringSync } from '../lib/code-review-registry';
+import { noteCodeReviewNamespaceEffect } from '../lib/code-review-storage-admission';
 import {
   revokeClosedChatSecrets,
   revokeScopeChatSecrets,
@@ -129,6 +130,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isE2eBuild } from '../lib/e2e-gate';
 import { isChatFormat4PromotionEnabled } from './chat-format4-promotion-flag';
 import { recordChatFormat4Outcome } from './chat-format4-telemetry';
+import { recordChatStorageFailure } from './chat-storage-failure-telemetry';
+import { startChatFormat4Sweep } from './chat-format4-sweep';
 import { installChatScopeResidencyE2eHook } from './chat-scope-residency-e2e';
 import { BACKGROUND_WORK_CHAT_REFUSAL } from '../agents/delegation/activity';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -350,6 +353,11 @@ import {
 import { chatEventDroppedDiagnostic } from '../lib/chat-event-drop-diagnostics';
 import { isRealWorkspaceTarget } from '../lib/chat-targets';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { browserHandoffs } from '../browser/browser-handoffs';
+import {
+  forgetPresentationChat,
+  presentationChatKey,
+} from '../canopy-tools/presentation-state';
 import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
 import { classifyProviderRunEvent } from '../lib/provider-run-reconciliation';
 // Type-only: erased at compile time, so it cannot create the import cycle
@@ -385,6 +393,7 @@ import {
 } from './automation-info-message';
 import {
   ChatStateRevisionConflictError,
+  type ChatMutationOptions,
   type ChatScopeKey,
   type ChatStateCommit,
   type ChatStateStorageDiagnostic,
@@ -1020,6 +1029,31 @@ function persistedChatTabFromCreateCommand(
  * the deny rules the send carries, which can only make it stricter. Grants
  * are never seeded onto a new tab.
  */
+/**
+ * The `chat.initiated` change (CAN-4174) of an initiated send, published with
+ * the commit that records its acceptance, or nothing for any other send.
+ */
+function initiatedOnAcceptance(
+  request: Pick<
+    ChatSendMessageRequest,
+    'chatId' | 'userMessageId' | 'automationDispatch'
+  >,
+  acceptedAt: string,
+): Pick<ChatMutationOptions, 'initiated'> {
+  const initiated = request.automationDispatch?.initiated;
+  if (!initiated) return {};
+  return {
+    initiated: {
+      type: 'chat.initiated',
+      chatId: request.chatId,
+      userMessageId: request.userMessageId,
+      origin: initiated.origin,
+      presentation: initiated.presentation,
+      acceptedAt,
+    },
+  };
+}
+
 function trustedSendDenyRulesField(
   rules: ChatSendMessageRequest['sessionApprovalRules'],
 ): Pick<PersistedChatTab, 'sessionApprovalRules'> {
@@ -3626,6 +3660,7 @@ export class ChatStateService implements ChatStateCommandPort {
           !isE2eBuild() || process.env.CANOPY_E2E_CHAT_FORMAT4 === '1',
         delegationReadMetadata: readMetadataOfRecord,
         format4Telemetry: recordChatFormat4Outcome,
+        storageFailure: recordChatStorageFailure,
         hasLiveDependency: async (scope): Promise<boolean> => {
           // Lazy by design: these local services import the chat-state singleton,
           // so static imports here would reintroduce an initialization cycle.
@@ -3665,6 +3700,13 @@ export class ChatStateService implements ChatStateCommandPort {
       this.repository instanceof ChatStateV2Repository
         ? installChatScopeResidencyE2eHook(this.repository)
         : (): void => undefined;
+    // CAN-7178: promotes scopes nobody opens, idle-paced; drainAll ends it.
+    if (
+      options.repository === undefined &&
+      !isE2eBuild() &&
+      process.env.NODE_ENV !== 'test'
+    )
+      startChatFormat4Sweep(this.repository, isChatFormat4PromotionEnabled);
     this.reconcileHostRuntime = options.repository === undefined;
     this.now = options.now ?? Date.now;
     this.createId = options.createId ?? randomUUID;
@@ -9742,6 +9784,12 @@ export class ChatStateService implements ChatStateCommandPort {
               commandResult: mutation.commandResult,
             }
           : { source: 'automation' }),
+        ...(mutation?.type === 'agent-send-accepted'
+          ? initiatedOnAcceptance(
+              mutation.request,
+              mutation.acceptance.acceptedAt,
+            )
+          : {}),
         ...(setupEnds.length > 0 ? { checkpoint: true } : {}),
         chatIds: [scope.chatId],
       },
@@ -10197,11 +10245,20 @@ export class ChatStateService implements ChatStateCommandPort {
             guard.expectedUserMessageId
         )
           return [];
+        // A new Antigravity proposal after a dismissed plan starts a fresh
+        // tracked plan; the renderer would otherwise reopen the dismissed one.
+        const unlinkDismissedPlan =
+          event.source === 'antigravity' &&
+          event.reviewMode === 'proposal' &&
+          tab.trackedPlanReviewStatus === 'dismissed';
         return [
           {
             type: 'tab.created',
             tab: {
               ...tab,
+              ...(unlinkDismissedPlan
+                ? { trackedPlanId: undefined, latestRevisionNumber: undefined }
+                : {}),
               pendingPlanExit: {
                 ...event.toolInput,
                 ...(event.source ? { source: event.source } : {}),
@@ -10984,6 +11041,8 @@ export class ChatStateService implements ChatStateCommandPort {
 
   private isScopeDeletionBlocking(lifecycleKey: string): boolean {
     const reviewPrefix = `${CODE_REVIEW_CHAT_PROJECT_ID}\u0000`;
+    if (lifecycleKey.startsWith(reviewPrefix))
+      noteCodeReviewNamespaceEffect('mutation');
     const retiringReview =
       lifecycleKey.startsWith(reviewPrefix) &&
       isCodeReviewTargetRetiringSync(lifecycleKey.slice(reviewPrefix.length));
@@ -11017,6 +11076,8 @@ export class ChatStateService implements ChatStateCommandPort {
     scope: ChatScopeKey,
     operation: () => Promise<T>,
   ): Promise<T> {
+    if (scope.projectId === CODE_REVIEW_CHAT_PROJECT_ID)
+      noteCodeReviewNamespaceEffect('cleanup');
     const lifecycleKey = chatScopeLifecycleKey(scope);
     this.deletingScopeIds.set(
       lifecycleKey,
@@ -15792,7 +15853,30 @@ export class ChatStateService implements ChatStateCommandPort {
           clearAskUserRequestCancellation(mutation.requestId);
           changedTabIds.add(mutation.chatId);
           break;
-        case 'tab.removed':
+        case 'tab.removed': {
+          const origin = {
+            projectId: commit.projectId,
+            worktreeId: commit.worktreeId,
+            chatTabId: mutation.tabId,
+          };
+          // Removal, including moves and keepSession archives, fences earlier
+          // browser.open admissions even when no handoff is currently pending.
+          try {
+            browserHandoffs.releaseOrigin(origin);
+          } catch (error) {
+            logMainProcessWarn(
+              '[chat-state] Removed chat browser handoff cleanup failed:',
+              error,
+            );
+          }
+          try {
+            forgetPresentationChat(presentationChatKey(origin));
+          } catch (error) {
+            logMainProcessWarn(
+              '[chat-state] Removed chat presentation cleanup failed:',
+              error,
+            );
+          }
           this.turnHandoff.invalidate({
             projectId: commit.projectId,
             worktreeId: commit.worktreeId,
@@ -15808,6 +15892,7 @@ export class ChatStateService implements ChatStateCommandPort {
           changedTabIds.delete(mutation.tabId);
           removedTabIds.add(mutation.tabId);
           break;
+        }
         default:
           break;
       }
@@ -15886,6 +15971,7 @@ export class ChatStateService implements ChatStateCommandPort {
           snapshot: commit.state,
         }),
         ...(commit.cardChanges ?? []),
+        ...(commit.initiatedChanges ?? []),
         ...commit.state.tabsFile.tabs.flatMap((tab) =>
           tab.transcript && changedTabIds.has(tab.id)
             ? [

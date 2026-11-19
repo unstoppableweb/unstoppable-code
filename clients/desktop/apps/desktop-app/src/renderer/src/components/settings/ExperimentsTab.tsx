@@ -7,7 +7,6 @@ import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
 import { isOpenCodeHarnessReleased } from '@/lib/opencode-settings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { type JSX, useEffect, useState } from 'react';
 import type { PreferencesLoadResult } from '@canopy/desktop-shared/types';
 import { ManagedDelegationSettings } from './ManagedDelegationSettings';
@@ -15,15 +14,13 @@ import { CopilotConnection } from './CopilotConnection';
 import { CursorConnection } from './CursorConnection';
 import { CursorApprovalCheck } from './CursorApprovalCheck';
 import { DesktopLabsSettingsSection } from './hosted/DesktopLabsSettingsSection';
-import { RemoteControlOptInSection } from './RemoteControlOptInSection';
 import { RendererCodeCacheSection } from './RendererCodeCacheSection';
 import { SettingsPage, SettingsLoading } from './SettingsLayout';
 
 /**
  * Settings → Labs tab. Hosts experimental features that are still
  * being evaluated: the early access master switch, managed delegation, the
- * Cursor harness diagnostics, the remote access opt-in and faster window
- * opening. How much of an agent's work chats show is under Display →
+ * Cursor harness diagnostics and faster window opening. How much of an agent's work chats show is under Display →
  * Appearance. Code Graph has its own settings page.
  */
 export function ExperimentsTab(): JSX.Element {
@@ -48,14 +45,6 @@ export function ExperimentsTab(): JSX.Element {
   const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key),
   );
-  const remoteControlFlagEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key),
-  );
-  // The switch belongs to the computer in front of the user, so a window
-  // that shows another computer leaves it out.
-  const localWindow = useRemoteControlStore(
-    (store) => store.context.mode === 'local',
-  );
   const [delegationPreferences, setDelegationPreferences] = useState<
     Pick<
       PreferencesLoadResult,
@@ -65,7 +54,6 @@ export function ExperimentsTab(): JSX.Element {
       | 'managedDelegationLifetimeLimit'
       | 'managedDelegationModelPolicy'
       | '__managedDelegationRevocationIncomplete'
-      | 'remoteControlEnabled'
     >
   >({});
   const [loaded, setLoaded] = useState(false);
@@ -86,7 +74,6 @@ export function ExperimentsTab(): JSX.Element {
           managedDelegationModelPolicy: prefs.managedDelegationModelPolicy,
           __managedDelegationRevocationIncomplete:
             prefs.__managedDelegationRevocationIncomplete,
-          remoteControlEnabled: prefs.remoteControlEnabled,
         });
         setLoaded(true);
       })
@@ -147,17 +134,6 @@ export function ExperimentsTab(): JSX.Element {
       {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
       {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
       {accountProxyFlagEnabled && <AccountProxyOptInSection />}
-      {remoteControlFlagEnabled && localWindow && (
-        <RemoteControlOptInSection
-          initialEnabled={delegationPreferences.remoteControlEnabled !== false}
-          onSaved={(enabled): void => {
-            setDelegationPreferences((current) => ({
-              ...current,
-              remoteControlEnabled: enabled,
-            }));
-          }}
-        />
-      )}
       <RendererCodeCacheSection />
     </SettingsPage>
   );

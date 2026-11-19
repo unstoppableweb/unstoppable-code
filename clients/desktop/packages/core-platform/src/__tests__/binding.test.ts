@@ -233,12 +233,20 @@ posix.each<PlatformProcessInspection>([
   },
 );
 
-(process.platform === 'darwin' ? test : test.skip)(
-  'a live full backlog never authorizes unlink',
-  async () => {
+(process.platform === 'darwin' ? test : test.skip).each([false, true])(
+  'a live full backlog never authorizes unlink (device remapped=%s)',
+  async (remapped) => {
     const options = await host();
     const child = await socketOwner(true);
-    await descriptor(child);
+    await descriptor(
+      child,
+      address.path,
+      remapped
+        ? { ...(await boundIdentity()), device: '999999999999' }
+        : undefined,
+    );
+    options.platform.supervision.bootRelation = (): Promise<'before_boot'> =>
+      Promise.resolve('before_boot');
     owner = { state: 'running', startIdentity: 'old-owner' };
     for (let i = 0; i < 3; i++) {
       const client = createConnection(address.path);
@@ -322,5 +330,155 @@ posix(
     await expect(attempt).rejects.toThrow('offline repair');
     expect(successor.exitCode).toBeNull();
     expect((await lstat(address.path)).ino).toBe(before.ino);
+  },
+);
+
+posix.each([
+  ['before_boot', { state: 'absent' }, true],
+  ['before_boot', { state: 'running', startIdentity: 'reused' }, true],
+  ['before_boot', { state: 'running', startIdentity: 'old-owner' }, false],
+  ['before_boot', { state: 'unverifiable', reason: 'denied' }, false],
+  ['this_boot', { state: 'absent' }, false],
+  ['unknown', { state: 'absent' }, false],
+] as const)(
+  'remapped socket with %s and %j recovery=%s',
+  async (relation, inspection, recover) => {
+    const base = await host();
+    const options = {
+      ...base,
+      platform: {
+        ...base.platform,
+        supervision: {
+          ...base.platform.supervision,
+          bootRelation: (): Promise<'before_boot' | 'this_boot' | 'unknown'> =>
+            Promise.resolve(relation),
+        },
+      },
+    };
+    const child = await socketOwner();
+    await descriptor(child, address.path, {
+      ...(await boundIdentity()),
+      device: '999999999999',
+    });
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+    owner = inspection;
+    const before = await boundIdentity();
+    const attempt = bindCanopyDaemonEndpoint(options);
+    void attempt.then(
+      ({ listener }) => listeners.push(listener),
+      () => undefined,
+    );
+    if (recover)
+      await expect(attempt).resolves.toMatchObject({ listener: { address } });
+    else {
+      await expect(attempt).rejects.toThrow('offline repair');
+      expect(await boundIdentity()).toEqual(before);
+    }
+  },
+);
+
+posix.each(['missing', 'failed', 'malformed', 'abort'] as const)(
+  'remapped socket preserves %s boot evidence failure',
+  async (kind) => {
+    const base = await host();
+    const cancellation = Object.assign(new Error('cancelled'), {
+      name: 'AbortError',
+    });
+    const bootRelation =
+      kind === 'missing'
+        ? undefined
+        : (): Promise<'unknown'> =>
+            Promise.resolve().then(() => {
+              if (kind === 'abort') throw cancellation;
+              if (kind === 'failed') throw new Error('read failed');
+              return 'unknown';
+            });
+    const options = {
+      ...base,
+      platform: {
+        ...base.platform,
+        supervision: { ...base.platform.supervision, bootRelation },
+      },
+    };
+    const child = await socketOwner();
+    await descriptor(child, address.path, {
+      ...(await boundIdentity()),
+      device: '999999999999',
+    });
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+    const before = await boundIdentity();
+    await expect(bindCanopyDaemonEndpoint(options)).rejects.toThrow(
+      kind === 'abort' ? cancellation : 'offline repair',
+    );
+    expect(await boundIdentity()).toEqual(before);
+  },
+);
+
+posix('exact socket identity does not consult reboot evidence', async () => {
+  const base = await host();
+  const bootRelation = jest.fn(
+    (): Promise<'before_boot'> => Promise.resolve('before_boot'),
+  );
+  const child = await socketOwner();
+  await descriptor(child);
+  const exited = once(child, 'exit');
+  child.kill('SIGKILL');
+  await exited;
+  const options = {
+    ...base,
+    platform: {
+      ...base.platform,
+      supervision: { ...base.platform.supervision, bootRelation },
+    },
+  };
+  const { listener } = await bindCanopyDaemonEndpoint(options);
+  listeners.push(listener);
+  expect(bootRelation).not.toHaveBeenCalled();
+});
+
+posix(
+  'remapped recovery never binds when the freshly observed socket changed',
+  async () => {
+    const base = await host();
+    const endpoints = base.platform.endpoints;
+    if (endpoints.semantics !== 'filesystem-socket')
+      throw new Error('wrong family');
+    const child = await socketOwner();
+    await descriptor(child, address.path, {
+      ...(await boundIdentity()),
+      device: '999999999999',
+    });
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+    const before = await boundIdentity();
+    const unlinkStale = jest.fn<
+      ReturnType<typeof endpoints.unlinkStale>,
+      Parameters<typeof endpoints.unlinkStale>
+    >((): Promise<'changed'> => Promise.resolve('changed'));
+    const options = {
+      ...base,
+      platform: {
+        ...base.platform,
+        endpoints: { ...endpoints, unlinkStale },
+        supervision: {
+          ...base.platform.supervision,
+          bootRelation: (): Promise<'before_boot'> =>
+            Promise.resolve('before_boot'),
+        },
+      },
+    };
+    await expect(bindCanopyDaemonEndpoint(options)).rejects.toThrow(
+      'Stale endpoint changed.',
+    );
+    expect(unlinkStale.mock.calls[0]?.[0].expected).toEqual({
+      device: BigInt(before.device),
+      inode: BigInt(before.inode),
+    });
+    expect(await boundIdentity()).toEqual(before);
   },
 );

@@ -35,7 +35,7 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": "none",
     "backupPolicy": "none",
     "admittedWriters": [
-      "main/lib/app-managed-workspaces",
+      "main/lib/code-review-namespace-reconciliation",
       "main/lib/code-review-registry",
       "main/lib/code-review-cleanup"
     ]
@@ -49,7 +49,7 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": "none",
     "backupPolicy": "none",
     "admittedWriters": [
-      "main/lib/app-managed-workspaces"
+      "main/lib/code-review-namespace-reconciliation"
     ]
   },
   {
@@ -61,8 +61,8 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": 1,
     "backupPolicy": "none",
     "admittedWriters": [
-      "main/lib/code-review-registry",
-      "main/lib/app-managed-workspaces"
+      "main/lib/code-review-namespace-reconciliation",
+      "main/lib/code-review-registry"
     ]
   },
   {
@@ -157,6 +157,45 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "mcp_removal_evidence",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/mcp/config-removal-disk"
+    ]
+  },
+  {
+    "id": "mcp_server_configs",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/mcp/config-repository",
+      "main/mcp/config-store",
+      "main/mcp/config-removal-disk"
+    ]
+  },
+  {
+    "id": "mcp_servers_index",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/mcp/config-repository",
+      "main/mcp/config-store"
+    ]
+  },
+  {
     "id": "operation_ledger",
     "transitionOwner": "legacy",
     "currentWriters": [
@@ -177,7 +216,6 @@ export const STORAGE_OWNERSHIP = [
     "schemaVersion": "none",
     "backupPolicy": "none",
     "admittedWriters": [
-      "main/pipelines/pipeline-service",
       "packages/execution-engine/src/pipelines/store.ts"
     ]
   },
@@ -204,6 +242,18 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "none",
     "admittedWriters": [
       "packages/execution-engine/src/node/pipelines/plugin-collection-store.ts"
+    ]
+  },
+  {
+    "id": "pipeline_project_share_links",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/pipelines/pipeline-service"
     ]
   },
   {

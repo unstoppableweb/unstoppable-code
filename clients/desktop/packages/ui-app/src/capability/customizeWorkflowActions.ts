@@ -40,6 +40,19 @@ export interface CustomizeWorkflowActionState {
   readonly reason?: string;
 }
 
+/**
+ * A workflow page's Source row, from its Customize row: where it comes from
+ * (Built-in, Yours, Project…) and, for a share, who shared it.
+ */
+export function customizeWorkflowSource(
+  entry: Pick<UnifiedPluginEntry, 'sourceLabel' | 'workflow'>,
+): string | undefined {
+  const parts = [entry.sourceLabel, entry.workflow?.sourceText].filter(
+    (part): part is string => typeof part === 'string' && part.trim() !== '',
+  );
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
 export interface CustomizeWorkflowAvailability {
   readonly run: CustomizeWorkflowActionState;
   readonly toggle: CustomizeWorkflowActionState;

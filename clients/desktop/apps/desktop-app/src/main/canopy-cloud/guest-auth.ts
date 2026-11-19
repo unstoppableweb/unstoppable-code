@@ -27,7 +27,7 @@ import {
   type CanopyCloudAccountEntry,
 } from '../lib/canopy-cloud-account-store';
 import { isRecord } from '../lib/type-guards';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import { getSharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { organizationSnapshotTransition } from '../shared-containers/organization-snapshot-transition';
 
@@ -259,7 +259,7 @@ async function performGuestMint(): Promise<GuestMintResult> {
     return resultFromSavedAccount(existing);
   }
 
-  const clientDeviceId = (await readPortalStateStore()).clientDeviceId;
+  const clientDeviceId = await getInstallId();
   const clientName = `${BRAND.displayName} Desktop`;
   const clientVersion = app?.getVersion?.() ?? null;
   const clientHostname = os.hostname() || null;

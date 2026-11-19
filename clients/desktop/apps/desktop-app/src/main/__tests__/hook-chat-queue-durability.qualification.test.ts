@@ -333,6 +333,14 @@ async function saved(
   );
   return z.object({ revision: z.number(), payload: z.json() }).parse(value);
 }
+/**
+ * Budget for a case whose body restarts: reloading the hook chat module
+ * evaluates a large part of the main-process module graph again, about half
+ * a second on a quiet machine and near Jest's 5 s default on a loaded CI
+ * shard. A case that times out keeps running into the next one and closes
+ * that case's runtime.
+ */
+const RESTART_CASE_TIMEOUT_MS = 20_000;
 async function restart(): Promise<void> {
   mockRuntime.operations.close();
   mockRuntime = createTestInitiatedWork(dir);
@@ -774,10 +782,7 @@ it.each([true, false])(
       ).items,
     ).toHaveLength(1);
   },
-  // A launch, a restart that loads the hook chat module afresh, and three
-  // ledger polls: about half a second on a quiet machine, and past Jest's
-  // 5 s default on a loaded CI shard.
-  20_000,
+  RESTART_CASE_TIMEOUT_MS,
 );
 it('does not confirm a starting cancellation until its ledger write succeeds', async () => {
   const identity = await runIdentity();
@@ -851,6 +856,7 @@ it.each([true, false])(
     clearActivity();
     expect(mockDispatches).toHaveLength(0);
   },
+  RESTART_CASE_TIMEOUT_MS,
 );
 
 it('retries a failed running transition on later activity ahead of newer work', async () => {

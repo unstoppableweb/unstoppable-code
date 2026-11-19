@@ -17,7 +17,8 @@ export type ItemHarnessInstallOutcome =
 /**
  * One Add for every harness, for plugins and skills (CAN-6816): after the
  * plugin or skill is installed as before, records what each set-up harness
- * loads from it. New Customize only; with the experiment off, or on a host
+ * loads from it; main also installs the native copies for harnesses it
+ * can't serve. New Customize only; with the experiment off, or on a host
  * without the channel, it does nothing and Add is unchanged.
  */
 export function useItemHarnessInstall(): (

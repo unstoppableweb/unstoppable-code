@@ -36,6 +36,7 @@ import {
   getModelDescription,
   getModelShowMoreOnly,
   getModelDisplayName,
+  getModelAliases,
   getExecutionHarnessForModel,
   getModelSource,
   getProviderForModel,
@@ -177,6 +178,9 @@ function providerModelOption(
     billing?.extraChargeOnly === true || isGatewayOnlyModel(id);
   return {
     id,
+    aliases: Object.entries(getModelAliases()).flatMap(([alias, model]) =>
+      model === id ? [alias] : [],
+    ),
     ...(canonicalModelId !== id ? { canonicalModelId } : {}),
     label: getModelDisplayName(id),
     ...(description ? { description } : {}),
@@ -231,6 +235,7 @@ function agentModelOption(
   const contextWindow = getListedModelContextWindow(routeId);
   return {
     id,
+    aliases: [],
     label: named.name,
     ...(description ? { description } : {}),
     ...(showMoreOnly ? { showMoreOnly: true } : {}),

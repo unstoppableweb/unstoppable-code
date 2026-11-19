@@ -194,10 +194,12 @@ export function useCreateSkillFromSuggestion(): CreateSkillFromSuggestion {
       inFlight.current = true;
       setPendingId(suggestion.id);
       void openCreateSkillFromSuggestionChat(suggestion)
-        .then(onCreated, (): void => {
+        .then(onCreated, (error: unknown): void => {
           useGitHubStore
             .getState()
-            .addToast(CREATE_SKILL_FROM_SUGGESTION_ERROR, 'error');
+            .addToast(CREATE_SKILL_FROM_SUGGESTION_ERROR, 'error', undefined, {
+              caught: error,
+            });
         })
         .finally((): void => {
           inFlight.current = false;

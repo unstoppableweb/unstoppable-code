@@ -8,6 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { Parser } from 'tar';
 import { open as openZip, type Entry, type ZipFile } from 'yauzl';
 import { verifyManagedExecutable } from '@canopy/desktop-shared/node/managed-runtime/verification';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 export interface ManagedRuntimeArtifact {
   version: string;
@@ -139,6 +140,13 @@ export class ManagedRuntimeInstaller {
       } catch {
         signal.throwIfAborted();
       }
+    }
+    // A local-only build never downloads a runtime, so reconnecting can't
+    // repair a missing one; say so instead of pointing at Settings.
+    if (!allowsAutomaticCall('runtime.npm-download')) {
+      throw new Error(
+        `${this.options.label} runtime isn't installed, and this build doesn't download it.`,
+      );
     }
     const { artifact, label } = this.options;
     const url = new URL(artifact.url);

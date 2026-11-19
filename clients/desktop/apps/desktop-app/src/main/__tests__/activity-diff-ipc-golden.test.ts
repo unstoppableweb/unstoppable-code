@@ -93,6 +93,35 @@ it('rejects non-string stop-polling IDs and keeps valid cleanup idempotent', asy
   ).resolves.toBeUndefined();
 });
 
+it('classifies refused start-polling and full-read requests as input.not_accepted', async () => {
+  const start = mockHandlers.get(IPC_CHANNELS.activityStartOutputPolling);
+  const readFull = mockHandlers.get(IPC_CHANNELS.activityReadFullOutput);
+  if (!start || !readFull)
+    throw new Error('Output handlers were not registered');
+  const ids = { projectId: 'project', worktreeId: 'worktree', chatId: 'chat' };
+  const refused = (run: () => Promise<unknown>): Promise<unknown> =>
+    Promise.resolve()
+      .then(run)
+      .then(
+        () => undefined,
+        (thrown: unknown) => toAppError(thrown),
+      );
+
+  expect(
+    await refused(() =>
+      start({}, { ...ids, taskId: '../x', outputFile: '/tmp/x.output' }),
+    ),
+  ).toMatchObject({ code: 'input.not_accepted' });
+  expect(
+    await refused(() =>
+      start({}, { ...ids, taskId: '1', outputFile: '/etc/hosts' }),
+    ),
+  ).toMatchObject({ code: 'input.not_accepted' });
+  expect(
+    await refused(() => readFull({}, { outputFile: '/etc/hosts' })),
+  ).toMatchObject({ code: 'input.not_accepted' });
+});
+
 type Outcome = { result: unknown } | { error: Record<string, unknown> };
 
 const localEvent: Partial<IpcMainInvokeEvent> = {};

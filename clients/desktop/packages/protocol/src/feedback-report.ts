@@ -216,9 +216,10 @@ function encodeBytes(bytes: Uint8Array): string {
 export function encodeFeedbackErrorDetail(
   detail: FeedbackReportError['detail'],
 ): string {
-  const bytes = new TextEncoder().encode(
-    JSON.stringify(AppErrorDetailSchema.parse(detail)),
-  );
+  const wireDetail = AppErrorDetailSchema.parse(detail);
+  // Older web deployments decode with a strict schema that predates `errno`.
+  delete wireDetail.errno;
+  const bytes = new TextEncoder().encode(JSON.stringify(wireDetail));
   if (bytes.byteLength > MAX_FEEDBACK_DETAIL_BYTES)
     throw new Error('Error detail exceeds the report size limit.');
   return encodeBytes(bytes);

@@ -1,3 +1,4 @@
+import { isNativeError } from 'node:util/types';
 import type { CanopyRetryDirective } from '@canopy/protocol/canopy-core';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -262,9 +263,13 @@ export type W5AtomicFileWriter = (
 ) => Promise<void>;
 
 function errorCode(error: unknown): unknown {
-  return typeof error === 'object' && error !== null && 'code' in error
-    ? error.code
-    : undefined;
+  try {
+    return typeof error === 'object' && error !== null
+      ? Reflect.get(error, 'code')
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** One direct Node read of a W5 file, outside the commit log. */
@@ -272,9 +277,17 @@ export async function readNodeW5File(filePath: string): Promise<W5FileRead> {
   try {
     return { state: 'present', raw: await readFile(filePath, 'utf8') };
   } catch (error) {
-    return {
-      state: errorCode(error) === 'ENOENT' ? 'absent' : 'unreadable',
-    };
+    if (errorCode(error) === 'ENOENT') return { state: 'absent' };
+    const failure = isNativeError(error)
+      ? error
+      : new Error('The W5 file could not be read.');
+    if (failure !== error)
+      Object.defineProperty(failure, 'cause', {
+        value: error,
+        configurable: true,
+        writable: true,
+      });
+    return { state: 'unreadable', error: failure };
   }
 }
 
@@ -350,4 +363,25 @@ export function createSerialQueue(): <T>(task: () => Promise<T>) => Promise<T> {
     );
     return run;
   };
+}
+
+export class WorkspaceConfigUnreadableError extends Error {
+  // `declare`: only some programs' libs (via type-fest) give Error a `cause`.
+  declare readonly cause?: unknown;
+  constructor(cause?: unknown, use?: W5UnreadableUse) {
+    super(
+      w5UnreadableMessage(
+        "This project's settings could not be read, so they were not changed. Try again.",
+        cause,
+        use,
+      ),
+    );
+    this.name = 'WorkspaceConfigUnreadableError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        writable: true,
+        configurable: true,
+      });
+  }
 }

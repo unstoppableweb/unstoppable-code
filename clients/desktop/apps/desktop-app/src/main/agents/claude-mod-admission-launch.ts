@@ -39,6 +39,7 @@ import { resolveAmbientClaudePluginIds } from './delegation/claude-settings';
 import { getFeatureFlagService } from '../feature-flags';
 import { readClaudeEnabledPlugins } from '../plugins/claude-enabled-plugins';
 import { getDataDir } from '../lib/paths';
+import { reportPluginLaunchFailure } from '../lib/plugin-launch-failure-reporting';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { readPreferencesFileDetailed } from '../lib/preferences-store';
 
@@ -305,15 +306,18 @@ export async function resolveClaudeModAdmissionLaunch(
       finalPlugins.push({ type: 'local', path: launchPath });
       continue;
     }
-    const projectedPath = projectClaudePluginForLaunch({
+    const projection = projectClaudePluginForLaunch({
       sourcePluginPath: launchPath,
       projectionRootDir,
       removeModules: true,
       removeMcpServers: false,
     });
-    if (projectedPath) {
-      finalPlugins.push({ type: 'local', path: projectedPath });
+    if (projection.ok) {
+      finalPlugins.push({ type: 'local', path: projection.path });
       continue;
+    }
+    if (projection.error !== undefined) {
+      reportPluginLaunchFailure(projection.error, 'plugin.claude_projection');
     }
     const sourceSkipped = decision.skippedMods.find(
       (entry) =>

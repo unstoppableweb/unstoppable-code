@@ -15,6 +15,7 @@ import {
   PIPELINE_OWNER_DEADLINE_MS,
   type PipelineOwnerClient,
 } from './owner-client';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { parseLaunchPluginCollections } from './plugin-collections';
 
 /*
@@ -38,6 +39,12 @@ export interface ChildCapabilities {
     Record<string, ResolvedPipelinePluginCollectionSnapshot>
   >;
   readonly modelAliases: Readonly<Record<string, DaemonModelAliasResolution>>;
+  /**
+   * The child's definition with the cloud models its run's person chose
+   * when the run started (CAN-7044), which it runs instead; absent when no
+   * step's model changes.
+   */
+  readonly pipeline?: Pipeline;
 }
 
 /** Whether a child workflow declares plugin collections or model aliases. */
@@ -53,6 +60,21 @@ export function declaresOwnCapabilities(
 /** The message a child gets when its core can't resolve its own. */
 const UNRESOLVED =
   "The cloud couldn't resolve this child workflow's plugin collections and model aliases.";
+
+/** The definition the core answered, or null when it isn't one. */
+function answeredPipeline(document: string): Pipeline | null {
+  try {
+    const parsed: unknown = JSON.parse(document);
+    return typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      'jobs' in parsed
+      ? parsePipelineText(document)
+      : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface ChildCapabilityStore {
   /**
@@ -121,9 +143,15 @@ export function createChildCapabilityStore(run: {
               result.value.pluginCollectionSnapshots,
             );
       if (pluginCollections === null) throw new Error(UNRESOLVED);
+      const pipeline =
+        result.value.document === undefined
+          ? undefined
+          : answeredPipeline(result.value.document);
+      if (pipeline === null) throw new Error(UNRESOLVED);
       const capabilities: ChildCapabilities = {
         pluginCollections,
         modelAliases: result.value.modelAliasResolutions ?? {},
+        ...(pipeline === undefined ? {} : { pipeline }),
       };
       byChild.set(request.childExecutionId, capabilities);
       return capabilities;

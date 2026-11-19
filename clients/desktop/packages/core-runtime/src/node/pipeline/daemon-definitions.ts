@@ -23,7 +23,9 @@ import {
   createPipelineDefinitionService,
   type PipelineDefinitionService,
   type PipelineDefinitionServiceOptions,
+  type PipelineDefinitionWritePort,
 } from './definitions';
+import type { PipelineLocalMetadataStore } from './store/local-metadata';
 import {
   createDurableReplayFileWriter,
   createPipelineDefinitionReplayStore,
@@ -73,6 +75,12 @@ export interface DaemonPipelineDefinitionHostOptions {
   readonly flushDirectory: (directoryPath: string) => Promise<unknown>;
   /** The replay receipts' atomic durable write; the portable one by default. */
   readonly writeReplays?: PipelineDefinitionReplayFileWriter;
+  /**
+   * The pipeline local metadata file under the data root, whose entry a
+   * deleted user definition takes with it (CAN-7057). Trusted
+   * composition only: the entry codec comes with it.
+   */
+  readonly localMetadata?: PipelineLocalMetadataStore<object>;
 }
 
 function notOwned(cause: unknown): CanopyOperationError {
@@ -97,6 +105,49 @@ function otherRoot(): CanopyOperationError {
   });
 }
 
+export interface DaemonDefinitionSidecarOptions {
+  readonly localMetadata: PipelineLocalMetadataStore<object>;
+  /** Trusted composition only; defaults to the compiled ownership rows. */
+  readonly ownership?: readonly StorageOwnershipRow[];
+}
+
+/**
+ * The daemon's definitions writer with the sidecar effects Electron main's
+ * writer applies (CAN-7057): a deleted user definition takes its local
+ * metadata entry with it. The metadata file has its own row, so a delete
+ * runs only where both pipeline_definitions and pipeline_local_metadata name
+ * the daemon, and is refused before anything is written where they don't.
+ */
+export function createDaemonDefinitionSidecarWriter(
+  writer: PipelineDefinitionWritePort,
+  options: DaemonDefinitionSidecarOptions,
+): PipelineDefinitionWritePort {
+  const ownership = options.ownership ?? STORAGE_OWNERSHIP;
+  const assertSidecarOwner = (): void => {
+    try {
+      assertStorageWriteAllowed('pipeline_definitions', 'daemon', ownership);
+      assertStorageWriteAllowed('pipeline_local_metadata', 'daemon', ownership);
+    } catch (error) {
+      throw notOwned(error);
+    }
+  };
+  return {
+    upsert: (write, context) => writer.upsert(write, context),
+    copy: (copy, context) => writer.copy(copy, context),
+    revision: (definitionId) => writer.revision(definitionId),
+    delete: async (definitionId, expectedRevision, context) => {
+      assertSidecarOwner();
+      const revision = await writer.delete(
+        definitionId,
+        expectedRevision,
+        context,
+      );
+      options.localMetadata.deleteUserPipeline(definitionId);
+      return revision;
+    },
+  };
+}
+
 /**
  * The daemon's definitions host (CAN-5092 S1b): the bundled and user sources
  * the loader supplies, written as the daemon, and replay receipts under the
@@ -105,8 +156,11 @@ function otherRoot(): CanopyOperationError {
  * it pipeline_definition_replays' writer, so a mis-gated composition answers
  * unavailable and never loads the sources, reads the receipts or touches the
  * store. A store
- * over another data root than the daemon's is refused the same way. Without
- * an enablement writer, setEnabled answers sourceUnavailable.
+ * over another data root than the daemon's is refused the same way, as is a
+ * composition with a project source unless the rows also make the daemon
+ * pipeline_project_share_links' writer; that refusal comes after the loader
+ * and before any service exists. Without an enablement writer, setEnabled
+ * answers sourceUnavailable.
  */
 export function createDaemonPipelineDefinitionHost(
   options: DaemonPipelineDefinitionHostOptions,
@@ -160,9 +214,26 @@ export function createDaemonPipelineDefinitionHost(
           .sources({ writer: 'daemon', ownership })
           .then((sources) => {
             if (sources.dataRoot !== options.dataRoot) throw otherRoot();
+            // Project discovery rewrites the share-link catalog, its own row
+            // (CAN-7058), so a project source needs that row too.
+            if (sources.ports.some((port) => port.sources.includes('project')))
+              try {
+                assertStorageWriteAllowed(
+                  'pipeline_project_share_links',
+                  'daemon',
+                  ownership,
+                );
+              } catch (error) {
+                throw notOwned(error);
+              }
             return createPipelineDefinitionService({
               ports: sources.ports,
-              writer: sources.writer,
+              writer: options.localMetadata
+                ? createDaemonDefinitionSidecarWriter(sources.writer, {
+                    localMetadata: options.localMetadata,
+                    ownership,
+                  })
+                : sources.writer,
               ...(sources.normalizeOptions && {
                 normalizeOptions: sources.normalizeOptions,
               }),

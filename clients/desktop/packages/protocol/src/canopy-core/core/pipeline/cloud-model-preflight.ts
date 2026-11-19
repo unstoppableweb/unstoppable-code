@@ -43,6 +43,11 @@ export const CLOUD_MODEL_PREFLIGHT_REASONS = [
   'blocked_model',
   /** The step's action doesn't run this model's harness in the cloud. */
   'action_harness',
+  /**
+   * The job's matrix is built while the run runs, so its models can't be
+   * checked first; the person picks the model its steps use (CAN-7018).
+   */
+  'run_time_model',
 ] as const;
 
 export type CloudModelPreflightReason =
@@ -66,6 +71,8 @@ export const CLOUD_MODEL_STEP_HARNESSES = [
 export const CLOUD_MODEL_ALTERNATIVES_MAX = 50;
 /** The most items one preflight lists. */
 export const CLOUD_MODEL_PREFLIGHT_ITEMS_MAX = 200;
+/** The deepest child workflow an item names (CAN-7044). */
+export const CLOUD_MODEL_CHILD_DEPTH_MAX = 4;
 
 const modelId = z.string().min(1).max(512);
 
@@ -78,9 +85,25 @@ export const CloudModelOptionSchema = z.strictObject({
 });
 export type CloudModelOption = z.output<typeof CloudModelOptionSchema>;
 
+/**
+ * The matrix axis an item's steps take their model from (CAN-7018): `value`
+ * is the one written-out value the item replaces in every variant that has
+ * it; without `value`, the matrix is built while the run runs and the item
+ * replaces the model of every step that names the axis.
+ */
+export const CloudModelMatrixSchema = z.strictObject({
+  axis: z.string().min(1).max(256),
+  value: z.string().max(512).optional(),
+});
+
 /** One model step a cloud run can't run as written. */
 export const CloudModelPreflightItemSchema = z.strictObject({
-  /** `<jobId>#<stepIndex>`: stable for one definition content hash. */
+  /**
+   * `<jobId>#<stepIndex>`, or `<jobId>#matrix.<axis>` and
+   * `<jobId>#matrix.<axis>[<n>]` for a job's matrix model, after a
+   * `<jobId>#<stepIndex>/` for each `run-pipeline` step that starts the
+   * child it is in: stable for one definition content hash.
+   */
   itemKey: z.string().min(1).max(600),
   reason: z.enum(CLOUD_MODEL_PREFLIGHT_REASONS),
   /** The parity matrix row (`R2`) or plan ticket that explains it. */
@@ -98,6 +121,19 @@ export const CloudModelPreflightItemSchema = z.strictObject({
   alternatives: z
     .array(CloudModelOptionSchema)
     .max(CLOUD_MODEL_ALTERNATIVES_MAX),
+  /** Set when the item is a job's matrix model, not one step's (CAN-7018). */
+  matrix: CloudModelMatrixSchema.optional(),
+  /**
+   * The child workflows the step is in, outermost first, when a
+   * `run-pipeline` step starts it (CAN-7044); `jobId` and `stepIndex` are
+   * then the innermost child's, and the key starts with each parent step's
+   * `<jobId>#<stepIndex>/`.
+   */
+  workflows: z
+    .array(z.string().min(1).max(256))
+    .min(1)
+    .max(CLOUD_MODEL_CHILD_DEPTH_MAX)
+    .optional(),
 });
 export type CloudModelPreflightItem = z.output<
   typeof CloudModelPreflightItemSchema

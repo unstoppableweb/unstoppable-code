@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { constants } from 'node:os';
 import { StringDecoder } from 'node:string_decoder';
 import {
   CanopyOperationError,
@@ -10,6 +11,7 @@ import {
   GitRepositoryWriteError,
   type GitChildEnvironment,
   type GitRepositoryWrite,
+  type GitRepositoryWriteFailureReason,
   type GitRepositoryWriteOutput,
   type GitRepositoryWritePort,
   type GitHubCredentialLeasePort,
@@ -23,6 +25,7 @@ import {
 import { createChildServices } from '../supervision/child';
 import { killProcessTree } from '../supervision/kill-tree';
 import {
+  errorCode,
   NODE_SUPERVISION,
   type SupervisionOperations,
 } from '../supervision/shared';
@@ -39,6 +42,69 @@ export interface GitWritePlan {
 // desktop git.ts SHARED_CONTAINER_GIT_REMOTE_TIMEOUT_MS and runGit's maxBuffer.
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_STDOUT_BYTES = 8 * 1024 * 1024;
+// Only the tail is classified; Git's verdict lines come last.
+const MAX_STDERR_TAIL = 16 * 1024;
+
+/** Spawn errnos a failure may name; any other reads as `other` (CAN-7113). */
+const SPAWN_ERRNOS: ReadonlySet<string> = new Set([
+  'ENOENT',
+  'EACCES',
+  'ENOTDIR',
+  'EPERM',
+  'ENOEXEC',
+  'ELOOP',
+  'ENAMETOOLONG',
+  'EISDIR',
+  'ETXTBSY',
+  'EMFILE',
+  'ENFILE',
+  'EAGAIN',
+  'ENOMEM',
+  'E2BIG',
+]);
+
+function spawnFailure(error: unknown): GitRepositoryWriteError {
+  const code = errorCode(error);
+  return new GitRepositoryWriteError('git_unavailable', {
+    errno: typeof code === 'string' && SPAWN_ERRNOS.has(code) ? code : 'other',
+    stage: 'spawn',
+  });
+}
+
+/**
+ * Why Git exited non-zero, from its own output. `remote:` lines are the
+ * remote's or a hook's free text, so only Git's own lines are read.
+ */
+function classifyGitWriteFailure(
+  stderr: string,
+  stdout: string,
+): GitRepositoryWriteFailureReason {
+  const own = stderr
+    .split('\n')
+    .filter((line) => !/^remote:/i.test(line))
+    .join('\n');
+  if (/gpg failed to sign|failed to sign the data|cannot run gpg/i.test(own))
+    return 'gpgFailed';
+  if (
+    /hook declined|push declined due to repository rule violations/i.test(own)
+  )
+    return 'hookRejected';
+  if (
+    /\[rejected\][^\n]*\((?:non-fast-forward|fetch first)\)|not possible to fast-forward|updates were rejected because/i.test(
+      own,
+    )
+  )
+    return 'nonFastForward';
+  if (
+    /authentication failed|could not read (?:username|password)|invalid username (?:or|and) (?:password|token)|permission denied \(publickey|terminal prompts disabled|returned error: 401\b/i.test(
+      own,
+    )
+  )
+    return 'authFailed';
+  if (/nothing to commit|nothing added to commit/i.test(`${stdout}\n${own}`))
+    return 'nothingToCommit';
+  return 'other';
+}
 
 /**
  * The branch writes run only where their closure is audited: no Win32 hook,
@@ -485,12 +551,13 @@ export function createGitWriteHostWith(
         child = spawn(plan.file, [...plan.args], {
           ...childOptions,
           cwd,
-          env: plan.env,
+          // Git's messages are classified below, so they stay English.
+          env: { ...plan.env, LANGUAGE: 'C' },
           stdio: ['ignore', 'pipe', 'pipe'],
         });
-      } catch {
+      } catch (error) {
         end();
-        reject(new GitRepositoryWriteError('git_unavailable'));
+        reject(spawnFailure(error));
         return;
       }
       const decoder = new StringDecoder('utf8');
@@ -503,7 +570,14 @@ export function createGitWriteHostWith(
         if (bytes <= MAX_STDOUT_BYTES) chunks.push(decoder.write(chunk));
       });
       child.stdout?.on('error', () => undefined);
-      child.stderr?.resume();
+      // Kept only to classify a failure here; it never leaves this host.
+      const stderrDecoder = new StringDecoder('utf8');
+      let stderrTail = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + stderrDecoder.write(chunk)).slice(
+          -MAX_STDERR_TAIL,
+        );
+      });
       child.stderr?.on('error', () => undefined);
       let timedOut = false;
       const timeoutMs =
@@ -521,11 +595,11 @@ export function createGitWriteHostWith(
                 // The close event still settles the request.
                 .catch(() => undefined);
             }, timeoutMs);
-      child.once('error', () => {
+      child.once('error', (error) => {
         if (child.pid !== undefined) return;
         if (timer) clearTimeout(timer);
         end();
-        reject(new GitRepositoryWriteError('git_unavailable'));
+        reject(spawnFailure(error));
       });
       child.once('close', (code, signal) => {
         if (timer) clearTimeout(timer);
@@ -535,11 +609,31 @@ export function createGitWriteHostWith(
           return;
         }
         if (signal !== null || code === null) {
-          reject(new GitRepositoryWriteError('exit_status'));
+          reject(
+            new GitRepositoryWriteError('exit_status', {
+              signal:
+                signal !== null &&
+                Object.prototype.hasOwnProperty.call(constants.signals, signal)
+                  ? signal
+                  : 'other',
+            }),
+          );
           return;
         }
         chunks.push(decoder.end());
-        resolve({ exitCode: code, stdout: chunks.join('') });
+        const stdout = chunks.join('');
+        resolve(
+          code === 0
+            ? { exitCode: code, stdout }
+            : {
+                exitCode: code,
+                stdout,
+                failure: classifyGitWriteFailure(
+                  stderrTail + stderrDecoder.end(),
+                  stdout,
+                ),
+              },
+        );
       });
     });
   }

@@ -1,6 +1,10 @@
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+  isDismissibleInvocationToken,
+  PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS,
+} from '@canopy/protocol/pipelines';
+import {
   damagedCopyPath,
   pruneDamagedCopies,
 } from '@canopy/execution-engine/node/lib/damaged-copies';
@@ -167,15 +171,14 @@ export async function replacePipelinePackageDismissals(
       dismissal,
     ]),
   );
-  if (unique.size > 50) {
+  if (unique.size > PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS) {
     throw new Error('Too many pipeline package dismissal records');
   }
   if (
     Array.from(unique.values()).some(
       ({ provider, token }) =>
         (provider !== 'claude' && provider !== 'codex') ||
-        token.length > 128 ||
-        !/^[/$][A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$/.test(token),
+        !isDismissibleInvocationToken(token),
     )
   ) {
     throw new Error('Invalid pipeline package dismissal record');

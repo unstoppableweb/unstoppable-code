@@ -17,6 +17,11 @@ export interface AgentActionHostCapabilities {
   /** Action types this surface dispatches; others are `unsupported_action`. */
   actionTypes: readonly string[];
   /**
+   * Whether bots.list advertises registry details and its pin filter.
+   * Omitted or false keeps the legacy catalog and schema.
+   */
+  botsRegistry?: boolean;
+  /**
    * Dispatchable action types that SearchActions lists only for an exact
    * `actionType` lookup: compatibility aliases of other offered actions.
    * Families with their own `search` do not consult it.
@@ -49,6 +54,8 @@ export interface AgentActionHostCapabilities {
   memory?: AgentMemoryReach;
   /** Paged, scope-bound reads; the host supplies the matching port members. */
   memoryPagination?: boolean;
+  /** Named tools over the shared chat-history family. */
+  chatHistory?: boolean;
   /** Withhold saving while a host offers only retrieval. */
   memoryReadOnly?: boolean;
   /** Withhold retrieval when only the independent save capability is enabled. */

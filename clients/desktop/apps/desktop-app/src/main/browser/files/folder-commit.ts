@@ -1,3 +1,5 @@
+import { getDesktopNodeRuntime } from '../../lib/node-runtime';
+import { cleanTrustedNodeEnvironment } from '../../lib/trusted-node-environment';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
@@ -175,11 +177,11 @@ function parsed<T>(schema: z.ZodType<T>, line: string): T {
 /** Starts the helper in `folder` and waits for the folder it is bound to. */
 export async function bindFolder(folder: string): Promise<BoundFolder> {
   const child = spawn(
-    process.execPath,
-    ['--input-type=commonjs', '--eval', COMMIT_SCRIPT],
+    (await getDesktopNodeRuntime()).nodeProcess.command,
+    ['--disable-sigusr1', '--input-type=commonjs', '--eval', COMMIT_SCRIPT],
     {
       cwd: folder,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: cleanTrustedNodeEnvironment(process.env),
       stdio: ['pipe', 'pipe', 'ignore'],
       windowsHide: true,
     },

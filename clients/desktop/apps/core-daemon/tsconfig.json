@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "src/**/__scratch__/**"
+  ],
+  "references": [
+    { "path": "../../packages/copilot-recipient" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/core-runtime" },
+    { "path": "../../packages/core-platform" },
+    { "path": "../../packages/code-graph" },
+    { "path": "../../packages/core-transport" }
+  ]
+}

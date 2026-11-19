@@ -205,6 +205,11 @@ function markerForAccount(
   };
 }
 
+/** Admission observes the persisted projection after its effective route read. */
+export function settleModelGatewayMarkerWrites(): Promise<void> {
+  return markerWriteQueue;
+}
+
 function writeMarker(marker: ModelGatewayMarkerFile): void {
   if (JSON.stringify(markerCache) === JSON.stringify(marker)) return;
   markerCache = marker;

@@ -17,6 +17,8 @@ export interface GitIgnoreReadPort {
 export interface DirectoryReadOptions {
   matchingRules: DirectoryMatchingRules;
   gitIgnore?: GitIgnoreReadPort;
+  /** Called once when a failed ignore check made the listing use defaults. */
+  onIgnoreStateUnknown?: () => void;
   readBoundary?: FileSystemReadBoundary;
 }
 
@@ -30,6 +32,31 @@ export interface DirectoryReadEntry {
   isIndexExcluded: boolean;
   isSymlink: boolean;
   hasChildren: boolean;
+}
+
+const DEFAULT_IGNORED_SEGMENTS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  '.next',
+]);
+
+/**
+ * The conservative ignore list used while Git's ignore state is unknown:
+ * dependency trees, `.env*` files, `.git` and common build outputs, at any
+ * depth. A failed lookup must not present these as tracked sources.
+ */
+export function isDefaultIgnoredPath(relativePath: string): boolean {
+  return relativePath
+    .replace(/\\/g, '/')
+    .toLowerCase()
+    .split('/')
+    .some(
+      (segment) =>
+        DEFAULT_IGNORED_SEGMENTS.has(segment) || segment.startsWith('.env'),
+    );
 }
 
 export function hasGitPathSegment(pathValue: string): boolean {
@@ -240,6 +267,7 @@ async function getIgnoredPaths(
   gitAware: boolean,
   relativePaths: string[],
   gitIgnore?: GitIgnoreReadPort,
+  onIgnoreStateUnknown?: () => void,
 ): Promise<Set<string>> {
   if (!gitAware || !gitIgnore || relativePaths.length === 0) {
     return new Set();
@@ -247,7 +275,8 @@ async function getIgnoredPaths(
   try {
     return await gitIgnore.checkIgnoredPaths(root, relativePaths);
   } catch {
-    return new Set();
+    onIgnoreStateUnknown?.();
+    return new Set(relativePaths.filter(isDefaultIgnoredPath));
   }
 }
 
@@ -288,6 +317,7 @@ export async function readFilesystemDirectory(
     catalogRoot.gitAware,
     relativePaths,
     options.gitIgnore,
+    options.onIgnoreStateUnknown,
   );
   const treeEntries = entries.map(
     (entry): DirectoryReadEntry => ({

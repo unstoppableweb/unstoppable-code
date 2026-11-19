@@ -8,6 +8,7 @@ import {
   PROJECT_WRITE_TYPES,
 } from './families/projects/actions';
 import { PULL_REQUEST_ACTION_TYPES } from './families/pull-request/actions';
+import { PULL_REQUEST_REVIEW_ACTION_TYPES } from './families/pull-request-review/actions';
 import { TRANSCRIPT_READ_ACTION_TYPES } from './families/transcript-read/actions';
 import type { AgentActionHostCapabilities } from './surface/capabilities';
 import type { AgentActionSurface } from './surface/engine';
@@ -70,6 +71,11 @@ const ACTION_EFFECTS: ReadonlyMap<string, AgentActionEffect> = new Map<
   ...CHAT_CONTROL_ACTION_TYPES.map((type) => [type, 'external'] as const),
   ...PIPELINES_ACTION_TYPES.map((type) => [type, 'external'] as const),
   ['pipeline.execution_cancel', 'external'],
+  // A review can approve any pull request the person can push to, not only
+  // the calling chat's own.
+  ...PULL_REQUEST_REVIEW_ACTION_TYPES.map(
+    (type) => [type, 'external'] as const,
+  ),
   ['pipeline.execution_resume', 'external'],
   // Account configuration is the owner's, outside the chat's own work.
   ['settings.ai_gateway.connect', 'external'],
@@ -100,6 +106,8 @@ const TOOL_EFFECTS: Readonly<
   save_memory: 'write',
   search_memory: 'read',
   read_memory: 'read',
+  search_chats: 'read',
+  read_chat_excerpt: 'read',
   // The Feed tools act as the calling chat in its own Feed: search reads, and
   // the Ledger lets a chat add entries it authors and change only entries it
   // owns (LD04), so add and update are the chat's own work.

@@ -407,6 +407,7 @@ export function TeamPage({
             onDeleted={afterMembershipRemoved}
             externalAgentsEnabled={externalAgentsEnabled}
             aiGatewayEnabled={aiGatewayEnabled}
+            projectsEnabled={projectsEnabled}
           />
         );
     }

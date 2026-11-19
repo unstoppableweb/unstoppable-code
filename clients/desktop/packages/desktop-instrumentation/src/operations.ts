@@ -126,6 +126,10 @@ export const DESKTOP_OPERATIONS = {
       'imported_claude_count',
       'imported_codex_count',
       'failed_count',
+      'skipped_count',
+      'failed_retryable_count',
+      'failed_final_count',
+      'unconfirmed_count',
       'chats_imported_count',
       'picked_folder',
       'outcome',
@@ -354,6 +358,16 @@ export const DESKTOP_OPERATIONS = {
       'failed_job_count',
       'cancelled_job_count',
       'skipped_job_count',
+      // Why a save of the run's state failed: an allowlisted errno, a store
+      // refusal, `lock_timeout` or `unknown` (CAN-7095).
+      'persist_failure_code',
+      // What failed the run, closed values only (CAN-7118): `step`, `engine`,
+      // `host_port` or `spawn`, with an allowlisted errno or error class, and
+      // the first failed step's typed host failure reason and kind.
+      'failure_origin',
+      'failure_code',
+      'failed_step_failure_reason',
+      'failed_step_kind',
     ],
   },
   'canopy.pipeline_crud': {
@@ -365,6 +379,8 @@ export const DESKTOP_OPERATIONS = {
       'result_count',
       'trigger_type',
       'share_scope',
+      'share_failure_kind',
+      'share_failure_stage',
       'has_pipeline_id',
       'has_project_context',
       'has_search_query',
@@ -528,6 +544,7 @@ export const DESKTOP_OPERATIONS = {
       'install_outcome',
       'claude_result',
       'codex_result',
+      'failure_code',
     ],
   },
   'canopy.skill_suggestion': {
@@ -542,6 +559,28 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'daemon:route_select',
     contextKeys: ['route_family', 'route_host', 'route_reason'],
   },
+  'canopy.chat_storage_load': {
+    kind: 'product',
+    posthogEvent: 'chat:storage_load_fail',
+    contextKeys: ['load_reason', 'is_newer_format'],
+  },
+  'canopy.chat_storage_checkpoint': {
+    kind: 'product',
+    posthogEvent: 'chat:storage_checkpoint_fail',
+    contextKeys: ['checkpoint_reason'],
+  },
+  'canopy.chat_storage_promotion': {
+    kind: 'product',
+    posthogEvent: 'chat:storage_promotion_fail',
+    contextKeys: ['promotion_reason'],
+  },
+  // Code Review namespace guardrail (CAN-6848): a failed qualification and
+  // each effect class that proceeded anyway. Fixed codes only.
+  'canopy.chat_review_namespace': {
+    kind: 'product',
+    posthogEvent: 'chat:review_namespace_fail',
+    contextKeys: ['namespace_effect', 'namespace_reason'],
+  },
   'canopy.chat_storage_format4': {
     kind: 'product',
     posthogEvent: 'chat:storage_format4_update',
@@ -550,6 +589,8 @@ export const DESKTOP_OPERATIONS = {
       'format4_reason',
       'format4_attempt',
       'format4_duration_bucket',
+      'format4_remaining_bucket',
+      'format4_pause_reason',
     ],
   },
   // The chat automation migration (CAN-5479): one event per run with

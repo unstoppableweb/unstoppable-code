@@ -21,31 +21,21 @@ import {
   PORTAL_COMMAND_TYPES,
   PORTAL_COMMAND_TYPES_SET,
   PORTAL_DESTRUCTIVE_COMMAND_TYPES,
-  PORTAL_LONG_POLL_MAX_TIMEOUT_MS,
-  PORTAL_LONG_RPC_COMMAND_TYPES,
-  PORTAL_LONG_RPC_RESULT_TIMEOUT_MS,
-  PORTAL_WORKSPACE_CREATE_EXPIRATION_MS,
-  portalLongRpcResultWaitMs,
   repositoryNameFromCloneUrl,
-  PORTAL_SMALL_RPC_COMMAND_TYPES,
   PORTAL_CAPABILITY_COLLECTION_MUTATIONS,
   type PortalCollectionsSaveResult,
   PORTAL_ENTITY_TYPES,
   PORTAL_EVENT_TYPES,
-  PORTAL_FEATURE_SCOPE_ENTITY_TYPES,
-  OVERVIEW_SCOPE_ENTITY_TYPES,
   PORTAL_CAPABILITY_PROVIDER_USAGE,
+  PORTAL_CAPABILITY_PROVIDER_USAGE_LIMITS,
   PORTAL_PROVIDER_USAGE_PROVIDERS,
+  PortalProviderUsageLimitsGetPayloadSchema,
   isPortalProviderUsageProvider,
-  STANDALONE_CHAT_SCOPE_ENTITY_TYPES,
-  WORKSPACE_SCOPE_ENTITY_TYPES,
   parseInputDeliveryViews,
   parseChatAgentSentInfo,
   parseSteeringCapabilities,
   projectPortalPipelineDispatchInputs,
-  PORTAL_SNAPSHOT_SCOPES,
   PORTAL_TARGET_KEYS,
-  WORKTREE_SCOPE_ENTITY_TYPES,
   type PortalAppAdvisorAnswerQuestionPayload,
   type PortalPipelineChatFollowUpPrepareResult,
   type PortalPipelineContentReadResult,
@@ -227,10 +217,9 @@ describe('changed-files paging contract compatibility', () => {
 });
 
 describe('Portal terminal failure recovery contract', () => {
-  it('returns bounded authoritative results through the capability-gated small RPC', () => {
+  it('carries the capability-gated retry request', () => {
     const command = 'portal.chat.retry_failure';
     expect(PORTAL_COMMAND_TYPES).toContain(command);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
     expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     const request: PortalCommandPayloadMap[typeof command] = {
       projectId: 'project-1',
@@ -249,7 +238,6 @@ describe('Portal branch picker contract', () => {
   it('negotiates the branch catalogue independently of the existing create payload', () => {
     const command = 'portal.worktree.branches.list';
     expect(PORTAL_COMMAND_TYPES).toContain(command);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
     expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     const query: PortalCommandPayloadMap[typeof command] = {
       workspaceId: 'ws',
@@ -273,12 +261,10 @@ describe('Portal branch picker contract', () => {
 });
 
 describe('repository owner Portal command', () => {
-  it('is a read-only small RPC with a URL payload', () => {
+  it('is a non-destructive command with a URL payload', () => {
     const command = 'portal.org_projects.find_repository_owner';
     expect(PORTAL_COMMAND_TYPES).toContain(command);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
     expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
-    expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(command)).toBe(false);
     const payload: PortalCommandPayloadMap[typeof command] = {
       remoteUrl: 'git@github.com:acme/catalog.git',
     };
@@ -954,7 +940,7 @@ describe('portal protocol contract', () => {
     }
   });
 
-  it('registers pipeline execution controls with the intended RPC classification', () => {
+  it('registers pipeline execution controls in the command vocabulary', () => {
     const payloads = {
       'portal.pipeline.execution_list': {
         projectId: 'workspace-1',
@@ -990,23 +976,16 @@ describe('portal protocol contract', () => {
       'portal.pipeline.retry',
       'portal.pipeline.rerun',
     ]);
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.pipeline.execution_list'),
-    ).toBe(true);
-    // The three control commands reconcile through portal.pipeline.event,
-    // exactly like run and cancel, so they remain fire-and-forget.
     for (const command of [
       'portal.pipeline.resume',
       'portal.pipeline.retry',
       'portal.pipeline.rerun',
     ] as const) {
       expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(false);
-      expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(command)).toBe(false);
     }
   });
 
-  it('keeps pipeline detail as one explicit-locator small RPC', () => {
+  it('keeps pipeline detail as one explicit-locator command', () => {
     const payload: PortalPipelineGetPayload = {
       projectId: 'workspace-1',
       pipelineId: 'project--ci.yml',
@@ -1026,9 +1005,6 @@ describe('portal protocol contract', () => {
     expect(result.definition).not.toHaveProperty('canonicalYaml');
     expect(result.definition).not.toHaveProperty('canonicalYamlTruncated');
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.pipeline.get')).toBe(true);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.pipeline.get')).toBe(
-      true,
-    );
   });
 
   it('pins workspace-items read payloads, results, and command parity', (): void => {
@@ -1169,9 +1145,6 @@ describe('portal protocol contract', () => {
     // CAN-2829: the web marketplace shares a plugin through the paired
     // desktop, which owns the plugin files and the Cloud credentials.
     expect(PORTAL_COMMAND_TYPES).toContain('portal.plugins.share_plugin');
-    expect(
-      PORTAL_LONG_RPC_COMMAND_TYPES.has('portal.plugins.share_plugin'),
-    ).toBe(true);
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.chat.fork')).toBe(true);
     expect(PORTAL_COMMAND_TYPES).toContain('portal.chat.branch');
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.chat.branch')).toBe(true);
@@ -1186,7 +1159,7 @@ describe('portal protocol contract', () => {
     expect(PORTAL_ENTITY_TYPES).toContain('background_process');
   });
 
-  it('pins the chat TODO projection and replacement scopes', () => {
+  it('pins the chat TODO projection', () => {
     const projection: PortalChatTodoProjection = {
       localId: 'chat-1',
       workspaceLocalId: 'workspace-1',
@@ -1197,17 +1170,8 @@ describe('portal protocol contract', () => {
       ],
     };
 
-    void projection;
-    // localId = chatId is enforced end-to-end by the stacked desktop PR's
-    // apps/desktop-app/src/main/portal/__tests__/portal-snapshot-builders.test.ts.
-    expect(WORKTREE_SCOPE_ENTITY_TYPES).toContain('chat_todo');
-    expect(WORKTREE_SCOPE_ENTITY_TYPES).toContain('mcp_server');
-    expect(WORKTREE_SCOPE_ENTITY_TYPES).toContain('background_process');
-    expect(PORTAL_FEATURE_SCOPE_ENTITY_TYPES.chat).toEqual([
-      'chat_summary',
-      'chat_todo',
-      'watcher',
-    ]);
+    expect(JSON.parse(JSON.stringify(projection))).toEqual(projection);
+    expect(PORTAL_ENTITY_TYPES).toContain('chat_todo');
   });
 
   it('exposes the CAN-1217 persistent composer setter commands', () => {
@@ -1275,6 +1239,31 @@ describe('portal protocol contract', () => {
     }
   });
 
+  it('preserves the typed provider-usage error in a failed response', () => {
+    const failed: PortalCommandFailedPayload = {
+      commandId: 'cmd-usage-limits',
+      sequenceNumber: 6,
+      error: {
+        code: 'unavailable',
+        message: 'Cached provider usage is unavailable.',
+      },
+      response: {
+        code: 'unavailable',
+        message: 'Cached provider usage is unavailable.',
+        retryable: false,
+      },
+      retryable: false,
+      generatedAt: '2026-11-12T00:00:00.000Z',
+    };
+
+    expect(JSON.parse(JSON.stringify(failed))).toEqual(failed);
+    expect(failed.response).toEqual({
+      code: 'unavailable',
+      message: 'Cached provider usage is unavailable.',
+      retryable: false,
+    });
+  });
+
   it('adds the task commands behind their capabilities', () => {
     expect([
       PORTAL_CAPABILITY_WORKTREE_CREATE_FROM,
@@ -1295,7 +1284,6 @@ describe('portal protocol contract', () => {
     ] as const;
     for (const command of commands) {
       expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
     }
     expect(
       PORTAL_DESTRUCTIVE_COMMAND_TYPES.has('portal.work_entry.delete'),
@@ -1928,17 +1916,11 @@ describe('portal protocol contract', () => {
     for (const command of commands) {
       expect(PORTAL_COMMAND_TYPES).toContain(command);
       expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
-      // Relayed chat commands are not flag-gated destructive operations.
+      // Relayed chat commands are not destructive operations.
       expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     }
     expect(PORTAL_EVENT_TYPES).toContain('portal.app_advisor.event');
     expect(PORTAL_ENTITY_TYPES).toContain('app_advisor_chat');
-    expect(PORTAL_SNAPSHOT_SCOPES).toContain('app_advisor');
-    expect(PORTAL_FEATURE_SCOPE_ENTITY_TYPES.app_advisor).toEqual([
-      'app_advisor_chat',
-      'app_advisor_item_groups',
-      'watcher',
-    ]);
     expect(PORTAL_CAPABILITY_APP_ADVISOR).toBe('app_advisor');
     expect(PORTAL_CAPABILITY_WORKTREE_RETENTION).toBe('worktree_retention');
   });
@@ -2039,11 +2021,8 @@ describe('portal protocol contract', () => {
     for (const command of commands) {
       expect(PORTAL_COMMAND_TYPES).toContain(command);
       expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
-      // Read-only browsing is never a flag-gated destructive operation.
+      // Read-only browsing is never a destructive operation.
       expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
-      expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(command)).toBe(false);
-      // Every browse command answers synchronously on the submit response.
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
     }
   });
 
@@ -2063,15 +2042,6 @@ describe('portal protocol contract', () => {
       expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
       expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     }
-    // The cached list answers on the submit response. Resolving may prepare
-    // a Codex plugin before it commits, so it waits on the long tier.
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.editor.list_invocables'),
-    ).toBe(true);
-    expect(
-      PORTAL_LONG_RPC_COMMAND_TYPES.has('portal.editor.resolve_invocable'),
-    ).toBe(true);
-
     // Payloads name chats by opaque ids only; the host owns paths, enable
     // refs and insert text.
     const list: PortalCommandPayloadMap['portal.editor.list_invocables'] = {
@@ -2105,12 +2075,7 @@ describe('portal protocol contract', () => {
     });
   });
 
-  it('keeps the small-RPC set inside the closed command enum', () => {
-    for (const type of PORTAL_SMALL_RPC_COMMAND_TYPES) {
-      expect(PORTAL_COMMAND_TYPES).toContain(type);
-    }
-    // The pre-existing small-RPC commands remain members after the refactor
-    // of the browser commands route onto this shared set.
+  it('keeps the catalog read budgets', () => {
     for (const type of [
       'portal.editor.list_slash_commands',
       'portal.editor.list_file_mentions',
@@ -2120,15 +2085,8 @@ describe('portal protocol contract', () => {
       'portal.workspace.update',
       'portal.state.request',
     ] as const) {
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(type)).toBe(true);
+      expect(PORTAL_COMMAND_TYPES).toContain(type);
     }
-    // Long-running creates keep their dedicated wait path.
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.workspace.create')).toBe(
-      false,
-    );
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.worktree.create')).toBe(
-      false,
-    );
     expect(PORTAL_CATALOG_CONTENT_MAX_BYTES).toBe(256 * 1024);
     // The whole-result budget must leave real headroom under the ~1 MiB
     // portal event cap while still fitting a full 256 KB body.
@@ -2183,15 +2141,9 @@ describe('portal protocol contract', () => {
     expect(getCollection.collectionId).toBe('abc-123');
   });
 
-  it('saves a collection through one small-RPC command behind its own capability', () => {
+  it('saves a collection through one command behind its own capability', () => {
     expect(PORTAL_COMMAND_TYPES).toContain('portal.collections.save');
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.collections.save')).toBe(true);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.collections.save')).toBe(
-      true,
-    );
-    expect(PORTAL_LONG_RPC_COMMAND_TYPES.has('portal.collections.save')).toBe(
-      false,
-    );
     expect(PORTAL_CAPABILITY_COLLECTION_MUTATIONS).toBe(
       'collection_mutations_v1',
     );
@@ -2242,46 +2194,6 @@ describe('portal protocol contract', () => {
     expect(
       PORTAL_COMMAND_TYPES_SET.has('portal.plugins.uninstall_builtin'),
     ).toBe(false);
-  });
-
-  it('keeps the long-RPC set in lockstep with the wait tiers', () => {
-    // Every long-RPC member is a real command and never small-RPC (the two
-    // wait tiers are mutually exclusive branches in the commands route).
-    PORTAL_LONG_RPC_COMMAND_TYPES.forEach((type) => {
-      expect(PORTAL_COMMAND_TYPES).toContain(type);
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(type)).toBe(false);
-    });
-    // The pre-existing creates joined this shared set when the route's
-    // hardcoded branch was generalized.
-    for (const type of [
-      'portal.workspace.create',
-      'portal.worktree.create',
-      'portal.plugins.install_builtin',
-      'portal.plugins.install_external',
-      'portal.marketplace.add',
-      'portal.marketplace.update',
-      'portal.marketplace.remove',
-    ] as const) {
-      expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(type)).toBe(true);
-    }
-    // refresh_all is FIRE-AND-FORGET: minutes-long fan-out, so neither wait
-    // tier may hold the submit response open for it.
-    expect(
-      PORTAL_LONG_RPC_COMMAND_TYPES.has('portal.marketplace.refresh_all'),
-    ).toBe(false);
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.marketplace.refresh_all'),
-    ).toBe(false);
-    // The MCP toggle is a fast local fs write → small-RPC.
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.mcp.set_config_enabled'),
-    ).toBe(true);
-    // The long-RPC wait window generalizes the workspace-create constant and
-    // stays inside the proven long-poll infra ceiling and under the 60s
-    // command TTL (a longer wait could observe EXPIRED mid-flight).
-    expect(PORTAL_LONG_RPC_RESULT_TIMEOUT_MS).toBe(
-      PORTAL_LONG_POLL_MAX_TIMEOUT_MS,
-    );
   });
 
   it('announces the plugin-mutations capability under its stable name', () => {
@@ -2537,18 +2449,13 @@ describe('pipeline run chat links (CAN-3619)', () => {
 });
 
 describe('pipeline chat follow-up (CAN-3719)', () => {
-  it('pins the capability key and the small-RPC prepare command', () => {
+  it('pins the capability key and the prepare command', () => {
     expect(PORTAL_CAPABILITY_PIPELINE_CHAT_FOLLOW_UP).toBe(
       'pipeline_chat_follow_up',
     );
     expect(PORTAL_COMMAND_TYPES).toContain(
       'portal.pipeline.chat_follow_up.prepare',
     );
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has(
-        'portal.pipeline.chat_follow_up.prepare',
-      ),
-    ).toBe(true);
   });
 
   it('round-trips path-free availability and the prepare shapes', () => {
@@ -2579,12 +2486,9 @@ describe('pipeline chat follow-up (CAN-3719)', () => {
 });
 
 describe('pipeline content reads (CAN-3717)', () => {
-  it('pins the capability key and the small-RPC read command', () => {
+  it('pins the capability key and the read command', () => {
     expect(PORTAL_CAPABILITY_PIPELINE_CONTENT).toBe('pipeline_content');
     expect(PORTAL_COMMAND_TYPES).toContain('portal.pipeline.content.read');
-    expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.pipeline.content.read'),
-    ).toBe(true);
   });
 
   it('keeps a fully escaped page under the result cap', () => {
@@ -2623,9 +2527,6 @@ describe('Claude Mod surface relay', () => {
       'portal.claude_mods.surface_command',
     );
     expect(
-      PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.claude_mods.surface_command'),
-    ).toBe(true);
-    expect(
       PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(
         'portal.claude_mods.surface_command',
       ),
@@ -2637,7 +2538,7 @@ describe('Claude Mod surface relay', () => {
 describe('Claude Mod admission controls', () => {
   const digest = `sha256:${'a'.repeat(64)}`;
 
-  it('pins the capability key and both small-RPC commands', () => {
+  it('pins the capability key and both commands', () => {
     expect(PORTAL_CAPABILITY_CLAUDE_MOD_ADMISSION).toBe(
       'claude_mod_admission_v1',
     );
@@ -2646,7 +2547,6 @@ describe('Claude Mod admission controls', () => {
       'portal.claude_mods.update',
     ] as const) {
       expect(PORTAL_COMMAND_TYPES).toContain(command);
-      expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
       expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     }
   });
@@ -2767,18 +2667,8 @@ describe('pipeline dispatch inputs (CAN-3174)', () => {
 });
 
 describe('provider usage projection (CAN-3635)', () => {
-  it('registers the provider_usage singleton only in the overview replacement set', () => {
+  it('registers the provider_usage entity type', () => {
     expect(PORTAL_ENTITY_TYPES).toContain('provider_usage');
-    expect([...OVERVIEW_SCOPE_ENTITY_TYPES]).toContain('provider_usage');
-    const otherReplacementSets: ReadonlyArray<readonly string[]> = [
-      WORKSPACE_SCOPE_ENTITY_TYPES,
-      WORKTREE_SCOPE_ENTITY_TYPES,
-      STANDALONE_CHAT_SCOPE_ENTITY_TYPES,
-      ...Object.values(PORTAL_FEATURE_SCOPE_ENTITY_TYPES),
-    ];
-    for (const replacementSet of otherReplacementSets) {
-      expect(replacementSet).not.toContain('provider_usage');
-    }
   });
 
   it('accepts Claude, Codex and Copilot as refreshable providers', () => {
@@ -2796,35 +2686,36 @@ describe('provider usage projection (CAN-3635)', () => {
     }
   });
 
-  it('registers the provider refresh as an acknowledged small RPC', () => {
+  it('registers the provider refresh as a non-destructive command', () => {
     expect(PORTAL_COMMAND_TYPES).toContain('portal.provider_usage.refresh');
     expect(PORTAL_COMMAND_TYPES_SET.has('portal.provider_usage.refresh')).toBe(
       true,
-    );
-    expect([...PORTAL_SMALL_RPC_COMMAND_TYPES]).toContain(
-      'portal.provider_usage.refresh',
-    );
-    expect([...PORTAL_LONG_RPC_COMMAND_TYPES]).not.toContain(
-      'portal.provider_usage.refresh',
     );
     expect([...PORTAL_DESTRUCTIVE_COMMAND_TYPES]).not.toContain(
       'portal.provider_usage.refresh',
     );
   });
+
+  it('registers passive provider limits as a strict empty command', () => {
+    const command = 'portal.provider_usage.limits.get';
+    expect(PORTAL_CAPABILITY_PROVIDER_USAGE_LIMITS).toBe(
+      'provider_usage_limits_v1',
+    );
+    expect(PORTAL_COMMAND_TYPES).toContain(command);
+    expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
+    expect([...PORTAL_DESTRUCTIVE_COMMAND_TYPES]).not.toContain(command);
+    expect(
+      PortalProviderUsageLimitsGetPayloadSchema.safeParse({}).success,
+    ).toBe(true);
+    for (const payload of [undefined, null, [], { targetId: 'foreign' }]) {
+      expect(
+        PortalProviderUsageLimitsGetPayloadSchema.safeParse(payload).success,
+      ).toBe(false);
+    }
+  });
 });
 
-describe('workspace clone handoff contracts', () => {
-  it('shortens only workspace-create result waits and defines a thirty-minute execution deadline', () => {
-    PORTAL_LONG_RPC_COMMAND_TYPES.forEach((type) => {
-      expect(portalLongRpcResultWaitMs(type)).toBe(
-        type === 'portal.workspace.create'
-          ? 1_000
-          : PORTAL_LONG_RPC_RESULT_TIMEOUT_MS,
-      );
-    });
-    expect(PORTAL_WORKSPACE_CREATE_EXPIRATION_MS).toBe(30 * 60_000);
-  });
-
+describe('workspace clone naming contract', () => {
   it.each([
     ['https://github.com/cursor/plugins/tree/main/pstack', 'plugins'],
     [' https://github.com/org/repo.git ', 'repo'],
@@ -2848,43 +2739,28 @@ describe('workspace clone handoff contracts', () => {
   });
 });
 
-it('registers the additive worktree branch catalog as a small RPC', () => {
+it('registers the additive worktree branch catalog command', () => {
   expect(PORTAL_COMMAND_TYPES).toContain('portal.worktree.branches.list');
-  expect(
-    PORTAL_SMALL_RPC_COMMAND_TYPES.has('portal.worktree.branches.list'),
-  ).toBe(true);
 });
 
 describe('standalone Work Entry archive contract', () => {
-  it('returns the archived Work Entry list through the read-only small RPC tier', () => {
+  it('lists archived Work Entries through a non-destructive command', () => {
     const command = 'portal.workspace.archived_work_entries.list';
     expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
-    expect(PORTAL_SMALL_RPC_COMMAND_TYPES.has(command)).toBe(true);
-    expect(PORTAL_LONG_RPC_COMMAND_TYPES.has(command)).toBe(false);
     expect(PORTAL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
   });
 
-  it('registers archive as a gated command whose ID returns at acceptance', () => {
+  it('registers archive as a destructive command', () => {
     const command = 'portal.standalone_chat.archive';
     expect(PORTAL_COMMAND_TYPES_SET.has(command)).toBe(true);
     expect([...PORTAL_DESTRUCTIVE_COMMAND_TYPES]).toContain(command);
-    // Neither wait tier holds the submit open: the browser follows the
-    // command's delivery and completion events instead.
-    expect([...PORTAL_LONG_RPC_COMMAND_TYPES]).not.toContain(command);
-    expect([...PORTAL_SMALL_RPC_COMMAND_TYPES]).not.toContain(command);
   });
 });
 
 // CAN-4847: updates have their own admission and long-running command contract.
-it('registers collection update as an operation-specific long RPC', () => {
+it('registers collection update behind its own capability', () => {
   expect(PORTAL_COMMAND_TYPES_SET.has('portal.collections.apply_update')).toBe(
     true,
-  );
-  expect([...PORTAL_LONG_RPC_COMMAND_TYPES]).toContain(
-    'portal.collections.apply_update',
-  );
-  expect([...PORTAL_SMALL_RPC_COMMAND_TYPES]).not.toContain(
-    'portal.collections.apply_update',
   );
   expect(
     Reflect.get(portalContract, 'PORTAL_CAPABILITY_COLLECTION_UPDATES'),

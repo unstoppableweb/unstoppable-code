@@ -44,8 +44,8 @@ export type RemoteLedgerOutcome =
   | { readonly kind: 'refused'; readonly error: LedgerErrorDetails };
 
 /**
- * Sends one Ledger operation to the owner for the attempt. An abort of the
- * call withdraws the request, so a cancelled call writes nothing more.
+ * Sends one Ledger operation to the owner for the attempt. An abort withdraws
+ * the request but cannot prove an in-flight mutation was not already durable.
  */
 export type RemoteLedgerOperate = (
   operation: WorkerPipelineOwnerLedgerOperation,
@@ -183,6 +183,8 @@ export function openRemoteLedgerTools(options: {
     readonly mode: string;
   };
   readonly operate: RemoteLedgerOperate;
+  /** The owner's real binding remains authoritative for scope. */
+  readonly globalScope?: boolean;
 }): LedgerChatToolsSession {
   const registry = memoryRegistry();
   const host: LedgerToolsHost = {
@@ -195,7 +197,7 @@ export function openRemoteLedgerTools(options: {
         ...(session.toolNames ? { toolNames: session.toolNames } : {}),
         planModeException: false,
         pipelineAgent: true,
-        globalScope: true,
+        globalScope: options.globalScope ?? true,
       }),
     isFlagEnabled: () => true,
     isRecordingEnabled: () => Promise.resolve(true),

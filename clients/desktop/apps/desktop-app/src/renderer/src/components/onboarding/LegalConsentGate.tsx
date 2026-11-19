@@ -146,12 +146,12 @@ export function LegalConsentGate({
                 icon={<GitHubIcon size={16} aria-hidden />}
                 testId="legal-consent-open-source"
               >
-                Open source.{' '}
+                {brandText.appName} is{' '}
                 <LegalDocumentLink
                   url={sourceUrl}
                   testId="legal-consent-source-link"
                 >
-                  View source
+                  open source
                 </LegalDocumentLink>
               </ConsentFact>
             )}
@@ -170,22 +170,20 @@ export function LegalConsentGate({
             testId="legal-consent-error"
           />
 
-          {/* One block: the agreement phrase is the checkbox's label (clicking
-              it toggles), and the document names follow under it in the text
-              column, outside that label, so clicking one never accepts them
+          {/* One sentence: the agreement phrase is the checkbox's label
+              (clicking it toggles), and the document names continue it
+              outside that label, so clicking one never accepts them
               (CAN-2621). */}
           <Surface variant="card" padding="default" className="w-full">
             <div className="text-left">
               <ChoiceField
-                aria-label="I have read and agree to the Terms of Service and Privacy Policy"
+                aria-label="I agree to the Terms of Service and Privacy Policy"
                 checked={agreed}
                 onChange={(e): void => setAgreed(e.target.checked)}
                 disabled={submitting}
                 data-testid="legal-consent-checkbox"
                 label={
-                  <span data-testid="legal-consent-label">
-                    I have read and agree to the
-                  </span>
+                  <span data-testid="legal-consent-label">I agree to the</span>
                 }
                 trailing={
                   <>

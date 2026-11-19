@@ -3,11 +3,13 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type JSX,
   type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import { AGENT_SECRET_VALUE_MAX_LENGTH } from '@canopy/protocol/agent-secrets';
 import {
@@ -19,11 +21,14 @@ import {
 } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
-import { FormField } from '../FormField';
+import { ConfirmDialog } from '../ConfirmDialog';
+import { FORM_FIELD_DESCRIPTION_CLASS, FormField } from '../FormField';
 import { TextArea, TextInput } from '../Field';
 import { Notice } from '../Notice';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { SegmentedControl } from '../SegmentedControl';
+import { TextLink } from '../TextLink';
+import { useChatAppName } from '../chat-look';
 import { ComposerIconButton } from './ComposerIconButton';
 import { COMPOSER_PROMPT_HEADER_CLASS } from './ComposerPrompt';
 
@@ -124,24 +129,48 @@ export function parseDotenvForSecrets(
 
 type FieldMode = 'held' | 'enter';
 
+/**
+ * A value that doesn't start with its hint's prefix. `partial` while the
+ * value is still a leading part of the prefix (`shp` for `shpat_`): the
+ * person may still be typing, so it shows only after a submit attempt.
+ */
+interface PrefixMismatch {
+  readonly prefix: string;
+  readonly partial: boolean;
+}
+
 interface FieldCheck {
   readonly blocking?: string;
   readonly warning?: string;
   readonly ok?: string;
+  /** Computed apart from `blocking`: a length error never hides it. */
+  readonly mismatch?: PrefixMismatch;
 }
 
 function checkValue(item: SecretRequestPromptItem, value: string): FieldCheck {
   if (value.trim().length === 0) return {};
+  const prefix =
+    item.hint?.prefix !== undefined && item.hint.prefix.length > 0
+      ? item.hint.prefix
+      : undefined;
+  // Raw and case-sensitive: the value is compared exactly as it is sent.
+  const mismatch: PrefixMismatch | undefined =
+    prefix !== undefined && !value.startsWith(prefix)
+      ? { prefix, partial: prefix.startsWith(value) }
+      : undefined;
+  const withMismatch = mismatch !== undefined ? { mismatch } : {};
   if (value.length > AGENT_SECRET_VALUE_MAX_LENGTH)
     return {
       blocking: `Use at most ${AGENT_SECRET_VALUE_MAX_LENGTH.toLocaleString('en-US')} characters.`,
+      ...withMismatch,
     };
   const minLength = item.hint?.minLength;
   if (minLength !== undefined && value.length < minLength)
-    return { blocking: `Use at least ${minLength} characters.` };
-  const prefix = item.hint?.prefix;
-  if (prefix !== undefined && !value.startsWith(prefix))
-    return { warning: `Usually starts with ${prefix}. Check the value.` };
+    return {
+      blocking: `Use at least ${minLength} characters.`,
+      ...withMismatch,
+    };
+  if (mismatch !== undefined) return { mismatch };
   if (value.length < SHORT_VALUE_WARNING_LENGTH)
     return {
       warning:
@@ -153,6 +182,105 @@ function checkValue(item: SecretRequestPromptItem, value: string): FieldCheck {
 
 function labelOf(item: SecretRequestPromptItem): string {
   return item.label ?? item.name;
+}
+
+// CAN-7049: a value that misses its prefix is often the wrong secret, and the
+// one that matters most is an account sign-in password typed in by habit. The
+// copy names that case plainly and never promises the hint is right.
+function mismatchCopy(prefix: string): string {
+  return `This doesn't look like the value asked for. It usually starts with ${prefix}. Never enter an account sign-in password here.`;
+}
+
+function loginHelperCopy(appName: string | undefined): string {
+  return appName !== undefined && appName.length > 0
+    ? `Don't enter your account sign-in password here. ${appName} never needs it. Not sure? Choose Decline; none of these values will be sent.`
+    : "Don't enter your account sign-in password here. Not sure? Choose Decline; none of these values will be sent.";
+}
+
+/** A description's link, as the form shows it: the parsed target and host. */
+interface DescriptionLink {
+  readonly href: string;
+  readonly host: string;
+}
+
+const URL_TRAILING_PUNCTUATION = /[.,;:!?]$/;
+// Characters that make a token's end ambiguous; such a token stays text.
+const URL_AMBIGUOUS_CHARACTERS = /["'“”‘’<>`\\]/;
+
+function countOf(text: string, character: string): number {
+  return text.split(character).length - 1;
+}
+
+/**
+ * The first standalone `https:` URL in an agent's description, as a link
+ * placed after the remaining text. Only that token moves: other URLs, and
+ * anything malformed, plain `http:`, or carrying credentials, stay text. A
+ * trailing sentence mark or an unbalanced `)` stays in the text; a query,
+ * fragment or balanced path parenthesis stays in the URL. A visible host
+ * is not a trust signal, so the link never says official or verified.
+ */
+function splitDescriptionLink(description: string): {
+  readonly text: string;
+  readonly link: DescriptionLink | null;
+} {
+  const token = /\S+/g;
+  for (
+    let match = token.exec(description);
+    match !== null;
+    match = token.exec(description)
+  ) {
+    const raw = match[0];
+    const lead = raw.startsWith('(') ? 1 : 0;
+    if (!/^https:\/\//i.test(raw.slice(lead))) continue;
+    let candidate = raw.slice(lead);
+    // A final mark in a query/fragment can be part of its value. Do not
+    // guess a shorter destination when sentence boundaries are ambiguous.
+    if (/[?#]/.test(candidate) && /[.,;:!?)]$/.test(candidate)) continue;
+    let trimming = true;
+    while (trimming) {
+      trimming =
+        URL_TRAILING_PUNCTUATION.test(candidate) ||
+        (candidate.endsWith(')') &&
+          countOf(candidate, ')') > countOf(candidate, '('));
+      if (trimming) candidate = candidate.slice(0, -1);
+    }
+    if (countOf(candidate, '(') !== countOf(candidate, ')')) continue;
+    if (URL_AMBIGUOUS_CHARACTERS.test(candidate)) continue;
+    let parsed: URL;
+    try {
+      parsed = new URL(candidate);
+    } catch {
+      continue;
+    }
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname.length === 0 ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0
+    )
+      continue;
+    const start = match.index + lead;
+    let before = description.slice(0, start);
+    const after = description.slice(start + candidate.length);
+    // No space left before a sentence mark the URL sat in front of.
+    if (after.length === 0 || /^[\s.,;:!?)]/.test(after))
+      before = before.replace(/\s+$/, '');
+    return {
+      text: `${before}${after}`.trim(),
+      link: { href: parsed.href, host: parsed.hostname },
+    };
+  }
+  return { text: description, link: null };
+}
+
+/** An open Send anyway confirmation, bound to the submission it was asked for. */
+interface PendingConfirmation {
+  /** The value revision when it opened; any later edit invalidates it. */
+  readonly revision: number;
+  /** The request's metadata when it opened. */
+  readonly requestKey: string;
+  /** The prompt's own document, so a popped-out window gets the dialog. */
+  readonly ownerDocument: Document;
 }
 
 /** Masks a multiline field's text (inherited) without changing what it holds. */
@@ -171,6 +299,11 @@ const FOOTER_COPY: Record<SecretRequestPromptProps['accessMode'], string> = {
  * they are sent, on Decline and when the prompt unmounts, and they never
  * reach a draft, a store or the composer. x or Escape closes the prompt and
  * keeps the request waiting.
+ *
+ * A value that misses its hint's prefix is a nudge, not a block (the hint
+ * may be wrong): Provide and Enter both open a Send anyway confirmation, and
+ * only its explicit Send anyway sends. That confirmation covers the whole
+ * submission and lapses when the values or the request change (CAN-7049).
  */
 export function SecretRequestPrompt({
   agentName,
@@ -189,6 +322,9 @@ export function SecretRequestPrompt({
 }: SecretRequestPromptProps): JSX.Element {
   const titleId = useId();
   const pasteId = useId();
+  const helperId = useId();
+  const appName = useChatAppName();
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const firstFieldRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(
     null,
   );
@@ -199,7 +335,36 @@ export function SecretRequestPrompt({
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState('');
   const [pasteResult, setPasteResult] = useState<string | null>(null);
+  // Counts edits to values and modes, so a confirmation can tell whether the
+  // submission it was asked about is still the one on screen without
+  // keeping a second copy of the secrets.
+  const [revision, setRevision] = useState(0);
+  const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(
+    null,
+  );
+  // Single flight: set while a confirmation is open or a send has started in
+  // this event, before React re-renders, so overlapping key and submit
+  // events can't open two dialogs or send twice.
+  const gateRef = useRef<'idle' | 'confirming' | 'sending' | 'closed'>('idle');
+  const activeConfirmationRef = useRef<PendingConfirmation | null>(null);
   const locked = busy !== null || disconnected || readOnlyHint !== undefined;
+  // Metadata only (never values): a different request, or changed hints,
+  // invalidates an open confirmation.
+  const requestKey = useMemo(
+    () => JSON.stringify({ agentName, reason, items }),
+    [agentName, reason, items],
+  );
+
+  const setValue = (name: string, value: string): void => {
+    cancelConfirmation();
+    setValues((current) => ({ ...current, [name]: value }));
+    setRevision((current) => current + 1);
+  };
+  const setMode = (name: string, mode: FieldMode): void => {
+    cancelConfirmation();
+    setModes((current) => ({ ...current, [name]: mode }));
+    setRevision((current) => current + 1);
+  };
 
   // Values never outlive the prompt.
   useEffect(
@@ -240,10 +405,85 @@ export function SecretRequestPrompt({
   ).length;
   const canSubmit =
     !locked && missingRequired.length === 0 && !blocked && provideCount > 0;
+  // Every entered value that misses its prefix, shown or not: the gate asks
+  // about a partial-prefix value too.
+  const mismatched = items.flatMap((item) => {
+    const mismatch = checks.get(item.name)?.mismatch;
+    return modeOf(item) === 'enter' && mismatch !== undefined
+      ? [{ item, mismatch }]
+      : [];
+  });
 
-  const submit = (): void => {
-    setAttempted(true);
-    if (!canSubmit) return;
+  /** The message under a field: missing, then blocking, then a mismatch. */
+  const fieldErrorOf = (
+    item: SecretRequestPromptItem,
+  ): { readonly text: string; readonly mismatch: boolean } | undefined => {
+    if (modeOf(item) !== 'enter') return undefined;
+    const value = values[item.name] ?? '';
+    const check = checks.get(item.name) ?? {};
+    if (attempted && item.required !== false && value.trim().length === 0)
+      return { text: `Enter ${labelOf(item)}.`, mismatch: false };
+    if (attempted && check.blocking !== undefined)
+      return { text: check.blocking, mismatch: false };
+    // Design deviation (docs/design/forms.md shows errors after submit): a
+    // prefix mismatch shows while typing, so the person sees it before
+    // choosing to send. A partial prefix waits for an attempt (CAN-7049).
+    if (check.mismatch !== undefined && (attempted || !check.mismatch.partial))
+      return { text: mismatchCopy(check.mismatch.prefix), mismatch: true };
+    return undefined;
+  };
+  const shownMismatches = items.flatMap((item) => {
+    const error = fieldErrorOf(item);
+    return error?.mismatch === true ? [{ item, text: error.text }] : [];
+  });
+  // Stable while the same fields mismatch, so typing doesn't re-announce.
+  const mismatchAnnouncement =
+    shownMismatches.length === 1 && items.length === 1
+      ? (shownMismatches[0]?.text ?? '')
+      : shownMismatches
+          .map(({ item, text }) => `${labelOf(item)}: ${text}`)
+          .join(' ');
+  const hasTypedField = items.some((item) => modeOf(item) === 'enter');
+
+  const confirmationValid =
+    confirmation !== null &&
+    confirmation.revision === revision &&
+    confirmation.requestKey === requestKey &&
+    canSubmit &&
+    mismatched.length > 0;
+
+  // A retained callback must compare against the latest committed state,
+  // not the render in which that callback opened its dialog. No secrets are
+  // copied into this identity/eligibility record.
+  const submissionRef = useRef({ revision, requestKey, canSubmit });
+  useLayoutEffect(() => {
+    submissionRef.current = { revision, requestKey, canSubmit };
+    if (!confirmationValid) activeConfirmationRef.current = null;
+  });
+  // Clearing entered values can leave held/optional values eligible. Keep
+  // that delivery single-flight until the host completes it or the person
+  // changes the submission (setValue/setMode also release the gate).
+  useLayoutEffect(() => {
+    if (!locked && gateRef.current === 'sending') gateRef.current = 'idle';
+  }, [requestKey, locked]);
+  useLayoutEffect(() => {
+    gateRef.current = 'idle';
+    return (): void => {
+      activeConfirmationRef.current = null;
+      gateRef.current = 'closed';
+    };
+  }, []);
+
+  // A confirmation for a submission that changed underneath it (an edit, a
+  // new request, a lock) lapses; the dialog is already hidden by
+  // `confirmationValid`, and the next submission goes through the gate.
+  useEffect(() => {
+    if (confirmation === null || confirmationValid) return;
+    gateRef.current = 'idle';
+    setConfirmation(null);
+  }, [confirmation, confirmationValid]);
+
+  const send = (): void => {
     const entered: Record<string, string> = {};
     const useHeld: string[] = [];
     for (const item of items) {
@@ -259,18 +499,84 @@ export function SecretRequestPrompt({
     setVisible({});
     setPasteText('');
     setPasteOpen(false);
+    setPasteResult(null);
     setAttempted(false);
+    setConfirmation(null);
+    setRevision((current) => current + 1);
     onSubmit({ values: entered, useHeld });
   };
 
+  /**
+   * Every submission (Provide, Enter, the form's submit) comes through here:
+   * it marks the attempt, validates, then asks to confirm a mismatch or
+   * sends. Opening the confirmation sends nothing.
+   */
+  const requestSubmit = (): void => {
+    if (gateRef.current !== 'idle') return;
+    setAttempted(true);
+    if (!canSubmit) return;
+    if (mismatched.length > 0) {
+      gateRef.current = 'confirming';
+      const pending: PendingConfirmation = {
+        revision,
+        requestKey,
+        ownerDocument: rootRef.current?.ownerDocument ?? document,
+      };
+      activeConfirmationRef.current = pending;
+      setConfirmation(pending);
+      return;
+    }
+    gateRef.current = 'sending';
+    send();
+  };
+
+  function cancelConfirmation(): void {
+    activeConfirmationRef.current = null;
+    gateRef.current = 'idle';
+    setConfirmation(null);
+  }
+
+  const close = (): void => {
+    cancelConfirmation();
+    gateRef.current = 'closed';
+    onClose();
+  };
+
+  /** Only the dialog's Send anyway action sends a mismatched submission. */
+  const confirmSend = (): void => {
+    if (
+      gateRef.current !== 'confirming' ||
+      confirmation === null ||
+      activeConfirmationRef.current !== confirmation
+    )
+      return;
+    const current = submissionRef.current;
+    cancelConfirmation();
+    // Rechecked here, not only at render: a stale dialog never sends.
+    if (
+      !current.canSubmit ||
+      current.revision !== confirmation.revision ||
+      current.requestKey !== confirmation.requestKey
+    )
+      return;
+    gateRef.current = 'sending';
+    send();
+  };
+
   const decline = (): void => {
+    cancelConfirmation();
     setValues({});
     setVisible({});
     setPasteText('');
+    setPasteOpen(false);
+    setPasteResult(null);
+    setAttempted(false);
+    setRevision((current) => current + 1);
     onDecline();
   };
 
   const applyPaste = (): void => {
+    cancelConfirmation();
     const parsed = parseDotenvForSecrets(
       pasteText,
       items
@@ -291,13 +597,16 @@ export function SecretRequestPrompt({
       for (const name of names) next[name] = 'enter';
       return next;
     });
+    setRevision((current) => current + 1);
     setPasteOpen(false);
   };
 
   const handleFieldKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
     if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    submit();
+    // A held Enter repeats: only the first press submits.
+    if (event.repeat) return;
+    requestSubmit();
   };
 
   useEffect(() => {
@@ -330,17 +639,71 @@ export function SecretRequestPrompt({
       ? `${agentName} needs a secret`
       : `${agentName} needs ${items.length} secrets`;
   let firstInputAssigned = false;
+  const confirmationOpen = confirmation !== null && confirmationValid;
+  let confirmationMessage: ReactNode = null;
+  if (confirmationOpen) {
+    const [only] = mismatched;
+    const whole =
+      provideCount > 1
+        ? " Sending will provide all the values you've supplied."
+        : '';
+    confirmationMessage =
+      mismatched.length === 1 && only !== undefined ? (
+        <span className={REPLAY_BLOCK_CLASS}>
+          The value for “{labelOf(only.item)}” doesn't start with{' '}
+          <span className="font-mono">{only.mismatch.prefix}</span>, so it may
+          be the wrong value. If it's an account sign-in password, choose
+          Cancel.
+          {whole}
+        </span>
+      ) : (
+        <span className={`${REPLAY_BLOCK_CLASS} flex flex-col gap-1.5`}>
+          <span>
+            These values don't start with their expected prefixes and may be
+            wrong:
+          </span>
+          <ul className="list-disc pl-5">
+            {mismatched.map(({ item, mismatch }) => (
+              <li key={item.name}>
+                {labelOf(item)}: usually starts with{' '}
+                <span className="font-mono">{mismatch.prefix}</span>
+              </li>
+            ))}
+          </ul>
+          <span>
+            If any is an account sign-in password, choose Cancel.{whole}
+          </span>
+        </span>
+      );
+  }
 
   return (
     <div
+      ref={rootRef}
       data-testid="chat-secret-request-prompt"
       role="group"
       aria-labelledby={titleId}
       className="flex flex-col gap-2 pb-1 text-pretty"
       onKeyDown={(event): void => {
+        // The confirmation portals out but its key events still bubble here
+        // through React. Leave them to the dialog: its own Escape closes only
+        // it, and a held Enter that opened it must not answer it.
+        if (confirmation !== null) {
+          if (event.key === 'Enter' && event.repeat) event.preventDefault();
+          return;
+        }
         if (event.key !== 'Escape' || event.defaultPrevented) return;
+        // Another portaled overlay inside this tree answers its own Escape.
+        // The window's own `Node`, so a popped-out window's nodes match.
+        const view = event.currentTarget.ownerDocument.defaultView;
+        if (
+          view !== null &&
+          event.target instanceof view.Node &&
+          !event.currentTarget.contains(event.target)
+        )
+          return;
         event.preventDefault();
-        onClose();
+        close();
       }}
     >
       <div className={`${COMPOSER_PROMPT_HEADER_CLASS} items-start`}>
@@ -349,7 +712,7 @@ export function SecretRequestPrompt({
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5 py-1">
           <div id={titleId} className="text-s font-medium fg-primary">
-            {title}
+            <span className={REPLAY_BLOCK_CLASS}>{title}</span>
           </div>
           <div
             className={`${REPLAY_BLOCK_CLASS} text-s fg-secondary break-words`}
@@ -378,7 +741,7 @@ export function SecretRequestPrompt({
             capsule
             tone="strong"
             aria-label="Close"
-            onClick={onClose}
+            onClick={close}
             data-testid="chat-secret-request-close"
           >
             <CloseLargeIcon size={16} />
@@ -392,7 +755,7 @@ export function SecretRequestPrompt({
         noValidate
         onSubmit={(event): void => {
           event.preventDefault();
-          submit();
+          requestSubmit();
         }}
       >
         {pasteOpen && (
@@ -443,24 +806,17 @@ export function SecretRequestPrompt({
               const value = values[item.name] ?? '';
               const check = checks.get(item.name) ?? {};
               const shown = visible[item.name] === true;
-              const missing =
-                attempted &&
-                item.required !== false &&
-                mode === 'enter' &&
-                value.trim().length === 0;
-              const error = missing
-                ? `Enter ${labelOf(item)}.`
-                : attempted && check.blocking
-                  ? check.blocking
-                  : undefined;
+              const error = fieldErrorOf(item)?.text;
+              const description =
+                item.description !== undefined
+                  ? splitDescriptionLink(item.description)
+                  : null;
               const assignFirst = !firstInputAssigned && mode === 'enter';
               if (assignFirst) firstInputAssigned = true;
               const toggle = (
                 <ComposerIconButton
                   capsule
-                  aria-label={
-                    shown ? `Hide ${labelOf(item)}` : `Show ${labelOf(item)}`
-                  }
+                  aria-labelledby={`${helperId}-${item.name}-visibility`}
                   aria-pressed={shown}
                   disabled={locked}
                   onClick={(): void =>
@@ -471,6 +827,12 @@ export function SecretRequestPrompt({
                   }
                   data-testid={`chat-secret-request-toggle-${item.name}`}
                 >
+                  <span
+                    id={`${helperId}-${item.name}-visibility`}
+                    className={`${REPLAY_BLOCK_CLASS} sr-only`}
+                  >
+                    {shown ? `Hide ${labelOf(item)}` : `Show ${labelOf(item)}`}
+                  </span>
                   {shown ? <EyeOffIcon size={14} /> : <EyeIcon size={14} />}
                 </ComposerIconButton>
               );
@@ -479,8 +841,15 @@ export function SecretRequestPrompt({
                   <FormField
                     label={
                       <span className="inline-flex flex-wrap items-center gap-2">
-                        <span>{labelOf(item)}</span>
-                        <span className="rounded-sm bg-subtle px-1.5 py-0.5 font-mono text-xs fg-secondary">
+                        <span
+                          id={`${helperId}-${item.name}-label`}
+                          className={REPLAY_BLOCK_CLASS}
+                        >
+                          {labelOf(item)}
+                        </span>
+                        <span
+                          className={`${REPLAY_BLOCK_CLASS} rounded-sm bg-subtle px-1.5 py-0.5 font-mono text-xs fg-secondary`}
+                        >
                           {item.name}
                         </span>
                       </span>
@@ -488,12 +857,26 @@ export function SecretRequestPrompt({
                     {...(item.required === false
                       ? { labelMeta: 'Optional' }
                       : {})}
-                    {...(item.description !== undefined
+                    {...(description !== null
                       ? {
-                          // Agent-supplied text: blocked from session replay.
+                          // Agent-supplied text and link: blocked from
+                          // session replay. Escaped text, never markup.
                           description: (
                             <span className={REPLAY_BLOCK_CLASS}>
-                              {item.description}
+                              {description.text}
+                              {description.link !== null && (
+                                <>
+                                  {description.text.length > 0 ? ' ' : null}
+                                  <TextLink
+                                    href={description.link.href}
+                                    variant="inline"
+                                    replayBlock
+                                    data-testid={`chat-secret-request-description-link-${item.name}`}
+                                  >
+                                    Where to find it ({description.link.host})
+                                  </TextLink>
+                                </>
+                              )}
                             </span>
                           ),
                         }
@@ -501,18 +884,27 @@ export function SecretRequestPrompt({
                     {...(error !== undefined ? { error } : {})}
                     dataTestId={`chat-secret-request-field-${item.name}`}
                   >
-                    {(control) =>
-                      item.held === true && mode === 'held' ? (
+                    {(formControl) => {
+                      // Every typed field also points at the login helper.
+                      const control = {
+                        ...formControl,
+                        'aria-describedby': [
+                          formControl['aria-describedby'],
+                          helperId,
+                        ]
+                          .filter(
+                            (id): id is string =>
+                              id !== undefined && id.length > 0,
+                          )
+                          .join(' '),
+                      };
+                      return item.held === true && mode === 'held' ? (
                         <SegmentedControl<FieldMode>
-                          label={`${labelOf(item)} value`}
+                          label="Value source"
+                          describedBy={`${helperId}-${item.name}-label`}
                           value={mode}
                           semantics="radio"
-                          onChange={(next): void =>
-                            setModes((current) => ({
-                              ...current,
-                              [item.name]: next,
-                            }))
-                          }
+                          onChange={(next): void => setMode(item.name, next)}
                           options={[
                             { value: 'held', label: "Use this chat's value" },
                             { value: 'enter', label: 'Enter new' },
@@ -522,14 +914,12 @@ export function SecretRequestPrompt({
                         <div className="flex flex-col gap-1.5">
                           {item.held === true && (
                             <SegmentedControl<FieldMode>
-                              label={`${labelOf(item)} value`}
+                              label="Value source"
+                              describedBy={`${helperId}-${item.name}-label`}
                               value={mode}
                               semantics="radio"
                               onChange={(next): void =>
-                                setModes((current) => ({
-                                  ...current,
-                                  [item.name]: next,
-                                }))
+                                setMode(item.name, next)
                               }
                               options={[
                                 {
@@ -571,10 +961,7 @@ export function SecretRequestPrompt({
                                     : undefined
                                 }
                                 onChange={(event): void =>
-                                  setValues((current) => ({
-                                    ...current,
-                                    [item.name]: event.target.value,
-                                  }))
+                                  setValue(item.name, event.target.value)
                                 }
                                 data-testid={`chat-secret-request-input-${item.name}`}
                               />
@@ -602,10 +989,7 @@ export function SecretRequestPrompt({
                                 trailing={toggle}
                                 onKeyDown={handleFieldKeyDown}
                                 onChange={(event): void =>
-                                  setValues((current) => ({
-                                    ...current,
-                                    [item.name]: event.target.value,
-                                  }))
+                                  setValue(item.name, event.target.value)
                                 }
                                 data-testid={`chat-secret-request-input-${item.name}`}
                               />
@@ -613,24 +997,52 @@ export function SecretRequestPrompt({
                           </div>
                           {item.kind === 'multiline' && <div>{toggle}</div>}
                         </div>
-                      )
-                    }
+                      );
+                    }}
                   </FormField>
-                  {mode === 'enter' && (check.ok || check.warning) && (
-                    <div className="flex flex-col gap-0.5 text-xs">
-                      {check.ok && (
-                        <span className="fg-positive">{check.ok}</span>
-                      )}
-                      {check.warning && (
-                        <span className="fg-attention">{check.warning}</span>
-                      )}
-                    </div>
-                  )}
+                  {mode === 'enter' &&
+                    error === undefined &&
+                    (check.ok || check.warning) && (
+                      <div className="flex flex-col gap-0.5 text-xs">
+                        {check.ok && (
+                          <span className={`${REPLAY_BLOCK_CLASS} fg-positive`}>
+                            {check.ok}
+                          </span>
+                        )}
+                        {check.warning && (
+                          <span className="fg-attention">{check.warning}</span>
+                        )}
+                      </div>
+                    )}
                 </div>
               );
             })}
           </div>
         </OverlayScrollArea>
+
+        {/* Once, outside the scroll area, so it stays in view; every typed
+            field points at it. Kept for `password` fields too: a database
+            password can belong here, an account sign-in password can't. */}
+        {hasTypedField && (
+          <p
+            id={helperId}
+            className={FORM_FIELD_DESCRIPTION_CLASS}
+            data-testid="chat-secret-request-login-helper"
+          >
+            {loginHelperCopy(appName)}
+          </p>
+        )}
+        {/* Always mounted so a new mismatch is announced politely; the text
+            holds steady while the same fields mismatch. Agent-supplied
+            labels and prefixes stay out of replay. */}
+        <div
+          role="status"
+          aria-live="polite"
+          className={`${REPLAY_BLOCK_CLASS} sr-only`}
+          data-testid="chat-secret-request-mismatch-status"
+        >
+          {mismatchAnnouncement}
+        </div>
 
         {notice && (
           <Notice
@@ -659,9 +1071,30 @@ export function SecretRequestPrompt({
             disabled={locked || (attempted && !canSubmit)}
             data-testid="chat-secret-request-provide"
           >
-            {provideCount <= 1 ? 'Provide' : `Provide ${provideCount}`}
+            {/* The ellipsis: this opens a confirmation, it doesn't send. */}
+            {shownMismatches.length > 0
+              ? 'Send anyway…'
+              : provideCount <= 1
+                ? 'Provide'
+                : `Provide ${provideCount}`}
           </Button>
         </div>
+        {confirmationOpen && (
+          <ConfirmDialog
+            title="Send anyway?"
+            message={confirmationMessage}
+            confirmLabel="Send anyway"
+            // Not destructive styling, but no default either: Cancel takes
+            // focus so a second Enter can't send.
+            focusCancel
+            onConfirm={confirmSend}
+            onCancel={cancelConfirmation}
+            ownerDocument={confirmation.ownerDocument}
+            dataTestId="chat-secret-request-mismatch-dialog"
+            confirmTestId="chat-secret-request-mismatch-confirm"
+            cancelTestId="chat-secret-request-mismatch-cancel"
+          />
+        )}
 
         <div className="flex items-start gap-2 text-xs fg-tertiary">
           <span aria-hidden className="shrink-0 pt-0.5">

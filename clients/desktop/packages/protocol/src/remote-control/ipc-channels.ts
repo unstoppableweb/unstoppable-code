@@ -169,6 +169,7 @@ export const REMOTE_IPC_CHANNELS = {
   turnFeedbackRate: 'turn-feedback:rate',
   workEntriesCreate: 'work-entries:create',
   workEntriesList: 'work-entries:list',
+  workEntriesListArchived: 'work-entries:list-archived',
   workspaceAddFromRemote: 'workspace:add-from-remote',
   workspaceArchiveWorktree: 'workspace:archive-worktree',
   workspaceContextChanged: 'workspace-context:changed',

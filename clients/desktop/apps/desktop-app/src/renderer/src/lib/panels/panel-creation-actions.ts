@@ -151,6 +151,7 @@ export async function createTerminalPanel(
       message = `${message}. ${extractIpcErrorMessage(error)}`;
     }
     useGitHubStore.getState().addToast(message, 'error', undefined, {
+      caught: error,
       projectId,
       worktreeId,
       blockMessageFromReplay: message !== 'Unable to open Terminal',

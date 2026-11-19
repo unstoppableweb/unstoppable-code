@@ -134,6 +134,28 @@ describe('core.plan contract (CAN-4165)', () => {
     ).toBe(true);
   });
 
+  it('attributes a write to who started it, and counts the records a list left out', () => {
+    for (const name of ['core.plan.create', 'core.plan.update'] as const) {
+      const { params } = CORE_PLAN_INSTRUCTION_DEFINITIONS[name];
+      const write = {
+        scope,
+        ...(name === 'core.plan.create'
+          ? { source: 'claude', content: 'x' }
+          : { planId: 'plan-1' }),
+      };
+      expect(
+        params.safeParse({ ...write, initiationSource: 'user' }).success,
+      ).toBe(true);
+      expect(
+        params.safeParse({ ...write, initiationSource: 'someone' }).success,
+      ).toBe(false);
+    }
+    const { result } = CORE_PLAN_QUERY_DEFINITIONS['core.plan.list'];
+    expect(result.safeParse({ plans: [] }).success).toBe(true);
+    expect(result.safeParse({ plans: [], skipped: 2 }).success).toBe(true);
+    expect(result.safeParse({ plans: [], skipped: 0 }).success).toBe(false);
+  });
+
   it('imports only a path that stays inside the worktree on any host', () => {
     const { params } = CORE_PLAN_INSTRUCTION_DEFINITIONS['core.plan.import'];
     const importing = (path: string): boolean =>

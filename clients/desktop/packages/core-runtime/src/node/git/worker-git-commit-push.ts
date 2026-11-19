@@ -10,6 +10,7 @@ import {
   canopyCapabilityUnavailableError,
 } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
+import { gitWriteOperationError } from './repository-writes';
 import { WorkerGitScopeError } from './worker-git-branch-list';
 import { isWorkerGitWriteCaller } from './worker-git-branch-writes';
 import {
@@ -114,7 +115,7 @@ export function createWorkerGitCommitPushHandlers<Checkout>(
           },
           error.hostCause ?? error,
         );
-      throw error;
+      throw gitWriteOperationError(error);
     }
   };
   return {

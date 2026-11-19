@@ -1,5 +1,4 @@
 import {
-  APP_ADVISOR_PROJECT_ID,
   IPC_CHANNELS,
   type CoworkWorkEntryCreateRequest,
   type CoworkWorkEntryCreateResponse,
@@ -37,8 +36,8 @@ let stopWorkEntryListProjection: (() => void) | null = null;
 
 /**
  * Creating, deleting, restoring or reordering a Work Entry shifts every
- * sibling's registry index, so re-project the whole cowork workspace's chats
- * to the portal. The emitter no-ops without an active portal session.
+ * sibling's registry index, so stale the desktop session snapshot for the
+ * whole cowork workspace.
  */
 function projectWorkEntryListChanges(workspaceId: string): void {
   if (isBotProjectId(workspaceId)) return;
@@ -46,7 +45,7 @@ function projectWorkEntryListChanges(workspaceId: string): void {
   // handlers below do; the projection is only needed once an entry changes.
   void import('../services/standalone-chat-service')
     .then(({ emitStandaloneWorkspaceWorkEntrySummaries }) =>
-      emitStandaloneWorkspaceWorkEntrySummaries(workspaceId),
+      emitStandaloneWorkspaceWorkEntrySummaries(),
     )
     .catch(() => undefined);
 }
@@ -92,12 +91,6 @@ export function registerWorkEntryHandlers(): void {
       const workspaceId = assertWorkEntryWorkspace(request.projectId);
       request.entryIds.forEach((entryId) => validateId(entryId, 'entryId'));
       await reorderWorkEntries(workspaceId, request.entryIds);
-      // Default Bot only: this projection publishes the Orchestrator Portal section.
-      if (workspaceId === APP_ADVISOR_PROJECT_ID) {
-        const { projectAllAppAdvisorChatSummaries } =
-          await import('../services/chat-service');
-        await projectAllAppAdvisorChatSummaries();
-      }
     },
   );
 

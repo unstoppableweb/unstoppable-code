@@ -19,7 +19,10 @@ import {
   type ChatCommand,
   type ChatCommandEnvelope,
 } from '@canopy/desktop-shared/types';
-import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import {
+  botIdForProjectId,
+  isBotProjectId,
+} from '@canopy/protocol/chat-targets';
 import {
   AgentChatSendError,
   canonicalSource,
@@ -28,6 +31,7 @@ import {
   type AgentChatSendContext,
   type PipelineNativeGrantSeed,
   type PipelineNewChatSeed,
+  type TrustedSendCaller,
 } from './send-orchestration';
 import type { AgentSenderRuntimeSource } from './sender-context';
 import { isAutomationRunSource } from './automation-run-source';
@@ -45,7 +49,10 @@ import {
   requireBotAccess,
   readBotEntries,
 } from '../project-discovery/bots/target';
-import { requireBot } from '../project-discovery/bots/registry';
+import {
+  ensureBotRegistryLoaded,
+  requireBotWorkspace,
+} from '../project-discovery/bots/registry';
 import {
   createWorkEntry,
   removeWorkEntryRow,
@@ -60,6 +67,35 @@ import {
 } from '../canopy-runtime/core-chat-command-adapter';
 import { getChatStateCommandPort } from '../ipc/chat-state';
 import type { CreationModelSelection } from './creation-model';
+
+async function requireBotWorkspaceForProjectId(
+  projectId: string,
+): Promise<void> {
+  const botId = botIdForProjectId(projectId);
+  if (botId) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(botId);
+  }
+}
+
+async function requireCreationBotWorkspaces(
+  action: ChatCreationAction,
+  caller: TrustedSendCaller,
+): Promise<void> {
+  if (
+    action.type === 'bots.create_task' ||
+    action.type === 'bots.create_task_chat'
+  ) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(action.botId);
+  } else await requireBotWorkspaceForProjectId(action.projectId);
+
+  const sourceProjectId =
+    caller.kind === 'pipeline'
+      ? caller.source.agentOrigin?.projectId
+      : caller.source.projectId;
+  if (sourceProjectId) await requireBotWorkspaceForProjectId(sourceProjectId);
+}
 
 /**
  * Orchestrator chats keep their own runtime: only these seed settings apply.
@@ -145,8 +181,12 @@ export async function dispatchAgentChatCreation(
       throw new AgentChatSendError(
         error.code === 'advisor_access_disabled'
           ? 'advisor_access_disabled'
-          : 'not_found',
-        'The target chat is not available.',
+          : error.code === 'unsupported_action'
+            ? 'unsupported_action'
+            : 'not_found',
+        error.code === 'unsupported_action'
+          ? error.message
+          : 'The target chat is not available.',
       );
     if (error instanceof CoworkFolderMissingError)
       throw new AgentChatSendError(error.code, error.message, error);
@@ -170,6 +210,7 @@ async function create(
     throw new AgentChatSendError('validation_failed', parsed.message);
   const action = parsed.action;
   const trusted = context.caller;
+  await requireCreationBotWorkspaces(action, trusted);
   // A creation's settings are its seed; a turn override is for existing chats.
   if (context.turnOverride)
     throw new AgentChatSendError(
@@ -224,7 +265,9 @@ async function create(
     await revalidatePipelineAgentOrigin(
       trusted.source.agentOrigin,
       trusted.source.owner,
-      projectAction ? action.projectId : requireBot(action.botId).projectId,
+      projectAction
+        ? action.projectId
+        : requireBotWorkspace(action.botId).projectId,
     );
   const actionModel =
     action.type === 'projects.create_task' ||
@@ -373,8 +416,8 @@ async function create(
       await ensureCoworkHomeScaffold(projectId);
     }
   } else {
+    const bot = requireBotWorkspace(action.botId);
     await requireBotAccess(caller);
-    const bot = requireBot(action.botId);
     projectId = bot.projectId;
     if (
       action.type === 'bots.create_task_chat' &&
@@ -554,7 +597,7 @@ async function create(
               seedProvider,
             )
           : await (
-              await import('../portal/adapters/chat-adapter')
+              await import('../remote-control/host/remote-chat-create')
             ).resolveRemoteCreateTabSeed(projectId);
         if ('noDispatchableModel' in defaults)
           throw new AgentChatSendError(

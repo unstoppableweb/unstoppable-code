@@ -23,6 +23,13 @@ import {
 import { readPersistedChatPluginInheritance } from '../lib/chat-tabs-reader';
 import { pluginDefaultsWorkspaceId } from './plugin-defaults-revision';
 import type { ProjectPluginDefaults } from './project-plugin-defaults-cache';
+import type { ConnectorScope } from '@canopy/desktop-shared/lib/connector-scope';
+import {
+  resolveCachedConnectorScope,
+  resolveConnectorScope,
+} from './connector-scope';
+import { withOnlyAllowedOrganizationRefs } from '@canopy/desktop-shared/lib/organization-capabilities';
+import { organizationLayerForWorkspace } from '../organization-capabilities/service';
 
 export interface ChatPluginOverlayTarget {
   projectId: string;
@@ -76,6 +83,11 @@ export interface EffectiveChatPluginContext {
    * honors them without rereading the tab file.
    */
   chatTombstones?: PluginSelectionTombstones;
+  /**
+   * The chat's connector scope (CAN-6231), read when the global layer holds
+   * connectors, the only layer the organization rules act on.
+   */
+  connectorScope?: ConnectorScope;
 }
 
 /**
@@ -121,14 +133,32 @@ export async function resolveEffectiveChatPluginContext(
   const projectDefaults = await normalizeAccountMcpSelections(
     normalizePluginSelections(projectLayer?.defaultPluginSelections),
   );
-  if (!hasAnySelections(global) && !hasAnySelections(projectDefaults)) {
+  // The organization's shared set for this workspace (CAN-6237), and the
+  // organization refs a chat here may use (CAN-6240); none outside one.
+  // One read of the workspace's owner serves both organization rules.
+  const workspaceScope = chatSurfaceUsesGlobalPluginDefaults(target.projectId)
+    ? await resolveCachedConnectorScope(target)
+    : undefined;
+  const organization = await organizationLayerForWorkspace(
+    pluginDefaultsWorkspaceId(target),
+    workspaceScope,
+  ).catch(() => undefined);
+  if (
+    !hasAnySelections(global) &&
+    !hasAnySelections(projectDefaults) &&
+    organization === undefined
+  ) {
+    const allowedLocal = withOnlyAllowedOrganizationRefs(
+      local,
+      undefined,
+    ).selections;
     // No layer to subtract from, so the tombstones are not needed here, except
     // by a harness that subtracts them from its own inherited plugins.
     const wantsTombstones =
       typeof overlay === 'object' &&
       overlay.draft !== true &&
       overlay.includeChatTombstones === true;
-    if (!wantsTombstones) return { selections: local, preferences };
+    if (!wantsTombstones) return { selections: allowedLocal, preferences };
     let supplied = overlay.chatTombstones;
     if (supplied === undefined) {
       try {
@@ -147,7 +177,7 @@ export async function resolveEffectiveChatPluginContext(
       normalizePluginSelectionTombstones(supplied),
     );
     return {
-      selections: local,
+      selections: allowedLocal,
       preferences,
       ...(tombstones ? { chatTombstones: tombstones } : {}),
     };
@@ -168,7 +198,8 @@ export async function resolveEffectiveChatPluginContext(
   let inheritsProjectDefaults = supplied.inheritsProjectDefaults;
   if (
     chatTombstones === undefined ||
-    (inheritsProjectDefaults === undefined && hasAnySelections(projectDefaults))
+    (inheritsProjectDefaults === undefined &&
+      (hasAnySelections(projectDefaults) || organization !== undefined))
   ) {
     try {
       const persisted = await readPersistedChatPluginInheritance(
@@ -185,6 +216,10 @@ export async function resolveEffectiveChatPluginContext(
   const normalizedChatTombstones = await normalizeAccountMcpTombstones(
     normalizePluginSelectionTombstones(chatTombstones),
   );
+  const connectorScope =
+    (global.mcpServerRefs?.length ?? 0) > 0
+      ? (workspaceScope ?? (await resolveConnectorScope(target)))
+      : undefined;
   return {
     selections: effectiveChatPluginSelections({
       local,
@@ -195,11 +230,21 @@ export async function resolveEffectiveChatPluginContext(
         projectLayer?.disabledGlobalPluginSelections,
       ),
       chatTombstones: normalizedChatTombstones,
+      ...(connectorScope ? { connectorScope } : {}),
+      // Inherited like the project defaults; a chat that opted out of them
+      // gets an organization item only by its own pick.
+      ...(organization && inheritsProjectDefaults !== false
+        ? { organization: organization.layer }
+        : {}),
+      ...(organization
+        ? { allowedOrganizationItems: organization.allowed }
+        : {}),
     }),
     preferences,
     ...(normalizedChatTombstones
       ? { chatTombstones: normalizedChatTombstones }
       : {}),
+    ...(connectorScope ? { connectorScope } : {}),
   };
 }
 
@@ -226,19 +271,28 @@ export async function resolveBackgroundChatPluginSelections(
   const projectDefaults = normalizePluginSelections(
     projectLayer?.defaultPluginSelections,
   );
-  if (!hasAnySelections(projectDefaults)) return local;
+  // The organization's shared set and what organization refs a run here may
+  // use (CAN-6237, CAN-6240), as a chat's turn resolves them.
+  const organization = await organizationLayerForWorkspace(
+    pluginDefaultsWorkspaceId(target),
+    await resolveCachedConnectorScope(target),
+  ).catch(() => undefined);
+  if (!hasAnySelections(projectDefaults) && organization === undefined)
+    return local
+      ? withOnlyAllowedOrganizationRefs(local, undefined).selections
+      : local;
   const inheritance = await readPersistedChatPluginInheritance(
     target.projectId,
     target.worktreeId,
     target.chatId,
   ).catch(() => undefined);
+  const inherits = inheritance?.inheritsProjectDefaults !== false;
   return effectiveChatPluginSelections({
     local,
-    projectDefaults:
-      inheritance?.inheritsProjectDefaults === false
-        ? undefined
-        : projectDefaults,
+    projectDefaults: inherits ? projectDefaults : undefined,
     chatTombstones: normalizePluginSelectionTombstones(inheritance?.tombstones),
+    ...(organization && inherits ? { organization: organization.layer } : {}),
+    ...(organization ? { allowedOrganizationItems: organization.allowed } : {}),
   });
 }
 

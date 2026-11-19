@@ -80,7 +80,7 @@ export function antigravityEnvironment(
   for (const key of Object.keys(env)) {
     if (/^(LD_|DYLD_|BASH_FUNC_)/.test(key)) delete env[key];
   }
-  // Native child launches must not inherit Electron application mode.
+  // Vendor CLI mode, not Canopy's Electron; unaffected by Canopy's fuse.
   env.ELECTRON_RUN_AS_NODE = '1';
   // The pinned runtime must not replace itself outside Canopy's qualification.
   // Neither the host nor workflow inputs may re-enable Google's self-update.

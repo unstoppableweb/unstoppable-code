@@ -17,6 +17,8 @@ import {
   type DesktopCanopyDispatcher,
 } from '../desktop-runtime';
 import { createWorkerAgentAdapter } from '../worker-agent-adapter';
+import type { WorkerAgentUsageLimitsHost } from '@canopy/core-runtime/node/agent/providers';
+import type { UsageLimitsSnapshot } from '@canopy/protocol/provider-usage';
 
 const caller: CanopyCallerDescriptor = {
   principalId: 'desktop-ipc',
@@ -131,16 +133,194 @@ function fakeSources(
 
 let runtime: DesktopCanopyDispatcher | undefined;
 
-function runtimeFor(sources: DesktopProviderSources): DesktopCanopyDispatcher {
+function runtimeFor(
+  sources: DesktopProviderSources,
+  usageHost?: WorkerAgentUsageLimitsHost,
+): DesktopCanopyDispatcher {
   runtime = createDesktopRuntime({
     shutdownTimeoutMs: 25,
     workerAgentAdapter: createWorkerAgentAdapter({
       providerHost: createDesktopProviderHost(sources),
+      usageHost,
       sinkFor: () => null,
     }),
   });
   return runtime;
 }
+
+function cachedUsageSnapshot(): UsageLimitsSnapshot {
+  return {
+    schemaVersion: 1,
+    snapshotAt: '2026-11-05T12:00:00.000Z',
+    completeness: 'partial',
+    sources: [
+      {
+        source: 'native',
+        provider: 'claude',
+        state: 'observed',
+        observedAt: '2026-11-05T11:00:00.000Z',
+      },
+      {
+        source: 'account_proxy',
+        state: 'unavailable',
+        observedAt: null,
+        error: {
+          kind: 'network',
+          message: 'Account inventory is unavailable.',
+        },
+      },
+    ],
+    accounts: [
+      {
+        accountId: 'snapshot-local-1',
+        provider: 'claude',
+        source: 'native',
+        authState: 'authenticated',
+        inventoryObservedAt: null,
+        usageObservedAt: '2026-11-05T11:00:00.000Z',
+        usageSource: 'passive',
+        usageState: 'reported',
+        limits: [
+          {
+            id: 'five-hour',
+            label: '5-hour window',
+            windows: [
+              {
+                kind: 'primary',
+                usedPercent: 109,
+                windowDurationMs: 18_000_000,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function usageHost(
+  get: WorkerAgentUsageLimitsHost['get'],
+): WorkerAgentUsageLimitsHost {
+  return { authorityId: 'local-desktop', targetId: 'in_process_worker', get };
+}
+
+const usageCaller: CanopyCallerDescriptor = {
+  ...caller,
+  principalId: 'core',
+  grants: ['worker.agent.usage.read'],
+};
+
+it('usage dispatch preserves passive snapshots and requires a separate per-call owning-core grant', async () => {
+  const snapshot = cachedUsageSnapshot();
+  const get = jest.fn(() => snapshot);
+  const dispatcher = runtimeFor(fakeSources(), usageHost(get));
+  await expect(
+    dispatcher.query('worker.agent.usageLimits.get', { scope: {} }, { caller }),
+  ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+  expect(get).not.toHaveBeenCalled();
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: { targetId: 'other' } },
+      { caller: usageCaller },
+    ),
+  ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+  expect(get).not.toHaveBeenCalled();
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).resolves.toEqual(snapshot);
+  expect(get).toHaveBeenCalledTimes(1);
+});
+
+it('usage dispatch reports unobserved sources and refuses oversized inventories without truncation', async () => {
+  const snapshot = cachedUsageSnapshot();
+  const account = snapshot.accounts[0];
+  if (!account) throw new Error('Missing usage fixture account.');
+  snapshot.accounts = [];
+  snapshot.sources = [
+    { source: 'native', state: 'not_observed', observedAt: null },
+  ];
+  const dispatcher = runtimeFor(
+    fakeSources(),
+    usageHost(() => snapshot),
+  );
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).rejects.toMatchObject({
+    payload: { kind: 'unavailable', retry: { kind: 'never' } },
+  });
+  snapshot.sources = [
+    { source: 'opencode', state: 'unavailable', observedAt: null },
+  ];
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).rejects.toMatchObject({ payload: { kind: 'unavailable' } });
+  snapshot.sources = [
+    {
+      source: 'account_proxy',
+      state: 'unavailable',
+      observedAt: '2026-11-05T11:00:00.000Z',
+    },
+  ];
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).resolves.toEqual(snapshot);
+  // Current identified membership remains useful even when the account has
+  // never yielded quotas. Null timestamps must not erase that auth error.
+  snapshot.accounts = [
+    {
+      ...account,
+      authState: 'error',
+      label: 'Current account',
+      usageObservedAt: null,
+      usageState: 'unavailable',
+      error: { kind: 'auth', message: 'Sign in again to read account usage.' },
+      limits: [],
+    },
+  ];
+  snapshot.sources = [
+    { source: 'native', state: 'unavailable', observedAt: null },
+  ];
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).resolves.toEqual(snapshot);
+  snapshot.sources = [
+    { source: 'native', state: 'observed', observedAt: snapshot.snapshotAt },
+  ];
+  snapshot.accounts = Array.from({ length: 1_001 }, (_, index) => ({
+    ...account,
+    accountId: `snapshot-${index}`,
+  }));
+  await expect(
+    dispatcher.query(
+      'worker.agent.usageLimits.get',
+      { scope: {} },
+      { caller: usageCaller },
+    ),
+  ).rejects.toMatchObject({
+    payload: { kind: 'resource_exhausted', retry: { kind: 'never' } },
+  });
+});
 
 afterEach(async () => {
   jest.useRealTimers();

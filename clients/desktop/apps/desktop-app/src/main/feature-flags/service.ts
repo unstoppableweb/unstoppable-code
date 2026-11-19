@@ -7,6 +7,7 @@ import {
   CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS,
   CLIENT_FEATURE_FLAGS,
   getDefaultFeatureFlagSnapshot,
+  getLocalOnlyClientFeatureFlagDefaults,
   isLabsExperimentFlagKey,
   type ClientFeatureFlagKey,
   type ClientFeatureFlagValues,
@@ -17,6 +18,7 @@ import { app as electronApp } from 'electron';
 import type * as LaunchDarklyClientModule from 'launchdarkly-node-client-sdk';
 import type { LDClient, LDContext } from 'launchdarkly-node-client-sdk';
 import { buildDesktopFeatureFlagContext } from './context';
+import { isLocalOnlyBuild } from '../local-only/profile';
 
 type SnapshotListener = (snapshot: FeatureFlagSnapshot) => void;
 
@@ -178,6 +180,19 @@ function buildReadySnapshot(client: LDClient): FeatureFlagSnapshot {
   };
 }
 
+/**
+ * The snapshot a local-only build (docs/local-only-build.md) serves: every
+ * flag at its `localOnlyDefaultValue`, so hosted features stay off even when
+ * a LaunchDarkly client-side ID or an E2E override is present.
+ */
+function buildLocalOnlySnapshot(): FeatureFlagSnapshot {
+  return {
+    ...getDefaultFeatureFlagSnapshot('not_configured'),
+    values: getLocalOnlyClientFeatureFlagDefaults(),
+    updatedAt: nowIso(),
+  };
+}
+
 function buildE2eOverrideSnapshot(): FeatureFlagSnapshot | null {
   if (!__CANOPY_E2E__) {
     return null;
@@ -318,7 +333,11 @@ function loadLaunchDarklyClientModule(): typeof LaunchDarklyClientModule {
 }
 
 export class FeatureFlagService {
-  private snapshot: FeatureFlagSnapshot = getDefaultFeatureFlagSnapshot();
+  // A local-only build serves its defaults from the first read, before
+  // initialize() runs, so hosted flags are never briefly on.
+  private snapshot: FeatureFlagSnapshot = isLocalOnlyBuild()
+    ? buildLocalOnlySnapshot()
+    : getDefaultFeatureFlagSnapshot();
   private client: LDClient | null = null;
   private clientInitialized = false;
   private disposed = false;
@@ -343,6 +362,10 @@ export class FeatureFlagService {
     this.hasLiveLaunchDarklyValues = false;
     this.liveValues = {};
     this.contextIdentity = null;
+    if (isLocalOnlyBuild()) {
+      this.setSnapshot(buildLocalOnlySnapshot());
+      return;
+    }
     // Static E2E flags and unconfigured defaults have no targeting context.
     // Account activation must not transiently turn them into outage fallbacks.
     if (!readLaunchDarklyDesktopClientSideId(electronApp.isPackaged === true)) {
@@ -431,6 +454,17 @@ export class FeatureFlagService {
       this.disposed = false;
     }
     this.clearRetryTimer();
+
+    // Local-only chokepoint: LaunchDarkly is never contacted and the
+    // local-only defaults apply, even in an E2E build that sets a client ID.
+    if (isLocalOnlyBuild()) {
+      this.outage = null;
+      await this.closeClient();
+      this.hasLiveLaunchDarklyValues = false;
+      this.liveValues = {};
+      this.setSnapshot(buildLocalOnlySnapshot());
+      return this.snapshot;
+    }
 
     // A configured LaunchDarkly client-side ID always takes precedence over the
     // E2E override snapshot. This lets E2E specs that deliberately inject a

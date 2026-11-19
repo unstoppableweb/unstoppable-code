@@ -14,6 +14,10 @@ import { W5_COMMIT_LOG_SCHEMA_VERSION } from './commit-log/database';
 import { readW5FileBytes, validateW5Document } from './backup';
 import { isErrnoException, isRecord } from './maintenance-guards';
 import { validateId } from '../identifiers';
+import {
+  countDestructiveJournalsNeedingAttention,
+  inspectDestructiveJournals,
+} from './destructive-journal';
 
 export interface W5FileIssue {
   readonly path: string;
@@ -30,7 +34,7 @@ export type W5DiagnosisScope = 'all-artifacts' | 'w5-owned';
 
 export interface W5Diagnosis {
   readonly files: readonly W5FileIssue[];
-  /** Filename-matching regular files, not operations; null if inspection is unavailable. */
+  /** Journal files needing attention, not consistent completed history; null if the directory is unavailable. */
   readonly destructiveJournalArtifactCount: number | null;
   readonly logIssue: 'unavailable' | 'incompatible-schema' | null;
   /** Commits not yet applied, oldest first. */
@@ -66,38 +70,12 @@ interface DiagnosticCopy {
 }
 
 async function countDestructiveJournalArtifacts(
-  w5Root: string,
+  dataRoot: string,
   issues: W5FileIssue[],
 ): Promise<number | null> {
-  const path = 'w5/destructive-lifecycles';
-  const directory = join(w5Root, 'destructive-lifecycles');
-  try {
-    const stat = await lstat(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      issues.push({ path, reason: 'unknown-artifact' });
-      return null;
-    }
-    let count = 0;
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (
-        entry.isFile() &&
-        !entry.isSymbolicLink() &&
-        /^([a-f0-9]{64}|[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[1-8][a-fA-F0-9]{3}-[89abAB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)\.json$/.test(
-          entry.name,
-        )
-      )
-        count += 1;
-      else
-        issues.push({
-          path: `${path}/${entry.name}`,
-          reason: 'unknown-artifact',
-        });
-    }
-    return count;
-  } catch {
-    issues.push({ path, reason: 'corrupt-file' });
-    return null;
-  }
+  const evidence = await inspectDestructiveJournals(dataRoot);
+  issues.push(...evidence.issues);
+  return countDestructiveJournalsNeedingAttention(evidence);
 }
 
 /** No journal scanner reads these; each is user-moved evidence, never deleted. */
@@ -275,7 +253,7 @@ export async function diagnoseW5State(
     for (const entry of logArtifacts)
       if (entry.name === 'destructive-lifecycles')
         destructiveJournalArtifactCount =
-          await countDestructiveJournalArtifacts(join(dataRoot, 'w5'), issues);
+          await countDestructiveJournalArtifacts(dataRoot, issues);
       else if (entry.name === 'quarantined-lifecycles')
         await reportQuarantinedJournals(join(dataRoot, 'w5'), issues);
       else if (

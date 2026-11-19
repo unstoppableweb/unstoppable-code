@@ -28,6 +28,7 @@ jest.mock('../advisor-automation-sharing-actions-host', () => ({
     mockHost,
 }));
 
+import { SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY } from '@canopy/protocol/automations';
 import { AdvisorActionRuns } from '@canopy/core-runtime/node/agent/advisor';
 import { OperationService } from '@canopy/core-runtime/node/operations';
 import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
@@ -272,6 +273,52 @@ describe('App Advisor automation sharing in main (CAN-6003 part B)', () => {
       }),
     ]);
     expect(published[0]).not.toHaveProperty('shareScope');
+  });
+
+  it('shares a chat automation as its workflow only with the flag on and a v6 server (CAN-6455)', async () => {
+    const h = setup();
+    const share = async (
+      host: Partial<AdvisorAutomationSharingHost>,
+    ): Promise<{ action: { type: string; target?: unknown } }> => {
+      mockHost = { ...recordingHost(), ...host };
+      published = [];
+      await expect(
+        h.route({
+          type: 'automation.share',
+          id: 'auto-1',
+          shareScope: 'team',
+          teamId: 't1',
+        }),
+      ).resolves.toMatchObject({ ok: true });
+      const [request] = published as Array<{
+        automation: { action: { type: string; target?: unknown } };
+      }>;
+      if (!request) throw new Error('nothing published');
+      return request.automation;
+    };
+    const v6 = (): Promise<readonly string[]> =>
+      Promise.resolve([SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY]);
+    // Flag off: the chat form, as before.
+    expect((await share({ accountCapabilities: v6 })).action.type).toBe(
+      'app_advisor_prompt',
+    );
+    // Flag on, but the server can't take v6 documents: the chat form.
+    expect(
+      (await share({ sharesChatAsWorkflow: () => true })).action.type,
+    ).toBe('app_advisor_prompt');
+    // Flag on and a v6 server: the workflow the converted copy shares.
+    const workflow = await share({
+      sharesChatAsWorkflow: () => true,
+      accountCapabilities: v6,
+    });
+    expect(workflow).toMatchObject({
+      version: 6,
+      action: {
+        type: 'worktree_pipeline',
+        target: { kind: 'global' },
+        pipeline: { source: 'inline' },
+      },
+    });
   });
 
   it("lists, reads and unshares through the window's owners", async () => {

@@ -278,13 +278,21 @@ function stepError(
   failure: StepFailure,
   message: string,
   detail?: string,
+  underlying?: unknown,
 ): CanopyClientError {
-  return new CanopyClientError({
+  const error = new CanopyClientError({
     kind: 'failed_precondition',
     message,
     retry: { kind: 'never' },
     details: { w5Handoff: failure, ...(detail !== undefined && { detail }) },
   });
+  if (underlying !== undefined)
+    Object.defineProperty(error, 'cause', {
+      value: underlying,
+      configurable: true,
+      writable: true,
+    });
+  return error;
 }
 
 /** The step failure a launch error carries, or `null`. */
@@ -415,6 +423,7 @@ async function captureOnce(
       'backup_refused',
       'The workspace records backup failed.',
       error instanceof W5BackupRefusedError ? error.reason : 'host-unavailable',
+      error,
     );
   }
   // Written last: a launch that stops earlier captures again.
@@ -431,11 +440,12 @@ async function captureOnce(
     };
     await publishCompletion(marker, scope);
     await writeMarker(marker);
-  } catch {
+  } catch (error) {
     throw stepError(
       'backup_refused',
       'The workspace records backup failed.',
       'marker-unwritable',
+      error,
     );
   }
 }
@@ -453,11 +463,12 @@ export async function prepareW5FlipSpawn(
   let scope: W5RootEvidenceScope;
   try {
     scope = await w5RootEvidenceScope(getDataDir());
-  } catch {
+  } catch (error) {
     throw stepError(
       'backup_refused',
       'The workspace records backup failed.',
       'source-unreadable',
+      error,
     );
   }
   const completed = await readCompletion();

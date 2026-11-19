@@ -73,7 +73,8 @@ function TextPreview({
   return (
     <div className="max-h-50 overflow-y-auto">
       <CodeBlock
-        variant="compact-document"
+        variant="document"
+        inset="compact"
         size="2xs"
         wrap="words"
         tone="soft"
@@ -202,9 +203,10 @@ export const AttachmentPreviewPopover = memo(function AttachmentPreviewPopover({
       onOpen();
       return;
     }
-    void window.api.openExternalFile({ absolutePath }).catch(() => {
+    void window.api.openExternalFile({ absolutePath }).catch((error) => {
       addToast(`Couldn't open ${displayName}.`, 'error', undefined, {
         forceInApp: true,
+        caught: error,
       });
     });
   }, [absolutePath, addToast, displayName, onOpen]);

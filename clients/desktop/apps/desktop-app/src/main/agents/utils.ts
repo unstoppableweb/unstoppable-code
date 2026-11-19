@@ -33,6 +33,7 @@ import {
   buildClaudeThinkingOptions,
   clampThinkingLevelForModel,
   DEFAULT_HANDOFF_SUMMARY_MODEL,
+  DEFAULT_SUMMARY_FALLBACK_MODEL,
   getExecutionHarnessForModel,
   getModelSource,
   type ResolveEnvironmentRequest,
@@ -43,6 +44,8 @@ import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { mkdir } from 'node:fs/promises';
 import type { AccountProxyQuotaWait } from '../account-proxy/quota-wait';
 import { codexRuntimeForWorkerRun } from '../codex/runtime-service';
+import { peekProviderNativeAuthAvailability } from '../auth/provider-auth-state';
+import { allowsAutomaticCall } from '../local-only/policy';
 import {
   admitCodexSpeed,
   reportCodexSpeedTurnFailure,
@@ -960,7 +963,16 @@ export async function generateChatSummary(
       fallback: { reason: SUMMARY_EMPTY_OUTPUT_FALLBACK },
     };
   }
-  const effectiveModel = options?.model ?? 'haiku';
+  const requestedModel = options?.model ?? 'haiku';
+  // A local-only build never launches Codex for a background summary unless
+  // the person connected Codex: unconnected, it reaches OpenAI on its own.
+  // The Claude fallback is the same default an install without Codex gets.
+  const effectiveModel =
+    getExecutionHarnessForModel(requestedModel) === 'codex' &&
+    !allowsAutomaticCall('helpers.unconnected-codex') &&
+    peekProviderNativeAuthAvailability().codex !== true
+      ? DEFAULT_SUMMARY_FALLBACK_MODEL
+      : requestedModel;
   const effectiveThinking = options?.thinkingLevel ?? 'off';
   const effectiveCwd = options?.cwd ?? process.cwd();
   const hasBoundWorkOwner =

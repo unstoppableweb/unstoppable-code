@@ -12,10 +12,24 @@ import {
   type SecretProtectionOptions,
 } from './policy';
 
+/** Closed load-failure reasons; a missing catalog or absent member is not one. */
+export type SecretProtectionLoadFailure =
+  | 'identity_mismatch'
+  | 'prepare_failed'
+  | 'aborted'
+  | 'owner_failed';
+
 export interface NativeSecretProtectionOwner {
   readonly services: Promise<PlatformSecretProtectionServices | null>;
+  /** Why a present native member did not load; null when none was expected. */
+  readonly failure: Promise<SecretProtectionLoadFailure | null>;
   closeAdmission(): void;
   drain(signal: AbortSignal): Promise<boolean>;
+}
+
+interface Loaded {
+  readonly services: PlatformSecretProtectionServices | null;
+  readonly failure: SecretProtectionLoadFailure | null;
 }
 
 /** Trusted host composition only. Identity errors precede artifact containment. */
@@ -31,20 +45,25 @@ export function createNativeSecretProtectionOwner(
     work.closeAdmission();
     authorizer.invalidate();
   };
-  const services = work
-    .track(async (): Promise<PlatformSecretProtectionServices | null> => {
+  const failed = (failure: SecretProtectionLoadFailure): Loaded => ({
+    services: null,
+    failure,
+  });
+  const loaded = work
+    .track(async (): Promise<Loaded> => {
       const catalog = compiledNativeArtifactCatalog();
+      if (!catalog || catalog.member.state !== 'present')
+        return { services: null, failure: null };
       if (
-        !catalog ||
-        catalog.member.state !== 'present' ||
         catalog.brandId !== options.brandId ||
         catalog.build !== options.build
       )
-        return null;
+        return failed('identity_mismatch');
       await authorizer.reap();
-      if (work.signal.aborted) return null;
+      if (work.signal.aborted) return failed('aborted');
       const preparedNative = await authorizer.prepare();
-      if (!preparedNative || work.signal.aborted) return null;
+      if (work.signal.aborted) return failed('aborted');
+      if (!preparedNative) return failed('prepare_failed');
       const raw = createSecretProtectionServices(
         { ...options, preparedNative },
         work,
@@ -57,7 +76,7 @@ export function createNativeSecretProtectionOwner(
         const signal = AbortSignal.any([caller, work.signal]);
         return work.track(() => call(signal));
       }
-      return {
+      const services: PlatformSecretProtectionServices = {
         backend: raw.backend,
         status: (options) =>
           dispatch(options.signal, (signal) => raw.status({ signal })),
@@ -80,10 +99,12 @@ export function createNativeSecretProtectionOwner(
             raw.deleteKeySlot(slot, { ...options, signal }),
           ),
       };
+      return { services, failure: null };
     })
-    .catch(() => null);
+    .catch((): Loaded => failed('owner_failed'));
   return {
-    services,
+    services: loaded.then(({ services }) => services),
+    failure: loaded.then(({ failure }) => failure),
     closeAdmission,
     drain(signal): Promise<boolean> {
       closeAdmission();

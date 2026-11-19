@@ -10,6 +10,7 @@ import {
   markProjectAvatarLoaded,
   resolveProjectAvatarUrl,
 } from './project-icon-avatar';
+import { useRemoteImagesAllowed } from '@/lib/remote-image';
 
 export interface ProjectIconProps {
   readonly kind: WorkspaceKind;
@@ -36,8 +37,10 @@ export function DesktopProjectIdentity({
   size = 'md',
   testIdSuffix,
 }: ProjectIconProps): JSX.Element {
+  // A local-only build loads no GitHub avatars; the badge keeps its fallback.
+  const remoteImages = useRemoteImagesAllowed();
   const initialAvatarUrl =
-    kind === 'single-repo' && repoPath
+    remoteImages && kind === 'single-repo' && repoPath
       ? getCachedProjectAvatarUrl(repoPath)
       : null;
   const [avatarUrl, setAvatarUrl] = useState<string | null>(initialAvatarUrl);
@@ -45,7 +48,7 @@ export function DesktopProjectIdentity({
   useEffect(() => {
     let active = true;
 
-    if (kind !== 'single-repo' || !repoPath) {
+    if (!remoteImages || kind !== 'single-repo' || !repoPath) {
       setAvatarUrl(null);
       return (): void => {
         active = false;
@@ -63,7 +66,7 @@ export function DesktopProjectIdentity({
     return (): void => {
       active = false;
     };
-  }, [kind, repoPath]);
+  }, [kind, remoteImages, repoPath]);
 
   return (
     <ProjectAvatarBadge

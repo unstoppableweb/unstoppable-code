@@ -1,0 +1,369 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`credential residue authorizes REST, GraphQL and every page from the lease, and the client keeps no credential 1`] = `
+{
+  "clientAuth": {
+    "type": "lease",
+  },
+  "clientCarriesToken": false,
+  "clientDefaultsCarryToken": false,
+  "debugCarriesHeader": false,
+  "debugLogged": 4,
+  "diagnosticsCarryScope": false,
+  "headerResidue": {
+    "carryingHeader": 0,
+    "hookEndpoints": 4,
+  },
+  "leaseAsJson": ""[GitHubBrokerCredentialLease]"",
+  "leaseCarriesToken": false,
+  "logged": [],
+  "logsCarryScope": false,
+  "outerHooks": [
+    "none",
+    "none",
+    "none",
+    "none",
+  ],
+  "retryOrThrottlePlugin": false,
+  "sent": [
+    {
+      "authorization": "token <defaultOne>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+    {
+      "authorization": "token <defaultOne>",
+      "method": "POST",
+      "path": "/graphql",
+    },
+    {
+      "authorization": "token <pat>",
+      "method": "GET",
+      "path": "/repos/acme/app/pulls?per_page=1",
+    },
+    {
+      "authorization": "token <pat>",
+      "method": "GET",
+      "path": "/repos/acme/app/pulls?per_page=1&page=2",
+    },
+  ],
+  "tokenReads": [
+    "default",
+    "default",
+    "default",
+    "default",
+    "default",
+    "default",
+    "pat",
+    "pat",
+    "pat",
+    "pat",
+    "pat",
+  ],
+}
+`;
+
+exports[`credential residue authorizes each retry again, so a retry carries the credential current at that attempt 1`] = `
+{
+  "headerResidue": {
+    "carryingHeader": 0,
+    "hookEndpoints": 2,
+  },
+  "logged": [
+    "warn [github] GET /repos/acme/app - 502 with id UNKNOWN in <ms>",
+  ],
+  "outcome": "resolved",
+  "sent": [
+    {
+      "authorization": "token <defaultOne>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+    {
+      "authorization": "token <defaultTwo>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+  ],
+  "tokenReads": [
+    "default",
+    "default",
+    "default",
+    "default",
+    "default",
+  ],
+}
+`;
+
+exports[`credential residue caches nothing on behalf of a lease revoked while its read was in flight 1`] = `
+{
+  "firstValidRead": {
+    "status": 200,
+  },
+  "ifNoneMatchSent": [
+    "none",
+    "none",
+    ""v1"",
+  ],
+  "revokedRead": {
+    "error": "not_authenticated",
+  },
+  "secondValidRead": {
+    "status": 200,
+  },
+}
+`;
+
+exports[`credential residue checks every lease that joins a shared read, not only the one that started it 1`] = `
+{
+  "joinedThenRevoked": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "joinedWhileRevoked": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "requestsSent": 1,
+  "started": "resolved",
+}
+`;
+
+exports[`credential residue discards a result when the credential is reset during the final lease check, and reissues 1`] = `
+{
+  "data": {
+    "served": 2,
+  },
+  "sent": [
+    {
+      "authorization": "token <defaultOne>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+    {
+      "authorization": "token <defaultTwo>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+  ],
+}
+`;
+
+exports[`credential residue drops a stored token or bearer prefix, as Octokit token auth does 1`] = `
+[
+  "token <defaultOne>",
+  "token <defaultOne>",
+  "token <defaultOne>",
+]
+`;
+
+exports[`credential residue drops the authorization header when a request is redirected to another origin 1`] = `
+{
+  "sentToOrigin": "token <defaultOne>",
+  "sentToRedirectTarget": "none",
+  "status": 200,
+}
+`;
+
+exports[`credential residue gives each credential its own scope, stable across a restart, and accepts only leases at the type level 1`] = `
+{
+  "derivedFromCredentialOnly": true,
+  "distinct": true,
+  "rawTokenRefused": "not_authenticated",
+  "stableAcrossRestart": true,
+}
+`;
+
+exports[`credential residue keeps the timeout and cancellation when the final lease check stalls 1`] = `
+{
+  "aborted": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "cancelled",
+  },
+  "requestsSent": 2,
+  "timedOut": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "timeout",
+  },
+}
+`;
+
+exports[`credential residue refuses a lease revoked between retries, without reusing the earlier header 1`] = `
+{
+  "headerResidue": {
+    "carryingHeader": 0,
+    "hookEndpoints": 1,
+  },
+  "outcome": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "sent": [
+    {
+      "authorization": "token <pat>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+  ],
+}
+`;
+
+exports[`credential residue refuses a lease whose credential changed or was revoked before sending anything, and a 404 error carries no token 1`] = `
+{
+  "diagnosticsCarryScope": false,
+  "grants": {
+    "cli": {
+      "source": "gh-cli",
+      "tokenFamily": "classic",
+    },
+    "pat": {
+      "source": "pat",
+      "tokenFamily": "fine-grained",
+    },
+  },
+  "headerResidue": {
+    "carryingHeader": 0,
+    "hookEndpoints": 1,
+  },
+  "logged": [
+    "warn [github] GET /repos/acme/app - 404 with id UNKNOWN in <ms>",
+  ],
+  "logsCarryScope": false,
+  "noDefault": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "notFound": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_found",
+  },
+  "replaced": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "revoked": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+  "scopes": {
+    "default": "resolved",
+    "distinct": true,
+    "pat": "custom:<sha256>",
+  },
+  "sent": [
+    {
+      "authorization": "token <pat>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+  ],
+}
+`;
+
+exports[`credential residue refuses a starter whose lease is revoked mid-read, while joiners with their own valid leases get the result 1`] = `
+{
+  "joinerA": "resolved",
+  "joinerB": "resolved",
+  "requestsSent": 1,
+  "starter": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "not_authenticated",
+  },
+}
+`;
+
+exports[`credential residue removes the header when an in-flight request is aborted 1`] = `
+{
+  "afterAbort": {
+    "carryingHeader": 0,
+    "hookEndpoints": 1,
+  },
+  "inFlight": {
+    "carryingHeader": 1,
+    "hookEndpoints": 1,
+  },
+  "outcome": {
+    "carriesScope": false,
+    "carriesToken": false,
+    "error": "cancelled",
+  },
+  "sentBeforeAbort": [
+    {
+      "authorization": "token <defaultOne>",
+      "method": "GET",
+      "path": "/repos/acme/app",
+    },
+  ],
+}
+`;
+
+exports[`credential residue returns a write GitHub applied once, even when the credential is reset while it is in flight 1`] = `
+{
+  "outcome": {
+    "kind": "mutation",
+    "status": 201,
+  },
+  "sent": [
+    {
+      "authorization": "token <defaultOne>",
+      "method": "POST",
+      "path": "/repos/acme/app/issues/7/comments",
+    },
+  ],
+}
+`;
+
+exports[`credential residue sends nothing under a credential reset while the lease was being authorized, and reissues a write under the new one 1`] = `
+{
+  "outcome": {
+    "kind": "mutation",
+    "status": 201,
+  },
+  "sent": [
+    {
+      "authorization": "token <defaultTwo>",
+      "method": "POST",
+      "path": "/repos/acme/app/issues/8/comments",
+    },
+  ],
+}
+`;
+
+exports[`credential residue serves conditional-cache data only to a caller whose own lease still holds 1`] = `
+{
+  "fresh": {
+    "data": {
+      "title": "cached",
+    },
+    "status": 200,
+  },
+  "replayed": {
+    "data": {
+      "title": "cached",
+    },
+    "status": 304,
+  },
+  "revokedDuringReplay": {
+    "error": "not_authenticated",
+  },
+  "revokedRead": {
+    "error": "not_authenticated",
+  },
+  "sent": [
+    "GET /repos/acme/app/pulls/9",
+    "GET /repos/acme/app/pulls/9",
+    "GET /repos/acme/app/pulls/9",
+  ],
+  "sentByRevokedRead": 0,
+}
+`;

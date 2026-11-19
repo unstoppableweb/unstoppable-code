@@ -79,6 +79,11 @@ import {
 } from './host-action-runner';
 import { buildPipelineHostIdempotencyKey } from '@canopy/execution-engine/pipelines/host-actions';
 import {
+  ACCOUNT_PROXY_ROUTED_OUTPUT_KEY,
+  AI_CREDITS_ROUTED_OUTPUT_KEY,
+  MODEL_GATEWAY_ROUTED_OUTPUT_KEY,
+} from '@canopy/execution-engine/pipelines/step-billing-route';
+import {
   resolveActionRuntime,
   type ResolvedActionRuntime,
 } from '../action-resolver';
@@ -245,6 +250,13 @@ import {
 } from './pipeline-ledger';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { MAX_NESTED_STEP_DEPTH } from './nesting-limit';
+import {
+  executionFailureCode,
+  isExecutionFailureCode,
+  isExecutionFailureOrigin,
+  isRunStateSaveError,
+  reportExecutionEngineError,
+} from './execution-failure';
 
 const FORCE_KILL_DELAY_MS = 5_000;
 const DEFAULT_AGENT_TERMINAL_RESULT_GRACE_MS = 30_000;
@@ -287,20 +299,13 @@ const EXECUTOR_MANAGED_ENV_KEYS = new Set<string>([
   ...brandEnvCandidates('PIPELINE_AGENT_HARNESS'),
 ]);
 
-/**
- * Reserved step-output key the executor sets to `'true'` when a model-aware
- * agent action's LLM traffic was routed through the AI Credits gateway proxy.
- * Consumed by desktop observability (`syncPipelineStep`) so routed pipeline
- * turns are not mis-attributed to a native provider subscription account.
- */
-export const AI_CREDITS_ROUTED_OUTPUT_KEY = 'canopy_ai_credits_routed';
-/** Persisted proof that this exact step used an organization-owned gateway. */
-export const MODEL_GATEWAY_ROUTED_OUTPUT_KEY = 'canopy_model_gateway_routed';
-/**
- * Set when the step's agent went through the account proxy (CAN-4030), so
- * desktop observability credits no native account with it.
- */
-export const ACCOUNT_PROXY_ROUTED_OUTPUT_KEY = 'canopy_account_proxy_routed';
+// The route keys live with the browser-safe billing-route reader (CAN-7256);
+// re-exported for existing importers such as desktop observability.
+export {
+  ACCOUNT_PROXY_ROUTED_OUTPUT_KEY,
+  AI_CREDITS_ROUTED_OUTPUT_KEY,
+  MODEL_GATEWAY_ROUTED_OUTPUT_KEY,
+};
 /**
  * The broker route the step's agent used through the account proxy, so
  * desktop observability can record which accounts served it (CAN-4021). An
@@ -674,9 +679,8 @@ function buildSafeProcessEnv(
 /**
  * Build the process spec used for Node-based steps and actions.
  *
- * In Electron runtimes `process.execPath` points at the Electron binary, so
- * we force child processes into Node compatibility mode. In SEA builds there
- * is no usable embedded Node runtime, so we fall back to `node` on PATH.
+ * Desktop supplies its private interpreter explicitly. SEA builds have no
+ * general-purpose embedded interpreter and retain their PATH Node behavior.
  */
 function getNodeProcessSpec(
   args: string[],
@@ -689,6 +693,11 @@ function getNodeProcessSpec(
       ...(override.env ? { env: { ...override.env } } : {}),
     };
   }
+  if (process.versions.electron) {
+    throw new Error(
+      'Desktop Node steps require an explicit bundled Node runtime.',
+    );
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sea = require('node:sea') as { isSea: () => boolean };
@@ -700,16 +709,6 @@ function getNodeProcessSpec(
     }
   } catch {
     // node:sea module not available — not a SEA build.
-  }
-
-  if (process.versions.electron) {
-    return {
-      command: process.execPath,
-      args,
-      env: {
-        ELECTRON_RUN_AS_NODE: '1',
-      },
-    };
   }
 
   return {
@@ -864,12 +863,16 @@ const FANOUT_AGENT_ACTIONS = new Set(['builtin/parallel-agents']);
 const AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX =
   '__canopy_agent_model__:';
 
-function getTsxCommand(
-  runtime: Pick<ExecutionRuntime, 'nodeProcess' | 'tsxCli'>,
-): ProcessSpec {
-  const { nodeProcess } = runtime;
+async function getTsxCommand(
+  runtime: Pick<
+    ExecutionRuntime,
+    'nodeProcess' | 'tsxCli' | 'resolveNodeRuntime'
+  >,
+): Promise<ProcessSpec> {
+  const { nodeProcess, tsxCli } =
+    (await runtime.resolveNodeRuntime?.()) ?? runtime;
   // A runtime that stages its own tsx runs it on its own Node (CAN-6316 G1).
-  if (runtime.tsxCli) return getNodeProcessSpec([runtime.tsxCli], nodeProcess);
+  if (tsxCli) return getNodeProcessSpec([tsxCli], nodeProcess);
   const localCli = findLocalNodeModuleFile(
     ['tsx', 'dist', 'cli.mjs'],
     [process.cwd(), __dirname],
@@ -1129,9 +1132,11 @@ function getCmdProcessSpec(scriptPath: string): ProcessSpec {
 async function buildRunProcessSpec(
   step: NormalizedStep,
   tempDir: string,
-  runtime: Pick<ExecutionRuntime, 'nodeProcess' | 'tsxCli'>,
+  runtime: Pick<
+    ExecutionRuntime,
+    'nodeProcess' | 'tsxCli' | 'resolveNodeRuntime'
+  >,
 ): Promise<ProcessSpec> {
-  const { nodeProcess } = runtime;
   if (!step.run) {
     throw new Error(`Step "${step.id}" is missing a run command`);
   }
@@ -1162,13 +1167,16 @@ async function buildRunProcessSpec(
     case 'node': {
       const scriptPath = await writeInlineScript(tempDir, step.shell, step.run);
       return {
-        ...getNodeProcessSpec([scriptPath], nodeProcess),
+        ...getNodeProcessSpec(
+          [scriptPath],
+          ((await runtime.resolveNodeRuntime?.()) ?? runtime).nodeProcess,
+        ),
         scriptPath,
       };
     }
     case 'tsx': {
       const scriptPath = await writeInlineScript(tempDir, step.shell, step.run);
-      const tsx = getTsxCommand(runtime);
+      const tsx = await getTsxCommand(runtime);
       return {
         ...tsx,
         args: [...tsx.args, scriptPath],
@@ -1684,6 +1692,9 @@ async function runNestedPipelineAction(
   // before the step names it (CAN-6868): on a resume, the stored snapshot
   // and inputs that run again, not the definition read now.
   const childExecutionId = resumeChildExecutionId ?? randomUUID();
+  // A starting child runs the definition its check answers, when it answers
+  // one (the cloud models its run's person chose, CAN-7044).
+  let admittedPipeline = pipeline;
   if (options.runtime.admitChildPipeline) {
     const repoPath =
       resolvedTarget.repoPath === undefined
@@ -1708,7 +1719,7 @@ async function runNestedPipelineAction(
       },
       signal: options.signal,
     };
-    await options.runtime.admitChildPipeline(
+    const admission = await options.runtime.admitChildPipeline(
       stored
         ? {
             ...step,
@@ -1727,6 +1738,8 @@ async function runNestedPipelineAction(
             ...repoPath,
           },
     );
+    if (!stored && admission.pipeline !== undefined)
+      admittedPipeline = admission.pipeline;
   }
   await options.onRunningStepPatch?.(parentStepId, {
     child_execution_id: childExecutionId,
@@ -1741,7 +1754,7 @@ async function runNestedPipelineAction(
           ? { pauseResponses: options.resumeChildPauseResponses }
           : {}),
       })
-    : await executePipeline(pipeline, {
+    : await executePipeline(admittedPipeline, {
         ...childExecutionOptions,
         executionId: childExecutionId,
       });
@@ -1935,6 +1948,15 @@ async function runDelegatedChildPipeline(
       status: cancelled ? 'cancelled' : 'failure',
       conclusion: cancelled ? 'cancelled' : 'failure',
       outcome: cancelled ? 'cancelled' : 'failure',
+      // The host's delegation port threw, rather than answer (CAN-7118).
+      ...(!cancelled && {
+        failure_origin: 'host_port',
+        failure_code: reportExecutionEngineError(
+          options.runtime,
+          error,
+          'child_pipeline',
+        ),
+      }),
       started_at: child.startedAt,
       completed_at: new Date().toISOString(),
       outputs: {},
@@ -1998,6 +2020,15 @@ async function runSpawnedProcess(
         conclusion: options.signal.aborted ? 'cancelled' : 'failure',
         outcome: options.signal.aborted ? 'cancelled' : 'failure',
         exit_code: options.signal.aborted ? undefined : 1,
+        // The process host threw, rather than run the step (CAN-7118).
+        ...(!options.signal.aborted && {
+          failure_origin: 'host_port',
+          failure_code: reportExecutionEngineError(
+            options.runtime,
+            error,
+            'process_host',
+          ),
+        }),
         error: error instanceof Error ? error.message : String(error),
         outputs: {},
         dynamic_env: {},
@@ -2604,6 +2635,9 @@ export async function runSpawnedProcessInline(
         outcome: 'failure',
         exit_code: 1,
         error: String(error),
+        // The process never started (CAN-7118).
+        failure_origin: 'spawn',
+        failure_code: executionFailureCode(error),
       });
       return;
     }
@@ -2669,6 +2703,11 @@ export async function runSpawnedProcessInline(
         conclusion: options.signal.aborted ? 'cancelled' : 'failure',
         outcome: options.signal.aborted ? 'cancelled' : 'failure',
         error: String(error),
+        // The process could not start, or be signalled (CAN-7118).
+        ...(!options.signal.aborted && {
+          failure_origin: 'spawn',
+          failure_code: executionFailureCode(error),
+        }),
       });
     });
 
@@ -2736,20 +2775,37 @@ async function postProcessSpawnedResult(
     };
   }
 
-  await Promise.resolve(
-    options.onStepPostProcess?.({
-      step: options.step,
-      outputs: result.outputs,
-      notifications: notificationResult?.notifications,
-      projectId: options.projectId,
-      worktreeId: options.worktreeId,
-      executionId: options.executionId,
-      jobId: options.jobId,
-      attempt: options.attempt ?? 0,
-      iteration: options.iteration ?? 0,
-      depth: options.depth ?? 0,
-    }),
-  ).catch(() => {});
+  // A hook that throws at once fails nothing either (CAN-7118).
+  await Promise.resolve()
+    .then(() =>
+      options.onStepPostProcess?.({
+        step: options.step,
+        outputs: result.outputs,
+        notifications: notificationResult?.notifications,
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        executionId: options.executionId,
+        jobId: options.jobId,
+        attempt: options.attempt ?? 0,
+        iteration: options.iteration ?? 0,
+        depth: options.depth ?? 0,
+      }),
+    )
+    .catch(async (error: unknown) => {
+      // The step's result stands; its log says what didn't happen (CAN-7118).
+      const code = reportExecutionEngineError(
+        options.runtime,
+        error,
+        'post_step_hook',
+      );
+      await fsp
+        .appendFile(
+          result.log_file,
+          `[post-step] Couldn't deliver this step's notices (${code}).\n`,
+          'utf8',
+        )
+        .catch(() => undefined);
+    });
 
   return {
     ...result,
@@ -3085,6 +3141,8 @@ function createStepResult(
     completed_at: partial.completed_at,
     exit_code: partial.exit_code,
     error: partial.error,
+    failure_origin: partial.failure_origin,
+    failure_code: partial.failure_code,
     log_file: partial.log_file,
     resolved_run: partial.resolved_run,
     log_format_hint: partial.log_format_hint,
@@ -3191,6 +3249,16 @@ interface ResolvedPipelineModelInputs {
   syntheticSelectionsByCollectionId?: Record<string, ChatTabPluginSelections>;
 }
 
+function pipelineRuntimeModel(
+  model: string,
+  runtime: ExecutionRuntime,
+): string {
+  const admitted = runtime.nativeModelPlan?.find(
+    (route) => route.selection === model || route.requestModel === model,
+  );
+  return admitted?.requestModel ?? resolveModelAlias(model);
+}
+
 function isRuntimeBaseModelAvailable(model: string): boolean {
   return isSelectableAgentOverrideModel(model);
 }
@@ -3260,14 +3328,15 @@ async function resolveAgentAliasInputs(options: {
     resolution.instructions ?? '',
   );
   const syntheticId = `${AGENT_MODEL_SYNTHETIC_PLUGIN_COLLECTION_PREFIX}${resolution.agentId}`;
+  const runtimeModel = pipelineRuntimeModel(resolution.base, runtime);
   return {
     inputValues: {
       ...inputValues,
-      model: resolution.base,
+      model: runtimeModel,
       ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
     },
     selectedModel: aliasId,
-    runtimeModel: resolution.base,
+    runtimeModel,
     aliasId,
     aliasName,
     agentId: resolution.agentId,
@@ -3324,14 +3393,15 @@ export async function resolvePipelineModelInputs(options: {
       inputValues.system_prompt,
       defaults.instructions ?? '',
     );
+    const runtimeModel = pipelineRuntimeModel(defaults.base, options.runtime);
     return {
       inputValues: {
         ...inputValues,
-        model: defaults.base,
+        model: runtimeModel,
         ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
       },
       selectedModel: alias.id,
-      runtimeModel: defaults.base,
+      runtimeModel,
       aliasId: alias.id,
       aliasName: alias.name,
       aliasPluginCollectionIds: defaults.plugin_collection_id
@@ -3346,8 +3416,9 @@ export async function resolvePipelineModelInputs(options: {
   // executor as the raw alias string, so resolve it here too; an unknown
   // `$...` id throws the normalizer's "Unknown pipeline model alias" error
   // instead of reaching the provider as a bogus model id.
-  const resolvedModel = resolveModelAlias(
+  const resolvedModel = pipelineRuntimeModel(
     resolvePipelineModelAlias(selectedModel),
+    options.runtime,
   );
   assertPipelineRuntimeModelIsNotAgentModel(resolvedModel);
   return {
@@ -5411,6 +5482,26 @@ function resolveHostHelperBatch(
 }
 
 /**
+ * A failed prepare run, carrying the failure origin and code the spawn or
+ * process host classified it with (CAN-7118). It stays a plain `Error` by
+ * name, so it is never an engine failure; the step's catch reads the two
+ * fields, which it validates there.
+ */
+class HostHelperPrepareError extends Error {
+  readonly failureOrigin: unknown;
+  readonly failureCode: unknown;
+
+  constructor(
+    message: string,
+    prepared: Pick<CompletedProcessResult, 'failure_origin' | 'failure_code'>,
+  ) {
+    super(message);
+    this.failureOrigin = prepared.failure_origin;
+    this.failureCode = prepared.failure_code;
+  }
+}
+
+/**
  * Runs a commit or pull request helper's model turns on the host runner
  * (CAN-6702 stage 1b):
  *
@@ -5501,8 +5592,9 @@ async function runHostHelperBatch(options: {
     // Its own timeout is the rest of the step's budget; report the step's.
     if (prepared.error === stepTimedOutMessage(prepareTimeoutMs))
       throw new Error(stepTimedOutMessage(stepTimeoutMs));
-    throw new Error(
+    throw new HostHelperPrepareError(
       `The helper could not prepare its model requests: ${prepared.error ?? 'the action failed.'}`,
+      prepared,
     );
   }
   const prepareText = await fsp.readFile(prepareFile, 'utf8');
@@ -6665,6 +6757,8 @@ async function runCompositeAction(
         outputs: buildCompositeOutputs(),
         dynamic_env: dynamicEnv,
         error: nestedResult.error,
+        failure_origin: nestedResult.failure_origin,
+        failure_code: nestedResult.failure_code,
         log_file: options.logFile,
       });
     }
@@ -6767,6 +6861,7 @@ async function runCompositeAction(
 /** A step's open Ledger attempt, shared by `runStep` and its body. */
 interface StepLedgerState {
   attempt: PipelineLedgerAttempt | null;
+  failureCode?: ReturnType<typeof executionFailureCode>;
 }
 
 export async function runStep(options: RunStepOptions): Promise<StepResult> {
@@ -6774,6 +6869,18 @@ export async function runStep(options: RunStepOptions): Promise<StepResult> {
   let result: StepResult | undefined;
   try {
     result = await runStepBody(options, ledger);
+    if (ledger.failureCode !== undefined) {
+      const code = ledger.failureCode;
+      // Native transcript writers can replace the log. Append only after
+      // they finish. Logging is best effort; the host already has the code.
+      await fsp
+        .appendFile(
+          result.log_file ?? '',
+          `[ledger] Couldn't open this step's Ledger tools (${code}). The step runs without them.\n`,
+          'utf8',
+        )
+        .catch(() => {});
+    }
     // The attempt's session is recorded, so resuming its checkpoint keeps it.
     return ledger.attempt === null
       ? result
@@ -6802,6 +6909,7 @@ async function openStepLedgerAttempt(
     attempt: number;
     iteration: number;
   },
+  ledger: StepLedgerState,
 ): Promise<PipelineLedgerAttempt | null> {
   const port = options.runtime.pipelineLedger;
   const { projectId, worktreeId } = options;
@@ -6838,30 +6946,43 @@ async function openStepLedgerAttempt(
   const thinkingEffort = facts.inputValues.thinking_effort?.trim();
   // The agent can echo a configured secret into an entry; the host masks it.
   const secretValues = getSecretValues(options.secretEnv);
-  const attempt = await openPipelineLedgerAttempt(port, {
-    executionId: options.executionId,
-    ...(options.pipelineId ? { pipelineId: options.pipelineId } : {}),
-    ...(options.pipelineName ? { pipelineName: options.pipelineName } : {}),
-    target,
-    ...(projectId ? { projectId } : {}),
-    ...(worktreeId ? { worktreeId } : {}),
-    physicalJobId: options.childId
-      ? `${options.jobId}:${options.childId}`
-      : options.jobId,
-    logicalJobId: options.logicalJobId ?? options.jobId,
-    jobName: options.jobName ?? options.jobId,
-    stepId: facts.stepId,
-    stepName: options.step.name ?? facts.stepId,
-    // The job's retry count is zero-based; Ledger attempts start at 1.
-    attempt: facts.attempt + 1,
-    iteration: facts.iteration,
-    ...identity,
-    harness: agent.harness,
-    ...(model ? { model } : {}),
-    ...(thinkingEffort ? { thinkingEffort } : {}),
-    permissionPreset: agent.permissionPreset,
-    ...(secretValues.length > 0 ? { secretValues } : {}),
-  });
+  const attempt = await openPipelineLedgerAttempt(
+    port,
+    {
+      executionId: options.executionId,
+      ...(options.pipelineId ? { pipelineId: options.pipelineId } : {}),
+      ...(options.pipelineName ? { pipelineName: options.pipelineName } : {}),
+      target,
+      ...(projectId ? { projectId } : {}),
+      ...(worktreeId ? { worktreeId } : {}),
+      physicalJobId: options.childId
+        ? `${options.jobId}:${options.childId}`
+        : options.jobId,
+      logicalJobId: options.logicalJobId ?? options.jobId,
+      jobName: options.jobName ?? options.jobId,
+      stepId: facts.stepId,
+      stepName: options.step.name ?? facts.stepId,
+      // The job's retry count is zero-based; Ledger attempts start at 1.
+      attempt: facts.attempt + 1,
+      iteration: facts.iteration,
+      ...identity,
+      harness: agent.harness,
+      ...(model ? { model } : {}),
+      ...(thinkingEffort ? { thinkingEffort } : {}),
+      permissionPreset: agent.permissionPreset,
+      ...(secretValues.length > 0 ? { secretValues } : {}),
+    },
+    // The step runs without its Ledger tools; runStep records why after its
+    // transcript writer has finished (CAN-7118).
+    (error) => {
+      ledger.failureCode = reportExecutionEngineError(
+        options.runtime,
+        error,
+        'ledger_attempt',
+      );
+      return Promise.resolve();
+    },
+  );
   if (attempt === null) return null;
   // Saved with the running step, so a checkpoint rebuilt after a crash keeps
   // the session. A composite's nested steps share the parent's record.
@@ -7426,14 +7547,18 @@ async function runStepBody(
         `Model "${selectedAgentModel}" requires AI Credits, but this runtime cannot route AI Credits requests.`,
       );
     }
-    ledger.attempt = await openStepLedgerAttempt(options, {
-      logMetadata,
-      inputValues: resolvedAgentInputs.inputValues,
-      recoveryCheckpoint,
-      stepId,
-      attempt,
-      iteration,
-    });
+    ledger.attempt = await openStepLedgerAttempt(
+      options,
+      {
+        logMetadata,
+        inputValues: resolvedAgentInputs.inputValues,
+        recoveryCheckpoint,
+        stepId,
+        attempt,
+        iteration,
+      },
+      ledger,
+    );
     const codexResult = await maybeRunCodexPrompt({
       runStepOptions: { ...options, recoveryCheckpoint },
       inputValues: resolvedAgentInputs.inputValues,
@@ -7745,12 +7870,13 @@ async function runStepBody(
       if (runsUsing === 'node') {
         processSpec = getNodeProcessSpec(
           [action.mainPath ?? ''],
-          options.runtime.nodeProcess,
+          ((await options.runtime.resolveNodeRuntime?.()) ?? options.runtime)
+            .nodeProcess,
         );
       } else if (runsUsing === 'python') {
         processSpec = getPythonProcessSpec(action.mainPath ?? '');
       } else {
-        const tsxProcessSpec = getTsxCommand(options.runtime);
+        const tsxProcessSpec = await getTsxCommand(options.runtime);
         processSpec = {
           ...tsxProcessSpec,
           args: [...tsxProcessSpec.args, action.mainPath ?? ''],
@@ -7911,10 +8037,42 @@ async function runStepBody(
       }
     }
   } catch (error) {
+    // The step runner threw, rather than return a result (CAN-7118). A plain
+    // `Error` is one of its own refusals (a model it can't route, say): the
+    // step just failed, with no engine origin and no report. Another class is
+    // a defect: it is labelled and its host is told. A run-state save that
+    // failed is the settle's to report, not the step's.
+    const code = executionFailureCode(error);
+    const engineFailure =
+      !options.signal.aborted &&
+      !isRunStateSaveError(error) &&
+      code !== 'Error';
+    if (engineFailure)
+      reportExecutionEngineError(options.runtime, error, 'step_runner');
+    // A helper's prepare run that could not spawn, or whose process host
+    // failed, keeps that origin and closed code. Both were reported (host
+    // port) or are not reported (spawn) where they were classified.
+    const carried =
+      !options.signal.aborted &&
+      error instanceof HostHelperPrepareError &&
+      isExecutionFailureOrigin(error.failureOrigin) &&
+      (error.failureOrigin === 'spawn' ||
+        error.failureOrigin === 'host_port') &&
+      isExecutionFailureCode(error.failureCode)
+        ? { origin: error.failureOrigin, code: error.failureCode }
+        : undefined;
     return createStepResult({
       status: options.signal.aborted ? 'cancelled' : 'failure',
       conclusion: options.signal.aborted ? 'cancelled' : 'failure',
       outcome: options.signal.aborted ? 'cancelled' : 'failure',
+      ...(engineFailure && {
+        failure_origin: 'engine',
+        failure_code: code,
+      }),
+      ...(carried && {
+        failure_origin: carried.origin,
+        failure_code: carried.code,
+      }),
       ...logMetadata,
       started_at: startedAt,
       completed_at: new Date().toISOString(),

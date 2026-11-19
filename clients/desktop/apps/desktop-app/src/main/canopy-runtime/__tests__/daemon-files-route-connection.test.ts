@@ -1,7 +1,11 @@
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCoreOperationAdapter } from '../core-operation-adapter';
+import { createDesktopRuntime } from '../desktop-runtime';
 import { SINGLE_REPO_USAGE_REPO_ID } from '@canopy/desktop-shared/types';
 import { runPrAction } from '../../services/pr-service';
 import * as sidebarItems from '../../lib/sidebar-items';
@@ -586,38 +590,85 @@ it.each([
 ] as const)(
   '%s makes no daemon contact even with the Files connection ready',
   async (name) => {
-    harness = await createRouteHarness({});
+    const { runtime } = (harness = await createRouteHarness({}));
     const scope = { workspaceId: 'absent', worktreeId: 'task' };
     const caller: CanopyCallerDescriptor = {
       principalId: 'local-desktop-user',
       clientInstanceId: 'test',
       authorityId: 'local-desktop',
       interfaceKind: 'desktop',
-      grants: ['worker.git.write'],
+      // The grant source-change apply adds per call (CAN-7197).
+      grants: ['worker.git.worktree.write'],
     };
-    if (name === 'worker.git.worktree.add')
-      await expect(
-        harness.runtime.instruction(
-          name,
-          { scope, branch: 'topic' },
-          { caller },
-        ),
-      ).rejects.toBeDefined();
-    else
-      await expect(
-        harness.runtime.instruction(
-          name,
-          {
-            scope:
-              name === 'worker.git.worktree.prune'
-                ? { workspaceId: 'absent' }
-                : scope,
-          },
-          { caller },
-        ),
-      ).rejects.toBeDefined();
+    const call = (as: CanopyCallerDescriptor): Promise<unknown> =>
+      name === 'worker.git.worktree.add'
+        ? runtime.instruction(name, { scope, branch: 'topic' }, { caller: as })
+        : runtime.instruction(
+            name,
+            {
+              scope:
+                name === 'worker.git.worktree.prune'
+                  ? { workspaceId: 'absent' }
+                  : scope,
+            },
+            { caller: as },
+          );
+    // Admitted: it reaches the desktop handler, which refuses the absent scope.
+    await expect(call(caller)).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'worker.git.worktree.scopeUnsupported',
+      },
+    });
+    // worker.git.write alone no longer admits the worktree lifecycle.
+    await expect(
+      call({ ...caller, grants: ['worker.git.write'] }),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
     expect(harness.daemon.names()).toEqual([]);
     expect(harness.connectionsFactory).not.toHaveBeenCalled();
     expect(harness.hostContext).not.toHaveBeenCalled();
   },
 );
+
+// CAN-7197: the local worker's core caller derives its grants from the
+// worker instructions it carries, but never holds the worktree grant.
+it('the desktop local worker caller is refused the worktree lifecycle', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'local-worker-worktree-'));
+  const operations = createCoreOperationAdapter({
+    ledgerPath: () => join(root, 'ledger.sqlite'),
+  });
+  const runtime = createDesktopRuntime({
+    operationAdapter: operations,
+    shutdownTimeoutMs: 25,
+  });
+  try {
+    expect(runtime.localWorker.operations).toContain('worker.git.worktree.add');
+    const { operation: parent } = await operations.service.admit({
+      kind: 'core.chat.turn.run',
+      status: 'running',
+      origin: { kind: 'client', sourceId: 'test' },
+      owner: { kind: 'system', id: 'test' },
+      scope: { workspaceId: 'absent', worktreeId: 'task', chatId: 'chat' },
+    });
+    const scope = { workspaceId: 'absent', worktreeId: 'task' };
+    for (const [operation, params] of [
+      ['worker.git.worktree.add', { scope, branch: 'topic' }],
+      ['worker.git.worktree.remove', { scope }],
+      ['worker.git.worktree.prune', { scope: { workspaceId: 'absent' } }],
+    ] as const) {
+      const dispatched = await runtime.localWorker.dispatch({
+        parentOperationId: parent.operationId,
+        operation,
+        params,
+        idempotencyKey: operation,
+      });
+      expect(dispatched.operation).toMatchObject({
+        status: 'failed',
+        error: { kind: 'permission_denied' },
+      });
+    }
+  } finally {
+    await runtime.shutdown();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

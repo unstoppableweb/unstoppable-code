@@ -1,3 +1,4 @@
+import { CanopyOperationError } from '../../runtime/errors';
 import type { GitChildEnvironment } from './repository-reads';
 
 /**
@@ -106,12 +107,38 @@ export type GitRepositorySyncWrite =
   /** `status --porcelain=v1` */
   | { readonly kind: 'porcelain-status' };
 
+/**
+ * Why a Git write exited non-zero, classified on the write host from Git's
+ * own output (CAN-7113). Git's text never leaves the host; only this does.
+ */
+export type GitRepositoryWriteFailureReason =
+  | 'authFailed'
+  | 'nonFastForward'
+  | 'hookRejected'
+  | 'nothingToCommit'
+  | 'gpgFailed'
+  | 'other';
+
 /** A command that ran to its end; its exit status is the caller's to judge. */
 export interface GitRepositoryWriteOutput {
   readonly exitCode: number;
   /** Untrimmed. */
   readonly stdout: string;
+  /** A non-zero exit only: why Git failed. */
+  readonly failure?: GitRepositoryWriteFailureReason;
 }
+
+/**
+ * The value-free facts a failure carries: the classified `gitFailure` and Git's
+ * exit code, an allowlisted signal name, or a spawn's allowlisted errno.
+ */
+type GitRepositoryWriteFailureDetails = {
+  readonly gitFailure?: GitRepositoryWriteFailureReason;
+  readonly exitCode?: number;
+  readonly signal?: string;
+  readonly errno?: string;
+  readonly stage?: 'spawn';
+};
 
 export type GitRepositoryWriteFailureCode =
   | 'git_unavailable'
@@ -136,12 +163,56 @@ const GIT_REPOSITORY_WRITE_FAILURE_MESSAGES: Record<
 /** Fixed, value-free text: no paths, arguments or Git output. */
 export class GitRepositoryWriteError extends Error {
   readonly code: GitRepositoryWriteFailureCode;
+  readonly details: GitRepositoryWriteFailureDetails | undefined;
 
-  constructor(code: GitRepositoryWriteFailureCode) {
+  constructor(
+    code: GitRepositoryWriteFailureCode,
+    details?: GitRepositoryWriteFailureDetails,
+  ) {
     super(GIT_REPOSITORY_WRITE_FAILURE_MESSAGES[code]);
     this.name = 'GitRepositoryWriteError';
     this.code = code;
+    this.details = details;
   }
+}
+
+/** The `exit_status` failure of a command that ran and exited non-zero. */
+export function gitWriteExitError(
+  output: GitRepositoryWriteOutput,
+): GitRepositoryWriteError {
+  return new GitRepositoryWriteError('exit_status', {
+    gitFailure: output.failure ?? 'other',
+    exitCode: output.exitCode,
+  });
+}
+
+/** A write-host failure's value-free details, as an error payload field. */
+export function gitWriteDetailsOf(error: unknown): {
+  readonly details?: GitRepositoryWriteFailureDetails;
+} {
+  return error instanceof GitRepositoryWriteError && error.details
+    ? { details: { ...error.details } }
+    : {};
+}
+
+/**
+ * A write-host failure with details as the `internal` answer the dispatcher
+ * gave it before, now carrying those value-free details; anything else is
+ * returned unchanged. The host error stays the runtime cause, so in-process
+ * projections still rethrow it.
+ */
+export function gitWriteOperationError(error: unknown): unknown {
+  const { details } = gitWriteDetailsOf(error);
+  if (details === undefined) return error;
+  return new CanopyOperationError(
+    {
+      kind: 'internal',
+      message: 'The operation failed.',
+      details,
+      retry: { kind: 'never' },
+    },
+    error,
+  );
 }
 
 /**

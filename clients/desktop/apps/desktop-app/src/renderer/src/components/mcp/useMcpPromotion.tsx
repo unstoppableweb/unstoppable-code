@@ -178,7 +178,7 @@ export function useMcpPromotion(
         );
         if (current === generation.current) await refresh();
       } catch (cause) {
-        reportClientAppError(new Error('MCP server promotion failed'));
+        reportClientAppError(cause);
         if (current === generation.current)
           setFailure({ rowId: row.id, message: extractIpcErrorMessage(cause) });
       } finally {

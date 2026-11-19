@@ -1,3 +1,5 @@
+/// <reference lib="es2021.promise" />
+import { destructiveFailureCode } from './destructive-failure-context';
 import {
   inspectWorktreeCreationRecovery,
   repairOrphanedWorktreeRegistration,
@@ -379,7 +381,15 @@ export async function reconcileGitPendingWorktrees(
           'Archive recovery parent cleanup remains incomplete',
           {
             operationId: record.operationId,
-            error: error instanceof Error ? error.message : String(error),
+            error,
+            code: destructiveFailureCode(error),
+            failures:
+              error instanceof AggregateError
+                ? error.errors.map((member: unknown) => ({
+                    error: member,
+                    code: destructiveFailureCode(member),
+                  }))
+                : undefined,
           },
         );
       });

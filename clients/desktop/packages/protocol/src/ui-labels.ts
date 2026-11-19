@@ -33,23 +33,16 @@ export const WORKTREE_UNIT_LABEL_PLURAL = 'Worktrees';
 export const WORKSPACE_LABEL = 'Project';
 export const WORKSPACE_LABEL_PLURAL = 'Projects';
 // User-facing name for the remote-control surface. Internally this feature is
-// still called "Portal" (routes, IPC channels, the canopy-portal-enabled flag,
-// Portal* types) — this label is the ONLY user-visible representation. It is a
+// still called "Portal" in places (routes, IPC channels, Portal* types) —
+// this label is the ONLY user-visible representation. It is a
 // fixed product label, deliberately brand-neutral (no "<Brand>" prefix), so a
-// future rename touches just this line — plus the Dart mirrors below, which
+// future rename touches just this line — plus the Dart mirror below, which
 // cannot import it:
-//   - apps/mobile/.../views/widgets/connect_desktop_view.dart hardcodes
-//     "Remote Control" and "Enable Remote Control" to tell users which desktop
-//     controls reveal the pairing code.
-//   - apps/mobile/.../views/remote_screen.dart uses it as the tab's AppBar
-//     title while disconnected.
-//   - apps/mobile/.../data/repositories/remote_control_repository.dart matches
-//     `Active <label, lowercased> session not found` — the rejection the
-//     commands route composes from this label — to decide whether a pairing is
-//     orphaned. That mirror is behavioral, not copy: a rename would silently
-//     disable orphan detection rather than just misname a control.
-// A rename here must update all three, or those screens name controls that no
-// longer exist. ui-labels-mobile-mirror.test.ts fails if they drift.
+//   - apps/mobile/lib/ui/features/device_link/computer_connect/connection_view.dart
+//     hardcodes "Remote Control" in the setup steps that tell users which
+//     desktop setting lets Computer connect find the computer.
+// A rename here must update it too, or that screen names a setting that no
+// longer exists. No test checks the mirror.
 // Capitalized for use as a title/heading/button/nav label and at the start of a
 // sentence; lowercase it inline (.toLowerCase()) for mid-sentence prose copy
 // (e.g. "...before enabling remote control.").
@@ -64,15 +57,14 @@ export const REMOTE_CONTROL_LABEL = 'Remote Control';
 // (CollapsedTurnSummary), which matches its lowercase sibling chips. The Dart
 // mirrors below cannot import it and hard-code the word:
 //   - apps/mobile/lib/ui/features/home/views/widgets/home_navigation_drawer.dart
-//   - apps/mobile/lib/ui/features/remote/views/remote_app_advisor_screen.dart
-//   - apps/mobile/lib/ui/features/remote/views/remote_app_advisor_chat_screen.dart
 //   - apps/mobile/lib/ui/core/chat/view_models/tool_call_display.dart
 //   - apps/mobile/lib/ui/core/chat/view_models/turn_grouping.dart (lowercased
 //     chip label, like its siblings)
 //   - apps/mobile/lib/ui/features/stats/stats_aggregation.dart
-//   - apps/mobile/lib/ui/features/remote/view_models/app_advisor_controller.dart
-//   - apps/mobile/lib/data/repositories/remote_app_advisor_commands.dart
-// ui-labels-mobile-mirror.test.ts fails if they drift.
+//   - apps/mobile/lib/device_link/orchestrator/catalog.dart
+//   - apps/mobile/lib/ui/features/device_link/computer_connect/orchestrator/controller.dart
+//   - apps/mobile/lib/ui/features/device_link/computer_connect/orchestrator/screen.dart
+// A rename here must update them too. No test checks the mirror.
 export const ORCHESTRATOR_LABEL = 'Orchestrator';
 // The name this feature shipped under. Only for matching labels stored or sent
 // by older builds ({@link isOrchestratorLabel}) and for the agent-facing

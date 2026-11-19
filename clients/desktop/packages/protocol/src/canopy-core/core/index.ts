@@ -8,6 +8,7 @@ export * from './chat/attachment-upload';
 export * from './chat/agent-tasks';
 export * from './workspace/reads';
 export * from './workspace/sandbox-routes';
+export * from './workspace/settings-input';
 export * from './workspace/commands';
 export * from './workspace/guarded-commands';
 export * from './workspace/metadata-commands';
@@ -21,9 +22,15 @@ export * from './workspace/items';
 export * from './workspace/repo-rules';
 export * from './script/definitions';
 export * from './chat/transcript';
+export {
+  chatInitiatedIsLive,
+  CoreChatInitiatedChangeSchema,
+  type CoreChatInitiatedChange,
+} from './chat/events';
 export * from './chat/child-page';
 export * from './worktree/reads';
 export * from './worktree/recovery';
+export * from './worktree/setup';
 export * from './initiatedWork/sources';
 export * from './initiatedWork/runs';
 export * from './initiatedWork/watchers';
@@ -43,7 +50,9 @@ export * from './chat/locate';
 export * from './chat/transfer';
 export * from './ledger';
 export * from './cost';
+export * from './bots';
 export * from './update';
+export * from './dictation';
 export * from './summary';
 export * from './search';
 export * from './pipeline';
@@ -74,8 +83,12 @@ export * from './catalog/invocables';
 export * from './catalog/entry-ids';
 export * from './catalog/sources';
 export * from './catalog/materialization';
+export * from './catalog/collection-entries';
 export * from './catalog/skills';
+export * from './catalog/mcp-removal';
 export * from './catalog/publish';
+export * from './catalog/capability-setup';
+export * from './catalog/collection-publish';
 export * from './config/operations';
 export * from './memory/operations';
 export * from './memory/maintenance';
@@ -87,6 +100,7 @@ export * from './integration/mcp-account';
 export * from './integration/cloud-account';
 
 export * from './pullRequest/merge-queue';
+export * from './pullRequest/review-publish';
 
 export * from './workspace/cowork-folder';
 export * from './workspaceRecovery/registry';

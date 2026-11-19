@@ -1,5 +1,8 @@
 import { type JSX, useEffect, useRef, useState } from 'react';
-import type { SkillUpdateError } from '@canopy/ui-shared/lib';
+import {
+  linkRecordedAppError,
+  type SkillUpdateError,
+} from '@canopy/ui-shared/lib';
 import type {
   InstalledSkillInfo,
   SharedSkillDetail,
@@ -123,6 +126,8 @@ interface UpdateError {
   /** The skill key an update failed for; `null` for a failed check. */
   key: string | null;
   message: string;
+  /** Main already recorded the failure, so its notice records nothing. */
+  recorded?: true;
 }
 
 /**
@@ -301,6 +306,7 @@ export function useInstalledSkillActions({
     setUpdatingKey(key);
     setUpdateError(null);
     let failure: string | null = null;
+    let recorded = false;
     try {
       const result = await window.skills.updateSkill(sourceId, name);
       if (result.success) {
@@ -319,6 +325,9 @@ export function useInstalledSkillActions({
         }
       } else {
         failure = result.error || UPDATE_FAILED;
+        // Main recorded it; the notice records nothing but links it to this session.
+        linkRecordedAppError(result.appError, 'skill-update-notice');
+        recorded = result.appError?.recordedBy !== undefined;
       }
     } catch (err) {
       failure = errorMessage(err);
@@ -328,7 +337,12 @@ export function useInstalledSkillActions({
     if (scope !== updateScope.current) return;
     updateBusy.current = false;
     setUpdatingKey(null);
-    if (failure !== null) setUpdateError({ key, message: failure });
+    if (failure !== null)
+      setUpdateError({
+        key,
+        message: failure,
+        ...(recorded ? { recorded: true as const } : {}),
+      });
   };
 
   // Built-in skills are shared as snapshot copies under the sharer's
@@ -467,6 +481,7 @@ export function useInstalledSkillActions({
       return {
         kind: 'update-failed',
         ...(message !== UPDATE_FAILED ? { detail: message } : {}),
+        ...(updateError.recorded ? { recorded: true as const } : {}),
       };
     },
     updateCheckedAt,

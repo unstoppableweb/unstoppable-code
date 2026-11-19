@@ -1,7 +1,5 @@
 import type { BrowserWindow } from 'electron';
 import type * as SettingsModule from '../ipc/settings';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { getFeatureFlagService } from '../feature-flags';
 import { getRemoteControlRuntime } from '../remote-control/electron-remote-control';
 import type { AdvisorCredentialActionHost } from './advisor-credential-actions';
 
@@ -34,20 +32,6 @@ export function mainAdvisorCredentialActionHost(options: {
       (await settings()).cancelCanopyCloudOAuthLoginForWindow(),
     disconnectCloudAccount: async () =>
       (await settings()).disconnectCanopyCloudAccount(),
-    portalEnabled: () =>
-      getFeatureFlagService().isEnabled(
-        CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
-      ),
-    startPortal: async () => {
-      const { startCanopyPortal } =
-        await import('../portal/portal-session-manager');
-      return startCanopyPortal();
-    },
-    stopPortal: async () => {
-      const { stopCanopyPortal } =
-        await import('../portal/portal-session-manager');
-      return stopCanopyPortal();
-    },
     remoteControl: () => {
       const service = getRemoteControlRuntime()?.service;
       return service

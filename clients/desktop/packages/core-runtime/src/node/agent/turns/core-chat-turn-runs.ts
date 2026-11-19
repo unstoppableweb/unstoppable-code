@@ -1,4 +1,5 @@
 import {
+  CanopyErrorPayloadSchema,
   WORKER_AGENT_TURN_FAILED_CODE,
   WORKER_AGENT_TURN_FAILED_MESSAGE,
   WorkerAgentTurnRunResultSchema,
@@ -380,11 +381,26 @@ export class CoreChatTurnRuns {
       await this.finish(ref.operationId, { status: 'cancelled' });
       return { status: 'cancelled', ref, eventCount: null };
     }
-    await this.finish(ref.operationId, {
-      status: 'failed',
-      error: NOT_DISPATCHED,
-    });
-    return { status: 'failed', ref, error: NOT_DISPATCHED, eventCount: null };
+    let failure = NOT_DISPATCHED;
+    try {
+      if (error instanceof CanopyOperationError) {
+        const parsed = CanopyErrorPayloadSchema.safeParse(error.payload);
+        if (parsed.success) {
+          failure = {
+            kind: parsed.data.kind,
+            ...(parsed.data.code === undefined
+              ? {}
+              : { code: parsed.data.code }),
+            message: NOT_DISPATCHED.message,
+            retry: { kind: 'never' },
+          };
+        }
+      }
+    } catch {
+      // Malformed typed-looking refusals still settle with the fixed payload.
+    }
+    await this.finish(ref.operationId, { status: 'failed', error: failure });
+    return { status: 'failed', ref, error: failure, eventCount: null };
   }
 
   private async finish(

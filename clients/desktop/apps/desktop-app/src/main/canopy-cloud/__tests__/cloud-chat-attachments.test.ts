@@ -1,7 +1,11 @@
 import { CLOUD_ATTACHMENT_MAX_BYTES } from '@canopy/protocol/cloud-attachments';
 import { CanopyClientError } from '@canopy/core-client';
-import { CoreChatAttachmentUploadParamsSchema } from '@canopy/protocol/canopy-core';
+import {
+  CoreChatAttachmentUploadParamsSchema,
+  WorkerArtifactUploadWriteParamsSchema,
+} from '@canopy/protocol/canopy-core';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 
 const mockIpcHandlers = new Map<
   string,
@@ -788,6 +792,235 @@ describe("main's Files wake of a sleeping cloud chat (CAN-6724)", () => {
     await expect(wakeFiles(MAIN)).resolves.toEqual({
       ok: false,
       reason: 'offline',
+    });
+  });
+});
+
+describe("a cloud project's workspace file upload through main (CAN-7008)", () => {
+  const WORKSPACE = '11111111-1111-4111-8111-111111111111';
+  const OPERATION = '22222222-2222-4222-8222-222222222222';
+  const FILE_ID = '33333333-3333-4333-8333-333333333333';
+  const VERSION = '44444444-4444-4444-8444-444444444444';
+  const BYTES = new TextEncoder().encode('hello world!');
+  const SHA256 =
+    '7509e5bda0c762d2bac7f90d758b5b2263fa01ccbc542ab5e3df163be08e6ca9';
+  const stored = {
+    artifactId: `workspace-file:${FILE_ID}`,
+    name: 'notes.txt',
+    mediaType: 'text/plain',
+    sizeBytes: BYTES.byteLength,
+    sha256: SHA256,
+    storageState: 'available',
+    createdAt: '2026-11-17T12:00:00.000Z',
+  };
+  const request = (extra: Record<string, unknown> = {}): unknown => ({
+    workspaceId: WORKSPACE,
+    operationId: OPERATION,
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    bytes: BYTES,
+    ...extra,
+  });
+
+  function uploadFile(
+    event: RendererRelayEvent,
+    input: unknown,
+  ): Promise<unknown> {
+    const handler = mockIpcHandlers.get(
+      IPC_CHANNELS.cloudChatsUploadWorkspaceFile,
+    );
+    if (handler === undefined) throw new Error('The upload is not registered.');
+    return Promise.resolve().then(() => handler(event, input));
+  }
+
+  /** Answers the web core's upload instructions, four bytes a chunk. */
+  function answering(
+    fail: Partial<Record<string, () => Promise<unknown>>> = {},
+  ): void {
+    mockInstruction.mockImplementation((method, params) => {
+      mockCalls.push(method);
+      const failure = fail[method];
+      if (failure !== undefined) return failure();
+      if (method === 'worker.artifact.upload.open')
+        return Promise.resolve({
+          artifact: { ...stored, storageState: 'pending' },
+          uploadId: 'upload-1',
+          chunkSizeBytes: 4,
+          nextOffset: 0,
+        });
+      if (method === 'worker.artifact.upload.write') {
+        const { offset, data } =
+          WorkerArtifactUploadWriteParamsSchema.parse(params);
+        return Promise.resolve({
+          nextOffset: offset + Buffer.from(data, 'base64').byteLength,
+        });
+      }
+      return Promise.resolve(stored);
+    });
+  }
+
+  beforeAll(() => {
+    registerCloudChatsHandlers(
+      (event) =>
+        resolveTrustedRelaySurface(
+          event,
+          [
+            { surface: 'main', window: windowOf(MAIN), url: MAIN_URL },
+            {
+              surface: 'app-advisor',
+              window: windowOf(ADVISOR),
+              url: ADVISOR_URL,
+            },
+          ],
+          [],
+        ),
+      (event, chatId) => mockFollows(event, chatId),
+    );
+  });
+
+  beforeEach(() => {
+    mockConnectWebCore.mockReset();
+    mockConnectWebCore.mockImplementation(() => Promise.resolve({}));
+    mockInstruction.mockReset();
+    mockCalls.length = 0;
+    mockState.flagEnabled = true;
+    answering();
+  });
+
+  it('adds the picked bytes in chunks under their operation id, on a leased connection of its own', async () => {
+    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+      ok: true,
+      fileId: FILE_ID,
+    });
+    expect(mockCalls).toEqual([
+      'lease.acquire',
+      'worker.artifact.upload.open',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.commit',
+      'lease.release',
+    ]);
+    expect(mockInstruction.mock.calls[0]).toEqual([
+      'worker.artifact.upload.open',
+      {
+        artifactId: 'workspace-file:',
+        scope: { workspaceId: WORKSPACE },
+        name: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: BYTES.byteLength,
+        sha256: SHA256,
+        _meta: { idempotencyKey: OPERATION },
+      },
+    ]);
+    // A new version names its file and the version the person replaced.
+    mockCalls.length = 0;
+    await uploadFile(
+      MAIN,
+      request({ replaceFileId: FILE_ID, expectedVersionId: VERSION }),
+    );
+    expect(mockInstruction.mock.calls.at(-5)?.[1]).toMatchObject({
+      artifactId: `workspace-file:${FILE_ID}`,
+      expectedVersionId: VERSION,
+    });
+  });
+
+  it('refuses another window, and bad ids, a path, size or type before any connection', async () => {
+    for (const event of [ADVISOR, STRANGER])
+      await expect(uploadFile(event, request())).rejects.toThrow(
+        'Untrusted cloud chats sender.',
+      );
+    for (const input of [
+      request({ workspaceId: '../settings' }),
+      request({ operationId: 'not-a-uuid' }),
+      request({ replaceFileId: FILE_ID }),
+      request({ expectedVersionId: VERSION }),
+      { ...(request() as object), bytes: undefined, path: '/etc/passwd' },
+    ])
+      await expect(uploadFile(MAIN, input)).resolves.toEqual({
+        ok: false,
+        reason: 'rejected',
+      });
+    await expect(
+      uploadFile(
+        MAIN,
+        request({ bytes: new Uint8Array(CLOUD_ATTACHMENT_MAX_BYTES + 1) }),
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'too_large' });
+    await expect(
+      uploadFile(MAIN, request({ mimeType: 'application/x-msdownload' })),
+    ).resolves.toEqual({ ok: false, reason: 'unsupported_type' });
+    mockState.flagEnabled = false;
+    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+      ok: false,
+      reason: 'disabled',
+    });
+    expect(mockConnectWebCore).not.toHaveBeenCalled();
+    expect(mockInstruction).not.toHaveBeenCalled();
+  });
+
+  it('is blocked for remote control', () => {
+    expect(IPC_REMOTE_DISPOSITIONS.cloudChatsUploadWorkspaceFile).toBe(
+      'blocked',
+    );
+  });
+
+  it('answers a lost reply after the open as an unknown outcome and never retries it', async () => {
+    const lost = (): Promise<never> =>
+      Promise.reject(
+        new CanopyClientError({
+          kind: 'unavailable',
+          message: 'The connection closed.',
+          retry: { kind: 'never' },
+        }),
+      );
+    for (const method of [
+      'worker.artifact.upload.open',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.commit',
+    ]) {
+      mockCalls.length = 0;
+      answering({ [method]: lost });
+      await expect(uploadFile(MAIN, request())).resolves.toEqual({
+        ok: false,
+        reason: 'unknown',
+      });
+      // Each instruction went once; the failed one was not sent again.
+      expect(mockCalls.filter((call) => call === method)).toHaveLength(1);
+      expect(mockCalls.at(-1)).toBe('lease.release');
+    }
+    // Nothing sent: a connection that never opened is offline, not unknown.
+    mockCalls.length = 0;
+    mockConnectWebCore.mockImplementation(() =>
+      Promise.reject(new Error('ECONNREFUSED')),
+    );
+    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+      ok: false,
+      reason: 'offline',
+    });
+    expect(mockCalls).toEqual([]);
+  });
+
+  it('keeps a refusal the web core answered typed, with its words', async () => {
+    answering({
+      'worker.artifact.upload.open': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'conflict',
+            message: 'This file has a newer version.',
+            retry: { kind: 'never' },
+          }),
+        ),
+    });
+    await expect(
+      uploadFile(
+        MAIN,
+        request({ replaceFileId: FILE_ID, expectedVersionId: VERSION }),
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'conflict',
+      message: 'This file has a newer version.',
     });
   });
 });

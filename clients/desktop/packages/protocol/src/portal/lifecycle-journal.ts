@@ -102,3 +102,68 @@ export const LifecycleJournalQuarantineResultSchema = z
 export type LifecycleJournalQuarantineResult = z.infer<
   typeof LifecycleJournalQuarantineResultSchema
 >;
+
+export const archiveTriggerSchema = z.enum([
+  'manual',
+  'auto-delete',
+  'agent',
+  'project-deletion',
+  'restore',
+  'split',
+  'import',
+  'internal-rollback',
+]);
+export type ArchiveTrigger = z.infer<typeof archiveTriggerSchema>;
+const operationSchema = z.enum([
+  'workspace-delete',
+  'worktree-archive',
+  'worktree-delete',
+]);
+export const journalSchema = z.object({
+  version: z.literal(1),
+  operationId: z.string().uuid(),
+  operation: operationSchema,
+  trigger: archiveTriggerSchema.optional(),
+  /** Set on a child of {@link runStepFreeChildLifecycles}, which may resume it. */
+  parentOperation: operationSchema.optional(),
+  /** A resumed pre-capture archive's successor retains this binding after replacing its slot. */
+  supersedesArchives: z.array(z.string().uuid()).optional(),
+  workspaceId: z.string(),
+  worktreeId: z.string().optional(),
+  createdAt: z.string().optional(),
+  directoryIdentity: z.string().nullable(),
+  state: z.enum(['active', 'recovery-required', 'completed']),
+  steps: z.array(
+    z.object({
+      phase: z.string(),
+      state: z.enum(['pending', 'done', 'failed']),
+      /** Privacy-safe failure classification; raw step errors stay local. */
+      code: z.string().optional(),
+      error: z.string().optional(),
+      /** Taken by {@link resumableDestructiveStep} while it was step-free. */
+      resumable: z.literal(true).optional(),
+    }),
+  ),
+  outcome: z.unknown().optional(),
+  cleanupRequired: z.boolean().optional(),
+  archiveRecoveryCleanup: z
+    .array(
+      z.object({
+        operationId: z.string().uuid(),
+        revision: z.string().regex(/^[a-f0-9]{64}$/),
+        done: z.boolean().optional(),
+        discardPending: z.literal(true).optional(),
+        receiptDigest: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional(),
+      }),
+    )
+    .optional(),
+  /** Retains bounded-repair scope across a caught failure; never generic archive replay. */
+  cleanupRepair: z.object({ kind: z.literal('completed-cleanup') }).optional(),
+  ownedPaths: z
+    .array(z.object({ path: z.string(), identity: z.string().nullable() }))
+    .default([]),
+});
+export type DestructiveRecoveryRecord = z.infer<typeof journalSchema>;

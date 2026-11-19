@@ -1122,6 +1122,10 @@ async function resolveSend(
   const automation = caller.initiator?.kind === 'automation';
   let prompt: Awaited<ReturnType<typeof resolvePromptText>>;
   let resolvedSettings: ResolvedSettings;
+  // What the run's accounts are checked against (CAN-6233): an existing
+  // chat's turn runs on its own selections (or the override) and the project
+  // defaults it inherits, even when the step names no plugins.
+  let accountSelections: () => Promise<ChatTabPluginSelections | undefined>;
   if (target.chatId !== undefined) {
     const existing = await resolveExistingChatOverride(
       target,
@@ -1139,6 +1143,20 @@ async function resolveSend(
       existing,
       prompt.referencedPluginSelections,
     );
+    const chatId = target.chatId;
+    const chatSelections =
+      resolvedSettings.selections ?? existing.tab.pluginSelections;
+    accountSelections = async (): Promise<
+      ChatTabPluginSelections | undefined
+    > => {
+      const { resolveBackgroundChatPluginSelections } =
+        await import('../plugins/global-plugin-overlay');
+      return resolveBackgroundChatPluginSelections(chatSelections, {
+        projectId: target.tabsProjectId,
+        worktreeId: target.taskId,
+        chatId,
+      });
+    };
   } else {
     const named = await resolveNewChatModel(settings, target);
     // With no model, the default model decides what a plugin reference binds
@@ -1175,6 +1193,36 @@ async function resolveSend(
       prompt.referencedPluginSelections,
       await automationPluginDefaults(caller, target),
     );
+    // A new project chat also inherits the project's defaults, as the
+    // native prompt's check merges them.
+    const newChatSelections = resolvedSettings.selections;
+    const projectId = target.kind === 'project' ? target.id : undefined;
+    accountSelections = async (): Promise<
+      ChatTabPluginSelections | undefined
+    > => {
+      if (projectId === undefined) return newChatSelections;
+      const [
+        { readAllSidebarItems },
+        { mergePluginSelections },
+        { withoutAccountsPickedOver },
+      ] = await Promise.all([
+        import('../lib/sidebar-items'),
+        import('../lib/plugin-selection-utils'),
+        import('@canopy/desktop-shared/lib/effective-plugin-selections'),
+      ]);
+      const { items } = await readAllSidebarItems();
+      const inherited = items.find(
+        (item) => item.id === projectId,
+      )?.defaultPluginSelections;
+      // The chat's own account pick stands in for the project's other
+      // account of that connector, as its session layers them.
+      return newChatSelections
+        ? mergePluginSelections(
+            withoutAccountsPickedOver(inherited, newChatSelections),
+            newChatSelections,
+          )
+        : inherited;
+    };
   }
 
   const nativeGrant = grantedSeed(
@@ -1208,6 +1256,35 @@ async function resolveSend(
         'authorization_conflict',
         "This pipeline's owner can't use the requested plugins or Agent.",
       );
+    }
+  }
+  // A run an automation started sends as the accounts its automation names,
+  // or as a connector's only account; anything else stops the step before
+  // anything is sent, as the automation's own send does (CAN-6233).
+  if (automation) {
+    const { assertAutomationAccountsReady } =
+      await import('../automations/automation-account-preflight');
+    try {
+      await assertAutomationAccountsReady(await accountSelections(), {
+        automationName:
+          (caller.initiator?.kind === 'automation'
+            ? caller.initiator.automationName
+            : undefined) ||
+          caller.pipelineName ||
+          'An automation',
+        ...(target.kind === 'project' && target.taskId !== undefined
+          ? { scope: { projectId: target.id, worktreeId: target.taskId } }
+          : {}),
+        // The chat's session layers (the person's global defaults
+        // included), as the dispatched turn loads them.
+        target: {
+          projectId: target.tabsProjectId,
+          worktreeId: target.taskId,
+          ...(target.chatId !== undefined ? { chatId: target.chatId } : {}),
+        },
+      });
+    } catch (error) {
+      throw new PipelineHostRefusal('target_not_ready', messageOf(error));
     }
   }
 

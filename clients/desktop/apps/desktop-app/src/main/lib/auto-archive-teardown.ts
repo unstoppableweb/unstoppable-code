@@ -3,7 +3,10 @@ import { cancelWorktreeSetup, runScript } from '../services/scripts-service';
 import { readWorkspaceConfig } from './workspace-persistence';
 
 export class AutoArchiveTeardownFailedError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly code: 'TEARDOWN_TIMEOUT' | 'TEARDOWN_FAILED' = 'TEARDOWN_FAILED',
+  ) {
     super(message);
     this.name = 'AutoArchiveTeardownFailedError';
   }
@@ -26,6 +29,7 @@ export async function runAutoArchiveTeardown(
     if (!result.success) {
       throw new AutoArchiveTeardownFailedError(
         `${operation} ${request.scriptName} failed${result.timedOut ? ' (timed out)' : ''}: ${result.output}`,
+        result.timedOut ? 'TEARDOWN_TIMEOUT' : 'TEARDOWN_FAILED',
       );
     }
   };
@@ -65,7 +69,16 @@ export async function runAutoArchiveTeardown(
   );
   if (unexpected.length) throw unexpected[0];
   if (errors.length)
-    throw new AutoArchiveTeardownFailedError(errors.map(String).join('; '));
+    throw new AutoArchiveTeardownFailedError(
+      errors.map(String).join('; '),
+      errors.some(
+        (error) =>
+          error instanceof AutoArchiveTeardownFailedError &&
+          error.code === 'TEARDOWN_TIMEOUT',
+      )
+        ? 'TEARDOWN_TIMEOUT'
+        : 'TEARDOWN_FAILED',
+    );
   await run({
     target: 'workspace-root',
     workspaceId,

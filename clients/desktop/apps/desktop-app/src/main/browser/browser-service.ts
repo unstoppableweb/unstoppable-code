@@ -1,4 +1,5 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { MCP_OAUTH_BROWSER_PARTITION } from './mcp-oauth-session';
 import {
   browserHandoffs,
   type BrowserHandoffAdmission,
@@ -416,7 +417,7 @@ function profilelessBrowserPartition(
   worktreeId: string,
 ): string {
   return isMcpOAuthBrowserScope(projectId, worktreeId)
-    ? 'mcp-oauth'
+    ? MCP_OAUTH_BROWSER_PARTITION
     : `persist:canopy-browser-shared-container-${encodeURIComponent(worktreeId)}`;
 }
 
@@ -4852,10 +4853,25 @@ export class BrowserService {
   async screenshot(
     request: BrowserScreenshotRequest,
   ): Promise<BrowserScreenshotResponse> {
-    const state = this.requireSession(request.browserId);
+    const state = this.requireSession(
+      request.browserId,
+      'external.state_changed',
+    );
+    // The pane asks for a freeze-frame of every tab it shows; a private
+    // sign-in tab has none to give, which is not a failure.
+    if (
+      request.purpose === 'freeze-frame' &&
+      isMcpOAuthBrowserScope(
+        state.snapshot.projectId,
+        state.snapshot.worktreeId,
+      )
+    ) {
+      return {};
+    }
     this.assertAutomationAllowed(state);
     if (request.purpose === 'freeze-frame') {
-      return { dataUrl: await this.captureFreezeFrame(state) };
+      const dataUrl = await this.captureFreezeFrame(state);
+      return dataUrl === undefined ? {} : { dataUrl };
     }
     let observation: BrowserScreenshotObservationContext | undefined;
     if (__CANOPY_E2E__) {
@@ -4909,7 +4925,7 @@ export class BrowserService {
         false,
         observation,
       );
-      this.assertCurrentLiveSession(state);
+      this.assertCurrentLiveSession(state, 'external.state_changed');
       return { dataUrl: capture.dataUrl };
     }
     const capture = await this.captureValidScreenshot(state, true, observation);
@@ -4921,10 +4937,12 @@ export class BrowserService {
     return { attachmentPath: filePath, dataUrl: capture.dataUrl };
   }
 
-  private async captureFreezeFrame(state: LiveBrowserSession): Promise<string> {
+  private async captureFreezeFrame(
+    state: LiveBrowserSession,
+  ): Promise<string | undefined> {
     for (let attempt = 0; attempt < SCREENSHOT_CAPTURE_ATTEMPTS; attempt += 1) {
       const image = await state.view.webContents.capturePage();
-      this.assertCurrentLiveSession(state);
+      this.assertCurrentLiveSession(state, 'external.state_changed');
       if (!image.isEmpty()) {
         const jpeg = image.toJPEG(FREEZE_FRAME_JPEG_QUALITY);
         if (jpeg.byteLength > 0) {
@@ -4936,10 +4954,11 @@ export class BrowserService {
         await new Promise<void>((resolve) => {
           setTimeout(resolve, SCREENSHOT_REPAINT_INTERVAL_MS);
         });
-        this.assertCurrentLiveSession(state);
+        this.assertCurrentLiveSession(state, 'external.state_changed');
       }
     }
-    throw new Error('Browser screenshot is unavailable.');
+    // A blank page is not an error for a placeholder frame.
+    return undefined;
   }
 
   private async captureValidScreenshot(
@@ -5228,7 +5247,7 @@ export class BrowserService {
           ? process.hrtime.bigint().toString()
           : undefined;
       try {
-        this.assertCurrentLiveSession(state);
+        this.assertCurrentLiveSession(state, 'external.state_changed');
       } catch (error) {
         if (__CANOPY_E2E__ && observe) {
           observe('operation-threw', {
@@ -5338,7 +5357,7 @@ export class BrowserService {
           setTimeout(resolve, SCREENSHOT_REPAINT_INTERVAL_MS);
         });
         try {
-          this.assertCurrentLiveSession(state);
+          this.assertCurrentLiveSession(state, 'external.state_changed');
         } catch (error) {
           if (__CANOPY_E2E__ && observe) {
             observe('operation-threw', {
@@ -13448,9 +13467,15 @@ export class BrowserService {
     );
   }
 
-  private assertCurrentLiveSession(state: LiveBrowserSession): void {
+  private assertCurrentLiveSession(
+    state: LiveBrowserSession,
+    unavailableCode?: 'external.state_changed',
+  ): void {
     if (!this.isCurrentLiveSession(state)) {
-      throw new Error(`Browser ${state.snapshot.id} is no longer available.`);
+      const error = new Error(
+        `Browser ${state.snapshot.id} is no longer available.`,
+      );
+      throw unavailableCode ? classifyError(error, unavailableCode) : error;
     }
   }
 

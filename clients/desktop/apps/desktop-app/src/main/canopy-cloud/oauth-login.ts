@@ -37,7 +37,7 @@ import { openExternalGuarded } from '../lib/open-external';
 import { focusMainWindow } from '../lib/main-window-focus';
 import { isE2eBuild } from '../lib/e2e-gate';
 import { isRecord } from '../lib/type-guards';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import { getObservabilityService } from '../observability';
 import { getSharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { organizationSnapshotTransition } from '../shared-containers/organization-snapshot-transition';
@@ -669,7 +669,7 @@ function isValidCallbackRequest(input: {
 }
 
 export async function getDesktopOAuthClientDeviceId(): Promise<string> {
-  return (await readPortalStateStore()).clientDeviceId;
+  return await getInstallId();
 }
 
 /**

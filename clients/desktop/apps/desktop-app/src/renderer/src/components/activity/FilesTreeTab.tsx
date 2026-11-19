@@ -38,6 +38,7 @@ import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-syn
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { useChatStore } from '@/stores/chatStore';
 import { worktreeKey } from '@/stores/chat/utils';
+import { moveWithFileTabs } from '@/lib/file-viewer/follow-moved-file';
 import {
   getDirectoryCacheKey,
   getFileTreeIndexCacheKey,
@@ -2569,16 +2570,30 @@ export function FilesTreeTab({
             repoId: destination.root.repoId,
             relativePath: targetRelativePath,
           };
-          const transferred = await workspaceFileSourceFor(
-            worktreeId,
-          ).mutateFileTree({
-            operation,
-            projectId,
-            worktreeId,
-            source: nodeReference(source),
-            target: requested,
-            conflict: operation === 'copy' ? 'increment' : 'error',
-          });
+          const mutate = (): ReturnType<
+            ReturnType<typeof workspaceFileSourceFor>['mutateFileTree']
+          > =>
+            workspaceFileSourceFor(worktreeId).mutateFileTree({
+              operation,
+              projectId,
+              worktreeId,
+              source: nodeReference(source),
+              target: requested,
+              conflict: operation === 'copy' ? 'increment' : 'error',
+            });
+          const transferred =
+            operation === 'move' && source.absolutePath
+              ? await moveWithFileTabs(
+                  {
+                    projectId,
+                    worktreeId,
+                    source: { ...source, absolutePath: source.absolutePath },
+                    toRoot: destination.root,
+                    toRelativePath: targetRelativePath,
+                  },
+                  mutate,
+                )
+              : await mutate();
           // Something exists at the target again, even if it was deleted.
           retireFileTreeTombstones(projectId, worktreeId, {
             entries: [transferred.target ?? requested],
@@ -2643,20 +2658,34 @@ export function FilesTreeTab({
     try {
       let target: { repoId: string; relativePath: string };
       if (inlineEditor.mode === 'rename') {
+        const { node } = inlineEditor;
         const parts = inlineEditor.node.relativePath.split('/');
         parts[parts.length - 1] = value;
         target = {
           repoId: inlineEditor.node.root.repoId,
           relativePath: parts.join('/'),
         };
-        await workspaceFileSourceFor(worktreeId).mutateFileTree({
-          operation: 'move',
-          projectId,
-          worktreeId,
-          source: nodeReference(inlineEditor.node),
-          target,
-          conflict: 'error',
-        });
+        const mutate = (): Promise<unknown> =>
+          workspaceFileSourceFor(worktreeId).mutateFileTree({
+            operation: 'move',
+            projectId,
+            worktreeId,
+            source: nodeReference(node),
+            target,
+            conflict: 'error',
+          });
+        await (node.absolutePath
+          ? moveWithFileTabs(
+              {
+                projectId,
+                worktreeId,
+                source: { ...node, absolutePath: node.absolutePath },
+                toRoot: node.root,
+                toRelativePath: target.relativePath,
+              },
+              mutate,
+            )
+          : mutate());
       } else {
         const parent =
           inlineEditor.node.kind === 'folder'

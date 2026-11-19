@@ -759,7 +759,11 @@ function automationSkipReason(
       if (isCode) return 'incompatible-target';
       break;
     case 'worktree_pipeline':
-      if (!isCode) return 'incompatible-target';
+      // A converted chat automation runs a workflow with a global target,
+      // whose project the fork binds (CAN-6455); any other pipeline target
+      // is a code worktree's.
+      if (!isCode && action.target.kind !== 'global')
+        return 'incompatible-target';
       if (action.pipeline.source === 'unresolved') {
         if (document.uses?.pipeline === undefined)
           return 'pipeline-unavailable';

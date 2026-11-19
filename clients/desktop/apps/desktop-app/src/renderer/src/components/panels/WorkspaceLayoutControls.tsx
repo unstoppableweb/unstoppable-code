@@ -99,8 +99,12 @@ export function WorkspaceLayoutControls({
       setChatWidth(prefs.chatWidth === 'full' ? 'full' : 'default');
       applyChatWidth(prefs.chatWidth);
       emitPreferencesUpdated(prefs);
-    } catch {
-      useGitHubStore.getState().addToast("Couldn't change chat width", 'error');
+    } catch (error) {
+      useGitHubStore
+        .getState()
+        .addToast("Couldn't change chat width", 'error', undefined, {
+          caught: error,
+        });
     } finally {
       setWidthBusy(false);
     }

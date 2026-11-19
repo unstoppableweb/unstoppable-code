@@ -14,6 +14,12 @@ import {
   scopeServesActivitySection,
 } from '@/lib/panels/scope-panel-kinds';
 import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
+import { workspaceFilesCardWrite } from '@canopy/ui-app/workspace-files';
+import { CLOUD_ATTACHMENT_MAX_BYTES } from '@canopy/protocol/cloud-attachments';
+import {
+  cloudWorkspaceFilesHost,
+  cloudWorkspaceFileWrites,
+} from '../cloud-workspace-file-writes';
 import {
   cloudWorkspaceFileList,
   cloudWorkspaceFilesHeader,
@@ -175,5 +181,79 @@ describe("a cloud task's Activity on desktop (CAN-6568)", () => {
     expect(
       cloudWorkspaceFilesHeader({ kind: 'ready', rows: [] }).hasContent,
     ).toBe(false);
+  });
+
+  it('offers workspace file writes on a cloud scope only (CAN-7008)', () => {
+    const write = {
+      upload: (): Promise<void> => Promise.resolve(),
+      remove: (): Promise<void> => Promise.resolve(),
+    };
+    expect(cloud.cloudWorkspaceFileWrite).toBe(true);
+    expect(desktop.cloudWorkspaceFileWrite).not.toBe(true);
+    expect(workspaceFilesCardWrite(cloud, write)).toBe(write);
+    expect(workspaceFilesCardWrite(desktop, write)).toBeUndefined();
+  });
+
+  it('refuses an oversized pick before reading it or calling main (CAN-7008)', async () => {
+    const uploadWorkspaceFile = jest.fn();
+    const writes = cloudWorkspaceFileWrites({
+      workspaceId: WORKSPACE,
+      cloudChats: { uploadWorkspaceFile },
+      relay: relayAnswering(() => ({
+        ok: false,
+        error: {
+          kind: 'internal',
+          message: 'unused',
+          retry: { kind: 'never' },
+        },
+      })),
+    });
+    const file = new File(
+      [new Uint8Array(CLOUD_ATTACHMENT_MAX_BYTES + 1)],
+      'huge.pdf',
+      { type: 'application/pdf' },
+    );
+    const arrayBuffer = jest.spyOn(file, 'arrayBuffer');
+    await expect(
+      writes.upload(
+        { file, operationId: '22222222-2222-4222-8222-222222222222' },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ reason: 'too_large' });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(uploadWorkspaceFile).not.toHaveBeenCalled();
+  });
+
+  it("reads the project's list again whenever a write settles, with no card mounted (CAN-7008)", async () => {
+    const refresh = jest.fn();
+    const uploadWorkspaceFile = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, fileId: 'f-1' })
+      .mockResolvedValueOnce({ ok: false, reason: 'unknown' });
+    const relay = relayAnswering(() => ({
+      ok: true,
+      value: { artifactId: 'workspace-file:f-1', storageState: 'deleted' },
+    }));
+    const host = cloudWorkspaceFilesHost({
+      workspaceId: WORKSPACE,
+      cloudChats: { uploadWorkspaceFile },
+      relay,
+      refresh,
+    });
+    const write = host.write;
+    if (write === undefined) throw new Error('The host offers no writes.');
+    const pending = {
+      file: new File(['day,swell'], 'tides.csv', { type: 'text/csv' }),
+      operationId: '22222222-2222-4222-8222-222222222222',
+    };
+    const signal = new AbortController().signal;
+    await write.upload(pending, signal);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await expect(write.upload(pending, signal)).rejects.toMatchObject({
+      reason: 'unknown',
+    });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await write.remove(`wsf:${WORKSPACE}:f-1`);
+    expect(refresh).toHaveBeenCalledTimes(3);
   });
 });

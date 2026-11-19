@@ -47,7 +47,7 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
-import { formatRelativeTime } from '@canopy/ui-shared/lib';
+import { formatRelativeTime, recordSurfacedError } from '@canopy/ui-shared/lib';
 import {
   BackIcon,
   HistoryIcon,
@@ -89,7 +89,11 @@ import {
   rowMenuItems,
 } from './memory-panel-parts';
 import { memorySyncFailureText } from './memory-sync-copy';
-import { consolidationProblem, rebuildProblem } from './memory-status-copy';
+import {
+  consolidationProblem,
+  problemReasonCode,
+  rebuildProblem,
+} from './memory-status-copy';
 import {
   MemoryProjectSyncRow,
   MemorySyncConflictsView,
@@ -123,6 +127,62 @@ export interface MemoryPanelProps {
  * this runs out, or at once when the panel closes.
  */
 export const MEMORY_UNDO_WINDOW_MS = 15_000;
+
+// Failures already reported, so a panel that re-mounts on the same persistent
+// failure does not report it again. Bounded; the oldest falls out first.
+const REPORTED_FAILURES = new Set<string>();
+const MAX_REPORTED_FAILURES = 32;
+
+/**
+ * The red banner for a failed or skipped run. It reports once per failure (the
+ * run's timestamp and closed reason), not on every render or re-mount; the
+ * reason is a closed code, never the banner's copy or a raw error message.
+ */
+function ConsolidationProblemNotice({
+  failureKey,
+  reasonCode,
+  message,
+  actions,
+  children,
+}: {
+  failureKey: string;
+  reasonCode: string;
+  message: string;
+  actions: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  useEffect(() => {
+    if (REPORTED_FAILURES.has(failureKey)) return;
+    REPORTED_FAILURES.add(failureKey);
+    if (REPORTED_FAILURES.size > MAX_REPORTED_FAILURES)
+      for (const oldest of REPORTED_FAILURES) {
+        REPORTED_FAILURES.delete(oldest);
+        break;
+      }
+    recordSurfacedError({
+      chokePoint: 'notice',
+      surface: 'inline',
+      identifier: `memory-consolidation-status-${reasonCode}`,
+      // The recorder's 60 s repeat window keys on this text, not on our own
+      // dedupe: the run is in it so two runs failing alike both get reported.
+      // Sensitive text is never stored or sent.
+      text: `${failureKey}|${message}`,
+      textIsSensitive: true,
+    });
+  }, [failureKey, reasonCode, message]);
+  return (
+    <Notice
+      intent="destructive"
+      errorRecordingDisabled
+      surface="none"
+      data-testid="memory-consolidation-status"
+      data-state="problem"
+      actions={actions}
+    >
+      {children}
+    </Notice>
+  );
+}
 
 const DOCUMENT_ERROR = "Couldn't open this memory.";
 // A host from before whole-memory edits returns no markdown and has no
@@ -295,6 +355,7 @@ export function MemoryPanel({
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildMessage, setRebuildMessage] = useState<{
     text: string;
+    code: string;
     lastRunAt: string | null;
   } | null>(null);
   const [savingProjectMemory, setSavingProjectMemory] = useState(false);
@@ -914,7 +975,13 @@ export function MemoryPanel({
         setStatus(response.status);
         const text = rebuildProblem(response.rebuild);
         setRebuildMessage(
-          text === null ? null : { text, lastRunAt: response.status.lastRunAt },
+          text === null
+            ? null
+            : {
+                text,
+                code: problemReasonCode(response.rebuild.reason),
+                lastRunAt: response.status.lastRunAt,
+              },
         );
       }
     } catch (failure) {
@@ -925,6 +992,7 @@ export function MemoryPanel({
               status: 'failed',
               reason: errorText(failure) || undefined,
             }) ?? '',
+          code: problemReasonCode(errorText(failure) || undefined),
           lastRunAt: status?.lastRunAt ?? null,
         });
     } finally {
@@ -979,13 +1047,15 @@ export function MemoryPanel({
   function renderStatus(): JSX.Element | null {
     if (!status) return null;
     const rebuildRunning = rebuilding || status.rebuilding;
-    const currentRebuildMessage =
+    const currentRebuild =
       rebuildMessage !== null && rebuildMessage.lastRunAt === status.lastRunAt
-        ? rebuildMessage.text
+        ? rebuildMessage
         : null;
     const problem = running
       ? null
-      : (currentRebuildMessage ?? consolidationProblem(status));
+      : (currentRebuild?.text ?? consolidationProblem(status));
+    const reasonCode =
+      currentRebuild?.code ?? problemReasonCode(status.lastReason);
     const waiting = status.pendingNotes;
     const metrics = status.metrics;
     const health = metrics
@@ -1018,17 +1088,15 @@ export function MemoryPanel({
       );
     if (problem !== null)
       return (
-        <Notice
-          intent="destructive"
-          errorSource="memory-consolidation-status"
-          surface="none"
-          data-testid="memory-consolidation-status"
-          data-state="problem"
+        <ConsolidationProblemNotice
+          failureKey={`${status.lastRunAt ?? ''}|${reasonCode}`}
+          reasonCode={reasonCode}
+          message={message}
           actions={action}
         >
-          {message}
+          <span className={REPLAY_BLOCK_CLASS}>{message}</span>
           {healthMessage !== null && <> · {healthMessage}</>}
-        </Notice>
+        </ConsolidationProblemNotice>
       );
     return (
       <p

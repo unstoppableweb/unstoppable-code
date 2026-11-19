@@ -35,8 +35,9 @@
  * re-check every before-stage capture spec.
  *
  * `brandId` is REQUIRED and must be the brand the server under test actually
- * serves. For the portal harness that is `startPortalWebServer(...).brandId`
- * (`portal/web-server.mjs`), which the harness also pins into the server's own
+ * serves. For the Remote Control harness that is
+ * `startPortalWebServer(...).brandId` (`remote-control/harness/web-server.mjs`),
+ * which the harness also pins into the server's own
  * environment. It is deliberately not defaulted: a missing propagation would
  * otherwise fall back to a plausible brand and produce a screenshot in the
  * wrong color mode, which is far worse than a loud failure.

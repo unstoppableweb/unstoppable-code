@@ -243,7 +243,6 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   skillSuggestionsEnabled: true,
   rendererCodeCacheSchemeEnabled: false,
   chatDetail: DEFAULT_CHAT_DETAIL,
-  remoteControlEnabled: true,
   windowBounds: null,
   windowMaximized: false,
   windowFullScreen: false,

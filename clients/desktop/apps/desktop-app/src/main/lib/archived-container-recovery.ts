@@ -1,10 +1,16 @@
 import {
+  matchesRecordedDirectoryIdentity,
+  directoryStatIdentity,
+} from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
   assertNoDestructiveRecovery,
   refuseInterruptedArchiveJournal,
 } from './w5-destructive-recovery';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import type { Stats } from 'node:fs';
 import {
   access,
   cp,
@@ -199,9 +205,7 @@ function paths(
   };
 }
 
-async function statOrAbsent(
-  path: string,
-): Promise<Awaited<ReturnType<typeof lstat>> | null> {
+async function statOrAbsent(path: string): Promise<Stats | null> {
   try {
     return await lstat(path);
   } catch (error) {
@@ -749,6 +753,8 @@ async function cleanupGitRegistrations(
   for (const repository of journal.repositories) {
     if (pending && mode === 'inspect') break;
     let recordedIdentity = repository.repositoryIdentity;
+    const historicalIdentity =
+      recordedIdentity !== null && recordedIdentity !== undefined;
     if (!recordedIdentity) {
       try {
         const repositoryIdentityPath = resolve(
@@ -774,9 +780,14 @@ async function cleanupGitRegistrations(
       const currentIdentity = await lstat(currentIdentityPath);
       if (
         currentIdentityPath !== resolve(recordedIdentity.path) ||
-        currentIdentity.dev !== recordedIdentity.dev ||
-        currentIdentity.ino !== recordedIdentity.ino ||
-        currentIdentity.birthtimeMs !== recordedIdentity.birthtimeMs
+        (historicalIdentity
+          ? !matchesRecordedDirectoryIdentity(
+              directoryStatIdentity(recordedIdentity),
+              directoryStatIdentity(currentIdentity),
+              hostOperatingSystem(),
+            )
+          : directoryStatIdentity(currentIdentity) !==
+            directoryStatIdentity(recordedIdentity))
       ) {
         pending = true;
         continue;
@@ -1123,9 +1134,11 @@ export async function prepareArchivedContainerRecovery(args: {
       return existing.recovery;
     if (
       !existing.identity ||
-      source.dev !== existing.identity.dev ||
-      source.ino !== existing.identity.ino ||
-      source.birthtimeMs !== existing.identity.birthtimeMs
+      !matchesRecordedDirectoryIdentity(
+        directoryStatIdentity(existing.identity),
+        directoryStatIdentity(source),
+        hostOperatingSystem(),
+      )
     )
       throw new Error('The recovery source changed identity.');
     if (
@@ -1472,9 +1485,11 @@ async function verifyRecoveryBeforeFinish(
     const current = source ?? quarantine;
     if (
       current &&
-      (current.dev !== journal.identity.dev ||
-        current.ino !== journal.identity.ino ||
-        current.birthtimeMs !== journal.identity.birthtimeMs ||
+      (!matchesRecordedDirectoryIdentity(
+        directoryStatIdentity(journal.identity),
+        directoryStatIdentity(current),
+        hostOperatingSystem(),
+      ) ||
         current.isSymbolicLink())
     )
       throw new Error('The worktree changed identity during recovery.');
@@ -1505,9 +1520,11 @@ async function assertRecoveryQuarantineOwned(
   if (
     remaining &&
     (!journal.identity ||
-      remaining.dev !== journal.identity.dev ||
-      remaining.ino !== journal.identity.ino ||
-      remaining.birthtimeMs !== journal.identity.birthtimeMs ||
+      !matchesRecordedDirectoryIdentity(
+        directoryStatIdentity(journal.identity),
+        directoryStatIdentity(remaining),
+        hostOperatingSystem(),
+      ) ||
       remaining.isSymbolicLink())
   ) {
     throw new Error(

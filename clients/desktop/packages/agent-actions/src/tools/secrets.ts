@@ -85,7 +85,7 @@ export const REQUEST_SECRETS_DECLINED_TEXT =
 
 /** Every WriteSecretsFile result carries this warning. */
 export const WRITE_SECRETS_FILE_WARNING =
-  'A shell command can still read this file and print its values. Prefer RunWithSecrets when a command can take the secrets from its environment, and remove the file when it is no longer needed.';
+  "This file holds the values in plain text. Your shell commands, and any program that reads the file or a copy of it, see them; only the app's own views hide them. Prefer RunWithSecrets when a command can take the secrets from its environment, and remove the file when it is no longer needed.";
 
 export const REQUEST_SECRETS_DESCRIPTION =
   'Ask the person for one or more secrets, such as passwords, API keys, tokens or connection strings. The person fills a masked form; you get back only the names that are now available, never the values. Name each secret like an environment variable (for example DATABASE_URL) and explain in reason why you need it. Then use the secrets by name with RunWithSecrets or WriteSecretsFile. Never ask the person to paste a secret into chat.';
@@ -94,7 +94,7 @@ export const RUN_WITH_SECRETS_DESCRIPTION =
   'Run a shell command with secrets from RequestSecrets set as environment variables. env maps each variable the command reads to a secret name, for example { "PGURL": "DATABASE_URL" }; stdin optionally names a secret to pipe to the command\'s input. Values never appear in the command, its record or its result: stdout and stderr come back with every held secret replaced by [secret:NAME], and redactions counts the replacements. If a named secret is not held, the command is not run and missing lists it.';
 
 export const WRITE_SECRETS_FILE_DESCRIPTION =
-  'Write secrets from RequestSecrets into a file inside the worktree, for tools that read configuration from a file. entries maps each key in the file to a secret name. format dotenv writes KEY=value lines, json writes an object, and raw writes the one secret as the whole file. mode merge keeps other keys already in a dotenv or json file; replace overwrites it. The file is written with owner-only permissions; a git-tracked path is refused, and an untracked path not already ignored is added to .git/info/exclude. Prefer RunWithSecrets: a shell command can still read this file.';
+  'Write secrets from RequestSecrets into a file inside the worktree, for tools that read configuration from a file. entries maps each key in the file to a secret name. format dotenv writes KEY=value lines, json writes an object, and raw writes the one secret as the whole file. mode merge keeps other keys already in a dotenv or json file; replace overwrites it. The file is written with owner-only permissions; a git-tracked path is refused, and an untracked path not already ignored is added to .git/info/exclude. The values are in the file in plain text, so your shell commands can read them: prefer RunWithSecrets.';
 
 // Input schemas. -------------------------------------------------------------
 

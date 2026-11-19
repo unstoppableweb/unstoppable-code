@@ -99,6 +99,7 @@ import {
 import { currentEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { automationsPanelTabTitle } from '@/lib/panels/automations-variants';
 import { chatTabStripLabel } from '@/lib/chatTabLabel';
+import { useRemoteImagesAllowed } from '@/lib/remote-image';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 
@@ -613,12 +614,18 @@ export function BrowserPanelTabFavicon({
     return url !== undefined && url.length > 0 ? url : undefined;
   });
   const [failedFaviconUrl, setFailedFaviconUrl] = useState<string | null>(null);
+  // A local-only build loads no remote favicons; the tab keeps its globe.
+  const remoteImages = useRemoteImagesAllowed();
   useEffect(() => {
     // Reset the error latch whenever the favicon source changes.
     setFailedFaviconUrl(null);
   }, [faviconUrl]);
 
-  if (faviconUrl === undefined || failedFaviconUrl === faviconUrl) {
+  if (
+    !remoteImages ||
+    faviconUrl === undefined ||
+    failedFaviconUrl === faviconUrl
+  ) {
     return (
       <GlobeIcon
         size="sm"

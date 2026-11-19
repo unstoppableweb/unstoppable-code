@@ -1,5 +1,13 @@
 import { seedChatsSectionFixture } from './seeders/seedChatsSectionFixture.mjs';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -19,6 +27,322 @@ import { seedWorktreeChat } from './seeders/index.mjs';
 
 const WORKTREE_BRANCH = 'demo-main';
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
+
+test('Finish qualifies historical nonempty metadata after device renumbering', async () => {
+  test.setTimeout(240_000);
+  let control;
+  for (const change of ['exact', 'device', 'inode', 'birthtime']) {
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-finish-identity-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    const project = path.join(userDataDir, 'workspaces', WORKSPACE_ID);
+    const config = JSON.parse(
+      readFileSync(path.join(project, 'workspace.json'), 'utf8'),
+    );
+    const { electronApp: initial } = await launchCanopy({ userDataDir });
+    try {
+      const window = await initial.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      const result = await window.evaluate(
+        (request) => window.api.archiveWorktree(request),
+        {
+          projectId: WORKSPACE_ID,
+          worktreeId: WORKTREE_BRANCH,
+          repoPath: config.repoPath,
+          deleteBranch: false,
+          lockAfterArchive: true,
+        },
+      );
+      expect(result.success).toBe(true);
+    } finally {
+      await closeCanopy(initial, userDataDir, { keepUserData: true });
+    }
+    const journal = path.join(
+      userDataDir,
+      'w5/destructive-lifecycles',
+      createHash('sha256')
+        .update(JSON.stringify([WORKSPACE_ID, WORKTREE_BRANCH]))
+        .digest('hex') + '.json',
+    );
+    const record = JSON.parse(readFileSync(journal, 'utf8'));
+    const metadata = path.join(project, 'worktree-data', WORKTREE_BRANCH);
+    mkdirSync(metadata, { recursive: true });
+    writeFileSync(
+      path.join(metadata, 'sentinel'),
+      'original metadata awaiting cleanup',
+    );
+    const mutate = (value) => {
+      const fields = value.split(':');
+      if (change !== 'exact') {
+        const index = change === 'device' ? 0 : change === 'inode' ? 1 : 2;
+        fields[index] = String(Number(fields[index]) + 1);
+      }
+      return fields.join(':');
+    };
+    const observed = lstatSync(metadata);
+    // Negative metadata cases must reach the metadata guard, not fail at the project guard.
+    if (change === 'device')
+      record.directoryIdentity = mutate(record.directoryIdentity);
+    record.ownedPaths = record.ownedPaths.filter(
+      (owned) => owned.path !== metadata,
+    );
+    record.ownedPaths.push({
+      path: metadata,
+      identity: mutate(
+        `${observed.dev}:${observed.ino}:${observed.birthtimeMs}`,
+      ),
+    });
+    record.state = 'recovery-required';
+    record.cleanupRequired = true;
+    record.steps = record.steps.filter(
+      (step) => !step.phase.startsWith('sidecar:'),
+    );
+    record.steps.push({ phase: 'sidecar:worktree metadata', state: 'pending' });
+    writeFileSync(journal, JSON.stringify(record));
+    const { electronApp } = await launchCanopy({ userDataDir });
+    try {
+      const window = await electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell();
+      const list = await window.evaluate(
+        (request) => window.api.listWorktreeRecovery(request),
+        { workspaceId: WORKSPACE_ID, operationId: record.operationId },
+      );
+      const entry = list.entries[0];
+      expect(entry?.diagnosis).toBeDefined();
+      const accepted =
+        change === 'exact' ||
+        (change === 'device' && process.platform === 'darwin');
+      const verdict = {
+        verdict: entry.diagnosis.verdict,
+        check: entry.diagnosis.check,
+        actions: entry.actions,
+      };
+      if (change === 'exact') control = verdict;
+      if (accepted) expect(verdict).toEqual(control);
+      else expect(entry.diagnosis.verdict).toBe('refused');
+      const result = await window.evaluate(
+        (request) => window.api.finishWorktreeRecovery(request),
+        {
+          workspaceId: WORKSPACE_ID,
+          operationId: record.operationId,
+          revision: entry.diagnosis.revision,
+        },
+      );
+      expect(result.status).toBe(accepted ? 'finished' : 'refused');
+      expect(existsSync(metadata)).toBe(!accepted);
+      expect(JSON.parse(readFileSync(journal, 'utf8')).state).toBe(
+        accepted ? 'completed' : 'recovery-required',
+      );
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+    }
+  }
+});
+
+for (const action of ['keep', 'discard', 'aside-discard', 'retained-discard']) {
+  test(`persisted identity device drift preserves ${action} verdicts and effects`, async () => {
+    test.setTimeout(240_000);
+    const { seedWorktreeRecoveryFixture } =
+      await import('./seeders/worktreeRecoveryFixture.mjs');
+    let control;
+    const cases = [
+      { identityChange: 'exact' },
+      { identityChange: 'device' },
+      ...['inode', 'birthtime'].map((identityChange) => ({
+        identityChange,
+        identityScope: action === 'retained-discard' ? 'staged' : 'owned',
+      })),
+      ...(action === 'keep'
+        ? ['project', 'staged'].flatMap((identityScope) =>
+            ['inode', 'birthtime'].map((identityChange) => ({
+              identityChange,
+              identityScope,
+            })),
+          )
+        : []),
+      ...(['discard', 'aside-discard'].includes(action)
+        ? ['exact', 'device'].map((identityChange) => ({
+            identityChange,
+            identityScope: 'owned',
+            unverifiableCheckout: true,
+          }))
+        : []),
+    ];
+    for (const scenario of cases) {
+      const { identityChange, unverifiableCheckout = false } = scenario;
+      const userDataDir = mkdtempSync(
+        path.join(os.tmpdir(), 'canopy-recorded-identity-'),
+      );
+      seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+      const fixture = seedWorktreeRecoveryFixture({
+        userDataDir,
+        ...scenario,
+        interruptedDiscard: action === 'aside-discard',
+        aside: action === 'aside-discard',
+        stagedCapture: action === 'keep',
+        retained: action === 'retained-discard',
+      });
+      const { electronApp } = await launchCanopy({ userDataDir });
+      try {
+        const window = await electronApp.firstWindow();
+        await new CanopyAppDriver(window).waitForShell();
+        const accepted =
+          identityChange === 'exact' ||
+          (identityChange === 'device' &&
+            process.platform === 'darwin' &&
+            !unverifiableCheckout);
+        if (action === 'keep') {
+          const list = await window.evaluate(
+            (workspaceId) => window.api.listWorktreeRecovery({ workspaceId }),
+            WORKSPACE_ID,
+          );
+          const entry = list.entries.find(
+            (item) => item.diagnosis?.operationId === fixture.operationId,
+          );
+          expect(entry).toBeDefined();
+          const verdict = {
+            diagnosis: entry.diagnosis.verdict,
+            check: entry.diagnosis.check,
+            actions: entry.actions,
+            checkout: entry.retained.checkout,
+          };
+          if (identityChange === 'exact') control = verdict;
+          // Keep binds project/staged evidence; explicit Discard independently binds the checkout.
+          expect(entry.actions.discard.eligible).toBe(
+            accepted || ['project', 'staged'].includes(scenario.identityScope),
+          );
+          if (accepted) {
+            expect(verdict).toEqual(control);
+            expect(entry.diagnosis.verdict).toBe('keep-worktree');
+            const result = await window.evaluate(
+              (request) => window.api.resolveWorktreeRecovery(request),
+              {
+                workspaceId: WORKSPACE_ID,
+                operationId: fixture.operationId,
+                revision: entry.diagnosis.revision,
+                action: 'keep-worktree',
+              },
+            );
+            expect(result.status).toBe('worktree-kept');
+            expect(existsSync(fixture.checkout)).toBe(true);
+            const hold = JSON.parse(
+              readFileSync(
+                path.join(
+                  userDataDir,
+                  'w5/archive-recovery',
+                  WORKSPACE_ID,
+                  fixture.operationId,
+                  'receipt.json',
+                ),
+                'utf8',
+              ),
+            );
+            expect(hold.stage).toBe('completed');
+          } else {
+            expect(entry.diagnosis.verdict).toBe('refused');
+            const before = readFileSync(fixture.file, 'utf8');
+            const result = await window.evaluate(
+              (request) => window.api.resolveWorktreeRecovery(request),
+              {
+                workspaceId: WORKSPACE_ID,
+                operationId: fixture.operationId,
+                revision: entry.diagnosis.revision,
+                action: 'keep-worktree',
+              },
+            );
+            expect(result.status).toBe('refused');
+            expect(readFileSync(fixture.file, 'utf8')).toBe(before);
+            expect(existsSync(fixture.checkout)).toBe(true);
+            expect(JSON.parse(readFileSync(fixture.file, 'utf8')).state).toBe(
+              'recovery-required',
+            );
+          }
+        } else {
+          const description = await window.evaluate(
+            (request) => window.api.describeWorktreeDiscard(request),
+            {
+              projectId: WORKSPACE_ID,
+              worktreeId: WORKTREE_BRANCH,
+              retainedArchives: action === 'retained-discard',
+            },
+          );
+          const verdict = {
+            status: description.status,
+            causes: description.causes,
+            kinds: description.targets.map((target) => target.kind),
+            preserved: description.preserved,
+          };
+          if (identityChange === 'exact' && !unverifiableCheckout)
+            control = verdict;
+          if (accepted) {
+            expect(verdict).toEqual(control);
+            expect(description.status).toBe('discardable');
+            const result = await window.evaluate(
+              (request) => window.api.discardWorktree(request),
+              {
+                projectId: WORKSPACE_ID,
+                worktreeId: WORKTREE_BRANCH,
+                confirmation: description.confirmation,
+                retainedArchives: action === 'retained-discard',
+              },
+            );
+            expect(result.status).toBe('discarded');
+            expect(existsSync(fixture.checkout)).toBe(false);
+            expect(
+              existsSync(
+                path.join(
+                  path.dirname(fixture.checkout),
+                  `.${WORKTREE_BRANCH}.discard-aside-live-checkout`,
+                ),
+              ),
+            ).toBe(false);
+            if (action === 'retained-discard')
+              expect(existsSync(fixture.container)).toBe(false);
+            else
+              expect(JSON.parse(readFileSync(fixture.file, 'utf8')).state).toBe(
+                'completed',
+              );
+          } else {
+            expect(description.status).toBe('refused');
+            const before = readFileSync(fixture.file, 'utf8');
+            const result = await window.evaluate(
+              (request) => window.api.discardWorktree(request),
+              {
+                projectId: WORKSPACE_ID,
+                worktreeId: WORKTREE_BRANCH,
+                confirmation: description.confirmation,
+                retainedArchives: action === 'retained-discard',
+              },
+            );
+            expect(result.status).toBe('refused');
+            expect(readFileSync(fixture.file, 'utf8')).toBe(before);
+            expect(
+              existsSync(
+                action === 'aside-discard'
+                  ? path.join(
+                      path.dirname(fixture.checkout),
+                      `.${WORKTREE_BRANCH}.discard-aside-live-checkout`,
+                    )
+                  : fixture.checkout,
+              ),
+            ).toBe(true);
+            if (action === 'retained-discard')
+              expect(JSON.parse(readFileSync(fixture.file, 'utf8')).phase).toBe(
+                'captured',
+              );
+            else
+              expect(JSON.parse(readFileSync(fixture.file, 'utf8')).state).toBe(
+                'recovery-required',
+              );
+          }
+        }
+      } finally {
+        await closeCanopy(electronApp, userDataDir);
+      }
+    }
+  });
+}
 
 test('shared rail stays current during continuous snapshot invalidations', async () => {
   test.setTimeout(60_000);

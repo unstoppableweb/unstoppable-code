@@ -1,5 +1,5 @@
-import type { BrowserWindow } from 'electron';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
+import type { AgentInterfacePort } from '../agents/agent-interface-port';
 import type { AgentProvider, AgentSessionOptions } from '../agents/types';
 
 /*
@@ -17,7 +17,7 @@ export interface WorkerProviderRuntime {
   /** Asserts an agent worker context; resolves the provider for `providerType`. */
   providerFor(
     providerType: AgentProviderType,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): Promise<AgentProvider>;
 }
 

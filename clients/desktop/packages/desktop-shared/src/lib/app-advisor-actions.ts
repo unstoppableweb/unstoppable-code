@@ -1715,7 +1715,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       category: 'remote-control',
       summary:
         'List paired computers, whether each is online and connected, and whether this computer accepts control.',
-      requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key,
       fields: [],
       example: { type: 'remote_control.get_state' },
       keywords: [
@@ -1735,7 +1734,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       category: 'remote-control',
       summary:
         "Open a paired computer's window to control it, or return to this computer.",
-      requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key,
       fields: [
         field(
           'deviceId',
@@ -1758,7 +1756,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       category: 'remote-control',
       summary:
         'Let paired computers control this one, or turn that off and end their sessions.',
-      requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key,
       fields: [
         field(
           'enabled',
@@ -10070,8 +10067,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       fields: [],
       example: { type: 'canopy_portal.open' },
       keywords: ['portal', 'open', 'modal'],
-      // The dialog follows device Remote Control, not Portal (CAN-5985).
-      requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDeviceRemoteControl.key,
     },
     {
       type: 'canopy_portal.close',
@@ -10084,21 +10079,36 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'canopy_portal.start',
       category: 'portal',
-      summary: `Start ${portalDisplayName} for the configured ${cloudName} account.`,
+      summary: `Turn on Allow incoming in ${portalDisplayName}, so paired computers can control this one.`,
       fields: [],
       example: { type: 'canopy_portal.start' },
-      keywords: ['portal', 'start', 'canopy cloud', 'account', 'api key'],
-      requiredFeatureFlag: 'canopy-portal-enabled',
+      keywords: [
+        'portal',
+        'start',
+        'remote control',
+        'allow incoming',
+        'remote access',
+      ],
+      notes: [
+        'The same as remote_control.set_allow_incoming with enabled true; the result is { allowIncoming }.',
+      ],
     },
     {
       type: 'canopy_portal.stop',
       category: 'portal',
-      summary: `Stop the active ${portalDisplayNameInline} session.`,
+      summary: `Turn off Allow incoming in ${portalDisplayName} and end the sessions of computers controlling this one.`,
       fields: [],
       example: { type: 'canopy_portal.stop' },
-      keywords: ['portal', 'stop', 'canopy cloud', 'account', 'api key'],
-      // Stop remains available so users can clean up an in-flight Portal
-      // session even after the feature flag flips to disabled.
+      keywords: [
+        'portal',
+        'stop',
+        'remote control',
+        'allow incoming',
+        'remote access',
+      ],
+      notes: [
+        'The same as remote_control.set_allow_incoming with enabled false; the result is { allowIncoming }.',
+      ],
     },
     {
       type: 'canopy_portal.open_account_settings',
@@ -10113,7 +10123,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'account',
         'api key',
       ],
-      requiredFeatureFlag: 'canopy-portal-enabled',
     },
     {
       type: 'app_advisor.open',

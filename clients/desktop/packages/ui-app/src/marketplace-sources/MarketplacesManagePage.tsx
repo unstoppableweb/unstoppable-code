@@ -77,7 +77,17 @@ function defaultRemoveConfirmation(
   };
 }
 
-function SourceLogo({ source }: { source: MarketplaceSource }): JSX.Element {
+/**
+ * A marketplace's mark: its avatar, with the Claude or Codex glyph for a
+ * provider marketplace. The list row and the detail page wear the same one.
+ */
+export function MarketplaceSourceLogo({
+  source,
+  size = 'lg',
+}: {
+  source: MarketplaceSource;
+  size?: 'lg' | 'xl';
+}): JSX.Element {
   const provider = marketplaceSourceProvider(source);
   const Logo =
     provider === 'Claude'
@@ -89,7 +99,7 @@ function SourceLogo({ source }: { source: MarketplaceSource }): JSX.Element {
     <DisplayAvatar
       name={source.name}
       subject="group"
-      size="lg"
+      size={size}
       replayBlocked
       className="shrink-0"
       glyph={Logo ? <Logo width={16} height={16} aria-hidden /> : undefined}
@@ -210,7 +220,7 @@ export function MarketplacesManagePage({
         const busy = busyLabel(state, source.id);
         return (
           <span className="flex min-w-0 items-center gap-3 py-2">
-            <SourceLogo source={source} />
+            <MarketplaceSourceLogo source={source} />
             <span className="flex min-w-0 flex-col">
               <span className="flex min-w-0 items-center gap-2">
                 <span
@@ -287,6 +297,9 @@ export function MarketplacesManagePage({
         <Notice
           key={`${source.id}-message`}
           errorSource="marketplace-source-message"
+          errorRecordingDisabled={
+            error !== undefined && state.recordedErrors.has(error)
+          }
           intent={error ? 'destructive' : 'attention'}
           data-testid="marketplace-source-message"
           onDismiss={() => state.dismissSourceMessage(source.id)}

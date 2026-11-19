@@ -159,9 +159,9 @@ export function useSharedContainerRun({
         await action();
         await load();
         return true;
-      } catch {
+      } catch (error) {
         setError(failureMessage);
-        addToast(failureMessage, 'error');
+        addToast(failureMessage, 'error', undefined, { caught: error });
         return false;
       } finally {
         pendingRef.current = false;
@@ -258,10 +258,10 @@ export function useSharedContainerRun({
         setLastRun({ scriptName, response });
         await load();
         return true;
-      } catch {
+      } catch (error) {
         const message = 'Could not start this command.';
         setError(message);
-        addToast(message, 'error');
+        addToast(message, 'error', undefined, { caught: error });
         return false;
       } finally {
         commandPendingRef.current = false;

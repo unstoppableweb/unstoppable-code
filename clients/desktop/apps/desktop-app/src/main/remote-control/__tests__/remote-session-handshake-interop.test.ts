@@ -73,7 +73,10 @@ const DESKTOP_GRANT: SessionGrant = {
   rootDeviceId: null,
   expiresAt: null,
 };
-import { RpcPeer as DesktopRpcPeer } from '../transport/rpc-peer';
+import {
+  RpcPeer as DesktopRpcPeer,
+  RpcPublicError,
+} from '../transport/rpc-peer';
 import { ipcResultCorpus } from './helpers/ipc-result-corpus';
 import {
   ManualScheduler,
@@ -473,22 +476,61 @@ describe('handshake interop with the desktop', () => {
 
     // Concurrent RPC in both directions over one session, including large
     // compressed multi-fragment messages and the allowlisted IPC corpus.
+    const respond = (method: string, params: unknown): Promise<unknown> => {
+      if (method === 'typed-refusal') {
+        return Promise.reject(
+          Object.assign(new RpcPublicError('Safe refusal.'), {
+            operationFailure: {
+              status: 'unavailable',
+              code: 'private-provider-detail',
+              effects: { diagnostic: 'private-provider-detail' },
+              retry: {
+                kind: 'after_refresh',
+                resource: 'private-provider-detail',
+                delayMs: 12,
+              },
+            },
+          }),
+        );
+      }
+      if (method === 'legacy-refusal') {
+        return Promise.reject(new RpcPublicError('Legacy refusal.'));
+      }
+      return Promise.resolve({ method, params });
+    };
     const desktopEvents: unknown[] = [];
     const desktopPeer = new DesktopRpcPeer(desktopSession, {
-      onRequest: (method, params): Promise<unknown> =>
-        Promise.resolve({ method, params }),
+      onRequest: respond,
       onEvent: (name, payload): void => {
         desktopEvents.push([name, payload]);
       },
     });
     const portableEvents: unknown[] = [];
     const portablePeer = new RpcPeer(session, {
-      onRequest: (method, params): Promise<unknown> =>
-        Promise.resolve({ method, params }),
+      onRequest: respond,
       onEvent: (name, payload): void => {
         portableEvents.push([name, payload]);
       },
     });
+    // New peers preserve only portable retry advice. Legacy refusals remain
+    // readable in both directions without requiring the optional field.
+    for (const peer of [desktopPeer, portablePeer]) {
+      const refusal: unknown = await peer
+        .request('typed-refusal', {})
+        .catch((error: unknown) => error);
+      expect(refusal).toMatchObject({
+        message: 'Safe refusal.',
+        operationFailure: {
+          status: 'unavailable',
+          retry: { kind: 'after_refresh', delayMs: 12 },
+        },
+      });
+      expect(JSON.stringify(refusal)).not.toContain('private-provider-detail');
+      await expect(peer.request('legacy-refusal', {})).rejects.toMatchObject({
+        message: 'Legacy refusal.',
+        operationFailure: undefined,
+      });
+    }
     const corpus = ipcResultCorpus().map((entry) => entry.value);
     const big = {
       text: 'compressible line\n'.repeat(30_000),
@@ -1390,7 +1432,7 @@ describe('controller connection and pairing against a desktop host', () => {
               }
               return { channel, args };
             }
-            throw new Error(`Unknown remote method ${method}.`);
+            throw new RpcPublicError(`Unknown remote method ${method}.`);
           },
         });
         hostPeers.push(peer);

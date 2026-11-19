@@ -13,6 +13,7 @@ export interface ReviewLinePopoverProps {
   annotations: ReviewAnnotation[];
   /** Comment threads anchored to the line. */
   threads: ReviewCommentThread[];
+  isThreadReadOnly?: (threadId: string) => boolean;
   onReply: (threadId: string, body: string) => void;
   onToggleResolved: (threadId: string) => void;
   onEditStagedComment: (
@@ -36,6 +37,7 @@ export function ReviewLinePopover({
   anchorRect,
   annotations,
   threads,
+  isThreadReadOnly,
   onReply,
   onToggleResolved,
   onEditStagedComment,
@@ -83,6 +85,7 @@ export function ReviewLinePopover({
             <div key={thread.id} className="shrink-0">
               <ReviewThreadCard
                 thread={thread}
+                readOnly={isThreadReadOnly?.(thread.id)}
                 onReply={(body): void => onReply(thread.id, body)}
                 onToggleResolved={(): void => onToggleResolved(thread.id)}
                 onEditStagedComment={(commentId, body): void =>

@@ -200,6 +200,7 @@ export {
   type LedgerFeedStoreOptions,
   type LedgerViewStoreFor,
 } from './ledger/create-ledger-feed-store';
+export { thrownResult as ledgerThrownResult } from './ledger/ledger-view-results';
 export {
   isLedgerDraftComplete,
   ledgerDraftAddParams,

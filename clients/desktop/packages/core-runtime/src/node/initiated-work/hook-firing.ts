@@ -16,6 +16,7 @@ import type {
   InitiatedWorkGateCheck,
   InitiatedWorkGateVerdict,
   InitiatedWorkRequest,
+  InitiatedWorkSkipCode,
   InitiatedWorkSubmission,
 } from './engine';
 
@@ -53,9 +54,22 @@ export interface HookActionRef {
 
 export const HOOK_PAUSED_MESSAGE = 'This hook is paused in this worktree.';
 
+/** The code of a skip whose worktree pause state could not be read (CAN-7094). */
+export const HOOK_PAUSE_UNKNOWN_CODE =
+  'core.initiatedWork.gate.pauseUnknown' satisfies InitiatedWorkSkipCode;
+
+export const HOOK_PAUSE_UNKNOWN_MESSAGE =
+  "This hook was skipped because this worktree's paused hooks could not be read.";
+
+/** A worktree's paused hook keys, or `unknown` when they could not be read. */
+type HookPauseState = ReadonlySet<string> | 'unknown';
+
 /** What the hook source reads from its host. Every effect stays there. */
 export interface HookFiringHost {
-  /** The hook keys paused in a worktree. An unreadable worktree pauses none. */
+  /**
+   * The hook keys paused in a worktree. Throws when they can't be read; an
+   * enforced firing is then skipped as `pause state unknown`, never run.
+   */
   pausedHookKeys(
     workspaceId: string,
     worktreeId: string,
@@ -612,21 +626,28 @@ export class HookFiring {
       : this.engine.submit(engineRequest);
   }
 
+  /** Fails closed: a pause state that can't be read is `unknown`. */
   private async readPaused(
     workspaceId: string,
     worktreeId: string,
-  ): Promise<ReadonlySet<string>> {
+  ): Promise<HookPauseState> {
     try {
       return await this.host.pausedHookKeys(workspaceId, worktreeId);
     } catch {
-      return new Set();
+      return 'unknown';
     }
   }
 
   private pauseVerdict(
-    paused: ReadonlySet<string> | null,
+    paused: HookPauseState | null,
     hookKey: string,
   ): InitiatedWorkGateVerdict {
+    if (paused === 'unknown')
+      return {
+        decision: 'skipped',
+        message: HOOK_PAUSE_UNKNOWN_MESSAGE,
+        code: HOOK_PAUSE_UNKNOWN_CODE,
+      };
     return paused?.has(hookKey) === true
       ? { decision: 'skipped', message: HOOK_PAUSED_MESSAGE }
       : { decision: 'passed' };
@@ -640,7 +661,7 @@ export class HookFiring {
     workspaceId: string,
     worktreeId: string,
     hookKey: string,
-    paused: ReadonlySet<string> | null,
+    paused: HookPauseState | null,
   ): InitiatedWorkGateCheck[] {
     return [
       ...(paused !== null

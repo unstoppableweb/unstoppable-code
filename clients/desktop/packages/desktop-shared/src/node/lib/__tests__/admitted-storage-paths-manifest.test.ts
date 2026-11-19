@@ -117,6 +117,68 @@ it('does not admit secure files under the data root or an unrelated secure root'
   }
 });
 
+it('guards MCP config/index files and private evidence without claiming other MCP storage', () => {
+  for (const [tail, row] of [
+    ['mcp-servers/server-id-1.json', 'mcp_server_configs'],
+    ...(sep === '/'
+      ? [['mcp-servers/server-id\\part.json', 'mcp_server_configs']]
+      : []),
+    ['mcp-servers/index.json', 'mcp_servers_index'],
+    ['mcp-servers/removal-evidence', 'mcp_removal_evidence'],
+    ['mcp-servers/removal-evidence/operation-id', 'mcp_removal_evidence'],
+    [
+      'mcp-servers/removal-evidence/operation-id/receipt.json',
+      'mcp_removal_evidence',
+    ],
+    [
+      'mcp-servers/removal-evidence/operation-id/evidence',
+      'mcp_removal_evidence',
+    ],
+    ...['\n', '\r', '\u2028', '\u2029'].map((separator) => [
+      `mcp-servers/removal-evidence/operation${separator}id/receipt.json`,
+      'mcp_removal_evidence',
+    ]),
+  ]) {
+    const target = join(ROOT, tail);
+    expect(isAdmittedStorageCandidate(target)).toBe(true);
+    expect(admittedStorageRowForPath(target, ROOT)).toBe(row);
+    expect(admittedStorageRowForPath(target, null)).toBe(row);
+    expect(
+      admittedStorageRowForPath(target, join(ROOT, 'another-root')),
+    ).toBeUndefined();
+    const namedRoot = join(ROOT, 'mcp-servers');
+    expect(admittedStorageRowForPath(join(namedRoot, tail), namedRoot)).toBe(
+      row,
+    );
+    expect(() => writeFileAtomicallySync(target, '{}')).toThrow(
+      /unadmitted_writer/,
+    );
+  }
+  for (const tail of [
+    'mcp-servers',
+    'mcp-servers/server-.json',
+    'mcp-servers/server-id-1.json.unowned',
+    'mcp-servers/index.json.unowned',
+    'mcp-servers/unowned/server-id-1.json',
+    'mcp-servers/unowned/index.json',
+    'mcp-servers/unowned/removal-evidence',
+    'mcp-servers/removal-evidence.unowned',
+    'mcp-servers/harness-installs.json',
+    'mcp-servers/tools-cache/id-1.json',
+    'mcp-servers/index.json\n',
+    'mcp-servers/server-id-1.json\n',
+    ...(sep === '/' ? ['mcp-servers\\index.json'] : []),
+  ]) {
+    const target = join(ROOT, tail);
+    expect(isAdmittedStorageCandidate(target)).toBe(false);
+    expect(admittedStorageRowForPath(target, ROOT)).toBeUndefined();
+    expect(admittedStorageRowForPath(target, null)).toBeUndefined();
+  }
+  expect(
+    admittedStorageRowForPath(join(ROOT, 'other/mcp-servers/index.json'), ROOT),
+  ).toBeUndefined();
+});
+
 it('guards native snapshot directories and exact members without admitting nested or unrelated paths', () => {
   for (const tail of [
     'native-artifacts',

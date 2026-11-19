@@ -1,4 +1,5 @@
 import type { CreateSharedPipelineRequest } from '../pipelines/canopy-server-client';
+import { WorkerPipelineSurvivalAssessmentSchema } from '@canopy/protocol/canopy-core';
 import { withSharedProjectDiscovery } from '../pipelines/shared-project-discovery';
 import {
   isPipelineDefinitionNotFound,
@@ -29,7 +30,6 @@ import {
 import type {
   AgentModelConfig,
   PortalEntityEnvelope,
-  PortalEventEnvelope,
   PortalPipelineCancelPayload,
   PortalPipelineExecutionListPayload,
   PortalPipelineExecutionListResult,
@@ -66,6 +66,10 @@ import {
   validatePipelineDefinitionLocator,
 } from '../lib/validation';
 import { validatePipelineRuntimeIdentifier } from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import {
+  executionOwnerKind,
+  stepBillingRoute,
+} from '@canopy/execution-engine/pipelines/step-billing-route';
 import { assertNotSplitLocked } from './split-lock-service';
 import { PortalServiceError } from './portal-service-error';
 import { buildPipelineFailureDebugPrompt } from '@canopy/desktop-shared/lib/pipelineFailureDebugPrompt';
@@ -158,18 +162,11 @@ import {
   reportDocument,
   type PipelineContentDocument,
 } from './pipeline-content';
-import { createFeatureUpsertEvent } from '../portal/portal-feature-events';
-import {
-  enqueuePortalEvent,
-  isPortalEventSinkActive,
-} from '../portal/portal-event-bus';
-import { setPipelineRunObserverFactory } from '../pipelines/pipeline-run-observers';
 import {
   getPipelineRunChatLinks,
   type PipelineRunChatLinksScope,
 } from './pipeline-run-chat-links';
 import { logMainProcessError } from '../lib/main-process-logging';
-import { portalEventMaxRoutedByteLength } from '../portal/portal-outbox';
 import { toPipelineDefinitionViewModelWithoutCanonicalYaml } from '@canopy/desktop-shared/pipelines/pipeline-read-detail-adapter';
 import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import {
@@ -282,27 +279,6 @@ async function pipelineRunChatTurns(
   }
 }
 
-// Re-project runs whose chat-turn links changed after a durable chat commit,
-// even when the execution itself did not change. Runs from another scope or
-// that no longer exist are skipped.
-getPipelineRunChatLinks().subscribe((scope, executionIds) => {
-  if (!isPortalEventSinkActive()) return;
-  for (const executionId of executionIds) {
-    void projectPortalPipelineRun(executionId, async () => {
-      const state = await loadExecutionState(
-        executionId,
-        getPipelineExecutionsDir(),
-      );
-      if (
-        state?.project_id !== scope.projectId ||
-        state.worktree_id !== scope.worktreeId
-      ) {
-        return null;
-      }
-      return stateToPortalRun(state);
-    }).catch(() => undefined);
-  }
-});
 const STEP_TAIL_MAX_BYTES = 2 * 1024;
 const STEP_TAIL_READ_BYTES = STEP_TAIL_MAX_BYTES * 2 + 4;
 const STEP_TAIL_READ_CONCURRENCY = 8;
@@ -1878,9 +1854,6 @@ export async function runPipeline(
     );
   }
   const portalForwarder = createPortalPipelineForwarder(options);
-  // Claim this execution before it starts, so the ambient observers that
-  // `pipeline-handlers` attaches defer to the command-correlated forwarder.
-  markPortalForwardedExecution(options.portalCommandId);
   const result = await startPipelineExecutionFromMain({
     pipeline,
     getWindow: () => null,
@@ -1928,28 +1901,6 @@ export async function runPipeline(
   }
   await getPipelineExecution({ executionId: result.data.id }, options);
   return { executionId: result.data.id };
-}
-
-/**
- * Executions that already carry a command-correlated forwarder, from
- * {@link runPipeline} or {@link portalPipelineActionRuntime}.
- *
- * The ambient observers below are attached to EVERY execution, so without this
- * a browser-dispatched run would be projected twice per event: once with the
- * `commandId` that ties the upsert to its dispatch command, once without. The
- * duplicate is idempotent for the browser's entity cache but doubles the
- * transport cost on a long-poll connection, and each forwarder keeps its own
- * step-output tail buffers.
- *
- * Entries are removed when the execution reaches a terminal status, observed by
- * the ambient observer (which every execution has). An execution killed by an
- * app quit leaks one id until the next launch, which is bounded by the number
- * of concurrently running pipelines.
- */
-const portalForwardedExecutionIds = new Set<string>();
-
-function markPortalForwardedExecution(executionId: string | undefined): void {
-  if (executionId) portalForwardedExecutionIds.add(executionId);
 }
 
 function createPortalPipelineForwarder(options: {
@@ -2144,48 +2095,6 @@ function createPortalPipelineForwarder(options: {
   };
 }
 
-/**
- * Give every execution a browser projection, whoever started it.
- *
- * Attached once per execution by `pipeline-handlers`; see
- * `pipelines/pipeline-run-observers.ts` for why this is a registration seam
- * rather than a direct import, and for the defect it closes.
- *
- * Both gates are re-read per event rather than decided once at attach time: a
- * browser that pairs mid-run must start receiving updates without the run
- * restarting, and a browser-dispatched run must stay on its command-correlated
- * forwarder for its whole life.
- */
-setPipelineRunObserverFactory(() => {
-  const forwarder = createPortalPipelineForwarder({});
-  const skip = (executionId: string): boolean =>
-    portalForwardedExecutionIds.has(executionId) || !isPortalEventSinkActive();
-  return {
-    onEvent: (event): void => {
-      // Read the skip decision BEFORE draining the set. The ambient observer is
-      // the only one guaranteed to see every execution's final event, so it
-      // owns the cleanup — but a run that had an explicit forwarder for its
-      // whole life must not have its terminal event published twice.
-      const skipped = skip(event.executionId);
-      if (TERMINAL_PIPELINE_STATUSES.has(event.state.status)) {
-        portalForwardedExecutionIds.delete(event.executionId);
-      }
-      if (skipped) return;
-      forwarder.onEvent(event);
-    },
-    onStepOutput: (event): void => {
-      if (skip(event.executionId)) return;
-      forwarder.onStepOutput(event);
-    },
-    prime: (state): void => {
-      if (skip(state.id)) return;
-      void projectPortalPipelineRun(state.id, () =>
-        stateToPortalRun(state),
-      ).catch(() => undefined);
-    },
-  };
-});
-
 async function cancelPipelineUnlocked(
   request: PortalPipelineCancelPayload & PipelineExecutionScope,
   options: {
@@ -2239,9 +2148,6 @@ function portalPipelineActionRuntime(
     );
   }
   const forwarder = createPortalPipelineForwarder(options);
-  // Resume / retry / rerun re-enter the executor, which re-attaches ambient
-  // observers; this forwarder is the correlated one for the continuation.
-  markPortalForwardedExecution(state.id);
   return {
     projectId: state.project_id,
     worktreeId: state.worktree_id,
@@ -3003,6 +2909,11 @@ export async function stateToPortalRun(
     runId: state.id,
     pipelineId: state.pipeline_id,
     pipelineName: state.pipeline_snapshot.name,
+    survival: WorkerPipelineSurvivalAssessmentSchema.safeParse(
+      state.survival_assessment,
+    ).data,
+    pausedAt: state.paused_at,
+    ownerKind: executionOwnerKind(state.execution_context),
     workspaceLocalId: state.project_id,
     worktreeLocalId: state.worktree_id,
     status: mapRunStatus(state.status),
@@ -3114,6 +3025,7 @@ async function buildPortalPipelineJobs(
                   definition.artifact_locator?.matrix_child_id,
                 );
               }
+              const billingRoute = stepBillingRoute(step?.outputs);
               return {
                 stepId: stepDef.id,
                 name: stepDef.name ?? stepDef.id,
@@ -3121,6 +3033,7 @@ async function buildPortalPipelineJobs(
                 attempt: currentAttempt(result),
                 iteration: currentIteration(result),
                 ...(outputTail ? { outputTail } : {}),
+                ...(billingRoute ? { billingRoute } : {}),
               };
             }),
           );
@@ -3293,72 +3206,14 @@ function notifyPipelineRunUpdate(
 ): void {
   options.onRunUpdate?.(run);
   pipelineRunUpdateListeners.forEach((listener): void => {
-    // A throwing subscriber must not gate the portal feature upsert below or
-    // other listeners; this registry is observational only.
+    // A throwing subscriber must not gate other listeners; this registry is
+    // observational only.
     try {
       listener(run);
     } catch {
       // Ignore listener failures.
     }
   });
-  const createRunEvent = (payload: PortalPipelineRun): PortalEventEnvelope =>
-    createFeatureUpsertEvent({
-      type: 'portal.pipeline.event',
-      commandId: options.portalCommandId,
-      entity: {
-        entityType: 'pipeline_run',
-        localId: run.localId,
-        parentLocalId: worktreeScopedParentLocalId(
-          run.workspaceLocalId,
-          run.worktreeLocalId,
-        ),
-        payload,
-      },
-    });
-  let event = createRunEvent(run);
-  if (portalEventMaxRoutedByteLength(event) > PORTAL_EVENT_BATCH_MAX_BYTES) {
-    const unavailableInput = run.pendingPauses?.find(
-      (checkpoint) => checkpoint.kind === 'input',
-    );
-    // Keep identity, chat-turn links and follow-up availability: clients
-    // merge this partial row into the run they already know, and these
-    // small facts must survive truncation.
-    event = createRunEvent({
-      localId: run.localId,
-      runId: run.runId,
-      pipelineId: run.pipelineId,
-      pipelineName: run.pipelineName,
-      workspaceLocalId: run.workspaceLocalId,
-      worktreeLocalId: run.worktreeLocalId,
-      parentExecutionId: run.parentExecutionId,
-      ...(run.chatTurns ? { chatTurns: run.chatTurns } : {}),
-      ...(run.chatFollowUp ? { chatFollowUp: run.chatFollowUp } : {}),
-      status: run.status,
-      startedAt: run.startedAt,
-      finishedAt: run.finishedAt,
-      hidden: run.hidden,
-      triggerSource: run.triggerSource,
-      progress: run.progress,
-      ...(unavailableInput
-        ? {
-            pendingPauses: [
-              {
-                id: unavailableInput.id,
-                kind: unavailableInput.kind,
-                jobId: unavailableInput.jobId,
-                logicalJobId: unavailableInput.logicalJobId,
-                stepId: unavailableInput.stepId,
-                requestUnavailableReason: 'too_large',
-              },
-            ],
-          }
-        : {}),
-      truncated: true,
-    });
-  }
-  if (portalEventMaxRoutedByteLength(event) <= PORTAL_EVENT_BATCH_MAX_BYTES) {
-    enqueuePortalEvent(event);
-  }
 }
 
 /**

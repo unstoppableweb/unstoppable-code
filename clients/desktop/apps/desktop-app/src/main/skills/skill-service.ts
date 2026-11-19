@@ -22,7 +22,11 @@ import { TextDecoder } from 'node:util';
 import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
 import { isPipelinePackageDigest } from '@canopy/protocol/pipelines';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type {
+  IPCResult,
+  IPCResultWithAppError,
+} from '@canopy/execution-engine/types/pipeline';
+import { reportInstallFailure } from '../lib/install-failure-reporting';
 import type {
   InstalledSkillInfo,
   FetchAvailableSkillsResponse,
@@ -707,7 +711,22 @@ function loadCustomSkills(): InstalledSkillInfo[] {
     const description = content
       ? parseFrontmatter<{ description?: string }>(content)?.description || ''
       : '';
-    const stat = fs.statSync(skillMdPath);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(skillMdPath);
+    } catch (error) {
+      // Windows atomic-save race: a refresh can stat SKILL.md while it is
+      // delete-pending (EPERM), held (EBUSY) or mid-swap (ENOENT). Skip the
+      // row; the next refresh lists it.
+      if (
+        hasFileSystemErrorCode(error, 'ENOENT') ||
+        hasFileSystemErrorCode(error, 'EPERM') ||
+        hasFileSystemErrorCode(error, 'EBUSY')
+      ) {
+        continue;
+      }
+      throw error;
+    }
     const installedAt = stat.birthtime.toISOString();
     const updatedAt = stat.mtime.toISOString();
 
@@ -843,7 +862,7 @@ export async function fetchAvailable(
 export async function installSkills(
   source: string,
   skillNames: string[],
-): Promise<IPCResult<void>> {
+): Promise<IPCResultWithAppError<void>> {
   try {
     const parsed = parseGitHubSource(source);
     if (!parsed) {
@@ -923,7 +942,11 @@ export async function installSkills(
     return { success: true, data: undefined };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: message,
+      ...reportInstallFailure(error, 'skill.install'),
+    };
   }
 }
 
@@ -1225,14 +1248,14 @@ interface SaveCustomSkillOptions {
 export async function saveCustomSkill(
   payload: SaveCustomSkillRequest,
   options: SaveCustomSkillOptions = {},
-): Promise<IPCResult<{ name: string }>> {
+): Promise<IPCResultWithAppError<{ name: string }>> {
   return runSkillMutation(() => saveCustomSkillUnlocked(payload, options));
 }
 
 async function saveCustomSkillUnlocked(
   payload: SaveCustomSkillRequest,
   options: SaveCustomSkillOptions,
-): Promise<IPCResult<{ name: string }>> {
+): Promise<IPCResultWithAppError<{ name: string }>> {
   let stagingDir: string | null = null;
   try {
     const skillName = payload.name || '';
@@ -1411,7 +1434,11 @@ async function saveCustomSkillUnlocked(
     return { success: true, data: { name: skillName } };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: message,
+      ...reportInstallFailure(error, 'skill.save_custom'),
+    };
   } finally {
     if (stagingDir) {
       try {
@@ -2178,7 +2205,7 @@ export function writeRawSkill(input: { skillName: string; rawSkill: string }): {
 export async function updateSkill(
   sourceId: string,
   skillName: string,
-): Promise<IPCResult<void>> {
+): Promise<IPCResultWithAppError<void>> {
   if (isBuiltinSourceId(sourceId)) {
     return { success: false, error: 'Built-in skills cannot be updated.' };
   }
@@ -2254,7 +2281,11 @@ export async function updateSkill(
     return { success: true, data: undefined };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { success: false, error: message };
+    return {
+      success: false,
+      error: message,
+      ...reportInstallFailure(error, 'skill.update'),
+    };
   }
 }
 

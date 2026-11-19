@@ -310,7 +310,9 @@ export const PipelineSessionDataSchema = z.strictObject({
   ct: z
     .string()
     .min(22)
-    .regex(/^[A-Za-z0-9_-]+$/),
+    // Search for one invalid character: a repeated full-string match can
+    // exhaust V8's regexp stack on valid multi-megabyte relay frames.
+    .refine((value) => !/[^A-Za-z0-9_-]/.test(value)),
 });
 
 export const PipelineSessionFrameSchema = z.discriminatedUnion('t', [

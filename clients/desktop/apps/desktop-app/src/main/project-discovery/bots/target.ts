@@ -25,7 +25,7 @@ import type { ProjectDiscoveryCaller } from '../index';
 import { readProjectEntries } from '../sources';
 import { readTaskRuntimeSnapshot } from '../runtime-state';
 import { botChatRow } from './rows';
-import { requireBot } from './registry';
+import { ensureBotRegistryLoaded, requireBot } from './registry';
 
 export type BotReadAction =
   | BotsGetLastUserMessageAction
@@ -117,6 +117,7 @@ export function isBotTaskEligible(entry: CoworkWorkEntryData): boolean {
 export async function readBotEntries(
   botId: string,
 ): Promise<CoworkWorkEntryData[]> {
+  await ensureBotRegistryLoaded();
   const bot = requireBot(botId);
   return (await readProjectEntries(bot.projectId)).entries.filter(
     isBotTaskEligible,
@@ -128,6 +129,7 @@ export async function resolveBotReadBinding(
   caller: ProjectDiscoveryCaller,
 ): Promise<{ binding: string; context: BotChatReadContext }> {
   const access = await requireBotAccess(caller);
+  await ensureBotRegistryLoaded();
   const bot = requireBot(action.botId);
   const entry = (await readBotEntries(bot.botId)).find(
     (candidate) => candidate.id === action.taskId,

@@ -12,6 +12,8 @@ export interface PullRequestActionErrorProps {
   readonly error: string | AppError | null | undefined;
   /** The raw reason behind `Copy details`, never rendered. */
   readonly details?: string;
+  /** The failure is already recorded elsewhere, so the banner must not record it. */
+  readonly errorRecordingDisabled?: boolean;
   readonly onDismiss: () => void;
   readonly onRetry?: () => void;
   readonly retrying?: boolean;
@@ -32,6 +34,7 @@ export interface PullRequestActionErrorProps {
 export function PullRequestActionError({
   error,
   details,
+  errorRecordingDisabled,
   onDismiss,
   onRetry,
   retrying,
@@ -54,6 +57,7 @@ export function PullRequestActionError({
         onDismiss={onDismiss}
         displayPolicy={displayPolicy}
         {...(details === undefined ? {} : { details })}
+        {...(errorRecordingDisabled ? { errorRecordingDisabled } : {})}
         {...(onRetry ? { onRetry, retrying: retrying === true } : {})}
         {...(onStartOver ? { onStartOver, starting: starting === true } : {})}
         {...(secondaryAction ? { secondaryAction } : {})}

@@ -18,6 +18,7 @@ export type CodexErrorInfo =
   | 'serverOverloaded'
   | 'modelNotFound'
   | 'policyCapacityUnavailable'
+  | 'inferenceHookDenied'
   | 'cyberPolicy'
   | 'misalignmentPolicyViolation'
   | 'tooManyDenials'

@@ -7,6 +7,12 @@ import {
   LedgerErrorDetailsSchema,
   LedgerSearchEntriesToolInputSchema,
   LedgerUpdateEntryToolInputSchema,
+  LedgerEntriesSearchParamsSchema,
+  LedgerEntryGetParamsSchema,
+  LedgerOwnersListParamsSchema,
+  LedgerEntryAddParamsSchema,
+  LedgerEntryUpdateParamsSchema,
+  type WorkerPipelineOwnerLedgerOperation,
   type CanopyCallerDescriptor,
   type CanopyErrorPayload,
   type LedgerAuthorDetails,
@@ -284,6 +290,8 @@ export interface LedgerToolsBindingRegistry {
  * substitute their own.
  */
 export interface LedgerToolsHost {
+  /** Reports an unexpected (non-operation) tool failure; never given the error text. */
+  readonly onUnexpectedError?: (error: unknown) => void;
   readonly dispatcher: () => LedgerToolsDispatcher | null;
   /**
    * What the agent tools' calls go through: the host's table of the
@@ -476,6 +484,54 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
       case 'search_ledger_entries':
         return this.searchEntries(rawArgs, invocation);
     }
+  }
+
+  /** Host-only forwarding for an already-bound pipeline attempt, never a new writer. */
+  async operatePipeline(
+    operation: WorkerPipelineOwnerLedgerOperation,
+    params: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    if (this.options.pipelineAgent === undefined)
+      throw new Error('This session is not a workflow agent.');
+    return this.withDelegationFeedCaller<unknown>((dispatcher, caller) => {
+      if (signal.aborted) throw new Error('The Feed request was withdrawn.');
+      const context = { caller, signal };
+      switch (operation) {
+        case 'core.ledger.entries.search':
+          return dispatcher.query(
+            operation,
+            LedgerEntriesSearchParamsSchema.parse(params),
+            context,
+          );
+        case 'core.ledger.entry.get':
+          return dispatcher.query(
+            operation,
+            LedgerEntryGetParamsSchema.parse(params),
+            context,
+          );
+        case 'core.ledger.owners.list':
+          return dispatcher.query(
+            operation,
+            LedgerOwnersListParamsSchema.parse(params),
+            context,
+          );
+        case 'core.ledger.entry.add': {
+          const parsed = LedgerEntryAddParamsSchema.parse(params);
+          return dispatcher.instruction(operation, parsed, {
+            ...context,
+            metadata: parsed._meta,
+          });
+        }
+        case 'core.ledger.entry.update': {
+          const parsed = LedgerEntryUpdateParamsSchema.parse(params);
+          return dispatcher.instruction(operation, parsed, {
+            ...context,
+            metadata: parsed._meta,
+          });
+        }
+      }
+    });
   }
 
   private async validateDelegationTaskIds(
@@ -1484,6 +1540,9 @@ export class LedgerChatToolsSession implements LedgerToolsRuntime {
     error: unknown,
     site: { readonly mode: 'command' | 'query'; readonly explicitKey: boolean },
   ): LedgerToolTextResult {
+    if (!(error instanceof CanopyOperationError)) {
+      this.host.onUnexpectedError?.(error);
+    }
     return ledgerErrorResult(error, site, this.selfActorId);
   }
 }

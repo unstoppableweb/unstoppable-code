@@ -25,6 +25,7 @@ import {
 } from '@canopy/protocol/delegation';
 // Type only: the chat store must not load the shared UI package at runtime.
 import type { ManagedDelegationProgress } from '@canopy/ui-app';
+import { isWebCoreScope } from '@/lib/chat-authority';
 
 export const DELEGATION_TRANSCRIPT_RUN_LIMIT = 48;
 
@@ -275,6 +276,9 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
     },
     hydrateCurrent: (source, run): void => {
       if (source.archivedContainerId || source.standaloneHistory) return;
+      // A cloud chat's delegates read through the window's transcript reads,
+      // never this computer's delegation service (CAN-7027).
+      if (isWebCoreScope(source.projectId)) return;
       const key = delegationRunKey(source, run);
       const streamBacked = isStreamBackedDelegation(run.transcriptStore);
       const entry = get().runs[key];
@@ -346,6 +350,7 @@ export const useDelegationTranscriptStore = create<DelegationTranscriptState>(
         );
     },
     load: (source, run): void => {
+      if (isWebCoreScope(source.projectId)) return;
       const key = delegationRunKey(source, run);
       const entry = get().runs[key];
       if (

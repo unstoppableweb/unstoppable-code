@@ -1,4 +1,5 @@
 import type { ExternalAgentSender } from '@canopy/protocol/portal';
+import { RpcPublicError } from '../transport/rpc-peer';
 import type {
   ChatCommand,
   ChatCommandExecutionOptions,
@@ -223,7 +224,7 @@ export function createHostedChatDispatcher(
             return refused(request, 'rejected', outcome.message);
           case 'unavailable':
             // The answer may or may not have been taken: never a refusal.
-            throw new Error(
+            throw new RpcPublicError(
               'The chat state service is temporarily unavailable.',
             );
         }

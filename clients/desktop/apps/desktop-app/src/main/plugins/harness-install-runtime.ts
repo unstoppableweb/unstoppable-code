@@ -1,6 +1,7 @@
 import {
   harnessInstallItemKey,
   type HarnessInstallItemRef,
+  type ItemHarnessCompanion,
   type ItemHarnessInstalls,
   type MarketplaceInfo,
   type PluginInfo,
@@ -45,6 +46,7 @@ import {
   withServedStandIns,
 } from './stand-in-runtime';
 import { loadMarketplacesCacheOnly } from './plugin-service';
+import { enqueueDetachedPluginMutation } from './plugin-mutation-queue';
 
 // ---------------------------------------------------------------------------
 // Production wiring for one Add for every harness, for plugins and skills
@@ -364,9 +366,24 @@ export async function forgetItemHarnessInstalls(
   item: HarnessInstallItemRef,
 ): Promise<void> {
   const key = harnessInstallItemKey(item);
+  // Taken before the record is read: a copy the user adds on its own, or an
+  // Add claims again, after this point keeps its install when the copies
+  // are removed.
+  const ownership = snapshotCompanionOwnership();
+  // Companion copies one Add installed with this plugin go with it.
+  const companions =
+    item.kind === 'plugin'
+      ? ((
+          await itemHarnessInstallStore
+            .read()
+            .catch((): Readonly<Record<string, ItemHarnessInstalls>> => ({}))
+        )[key]?.companions ?? [])
+      : [];
   noteItemUninstalled(key);
   // Only an MCP server the plugin added for its ChatGPT app goes with it.
   if (item.kind === 'plugin') await forgetPluginStandIn(key);
+  if (companions.length > 0)
+    uninstallItemCompanions(companions, ownership, key);
   const removed = await itemHarnessInstallStore
     .remove(key)
     .catch((): boolean => false);
@@ -375,4 +392,194 @@ export async function forgetItemHarnessInstalls(
       '[harness-installs]',
       'Could not remove an install record from disk; it is ignored until a later write removes it.',
     );
+}
+
+// Direct Adds this process has seen, per plugin key (Sergii's QA): a plugin
+// the user adds on its own is theirs, so an item that brought it along as a
+// copy neither links it afterwards nor removes it.
+const directPluginAddGenerations = new Map<string, number>();
+
+export function directPluginAddGeneration(key: string): number {
+  return directPluginAddGenerations.get(key) ?? 0;
+}
+
+/** Marks a plugin as added on its own, before its old links are released. */
+export function noteDirectPluginAdd(key: string): void {
+  directPluginAddGenerations.set(key, directPluginAddGeneration(key) + 1);
+}
+
+// Adds about to install a plugin as a copy, per plugin key: a removal
+// queued before such an Add leaves the copy that Add now relies on.
+const companionClaimGenerations = new Map<string, number>();
+
+/** Marks a plugin as claimed as a copy by an Add about to install it. */
+export function noteCompanionClaim(key: string): void {
+  companionClaimGenerations.set(
+    key,
+    (companionClaimGenerations.get(key) ?? 0) + 1,
+  );
+}
+
+// Copies an Add is installing and hasn't linked yet, per plugin key: their
+// own record can land before the link, and another Add reading in between
+// must still count them as an item's copy, not the user's own.
+const companionInstallsInFlight = new Map<string, number>();
+
+export function beginCompanionInstall(key: string): void {
+  companionInstallsInFlight.set(
+    key,
+    (companionInstallsInFlight.get(key) ?? 0) + 1,
+  );
+}
+
+export function endCompanionInstall(key: string): void {
+  const left = (companionInstallsInFlight.get(key) ?? 1) - 1;
+  if (left > 0) companionInstallsInFlight.set(key, left);
+  else companionInstallsInFlight.delete(key);
+}
+
+export function companionInstallInFlight(key: string): boolean {
+  return (companionInstallsInFlight.get(key) ?? 0) > 0;
+}
+
+// Copies whose removal is queued, per plugin key: an Add meanwhile claims
+// them again instead of taking them for the user's own.
+const pendingCompanionRemovals = new Map<string, number>();
+
+export function companionRemovalPending(key: string): boolean {
+  return (pendingCompanionRemovals.get(key) ?? 0) > 0;
+}
+
+/** Who may claim each copy, as of when a removal took its list. */
+export interface CompanionOwnershipSnapshot {
+  readonly directAdds: ReadonlyMap<string, number>;
+  readonly claims: ReadonlyMap<string, number>;
+}
+
+export function snapshotCompanionOwnership(): CompanionOwnershipSnapshot {
+  return {
+    directAdds: new Map(directPluginAddGenerations),
+    claims: new Map(companionClaimGenerations),
+  };
+}
+
+function claimedSince(key: string, since: CompanionOwnershipSnapshot): boolean {
+  return (
+    directPluginAddGeneration(key) !== (since.directAdds.get(key) ?? 0) ||
+    (companionClaimGenerations.get(key) ?? 0) !== (since.claims.get(key) ?? 0)
+  );
+}
+
+/**
+ * Uninstalls companion copies through the installed-item service, queued
+ * behind the uninstall that removed their plugin (and any mutation already
+ * waiting), never inside its slot. Inside the queued slot, a copy the user
+ * has since added on its own, or an Add has claimed again, is left as it
+ * is. Never throws; a companion that stays shows as installed.
+ */
+export function uninstallItemCompanions(
+  companions: readonly ItemHarnessCompanion[],
+  /** Taken when the caller read the companion list. */
+  since: CompanionOwnershipSnapshot,
+  /** The item whose copies these are, when it is being uninstalled. */
+  ownerKey?: string,
+): void {
+  const keys = companions.map((companion) =>
+    harnessInstallItemKey(companion.item),
+  );
+  for (const key of keys)
+    pendingCompanionRemovals.set(
+      key,
+      (pendingCompanionRemovals.get(key) ?? 0) + 1,
+    );
+  void enqueueDetachedPluginMutation(async (): Promise<void> => {
+    try {
+      const { installedItemService } =
+        await import('../installed-items/installed-item-service');
+      // A copy another item still links stays: two Adds can bring the same
+      // copy along. Unreadable records keep every copy.
+      const records = await itemHarnessInstallStore
+        .read()
+        .catch((): undefined => undefined);
+      if (records === undefined) return;
+      const stillLinked = new Set(
+        Object.entries(records).flatMap(([recordKey, record]) =>
+          recordKey === ownerKey
+            ? []
+            : (record.companions ?? []).map((entry) =>
+                harnessInstallItemKey(entry.item),
+              ),
+        ),
+      );
+      for (const companion of companions) {
+        const key = harnessInstallItemKey(companion.item);
+        // A copy another Add is still adopting is that Add's to link, or
+        // to remove if it fails.
+        if (
+          claimedSince(key, since) ||
+          stillLinked.has(key) ||
+          companionInstallInFlight(key)
+        )
+          continue;
+        try {
+          await installedItemService.uninstall({
+            target: {
+              kind: 'plugin',
+              marketplaceId: companion.item.marketplaceId,
+              pluginName: companion.item.pluginName,
+            },
+          });
+        } catch (error) {
+          logMainProcessWarn(
+            '[harness-installs]',
+            `Could not remove a companion copy: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+    } finally {
+      for (const key of keys) {
+        const left = (pendingCompanionRemovals.get(key) ?? 1) - 1;
+        if (left > 0) pendingCompanionRemovals.set(key, left);
+        else pendingCompanionRemovals.delete(key);
+      }
+    }
+  });
+}
+
+/**
+ * A plugin the user adds on its own is theirs: every other item that
+ * brought it along as a copy lets go of it, so removing that item no longer
+ * removes this one. A catch-up for a newly set-up harness isn't such an Add.
+ */
+export async function releasePluginCompanionLinks(
+  item: HarnessInstallItemRef,
+): Promise<void> {
+  const key = harnessInstallItemKey(item);
+  // Bumped first, so an Add whose copies were already installing when this
+  // one landed doesn't link this plugin afterwards.
+  noteDirectPluginAdd(key);
+  const records = await itemHarnessInstallStore
+    .read()
+    .catch((): Readonly<Record<string, ItemHarnessInstalls>> => ({}));
+  for (const [parentKey, record] of Object.entries(records)) {
+    if (
+      parentKey === key ||
+      !(record.companions ?? []).some(
+        (entry) => harnessInstallItemKey(entry.item) === key,
+      )
+    )
+      continue;
+    await itemHarnessInstallStore
+      .update(parentKey, (existing) => {
+        if (existing === undefined) return existing;
+        const kept = (existing.companions ?? []).filter(
+          (entry) => harnessInstallItemKey(entry.item) !== key,
+        );
+        return {
+          ...existing,
+          companions: kept.length > 0 ? kept : undefined,
+        };
+      })
+      .catch((): undefined => undefined);
+  }
 }

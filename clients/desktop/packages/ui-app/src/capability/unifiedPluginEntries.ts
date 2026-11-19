@@ -88,6 +88,7 @@ import {
   type UnifiedEntryHarnessInstalls,
   type UnifiedEntryHarnessRecord,
   type UnifiedEntryAlternative,
+  type UnifiedEntryHarnessRow,
   type UnifiedEntryBundledServer,
   type UnifiedEntryBundledServerRow,
   type UnifiedEntryInstalledFrom,
@@ -115,6 +116,7 @@ import {
 } from '@canopy/ui-shared/lib/unified-plugin-entry';
 export { marketplaceTitleCase } from '@canopy/ui-shared';
 import { MCP_BRAND_LOGOS } from '@canopy/ui-shared/lib/mcp-brand-logos';
+import { isCuratedCatalogMarketplaceId } from '@canopy/ui-shared/lib/curated-plugin-logos';
 import {
   describeRunUnavailable,
   pipelineTriggerKinds,
@@ -145,6 +147,7 @@ import {
 } from './pluginProvenance';
 import { normalizeShareContentHash } from './share-content-hash';
 import {
+  endpointPublisherName,
   groupCatalogIntegrations,
   type CatalogIntegration,
   type CatalogIntegrationSource,
@@ -203,6 +206,8 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   bundledMcpServers?: readonly UnifiedBundledMcpServerInput[];
   /** Bundled skills, for hosts whose rows carry no `details` (CAN-4844). */
   bundledSkills?: readonly Pick<PluginSkillInfo, 'name' | 'description'>[];
+  /** The host's harness rows for this plugin (New Customize). */
+  harnessRows?: readonly UnifiedEntryHarnessRow[];
 }
 
 /** An MCP server a plugin bundles, without command, args, or env. */
@@ -218,7 +223,7 @@ export interface UnifiedMarketplaceInput
     Partial<
       Pick<
         MarketplaceInfo,
-        'sourceType' | 'sourceUrl' | 'builtIn' | 'installLocation'
+        'sourceType' | 'sourceUrl' | 'builtIn' | 'installLocation' | 'ownerName'
       >
     > {
   plugins: UnifiedMarketplacePluginInput[];
@@ -669,8 +674,12 @@ function buildCuratedPluginEntries(
   marketplaces: UnifiedMarketplaceInput[],
   curatedMcpByKey: ReadonlyMap<string, CuratedMcpServerEntry>,
   foldSingleKeyPlugins: boolean,
+  appName: string | undefined,
 ): CuratedPluginProjection {
   const curatedMarketplace = findCuratedMarketplace(marketplaces);
+  // The curated marketplace's maker publishes a plugin with no author.
+  const curatedOwner =
+    curatedMarketplace?.ownerName?.trim() || appName?.trim() || undefined;
   const rowsByPluginName = new Map<string, UnifiedMarketplacePluginInput>();
   if (curatedMarketplace) {
     for (const plugin of curatedMarketplace.plugins) {
@@ -728,6 +737,10 @@ function buildCuratedPluginEntries(
       logoUrl: entry.logoUrl ?? marketplaceProductIconUrl(entry.authorUrl),
       categories: [...entry.categories],
       authorName: entry.authorName,
+      ...(!entry.authorName?.trim() && curatedOwner !== undefined
+        ? { derivedPublisher: curatedOwner }
+        : {}),
+      ...(entry.authorUrl ? { siteUrl: entry.authorUrl } : {}),
       typeLabel: 'Plugin',
       sourceLabel: 'Curated',
       ownershipLabel: entry.authorName,
@@ -1165,6 +1178,8 @@ function buildCuratedMcpEntry(
     logoUrl: logoUrl ?? marketplaceProductIconUrl(entry.authorUrl),
     categories: [...entry.categories],
     authorName: entry.authorName,
+    ...mcpDerivedPublisher(entry.authorName, entry.url, entry.name),
+    siteUrl: entry.url,
     typeLabel: 'MCP server',
     sourceLabel: 'Curated',
     ownershipLabel: entry.authorName,
@@ -1258,6 +1273,20 @@ function harnessInstallsFact(
   };
 }
 
+/**
+ * An MCP server's derived publisher (Sergii's Customize QA), for one without
+ * a catalog author: the owner of its host (`mcp.sentry.dev` reads "Sentry").
+ */
+function mcpDerivedPublisher(
+  authorName: string | undefined,
+  endpoint: string | undefined,
+  name: string | undefined,
+): Pick<UnifiedPluginEntry, 'derivedPublisher'> {
+  if (authorName?.trim()) return {};
+  const derived = endpointPublisherName(endpoint, name);
+  return derived ? { derivedPublisher: derived } : {};
+}
+
 function buildLocalMcpEntry(
   server: McpServerIndexEntry,
   state: UnifiedEntryState,
@@ -1279,6 +1308,8 @@ function buildLocalMcpEntry(
     logoUrl: server.logoUrl,
     categories: [],
     authorName: undefined,
+    ...mcpDerivedPublisher(undefined, server.urlHost, server.name),
+    ...(server.urlHost ? { siteUrl: server.urlHost } : {}),
     typeLabel: 'MCP server',
     sourceLabel: 'Local',
     availabilityLabel: availabilityLabel(state),
@@ -1309,6 +1340,65 @@ function buildLocalMcpEntry(
       ...(configId !== undefined ? { configId } : {}),
       // The catalog can be empty or stale while the bundled mark for this key
       // ships with the app; keep the key so the logo still resolves.
+      ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
+    },
+  };
+}
+
+/**
+ * An installed MCP server's identity as its Customize row shows it, for a
+ * detail page that reads the server alone (the Portal's MCP page): the same
+ * logo chain (curated key, catalog logo) and publisher (the catalog author,
+ * else the endpoint's owner) as `buildLocalMcpEntry`.
+ */
+export function mcpServerDetailEntry(server: {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly url?: string;
+  readonly logoUrl?: string;
+  readonly curatedKey?: string;
+  readonly authorName?: string;
+  /**
+   * The server's row in the synced inventory, which the Customize list
+   * reads: its logo and harness facts, so the page matches the tile.
+   */
+  readonly row?: McpServerIndexEntry;
+}): UnifiedPluginEntry {
+  // With the inventory row, the exact builder the Customize list's local MCP
+  // tile comes from, so page and tile cannot disagree.
+  if (server.row)
+    return buildLocalMcpEntry(
+      server.row,
+      'installed',
+      { status: 'unknown' },
+      0,
+    );
+  let urlHost: string | undefined;
+  try {
+    urlHost = server.url ? new URL(server.url).hostname : undefined;
+  } catch {
+    urlHost = undefined;
+  }
+  return {
+    id: `mcp-local:${server.id}`,
+    kind: 'app',
+    origin: 'installed-standalone',
+    name: server.name,
+    description: server.description,
+    ...(server.logoUrl ? { logoUrl: server.logoUrl } : {}),
+    categories: [],
+    authorName: server.authorName,
+    ...mcpDerivedPublisher(server.authorName, urlHost, server.name),
+    typeLabel: 'MCP server',
+    sourceLabel: 'Local',
+    components: mcpAppComponents(),
+    providerSupport: NEUTRAL_PROVIDER_SUPPORT,
+    state: 'installed',
+    recommended: false,
+    ref: {
+      type: 'local-mcp',
+      serverId: server.id,
       ...(server.curatedKey ? { curatedKey: server.curatedKey } : {}),
     },
   };
@@ -1564,7 +1654,10 @@ export type MarketplacePluginLogoInput = Pick<
 export function marketplacePluginLogo(
   marketplaceId: string,
   plugin: MarketplacePluginLogoInput,
-): Pick<UnifiedPluginEntry, 'logoUrl' | 'bundledLogo' | 'brandMark'> {
+): Pick<
+  UnifiedPluginEntry,
+  'logoUrl' | 'bundledLogo' | 'brandMark' | 'logoDerived'
+> {
   if (marketplaceId === CURATED_PLUGIN_MARKETPLACE_ID) {
     return { logoUrl: plugin.logoUrl };
   }
@@ -1577,16 +1670,131 @@ export function marketplacePluginLogo(
       : { bundledLogo: bundledPluginLogo(marketplaceId, plugin) };
   }
   const bundledLogo = bundledPluginLogo(marketplaceId, plugin);
+  const logoUrl =
+    plugin.logoUrl ??
+    pluginOwnerAvatarUrl(plugin) ??
+    (bundledLogo === undefined
+      ? marketplaceProductIconUrl(plugin.homepage)
+      : undefined);
   return {
-    logoUrl:
-      plugin.logoUrl ??
-      pluginOwnerAvatarUrl(plugin) ??
-      (bundledLogo === undefined
-        ? marketplaceProductIconUrl(plugin.homepage)
-        : undefined),
+    logoUrl,
     bundledLogo,
     brandMark: plugin.builtIn === true,
+    ...(plugin.logoUrl === undefined && logoUrl !== undefined
+      ? { logoDerived: true as const }
+      : {}),
   };
+}
+
+/**
+ * Official multi-publisher marketplaces and the GitHub org of their own
+ * repository. A listing homepage inside that repository names the
+ * marketplace, not the plugin's publisher.
+ */
+const OFFICIAL_MARKETPLACE_REPO_OWNERS: Readonly<Record<string, string>> = {
+  'claude-plugins-official': 'anthropics',
+  'openai-curated': 'openai',
+  'openai-curated-remote': 'openai',
+};
+
+/**
+ * New Customize's GitHub avatar for a listing with no art (Sergii's QA, logo
+ * step 4): the owner of its package source, then of its GitHub homepage,
+ * then, for a single-publisher marketplace, of the marketplace repository.
+ * A homepage inside an official marketplace's own repository is skipped for
+ * other publishers, so GitLab's plugin never wears Anthropic's avatar.
+ */
+function listingGithubAvatar(
+  marketplace: UnifiedMarketplaceInput,
+  plugin: UnifiedMarketplacePluginInput,
+  publisher: string | undefined,
+): string | undefined {
+  const source = githubOwnerAvatarUrl(
+    plugin.externalSourceUrl ?? plugin.externalSource?.url,
+  );
+  if (source !== undefined) return source;
+  const homepageOwner = githubOwner(plugin.homepage);
+  const repoOwner = OFFICIAL_MARKETPLACE_REPO_OWNERS[marketplace.id];
+  if (homepageOwner !== undefined) {
+    const marketplaceRepo =
+      repoOwner !== undefined &&
+      homepageOwner.toLowerCase() === repoOwner &&
+      publisherFromHandle(repoOwner) !== publisher?.trim();
+    if (!marketplaceRepo) return githubOwnerAvatarUrl(plugin.homepage);
+  }
+  return officialMarketplaceProvider(marketplace.id) === undefined
+    ? githubOwnerAvatarUrl(marketplace.sourceUrl)
+    : undefined;
+}
+
+/** Repository owners whose handle is not their name. */
+const KNOWN_PUBLISHER_HANDLES: Readonly<Record<string, string>> = {
+  anthropics: 'Anthropic',
+  openai: 'OpenAI',
+};
+
+/**
+ * First-party marketplaces whose own plugins (those inside the marketplace
+ * repository, with no author of their own) are by the marketplace's maker.
+ */
+const FIRST_PARTY_MARKETPLACE_OWNERS: Readonly<Record<string, string>> = {
+  'claude-plugins-official': 'Anthropic',
+  'openai-curated': 'OpenAI',
+  'openai-curated-remote': 'OpenAI',
+  'openai-bundled': 'OpenAI',
+  'openai-primary-runtime': 'OpenAI',
+};
+
+/**
+ * "vercel-labs" as a publisher name: "Vercel Labs". The listing's own name
+ * gives the casing when it is the same word ("DeepWiki").
+ */
+function publisherFromHandle(handle: string, properName?: string): string {
+  const known = KNOWN_PUBLISHER_HANDLES[handle.toLowerCase()];
+  if (known !== undefined) return known;
+  const proper = properName?.trim();
+  if (
+    proper &&
+    proper.replace(/[\s-]+/g, '').toLowerCase() ===
+      handle.replace(/-/g, '').toLowerCase()
+  )
+    return proper;
+  return handle
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
+ * Who publishes a marketplace listing (Sergii's Customize QA): the listing's
+ * declared author (or its official product's vendor), then the marketplace
+ * manifest's owner, then the owner of the package's repository or homepage.
+ * An official multi-publisher marketplace (Claude's, Codex's) lists other
+ * publishers' plugins, so its own owner is never credited for them.
+ */
+function marketplacePluginPublisher(
+  marketplace: UnifiedMarketplaceInput,
+  plugin: UnifiedMarketplacePluginInput,
+): Pick<UnifiedPluginEntry, 'authorName' | 'derivedPublisher'> {
+  const declared = pluginDisplayAuthor(marketplace.id, plugin);
+  if (declared !== undefined) return { authorName: declared };
+  const official = officialMarketplaceProvider(marketplace.id) !== undefined;
+  const marketplaceOwner = marketplace.ownerName?.trim() || undefined;
+  const handle =
+    githubOwner(plugin.externalSourceUrl) ??
+    githubOwner(plugin.externalSource?.url) ??
+    githubOwner(plugin.marketplacePackageSourceUrl) ??
+    githubOwner(plugin.homepage);
+  const derived =
+    (official ? undefined : marketplaceOwner) ??
+    (handle !== undefined
+      ? publisherFromHandle(handle, plugin.displayName)
+      : undefined) ??
+    // A plugin inside a first-party marketplace's own repository.
+    (official ? marketplaceOwner : undefined) ??
+    FIRST_PARTY_MARKETPLACE_OWNERS[marketplace.id];
+  return derived ? { derivedPublisher: derived } : {};
 }
 
 /**
@@ -1683,6 +1891,7 @@ function marketplacePluginPackageSource(
 
 function buildMarketplacePluginEntries(
   marketplaces: readonly UnifiedMarketplaceInput[],
+  appName?: string,
 ): UnifiedPluginEntry[] {
   const entries: UnifiedPluginEntry[] = [];
   for (const marketplace of marketplaces) {
@@ -1691,7 +1900,16 @@ function buildMarketplacePluginEntries(
     for (const plugin of marketplace.plugins) {
       const logo = marketplacePluginLogo(marketplace.id, plugin);
       // Product over publisher, the same rule the mark above follows.
-      const author = pluginDisplayAuthor(marketplace.id, plugin);
+      const publisher = marketplacePluginPublisher(marketplace, plugin);
+      // The curated catalog's provider-facing copy is the app maker's.
+      if (
+        publisher.authorName === undefined &&
+        publisher.derivedPublisher === undefined &&
+        isCuratedCatalogMarketplaceId(marketplace.id) &&
+        appName?.trim()
+      )
+        publisher.derivedPublisher = appName.trim();
+      const author = publisher.authorName;
       entries.push({
         id: `mkt:${marketplace.id}/${plugin.name}`,
         ...(marketplaceProvider
@@ -1710,8 +1928,24 @@ function buildMarketplacePluginEntries(
         logoUrl: logo.logoUrl,
         bundledLogo: logo.bundledLogo,
         brandMark: logo.brandMark,
+        ...(logo.logoDerived ? { logoDerived: true } : {}),
         categories: plugin.category ? [plugin.category] : [],
         authorName: author,
+        ...(publisher.derivedPublisher !== undefined
+          ? { derivedPublisher: publisher.derivedPublisher }
+          : {}),
+        // New Customize's guesses: the vendored source owner's avatar for a
+        // Claude listing with no art, and the homepage for its site icon.
+        ...((): Pick<UnifiedPluginEntry, 'derivedLogoUrl'> => {
+          if (logo.logoUrl || logo.bundledLogo !== undefined) return {};
+          const avatar = listingGithubAvatar(
+            marketplace,
+            plugin,
+            author ?? publisher.derivedPublisher,
+          );
+          return avatar !== undefined ? { derivedLogoUrl: avatar } : {};
+        })(),
+        ...(plugin.homepage ? { siteUrl: plugin.homepage } : {}),
         typeLabel: 'Plugin',
         sourceLabel: pluginSourceLabel(marketplace, plugin),
         marketplaceSourceName: marketplaceDisplayName(marketplace.name),
@@ -1730,6 +1964,7 @@ function buildMarketplacePluginEntries(
         browseInstallAvailable: plugin.browseInstallAvailable,
         providerSupport: pluginProviderSupport(plugin),
         ...harnessCompatibilityFact(plugin.harnessCompatibility),
+        ...(plugin.harnessRows ? { harnessRows: plugin.harnessRows } : {}),
         state: marketplacePluginState(plugin),
         ...installedPluginFacts(plugin),
         // Breaks ties between installed copies of one integration (CAN-6811).
@@ -2123,6 +2358,27 @@ function pipelineWorkflowFacets(
 }
 
 /**
+ * One pipeline's Customize row, as `buildUnifiedPluginEntries` lists it, so
+ * its detail page shows the tile's identity and Run availability. The
+ * viewer's own share it links to (`authorShares`) folds in as on the list.
+ */
+export function buildPipelineEntry(
+  pipeline: UnifiedPipelineInput,
+  options: {
+    readonly viewerId?: string | null;
+    readonly runUnavailable?: ReadonlyMap<string, string>;
+    readonly authorShares?: readonly UnifiedPipelineInput[];
+  } = {},
+): UnifiedPluginEntry | undefined {
+  return buildPipelineEntries(
+    [pipeline, ...(options.authorShares ?? [])],
+    options.viewerId,
+    undefined,
+    options.runUnavailable,
+  )[0];
+}
+
+/**
  * Pipeline rows. The viewer's own share that exactly one local pipeline links
  * to folds into that row: the share stays in the projection with
  * `installedEntryId`, so Browse leaves it out while direct links and "Shared
@@ -2320,6 +2576,19 @@ function sharedCollectionItemCounts(collection: SharedCollectionSummary): {
  * Collection links to folds the same way, and that local row carries the
  * share's audience.
  */
+/**
+ * One local collection's Customize row, as `buildUnifiedPluginEntries` lists
+ * it, so its detail page shows the tile's logo and publisher.
+ */
+export function buildLocalCollectionEntry(
+  collection: UnifiedCollectionInput,
+  viewerId?: string | null,
+  /** The share a copy came from, for its "Shared by" line and update state. */
+  sharedCollections: SharedCollectionSummary[] = [],
+): UnifiedPluginEntry | undefined {
+  return buildCollectionEntries([collection], sharedCollections, viewerId)[0];
+}
+
 function buildCollectionEntries(
   localCollections: UnifiedCollectionInput[],
   sharedCollections: SharedCollectionSummary[],
@@ -2602,6 +2871,16 @@ function sharedAgentsWithoutLocalCopies(
   );
 }
 
+/**
+ * A team-shared agent's Customize row as the list builds it, for a host that
+ * lists no local agents (the Portal) and so folds no local copy into it.
+ */
+export function sharedAgentEntry(
+  agent: SharedAgentSummary,
+): UnifiedPluginEntry | undefined {
+  return buildSharedAgentEntries([agent], [], undefined)[0];
+}
+
 function buildSharedAgentEntries(
   agents: SharedAgentSummary[],
   local: readonly UnifiedLocalAgentInput[],
@@ -2846,7 +3125,8 @@ interface AutomationEntryOptions {
 /** Entry id prefix of a team-shared automation: `automation:shared:<id>`. */
 const SHARED_AUTOMATION_ENTRY_PREFIX = 'automation:shared:';
 
-function sharedAutomationEntry(
+/** A team-shared automation's Customize row, as the list builds it. */
+export function sharedAutomationEntry(
   summary: SharedAutomationSummary,
 ): UnifiedPluginEntry {
   return {
@@ -2871,6 +3151,31 @@ function sharedAutomationEntry(
     state: 'available',
     recommended: false,
     ref: { type: 'shared-automation', automationId: summary.id },
+  };
+}
+
+/** A catalog automation's Customize row, as the list builds it. */
+export function curatedAutomationEntry(
+  summary: CuratedAutomationSummary,
+): UnifiedPluginEntry {
+  return {
+    id: `automation:curated:${summary.key}`,
+    kind: 'automation',
+    origin: 'curated',
+    name: summary.name,
+    description: summary.shortDescription,
+    categories: [...summary.categories],
+    authorName: summary.authorName ?? undefined,
+    typeLabel: 'Automation',
+    sourceLabel: 'Curated',
+    ownershipLabel: summary.authorName ?? undefined,
+    availabilityLabel: 'Available',
+    components: emptyComponents(),
+    providerSupport: NEUTRAL_PROVIDER_SUPPORT,
+    state: 'available',
+    recommended: summary.popular,
+    catalogSortOrder: summary.sortOrder,
+    ref: { type: 'curated-automation', key: summary.key },
   };
 }
 
@@ -2902,6 +3207,20 @@ export function pendingSharedAutomationEntry(
     recommended: false,
     ref: { type: 'shared-automation', automationId },
   };
+}
+
+/**
+ * Whether an entry is `pendingSharedAutomationEntry`'s stand-in rather than a
+ * listed share: a listed share always carries when it was shared.
+ */
+export function isPendingSharedAutomationEntry(
+  entry: UnifiedPluginEntry,
+): boolean {
+  return (
+    entry.ref.type === 'shared-automation' &&
+    entry.origin === 'shared' &&
+    entry.sharedSince === undefined
+  );
 }
 
 /**
@@ -3054,23 +3373,7 @@ function buildAutomationEntries(
     if (!retainCatalogEntries && localCuratedKeys.has(summary.key)) continue;
     const installedEntryId = localCuratedKeys.get(summary.key);
     entries.push({
-      id: `automation:curated:${summary.key}`,
-      kind: 'automation',
-      origin: 'curated',
-      name: summary.name,
-      description: summary.shortDescription,
-      categories: [...summary.categories],
-      authorName: summary.authorName ?? undefined,
-      typeLabel: 'Automation',
-      sourceLabel: 'Curated',
-      ownershipLabel: summary.authorName ?? undefined,
-      availabilityLabel: 'Available',
-      components: emptyComponents(),
-      providerSupport: NEUTRAL_PROVIDER_SUPPORT,
-      state: 'available',
-      recommended: summary.popular,
-      catalogSortOrder: summary.sortOrder,
-      ref: { type: 'curated-automation', key: summary.key },
+      ...curatedAutomationEntry(summary),
       ...(retainCatalogEntries && installedEntryId
         ? {
             state: 'installed',
@@ -3345,6 +3648,49 @@ function alternativeLabel(entry: UnifiedPluginEntry): string {
   return entry.sourceLabel ?? entry.name;
 }
 
+/** The copy's name and its publisher, when the publisher adds anything. */
+/**
+ * Whether the item's one Add brings this copy along, by the desktop's own
+ * rule (`pluginCompanionsFromCatalog`): the copy is a provider's official
+ * marketplace listing, or both name the same author.
+ */
+function addedWithItem(
+  entry: UnifiedPluginEntry,
+  other: UnifiedPluginEntry,
+): boolean {
+  if (
+    other.ref.type === 'marketplace-plugin' &&
+    officialMarketplaceProvider(other.ref.marketplaceId) !== undefined
+  )
+    return true;
+  const author = entry.authorName?.trim().toLowerCase();
+  return (
+    author !== undefined &&
+    author !== '' &&
+    other.authorName?.trim().toLowerCase() === author
+  );
+}
+
+function alternativeCopyBase(entry: UnifiedPluginEntry): {
+  name: string;
+  publisher?: string;
+} {
+  const publisher = (entry.authorName ?? entry.derivedPublisher)?.trim();
+  return publisher &&
+    publisher.toLowerCase() !== entry.name.trim().toLowerCase()
+    ? { name: entry.name, publisher }
+    : { name: entry.name };
+}
+
+/** "Slack (slackapi)": the copy's name and, when it adds anything, publisher. */
+function alternativeCopyName(entry: UnifiedPluginEntry): string {
+  const publisher = (entry.authorName ?? entry.derivedPublisher)?.trim();
+  return publisher &&
+    publisher.toLowerCase() !== entry.name.trim().toLowerCase()
+    ? `${entry.name} (${publisher})`
+    : entry.name;
+}
+
 function marketplaceVariant(
   entry: UnifiedPluginEntry,
   other: UnifiedPluginEntry,
@@ -3405,6 +3751,17 @@ function linkSameAppPlugins(
           label: alternativeLabel(other),
           ref: other.ref,
           ...(variant ? { marketplaceVariant: variant } : {}),
+          copyName: alternativeCopyName(other),
+          copyBase: alternativeCopyBase(other),
+          ...(addedWithItem(entry, other) ? { addedWithItem: true } : {}),
+          ...(other.harnessRows ? { harnessRows: other.harnessRows } : {}),
+          ...(other.installedHarnesses
+            ? { installedHarnesses: other.installedHarnesses }
+            : {}),
+          ...(other.components.mcpServers > 0 ||
+          (other.bundledServers?.length ?? 0) > 0
+            ? { hasMcpServers: true }
+            : {}),
         };
       });
     return others.length > 0 ? { ...entry, alsoAvailableFrom: others } : entry;
@@ -3981,6 +4338,37 @@ export function marketplacePluginAlternatives(
 ):
   | Pick<UnifiedPluginEntry, 'marketplaceGroup' | 'alsoAvailableFrom'>
   | undefined {
+  const listing = marketplacePluginListing(marketplaces, ref);
+  return (
+    listing && {
+      marketplaceGroup: listing.marketplaceGroup,
+      alsoAvailableFrom: listing.alsoAvailableFrom,
+    }
+  );
+}
+
+/**
+ * The marketplace plugin's row as Customize lists it, so a detail page shows
+ * the identity (logo, publisher) of the tile it was opened from.
+ */
+export function marketplacePluginListing(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+  ref: { marketplaceId: string; pluginName: string },
+): UnifiedPluginEntry | undefined {
+  return marketplacePluginListingWithCopies(marketplaces, ref)?.listing;
+}
+
+/**
+ * The marketplace plugin's row with the other listings Customize groups
+ * into its tile (the same package group or integration), so a detail page
+ * opened on its own can read the tile's identity from every copy.
+ */
+export function marketplacePluginListingWithCopies(
+  marketplaces: readonly UnifiedMarketplaceInput[],
+  ref: { marketplaceId: string; pluginName: string },
+):
+  | { listing: UnifiedPluginEntry; copies: readonly UnifiedPluginEntry[] }
+  | undefined {
   const linked = linkSameAppPlugins(
     collapseDuplicateCapabilities(
       buildMarketplacePluginEntries(marketplaces),
@@ -3990,12 +4378,16 @@ export function marketplacePluginAlternatives(
   );
   const id = `mkt:${ref.marketplaceId}/${ref.pluginName}`;
   const listing = linked.find((entry) => entry.id === id);
-  return (
-    listing && {
-      marketplaceGroup: listing.marketplaceGroup,
-      alsoAvailableFrom: listing.alsoAvailableFrom,
-    }
+  if (listing === undefined) return undefined;
+  const copies = linked.filter(
+    (entry) =>
+      entry !== listing &&
+      ((listing.marketplaceGroup !== undefined &&
+        entry.marketplaceGroup === listing.marketplaceGroup) ||
+        (listing.integrationKey !== undefined &&
+          entry.integrationKey === listing.integrationKey)),
   );
+  return { listing, copies };
 }
 
 // ---------------------------------------------------------------------------
@@ -4086,11 +4478,14 @@ export function buildUnifiedPluginEntries(
     inputs.marketplaces,
     curatedMcpByKey,
     inputs.foldSingleKeyPlugins === true,
+    inputs.appName,
   );
   // Installed listings are pinned through the collapse, so a shared plugin
   // folds into a listing id that survives it.
   const marketplacePlugins = collapseDuplicateCapabilities(
-    buildMarketplacePluginEntries(inputs.marketplaces).filter(notOwned),
+    buildMarketplacePluginEntries(inputs.marketplaces, inputs.appName).filter(
+      notOwned,
+    ),
     marketplacePackageKeys(inputs.marketplaces),
     inputs.retainProviderListings,
   );

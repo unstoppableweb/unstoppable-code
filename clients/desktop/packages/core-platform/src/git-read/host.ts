@@ -48,6 +48,8 @@ export interface GitReadHostCleanupReport {
 
 export interface GitReadHostOptions {
   readonly os: PlatformOperatingSystem;
+  /** Trusted Windows host staging path, never a request or environment field. */
+  readonly nativePath?: string;
   /**
    * Daemon's own startup env after claim-marker removal. Copied once;
    * undefined dropped. Never a client's: a repository read's own
@@ -82,7 +84,7 @@ export const GIT_READ_SELECTION_LIMITS = Object.freeze({
 export interface GitReadHost {
   readonly port: GitIgnoreHostPort;
   /**
-   * The `worker.git.*` repository reads (POSIX only) and executable
+   * The `worker.git.*` repository reads and executable
    * selection facts, over the same selection, runner and stop as `port`.
    */
   readonly repository: GitRepositoryReadPort;
@@ -229,29 +231,32 @@ export function createGitReadHostWith(
     readonly runner: GitReadRunner;
     readonly selection: GitSelection;
   }
-  let ready: Ready | null | undefined;
+  let ready: Ready | undefined;
 
-  /** Validated once, on first use; the snapshot never changes after. */
-  function readiness(): Ready | null {
+  /**
+   * Validated on use until it succeeds, then kept; a failure is answered
+   * with its code and never kept (CAN-7113).
+   */
+  function readiness(): Ready | 'invalid_request' | 'environment_invalid' {
     if (ready !== undefined) return ready;
-    ready = null;
     const supported = os === 'darwin' || os === 'linux' || os === 'win32';
     if (
       !supported ||
-      snapshot === null ||
       typeof probeDirectory !== 'string' ||
       !isHostAbsolute(os, probeDirectory)
     )
-      return ready;
+      return 'invalid_request';
+    if (snapshot === null) return 'environment_invalid';
     let environment: GitReadEnvironment;
     try {
       environment = validateEnvironment(snapshot);
     } catch {
-      return ready;
+      return 'environment_invalid';
     }
     const runner = (seams.createRunner ?? createGitReadRunner)({
       ...seams.runner,
       os,
+      nativePath: options.nativePath,
       hostSignal: stopping.signal,
       onKillCleanup: (outcome) => report({ kind: 'kill', outcome }),
       onScratchCleanupFailure: (error) =>
@@ -318,7 +323,7 @@ export function createGitReadHostWith(
       failWith('invalid_request');
     if (paths.length === 0) return new Set();
     const host = readiness();
-    if (host === null) failWith('invalid_request');
+    if (typeof host === 'string') failWith(host);
     const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
       Promise.resolve().then((): unknown =>
         Reflect.apply(readSaved, request, [saved]),
@@ -416,8 +421,8 @@ export function createGitReadHostWith(
     )
       return failRead('invalid_request');
     const host = readiness();
-    if (host === null || !isHostAbsolute(host.os, cwd))
-      return failRead('invalid_request');
+    if (typeof host === 'string') return failRead(host);
+    if (!isHostAbsolute(host.os, cwd)) return failRead('invalid_request');
     // Validated per request and used for this command only; selection keeps
     // the snapshot (D2).
     let environment = host.environment;
@@ -496,7 +501,7 @@ export function createGitReadHostWith(
     )
       throw new GitRepositoryReadError('invalid_request');
     const host = readiness();
-    if (host === null) throw new GitRepositoryReadError('invalid_request');
+    if (typeof host === 'string') throw new GitRepositoryReadError(host);
     const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
       Promise.resolve().then((): unknown =>
         Reflect.apply(readSaved, request, [saved]),
@@ -524,7 +529,7 @@ export function createGitReadHostWith(
     )
       failWith('invalid_request');
     const host = readiness();
-    if (host === null) failWith('invalid_request');
+    if (typeof host === 'string') failWith(host);
     const readSavedExecutablePath = (saved: AbortSignal): Promise<unknown> =>
       Promise.resolve().then((): unknown =>
         Reflect.apply(readSaved, request, [saved]),
@@ -568,7 +573,7 @@ export function createGitReadHostWith(
     signal.throwIfAborted();
     if (stopped) throw new GitRepositoryReadError('stopped');
     const host = readiness();
-    if (host === null) throw new GitRepositoryReadError('invalid_request');
+    if (typeof host === 'string') throw new GitRepositoryReadError(host);
     try {
       const selected = await untilAborted(
         host.selection.select(readSaved, signal),
@@ -587,7 +592,8 @@ export function createGitReadHostWith(
   function prewarm(): void {
     checkClosureContext?.();
     try {
-      if (!stopped) readiness()?.selection.prewarm();
+      const host = stopped ? undefined : readiness();
+      if (typeof host === 'object') host.selection.prewarm();
     } catch {
       // Prewarming is advisory.
     }

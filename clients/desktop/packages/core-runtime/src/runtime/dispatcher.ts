@@ -25,6 +25,7 @@ import {
   canopyCapabilityUnavailableError,
   canopyDeadlineExceededError,
   canopyInternalError,
+  canopyUnexpectedError,
   canopyInvalidArgumentError,
   canopyInvalidHandlerResultError,
   canopyPermissionDeniedError,
@@ -192,9 +193,9 @@ export function translateCanopyHandlerError(
         : error;
     return definition.error.safeParse(normalized.payload).success
       ? normalized
-      : canopyInternalError('The operation returned an invalid error.');
+      : canopyInternalError('The operation returned an invalid error.', error);
   }
-  return canopyInternalError('The operation failed.', error);
+  return canopyUnexpectedError(error, definition.error);
 }
 function isDefinitionBundle(
   value:

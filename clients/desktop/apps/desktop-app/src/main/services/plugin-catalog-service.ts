@@ -6,11 +6,14 @@ import {
   type ItemHarnessInstalls,
 } from '@canopy/protocol/plugins';
 import { listAdvertisedProviderConnectors } from '../mcp/provider-connectors';
+import { mergeCatalogAccountMcpServers } from './catalog-account-mcp-rows';
 import {
   McpConfigNotFoundError,
   McpConfigStateError,
 } from '../mcp/config-repository-format';
 import {
+  PORTAL_MCP_TOOL_NAME_MAX_LENGTH,
+  PORTAL_MCP_TOOL_NAMES_MAX,
   projectPortalMcpStatus,
   isPortalMcpTestConnectionResult,
   type PortalMcpServerStatus,
@@ -44,7 +47,7 @@ import {
 import {
   resultByteLength,
   truncateBodyToBytes,
-} from '../portal/adapters/result-budget';
+} from '../remote-projection/result-budget';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -128,7 +131,11 @@ import { loadSkills } from '../skills/skill-service';
 import { loadMarketplaces } from '../plugins/plugin-service';
 import { getMcpServersIndexFilePath } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
-import { offeredPluginHarnesses } from '@canopy/plugin-interop/harness-support';
+import {
+  offeredPluginHarnesses,
+  pluginInfoHarnessRows,
+  type PluginHarnessId,
+} from '@canopy/plugin-interop/harness-support';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
 import { isCopilotHarnessEnabled } from '../copilot/feature-flag';
 import { isOpenCodeHarnessEnabled } from '../opencode/feature-flag';
@@ -469,6 +476,18 @@ function createMarketplaceShareResolver(
   return createSharedMarketplaceShareResolver(marketplaces, pluginDisplayName);
 }
 
+/** The harnesses this desktop offers, as its plugin page lists them. */
+function offeredHarnesses(): PluginHarnessId[] {
+  return offeredPluginHarnesses({
+    cursor: isCursorHarnessEnabled(),
+    copilot: isCopilotHarnessEnabled(),
+    opencode: isOpenCodeHarnessEnabled(),
+    // Labs: offered only where Google models were discovered.
+    antigravity:
+      isAntigravityHarnessEnabled() && getAntigravityModelEntries().length > 0,
+  });
+}
+
 /** Whether the marketplace row is installed, as the Plugins page shows it. */
 export function isPluginInstalled(plugin: PluginInfo): boolean {
   return (
@@ -483,6 +502,8 @@ function toPluginRow(
   plugin: PluginInfo,
   marketplace?: MarketplaceInfo,
   shareResolver?: MarketplaceShareResolver,
+  /** New Customize is on in main: send the harness rows its tiles read. */
+  withHarnessRows = false,
 ): PortalMarketplacePluginRow {
   const installed = isPluginInstalled(plugin);
   const logoUrl = sanitizePortalArtworkUrl(plugin.logoUrl);
@@ -490,6 +511,20 @@ function toPluginRow(
     harnessCompatibility: parseHarnessCompatibility(
       plugin.harnessCompatibility,
     ),
+    // New Customize's tile chips and Works with table read these one way.
+    // A listing not fetched yet isn't installed for any harness.
+    ...(withHarnessRows
+      ? {
+          harnessRows: pluginInfoHarnessRows(
+            plugin,
+            offeredHarnesses(),
+            true,
+            // Cached listing content isn't an install: only an install
+            // status or a recorded install makes a harness Installed.
+            false,
+          ),
+        }
+      : {}),
     name: plugin.name,
     marketplaceId: plugin.marketplaceId,
     providerSupport: plugin.providerSupport,
@@ -597,6 +632,7 @@ function toMarketplaceRow(
   shareResolver: MarketplaceShareResolver = createMarketplaceShareResolver([
     marketplace,
   ]),
+  withHarnessRows = false,
 ): PortalMarketplaceRow {
   return {
     id: marketplace.id,
@@ -611,7 +647,7 @@ function toMarketplaceRow(
       codex: toProviderStatusRow(marketplace.providerStatus.codex),
     },
     plugins: marketplace.plugins.map((plugin) =>
-      toPluginRow(plugin, marketplace, shareResolver),
+      toPluginRow(plugin, marketplace, shareResolver, withHarnessRows),
     ),
     ...(marketplace.description !== undefined
       ? { description: marketplace.description }
@@ -734,18 +770,64 @@ export async function sharePortalPlugin(input: {
   };
 }
 
+/**
+ * New Customize: the marketplaces with each plugin's one-Add record served
+ * on it (outside changes and stand-ins flagged, CAN-6817), so the harness
+ * rows sent to the Portal read the record as the desktop's own rows do.
+ * Unchanged with New Customize off in main.
+ */
+async function withServedHarnessInstalls(
+  marketplaces: MarketplaceInfo[],
+): Promise<MarketplaceInfo[]> {
+  if (!(await isCustomizeDiscoveryEnabledForRows())) return marketplaces;
+  const { itemHarnessInstallStore, servedPluginHarnessInstalls } =
+    await import('../plugins/harness-install-runtime');
+  const { withPluginHarnessInstalls } =
+    await import('../plugins/harness-installs');
+  const records = await itemHarnessInstallStore
+    .read()
+    .catch((): Record<string, never> => ({}));
+  if (Object.keys(records).length === 0) return marketplaces;
+  const served = await servedPluginHarnessInstalls(records, marketplaces).catch(
+    (): Readonly<Record<string, ItemHarnessInstalls>> => records,
+  );
+  return withPluginHarnessInstalls({ marketplaces }, served).marketplaces;
+}
+
 /** Build the `portal.plugins.list_marketplaces` result (cache-only). */
 export async function listPortalMarketplaces(): Promise<PortalPluginsListMarketplacesResult> {
-  const { marketplaces, lastRefreshed } = await readCachedMarketplaces();
+  const cached = await readCachedMarketplaces();
+  const { lastRefreshed } = cached;
+  const withHarnessRows = await isCustomizeDiscoveryEnabledForRows();
+  const marketplaces = withHarnessRows
+    ? await withServedHarnessInstalls(cached.marketplaces)
+    : cached.marketplaces;
   const resolver = createMarketplaceShareResolver(marketplaces);
-  return fitListToResultBudget(
-    marketplaces.map((marketplace) => toMarketplaceRow(marketplace, resolver)),
-    (rows, truncated) => ({
-      marketplaces: rows,
-      lastRefreshed,
-      ...(truncated ? { truncated: true } : {}),
+  const rows = marketplaces.map((marketplace) =>
+    toMarketplaceRow(marketplace, resolver, withHarnessRows),
+  );
+  const build = (
+    items: PortalMarketplaceRow[],
+    truncated: boolean,
+  ): PortalPluginsListMarketplacesResult => ({
+    marketplaces: items,
+    lastRefreshed,
+    ...(truncated ? { truncated: true } : {}),
+  });
+  // The harness rows are the first thing to go, before any marketplace.
+  const withoutRows = rows.map(
+    (row): PortalMarketplaceRow => ({
+      ...row,
+      plugins: row.plugins.map((plugin) => ({
+        ...plugin,
+        harnessRows: undefined,
+      })),
     }),
   );
+  return enforcePortalResultBudget(build(rows, false), [
+    (): PortalPluginsListMarketplacesResult => build(withoutRows, false),
+    (): PortalPluginsListMarketplacesResult => cutListToFit(withoutRows, build),
+  ]);
 }
 
 function requirePlainId(value: string, label: string): string {
@@ -829,6 +911,12 @@ function resolvePluginDetails(
  * One plugin's CAN-6816 record, with copies changed outside the app flagged
  * as the window serves it (CAN-6817); a read failure leaves it out.
  */
+async function isCustomizeDiscoveryEnabledForRows(): Promise<boolean> {
+  const { isCustomizeDiscoveryEnabledInMain } =
+    await import('../lib/customize-discovery-enabled');
+  return isCustomizeDiscoveryEnabledInMain();
+}
+
 async function readPluginHarnessInstalls(
   marketplace: MarketplaceInfo,
   pluginName: string,
@@ -893,23 +981,24 @@ export async function getPortalPluginDetail(
     marketplace,
     plugin.name,
   );
+  const withHarnessRows = await isCustomizeDiscoveryEnabledForRows();
   const complete: PortalPluginDetailResult = {
     marketplaceId: marketplace.id,
     marketplaceName: marketplace.name,
-    plugin: toPluginRow(plugin, marketplace, shareResolver),
+    // New Customize: the rows read the record, as the desktop's own do.
+    plugin: toPluginRow(
+      harnessInstalls !== undefined && withHarnessRows
+        ? { ...plugin, harnessInstalls }
+        : plugin,
+      marketplace,
+      shareResolver,
+      withHarnessRows,
+    ),
     details: sanitizePluginDetails(details),
     readme,
     opencodeCommandHooks: true,
     // The Portal lists the same harness rows as this desktop (CAN-4842).
-    harnesses: offeredPluginHarnesses({
-      cursor: isCursorHarnessEnabled(),
-      copilot: isCopilotHarnessEnabled(),
-      opencode: isOpenCodeHarnessEnabled(),
-      // Labs: offered only where Google models were discovered.
-      antigravity:
-        isAntigravityHarnessEnabled() &&
-        getAntigravityModelEntries().length > 0,
-    }),
+    harnesses: offeredHarnesses(),
     // Per-provider install state and the Codex compatibility setting, read
     // the way the desktop plugin page reads them.
     ...(plugin.globalInstallStatus
@@ -1756,6 +1845,51 @@ function sanitizePortalSourceRef(raw: string): string {
  * to presence flags, and every URL is sanitized via {@link sanitizePortalUrl}.
  * Never triggers health checks or OAuth.
  */
+/**
+ * The tool names the desktop's tools cache holds for a device server's
+ * active configuration, as the MCP page reads them: the enabled config (else
+ * the first), only while the cache matches its current source. Never runs a
+ * live discovery. Capped for the Portal's result budget.
+ */
+async function cachedPortalMcpToolNames(
+  definition: McpServerFile['server']['definition'],
+  configs: McpServerFile['server']['configs'],
+): Promise<string[] | undefined | 'unavailable'> {
+  const config = configs.find((entry) => entry.enabled) ?? configs[0];
+  if (!config) return undefined;
+  try {
+    const [{ getMcpToolsCacheEntry, mcpToolsSourceFingerprint }, oauth] =
+      await Promise.all([
+        import('../mcp/tool-discovery'),
+        import('../mcp/oauth-token-store'),
+      ]);
+    const entry = await getMcpToolsCacheEntry(
+      definition.id,
+      config.id,
+      await mcpToolsSourceFingerprint(
+        definition,
+        config,
+        await oauth.getMcpOAuthTokenRevision(definition.id, config.id),
+      ),
+      { strict: true },
+    );
+    if (!entry) return undefined;
+    return [...new Set(entry.tools)]
+      .filter(
+        (name) =>
+          typeof name === 'string' &&
+          name.length > 0 &&
+          name.length <= PORTAL_MCP_TOOL_NAME_MAX_LENGTH,
+      )
+      .slice(0, PORTAL_MCP_TOOL_NAMES_MAX);
+  } catch {
+    // A read that fails (the cache file, the source fingerprint, its OAuth
+    // revision) is a failure the page says. A malformed cache file reads as
+    // an empty cache, as it does for the desktop's own Tools table.
+    return 'unavailable';
+  }
+}
+
 export async function getPortalMcpServer(
   serverId: string,
 ): Promise<PortalMcpGetServerResult> {
@@ -1838,7 +1972,18 @@ export async function getPortalMcpServer(
     configs.map((config) => config.id),
     effectiveHandler === 'account',
   );
+  const toolNames = await cachedPortalMcpToolNames(definition, configs);
+  const toolsFact: Pick<
+    PortalMcpServerDetail,
+    'toolNames' | 'toolsUnavailable'
+  > =
+    toolNames === 'unavailable'
+      ? { toolsUnavailable: true }
+      : toolNames
+        ? { toolNames }
+        : {};
   const server: PortalMcpServerDetail = {
+    ...toolsFact,
     ...(/^[a-f0-9-]+$/.test(serverId) &&
     definition.id === serverId &&
     effectiveHandler !== 'provider'
@@ -2271,17 +2416,30 @@ export async function getPortalCollection(
 async function readCatalogMcpServers(): Promise<
   PortalPluginCatalogMcpServer[]
 > {
+  // A desktop whose connectors are all hosted accounts may have no device
+  // index; its hosted accounts still list (CAN-6227).
+  const device = await readCatalogDeviceMcpServers();
+  return await withCatalogAccountMcpServers(device.rows, device.serverIds);
+}
+
+/** The device's enabled MCP configs, and every server it lists. */
+async function readCatalogDeviceMcpServers(): Promise<{
+  rows: PortalPluginCatalogMcpServer[];
+  serverIds: string[];
+}> {
+  const rows: PortalPluginCatalogMcpServer[] = [];
+  const serverIds: string[] = [];
   try {
     const raw = await readFile(getMcpServersIndexFilePath(), 'utf8');
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || !Array.isArray(parsed.servers)) {
-      return [];
+      return { rows, serverIds };
     }
-    const rows: PortalPluginCatalogMcpServer[] = [];
     for (const server of parsed.servers) {
       if (!isServerEntry(server)) {
         continue;
       }
+      serverIds.push(server.id);
       const transport: 'command' | 'http' =
         server.type === 'command' ? 'command' : 'http';
       for (const config of server.configs) {
@@ -2298,9 +2456,35 @@ async function readCatalogMcpServers(): Promise<
         });
       }
     }
-    return rows;
+    return { rows, serverIds };
   } catch {
-    return [];
+    return { rows: [], serverIds: [] };
+  }
+}
+
+/**
+ * The device rows plus one row per hosted account of each curated connector
+ * the device does not list itself (see mergeCatalogAccountMcpServers). Read
+ * from the cached account connection list; when it can't be read, the device
+ * rows stand.
+ */
+async function withCatalogAccountMcpServers(
+  deviceRows: PortalPluginCatalogMcpServer[],
+  deviceServerIds: readonly string[],
+): Promise<PortalPluginCatalogMcpServer[]> {
+  try {
+    // A picker waits briefly for the cloud, never for a slow one: past the
+    // wait, the device rows stand and the next read lists the accounts.
+    const { loadAccountMcpRefConnections, ACCOUNT_MCP_REF_LOADER_WAIT } =
+      await import('../mcp/account-catalog');
+    const connections = await loadAccountMcpRefConnections(
+      ACCOUNT_MCP_REF_LOADER_WAIT,
+    );
+    return connections
+      ? mergeCatalogAccountMcpServers(deviceRows, deviceServerIds, connections)
+      : deviceRows;
+  } catch {
+    return deviceRows;
   }
 }
 
@@ -2485,6 +2669,23 @@ export async function installPortalBuiltInPlugin(
 }
 
 /** {@link installPortalBuiltInPlugin}, also naming the providers that installed and failed. */
+/**
+ * A plugin installed from the Portal is the user's own: no item that brought
+ * it along as a native copy removes it any more (Sergii's QA).
+ */
+async function releaseInstalledPluginCompanionLinks(
+  marketplaceId: string,
+  pluginName: string,
+): Promise<void> {
+  const { releasePluginCompanionLinks } =
+    await import('../plugins/harness-install-runtime');
+  await releasePluginCompanionLinks({
+    kind: 'plugin',
+    marketplaceId,
+    pluginName,
+  });
+}
+
 export async function installPortalBuiltInPluginWithOutcomes(
   marketplaceId: string,
   pluginName: string,
@@ -2512,6 +2713,7 @@ export async function installPortalBuiltInPluginWithOutcomes(
           result,
           'The plugin could not be installed.',
         );
+        await releaseInstalledPluginCompanionLinks(marketplaceId, pluginName);
         // One collapsed install is one real install, so this fires once for
         // the group rather than once per duplicate submission.
         handlers.reportCuratedPluginInstallBestEffort(
@@ -2590,6 +2792,7 @@ export async function installPortalExternalPlugin(
         // external install would overlap this refresh's locked cache read/write.
         // Failure of the refresh alone must not fail an install that succeeded.
         await service.refreshMarketplaces().catch(() => undefined);
+        await releaseInstalledPluginCompanionLinks(marketplaceId, plugin.name);
         return {
           result: { plugin: toPluginRow(data) },
           installedProviders: ['claude'],

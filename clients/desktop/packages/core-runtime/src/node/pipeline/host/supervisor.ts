@@ -1,12 +1,15 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   isWorkerPipelineLocalOwnerAction,
   isWorkerPipelineOwnerAction,
+  pipelineModelCatalogIdentity,
   WORKER_PIPELINE_LIST_LIMIT_MAX,
   WorkerPipelineControlResultSchema,
   WorkerPipelineExecutionSchema,
   WorkerPipelineExecutionViewSchema,
   WorkerPipelineRecoveryCheckpointResultSchema,
   WorkerPipelineRecoverySweepResultSchema,
+  WorkerPipelineSurvivalAssessmentSchema,
   type CanopyHostExecution,
   type WorkerPipelineCancelMode,
   type WorkerPipelineControlResult,
@@ -21,8 +24,10 @@ import {
   type WorkerPipelineRecoveryCheckpointResult,
   type WorkerPipelineRecoverySweepParams,
   type WorkerPipelineRecoverySweepResult,
+  type WorkerPipelineSurvivalAssessment,
 } from '@canopy/protocol/canopy-core';
 
+import type { SpawnFailureDetails } from '../../../runtime/errors';
 import type { RedeemedExecutionSecrets } from '../../execution-secrets';
 import {
   PipelineHostUnavailableError,
@@ -33,6 +38,7 @@ import type { PipelineOwnerChannel } from '../execution/owner-channel';
 import {
   PipelineDrainTimeoutError,
   isTerminalPipelineExecution,
+  pipelineCancelFailedError,
   pipelineCheckpointFailedError,
   pipelineControlFailedError,
   pipelineExecutionNotFoundError,
@@ -53,6 +59,7 @@ import {
 } from '../execution/worker-pipelines';
 import {
   isPipelineHostMessage,
+  pipelineHostErrorFacts,
   type PipelineHostControl,
   type PipelineHostErrorCode,
   type PipelineHostLaunch,
@@ -64,11 +71,14 @@ import {
   type PipelineOwnerLease,
   type PipelineOwnerLeaseAnswer,
   type PipelineOwnerLeaseObservation,
+  type PipelineHostErrorFacts,
   type PipelineHostSettlement,
 } from './protocol';
 
 /** A launched pipeline host, as the execution host port reports it. */
 export interface PipelineHostProcess {
+  /** Why the host never started, set before its `exit` (CAN-7113). */
+  readonly startFailure?: SpawnFailureDetails | undefined;
   postMessage(message: PipelineHostRequestMessage): void;
   kill(): boolean;
   on(event: 'message', listener: (message: unknown) => void): unknown;
@@ -165,7 +175,31 @@ function remoteOwnerRequestOf(
       ...request,
       request: { action: action.action, attemptKey: action.attemptKey },
     };
+  if (action.action === 'owner.ledger.operation') {
+    const { cwd: _cwd, ...operation } = action;
+    void _cwd;
+    return { ...request, request: operation };
+  }
   return request;
+}
+
+/** Non-secret identity from trusted launch admission, not a worker request. */
+export type PipelineOwnerRunIdentity = Readonly<
+  Pick<
+    WorkerPipelineExecutionStartParams,
+    'executionId' | 'owner' | 'runScope' | 'workspaceId' | 'worktreeId'
+  >
+>;
+
+/** A daemon authority bound to one admitted launch; never a client lease. */
+export interface PipelineOwnerRunAuthority {
+  /** Whole-run readiness; a model-only answer authority must omit this. */
+  readonly survivalAssessment?: WorkerPipelineSurvivalAssessment;
+  readonly answer: (
+    request: WorkerPipelineHostRequest,
+    signal: AbortSignal,
+  ) => Promise<PipelineOwnerSettlement | undefined>;
+  dispose(): void;
 }
 
 export interface PipelineHostSupervisorOptions {
@@ -220,11 +254,23 @@ export interface PipelineHostSupervisorOptions {
   readonly owner?: Pick<
     PipelineOwnerChannel,
     'broker' | 'ownerSubscribed' | 'onOwnerChange'
-  >;
+  > &
+    Partial<Pick<PipelineOwnerChannel, 'onOwnerEpochEnd'>>;
   /** How long a host request waits for an owner subscriber. Default 10_000. */
   readonly ownerWaitMs?: number;
   /** How long the owner may be gone before owner-bound runs pause. Default 10_000. */
   readonly ownerAbsentPauseMs?: number;
+  /**
+   * Prepares daemon answers from the admitted launch, before any host request.
+   * An absent authority or undefined answer retains app settlement. Only an
+   * identity-bound whole-run assessment acknowledged by execution authority
+   * exempts owner loss; a remote owner's delegation lease is never exempted.
+   */
+  readonly prepareOwnerRun?: (
+    identity: PipelineOwnerRunIdentity,
+    start: PipelineHostLaunch,
+    signal: AbortSignal,
+  ) => Promise<PipelineOwnerRunAuthority | undefined>;
   /**
    * A remote owner (CAN-6102). Its lease TTL replaces `ownerWaitMs` and
    * `ownerAbsentPauseMs`, an owner-loss pause records `owner_lost` instead of
@@ -261,6 +307,33 @@ const OWNER_ABSENT_PAUSE_MS = 10_000;
 const HUNG_OWNER_PAUSE_LEAD_MS = 5_000;
 /** The longest delay a timer takes. */
 const TIMER_MAX_MS = 2_147_483_647;
+
+type SurvivalBlocker = WorkerPipelineSurvivalAssessment['blockers'][number];
+const DEPENDENCY_UNVERIFIED: SurvivalBlocker = {
+  code: 'setup-lease',
+  explanation:
+    'A workflow dependency changed or could not be verified while the app was closed.',
+};
+const APP_CLOSED_UNCONFIRMED: SurvivalBlocker = {
+  code: 'unknown',
+  explanation:
+    'The app closed before a workflow request was confirmed. Reopen it to continue safely.',
+};
+const CATALOG_CHANGED: SurvivalBlocker = {
+  code: 'configuration-unverified',
+  // The cause only: the run surface already says the run pauses.
+  explanation: 'Model settings changed after this workflow started.',
+};
+
+/** The model registry an owner-bound launch makes its host apply, if any. */
+function appliedCatalogOf(
+  launch: WorkerPipelineHostLaunch,
+): string | undefined {
+  return launch.ownerBound === true && launch.modelCatalog
+    ? pipelineModelCatalogIdentity(launch.modelCatalog)
+    : undefined;
+}
+
 function leaseTtlInRange(ttl: number): boolean {
   return Number.isSafeInteger(ttl) && ttl > 0 && ttl <= TIMER_MAX_MS;
 }
@@ -273,10 +346,32 @@ class HostRequestFailure extends Error {
   public constructor(
     public readonly reason: 'refused' | 'timeout' | 'exited' | 'unavailable',
     public readonly code?: PipelineHostErrorCode,
+    /** The refusal's allowlisted name and errno (CAN-7113). */
+    public readonly facts?: PipelineHostErrorFacts,
   ) {
     super('The pipeline host request failed.');
     this.name = 'HostRequestFailure';
   }
+}
+
+/** The refusal facts a failed host request carried, if any. */
+function factsOf(error: unknown): PipelineHostErrorFacts | undefined {
+  return error instanceof HostRequestFailure ? error.facts : undefined;
+}
+
+/**
+ * Ledger calls the host binds to the app's Ledger epoch and withdraws when it
+ * ends; a later app must never receive one (CAN-6996).
+ */
+const LEDGER_EPOCH_ACTIONS: ReadonlySet<string> = new Set([
+  'owner.ledger.open',
+  'owner.ledger.operation',
+]);
+
+/** An owner request the current app subscription holds (CAN-6996). */
+interface AppOwnerCall {
+  readonly runId: string;
+  readonly ledgerEpoch: boolean;
 }
 
 interface Pending {
@@ -338,6 +433,22 @@ function isSettled(execution: WorkerPipelineExecution): boolean {
   return (
     execution.status === 'paused' || isTerminalPipelineExecution(execution)
   );
+}
+
+/** Resolves once `promise` settles or `signal` aborts; never rejects. */
+function settledOrAborted(
+  promise: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = (): void => {
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    signal.addEventListener('abort', done, { once: true });
+    promise.then(done, done);
+  });
 }
 
 function delay(ms: number): Promise<void> {
@@ -450,6 +561,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   >();
 
   private readonly starts = new Map<string, Promise<WorkerPipelineExecution>>();
+  private readonly ownerRuns = new Map<string, PipelineOwnerRunAuthority>();
 
   /** Each portable start, by execution id, for recovery controls (CAN-6103). */
   private readonly recoverable = new Map<string, RecoverableStart>();
@@ -459,6 +571,40 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
 
   /** Executions started with `ownerBound` that have not paused or ended (CAN-5771). */
   private readonly ownerBound = new Set<string>();
+  /** Only readiness acknowledged by the execution writer exempts owner loss. */
+  private readonly survivesOwnerLoss = new Set<string>();
+  /**
+   * Starts not yet answered whose launch assessment continues after owner
+   * loss: an app leaving meanwhile detaches them as it does survivors.
+   */
+  private readonly survivalCandidates = new Set<string>();
+  /**
+   * The model catalog each survivor or candidate was admitted under. The
+   * host's process registry takes the latest launch's, so a later start with
+   * another catalog revokes their survival instead of being refused.
+   */
+  private readonly survivalCatalogs = new Map<string, string | undefined>();
+  /**
+   * Candidates whose survival was revoked before their start answered: the
+   * host had no live run to record it on, so it is recorded once it does.
+   */
+  private readonly revokedCandidates = new Map<string, SurvivalBlocker>();
+  /** Once detached, a run cannot hand requests to an unrelated app subscriber. */
+  private readonly detachedOwnerRuns = new Set<string>();
+  /**
+   * Runs being revoked and paused, until they pause or settle: their
+   * requests reach no app and are answered as paused once the pause is
+   * answered (answerPaused). Each value is the latest revocation and pause,
+   * resolving to whether the host reported pausing the run.
+   */
+  private readonly revokingRuns = new Map<string, Promise<boolean>>();
+  /** Counts owner losses, so a start can tell its app left while it was admitted. */
+  private ownerLosses = 0;
+  /**
+   * Owner requests with the current app subscription: aborting one
+   * withdraws it from the broker so no later subscription receives it.
+   */
+  private readonly appOwnerCalls = new Map<AbortController, AppOwnerCall>();
 
   private ownerAbsentTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -466,6 +612,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   private ownerGone = false;
 
   private readonly offOwnerChange: (() => void) | undefined;
+  private readonly offOwnerEpochEnd: (() => void) | undefined;
 
   /** The lease as last observed (CAN-6198); each new host is configured with it. */
   private ownerLease: PipelineOwnerLease | undefined;
@@ -513,6 +660,9 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     this.leaseTtlMs = ttl;
     this.offOwnerChange = options.owner?.onOwnerChange((subscribed) =>
       this.ownerChanged(subscribed),
+    );
+    this.offOwnerEpochEnd = options.owner?.onOwnerEpochEnd?.((replaced) =>
+      this.ownerEpochEnded(replaced),
     );
   }
 
@@ -779,6 +929,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     prepared: PreparedStart,
     secrets: RedeemedExecutionSecrets,
   ): Promise<WorkerPipelineExecution> {
+    const ownerLossesAtStart = this.ownerLosses;
     // The owner left since admission. A retry would find the secret grant
     // already redeemed, so only a start without bindings may retry.
     if (prepared.ownerBound && this.options.owner?.ownerSubscribed() !== true)
@@ -787,36 +938,140 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
           this.options.remoteOwner !== undefined &&
           params.secrets === undefined,
       });
-    const start = await prepared.resolve(secrets);
+    const resolvedStart = await prepared.resolve(secrets);
     const host = await this.liveHost();
     await this.sendOwnerRequestFloor(host);
-    if (signal.aborted)
+    const authority =
+      !this.options.remoteOwner && prepared.ownerBound
+        ? await this.options.prepareOwnerRun?.(
+            Object.freeze({
+              executionId: params.executionId,
+              owner: params.owner,
+              runScope: params.runScope,
+              workspaceId: params.workspaceId,
+              worktreeId: params.worktreeId,
+            }),
+            resolvedStart,
+            signal,
+          )
+        : undefined;
+    const survival = WorkerPipelineSurvivalAssessmentSchema.safeParse(
+      authority?.survivalAssessment,
+    );
+    const assessment =
+      survival.success &&
+      isDeepStrictEqual(survival.data.identity, {
+        executionId: params.executionId,
+        owner: params.owner,
+        runScope: params.runScope,
+        workspaceId: params.workspaceId,
+        worktreeId: params.worktreeId,
+      })
+        ? survival.data
+        : undefined;
+    // Ignore caller-supplied assessments: only this composition may grant
+    // whole-run readiness. The host persists this before acknowledging start.
+    const start: PipelineHostLaunch = {
+      ...resolvedStart,
+      survivalAssessment: assessment,
+    };
+    if (signal.aborted) {
+      this.disposeOwnerAuthority(authority);
       throw pipelineStartFailedError(
         new Error('The workflow start was cancelled.'),
       );
+    }
     // From here on the signal is ignored: a dropped connection never
     // cancels a started run.
     const { executionId } = params;
+    // Posted ahead of the start, so the host revokes before it applies.
+    this.revokeSurvivalAcrossCatalog(start.launch, executionId);
     // Another client may follow the run before its start answers.
     host.pendingStarts.add(executionId);
+    if (authority !== undefined) this.ownerRuns.set(executionId, authority);
+    if (
+      authority !== undefined &&
+      !this.options.remoteOwner &&
+      assessment?.disposition === 'continues'
+    ) {
+      this.survivalCandidates.add(executionId);
+      this.survivalCatalogs.set(executionId, appliedCatalogOf(start.launch));
+    }
     let projection: WorkerPipelineExecution;
     let settledEarly: boolean;
+    let revoked: SurvivalBlocker | undefined;
     try {
       projection = await this.sendStart(host, start);
     } catch (error) {
       this.endObservers(host, executionId);
+      this.releaseOwnerAuthority(executionId);
       throw error;
     } finally {
       host.pendingStarts.delete(executionId);
+      this.survivalCandidates.delete(executionId);
+      revoked = this.revokedCandidates.get(executionId);
+      this.revokedCandidates.delete(executionId);
       settledEarly = host.settledEarly.delete(executionId);
     }
     // A start the host answered just before its fence closed: the run
     // stopped without an outcome, so it is not followed (CAN-6198).
-    if (host.fenced) throw pipelineHostLostError();
+    if (host.fenced) {
+      this.releaseOwnerAuthority(executionId);
+      throw pipelineHostLostError();
+    }
     if (prepared.recoverable) this.keepRecoverable(prepared.recoverable);
+    // A request answered meanwhile may already have revoked survival.
+    if (
+      !this.options.remoteOwner &&
+      assessment?.disposition === 'continues' &&
+      isDeepStrictEqual(projection.survival, assessment) &&
+      authority !== undefined &&
+      this.ownerRuns.get(executionId) === authority
+    )
+      this.survivesOwnerLoss.add(executionId);
+    else {
+      this.detachedOwnerRuns.delete(executionId);
+      this.survivalCatalogs.delete(executionId);
+    }
+    // Revoked while its host was still admitting it, with no live run to
+    // record that on: the host records it now, before any quit can pause it.
+    if (
+      revoked !== undefined &&
+      projection.survival?.disposition === 'continues' &&
+      !host.exited &&
+      !settledEarly &&
+      !isSettled(projection)
+    ) {
+      void this.send(
+        host,
+        { op: 'invalidateSurvival', executionId, blocker: revoked },
+        this.requestTimeoutMs,
+      ).catch(() => undefined);
+      projection = {
+        ...projection,
+        survival: {
+          ...projection.survival,
+          disposition: 'pauses',
+          blockers: [revoked],
+        },
+      };
+    }
+    // The starting app may have left, and another subscribed, before the
+    // start answered; that subscriber has no context for this run, nor for
+    // a request the run raised to the departed app meanwhile.
+    if (
+      this.survivesOwnerLoss.has(executionId) &&
+      (this.options.owner?.ownerSubscribed() !== true ||
+        this.ownerLosses !== ownerLossesAtStart)
+    ) {
+      this.detachedOwnerRuns.add(executionId);
+      this.withdrawAppOwnerCalls(({ runId }) => runId === executionId);
+    }
     // A run can settle in the same tick its start answers.
-    if (!host.exited && !settledEarly && !isSettled(projection))
+    if (!host.exited && !settledEarly && !isSettled(projection)) {
       this.admitRunning(host, executionId, prepared.ownerBound);
+      this.pauseAdmittedRevoked(executionId);
+    } else this.releaseOwnerAuthority(executionId);
     return projection;
   }
 
@@ -872,6 +1127,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       }
       throw pipelineStartFailedError(
         new Error('The pipeline host refused the start.'),
+        factsOf(error),
       );
     }
     const parsed = WorkerPipelineExecutionSchema.safeParse(value);
@@ -964,6 +1220,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         new Error('The workflow control was cancelled.'),
       );
     // From here on the signal is ignored, as for a start.
+    this.revokeSurvivalAcrossCatalog(start.launch, target);
     // Requests the run raises before the answer are relayed, as for a start.
     host.pendingStarts.add(target);
     let result: WorkerPipelineControlResult;
@@ -1043,6 +1300,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       }
       throw pipelineControlFailedError(
         new Error('The pipeline host refused the control.'),
+        factsOf(error),
       );
     }
     const parsed = WorkerPipelineControlResultSchema.safeParse(value);
@@ -1113,11 +1371,16 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
           throw new PipelineDrainTimeoutError();
         if (error.reason === 'exited') throw pipelineHostUnavailableError();
       }
-      throw new Error('The workflow run could not be cancelled.');
+      throw pipelineCancelFailedError(
+        new Error('The workflow run could not be cancelled.'),
+        factsOf(error),
+      );
     }
     const parsed = WorkerPipelineExecutionSchema.safeParse(value);
     if (!parsed.success)
-      throw new Error('The workflow run could not be cancelled.');
+      throw pipelineCancelFailedError(
+        new Error('The workflow run could not be cancelled.'),
+      );
     return parsed.data;
   }
 
@@ -1153,9 +1416,10 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         { op: 'checkpoint' },
         this.options.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS,
       );
-    } catch {
+    } catch (error) {
       throw pipelineCheckpointFailedError(
         new Error('The pipeline host could not checkpoint.'),
+        factsOf(error),
       );
     }
     const parsed =
@@ -1203,6 +1467,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       }
       throw pipelineCheckpointFailedError(
         new Error('The pipeline host could not checkpoint the run.'),
+        factsOf(error),
       );
     }
     const parsed = WorkerPipelineExecutionSchema.safeParse(value);
@@ -1248,6 +1513,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     if (this.stopped) return;
     this.stopped = true;
     this.offOwnerChange?.();
+    this.offOwnerEpochEnd?.();
     if (this.ownerAbsentTimer !== undefined)
       clearTimeout(this.ownerAbsentTimer);
     this.ownerAbsentTimer = undefined;
@@ -1370,6 +1636,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     process.on('message', (message) => this.receive(host, message));
     process.on('exit', (code) => this.ended(host, code));
     const configuredLease = this.ownerLease;
+    let ledgerOwnerAvailable = this.options.owner?.ownerSubscribed() === true;
     host.ownerRequestDeadlineMs = this.ownerRequestFloor();
     try {
       await this.send(
@@ -1377,6 +1644,9 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         {
           op: 'configure',
           dataRoot: this.options.configure.dataRoot,
+          ...(!this.options.remoteOwner && {
+            ledgerOwnerAvailable,
+          }),
           ...(this.options.configure.codexMcpLauncher && {
             codexMcpLauncher: this.options.configure.codexMcpLauncher,
           }),
@@ -1395,7 +1665,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     } catch {
       host.expectedExit = true;
       process.kill();
-      throw pipelineHostUnavailableError();
+      throw pipelineHostUnavailableError(process.startFailure);
     }
     // A renewal observed while the host started must hold in it before it
     // serves, and the lease may have ended meanwhile (CAN-6198). A host
@@ -1422,6 +1692,32 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         throw pipelineHostUnavailableError();
       }
       sentLease = lease;
+    }
+    // Owner changes while configure is in flight cannot reach this host yet.
+    // Synchronize before publishing it, with no await between the last check
+    // and publication so subsequent changes use ownerChanged normally.
+    if (!this.options.remoteOwner) {
+      for (;;) {
+        const available = this.options.owner?.ownerSubscribed() === true;
+        if (available === ledgerOwnerAvailable) break;
+        try {
+          await this.send(
+            host,
+            { op: 'ledgerOwnerAvailability', available },
+            this.requestTimeoutMs,
+          );
+        } catch {
+          host.expectedExit = true;
+          process.kill();
+          throw pipelineHostUnavailableError();
+        }
+        ledgerOwnerAvailable = available;
+      }
+    }
+    if (this.stopped || host.exited || this.leaseEnded()) {
+      host.expectedExit = true;
+      process.kill();
+      throw pipelineHostUnavailableError();
     }
     this.host = host;
     this.scheduleIdleStop(host);
@@ -1468,7 +1764,13 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         clearTimeout(pending.timer);
         if (message.ok) pending.resolve(message.value);
         else
-          pending.reject(new HostRequestFailure('refused', message.error.code));
+          pending.reject(
+            new HostRequestFailure(
+              'refused',
+              message.error.code,
+              pipelineHostErrorFacts(message.error),
+            ),
+          );
         return;
       }
       case 'execution': {
@@ -1548,7 +1850,11 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     host.hostCalls.set(requestId, { executionId, abort });
     const hung = this.armHungOwnerPause(request);
     try {
-      const settlement = await this.settleHostRequest(request, abort.signal);
+      const settlement = await this.settleHostRequest(
+        request,
+        runId,
+        abort.signal,
+      );
       // The owner answered: only an unanswered request pauses its run.
       if (hung !== undefined) clearTimeout(hung);
       if (settlement && !abort.signal.aborted)
@@ -1567,9 +1873,22 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   /** The owner's settlement, `unavailable` without one, or null when withdrawn. */
   private async settleHostRequest(
     request: WorkerPipelineHostRequest,
+    runId: string,
     signal: AbortSignal,
   ): Promise<PipelineHostSettlement | null> {
     const remote = this.options.remoteOwner;
+    if (this.revokingRuns.has(runId)) return this.answerPaused(runId, signal);
+    // Unexpected setup, changed content or an uncovered owner dependency
+    // checkpoints before a request timeout can look like a provider failure.
+    const daemonAuthority = this.daemonAuthorityFor(request, runId);
+    if (daemonAuthority !== undefined)
+      return this.answerAsDaemon(
+        request,
+        runId,
+        daemonAuthority,
+        signal,
+        DEPENDENCY_UNVERIFIED,
+      );
     // A remote owner never receives a request only this host can answer.
     if (remote && isWorkerPipelineLocalOwnerAction(request.request.action))
       return {
@@ -1581,14 +1900,53 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     const present = await this.waitForOwner(owner, signal);
     if (signal.aborted) return null;
     if (!present) return { kind: 'unavailable' };
+    if (this.revokingRuns.has(runId)) return this.answerPaused(runId, signal);
+    // The app may have left, or the run detached, during the wait.
+    const detachedAuthority = this.daemonAuthorityFor(request, runId);
+    if (detachedAuthority !== undefined)
+      return this.answerAsDaemon(
+        request,
+        runId,
+        detachedAuthority,
+        signal,
+        DEPENDENCY_UNVERIFIED,
+      );
     try {
       // A model step's owner request (CAN-5095) takes the owner's answer and values as they are.
       if (isWorkerPipelineOwnerAction(request.request.action)) {
-        if (!remote)
-          return {
-            kind: 'owner',
-            settlement: await owner.broker.raiseOwner(request, signal),
-          };
+        if (!remote) {
+          const epoch = new AbortController();
+          this.appOwnerCalls.set(epoch, {
+            runId,
+            ledgerEpoch: LEDGER_EPOCH_ACTIONS.has(request.request.action),
+          });
+          try {
+            return {
+              kind: 'owner',
+              settlement: await owner.broker.raiseOwner(
+                request,
+                AbortSignal.any([signal, epoch.signal]),
+              ),
+            };
+          } catch (error) {
+            if (signal.aborted || !epoch.signal.aborted) throw error;
+          } finally {
+            this.appOwnerCalls.delete(epoch);
+          }
+          // The app left without answering: it may have acted on the request,
+          // so no later app receives it again (withdrawAppOwnerCalls).
+          // Only a survivor's request or an epoch-bound Ledger call is
+          // withdrawn; a survivor's counts as one even if its survival has
+          // been revoked since, and a Ledger call never checkpoints.
+          return await this.answerAsDaemon(
+            request,
+            runId,
+            this.ownerRuns.get(runId),
+            signal,
+            APP_CLOSED_UNCONFIRMED,
+            true,
+          );
+        }
         const settlement = await owner.broker.raiseOwner(
           remoteOwnerRequestOf(request),
           signal,
@@ -1605,10 +1963,169 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         values: answer.values ?? null,
       };
     } catch (error) {
-      if (error instanceof PipelineHostUnavailableError)
+      if (error instanceof PipelineHostUnavailableError) {
+        // No app received it, so the survivor's daemon authority may answer.
+        if (
+          !remote &&
+          isWorkerPipelineOwnerAction(request.request.action) &&
+          this.survivesOrMay(runId)
+        )
+          return this.answerAsDaemon(
+            request,
+            runId,
+            this.ownerRuns.get(runId),
+            signal,
+            DEPENDENCY_UNVERIFIED,
+          );
+        // Do not replay an app call whose settlement was lost. Checkpoint a
+        // selected run instead of reporting a misleading provider failure.
+        if (
+          !remote &&
+          owner.ownerSubscribed() !== true &&
+          !request.request.action.startsWith('owner.ledger.') &&
+          this.survivesOwnerLoss.has(runId)
+        )
+          void this.revokeAndPause(runId, APP_CLOSED_UNCONFIRMED);
+        // Revoked, here or meanwhile: this step waits for its checkpoint too.
+        if (this.revokingRuns.has(runId))
+          return this.answerPaused(runId, signal);
         return { kind: 'unavailable' };
+      }
       return null;
     }
+  }
+
+  /**
+   * The run's daemon authority when it, not the app, answers `request` now:
+   * the app is gone or the run detached from it. The starting owner resolves
+   * current settings until it leaves; a later subscriber has no context for
+   * the run. Never replay owner calls.
+   */
+  private daemonAuthorityFor(
+    request: WorkerPipelineHostRequest,
+    runId: string,
+  ): PipelineOwnerRunAuthority | undefined {
+    if (
+      this.options.remoteOwner ||
+      !isWorkerPipelineOwnerAction(request.request.action) ||
+      (this.options.owner?.ownerSubscribed() === true &&
+        !this.detachedOwnerRuns.has(runId))
+    )
+      return undefined;
+    return this.ownerRuns.get(runId);
+  }
+
+  /** A survivor, or a start whose assessment continues and has not answered. */
+  private survivesOrMay(runId: string): boolean {
+    return (
+      this.survivesOwnerLoss.has(runId) || this.survivalCandidates.has(runId)
+    );
+  }
+
+  /**
+   * The run's daemon authority answers an owner request the app cannot. An
+   * unanswered non-Ledger request of a survivor revokes survival and
+   * checkpoints the run; Ledger calls degrade to no Ledger without replay.
+   */
+  private async answerAsDaemon(
+    request: WorkerPipelineHostRequest,
+    runId: string,
+    authority: PipelineOwnerRunAuthority | undefined,
+    signal: AbortSignal,
+    blocker: WorkerPipelineSurvivalAssessment['blockers'][number],
+    survivor = this.survivesOrMay(runId),
+  ): Promise<PipelineHostSettlement | null> {
+    try {
+      const answer = await authority?.answer(request, signal);
+      if (signal.aborted) return null;
+      if (answer !== undefined && answer.result.status !== 'failure')
+        return {
+          kind: 'owner',
+          settlement: ownerSettlement(request, answer.result, answer.values),
+        };
+    } catch {
+      // No retry against another authority or writer after an uncertain call.
+    }
+    // Another request may have revoked survival meanwhile; its pause may
+    // still be on its way, and this step must not fail first.
+    if (!request.request.action.startsWith('owner.ledger.') && survivor) {
+      void this.revokeAndPause(runId, blocker);
+      return this.answerPaused(runId, signal);
+    }
+    return { kind: 'unavailable' };
+  }
+
+  /**
+   * Revokes a survivor's survival, then pauses it; a run already revoked is
+   * paused at once. Until it pauses or settles, it stays fenced in
+   * `revokingRuns`: no app, nor its released authority, answers its
+   * requests, since a later app has no context for it (CAN-6996). A run
+   * already released is not fenced: a resume of it must reach its app.
+   */
+  private revokeAndPause(
+    runId: string,
+    blocker: SurvivalBlocker,
+  ): Promise<boolean> {
+    let fence: Promise<boolean>;
+    if (this.survivesOrMay(runId))
+      // Releases the run, so any earlier fence ends here.
+      fence = this.invalidateSurvival(runId, blocker).then(() =>
+        this.pauseRevoked(runId),
+      );
+    else if (this.pausable(runId))
+      fence = Promise.all([
+        this.revokingRuns.get(runId) ?? false,
+        this.pauseRevoked(runId),
+      ]).then(([earlier, now]) => earlier || now);
+    else return Promise.resolve(false);
+    this.revokingRuns.set(runId, fence);
+    return fence;
+  }
+
+  /** A start still pending is paused too: the host may already run it. */
+  private pausable(runId: string): boolean {
+    return (
+      this.ownerBound.has(runId) || this.host?.pendingStarts.has(runId) === true
+    );
+  }
+
+  private async pauseRevoked(runId: string): Promise<boolean> {
+    return this.pausable(runId) ? this.pauseOwnerBound([runId]) : false;
+  }
+
+  /**
+   * A run fenced while its start was pending, once the host registered it:
+   * a pause that found no run on the host yet is sent again.
+   */
+  private pauseAdmittedRevoked(executionId: string): void {
+    const fence = this.revokingRuns.get(executionId);
+    if (fence === undefined) return;
+    this.revokingRuns.set(
+      executionId,
+      fence.then((paused) => paused || this.pauseRevoked(executionId)),
+    );
+  }
+
+  /**
+   * A fenced run's request: answered as paused once its latest pause is
+   * answered or the run pauses, or withdrawn with the request. Answered
+   * earlier, the step could fail before its checkpoint.
+   */
+  private async answerPaused(
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<PipelineHostSettlement | null> {
+    let fence = this.revokingRuns.get(runId);
+    while (fence !== undefined && !signal.aborted) {
+      await settledOrAborted(fence, signal);
+      // A pending start's pause may have found no run; once the start
+      // answers, pauseAdmittedRevoked extends the fence.
+      const starting = this.starts.get(runId);
+      if (starting !== undefined) await settledOrAborted(starting, signal);
+      const latest = this.revokingRuns.get(runId);
+      fence = latest === fence ? undefined : latest;
+    }
+    return signal.aborted ? null : { kind: 'unavailable' };
   }
 
   /** A local-only request's answer, checked as an owner's would be (CAN-6161). */
@@ -1689,14 +2206,79 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   /** Owner-bound runs pause once the owner has been gone a while (CAN-5771). */
   private ownerChanged(subscribed: boolean): void {
     if (subscribed) {
+      this.sendLedgerOwnerAvailability(true);
       this.ownerGone = false;
       if (this.ownerAbsentTimer !== undefined)
         clearTimeout(this.ownerAbsentTimer);
       this.ownerAbsentTimer = undefined;
       return;
     }
+    // Also announced by the channel's epoch end; repeating it is harmless.
+    this.ownerEpochEnded(false);
     if (this.stopped || this.ownerAbsentTimer !== undefined) return;
     this.armOwnerAbsence();
+  }
+
+  /**
+   * An app subscription ended or was replaced (CAN-6996). Each subscription
+   * is its own Ledger epoch: the host ends it before any withdrawn call
+   * settles, so issued tools and interrupted writes see no Ledger, and a
+   * replacing app starts a fresh one. Survivors stay with their daemon
+   * authority from now on. Their requests still with that app, and every
+   * epoch-bound Ledger call, are withdrawn before a later subscription could
+   * receive them; app-dependent runs keep their other requests for the
+   * returning app.
+   */
+  private ownerEpochEnded(replaced: boolean): void {
+    this.ownerLosses += 1;
+    if (this.options.remoteOwner) return;
+    this.sendLedgerOwnerAvailability(false);
+    for (const executionId of [
+      ...this.survivesOwnerLoss,
+      ...this.survivalCandidates,
+    ])
+      this.detachedOwnerRuns.add(executionId);
+    this.withdrawAppOwnerCalls(
+      (call) => call.ledgerEpoch || this.survivesOrMay(call.runId),
+    );
+    if (replaced) this.sendLedgerOwnerAvailability(true);
+  }
+
+  /** Messages to the host keep their order, so settlements follow this. */
+  private sendLedgerOwnerAvailability(available: boolean): void {
+    const host = this.host;
+    if (this.options.remoteOwner || !host || host.exited) return;
+    void this.send(
+      host,
+      { op: 'ledgerOwnerAvailability', available },
+      this.requestTimeoutMs,
+    ).catch(() => undefined);
+  }
+
+  private withdrawAppOwnerCalls(
+    selected: (call: AppOwnerCall) => boolean,
+  ): void {
+    for (const [epoch, call] of [...this.appOwnerCalls]) {
+      if (!selected(call)) continue;
+      this.appOwnerCalls.delete(epoch);
+      epoch.abort();
+    }
+  }
+
+  private async invalidateSurvival(
+    executionId: string,
+    blocker: WorkerPipelineSurvivalAssessment['blockers'][number],
+  ): Promise<void> {
+    if (this.survivalCandidates.has(executionId))
+      this.revokedCandidates.set(executionId, blocker);
+    this.releaseOwnerAuthority(executionId);
+    const host = this.host;
+    if (!host || host.exited) return;
+    await this.send(
+      host,
+      { op: 'invalidateSurvival', executionId, blocker },
+      this.requestTimeoutMs,
+    ).catch(() => undefined);
   }
 
   /**
@@ -1714,21 +2296,32 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     this.ownerAbsentTimer = timer;
   }
 
+  /** Whether the host reported pausing any of them. */
   private async pauseOwnerBound(
     executionIds: readonly string[] = [...this.ownerBound],
-  ): Promise<void> {
+  ): Promise<boolean> {
     const host = this.host;
-    if (!host || host.exited || executionIds.length === 0) return;
-    await this.send(
+    const dependent = executionIds.filter(
+      (id) => !this.survivesOwnerLoss.has(id),
+    );
+    if (!host || host.exited || dependent.length === 0) return false;
+    const answer = await this.send(
       host,
       {
         op: 'pause',
-        executionIds: [...executionIds],
+        executionIds: dependent,
         // Desktop keeps `app_shutdown`: its resume after restart looks for it.
         ...(this.options.remoteOwner && { reason: 'owner_lost' as const }),
       },
       this.options.checkpointTimeoutMs ?? CHECKPOINT_TIMEOUT_MS,
     ).catch(() => undefined);
+    return (
+      typeof answer === 'object' &&
+      answer !== null &&
+      'pausedCount' in answer &&
+      typeof answer.pausedCount === 'number' &&
+      answer.pausedCount > 0
+    );
   }
 
   /**
@@ -1819,7 +2412,58 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     host.process.kill();
   }
 
+  private releaseOwnerAuthority(executionId: string): void {
+    const authority = this.ownerRuns.get(executionId);
+    this.ownerRuns.delete(executionId);
+    this.survivesOwnerLoss.delete(executionId);
+    this.survivalCandidates.delete(executionId);
+    this.survivalCatalogs.delete(executionId);
+    this.detachedOwnerRuns.delete(executionId);
+    this.revokingRuns.delete(executionId);
+    this.disposeOwnerAuthority(authority);
+  }
+
+  /**
+   * A launch that makes the host apply another model catalog revokes the
+   * survival of every survivor and pending candidate admitted under a
+   * different one: their later model steps would resolve against it. The
+   * launch itself is never refused for it (CAN-6996).
+   */
+  private revokeSurvivalAcrossCatalog(
+    launch: WorkerPipelineHostLaunch,
+    executionId: string,
+  ): void {
+    if (this.options.remoteOwner) return;
+    const catalog = appliedCatalogOf(launch);
+    if (catalog === undefined) return;
+    for (const runId of new Set([
+      ...this.survivesOwnerLoss,
+      ...this.survivalCandidates,
+    ])) {
+      if (runId === executionId || this.survivalCatalogs.get(runId) === catalog)
+        continue;
+      // A run its starting app already left has no app to answer it now:
+      // it checkpoints, as any other revoked survivor does. Either call is
+      // synchronous up to its message, which keeps its place ahead of the
+      // start.
+      if (this.detachedOwnerRuns.has(runId))
+        void this.revokeAndPause(runId, CATALOG_CHANGED);
+      else void this.invalidateSurvival(runId, CATALOG_CHANGED);
+    }
+  }
+
+  private disposeOwnerAuthority(
+    authority: PipelineOwnerRunAuthority | undefined,
+  ): void {
+    try {
+      authority?.dispose();
+    } catch {
+      // A failing route cleanup must not retain the run's process or hold.
+    }
+  }
+
   private releaseExecution(executionId: string): void {
+    this.releaseOwnerAuthority(executionId);
     this.ownerBound.delete(executionId);
     // A run let go lets go of its children; a resume reports them again.
     const host = this.host;

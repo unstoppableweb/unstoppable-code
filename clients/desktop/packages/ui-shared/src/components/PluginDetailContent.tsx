@@ -27,6 +27,13 @@ import {
 } from './DataTable';
 import { Disclosure } from './Disclosure';
 import { DetailFact, DetailFactList } from './DetailFact';
+import {
+  CapabilityDetailLayout,
+  DetailHostRelated,
+  DetailWebsiteFact,
+  detailWebsiteHost,
+  type CapabilityDetailFacts,
+} from './CapabilityDetailLayout';
 import { DetailEntityType } from './MarketplaceTypeLabel';
 import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
@@ -39,10 +46,14 @@ import { McpServerLogo } from './McpServerLogo';
 import { StatusToneText, useItemStateMarks } from './ItemStateMark';
 import {
   HarnessLogoList,
+  PluginHarnessConnections,
   PluginWorksWith,
-  type PluginHarnessConnectionRow,
+  type PluginMcpServerVia,
+  PluginHarnessVia,
+  type PluginWorksWithRow,
 } from './PluginHarnessConnections';
 import { ChevronLeftMediumIcon } from '../icons/AppIcons';
+import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { mcpEndpointKey } from '../lib/mcp-endpoint-key';
 import type { UnifiedEntryBundledServerRow } from '../lib/unified-plugin-entry';
@@ -181,14 +192,12 @@ export interface PluginDetailContentProps {
   /** Host-owned Status row, under the metadata and any update notice. */
   statusContent?: ReactNode;
   /** Where the plugin runs, one row per harness, after the Status row. */
-  harnessRows?: readonly (PluginHarnessConnectionRow & {
-    readonly alternative?: {
-      label: string;
-      onOpen: () => void;
-      iconOnly?: boolean;
-    };
-    readonly note?: string;
-  })[];
+  harnessRows?: readonly PluginWorksWithRow[];
+  /**
+   * Harnesses whose MCP server comes from another copy of this plugin (New
+   * Customize), one line each in the MCP servers table.
+   */
+  mcpServerVia?: readonly PluginMcpServerVia[];
   /**
    * Host-owned block rendered between the metadata section and the README
    * (desktop: built-in install panel, external source box, install prompt,
@@ -210,6 +219,21 @@ export interface PluginDetailContentProps {
   titleAs?: 'h1' | 'h2';
   /** Authoritative listing author; null explicitly omits unavailable metadata. */
   authorDisplay?: string | null;
+  /**
+   * New Customize: the tile's line 2 under the title, so the page and the
+   * tile it opened from name the same publisher.
+   */
+  publisher?: ReactNode;
+  /**
+   * New Customize: host fact rows in the shared order. Website comes from
+   * the plugin; `metadataFacts` and `updateNotice` are not shown.
+   */
+  facts?: Omit<CapabilityDetailFacts, 'status' | 'website'>;
+  /**
+   * New Customize: an Add or harness install failure, said under Works with
+   * (the harnesses it is about) instead of in a page banner.
+   */
+  worksWithNotice?: ReactNode;
   /**
    * Installed MCP rows hidden behind this plugin (CAN-3653). Customize lists
    * them only here, so each bundled server with a row opens that row's own
@@ -274,11 +298,13 @@ function ComponentContentView({
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [errorDetails, setErrorDetails] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError('');
+    setErrorDetails('');
     setContent(null);
 
     void (async (): Promise<void> => {
@@ -296,7 +322,9 @@ function ComponentContentView({
         }
       } catch (err) {
         if (cancelled) return;
-        setError(errorMessage(err));
+        // Fixed copy on screen; the raw message is only in Copy details.
+        setError('Failed to load component content.');
+        setErrorDetails(errorMessage(err));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -327,6 +355,7 @@ function ComponentContentView({
           markdownOptions={markdownOptions}
           loading={loading}
           error={error}
+          errorDetails={errorDetails}
           content={content}
           emptyText="This component has no content."
         />
@@ -361,10 +390,12 @@ function ReadmeSection({
   const [truncated, setTruncated] = useState(preloaded?.truncated === true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorDetails, setErrorDetails] = useState('');
 
   const loadContent = async (): Promise<void> => {
     setLoading(true);
     setError('');
+    setErrorDetails('');
     try {
       const result = await onReadComponent('readme', 'README.md', activeFacet);
       if (result) {
@@ -374,7 +405,8 @@ function ReadmeSection({
         setError('Failed to load README.');
       }
     } catch (err) {
-      setError(errorMessage(err));
+      setError('Failed to load README.');
+      setErrorDetails(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -411,7 +443,12 @@ function ReadmeSection({
       dataTestId="plugin-detail-readme"
     >
       {loading && <p className="text-s fg-secondary">Loading README&hellip;</p>}
-      <ErrorBanner errorSource="readme-section" className="" error={error} />
+      <ErrorBanner
+        errorSource="readme-section"
+        className=""
+        error={error}
+        {...(errorDetails ? { details: errorDetails } : {})}
+      />
       {content !== null && !loading && (
         <div
           className={`${REPLAY_BLOCK_CLASS} canopy-readme-prose prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_code]:bg-secondary [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h2]:text-s [&_h2]:font-semibold [&_h3]:text-s [&_h3]:font-medium [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
@@ -621,10 +658,14 @@ export function PluginDetailContent({
   headerIcon,
   titleAs = 'h2',
   authorDisplay,
+  publisher,
+  facts,
+  worksWithNotice,
   bundledServerRows,
   onOpenEntryId,
   mcpTarget,
   renderMcpServerStatus,
+  mcpServerVia,
 }: PluginDetailContentProps): JSX.Element {
   const Title = titleAs;
   const [viewingComponent, setViewingComponent] = useState<ComponentRef | null>(
@@ -689,6 +730,9 @@ export function PluginDetailContent({
   const [mcpTargetError, setMcpTargetError] = useState(false);
   // New Customize: status text stays plain; only its icon is colored.
   const neutralStatusText = useItemStateMarks();
+  // New Customize draws the header and facts through the shared layout, and
+  // orders the sections Works with, Contents, Settings, Docs, Related.
+  const layout = neutralStatusText;
   useEffect(() => {
     if (!mcpTarget) {
       setMcpTargetError(false);
@@ -803,7 +847,17 @@ export function PluginDetailContent({
     !hideComponents &&
     !!displayDetails &&
     (hasNonMcpComponents || (!hasComponents && !displayDetails.hasReadme));
-  const showMcpServers = !hideComponents && listedMcpServers.length > 0;
+  // New Customize: a harness whose MCP server another copy brings, unless
+  // this copy lists a server for that harness itself.
+  const companionMcpVia = mcpServerVia?.filter(
+    (entry) =>
+      !listedMcpServers.some((server) =>
+        server.harnesses.includes(entry.harness),
+      ),
+  );
+  const showMcpServers =
+    !hideComponents &&
+    (listedMcpServers.length > 0 || (companionMcpVia?.length ?? 0) > 0);
 
   // Stable token for the roots content reads resolve against (facet kind +
   // facet/plugin paths). Keys the README section remount and the component
@@ -846,7 +900,7 @@ export function PluginDetailContent({
         <span />
       )}
 
-      {headerActions && (
+      {headerActions && !layout && (
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {headerActions}
         </div>
@@ -872,156 +926,215 @@ export function PluginDetailContent({
     );
   }
 
+  const mcpTargetNotice =
+    layout && mcpTargetError ? (
+      <p role="status" data-testid="plugin-mcp-target-unavailable">
+        <StatusToneText tone="warning" size="s">
+          This MCP server is no longer available
+        </StatusToneText>
+      </p>
+    ) : undefined;
+  const mcpServersBlock = showMcpServers && (
+    <McpServersSection
+      notice={mcpTargetNotice}
+      servers={listedMcpServers}
+      bundledServerRows={bundledServerRows}
+      onOpenEntryId={onOpenEntryId}
+      renderStatus={renderMcpServerStatus}
+      rowRefs={mcpRows}
+      via={companionMcpVia}
+    />
+  );
+  const readmeBlock = displayDetails?.hasReadme && (
+    <ReadmeSection
+      markdownOptions={markdownOptions}
+      key={contentRootsKey}
+      activeFacet={activeSlot}
+      onReadComponent={onReadComponent}
+      preloaded={readme}
+      defaultExpanded={!hasComponents}
+    />
+  );
+
   return (
     <div className="flex min-w-0 flex-col gap-6">
-      {chrome}
+      {(!layout || showBack) && chrome}
 
       {/* Plugin metadata */}
-      <section className="min-w-0">
-        <Stack gap="group">
-          <Stack gap="item">
-            <div className="flex items-center gap-3">
-              {headerIcon ?? (
-                <McpServerLogo
-                  name={displayName}
-                  size={40}
-                  fallback="monogram"
-                  fit="contain"
-                />
-              )}
-              <div className="flex flex-col min-w-0 flex-1 gap-1">
-                <Title
-                  id="plugin-detail-title"
-                  className="break-words text-lg font-semibold fg-primary"
-                >
-                  <span className="inline-flex flex-wrap items-baseline gap-x-2">
-                    {displayName}
-                    <DetailEntityType />
-                  </span>
-                </Title>
-                <div className="flex flex-wrap items-center gap-2">
-                  {displayVersion && (
-                    <span className="text-xs fg-secondary">
-                      v{displayVersion}
+      {layout ? (
+        <CapabilityDetailLayout
+          dataTestId="plugin-detail"
+          includeHostRelated={false}
+          logo={
+            headerIcon ?? (
+              <McpServerLogo
+                name={displayName}
+                size={40}
+                fallback="monogram"
+                fit="contain"
+                shape="tile"
+                plate
+              />
+            )
+          }
+          title={displayName}
+          titleId="plugin-detail-title"
+          publisher={publisher ?? displayAuthor ?? undefined}
+          actions={headerActions}
+          description={displayDescription}
+          facts={{
+            ...facts,
+            status: statusContent,
+            website: displayHomepage ? (
+              <DetailWebsiteFact
+                href={displayHomepage}
+                testId="plugin-detail-links"
+              />
+            ) : undefined,
+          }}
+          factsFooter={metadataFooter}
+        />
+      ) : (
+        <section className="min-w-0">
+          <Stack gap="group">
+            <Stack gap="item">
+              <div className="flex items-center gap-3">
+                {headerIcon ?? (
+                  <McpServerLogo
+                    name={displayName}
+                    size={40}
+                    fallback="monogram"
+                    fit="contain"
+                  />
+                )}
+                <div className="flex flex-col min-w-0 flex-1 gap-1">
+                  <Title
+                    id="plugin-detail-title"
+                    className="break-words text-lg font-semibold fg-primary"
+                  >
+                    <span className="inline-flex flex-wrap items-baseline gap-x-2">
+                      {displayName}
+                      <DetailEntityType />
                     </span>
-                  )}
-                  {displayCategory && (
-                    <span className="text-xs fg-secondary">
-                      {displayCategory}
-                    </span>
-                  )}
-                  {displayAuthor && (
-                    <span
-                      data-testid="plugin-detail-author"
-                      className="text-xs fg-secondary"
-                    >
-                      by {displayAuthor}
-                    </span>
-                  )}
-                  {isCompat && (
-                    <Tooltip label={CODEX_COMPATIBILITY_BADGE_TOOLTIP}>
-                      <Badge
-                        tone="warning"
-                        data-testid="plugin-detail-codex-compat-badge"
+                  </Title>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {displayVersion && (
+                      <span className="text-xs fg-secondary">
+                        v{displayVersion}
+                      </span>
+                    )}
+                    {displayCategory && (
+                      <span className="text-xs fg-secondary">
+                        {displayCategory}
+                      </span>
+                    )}
+                    {displayAuthor && (
+                      <span
+                        data-testid="plugin-detail-author"
+                        className="text-xs fg-secondary"
                       >
-                        Codex compatibility
-                      </Badge>
-                    </Tooltip>
-                  )}
-                  {compatCapable && codexCompatDisabled && (
-                    <Tooltip label={CODEX_COMPATIBILITY_DISABLED_TOOLTIP}>
-                      <Badge data-testid="plugin-detail-codex-compat-disabled-badge">
-                        Codex disabled
-                      </Badge>
-                    </Tooltip>
-                  )}
+                        by {displayAuthor}
+                      </span>
+                    )}
+                    {isCompat && (
+                      <Tooltip label={CODEX_COMPATIBILITY_BADGE_TOOLTIP}>
+                        <Badge
+                          tone="warning"
+                          data-testid="plugin-detail-codex-compat-badge"
+                        >
+                          Codex compatibility
+                        </Badge>
+                      </Tooltip>
+                    )}
+                    {compatCapable && codexCompatDisabled && (
+                      <Tooltip label={CODEX_COMPATIBILITY_DISABLED_TOOLTIP}>
+                        <Badge data-testid="plugin-detail-codex-compat-disabled-badge">
+                          Codex disabled
+                        </Badge>
+                      </Tooltip>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-            {displayDescription && (
-              <p className="max-w-2xl text-s fg-secondary">
-                {displayDescription}
-              </p>
-            )}
-          </Stack>
-          {/* Links sit apart from the metadata line, where "Website" read as
-            part of the author ("by Microsoft Website"). Status and links
-            share one group 4px apart; either alone sits 16px below. */}
-          {(statusContent || displayHomepage || metadataFacts) && (
-            <Stack gap="tight">
-              {statusContent && <div>{statusContent}</div>}
-              {(displayHomepage || metadataFacts) && (
-                <div className="-mb-1">
-                  <DetailFactList>
-                    {displayHomepage && (
-                      <DetailFact label="Website" testId="plugin-detail-links">
-                        <ExternalTextLink
-                          href={displayHomepage}
-                          label={websiteHost(displayHomepage)}
-                        />
-                      </DetailFact>
-                    )}
-                    {metadataFacts}
-                  </DetailFactList>
-                </div>
+              {displayDescription && (
+                <p className="max-w-2xl text-s fg-secondary">
+                  {displayDescription}
+                </p>
               )}
             </Stack>
-          )}
-        </Stack>
-        {mcpTargetError &&
-          (neutralStatusText ? (
-            <p role="status" data-testid="plugin-mcp-target-unavailable">
-              <StatusToneText tone="warning" size="s">
+            {/* Links sit apart from the metadata line, where "Website" read as
+            part of the author ("by Microsoft Website"). Status and links
+            share one group 4px apart; either alone sits 16px below. */}
+            {(statusContent || displayHomepage || metadataFacts) && (
+              <Stack gap="tight">
+                {statusContent && <div>{statusContent}</div>}
+                {(displayHomepage || metadataFacts) && (
+                  <div className="-mb-1">
+                    <DetailFactList>
+                      {displayHomepage && (
+                        <DetailFact
+                          label="Website"
+                          testId="plugin-detail-links"
+                        >
+                          <ExternalTextLink
+                            href={displayHomepage}
+                            label={detailWebsiteHost(displayHomepage)}
+                          />
+                        </DetailFact>
+                      )}
+                      {metadataFacts}
+                    </DetailFactList>
+                  </div>
+                )}
+              </Stack>
+            )}
+          </Stack>
+          {mcpTargetError &&
+            (neutralStatusText ? (
+              <p role="status" data-testid="plugin-mcp-target-unavailable">
+                <StatusToneText tone="warning" size="s">
+                  This MCP server is no longer available
+                </StatusToneText>
+              </p>
+            ) : (
+              <p
+                role="status"
+                className="text-s fg-warning"
+                data-testid="plugin-mcp-target-unavailable"
+              >
                 This MCP server is no longer available
-              </StatusToneText>
-            </p>
-          ) : (
-            <p
-              role="status"
-              className="text-s fg-warning"
-              data-testid="plugin-mcp-target-unavailable"
-            >
-              This MCP server is no longer available
-            </p>
-          ))}
-        {metadataFooter}
-      </section>
+              </p>
+            ))}
+          {metadataFooter}
+        </section>
+      )}
 
       {/* Host slots render bare, so an empty slot leaves no wrapper. */}
-      {updateNotice}
-      {harnessRows && <PluginWorksWith rows={harnessRows} />}
+      {!layout && updateNotice}
+      {!layout && harnessRows && <PluginWorksWith rows={harnessRows} />}
+      {/* New Customize: an Add failure sits in the Works with section, with
+          or without the table. */}
+      {layout &&
+        ((harnessRows?.length ?? 0) > 0 || worksWithNotice ? (
+          <ComponentSection title="Works with">
+            {harnessRows && harnessRows.length > 0 && (
+              <PluginHarnessConnections rows={harnessRows} />
+            )}
+            {worksWithNotice}
+          </ComponentSection>
+        ) : null)}
 
       {/* Host-owned install/action area (desktop install panels; empty on web) */}
       {installActions && (
         <div className="flex flex-col gap-6 empty:hidden">{installActions}</div>
       )}
 
-      {showMcpServers && (
-        <McpServersSection
-          servers={listedMcpServers}
-          bundledServerRows={bundledServerRows}
-          onOpenEntryId={onOpenEntryId}
-          renderStatus={renderMcpServerStatus}
-          rowRefs={mcpRows}
-        />
-      )}
-
-      {sharedContent}
-
-      {/* README */}
-      {displayDetails?.hasReadme && (
-        <ReadmeSection
-          markdownOptions={markdownOptions}
-          key={contentRootsKey}
-          activeFacet={activeSlot}
-          onReadComponent={onReadComponent}
-          preloaded={readme}
-          defaultExpanded={!hasComponents}
-        />
-      )}
+      {!layout && mcpServersBlock}
+      {!layout && sharedContent}
+      {!layout && readmeBlock}
 
       {/* Components */}
-      {showComponentsSection && displayDetails && (
+      {!layout && showComponentsSection && displayDetails && (
         <div className="flex flex-col gap-6">
           {hasNonMcpComponents ? (
             <>
@@ -1244,7 +1357,120 @@ export function PluginDetailContent({
         </div>
       )}
 
+      {layout &&
+        ((showComponentsSection && displayDetails) ||
+          showMcpServers ||
+          mcpTargetNotice) && (
+          <ComponentSection title="Contents">
+            {/* A target that is gone is said above the table. */}
+            {mcpTargetNotice}
+            {listedMods.length > 0 && (
+              <>
+                <PluginModNotice />
+                {modsControl}
+              </>
+            )}
+            {hasNonMcpComponents || showMcpServers ? (
+              <PluginContentsTable
+                commandHint={commandHint}
+                {...(showMcpServers
+                  ? {
+                      mcp: {
+                        servers: listedMcpServers,
+                        via: companionMcpVia ?? [],
+                        bundledServerRows,
+                        onOpenEntryId,
+                        renderStatus: renderMcpServerStatus,
+                        rowRefs: mcpRows,
+                      },
+                    }
+                  : {})}
+                rows={[
+                  ...listedSkills.map(({ item: s, harnesses, slot }) => ({
+                    key: `skill:${s.path}`,
+                    type: 'Skill',
+                    name: s.name,
+                    command: s.userInvocable === false ? undefined : s.name,
+                    description: s.description,
+                    harnesses,
+                    onOpen: (): void =>
+                      setViewingComponent({
+                        name: s.name,
+                        componentType: 'skill',
+                        file: `${s.path}/SKILL.md`,
+                        slot,
+                      }),
+                  })),
+                  ...(
+                    [
+                      ['Agent', 'agent', listedAgents],
+                      ['Command', 'command', listedCommands],
+                      ['App', 'app', listedApps],
+                    ] as const
+                  ).flatMap(([type, componentType, listed]) =>
+                    listed.map(({ item, harnesses, slot }, index) => ({
+                      key: `${componentType}:${item.filePath || String(index)}`,
+                      type,
+                      name: item.name,
+                      ...(componentType === 'command'
+                        ? { command: item.name }
+                        : {}),
+                      description: item.description,
+                      harnesses,
+                      onOpen: item.filePath
+                        ? (): void =>
+                            setViewingComponent({
+                              name: item.name,
+                              componentType,
+                              file: item.filePath,
+                              slot,
+                            })
+                        : undefined,
+                    })),
+                  ),
+                  ...listedHooks.map(({ item: h, harnesses }, index) => ({
+                    key: `hook:${h.event}:${String(index)}`,
+                    type: 'Hook',
+                    name: h.event,
+                    description: [h.matcher, h.hookType]
+                      .filter(Boolean)
+                      .join(' · '),
+                    harnesses,
+                  })),
+                  ...pluginModRows(listedMods.map(({ item }) => item)).map(
+                    (mod) => ({
+                      key: `mod:${mod.key}`,
+                      type: 'Mod',
+                      name: mod.module,
+                      description: mod.hooksFile,
+                      harnesses: [],
+                    }),
+                  ),
+                  ...listedLspServers.map(({ item: server, harnesses }) => ({
+                    key: `lsp:${lspDefinitionKey(server)}`,
+                    type: 'LSP server',
+                    replayBlock: true,
+                    name: server.name,
+                    description: [
+                      `${server.command}${server.args?.length ? ` ${server.args.join(' ')}` : ''}`,
+                      server.languages?.join(', '),
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                    harnesses,
+                  })),
+                ]}
+              />
+            ) : displayDetails && !displayDetails.hasReadme ? (
+              <p className="text-s fg-secondary">No components found.</p>
+            ) : null}
+          </ComponentSection>
+        )}
+      {layout && sharedContent}
+      {layout && readmeBlock}
+
       {relatedContent}
+      <DetailHostRelated />
     </div>
   );
 }
@@ -1356,12 +1582,263 @@ function NameDescriptionTable({
   );
 }
 
-function websiteHost(href: string): string {
-  try {
-    return new URL(href).hostname.replace(/^www\./, '');
-  } catch {
-    return 'Website';
-  }
+/** One row of New Customize's grouped Contents table. */
+interface PluginContentsRow extends NameDescriptionItem {
+  /** The kind it is, which groups the rows: Skill, Agent, Command… */
+  readonly type: string;
+  /** A command line: session replay keeps a placeholder for it. */
+  readonly replayBlock?: boolean;
+}
+
+const CONTENTS_TYPE_ORDER = [
+  'Skill',
+  'Agent',
+  'Command',
+  'App',
+  'MCP server',
+  'Hook',
+  'Mod',
+  'LSP server',
+];
+
+/** The plugin's MCP servers, as rows of the Contents table. */
+interface PluginContentsMcp {
+  readonly servers: readonly ListedComponent<PluginMcpServerInfo>[];
+  readonly via: readonly PluginMcpServerVia[];
+  readonly bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
+  readonly onOpenEntryId?: (entryId: string) => void;
+  readonly renderStatus?: (
+    server: PluginMcpServerInfo,
+  ) => ReactNode | undefined;
+  readonly rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
+}
+
+/**
+ * New Customize's one Contents table: every component kind in one table,
+ * grouped by kind in a fixed order (Skills, Agents, Commands, MCP servers,
+ * Hooks…), then by name. MCP server rows keep their endpoint, health and
+ * Test connection in a Status column.
+ */
+function PluginContentsTable({
+  rows,
+  mcp,
+  commandHint,
+}: {
+  rows: readonly PluginContentsRow[];
+  mcp?: PluginContentsMcp;
+  commandHint?: string;
+}): JSX.Element {
+  const hasCommands = rows.some((row) => row.command);
+  const mcpServers = mcp
+    ? mcp.servers.slice().sort((a, b) => a.item.name.localeCompare(b.item.name))
+    : [];
+  const via = mcp?.via ?? [];
+  const hasMcp = mcpServers.length > 0 || via.length > 0;
+  const showHarness =
+    via.length > 0 ||
+    rows.some((row) => row.harnesses?.length) ||
+    mcpServers.some((server) => server.harnesses.length > 0);
+  const order = (type: string): number => CONTENTS_TYPE_ORDER.indexOf(type);
+  const sorted = rows
+    .slice()
+    .sort(
+      (a, b) => order(a.type) - order(b.type) || a.name.localeCompare(b.name),
+    );
+  const before = sorted.filter((row) => order(row.type) < order('MCP server'));
+  const after = sorted.filter((row) => order(row.type) > order('MCP server'));
+  const componentRow = (row: PluginContentsRow): JSX.Element => (
+    <DataTableRow key={row.key} verticalAlign="top">
+      <DataTableCell>
+        <span className="fg-secondary">{row.type}</span>
+      </DataTableCell>
+      <DataTableCell tone="primary" overflow="wrap">
+        {row.onOpen ? (
+          <ClickableName
+            name={row.command ?? row.name}
+            mono={row.command !== undefined}
+            onClick={row.onOpen}
+          />
+        ) : (
+          <span
+            className={
+              row.command ? 'font-mono text-xs font-medium' : 'font-medium'
+            }
+          >
+            {row.command ?? row.name}
+          </span>
+        )}
+      </DataTableCell>
+      {showHarness && (
+        <DataTableCell>
+          <HarnessLogoList harnesses={row.harnesses ?? []} />
+        </DataTableCell>
+      )}
+      <DataTableCell overflow="wrap" colSpan={hasMcp ? 2 : 1}>
+        {/* Read from the plugin's own files: replay keeps a placeholder. */}
+        <div className={REPLAY_BLOCK_CLASS}>
+          <ComponentDescription name={row.name} description={row.description} />
+        </div>
+      </DataTableCell>
+    </DataTableRow>
+  );
+  return (
+    <DataTableFrame
+      caption="Contents"
+      layout="fixed"
+      testId="plugin-detail-contents"
+    >
+      <DataTableHead>
+        <DataTableHeaderCell width="7rem">Type</DataTableHeaderCell>
+        <DataTableHeaderCell width="30%">
+          {hasCommands && commandHint ? (
+            <span className="inline-flex items-center gap-1">
+              Name or command
+              <Tooltip label={commandHint}>
+                <span
+                  tabIndex={0}
+                  aria-label={commandHint}
+                  role="img"
+                  data-testid="plugin-detail-contents-hint-name"
+                  className="focus-ring inline-flex rounded-sm fg-tertiary"
+                >
+                  <IconCircleQuestionmark size={12} />
+                </span>
+              </Tooltip>
+            </span>
+          ) : hasCommands ? (
+            'Name or command'
+          ) : (
+            'Name'
+          )}
+        </DataTableHeaderCell>
+        {showHarness && (
+          <DataTableHeaderCell width={HARNESS_COLUMN_WIDTH}>
+            Harness
+          </DataTableHeaderCell>
+        )}
+        <DataTableHeaderCell>Description</DataTableHeaderCell>
+        {hasMcp && (
+          <DataTableHeaderCell width="22%" align="right">
+            Status
+          </DataTableHeaderCell>
+        )}
+      </DataTableHead>
+      <DataTableBody>
+        {before.map(componentRow)}
+        {mcp &&
+          mcpServers.map(({ item: s, harnesses, slotKinds }) => {
+            const settings = mcp.onOpenEntryId
+              ? mcp.bundledServerRows?.find(
+                  (candidate) =>
+                    candidate.serverName === s.name &&
+                    candidate.endpoint === mcpEndpointKey(s),
+                )
+              : undefined;
+            const status = mcp.renderStatus?.(s);
+            const open = mcp.onOpenEntryId;
+            return (
+              <DataTableRow
+                key={`mcp:${mcpDefinitionKey(s)}`}
+                focusable
+                verticalAlign="top"
+                data-mcp-member={s.name}
+                ref={(node): void => {
+                  for (const key of [
+                    s.name,
+                    ...slotKinds.map((kind) => mcpRowKey(kind, s.name)),
+                  ]) {
+                    if (node) mcp.rowRefs.current.set(key, node);
+                    else mcp.rowRefs.current.delete(key);
+                  }
+                }}
+              >
+                <DataTableCell>
+                  <span className="fg-secondary">MCP server</span>
+                </DataTableCell>
+                <DataTableCell tone="primary" overflow="wrap">
+                  <div className="font-medium">
+                    {settings && open ? (
+                      <span
+                        data-testid={`plugin-detail-mcp-server-settings-${s.name}`}
+                      >
+                        <ClickableName
+                          name={s.name}
+                          description="Open server settings"
+                          onClick={() => open(settings.entryId)}
+                        />
+                      </span>
+                    ) : (
+                      s.name
+                    )}
+                  </div>
+                </DataTableCell>
+                {showHarness && (
+                  <DataTableCell>
+                    <HarnessLogoList harnesses={harnesses} />
+                  </DataTableCell>
+                )}
+                <DataTableCell overflow="wrap">
+                  <span
+                    className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} min-w-0 break-all font-mono text-xs`}
+                  >
+                    {/* The Portal drops a URL it can't parse. */}
+                    {(s.type === 'http'
+                      ? s.url
+                      : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`) ||
+                      '—'}
+                  </span>
+                </DataTableCell>
+                <DataTableCell overflow="wrap" align="right">
+                  <div className="flex justify-end">
+                    {status ?? (
+                      <span
+                        data-testid="plugin-detail-mcp-status-unavailable"
+                        className="text-xs fg-tertiary"
+                      >
+                        {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
+                      </span>
+                    )}
+                  </div>
+                </DataTableCell>
+              </DataTableRow>
+            );
+          })}
+        {/* A harness served by another copy's server: one line naming it. */}
+        {via.map((entry) => (
+          <DataTableRow
+            key={`mcp-via-${entry.harness}`}
+            data-testid={`plugin-detail-mcp-via-${entry.harness}`}
+          >
+            <DataTableCell>
+              <span className="fg-secondary">MCP server</span>
+            </DataTableCell>
+            <DataTableCell overflow="truncate">
+              <span className="fg-tertiary">Another copy</span>
+            </DataTableCell>
+            {showHarness && (
+              <DataTableCell>
+                <HarnessLogoList harnesses={[entry.harness]} />
+              </DataTableCell>
+            )}
+            <DataTableCell overflow="truncate">
+              <span className="flex min-w-0">
+                <PluginHarnessVia
+                  via={entry.via}
+                  testId={`plugin-detail-mcp-via-${entry.harness}-copy`}
+                />
+              </span>
+            </DataTableCell>
+            <DataTableCell align="right">
+              <span className="text-xs fg-tertiary">
+                {entry.installed ? 'Installed' : 'Not installed'}
+              </span>
+            </DataTableCell>
+          </DataTableRow>
+        ))}
+        {after.map(componentRow)}
+      </DataTableBody>
+    </DataTableFrame>
+  );
 }
 
 /**
@@ -1374,16 +1851,23 @@ function McpServersSection({
   onOpenEntryId,
   renderStatus,
   rowRefs,
+  via = [],
+  notice,
 }: {
+  /** Section feedback under the heading, such as a target that is gone. */
+  notice?: ReactNode;
   servers: readonly ListedComponent<PluginMcpServerInfo>[];
+  via?: readonly PluginMcpServerVia[];
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   onOpenEntryId?: (entryId: string) => void;
   renderStatus?: (server: PluginMcpServerInfo) => ReactNode | undefined;
   rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
 }): JSX.Element {
-  const showHarness = servers.some((server) => server.harnesses.length > 0);
+  const showHarness =
+    via.length > 0 || servers.some((server) => server.harnesses.length > 0);
   return (
     <ComponentSection title="MCP servers">
+      {notice}
       <DataTableFrame caption="MCP servers" layout="fixed">
         <DataTableHead>
           <DataTableHeaderCell width="22%">Name</DataTableHeaderCell>
@@ -1479,6 +1963,33 @@ function McpServersSection({
                 </DataTableRow>
               );
             })}
+          {/* A harness served by another copy's server: one line naming it. */}
+          {via.map((entry) => (
+            <DataTableRow
+              key={`via-${entry.harness}`}
+              data-testid={`plugin-detail-mcp-via-${entry.harness}`}
+            >
+              <DataTableCell colSpan={1} overflow="truncate">
+                <span className="fg-tertiary">Another copy</span>
+              </DataTableCell>
+              <DataTableCell>
+                <HarnessLogoList harnesses={[entry.harness]} />
+              </DataTableCell>
+              <DataTableCell overflow="truncate">
+                <span className="flex min-w-0">
+                  <PluginHarnessVia
+                    via={entry.via}
+                    testId={`plugin-detail-mcp-via-${entry.harness}-copy`}
+                  />
+                </span>
+              </DataTableCell>
+              <DataTableCell colSpan={2} align="right">
+                <span className="text-xs fg-tertiary">
+                  {entry.installed ? 'Installed' : 'Not installed'}
+                </span>
+              </DataTableCell>
+            </DataTableRow>
+          ))}
         </DataTableBody>
       </DataTableFrame>
     </ComponentSection>

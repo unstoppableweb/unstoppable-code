@@ -1,3 +1,4 @@
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import {
   agentActionToolResult,
   createAgentActionSurface,
@@ -139,6 +140,9 @@ export async function desktopAgentActionCall(
     toolUseId: context?.toolUseId,
     signal: context?.signal,
     actorKey: DESKTOP_AGENT_ACTOR_KEY,
+    reportUnexpectedError: (error) => {
+      reportMainAppError(error, { source: 'agent_action' });
+    },
     ...(scoped
       ? {
           scope: {
@@ -149,8 +153,9 @@ export async function desktopAgentActionCall(
         }
       : {}),
   };
-  // A run, a cloud run's cancel or resume (CAN-6354), and a worktree chat's
-  // hook pause or script run (CAN-5830) replay by tool call. For a worktree
+  // A run, a cloud run's cancel or resume (CAN-6354), a worktree chat's hook
+  // pause or script run (CAN-5830), and a review posted as the GitHub App
+  // (CAN-6989) replay by tool call. For a worktree
   // chat, the router passes each of them the provider's tool_use id rather
   // than the per-connection request id; the turn, when known, also keeps a
   // later turn's call apart. Neither is ever required.
@@ -163,7 +168,8 @@ export async function desktopAgentActionCall(
       action.type === 'pipeline.execution_resume' ||
       action.type === 'hook.pause' ||
       action.type === 'hook.resume' ||
-      action.type === 'worktree.run_script');
+      action.type === 'worktree.run_script' ||
+      action.type === 'pull_request.review.publish');
   if (!keyedByTurn(key, rawArgs) && !keyedByCall) return call;
   const turnKey = await resolveDesktopTurnKey(call);
   return turnKey ? { ...call, turnKey } : call;

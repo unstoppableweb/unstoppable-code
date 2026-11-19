@@ -1,3 +1,5 @@
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createHash } from 'node:crypto';
 import {
   lstat,
@@ -48,6 +50,21 @@ export const archiveRecoveryInventorySchema = z.object({
     }),
   ),
 });
+/** Content evidence stays exact; only the persisted root's device may drift on macOS. */
+export function matchesRecordedArchiveRecoveryInventory(
+  recorded: z.infer<typeof archiveRecoveryInventorySchema> | null,
+  live: z.infer<typeof archiveRecoveryInventorySchema> | null,
+): boolean {
+  if (recorded === null || live === null) return recorded === live;
+  return (
+    matchesRecordedDirectoryIdentity(
+      recorded.identity,
+      live.identity,
+      hostOperatingSystem(),
+    ) && isDeepStrictEqual(recorded.entries, live.entries)
+  );
+}
+
 export const archiveRecoveryRepositorySchema = z.object({
   repoId: z.string(),
   referenceRepoPath: z.string(),
@@ -457,10 +474,12 @@ export class ArchiveRecoveryStore {
         record.worktreeId === source.worktreeId &&
         record.createdAt === source.createdAt &&
         (record.directoryIdentity === source.directoryIdentity ||
-          // Pre-CAN-5024 journals compare only the project stat, before its marker was added.
-          (source.directoryIdentity?.split(':').length === 3 &&
-            record.directoryIdentity?.split(':').slice(0, 3).join(':') ===
-              source.directoryIdentity));
+          // A fresh successor may observe a renumbered device; journal bytes stay exact below.
+          matchesRecordedDirectoryIdentity(
+            source.directoryIdentity,
+            record.directoryIdentity,
+            hostOperatingSystem(),
+          ));
       const records = inspection.records.map((entry) => entry.record);
       const sources = records.filter(
         (record) => record.operationId === source.operationId,
@@ -529,10 +548,17 @@ export class ArchiveRecoveryStore {
     const payload = await inventoryArchiveRecoveryTree(
       this.payloadPath(receipt),
     );
-    const exact = isDeepStrictEqual(payload, receipt.staging);
+    const exact = matchesRecordedArchiveRecoveryInventory(
+      receipt.staging,
+      payload,
+    );
     const subset =
       payload !== null &&
-      payload.identity === receipt.staging?.identity &&
+      matchesRecordedDirectoryIdentity(
+        receipt.staging?.identity,
+        payload.identity,
+        hostOperatingSystem(),
+      ) &&
       payload.entries.every((entry) =>
         receipt.staging?.entries.some((original) =>
           isDeepStrictEqual(entry, original),
@@ -577,7 +603,10 @@ export class ArchiveRecoveryStore {
       const staging = await inventoryArchiveRecoveryTree(
         this.stagingPath(receipt),
       );
-      if (isDeepStrictEqual(staging, receipt.staging) && payload === null)
+      if (
+        matchesRecordedArchiveRecoveryInventory(receipt.staging, staging) &&
+        payload === null
+      )
         reset = 'unperformed';
       else if (
         receipt.stage === 'reset-intent' &&
@@ -886,9 +915,9 @@ export class ArchiveRecoveryStore {
         : receipt;
     if (intent.stage !== 'retention-intent') return intent;
     if (
-      !isDeepStrictEqual(
-        await inventoryArchiveRecoveryTree(this.stagingPath(intent)),
+      !matchesRecordedArchiveRecoveryInventory(
         intent.staging,
+        await inventoryArchiveRecoveryTree(this.stagingPath(intent)),
       )
     )
       throw new ArchiveRecoveryRefusedError(
@@ -931,11 +960,13 @@ export class ArchiveRecoveryStore {
           'Unexpected recovery staging occupant.',
         );
     } else if (original !== null) {
-      if (!isDeepStrictEqual(original, intent.staging))
+      if (!matchesRecordedArchiveRecoveryInventory(intent.staging, original))
         throw new ArchiveRecoveryRefusedError('Replaced recovery staging.');
       await syncTreeDurably(source);
       await renameWithRetry(source, target);
-    } else if (!isDeepStrictEqual(retained, intent.staging))
+    } else if (
+      !matchesRecordedArchiveRecoveryInventory(intent.staging, retained)
+    )
       throw new ArchiveRecoveryRefusedError(
         'Missing or replaced retained recovery payload.',
       );
@@ -944,9 +975,9 @@ export class ArchiveRecoveryStore {
       await syncDirectory(dirname(source));
       await syncDirectory(dirname(target));
       if (
-        !isDeepStrictEqual(
-          await inventoryArchiveRecoveryTree(target),
+        !matchesRecordedArchiveRecoveryInventory(
           intent.staging,
+          await inventoryArchiveRecoveryTree(target),
         )
       )
         throw new ArchiveRecoveryRefusedError(
@@ -1102,9 +1133,9 @@ export class ArchiveRecoveryStore {
     if (current.retention) return current;
     await this.assertOwnedPath(this.payloadPath(current));
     if (
-      !isDeepStrictEqual(
-        await inventoryArchiveRecoveryTree(this.payloadPath(current)),
+      !matchesRecordedArchiveRecoveryInventory(
         current.staging,
+        await inventoryArchiveRecoveryTree(this.payloadPath(current)),
       )
     )
       throw new ArchiveRecoveryRefusedError('Retained payload changed.');
@@ -1137,7 +1168,11 @@ export class ArchiveRecoveryStore {
     const payload = await inventoryArchiveRecoveryTree(path);
     if (
       payload &&
-      (payload.identity !== current.staging?.identity ||
+      (!matchesRecordedDirectoryIdentity(
+        current.staging?.identity,
+        payload.identity,
+        hostOperatingSystem(),
+      ) ||
         payload.entries.some(
           (entry) =>
             !current.staging?.entries.some((original) =>

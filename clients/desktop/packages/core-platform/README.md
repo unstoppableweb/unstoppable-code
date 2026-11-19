@@ -555,6 +555,18 @@ desktop's arguments, environments, per-stream limits and kill signals: `git
 `getent passwd <uid>` and `where.exe git`. The package index exports none
 of it; its only caller is the [Git read host](#git-read-host).
 
+CAN-5943 additionally admits the exact fifteen repository kinds behind
+branch, remote, worktree-health and change-set queries on Windows. They use
+the staged CAN-5140 owned-child addon's suspended launch in a no-breakaway
+job. A launch that starts nothing (no addon, or a failed job, pipe or process
+creation) runs the read uncontained through Node spawn and taskkill instead
+of refusing it, with unsafe closure evidence. Every job result waits for
+job-empty cleanup; failed cleanup proof latches non-idle. A helper surviving
+root exit invalidates qualification evidence even if later cleanup succeeds.
+The [per-kind closure analysis](../../docs/bundled-runtime-maintenance.md#windows-repository-command-closure-can-5943)
+records filters, lazy fetch and unsupported broker-created processes. Files
+Git reads and POSIX process-group behavior below are unchanged.
+
 Each request takes an explicit `cwd`, a caller-supplied environment (ambient
 `process.env` is never read) and a monotonic deadline. A command name without
 a directory (`where.exe`, a Git or `SHELL` such as `git`) is looked up only in
@@ -570,7 +582,7 @@ relative path with a directory part (`./git`, `sub\git.exe`) is rejected with
 `invalid_request`, and a name the PATH lacks with `command_not_found`, both
 before any process starts. The lookup counts against the request's deadline
 and abort. On Windows, the PATH searched is the case variant Node keeps: the
-first in sort order. Owned children are stopped from a timer or `setImmediate` turn, after an
+first in sort order. Except for Windows repository jobs, owned children are stopped from a timer or `setImmediate` turn, after an
 `exitCode`/`signalCode` check in that turn, by `killProcessTree`. Work stops a
 cleanup reserve before the deadline. After the root exits, held pipes drain
 for a bounded window and are then destroyed. A root that exited or failed to
@@ -685,8 +697,10 @@ canonical data root as `probeDirectory`. It prewarms the host on start and
 stops it in shutdown phase 5.
 
 - **Construction** copies the daemon's own startup environment once, dropping
-  undefined values, and does no I/O. It never throws. An unusable snapshot or
-  probe directory fails each request with `invalid_request`.
+  undefined values, and does no I/O. It never throws. An unusable probe
+  directory fails each request with `invalid_request`, and an unusable
+  snapshot with `environment_invalid`. Only a successful validation is kept;
+  a failure is checked again on the next request (CAN-7113).
 - **Each request** returns an empty set for no paths, without a saved read or
   spawn. A pre-aborted or aborted request rejects with its signal's reason. One
   30 s deadline covers selection and every 5,000-path chunk. Before each chunk
@@ -700,6 +714,8 @@ stops it in shutdown phase 5.
   cached or reported, and `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`
   still override it. Selection, its probes, `check-ignore` and the ignored
   listing keep the snapshot.
+  The change-set operation still refuses forwarded execution and keeps the
+  startup snapshot, lazy-fetch suppression and no-patch policy (CAN-4729).
 - **Errors** are `GitIgnoreHostError` codes with fixed text: runner codes pass
   through, except `command_not_found` and spawn errors, which become
   `git_unavailable`. `lastFailure()` keeps the last code until a request
@@ -798,9 +814,15 @@ CAN-5517 adds six kinds for `worker.git.fetch` and `worker.git.pull`:
 `pull --rebase --autostash origin <branch>`, `rev-parse --git-path` for
 `rebase-merge` or `rebase-apply` only, `stash list` and
 `status --porcelain=v1`. They follow the same rules; the fetch and both pulls
-contact `origin` and, like every effect, are never bounded or killed. Git's
-stderr is not read, so the recorded host classifies a failed rebase pull from
-the rebase state, the stash list and the status alone.
+contact `origin` and, like every effect, are never bounded or killed. The
+recorded host classifies a failed rebase pull from the rebase state, the
+stash list and the status alone.
+
+CAN-7113: a non-zero exit answers `failure` (`authFailed`, `nonFastForward`,
+`hookRejected`, `nothingToCommit`, `gpgFailed` or `other`), classified from the
+last 16 KiB of Git's English stderr and its stdout, never returned. A signal
+exit is `exit_status` with an allowlisted `signal`; a spawn failure is
+`git_unavailable` with `{ errno, stage: 'spawn' }`.
 
 CAN-5882 adds `head-sha`, `tracking-head-sha`, `stage-all`, `commit-message`
 and `push-head`. They run `rev-parse --verify`, `add -A`, `commit -m` and

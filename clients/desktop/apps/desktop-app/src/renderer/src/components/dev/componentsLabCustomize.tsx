@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { ComponentType, JSX, ReactNode } from 'react';
 import {
   TextLink,
   Button,
@@ -11,7 +11,11 @@ import {
   CustomizeRowMenu,
   HarnessCatchUpNotice,
   McpRowHealth,
+  McpRowCheckFeedback,
+  McpServerLogo,
+  type McpServerLogoProps,
   ItemStateMark,
+  HelpHint,
   ITEM_STATE_LABEL_CLASS,
   StatusToneText,
   type ItemStateTone,
@@ -22,7 +26,10 @@ import {
 import type { HarnessCompatibility } from '@canopy/protocol/plugins';
 import { mcpRowHealthModel } from '@canopy/ui-shared/lib/mcp-row-health';
 import { badgeClassName } from '@canopy/ui-shared/lib/badge';
+import { CURATED_PLUGIN_LOGOS } from '@canopy/ui-shared/lib/curated-plugin-logos';
 import type {
+  UnifiedEntryAlternative,
+  UnifiedEntryHarnessRow,
   UnifiedEntryPlacement,
   UnifiedPluginEntry,
 } from '@canopy/ui-shared/lib/unified-plugin-entry';
@@ -170,28 +177,36 @@ const LAB_ROW_ACTIONS: readonly {
     },
   },
   {
-    label: 'Update',
+    label: 'Available',
     action: {
-      label: 'Update',
-      accessibleName: 'Update Sentry',
-      onPrimary: noop,
-      statuses: [{ current: 'active', onChange: noop }],
+      label: 'Available',
+      accessibleName: 'Status for Sentry: Available',
+      glyph: 'available',
+      statuses: [{ current: 'available', onChange: noop }],
     },
   },
   {
-    label: 'Sign in',
+    label: 'Run (workflow)',
     action: {
-      label: 'Sign in',
-      accessibleName: 'Sign in to Sentry',
+      label: 'Run',
+      tone: 'run',
+      accessibleName: 'Run Sentry',
       onPrimary: noop,
+    },
+  },
+  {
+    label: 'Installed, no status',
+    action: {
+      label: 'Installed',
+      tone: 'installed',
+      accessibleName: 'Sentry is installed',
     },
   },
   {
     label: 'Busy',
     action: {
-      label: 'Update',
-      accessibleName: 'Update Sentry',
-      onPrimary: noop,
+      label: 'Installed',
+      accessibleName: 'Sentry is installed',
       busy: true,
     },
   },
@@ -205,6 +220,547 @@ const LAB_ROW_ACTIONS: readonly {
     },
   },
 ];
+
+const LAB_STATUS_ITEMS = [
+  { id: 'details', label: 'Open details', onSelect: noop },
+  { id: 'remove', label: 'Remove…', destructive: true, onSelect: noop },
+] as const;
+
+function labStatus(
+  status: 'active' | 'available' | 'disabled',
+  name: string,
+): CustomizeRowSplitAction {
+  const label = status.charAt(0).toUpperCase() + status.slice(1);
+  return {
+    label,
+    accessibleName: `Status for ${name}: ${label}`,
+    glyph: status,
+    statuses: [{ current: status, onChange: noop }],
+  };
+}
+
+function labEntry(
+  id: string,
+  fields: Partial<UnifiedPluginEntry> & Pick<UnifiedPluginEntry, 'name'>,
+): UnifiedPluginEntry {
+  return {
+    id: `lab-tile-${id}`,
+    kind: 'plugin',
+    origin: 'marketplace',
+    description: '',
+    categories: [],
+    typeLabel: 'Plugin',
+    components: { skills: 0, mcpServers: 0, commands: 0, agents: 0 },
+    providerSupport: { claude: true, codex: true },
+    harnessCompatibility: LAB_ALL_HARNESSES,
+    state: 'installed',
+    recommended: false,
+    ref: { type: 'marketplace-plugin', marketplaceId: 'lab', pluginName: id },
+    ...fields,
+  };
+}
+
+/** Transparent artwork, as a catalog serves it: dark ink and light ink. */
+const LAB_TRANSPARENT_DARK_LOGO =
+  'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZD0iTTIwIDQ0YzAtNiA1LTkgMTMtOWg3di0yYzAtNC0yLTYtNy02LTQgMC03IDEtMTAgM2wtMi01YzQtMiA4LTMgMTMtMyA4IDAgMTIgNCAxMiAxMXYxOWgtNnYtM2MtMiAyLTUgNC0xMCA0LTYgMC0xMC00LTEwLTl6bTIwLTJ2LTNoLTZjLTUgMC04IDEtOCA0IDAgMiAyIDQgNSA0IDUgMCA5LTIgOS01eiIgZmlsbD0iIzExMTExMSIvPjxwYXRoIGQ9Ik0xNCA1MGMxMCA2IDI2IDcgMzggMSIgc3Ryb2tlPSIjMTExMTExIiBzdHJva2Utd2lkdGg9IjMiIGZpbGw9Im5vbmUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==';
+const LAB_TRANSPARENT_LIGHT_LOGO =
+  'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMTQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI0ZGRkZGRiIgc3Ryb2tlLXdpZHRoPSI2Ii8+PHBhdGggZD0iTTQyIDQybDEwIDEwIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iNiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+';
+
+/**
+ * Opaque artwork that fills its own square: a UD plugin's purple tile and a
+ * photo avatar. Neither takes the light plate (it would show as a ring).
+ */
+const LAB_OPAQUE_UD_LOGO = `data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="#6B3FD4"/><text x="32" y="41" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">UD</text></svg>',
+)}`;
+const LAB_PHOTO_AVATAR = `data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8FB3C9"/><stop offset="1" stop-color="#3E5F73"/></linearGradient></defs><rect width="64" height="64" fill="url(#b)"/><circle cx="32" cy="25" r="11" fill="#E9C7A8"/><path d="M10 64c2-14 11-21 22-21s20 7 22 21Z" fill="#2F3B45"/></svg>',
+)}`;
+
+/** Harness rows as a host computes them, for the harness chip cases. */
+function labHarnessRows(
+  rows: Readonly<
+    Record<string, 'Installed' | 'Not installed' | 'Not supported'>
+  >,
+): UnifiedEntryHarnessRow[] {
+  const names: Readonly<Record<string, string>> = {
+    claude: 'Claude',
+    codex: 'Codex',
+    cursor: 'Cursor',
+    opencode: 'OpenCode',
+  };
+  return Object.entries(rows).map(([id, installation]) => ({
+    id,
+    name: names[id] ?? id,
+    installation,
+  }));
+}
+
+/** Slack's Claude copy, which serves Claude for the Codex copy's tile. */
+const LAB_SLACK_CLAUDE_COPY: UnifiedEntryAlternative = {
+  entryId: 'lab-tile-slack-claude',
+  label: 'Claude official',
+  ref: {
+    type: 'marketplace-plugin',
+    marketplaceId: 'claude-plugins-official',
+    pluginName: 'slack',
+  },
+  copyName: 'Slack (slackapi)',
+  copyBase: { name: 'Slack', publisher: 'slackapi' },
+  harnessRows: labHarnessRows({
+    claude: 'Installed',
+    codex: 'Not supported',
+    cursor: 'Installed',
+    opencode: 'Installed',
+  }),
+};
+
+/** The label colors before Sergii's "only the icon is colored" rule. */
+const LAB_COLORED_STATE_TEXT: Readonly<Record<ItemStateTone, string>> = {
+  active: 'fg-success-strong',
+  available: 'fg-primary',
+  disabled: 'fg-tertiary',
+  unavailable: 'fg-tertiary',
+  add: 'fg-primary',
+  run: 'fg-primary',
+  installed: 'fg-secondary',
+  'sign-in': 'fg-warning',
+  failed: 'fg-destructive',
+  update: 'fg-secondary',
+};
+
+/** The shared logo with the lab's data URIs read as remote logos. */
+function LabRemoteLogo(props: McpServerLogoProps): JSX.Element {
+  return <McpServerLogo {...props} useRemoteLogo={(url) => url} />;
+}
+
+const LAB_MCP = {
+  kind: 'app',
+  origin: 'curated',
+  typeLabel: 'MCP server',
+  components: { skills: 0, mcpServers: 1, commands: 0, agents: 0 },
+} as const;
+
+/**
+ * Sergii's Customize QA (item 7): every tile case on one fixed layout. Line
+ * 1 is the name and type; line 2 the status or publisher (text only), the
+ * version for plugins only, then the harness logos; line 3 exists only for
+ * an update.
+ */
+const LAB_TILE_CASES: readonly {
+  readonly label: string;
+  readonly entry: UnifiedPluginEntry;
+  readonly action: CustomizeRowSplitAction;
+  readonly dimmed?: boolean;
+  readonly signIn?: boolean;
+  readonly update?: boolean;
+  /** A logo host other than the shared default, for remote-logo cases. */
+  readonly logo?: ComponentType<McpServerLogoProps>;
+  /** The row's health line, as the host renders it. */
+  readonly health?: ReactNode;
+}[] = [
+  {
+    label: 'MCP connected (publisher, no health)',
+    entry: labEntry('mcp-connected', {
+      ...LAB_MCP,
+      name: 'Sentry',
+      authorName: 'Sentry',
+      connection: { status: 'connected' },
+      ref: { type: 'curated-mcp', key: 'sentry' },
+    }),
+    action: labStatus('active', 'Sentry'),
+  },
+  {
+    label: 'MCP couldn’t connect',
+    entry: labEntry('mcp-unreachable', {
+      ...LAB_MCP,
+      name: 'Linear',
+      authorName: 'Linear',
+      connection: { status: 'unreachable' },
+      ref: { type: 'curated-mcp', key: 'linear' },
+    }),
+    action: labStatus('active', 'Linear'),
+  },
+  {
+    label: 'MCP sign in needed',
+    entry: labEntry('mcp-sign-in', {
+      ...LAB_MCP,
+      name: 'Notion',
+      authorName: 'Notion',
+      connection: { status: 'auth_required', signIn: 'connect' },
+      pendingSignIns: 1,
+      ref: { type: 'curated-mcp', key: 'notion' },
+    }),
+    action: labStatus('available', 'Notion'),
+    signIn: true,
+  },
+  {
+    label: 'MCP Test connection: checking',
+    entry: labEntry('mcp-test-checking', {
+      ...LAB_MCP,
+      name: 'Sentry',
+      authorName: 'Sentry',
+      connection: { status: 'connected' },
+      ref: { type: 'curated-mcp', key: 'sentry' },
+    }),
+    action: labStatus('active', 'Sentry'),
+    health: (
+      <McpRowCheckFeedback kind="checking" testId="lab-tile-test-checking" />
+    ),
+  },
+  {
+    label: 'MCP Test connection: connected (3 s, then publisher)',
+    entry: labEntry('mcp-test-connected', {
+      ...LAB_MCP,
+      name: 'Sentry',
+      authorName: 'Sentry',
+      connection: { status: 'connected' },
+      ref: { type: 'curated-mcp', key: 'sentry' },
+    }),
+    action: labStatus('active', 'Sentry'),
+    health: (
+      <McpRowCheckFeedback kind="connected" testId="lab-tile-test-connected" />
+    ),
+  },
+  {
+    label: 'MCP Test connection: failed (stays)',
+    entry: labEntry('mcp-test-failed', {
+      ...LAB_MCP,
+      name: 'Linear',
+      authorName: 'Linear',
+      connection: { status: 'unreachable' },
+      ref: { type: 'curated-mcp', key: 'linear' },
+    }),
+    action: labStatus('active', 'Linear'),
+  },
+  {
+    label: 'MCP disabled',
+    entry: labEntry('mcp-disabled', {
+      ...LAB_MCP,
+      name: 'Slack',
+      authorName: 'Slack',
+      connection: { status: 'connected', disabled: true },
+      ref: { type: 'curated-mcp', key: 'slack' },
+    }),
+    action: labStatus('disabled', 'Slack'),
+    dimmed: true,
+  },
+  {
+    label: 'Plugin',
+    entry: labEntry('plugin', {
+      name: 'Azure DevOps',
+      authorName: 'Microsoft',
+      version: '2.4.1',
+      components: { skills: 6, mcpServers: 1, commands: 0, agents: 0 },
+    }),
+    action: labStatus('active', 'Azure DevOps'),
+  },
+  {
+    label: 'Curated plugin (Unstoppable Code logo)',
+    entry: labEntry('curated', {
+      origin: 'curated',
+      name: 'Deep research',
+      authorName: 'Unstoppable Domains',
+      version: '1.0.0',
+      ref: { type: 'curated-plugin', key: 'deep-research' },
+    }),
+    action: labStatus('available', 'Deep research'),
+  },
+  {
+    label: 'Skill',
+    entry: labEntry('skill', {
+      kind: 'skill',
+      origin: 'installed-standalone',
+      typeLabel: 'Skill',
+      name: 'Review changes',
+      authorName: 'Anthropic',
+    }),
+    action: labStatus('available', 'Review changes'),
+  },
+  {
+    label: 'Skill inside a plugin',
+    entry: labEntry('bundled-skill', {
+      kind: 'skill',
+      typeLabel: 'Skill',
+      name: 'Query insights',
+      bundledBy: { entryId: 'lab-posthog', name: 'PostHog' },
+    }),
+    action: {
+      ...labStatus('active', 'Query insights'),
+      statuses: [],
+      reason: 'Follows the PostHog plugin.',
+    },
+  },
+  {
+    label: 'Workflow',
+    entry: labEntry('workflow', {
+      kind: 'pipeline',
+      origin: 'installed-standalone',
+      typeLabel: 'Workflow',
+      name: 'Nightly triage',
+      authorName: 'You',
+    }),
+    action: {
+      label: 'Run',
+      tone: 'run',
+      accessibleName: 'Run Nightly triage',
+      onPrimary: noop,
+    },
+  },
+  {
+    label: 'Built-in workflow (product mark)',
+    entry: labEntry('builtin-workflow', {
+      kind: 'pipeline',
+      origin: 'built-in',
+      typeLabel: 'Workflow',
+      name: 'Refine Plan',
+      brandMark: true,
+      ref: { type: 'pipeline', pipelineId: 'refine-plan', source: 'bundled' },
+    }),
+    action: {
+      label: 'Run',
+      tone: 'run',
+      accessibleName: 'Run Refine Plan',
+      onPrimary: noop,
+    },
+  },
+  {
+    label: 'Collection',
+    entry: labEntry('collection', {
+      kind: 'collection',
+      typeLabel: 'Collection',
+      name: 'Design team kit',
+      authorName: 'Unstoppable Domains',
+      components: {
+        plugins: 3,
+        skills: 5,
+        mcpServers: 2,
+        commands: 0,
+        agents: 0,
+      },
+    }),
+    action: labStatus('active', 'Design team kit'),
+  },
+  {
+    label: 'ChatGPT app with a stand-in',
+    entry: labEntry('chatgpt-stand-in', {
+      name: 'Canva',
+      authorName: 'Canva',
+      sourceLabel: 'ChatGPT',
+      providerSupport: { claude: false, codex: false },
+      harnessCompatibility: undefined,
+      chatGptAppStandIn: {
+        endpoint: 'https://mcp.canva.com/mcp',
+        name: 'Canva',
+        harnesses: ['claude', 'codex', 'cursor'],
+      },
+    }),
+    action: labStatus('active', 'Canva'),
+  },
+  {
+    label: 'ChatGPT app only',
+    entry: labEntry('chatgpt-only', {
+      name: 'Instacart',
+      authorName: 'Instacart',
+      sourceLabel: 'ChatGPT',
+      providerSupport: { claude: false, codex: false },
+      harnessCompatibility: undefined,
+    }),
+    action: labStatus('available', 'Instacart'),
+  },
+  {
+    label: 'Update available',
+    entry: labEntry('update', {
+      name: 'Figma',
+      authorName: 'Figma',
+      version: '1.3.0',
+      updateAvailable: true,
+    }),
+    action: labStatus('active', 'Figma'),
+    update: true,
+  },
+  {
+    label: 'Shared with me',
+    entry: labEntry('shared', {
+      kind: 'skill',
+      origin: 'shared',
+      typeLabel: 'Skill',
+      name: 'Release notes',
+      sharedSource: { remoteId: 'lab', sharedBy: 'Alex Rivera' },
+    }),
+    action: labStatus('available', 'Release notes'),
+  },
+  {
+    label: 'Transparent dark logo (light plate)',
+    entry: labEntry('transparent-dark', {
+      ...LAB_MCP,
+      name: 'Amazon Selling Partner',
+      authorName: 'Amazon',
+      connection: { status: 'connected' },
+      logoUrl: LAB_TRANSPARENT_DARK_LOGO,
+    }),
+    action: labStatus('active', 'Amazon Selling Partner'),
+    logo: LabRemoteLogo,
+  },
+  {
+    label: 'Harness chips: merged item (Claude via another copy)',
+    entry: labEntry('harness-merged', {
+      name: 'Slack',
+      authorName: 'Slack',
+      harnessRows: labHarnessRows({
+        claude: 'Not supported',
+        codex: 'Installed',
+        cursor: 'Installed',
+        opencode: 'Installed',
+      }),
+      alsoAvailableFrom: [LAB_SLACK_CLAUDE_COPY],
+    }),
+    action: labStatus('active', 'Slack'),
+  },
+  {
+    label: 'Harness chips: single copy',
+    entry: labEntry('harness-single', {
+      name: 'Linear',
+      authorName: 'Linear',
+      harnessRows: labHarnessRows({
+        claude: 'Installed',
+        codex: 'Not installed',
+        cursor: 'Installed',
+        opencode: 'Installed',
+      }),
+    }),
+    action: labStatus('active', 'Linear'),
+  },
+  {
+    label: 'Harness chips: an unsupported harness (muted)',
+    entry: labEntry('harness-unsupported', {
+      name: 'Figma',
+      authorName: 'Figma',
+      harnessRows: labHarnessRows({
+        claude: 'Installed',
+        codex: 'Installed',
+        cursor: 'Not supported',
+        opencode: 'Not supported',
+      }),
+    }),
+    action: labStatus('available', 'Figma'),
+  },
+  {
+    label: 'Opaque UD logo (full-bleed, no plate)',
+    entry: labEntry('opaque-ud', {
+      name: 'Ud Alert Triage',
+      authorName: 'Unstoppable Domains',
+      logoUrl: LAB_OPAQUE_UD_LOGO,
+    }),
+    action: labStatus('active', 'Ud Alert Triage'),
+    logo: LabRemoteLogo,
+  },
+  {
+    label: 'Photo avatar (full-bleed, no plate)',
+    entry: labEntry('photo-avatar', {
+      name: 'Superpowers',
+      authorName: 'Jesse Vincent',
+      logoUrl: LAB_PHOTO_AVATAR,
+    }),
+    action: labStatus('available', 'Superpowers'),
+    logo: LabRemoteLogo,
+  },
+  {
+    label: 'Transparent light logo (light plate)',
+    entry: labEntry('transparent-light', {
+      name: 'Lens',
+      authorName: 'Lens Labs',
+      logoUrl: LAB_TRANSPARENT_LIGHT_LOGO,
+    }),
+    action: labStatus('available', 'Lens'),
+    logo: LabRemoteLogo,
+  },
+  {
+    label: 'Not installed (Browse)',
+    entry: labEntry('browse', {
+      name: 'Stripe',
+      authorName: 'Stripe',
+      state: 'available',
+    }),
+    action: {
+      label: 'Add',
+      tone: 'add',
+      accessibleName: 'Add Stripe',
+      onPrimary: noop,
+    },
+  },
+];
+
+/** Every Customize tile case side by side, at two widths, light or dark. */
+export function CustomizeTileBenchmarkSpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Customize tile benchmark">
+        <SpecimenGrid min={460}>
+          {LAB_TILE_CASES.map(
+            ({
+              label,
+              entry,
+              action,
+              dimmed,
+              signIn,
+              update,
+              logo,
+              health,
+            }) => (
+              <SpecimenCell key={entry.id} label={label} wide>
+                <div className="max-w-full" style={{ width: 560 }}>
+                  <ul>
+                    <CustomizeInstalledRow
+                      entry={entry}
+                      sectionId="benchmark"
+                      onSelect={noop}
+                      showEntryType
+                      discovery
+                      dimmed={dimmed}
+                      splitAction={action}
+                      menuItems={LAB_STATUS_ITEMS}
+                      {...(logo ? { McpServerLogoComponent: logo } : {})}
+                      health={health}
+                      {...(signIn
+                        ? {
+                            signIn: {
+                              accessibleName: `Sign in to ${entry.name}`,
+                              run: noop,
+                            },
+                          }
+                        : {})}
+                      {...(update ? { update: { run: noop } } : {})}
+                    />
+                  </ul>
+                </div>
+              </SpecimenCell>
+            ),
+          )}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="Curated plugin logos (row size and large)">
+        <SpecimenGrid min={140}>
+          {Object.entries(CURATED_PLUGIN_LOGOS).map(([key, src]) => (
+            <SpecimenCell key={key} label={key}>
+              <span className="flex items-center gap-3">
+                {[28, 56].map((size) => (
+                  <McpServerLogo
+                    key={size}
+                    bundledLogo={src}
+                    size={size}
+                    name={key}
+                    shape="tile"
+                  />
+                ))}
+              </span>
+            </SpecimenCell>
+          ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+    </div>
+  );
+}
 
 const LONG_NAME =
   'A custom skill with a name long enough that it cannot fit the page header';
@@ -221,20 +777,6 @@ const TRAIL: readonly CustomizeBreadcrumbItem[] = [
  * Hover and press are real pointer states here, not forced ones; point at a
  * crumb or open a menu to see them.
  */
-/** The label colors before Sergii's "only the icon is colored" rule. */
-const LAB_COLORED_STATE_TEXT: Readonly<Record<ItemStateTone, string>> = {
-  active: 'fg-success-strong',
-  available: 'fg-primary',
-  disabled: 'fg-tertiary',
-  unavailable: 'fg-tertiary',
-  add: 'fg-primary',
-  run: 'fg-primary',
-  installed: 'fg-secondary',
-  'sign-in': 'fg-warning',
-  failed: 'fg-destructive',
-  update: 'fg-secondary',
-};
-
 export function CustomizePartsSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
@@ -289,6 +831,28 @@ export function CustomizePartsSpecimen(): JSX.Element {
               </span>
             </SpecimenCell>
           ))}
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel title="HelpHint (filter section labels)">
+        <SpecimenGrid min={220}>
+          <SpecimenCell label="After a section label (hover or Tab to it)">
+            <span className="flex items-center gap-1 text-xs fg-secondary">
+              Works with
+              <HelpHint
+                label="Works with"
+                help="Show only items that work with the selected harnesses."
+              />
+            </span>
+          </SpecimenCell>
+          <SpecimenCell label="Long help text">
+            <span className="flex items-center gap-1 text-xs fg-secondary">
+              Source
+              <HelpHint
+                label="Source"
+                help="Who provides the workflow: Custom (made on this computer), Project (checked into this repo), Bundled (ships with the app), Shared (shared with you by a teammate or your organization), Curated (from the curated catalog)."
+              />
+            </span>
+          </SpecimenCell>
         </SpecimenGrid>
       </SpecimenPanel>
       <SpecimenPanel title="New-harness catch-up offer (New Customize)">

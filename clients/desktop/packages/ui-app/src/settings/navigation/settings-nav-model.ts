@@ -71,6 +71,7 @@ const ORGANIZATION_ROW_ORDER: readonly (
   { tab: 'projects' },
   { tab: 'memory' },
   { subtab: 'policies' },
+  { subtab: 'project-defaults' },
   { subtab: 'integrations' },
   { subtab: 'usage' },
   { subtab: 'ai-gateway' },

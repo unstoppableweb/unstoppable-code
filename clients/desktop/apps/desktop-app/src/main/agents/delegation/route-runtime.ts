@@ -4,6 +4,7 @@ import {
   isHomeOnlyCapabilityOverlay,
 } from './home-overlay';
 
+import { pluginDefaultsWorkspaceId } from '../../plugins/plugin-defaults-revision';
 import type { AccountProxyQuotaWait } from '../../account-proxy/quota-wait';
 import { resolveSessionAiCreditsAttribution } from '../ai-credits-routing';
 import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
@@ -667,7 +668,10 @@ export class DelegationRouteRuntime {
             ],
             (directory) => openDelegationFiles(directory, readSignal),
             harness,
-            { cache: this.capabilityCache },
+            {
+              cache: this.capabilityCache,
+              workspaceId: pluginDefaultsWorkspaceId(parent),
+            },
           );
           const skipped = result.skipped[0];
           return skipped
@@ -774,7 +778,10 @@ export class DelegationRouteRuntime {
               layers,
               (directory) => openDelegationFiles(directory, signal),
               harness,
-              { cache: this.capabilityCache },
+              {
+                cache: this.capabilityCache,
+                workspaceId: pluginDefaultsWorkspaceId(parent),
+              },
             ),
           loadCatalog: loadDelegationCapabilityCatalog,
         });
@@ -2200,7 +2207,8 @@ export class DelegationRouteRuntime {
     session: DelegationRunSession,
     build: (capabilities: PreparedDelegationCapabilityRuntime) => P,
   ): DelegationCapabilityReloadHost<P> {
-    const { route, delegationId, runGeneration } = session.context.request;
+    const { parent, route, delegationId, runGeneration } =
+      session.context.request;
     const harness = route.harnessId === 'codex' ? 'codex' : 'claude';
     // Reasons for requested items a successful apply skipped, by reload.
     const partial = new Map<string, readonly string[]>();
@@ -2261,7 +2269,10 @@ export class DelegationRouteRuntime {
           [...layers, loadedLayer],
           (directory) => openDelegationFiles(directory, signal),
           harness,
-          { cache: this.capabilityCache },
+          {
+            cache: this.capabilityCache,
+            workspaceId: pluginDefaultsWorkspaceId(parent),
+          },
         );
         signal.throwIfAborted();
         const previousIds = new Set(

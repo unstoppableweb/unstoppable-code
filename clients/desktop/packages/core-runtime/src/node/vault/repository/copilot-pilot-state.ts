@@ -18,6 +18,7 @@ import {
 } from './migration-storage';
 import { isLiveMigrationIntent } from './migration-intent';
 import { verifyVaultSecret } from './sealed-secret';
+import { vaultDeleteReceiptMatches } from './receipts';
 import type { VaultStore, VaultMigrationUpdate } from './store';
 import type { VaultIntentDraft } from './store-records';
 import type { VaultSubkeys } from './vault-keys';
@@ -149,6 +150,9 @@ export function createCopilotPilotComposition(options: {
     const { stored, bundle } = load();
     const next = copilotAuthorityBundle(input, keys().vaultId);
     if (bundle.authority.sequence !== expected) return false;
+    // Older builds refuse v2; trusted callers cannot erase its lineage to downgrade.
+    if (next.version < bundle.version)
+      throw new CopilotAuthorityJournalError('corrupt');
     validateMigrationBinding(next);
     if (next.binding?.phase !== bundle.binding?.phase)
       validatePublication(next);
@@ -296,7 +300,8 @@ export function createCopilotPilotComposition(options: {
       const { bundle } = load();
       const control = bundle.controls.find((c) => c.operationId === op);
       if (
-        bundle.binding?.phase !== 'cancelling' ||
+        !bundle.binding ||
+        !['cancelling', 'retired'].includes(bundle.binding.phase) ||
         bundle.binding.attemptId !== id ||
         bundle.binding.migrationEpoch !== epoch ||
         control?.accountEpoch !== bundle.binding.accountEpoch ||
@@ -319,12 +324,97 @@ export function createCopilotPilotComposition(options: {
     supersede: (epoch, reason) => currentMigration().supersede(epoch, reason),
   };
   const journal: CopilotAuthorityJournal = {
+    lifetime: {
+      familyId: store.header?.vaultId,
+      isExclusive: () =>
+        store.state === 'open' && keys().vaultId === store.header?.vaultId,
+    },
     read: () => Promise.resolve().then(() => load().bundle.authority),
     compareExchange: (expected, next) =>
-      Promise.resolve().then(() => {
+      Promise.resolve().then(async () => {
         const { bundle } = load();
+        if (bundle.authority.sequence !== expected) return false;
+        const b = bundle.binding;
+        const m = bundle.authority.mutation;
+        if (b?.phase === 'published' && !next.head) {
+          const h = bundle.authority.head;
+          const completed = bundle.authority.completed;
+          const completedDelete =
+            !m &&
+            completed?.kind === 'delete' &&
+            completed.epoch === b.accountEpoch &&
+            bundle.authority.removal?.epoch === b.accountEpoch &&
+            canonicalCopilotJson(next.completed) ===
+              canonicalCopilotJson(completed);
+          const from =
+            m?.kind === 'delete' ? m.from : completedDelete ? h?.pin : null;
+          const operationId =
+            m?.kind === 'delete' ? m.operationId : completed?.operationId;
+          if (
+            !from ||
+            next.sequence !== expected + 1 ||
+            (m?.epoch ?? h?.epoch) !== b.accountEpoch ||
+            (m?.origin ?? h?.origin) !== 'import' ||
+            canonicalCopilotJson(from.ref) !==
+              canonicalCopilotJson(b.destination?.ref) ||
+            next.mutation ||
+            next.removal ||
+            next.completed?.kind !== 'delete' ||
+            next.completed.operationId !== operationId ||
+            next.completed.epoch !== b.accountEpoch
+          )
+            throw new CopilotAuthorityJournalError('corrupt');
+          const deletion = await journal.reconcile(next.completed.operationId);
+          if (load().bundle.authority.sequence !== expected) return false;
+          if (
+            deletion.kind !== 'committed' ||
+            canonicalCopilotJson(deletion.pin) !==
+              canonicalCopilotJson({
+                ref: from.ref,
+                revision: from.revision + 1,
+              })
+          )
+            throw new CopilotAuthorityJournalError('unconfirmed');
+          const migration = migrationNow();
+          const head = migration.read().head;
+          if (head.attemptId !== null) {
+            if (
+              head.attemptId !== b.attemptId ||
+              head.epoch !== b.migrationEpoch
+            )
+              throw new CopilotAuthorityJournalError('unconfirmed');
+            // A crash here leaves the exact P4 deletion pending, never an unused vault.
+            migration.supersede(head.epoch + 1, 'published-account-removed');
+          }
+          return compareExchange(expected, {
+            ...bundle,
+            // A retired setup-lineage witness upgrades the bundle with its record.
+            version: next.version,
+            authority: next,
+            migrationEpoch: migration.read().head.epoch,
+            binding: { ...b, phase: 'retired' },
+            controls: [
+              ...bundle.controls,
+              {
+                kind: 'retirement',
+                operationId: b.operationId,
+                attemptId: b.attemptId,
+                migrationEpoch: b.migrationEpoch,
+                identity: b.identity,
+                accountEpoch: b.accountEpoch,
+                destination: from,
+                completionId: null,
+                phase: 'retired',
+              },
+            ],
+          });
+        }
         // Ordinary P4 saves cannot independently change or erase binding/control state.
-        return compareExchange(expected, { ...bundle, authority: next });
+        return compareExchange(expected, {
+          ...bundle,
+          version: next.version,
+          authority: next,
+        });
       }),
     reconcile(operationId) {
       try {
@@ -347,17 +437,95 @@ export function createCopilotPilotComposition(options: {
         }
         const m = bundle.authority.mutation;
         const h = bundle.authority.head;
+        const b = bundle.binding;
+        const completed = bundle.authority.completed;
+        // A rejected refresh can finish its delete while explicit removal retains the head.
+        const completedDelete =
+          !m &&
+          completed?.kind === 'delete' &&
+          completed.operationId === operationId &&
+          b?.phase === 'published' &&
+          completed.epoch === b.accountEpoch &&
+          bundle.authority.removal?.epoch === b.accountEpoch &&
+          h?.epoch === b.accountEpoch &&
+          h.origin === 'import' &&
+          canonicalCopilotJson(h.pin.ref) ===
+            canonicalCopilotJson(b.destination?.ref);
         const owner =
           m?.operationId === operationId
             ? m
             : h?.operationId === operationId
               ? h
-              : null;
+              : completedDelete
+                ? h
+                : null;
         if (!owner) return Promise.resolve({ kind: 'unconfirmed' });
         const intent = store.findIntent('copilot-account', operationId);
         if (!intent) return Promise.resolve({ kind: 'not_accepted' });
-        const expected = 'from' in owner ? owner.from : null;
+        const expected =
+          'from' in owner ? owner.from : completedDelete ? owner.pin : null;
         const destination = 'committed' in owner ? owner.committed : owner.pin;
+        if (completedDelete || ('kind' in owner && owner.kind === 'delete')) {
+          if (
+            !expected ||
+            intent.kind !== 'delete' ||
+            intent.family !== 'copilot-account' ||
+            intent.entryId !== expected.ref.entryId ||
+            intent.expectedRevision !== expected.revision ||
+            !Number.isSafeInteger(expected.revision + 1) ||
+            !vaultDeleteReceiptMatches(
+              { ref: expected.ref, expectedRevision: expected.revision },
+              intent.receipt,
+            ) ||
+            store.isIntentRunning(intent.sequence)
+          )
+            return Promise.resolve({ kind: 'unconfirmed' });
+          const lineage = store
+            .listIntents()
+            .filter((i) => i.entryId === intent.entryId);
+          if (
+            lineage.some(
+              (i) =>
+                i.family !== intent.family ||
+                i.sequence > intent.sequence ||
+                (i.kind === 'delete' &&
+                  i.state === 'committed' &&
+                  i.sequence !== intent.sequence),
+            )
+          )
+            return Promise.resolve({ kind: 'unconfirmed' });
+          const entry = store.readEntry(intent.entryId);
+          const tombstone = store.readTombstone(intent.entryId);
+          if (intent.state === 'pending') {
+            // Explicit removal uses authenticated targeting, not grant decryption.
+            return Promise.resolve({
+              kind:
+                intent.outcomeRevision === null &&
+                tombstone === null &&
+                entry?.family === intent.family &&
+                entry.revision === expected.revision
+                  ? 'retryable'
+                  : 'unconfirmed',
+            });
+          }
+          // Retention may prune the tombstone, but never its committed intent.
+          if (
+            entry !== null ||
+            intent.outcomeRevision !== expected.revision + 1 ||
+            (tombstone !== null &&
+              (tombstone.sequence !== intent.sequence ||
+                tombstone.family !== intent.family ||
+                tombstone.revision !== intent.outcomeRevision))
+          )
+            return Promise.resolve({ kind: 'unconfirmed' });
+          return Promise.resolve({
+            kind: 'committed',
+            pin: {
+              ref: expected.ref,
+              revision: intent.outcomeRevision,
+            },
+          });
+        }
         if (
           intent.kind !== 'put' ||
           (expected && intent.entryId !== expected.ref.entryId) ||

@@ -1,3 +1,4 @@
+import { isArchiveErrorFrame } from '../lib/archive-error-frames';
 import { isAbsolute } from 'node:path';
 import type {
   ArchivedContainerDiskUsage,
@@ -360,6 +361,8 @@ export type ArchiveIoResponse =
       requestId: string;
       code: string;
       message: string;
+      failureCode?: string;
+      frames?: readonly string[];
     }
   | {
       version: 1;
@@ -607,7 +610,19 @@ export function isArchiveIoResponse(
         isArchiveIoResult(value.operationType, value.result)
       );
     case 'error':
-      return nonEmpty(value.code) && nonEmpty(value.message);
+      return (
+        nonEmpty(value.code) &&
+        nonEmpty(value.message) &&
+        (value.failureCode === undefined ||
+          typeof value.failureCode === 'string') &&
+        (value.frames === undefined ||
+          (Array.isArray(value.frames) &&
+            value.frames.length <= 64 &&
+            value.frames.every(
+              (frame: unknown) =>
+                isArchiveErrorFrame(frame) && frame.length <= 4096,
+            )))
+      );
     case 'cleanup-complete':
       return (
         value.childCleanup === 'not-required' ||

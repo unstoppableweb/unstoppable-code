@@ -1,4 +1,5 @@
 import type { CoworkFolderMissing } from '@canopy/protocol/canopy-core';
+import type { RemoteOperationFailure } from '@canopy/protocol/remote-control';
 
 /**
  * Private channels between the controlled computer's main process and the
@@ -30,4 +31,5 @@ export type RemoteBridgeResultMessage =
       ok: false;
       message: string;
       coworkFolderMissing?: CoworkFolderMissing;
+      operationFailure?: RemoteOperationFailure;
     };

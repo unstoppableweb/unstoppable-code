@@ -106,6 +106,7 @@ import {
   ChangedFilesSection,
   type ChangedFilesSectionProps,
 } from './sections/ChangedFilesSection';
+import { reviewApprovalRunOwnerOf } from './ReviewApprovalLinkNotice';
 import { PullRequestSection } from './sections/PullRequestSection';
 import { ItemListSection } from './sections/ItemListSection';
 import { PlansSection } from './sections/PlansSection';
@@ -129,6 +130,20 @@ import {
   McpServersSectionBody,
   type McpServersSectionItem,
 } from './McpServersSectionBody';
+
+/** The run owner of a projected workspace's owner binding. */
+function reviewApprovalRunOwnerOfWorkspace(
+  owner:
+    | { readonly type: 'personal' }
+    | { readonly type: string; readonly organizationId: string }
+    | undefined,
+): string {
+  return reviewApprovalRunOwnerOf(
+    owner !== undefined && 'organizationId' in owner
+      ? owner.organizationId
+      : null,
+  );
+}
 
 export type ActivityTab = 'activity' | 'files';
 
@@ -801,6 +816,11 @@ export interface ActivityPanelProps {
     readonly changedFileOpen?: string;
   };
   readonly touchTarget?: boolean;
+  /**
+   * The product name for the PR section's review approval "Link GitHub"
+   * notice (CAN-7162). Absent: no notice.
+   */
+  readonly reviewApprovalBrandName?: string;
   /** Notify the host when the user opens Activity or Files. */
   readonly onTabChange?: (tab: ActivityTab) => void;
   /** Host-rendered content and chrome adjustments for shared section keys. */
@@ -1277,6 +1297,7 @@ export function ActivityPanel({
   showTerminals,
   testIds,
   touchTarget,
+  reviewApprovalBrandName,
   onTabChange,
   sectionOverrides,
   extraSections = [],
@@ -1547,6 +1568,19 @@ export function ActivityPanel({
         return (
           <PullRequestSection
             prStatus={snapshot?.prStatuses[worktreeLocalId]}
+            {...(reviewApprovalBrandName === undefined
+              ? {}
+              : {
+                  reviewApproval: {
+                    // The work owner: the project's organization, else Personal.
+                    runOwner: reviewApprovalRunOwnerOfWorkspace(
+                      snapshot?.workspaces.find(
+                        (workspace) => workspace.localId === workspaceLocalId,
+                      )?.owner,
+                    ),
+                    brandName: reviewApprovalBrandName,
+                  },
+                })}
           />
         );
       case 'plans':

@@ -21,6 +21,8 @@ export type McpRefRewritePhase =
   | 'manifestCommit'
   | 'scopeEnumeration'
   | 'chatRewrite'
+  | 'removalPreflight'
+  | 'removalRevalidation'
   | 'retirementRead'
   | 'tokenClear'
   | 'serverUnlink'
@@ -32,4 +34,5 @@ export type McpRefRewriteCode =
   | 'retireNotRewritten'
   | 'rewriteIncomplete'
   | 'rewriteFailed'
-  | 'retirementFailed';
+  | 'retirementFailed'
+  | 'removalRefused';

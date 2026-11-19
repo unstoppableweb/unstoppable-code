@@ -35,6 +35,7 @@ import { showOpenDialogForEvent } from '../lib/dialog-window';
 import { registerIpcHandler } from './register';
 import { ensureUniqueDestination } from '../lib/unique-destination';
 import { readRepositoryRemoteUrl } from '../canopy-runtime/worker-git-dispatch';
+import { remoteUrlForCaller } from '../canopy-runtime/remote-url-redaction';
 import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
 import type { DesktopIpcCallerResolver } from './file-tree';
 
@@ -298,11 +299,14 @@ export function registerRepoHandlers(runtime: {
         throw new Error('Repository path must be an absolute path');
       }
 
-      return readRepositoryRemoteUrl(
+      const caller = runtime.resolveCaller(event);
+      const { remoteUrl } = await readRepositoryRemoteUrl(
         runtime.dispatcher,
-        runtime.resolveCaller(event),
+        caller,
         repoPath,
       );
+      // A paired controller gets the redacted URL (CAN-7017).
+      return { remoteUrl: remoteUrlForCaller(caller, remoteUrl) };
     },
   );
 

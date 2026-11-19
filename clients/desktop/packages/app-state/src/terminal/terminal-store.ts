@@ -230,6 +230,7 @@ function buildSaveRequest(
   state: TerminalState,
   projectId: string,
   worktreeId: string,
+  forgetTerminalIds?: string[],
 ): SaveWorktreeTerminalStateRequest {
   const bucket =
     state.worktrees[worktreeKey(projectId, worktreeId)] ?? emptyBucket();
@@ -267,6 +268,7 @@ function buildSaveRequest(
     groupOrdinals: { ...bucket.groupOrdinals },
     terminalCustomNames,
     groupCustomNames,
+    ...(forgetTerminalIds && { forgetTerminalIds }),
   };
 }
 
@@ -419,13 +421,25 @@ export function createTerminalStore(
   const hydrationPromises = new Map<string, Promise<void>>();
   let generation = 0;
   const worktreeGenerations = new Map<string, number>();
-  function persistWorktreeState(projectId: string, worktreeId: string): void {
-    const request = buildSaveRequest(store.getState(), projectId, worktreeId);
+  function persistWorktreeState(
+    projectId: string,
+    worktreeId: string,
+    forgetTerminalIds?: string[],
+  ): void {
+    const request = buildSaveRequest(
+      store.getState(),
+      projectId,
+      worktreeId,
+      forgetTerminalIds,
+    );
     void getClient()
       .command('terminal.worktreeState.save', request)
-      .catch((): void => {
+      .catch((error: unknown): void => {
         // A dispatched save cannot be retracted on reset. Consume transport
         // failures without retrying this host's snapshot through a new binding.
+        // A lost forget leaves a closed terminal's history, so report it to the
+        // window's error logging (absent outside a browser).
+        if (forgetTerminalIds) globalThis.reportError?.(error);
       });
   }
 
@@ -811,7 +825,7 @@ export function createTerminalStore(
         .getState()
         .handleTerminalRemoved(projectId, worktreeId, terminalId);
       notifyTerminalRemoved(projectId, worktreeId, terminalId);
-      persistWorktreeState(projectId, worktreeId);
+      persistWorktreeState(projectId, worktreeId, [terminalId]);
     },
 
     removeGroup: (projectId, worktreeId, groupId): void => {
@@ -890,7 +904,7 @@ export function createTerminalStore(
           .handleTerminalRemoved(projectId, worktreeId, terminalId);
         notifyTerminalRemoved(projectId, worktreeId, terminalId);
       }
-      persistWorktreeState(projectId, worktreeId);
+      persistWorktreeState(projectId, worktreeId, [...group.terminalIds]);
     },
 
     applyExit: (event): void => {

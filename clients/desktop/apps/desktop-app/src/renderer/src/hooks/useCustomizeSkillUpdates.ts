@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib';
+import {
+  linkRecordedError,
+  recordedErrorOf,
+  recordSurfacedError,
+  type UnifiedPluginEntry,
+} from '@canopy/ui-shared/lib';
 
 /** Page-scoped checks and successful mutations are separate from list freshness. */
 export function useCustomizeSkillUpdates(refresh: () => Promise<void>): {
   project: (entry: UnifiedPluginEntry) => UnifiedPluginEntry;
   update: (entry: UnifiedPluginEntry) => Promise<void>;
   error: string | null;
+  /** Main already recorded the failures `error` shows, so its banner records nothing. */
+  errorRecorded: boolean;
   reportFailures: (failures: readonly { error: unknown }[]) => void;
 } {
   const [checked, setChecked] = useState<Readonly<Record<string, boolean>>>({});
   const completed = useRef(new Set<string>());
   const [error, setError] = useState<string | null>(null);
+  const [errorRecorded, setErrorRecorded] = useState(false);
   useEffect(() => {
     let cancelled = false;
     // This is deliberately nonblocking and runs once per page mount.
@@ -47,9 +55,13 @@ export function useCustomizeSkillUpdates(refresh: () => Promise<void>): {
       const key = `${sourceId}/${skillName}`;
       if (completed.current.has(key)) return;
       setError(null);
+      setErrorRecorded(false);
       const result = await window.skills.updateSkill(sourceId, skillName);
       if (!result.success)
-        throw new Error(result.error || `Couldn’t update ${entry.name}.`);
+        throw Object.assign(
+          new Error(result.error || `Couldn’t update ${entry.name}.`),
+          { appError: result.appError },
+        );
       // Keep the successful marker through stale lists and a late check, even
       // if refreshing fails. A new page mount may discover a subsequent version.
       completed.current.add(key);
@@ -57,6 +69,7 @@ export function useCustomizeSkillUpdates(refresh: () => Promise<void>): {
       try {
         await refresh();
       } catch {
+        setErrorRecorded(false);
         setError(
           'Updated the skill, but couldn’t refresh installed items. Try again.',
         );
@@ -66,6 +79,25 @@ export function useCustomizeSkillUpdates(refresh: () => Promise<void>): {
   );
   const reportFailures = useCallback(
     (failures: readonly { error: unknown }[]): void => {
+      // A failure main recorded is linked to this session, not recorded again.
+      // With one among them the banner records nothing, so the others are
+      // recorded here instead.
+      const recorded = failures.some(({ error: failure }) =>
+        recordedErrorOf(failure),
+      );
+      if (recorded)
+        for (const { error: failure } of failures) {
+          if (recordedErrorOf(failure))
+            linkRecordedError(failure, 'plugins-page-skill-updates');
+          else
+            recordSurfacedError({
+              chokePoint: 'notice',
+              surface: 'inline',
+              identifier: 'plugins-page-skill-updates',
+              error: failure,
+            });
+        }
+      setErrorRecorded(recorded);
       setError(
         failures
           .map(({ error: failure }) =>
@@ -76,5 +108,5 @@ export function useCustomizeSkillUpdates(refresh: () => Promise<void>): {
     },
     [],
   );
-  return { project, update, error, reportFailures };
+  return { project, update, error, errorRecorded, reportFailures };
 }

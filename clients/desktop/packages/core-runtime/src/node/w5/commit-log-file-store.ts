@@ -34,9 +34,10 @@ import {
   type W5ObservedFile,
 } from './commit-scope';
 import {
+  WorkspaceConfigUnreadableError,
   createSerialQueue,
   W5AuthorityUnreachableError,
-  W5RecordOverloadedError,
+  w5NamedUnreadable,
   w5ReadUnreachable,
   type W5FileReplacement,
   type W5FileRead,
@@ -107,6 +108,23 @@ export interface W5CommitLogHostPort {
   captureForPreparation?(request: W5CaptureRequest): Promise<W5CaptureResult>;
 }
 
+/** One decision a store asked its host for, as its `onApplied` binding sees it. */
+export interface W5StoreDecision {
+  /** The files it named, with the contents it would write (null removes). */
+  readonly files: readonly {
+    readonly path: string;
+    readonly contents: string | null;
+  }[];
+  readonly advance: readonly W5Resource[];
+  /**
+   * The host's outcome, or `failed` when preflight or the call threw;
+   * `maybeCommitted` unless the request certainly never became a commit.
+   */
+  readonly outcome:
+    | W5CommitOutcome
+    | { readonly status: 'failed'; readonly maybeCommitted: boolean };
+}
+
 /** The host's late admission of one checked write its operation did not admit. */
 export type W5StorageWriteAdmission = <T>(
   target: W5StorageTarget,
@@ -135,6 +153,12 @@ export interface W5CommitLogFileStoreBindings {
    * daemon-backed store leaves it to its authority, which checks `daemon`.
    */
   assertWrite?: (target: W5StorageTarget) => void;
+  /**
+   * Every decision's result, applied or not, reported synchronously before
+   * the process lock and final-decision queue release, so a cache sees its
+   * own writes before any later decision. A throw is logged, never raised.
+   */
+  onApplied?: (decision: W5StoreDecision) => void;
 }
 
 export interface W5CommitLogFileStore extends W5FileStore {
@@ -215,18 +239,14 @@ export async function preflightW5Files(
 ): Promise<void> {
   for (const file of files) {
     const current = await readFile(file.path);
-    // A read that never reached the authority shows no conflict (CAN-5542).
-    const unreachable = w5ReadUnreachable(current);
-    if (unreachable) throw unreachable;
+    if (current.state === 'unreadable')
+      throw (
+        w5NamedUnreadable(current.error) ??
+        new WorkspaceConfigUnreadableError(current.error)
+      );
     if (
-      current.state === 'unreadable' &&
-      current.error instanceof W5RecordOverloadedError
-    )
-      throw current.error;
-    if (
-      current.state === 'unreadable' ||
       fingerprintW5File(current.state === 'present' ? current.raw : null) !==
-        file.previousFingerprint
+      file.previousFingerprint
     ) {
       throw new W5FileWriteRefusedError(file.path);
     }
@@ -354,11 +374,36 @@ export function createW5CommitLogFileStore(
         contents,
         previousFingerprint: fingerprintW5File(previousRaw),
       }));
+      const report = (outcome: W5StoreDecision['outcome']): void => {
+        if (!bindings.onApplied) return;
+        try {
+          bindings.onApplied({
+            files: changes.map(({ path, contents }) => ({ path, contents })),
+            advance,
+            outcome,
+          });
+        } catch (error) {
+          warn('W5 decision observer failed', {
+            operation: options.operation,
+            error,
+          });
+        }
+      };
       const decide = async (): Promise<void> => {
-        await preflightW5Files((path) => readThroughHost(path, true), changes);
+        try {
+          await preflightW5Files(
+            (path) => readThroughHost(path, true),
+            changes,
+          );
+        } catch (error) {
+          report({ status: 'failed', maybeCommitted: false });
+          throw error;
+        }
         let outcome: W5CommitOutcome;
+        let sent = false;
         try {
           options.beforeDecision?.();
+          sent = true;
           outcome = await host.commit({
             operation: options.operation,
             receipt: options.receipt,
@@ -369,6 +414,10 @@ export function createW5CommitLogFileStore(
             outcome: options.outcome ?? null,
           });
         } catch (error) {
+          report({
+            status: 'failed',
+            maybeCommitted: sent && !(error instanceof W5CommitRefusedError),
+          });
           // A failed worker call may have left a durable, unapplied decision.
           // The next read/queued preflight must await recovery again.
           ready = undefined;
@@ -387,6 +436,7 @@ export function createW5CommitLogFileStore(
           }
           throw error;
         }
+        report(outcome);
         // Returned, not thrown: the worker answered, so recovery stays valid.
         if (outcome.status === 'conflict') {
           if (!isW5CommitOutcome(outcome))
@@ -427,10 +477,8 @@ export function createW5CommitLogFileStore(
       const read = await store.read(path);
       if (read.state === 'unreadable')
         throw (
-          w5ReadUnreachable(read) ??
-          (read.error instanceof W5RecordOverloadedError
-            ? read.error
-            : new W5FileWriteRefusedError(path))
+          w5NamedUnreadable(read.error) ??
+          new WorkspaceConfigUnreadableError(read.error)
         );
       const raw = read.state === 'present' ? read.raw : null;
       if (!scope.observed.has(path))

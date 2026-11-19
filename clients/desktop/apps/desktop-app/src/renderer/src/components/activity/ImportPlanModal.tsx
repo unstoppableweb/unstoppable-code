@@ -232,7 +232,7 @@ export function ImportPlanModal({
         err instanceof Error ? err.message : 'Failed to import plan',
         'error',
         undefined,
-        { projectId, worktreeId },
+        { projectId, worktreeId, caught: err },
       );
     },
     [addToast, projectId, worktreeId],
@@ -390,7 +390,7 @@ export function ImportPlanModal({
           err instanceof Error ? err.message : 'Failed to hide plan',
           'error',
           undefined,
-          { projectId, worktreeId },
+          { projectId, worktreeId, caught: err },
         );
       });
     },

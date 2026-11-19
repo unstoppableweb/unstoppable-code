@@ -708,7 +708,8 @@ export function ScriptsSectionBody({
                 // Script command lines can carry arguments and secrets.
                 <Surface variant="inset" className="overflow-hidden">
                   <CodeBlock
-                    variant="activity-command"
+                    variant="command"
+                    inset="compact"
                     size="2xs"
                     wrap="words"
                     tone="secondary"

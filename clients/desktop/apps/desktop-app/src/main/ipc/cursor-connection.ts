@@ -12,7 +12,6 @@ import {
 } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from './register';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 // Unlike `cursor/connection.ts` and `cursor/models.ts` (deliberately deferred
 // below — they pull in the CLI-invoking installer/discovery graph), this
 // module has no top-level imports of its own: it defers `runtime-status`
@@ -212,20 +211,11 @@ export function registerCursorConnectionHandlers(): void {
     } finally {
       signal.removeEventListener('abort', abortDiscovery);
     }
-    // Portal projects Cursor rows and the `cursor` availability key from
-    // this cache; refresh it before the registry broadcast so the
+    // Remote Control projects Cursor rows and the `cursor` availability key
+    // from this cache; refresh it before the registry broadcast so the
     // re-projection that follows sees the connected runtime.
     await refreshCursorRuntimeAvailability();
     broadcastModelRegistryUpdated();
-    // `broadcastModelRegistryUpdated` above only reaches desktop
-    // renderer windows. An already-open Portal session must see the
-    // Cursor flip without a reload, so push the same live update
-    // through the portal-event-bus re-projection path: a fresh
-    // overview snapshot re-derives every worktree's `chat_summary`
-    // entities, which carry `providerAvailability.cursor`. This helper backs
-    // both Connect and Change account, so a signed-in account swap now
-    // reaches open Portal sessions the same way Connect and Disconnect do.
-    notifyPortalStructureChanged();
   };
   registerIpcHandler<[], CursorConnectionStatus>(
     IPC_CHANNELS.cursorConnectionConnect,
@@ -341,10 +331,6 @@ export function registerCursorConnectionHandlers(): void {
       initCursorModels([]);
       await refreshCursorRuntimeAvailability();
       broadcastModelRegistryUpdated();
-      // See the matching comment on the Connect path above: push the same
-      // live update to any open Portal session, not just desktop renderer
-      // windows.
-      notifyPortalStructureChanged();
     },
   );
 }

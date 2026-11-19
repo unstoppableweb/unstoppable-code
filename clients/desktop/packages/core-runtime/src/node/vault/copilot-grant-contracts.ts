@@ -1,4 +1,8 @@
 import { VaultSecretPinSchema } from '@canopy/protocol/canopy-core';
+import {
+  CopilotHostSelectionSchema,
+  type CopilotHostSelection,
+} from '@canopy/protocol/copilot-selection';
 import type {
   VaultFamilyWriter,
   VaultRepository,
@@ -36,8 +40,19 @@ export interface CopilotGrantMutation extends CopilotGrantBinding {
   probeConfirmed: boolean;
   cancelling: boolean;
 }
-export interface CopilotAuthorityRecord {
+export interface CopilotSetupLineageWitness {
   version: 1;
+  /**
+   * 'retired': the exact disabled receipt of the head the successor delete retired.
+   * 'cancelled': the exact receipt that survived, the predecessor or the successor's own.
+   */
+  predecessor: CopilotHostSelection;
+  /** 'retired': the completed delete; otherwise the setup successor. */
+  successor: { operationId: string; epoch: string };
+  phase: 'creating' | 'cancelling' | 'cancelled' | 'retired';
+}
+export interface CopilotAuthorityRecord {
+  version: 1 | 2;
   sequence: number;
   head: CopilotGrantHead | null;
   mutation: CopilotGrantMutation | null;
@@ -47,6 +62,8 @@ export interface CopilotAuthorityRecord {
     epoch: string;
     kind: 'replace' | 'delete';
   } | null;
+  /** Required in v2; forbidden in v1. Authenticated continuity, never grant material. */
+  setupLineage?: CopilotSetupLineageWitness | null;
 }
 
 type Validation<T> = { success: true; data: T } | { success: false };
@@ -219,6 +236,73 @@ function completed(
     (value.kind === 'replace' || value.kind === 'delete')
   );
 }
+function lineage(value: unknown): value is CopilotSetupLineageWitness {
+  if (
+    !object(value) ||
+    !exact(value, ['version', 'predecessor', 'successor', 'phase']) ||
+    value.version !== 1 ||
+    !removal(value.successor) ||
+    (value.phase !== 'creating' &&
+      value.phase !== 'cancelling' &&
+      value.phase !== 'cancelled' &&
+      value.phase !== 'retired')
+  )
+    return false;
+  const predecessor = CopilotHostSelectionSchema.safeParse(value.predecessor);
+  if (!predecessor.success || predecessor.data.state !== 'disabled')
+    return false;
+  const { identity, pin } = predecessor.data;
+  if (identity.operationId === value.successor.operationId)
+    // Only a cancellation can leave the successor's own receipt as the survivor.
+    return (
+      value.phase === 'cancelled' &&
+      identity.epoch === value.successor.epoch &&
+      identity.origin === 'setup'
+    );
+  return value.phase === 'retired'
+    ? pin !== null && identity.epoch === value.successor.epoch
+    : identity.epoch !== value.successor.epoch;
+}
+function lineageMatches(record: Record<string, unknown>): boolean {
+  if (record.version === 1) return true;
+  const witness = record.setupLineage;
+  if (witness === null) return true;
+  if (!lineage(witness) || record.head !== null) return false;
+  const successor = witness.successor;
+  if (witness.phase === 'retired')
+    return (
+      record.mutation === null &&
+      record.removal === null &&
+      completed(record.completed) &&
+      record.completed.kind === 'delete' &&
+      !record.completed.operationId.endsWith(':cancel') &&
+      record.completed.operationId === successor.operationId &&
+      record.completed.epoch === successor.epoch
+    );
+  if (witness.phase === 'cancelled')
+    return (
+      record.mutation === null &&
+      completed(record.completed) &&
+      record.completed.kind === 'delete' &&
+      record.completed.operationId === `${successor.operationId}:cancel` &&
+      record.completed.epoch === successor.epoch
+    );
+  const m = record.mutation;
+  return (
+    mutation(m) &&
+    m.origin === 'setup' &&
+    m.epoch === successor.epoch &&
+    (witness.phase === 'creating'
+      ? m.kind === 'create' &&
+        !m.cancelling &&
+        m.operationId === successor.operationId
+      : (m.kind === 'create' &&
+          m.cancelling &&
+          m.operationId === successor.operationId) ||
+        (m.kind === 'delete' &&
+          m.operationId === `${successor.operationId}:cancel`))
+  );
+}
 export const CopilotAuthorityRecordSchema =
   custodySchema<CopilotAuthorityRecord>(
     (value): value is CopilotAuthorityRecord =>
@@ -230,15 +314,17 @@ export const CopilotAuthorityRecordSchema =
         'mutation',
         'removal',
         'completed',
+        ...(value.version === 2 ? ['setupLineage'] : []),
       ]) &&
-      value.version === 1 &&
+      (value.version === 1 || value.version === 2) &&
       typeof value.sequence === 'number' &&
       Number.isSafeInteger(value.sequence) &&
       value.sequence >= 0 &&
       (value.head === null || head(value.head)) &&
       (value.mutation === null || mutation(value.mutation)) &&
       (value.removal === null || removal(value.removal)) &&
-      (value.completed === null || completed(value.completed)),
+      (value.completed === null || completed(value.completed)) &&
+      lineageMatches(value),
   );
 
 /** Redacted journal failure; adapters must distinguish corrupt/missing authority. */
@@ -250,6 +336,8 @@ export class CopilotAuthorityJournalError extends Error {
 }
 
 export interface CopilotAuthorityJournal {
+  /** Trusted store composition only: currently holds the exclusive writer connection. */
+  readonly lifetime?: { readonly familyId?: string; isExclusive(): boolean };
   /** Validated, integrity-protected state; absence/corruption must throw CopilotAuthorityJournalError, not reset. */
   read(): Promise<CopilotAuthorityRecord>;
   /** Atomic, durable CAS. A lost reply must be resolved by read, not a new identity. */
@@ -279,8 +367,18 @@ export interface CopilotSelectionReceipt extends CopilotSelectionRequest {
   readonly pinGeneration: string;
 }
 export interface CopilotSelectionPort {
+  /** Trusted host-owned disabled receipt; P4 checkpoints it with the successor intent. */
+  setupPredecessor?(): Promise<CopilotHostSelection | undefined>;
   /** Exact prepared-intent CAS only. Reject uncertain cleanup so cancellation can retry. */
   abandon?(identity: CopilotGrantBinding): Promise<void>;
+  /**
+   * Lineage composition only: the durable disabled receipt left after this
+   * setup's cancellation; P4 commits it as the cancelled witness. A failed
+   * read rejects so cancellation retries.
+   */
+  cancelledReceipt?(
+    identity: CopilotGrantBinding,
+  ): Promise<CopilotHostSelection | undefined>;
   /**
    * Idempotently publish/reconcile this exact setup pin, or the P7 handoff.
    * A lost acknowledgement is unconfirmed. Account equality is insufficient.
@@ -291,11 +389,17 @@ export interface CopilotSelectionPort {
     | { readonly kind: 'confirmed'; readonly receipt: CopilotSelectionReceipt }
     | { readonly kind: 'unconfirmed' | 'superseded' }
   >;
-  /** CAS-disable only this epoch/pin generation; unrelated preferences are immaterial. */
+  /**
+   * CAS-disable only this epoch/pin generation; unrelated preferences are immaterial.
+   * A lineage composition returns the durable disabled receipt; P4 retires it into the v2 witness.
+   */
   disable(request: {
     readonly operationId: string;
     readonly head: CopilotGrantHead;
-  }): Promise<{ readonly kind: 'disabled' | 'failed' | 'unconfirmed' }>;
+  }): Promise<
+    | { readonly kind: 'disabled'; readonly receipt?: CopilotHostSelection }
+    | { readonly kind: 'failed' | 'unconfirmed' }
+  >;
 }
 
 export type CopilotGrantFailure = {
@@ -311,7 +415,9 @@ export type CopilotGrantFailure = {
     | 'denied'
     | 'key_missing'
     | 'expired'
-    | 'network';
+    | 'network'
+    /** The refresh port threw; distinct from a reported network loss. */
+    | 'refresh_failed';
 };
 export type CopilotGrantResult =
   | CopilotGrantFailure
@@ -337,6 +443,10 @@ export interface CopilotGrantAuthorityOptions {
   readonly writer: () => Promise<VaultFamilyWriter>;
   readonly probeKeyIfDue: () => Promise<void>;
   readonly journal: CopilotAuthorityJournal;
+  /** Stable trusted owner token across factories in one family lifetime; never a wire input. */
+  readonly familyLifetime?: object;
+  /** Trusted process composition only. Default is this process's singleton, never a reset hook. */
+  readonly processLifetime?: object;
   readonly selection: CopilotSelectionPort;
   /** Trusted device/identity adapter supplies setup material; probe must be real entitlement. */
   readonly probe: (
@@ -372,17 +482,25 @@ export interface CopilotVaultGrantAuthority {
     origin: 'setup' | 'import',
     /** Synchronous redacted identity of this call's proposed CAS, before its acknowledgement. */
     onCheckpoint?: (operationId: string) => void,
+    /** Caller cancellation fences setup publication, including after the probe. */
+    signal?: AbortSignal,
   ): Promise<CopilotGrantResult>;
   /** Same operation across storage uncertainty, process restart and lost pin acknowledgement. */
   resume(operationId: string): Promise<CopilotGrantResult>;
   status(): Promise<CopilotGrantResult>;
+  /** Supported demand only: exact local recovery/admission, never provider presentation. */
+  demand(): Promise<CopilotGrantResult>;
   /** Synchronous, redacted live admission facts for the fixed local recipient. */
   recipientGeneration(): number | undefined;
   cancel(operationId: string): Promise<CopilotGrantResult>;
   present(handle: string, expectedEpoch: string): Promise<CopilotGrantResult>;
   /** Closes recipient admission synchronously, retaining an owned pending successor. */
   revoke(): void;
+  /** Terminal admission fence; waits at most two seconds for already-owned rotation work. */
+  quiesce(): Promise<void>;
   /** A new runtime generation does not change account authority. */
   reopen(): void;
   remove(expectedEpoch: string): Promise<CopilotGrantResult>;
+  /** Explicit user removal of the currently pending operation, without secret material. */
+  removePending(operationId: string): Promise<CopilotGrantResult>;
 }

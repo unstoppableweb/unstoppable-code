@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { SpawnFailureDetails } from '@canopy/core-runtime';
 
 /**
  * Launches the worker execution hosts (the pipeline process host and the
@@ -73,6 +74,8 @@ export type ExecutionHostEvent = 'spawn' | 'message' | 'exit';
 export interface ExecutionHostProcess {
   /** Set from `spawn`; correlation only. */
   readonly pid: number | undefined;
+  /** Why the host never started, set before its `exit`; absent otherwise. */
+  readonly startFailure?: SpawnFailureDetails | undefined;
   /** Throws once the host can no longer receive messages. */
   postMessage(message: unknown): void;
   /**

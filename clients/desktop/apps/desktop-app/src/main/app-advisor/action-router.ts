@@ -346,6 +346,9 @@ export async function routeAppAdvisorAction(
       action.type === 'installed_items.list_status' ||
       action.type === 'installed_items.set_status' ||
       action.type === 'installed_items.uninstall' ||
+      action.type === 'installed_items.list_mcp_removals' ||
+      action.type === 'installed_items.inspect_mcp_removal' ||
+      action.type === 'installed_items.force_mcp_removal' ||
       action.type === 'experiments.set_enabled' ||
       action.type === 'settings.open' ||
       action.type === 'settings.ai_gateway.get' ||

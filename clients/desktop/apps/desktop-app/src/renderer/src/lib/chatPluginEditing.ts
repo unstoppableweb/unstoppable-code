@@ -4,8 +4,11 @@ import {
   type PluginSelectionTombstones,
 } from '@canopy/desktop-shared/types';
 import {
+  chatInheritsProjectDefaults,
   effectiveChatPluginSelections,
   effectiveGlobalPluginSelections,
+  organizationLayersFor,
+  globalLayerForConnectorScope,
   inheritedPluginSelections,
   projectDefaultsForChat,
   splitChosenChatPluginSelections,
@@ -20,9 +23,12 @@ import {
   stripAgentOnlyChatPluginSelections,
 } from './chatPluginSelections';
 import { useGlobalPluginDefaultsStore } from '@/stores/globalPluginDefaultsStore';
+import { useOrganizationLayerStore } from '@/stores/organizationLayerStore';
+import type { OrganizationLayerView } from '@canopy/desktop-shared/lib/organization-capabilities';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import type { useChatStore } from '@/stores/chatStore';
 import {
+  getProjectConnectorScope,
   getProjectPluginDefaults,
   getProjectPluginTombstones,
 } from '@/stores/chat/tab-utils';
@@ -43,12 +49,20 @@ export interface PluginChatTarget {
 export function inheritedDefaultLayers(layers: InheritedPluginLayers): {
   project?: ChatTabPluginSelections;
   global?: ChatTabPluginSelections;
+  organization?: ChatTabPluginSelections;
 } {
+  // A person's global connectors are not inherited in an organization's
+  // workspace (CAN-6230), so they are never labelled global defaults there.
+  const global = globalLayerForConnectorScope(
+    layers.global,
+    layers.connectorScope,
+  );
   return {
+    ...(layers.organization ? { organization: layers.organization } : {}),
     ...(layers.projectDefaults ? { project: layers.projectDefaults } : {}),
-    ...(layers.global
+    ...(global
       ? {
-          global: effectiveGlobalPluginSelections(layers.global, [
+          global: effectiveGlobalPluginSelections(global, [
             layers.projectTombstones,
           ]),
         }
@@ -71,6 +85,12 @@ export function chatPluginEditingState(
   global: ChatTabPluginSelections | undefined;
   projectDefaults: ChatTabPluginSelections | undefined;
   projectTombstones: PluginSelectionTombstones | undefined;
+  /** The organization fields of the chat's layers (CAN-6237). */
+  organizationLayers: Pick<
+    InheritedPluginLayers,
+    'organization' | 'allowedOrganizationItems'
+  >;
+  organizationView: OrganizationLayerView | undefined;
   agent: ChatTabPluginSelections | undefined;
   effective: ChatTabPluginSelections;
 } {
@@ -79,9 +99,14 @@ export function chatPluginEditingState(
   ]?.tabs.find((t) => t.id === target.chatId);
   if (!tab) throw new Error('Chat is no longer available.');
   const defaults = useGlobalPluginDefaultsStore.getState();
+  // The global layer this chat inherits: without a person's global
+  // connectors in an organization's workspace (CAN-6230).
   const global =
     chatSurfaceUsesGlobalPluginDefaults(target.projectId) && defaults.hydrated
-      ? defaults.selections
+      ? globalLayerForConnectorScope(
+          defaults.selections,
+          getProjectConnectorScope(target.projectId, target.worktreeId),
+        )
       : undefined;
   const rawProjectDefaults = projectDefaultsForChat(
     tab,
@@ -95,6 +120,17 @@ export function chatPluginEditingState(
     ? normalizePluginSelections(rawProjectDefaults)
     : undefined;
   const projectTombstones = getProjectPluginTombstones(target.projectId);
+  // The organization's shared set, as the turn resolves it (CAN-6237); read
+  // into the store before any edit (`editChatPlugins`).
+  const organizationView = chatSurfaceUsesGlobalPluginDefaults(target.projectId)
+    ? (useOrganizationLayerStore.getState().views[
+        `${target.projectId}/${target.worktreeId}`
+      ] ?? undefined)
+    : undefined;
+  const organizationLayers = organizationLayersFor(
+    organizationView,
+    chatInheritsProjectDefaults(tab),
+  );
   // A chat pinned to an Agent route takes that Agent's plugins.
   const agentId = tab.model ? getAgentModelSelectionId(tab.model) : undefined;
   const agent = useModelCatalogStore
@@ -106,12 +142,15 @@ export function chatPluginEditingState(
     global,
     projectTombstones,
     chatTombstones: tab.disabledGlobalPluginSelections,
+    ...organizationLayers,
   });
   return {
     tab,
     global,
     projectDefaults,
     projectTombstones,
+    organizationLayers,
+    organizationView,
     agent,
     effective: normalizePluginSelections(
       mergeAgentChatPluginSelections(displayed, agent),
@@ -145,11 +184,18 @@ export async function editChatPlugins(
   edit: (current: ChatTabPluginSelections) => ChatTabPluginSelections,
 ): Promise<void> {
   return queueDesktopTryItSelectionUpdate(target, async () => {
+    // An unread organization layer would read the chat's organization picks
+    // as not allowed, and the save would drop them.
+    if (chatSurfaceUsesGlobalPluginDefaults(target.projectId))
+      await useOrganizationLayerStore
+        .getState()
+        .load(target.projectId, target.worktreeId);
     const {
       tab,
       global,
       projectDefaults,
       projectTombstones,
+      organizationLayers,
       agent,
       effective,
     } = chatPluginEditingState(getState(), target);
@@ -159,6 +205,9 @@ export async function editChatPlugins(
       tab.status === 'streaming'
     )
       throw new Error(CHAT_PLUGINS_BUSY_MESSAGE);
+    // Edits work on the effective set, whose refs keep their owners
+    // (CAN-6235), so an owner-aware removal is saved as made; only a picker,
+    // which keys rows by identity, needs owners put back.
     const chosen = edit(effective);
     const stripped = stripAgentOnlyChatPluginSelections(
       chosen,
@@ -172,6 +221,7 @@ export async function editChatPlugins(
       projectDefaults,
       global,
       projectTombstones,
+      ...organizationLayers,
       previousLocal: tab.pluginSelections,
       previousTombstones: tab.disabledGlobalPluginSelections,
     });
@@ -180,9 +230,13 @@ export async function editChatPlugins(
       projectDefaults,
       global,
       projectTombstones,
+      ...organizationLayers,
       previousTombstones: tab.disabledGlobalPluginSelections,
     });
-    const inherits = global !== undefined || projectDefaults !== undefined;
+    const inherits =
+      global !== undefined ||
+      projectDefaults !== undefined ||
+      organizationLayers.organization !== undefined;
     const response = await window.api.chat.updatePlugins({
       ...target,
       pluginSelections: localSelections,
@@ -240,8 +294,14 @@ export async function setChatAuthPreferencesFromEffective(
       .mcpHttpAuthPreferences,
   };
   return queueDesktopTryItSelectionUpdate(target, async () => {
-    const { tab, global, projectDefaults, projectTombstones, effective } =
-      chatPluginEditingState(getState(), target);
+    const {
+      tab,
+      global,
+      projectDefaults,
+      projectTombstones,
+      organizationLayers,
+      effective,
+    } = chatPluginEditingState(getState(), target);
     if (
       tab.readOnly ||
       tab.pendingInitialCreation ||
@@ -252,6 +312,7 @@ export async function setChatAuthPreferencesFromEffective(
       projectDefaults,
       global,
       projectTombstones,
+      ...organizationLayers,
     });
     const chosen = unionPluginSelections(
       subtractPluginSelections(effective, removed),

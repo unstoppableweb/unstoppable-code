@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
-import type { UnifiedEntryFoldedPlugin } from '@canopy/ui-shared';
+import {
+  linkRecordedError,
+  recordedErrorOf,
+  type UnifiedEntryFoldedPlugin,
+} from '@canopy/ui-shared';
 import { installRecommendedPlugin } from '@/lib/plugins/installRecommendedPlugin';
 import { curatedPluginKey } from '@/lib/onboarding/curatedOnboardingPlugins';
 
 export interface FoldedPluginInstallState {
   status: 'idle' | 'installing' | 'installed' | 'error';
   message?: string;
+  /** Main already recorded this failure, so its banner records nothing. */
+  recorded?: true;
 }
 
 /**
@@ -50,10 +56,13 @@ export function useFoldedPluginInstall(
       ]);
       if (mounted.current) setPluginInstall({ status: 'installed' });
     } catch (cause) {
+      // Main recorded it; the banner records nothing but links it to this session.
+      linkRecordedError(cause, 'mcp-browse-detail-skills-error');
       if (mounted.current)
         setPluginInstall({
           status: 'error',
           message: cause instanceof Error ? cause.message : String(cause),
+          ...(recordedErrorOf(cause) ? { recorded: true as const } : {}),
         });
     }
   }, [foldedPlugin, pluginInstall.status]);

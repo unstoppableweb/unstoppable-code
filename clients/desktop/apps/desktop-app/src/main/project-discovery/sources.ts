@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import {
   type ChatStateSnapshot,
@@ -13,6 +14,7 @@ import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-id
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { getWorkspaceIndexRepository } from '../lib/sidebar-items';
+import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 import { noteProjectInventoryCall } from '../observability/chat-wait-diagnostics';
 import { DiscoveryError } from './errors';
@@ -168,16 +170,110 @@ export async function readProjectConfigSnapshot(
   return { config: response.legacyResult, authority: authority.authority };
 }
 
+interface ProjectWorktreeReadMemo {
+  open: boolean;
+  readonly lists: Map<string, Promise<WorktreeData[]>>;
+}
+
+const projectWorktreeReadMemo =
+  new AsyncLocalStorage<ProjectWorktreeReadMemo>();
+
+/**
+ * Shares one scoped worktree list per project across a single listing or
+ * discovery call (CAN-7129). The memo closes when `work` settles, so it never
+ * spans calls; a nested call gets its own memo, so its fresh re-reads stay
+ * fresh. Callers keep their account-epoch checks: a shared list is keyed by
+ * the epoch it started under and is shared only when that epoch held across a
+ * drain of account transitions, so a retry under a later epoch never reuses a
+ * sample from before or during its transition.
+ */
+export async function withProjectWorktreeReadMemo<T>(
+  work: () => Promise<T>,
+): Promise<T> {
+  const memo: ProjectWorktreeReadMemo = { open: true, lists: new Map() };
+  try {
+    return await projectWorktreeReadMemo.run(memo, work);
+  } finally {
+    memo.open = false;
+    memo.lists.clear();
+  }
+}
+
 /** Read a scoped worktree list; only an authoritative absent file means empty. */
 export async function readProjectWorktrees(
   projectId: string,
 ): Promise<WorktreeData[]> {
+  const memo = projectWorktreeReadMemo.getStore();
+  if (!memo?.open) return queryProjectWorktrees(projectId);
+  // Each caller gets its own array; rows stay shared read-only legacy data.
+  return [...(await memoizedProjectWorktrees(memo, projectId))];
+}
+
+async function memoizedProjectWorktrees(
+  memo: ProjectWorktreeReadMemo,
+  projectId: string,
+): Promise<WorktreeData[]> {
+  const service = getWorkspaceContextService();
   const workspaceId = resolveCoworkWorkspaceId(projectId);
-  const response =
-    await getActiveDesktopRuntime().queryWorktreeListForLegacyIpc(
-      { scope: { workspaceId } },
-      readOptions('core.worktree.read'),
+  const keyAt = (epoch: number): string => JSON.stringify([epoch, workspaceId]);
+  const shared = memo.lists.get(keyAt(service.accountEpoch()));
+  if (shared) return shared;
+  // The epoch bumps when a transition starts, so a sample is shared only if
+  // the epoch held across the drain: no transition was running when the read
+  // began, and one starting later bumps past this key. Otherwise a retry
+  // under the new epoch would reuse a mid-transition sample.
+  const drainedFrom = service.accountEpoch();
+  await service.whenIdle();
+  const epoch = service.accountEpoch();
+  if (!memo.open || epoch !== drainedFrom) {
+    return queryProjectWorktrees(projectId);
+  }
+  const key = keyAt(epoch);
+  const read = memo.lists.get(key) ?? queryProjectWorktrees(projectId);
+  memo.lists.set(key, read);
+  return read;
+}
+
+/**
+ * One task row under the authority rules of {@link readProjectWorktrees}:
+ * undefined only when an authoritative list lacks it. A memo scope reuses its
+ * list; otherwise the row is read by id, and any by-id failure is reclassified
+ * by the list read, so missing rows and unreadable lists keep their errors.
+ */
+export async function readProjectWorktree(
+  projectId: string,
+  worktreeId: string,
+): Promise<WorktreeData | undefined> {
+  const findInList = async (): Promise<WorktreeData | undefined> =>
+    (await readProjectWorktrees(projectId)).find(
+      (candidate) => candidate.id === worktreeId,
     );
+  if (projectWorktreeReadMemo.getStore()?.open) return findInList();
+  const response = await getActiveDesktopRuntime()
+    .queryWorktreeGetForLegacyIpc(
+      {
+        worktreeId,
+        scope: { workspaceId: resolveCoworkWorkspaceId(projectId) },
+      },
+      readOptions('core.worktree.read'),
+    )
+    .catch(() => null);
+  if (!response) return findInList();
+  const authority = readAuthority(response)?.authority;
+  if (authority === 'absent') return undefined;
+  if (authority !== 'ok')
+    throw sourceReadFailed('Project worktrees could not be read.');
+  return response.legacyResult;
+}
+
+async function queryProjectWorktrees(
+  projectId: string,
+): Promise<WorktreeData[]> {
+  const workspaceId = resolveCoworkWorkspaceId(projectId);
+  const response = await getActiveDesktopRuntime().readWorktreeListForLegacy(
+    workspaceId,
+    readOptions('core.worktree.read'),
+  );
   const authority = readAuthority(response);
   if (
     !authority ||

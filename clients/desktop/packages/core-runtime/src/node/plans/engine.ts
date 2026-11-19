@@ -13,6 +13,7 @@ import {
   withPlanStateLock,
   writePlanStateText,
 } from './state-file';
+import { isUnreadablePathError } from '../filesystem/unreadable-path-error';
 
 /*
  * The tracked-plan lifecycle of one worktree (CAN-4165): list, get, create,
@@ -23,8 +24,9 @@ import {
  *
  * Records keep every field the engine does not know (comment threads,
  * diagrams, share state) verbatim; a host transform updates those when the
- * content changes. Reads are forgiving, as they have always been; a write
- * over a file it cannot read is refused rather than replacing it.
+ * content changes. Reads are forgiving, as they have always been, except
+ * that a file the system refused to read (EACCES, EIO) fails the read; a
+ * write over a file it cannot read is refused rather than replacing it.
  */
 
 export type StoredPlanReviewStatus = 'pending' | 'approved' | 'dismissed';
@@ -373,7 +375,9 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
         await readPlanStateText(host.statePath(scope)),
         'lenient',
       );
-    } catch {
+    } catch (error) {
+      // A file the system refused to read (EACCES, EIO) is not an empty one.
+      if (isUnreadablePathError(error)) throw error;
       return { plans: [], skipped: 0 };
     }
     if (read.kind === 'damaged') return { plans: [], skipped: 0 };

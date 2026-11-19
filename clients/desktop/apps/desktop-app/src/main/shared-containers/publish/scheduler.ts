@@ -1,4 +1,5 @@
 import { CanopyCloudClientError } from '../../canopy-cloud/client';
+import { reportBackgroundFailure } from '../../observability/background-failure-reporter';
 import { readdir } from 'node:fs/promises';
 import { getWorktreeDataRootDir } from '../../lib/paths';
 import {
@@ -408,6 +409,10 @@ export class SharedContainerPublishScheduler {
           updatedAt: new Date().toISOString(),
         };
         await this.deps.stateStore.set(parked);
+        reportBackgroundFailure(
+          'shared-container-publish.parked',
+          reason ?? 'unclassified',
+        );
       }
     } finally {
       this.inFlight.delete(key);

@@ -12,6 +12,7 @@ import {
 } from '../lib/ask-user-outcomes';
 import { sendToWebContents } from '../lib/web-contents-send';
 import { getWorkspaceScopingContext } from '../lib/workspace-context-service';
+import { advisorChatCommandId } from './advisor-chat-command-id';
 import type { AdvisorChatReadHost } from './advisor-chat-reads';
 import type { AdvisorSharingActionHost } from './advisor-sharing-actions';
 
@@ -135,7 +136,9 @@ export function mainAdvisorSharingActionHost(options: {
     },
     setSharedRunMarker: async (target, sharedRun) => {
       markerWrites += 1;
-      const idempotencyKey = `${options.idempotencyKey}:shared-run:${markerWrites}`;
+      const idempotencyKey = advisorChatCommandId(
+        `${options.idempotencyKey}:shared-run:${markerWrites}`,
+      );
       const result = CoreChatLifecycleResultSchema.parse(
         await getActiveDesktopRuntime().instruction(
           'core.chat.update',

@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { z } from 'zod';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import {
   createServer,
   request as httpRequest,
@@ -78,7 +85,10 @@ import {
 } from '../oauth-credentials';
 import {
   clearMcpOAuthToken,
+  clearMcpOAuthTokensForServer,
   getMcpOAuthToken,
+  onMcpOAuthCredentialRevoked,
+  setMcpOAuthTokensChangedListener,
   saveMcpOAuthToken,
 } from '../oauth-token-store';
 import { claimPendingAuthFailures } from '../pending-auth-failures';
@@ -547,5 +557,123 @@ describe('MCP OAuth credentials (CAN-4126)', () => {
     ].map((entry) => inspect(entry, { depth: 10 }));
     for (const text of logged)
       for (const canary of CANARIES) expect(text).not.toContain(canary);
+  });
+
+  it('device repair clears exact server records through the owner queue and revokes every configuration', async () => {
+    const save = (serverId: string, configId: string): Promise<void> =>
+      saveMcpOAuthToken({
+        serverId,
+        configId,
+        accessToken: ACCESS,
+        tokenType: 'Bearer',
+        updatedAt: NOW,
+      });
+    await Promise.all([save('a1', 'c1'), save('a1', 'c2'), save('a10', 'c1')]);
+    const events: Array<{
+      serverId: string;
+      configId: string;
+      reason: string;
+    }> = [];
+    const unsubscribe = onMcpOAuthCredentialRevoked((event) =>
+      events.push(event),
+    );
+    try {
+      expect(await clearMcpOAuthTokensForServer('a1')).toEqual({ cleared: 2 });
+      expect(events).toEqual([
+        { serverId: 'a1', configId: 'c1', reason: 'cleared' },
+        { serverId: 'a1', configId: 'c2', reason: 'cleared' },
+      ]);
+      expect(await getMcpOAuthToken('a1', 'c1')).toBeNull();
+      expect(await getMcpOAuthToken('a10', 'c1')).not.toBeNull();
+      expect(await clearMcpOAuthTokensForServer('a1')).toEqual({ cleared: 0 });
+      expect(events).toHaveLength(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('repair refuses inconsistent key/record identity before changing any token or notifying revocation', async () => {
+    await saveMcpOAuthToken({
+      serverId: 'a1',
+      configId: 'c1',
+      accessToken: ACCESS,
+      tokenType: 'Bearer',
+      updatedAt: NOW,
+    });
+    const path = join(dataDir, 'secure', 'mcp-oauth-tokens.json');
+    const before = readFileSync(path, 'utf8');
+    const file = z
+      .object({
+        records: z.record(
+          z.string(),
+          z.object({ serverId: z.string() }).passthrough(),
+        ),
+      })
+      .passthrough()
+      .parse(JSON.parse(before));
+    file.records['a1:c1'].serverId = 'a10';
+    const damaged = JSON.stringify(file);
+    writeFileSync(path, damaged);
+    const revoked = jest.fn();
+    const unsubscribe = onMcpOAuthCredentialRevoked(revoked);
+    try {
+      await expect(clearMcpOAuthTokensForServer('a1')).rejects.toThrow(
+        'Invalid MCP OAuth token identity',
+      );
+      expect(readFileSync(path, 'utf8')).toBe(damaged);
+      expect(revoked).not.toHaveBeenCalled();
+    } finally {
+      writeFileSync(path, before);
+      unsubscribe();
+    }
+    // A refused cleanup must not poison the owner's mutation queue.
+    expect(await clearMcpOAuthTokensForServer('a1')).toEqual({ cleared: 1 });
+  });
+
+  it('an unusable current token store is not treated as empty by device repair', async () => {
+    const path = join(dataDir, 'secure', 'mcp-oauth-tokens.json');
+    const before = readFileSync(path, 'utf8');
+    const damaged = '{"records":"secret-canary-access-1"';
+    writeFileSync(path, damaged);
+    try {
+      await expect(clearMcpOAuthTokensForServer('a1')).rejects.toThrow(
+        'Invalid MCP OAuth token store',
+      );
+      expect(readFileSync(path, 'utf8')).toBe(damaged);
+      await expect(clearMcpOAuthTokensForServer('account:a1')).rejects.toThrow(
+        'Invalid device MCP server id.',
+      );
+    } finally {
+      writeFileSync(path, before);
+    }
+  });
+
+  it('revokes removed credentials even if the post-commit inventory refresh throws', async () => {
+    await saveMcpOAuthToken({
+      serverId: 'a1',
+      configId: 'c1',
+      accessToken: ACCESS,
+      tokenType: 'Bearer',
+      updatedAt: NOW,
+    });
+    const revoked = jest.fn();
+    const unsubscribe = onMcpOAuthCredentialRevoked(revoked);
+    setMcpOAuthTokensChangedListener(() => {
+      throw new Error('refresh failed');
+    });
+    try {
+      await expect(clearMcpOAuthTokensForServer('a1')).rejects.toThrow(
+        'refresh failed',
+      );
+      expect(revoked).toHaveBeenCalledWith({
+        serverId: 'a1',
+        configId: 'c1',
+        reason: 'cleared',
+      });
+      expect(await getMcpOAuthToken('a1', 'c1')).toBeNull();
+    } finally {
+      setMcpOAuthTokensChangedListener(null);
+      unsubscribe();
+    }
   });
 });

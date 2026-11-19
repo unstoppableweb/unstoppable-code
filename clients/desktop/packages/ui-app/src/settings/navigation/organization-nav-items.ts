@@ -10,6 +10,7 @@ import {
   PluginsIcon,
   Settings,
   Shield,
+  SkillIcon,
   Users,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { AI_CREDITS_LABEL } from '@canopy/ui-shared';
@@ -151,6 +152,12 @@ export const ORGANIZATION_SETTINGS_SUBTAB_ITEMS: readonly OrganizationSettingsSu
       description:
         'What members share, and which models and agents they can use.',
       icon: Shield,
+    },
+    {
+      key: 'project-defaults',
+      label: 'Project defaults',
+      description: 'What every project in this organization gets by default.',
+      icon: SkillIcon,
     },
     {
       key: 'integrations',

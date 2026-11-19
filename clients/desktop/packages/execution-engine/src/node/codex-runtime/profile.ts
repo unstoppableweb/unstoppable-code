@@ -46,7 +46,7 @@ const FORBIDDEN_CODEX_SPAWN_ENVIRONMENT_KEYS = new Set([
   'HOMESHARE',
 ]);
 
-function isForbiddenCodexSpawnEnvironmentKey(key: string): boolean {
+export function isForbiddenCodexSpawnEnvironmentKey(key: string): boolean {
   return FORBIDDEN_CODEX_SPAWN_ENVIRONMENT_KEYS.has(key.toUpperCase());
 }
 

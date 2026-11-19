@@ -357,14 +357,19 @@ function queueTokenStoreMutation(
       await writeStoredFile(original);
       return false;
     }
-    tokensChangedListener?.(Array.from(new Set(changedServers)));
-    if (revocation) {
-      for (const changed of changedRecords) {
-        for (const listener of Array.from(revocationListeners)) {
-          try {
-            listener({ ...changed, reason: revocation });
-          } catch {
-            /* skipped */
+    try {
+      tokensChangedListener?.(Array.from(new Set(changedServers)));
+    } finally {
+      // A failing inventory refresh cannot leave broker handles usable after
+      // their credential was durably removed. Preserve the refresh rejection.
+      if (revocation) {
+        for (const changed of changedRecords) {
+          for (const listener of Array.from(revocationListeners)) {
+            try {
+              listener({ ...changed, reason: revocation });
+            } catch {
+              /* skipped */
+            }
           }
         }
       }
@@ -609,6 +614,44 @@ export async function clearMcpOAuthToken(
     undefined,
     'cleared',
   );
+}
+
+/**
+ * Device-only repair cleanup when a damaged definition cannot supply config
+ * IDs. The OAuth owner validates stored identities inside its mutation queue;
+ * callers never enumerate, decrypt or select token-store keys themselves.
+ */
+export async function clearMcpOAuthTokensForServer(
+  serverId: string,
+): Promise<{ cleared: number }> {
+  if (!/^[a-f0-9-]{1,256}$/.test(serverId))
+    throw new Error('Invalid device MCP server id.');
+  let cleared = 0;
+  await queueTokenStoreMutation(
+    (file): void => {
+      const entries = Object.entries(file.records);
+      // Validate the whole store before changing it. A key/record disagreement
+      // cannot be resolved by a prefix match or by guessing which side owns it.
+      if (
+        entries.some(
+          ([key, record]) =>
+            !record.serverId ||
+            !record.configId ||
+            key !== tokenKey(record.serverId, record.configId),
+        )
+      )
+        throw new Error('Invalid MCP OAuth token identity');
+      for (const [key, record] of entries) {
+        if (record.serverId !== serverId) continue;
+        delete file.records[key];
+        cleared += 1;
+      }
+    },
+    undefined,
+    undefined,
+    'cleared',
+  );
+  return { cleared };
 }
 
 export async function recordMcpOAuthTokenError(

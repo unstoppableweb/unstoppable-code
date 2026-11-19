@@ -164,6 +164,43 @@ describe.each<Runtime.PlatformOperatingSystem>(['darwin', 'linux'])(
       });
     });
 
+    it('observes root exit before stream EOF without changing the credited outcome', async () => {
+      const observe = jest.fn<
+        void,
+        Parameters<NonNullable<ExecutionProcessOperations['onRootTreeEmpty']>>
+      >(() => {
+        throw new Error('observer failure must not affect execution');
+      });
+      const h = harness(os, { timing: { onRootTreeEmpty: observe } });
+      const child = await h.services.start(POSIX_REQUEST);
+      const settled = jest.fn<void, [Runtime.PlatformExecutionOutcome]>();
+      void child.outcome.then(settled);
+      try {
+        // Unlike FakeChild.exit(), this leaves both credited streams open.
+        h.spawned[0].emit('exit', 7, null);
+        await tick();
+        expect(observe).toHaveBeenCalledTimes(1);
+        expect(observe).toHaveBeenCalledWith(false, {
+          kind: 'exited',
+          code: 7,
+          signal: null,
+        });
+        expect(settled).not.toHaveBeenCalled();
+        h.spawned[0].stdout.end();
+        h.spawned[0].stderr.end();
+        expect(await child.stdout.read()).toBeNull();
+        expect(await child.stderr?.read()).toBeNull();
+        await expect(child.outcome).resolves.toEqual({
+          kind: 'exited',
+          code: 7,
+          signal: null,
+          output: 'complete',
+        });
+      } finally {
+        await h.services.shutdown();
+      }
+    });
+
     it('sends TERM to the group, then KILL after the grace, until it is empty', async () => {
       const h = harness(os);
       const child = await h.services.start(POSIX_REQUEST);
@@ -662,6 +699,54 @@ describe('win32 job custody', () => {
     expect(await rejection(() => h.services.start(WINDOWS_REQUEST))).toEqual(
       typed('unavailable'),
     );
+  });
+
+  it('keeps shutdown unconfirmed after native launch rollback fails before handle delivery', async () => {
+    const { native } = addon({
+      launch: jest.fn((): never => {
+        throw err('ERR_OWNED_CHILD_CLEANUP');
+      }),
+    });
+    const h = windows();
+    await expect(h.services.start(WINDOWS_REQUEST)).rejects.toEqual(
+      typed('unavailable'),
+    );
+    expect(native.resume).not.toHaveBeenCalled();
+    expect(h.pipes.connect).not.toHaveBeenCalled();
+    await expect(h.services.shutdown()).rejects.toEqual(typed('unavailable'));
+    await expect(h.services.shutdown()).rejects.toEqual(typed('unavailable'));
+    runHostExit();
+    expect(native.rollbackUndelivered).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows shutdown after native launch confirms rollback before handle delivery', async () => {
+    const { native } = addon({
+      launch: jest.fn((): never => {
+        throw err('ERR_OWNED_CHILD_SPAWN');
+      }),
+    });
+    const h = windows();
+    await expect(h.services.start(WINDOWS_REQUEST)).rejects.toEqual(
+      typed('failed_precondition'),
+    );
+    await expect(h.services.shutdown()).resolves.toBeUndefined();
+    runHostExit();
+    expect(native.rollbackUndelivered).not.toHaveBeenCalled();
+  });
+
+  it('still stops delivered jobs when an undelivered launch keeps shutdown unconfirmed', async () => {
+    const { native } = addon();
+    const h = windows();
+    const child = await h.services.start(WINDOWS_REQUEST);
+    native.launch?.mockImplementation((): never => {
+      throw err('ERR_OWNED_CHILD_CLEANUP');
+    });
+    await expect(h.services.start(WINDOWS_REQUEST)).rejects.toEqual(
+      typed('unavailable'),
+    );
+    await expect(h.services.shutdown()).rejects.toEqual(typed('unavailable'));
+    expect(native.stopGroup).toHaveBeenCalled();
+    await expect(child.outcome).resolves.toMatchObject({ kind: 'cancelled' });
   });
 
   // Simulates the Windows write-only pipe on POSIX sockets; on Windows the

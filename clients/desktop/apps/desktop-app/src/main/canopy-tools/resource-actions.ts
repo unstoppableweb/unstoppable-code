@@ -1356,6 +1356,7 @@ async function pipelineAction(
           }
           const policyError = validateAgentPipelineMutationPolicy(
             current.content,
+            { shared: true },
           );
           if (policyError) return failure('validation_failed', policyError);
           const rawPipeline = yaml.dump(
@@ -1414,7 +1415,9 @@ async function pipelineAction(
           const raw = action.rawYaml ?? current.rawPipeline;
           const parsed = parsePipelineText(raw);
           if (action.rawYaml !== undefined) {
-            const policyError = validateAgentPipelineMutationPolicy(parsed);
+            const policyError = validateAgentPipelineMutationPolicy(parsed, {
+              shared: true,
+            });
             if (policyError) return failure('validation_failed', policyError);
           }
           const content = pipelineSaveData(parsed, action).content;

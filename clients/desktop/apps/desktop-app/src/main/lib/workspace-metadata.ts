@@ -13,8 +13,7 @@ import {
 } from '@canopy/core-runtime/node/w5/workspace-metadata/metadata';
 import { isActivitySectionId } from '@canopy/desktop-shared/constants/activity';
 import type { ActivitySectionId } from '@canopy/desktop-shared/types';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import { recordWorkspaceCrudTelemetry } from './desktop-telemetry';
 import { getWorkspaceIndexRepository } from './sidebar-items';
@@ -87,7 +86,6 @@ export function createDesktopWorkspaceMetadataCommands(
     updateOutcome: workspaceMetadataUpdateOutcomeSchema,
     reorderOutcome: workspaceReorderOutcomeSchema,
     afterUpdateStaged: async ({ workspaceId, source, patch }) => {
-      await afterW5Commit(notifyPortalStructureChanged);
       // Collapse, pin and the other view preferences are not edits of the
       // workspace's identity, so only a rename or recolor records telemetry.
       if (
@@ -108,9 +106,11 @@ export function createDesktopWorkspaceMetadataCommands(
     // unrelated write stales the snapshot.
     afterUpdate: async (outcome) => {
       if (outcome.manifestWritten)
-        await afterW5Commit(schedulePortalStructuralSync);
+        await afterW5Commit(() =>
+          scheduleDesktopStructureChanged('structural.workspace-metadata'),
+        );
     },
-    afterMoveStaged: () => afterW5Commit(notifyPortalStructureChanged),
+    afterMoveStaged: () => Promise.resolve(),
     ...(decidedWorkspace && { decidedWorkspace }),
   });
 }

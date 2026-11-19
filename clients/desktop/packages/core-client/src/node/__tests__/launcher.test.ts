@@ -1202,6 +1202,44 @@ describe('the W5 handoff contract (GB12)', () => {
   });
 });
 
+describe.each(['darwin', 'win32'] as const)(
+  '%s owned child exit contract',
+  (platform) => {
+    it.each([
+      [69, null, 'endpoint_repair_required'],
+      [1, null, 'exited_before_ready'],
+      [null, 'SIGKILL', 'exited_before_ready'],
+      [null, null, 'exited_before_ready'],
+      [69, 'SIGTERM', 'exited_before_ready'],
+    ] as const)(
+      'maps immediate exit %s / %s to %s',
+      async (code, signal, refusal) => {
+        const world = new ScriptedDaemon();
+        world.child = (pid): void => world.exit(pid, code, signal);
+        expect(await run(launch(world, { platform }))).toMatchObject({
+          error: { kind: 'unavailable', details: { refusal } },
+        });
+      },
+    );
+    it('keeps failed owned-child cleanup primary over repair guidance', async () => {
+      const world = new ScriptedDaemon();
+      world.child = (pid): void => world.exit(pid, 69);
+      world.gates.set('terminate', () =>
+        Promise.resolve().then(() => {
+          throw new Error('private path');
+        }),
+      );
+      const result = await run(launch(world, { platform }));
+      expect(result).toMatchObject({
+        error: { message: 'Core cleanup failed.' },
+      });
+      if ('error' in result)
+        expect(result.error.details).not.toEqual({
+          refusal: 'endpoint_repair_required',
+        });
+    });
+  },
+);
 it('refuses a live same-protocol daemon with an older secure layout before token reads or leases', async () => {
   const world = new ScriptedDaemon();
   world.publish(7);

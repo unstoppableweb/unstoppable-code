@@ -1,4 +1,7 @@
-import type { CoreRuntimeDescriptor } from '@canopy/protocol/canopy-core';
+import type {
+  CanopyJsonValue,
+  CoreRuntimeDescriptor,
+} from '@canopy/protocol/canopy-core';
 import type { CanopyRuntimeProfile } from '../runtime/types';
 
 export type ServiceStopPhase = 3 | 4 | 5 | 6 | 7;
@@ -10,6 +13,8 @@ export type RuntimeHealthCheck = {
   message: string | null;
   /** A service's own machine-readable cause; `message` stays prose. */
   reason?: string;
+  /** Closed machine-readable facts behind `reason`; never prose, paths or output. */
+  details?: Readonly<Record<string, CanopyJsonValue>>;
 };
 
 export type RuntimeHealth = {
@@ -186,6 +191,7 @@ export function createServiceContainer(
             status: check.status,
             message: check.message,
             ...(check.reason !== undefined && { reason: check.reason }),
+            ...(check.details !== undefined && { details: check.details }),
           };
     } catch (error) {
       const message = `Health check threw: ${describe(error)}`;

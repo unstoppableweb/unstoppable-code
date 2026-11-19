@@ -141,7 +141,6 @@ import {
   getRendererToolRequestScopeKey,
   isWorkspaceContext,
 } from '@canopy/desktop-shared/types';
-import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import {
   useChatStore,
   type ChatTab,
@@ -711,21 +710,10 @@ const WORKTREE_GIT_ACTIONS = new Set<WorktreeGitAction>([
 ]);
 
 const CLOUD_NAME = `${brandText.appName} Cloud`;
-const PORTAL_NAME = REMOTE_CONTROL_LABEL;
-// Lowercase form for mid-sentence prose; PORTAL_NAME stays proper-cased for
-// sentence-start usage.
-const PORTAL_NAME_INLINE = REMOTE_CONTROL_LABEL.toLowerCase();
-
-export const CANOPY_PORTAL_DISABLED_TOAST = `${PORTAL_NAME} is not available.`;
+export const CANOPY_PORTAL_DISABLED_TOAST = `${REMOTE_CONTROL_LABEL} is not available.`;
 
 const SHARED_CONTAINERS_DISABLED_MESSAGE =
   'Shared containers are not available.';
-
-function isCanopyPortalEnabled(): boolean {
-  return useFeatureFlagsStore
-    .getState()
-    .isEnabled(CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key);
-}
 
 function isDesktopPrSplitEnabled(): boolean {
   return useFeatureFlagsStore
@@ -737,18 +725,6 @@ function isSharedContainerRecipientEnabled(): boolean {
   return useFeatureFlagsStore
     .getState()
     .isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopSharedContainers.key);
-}
-
-function rejectIfPortalDisabled(actionLabel: string): boolean {
-  if (isCanopyPortalEnabled()) {
-    return false;
-  }
-  useGitHubStore.getState().addToast(CANOPY_PORTAL_DISABLED_TOAST, 'info');
-  // eslint-disable-next-line no-console
-  console.info(
-    `[dispatcher] Skipping ${actionLabel}: canopy-portal-enabled flag is off.`,
-  );
-  return true;
 }
 
 function claudeSettingsUnavailableError(): AppAdvisorActionError {
@@ -791,7 +767,7 @@ function canopyPortalDisabledResponse(): {
     ok: true,
     result: {
       skipped: true,
-      reason: 'canopy-portal-disabled',
+      reason: 'remote-control-unavailable',
     },
   };
 }
@@ -7329,7 +7305,9 @@ async function updateSharedPipelineResult(
     }
     const pipeline = await parsePipelineYamlSource({ ...action, rawYaml });
     if (action.rawYaml !== undefined) {
-      const policyError = validateAgentPipelineMutationPolicy(pipeline);
+      const policyError = validateAgentPipelineMutationPolicy(pipeline, {
+        shared: true,
+      });
       if (policyError) {
         return {
           ok: false,
@@ -14644,8 +14622,8 @@ async function routeAction(
       return { ok: true, result: { saved: true } };
     }
     case 'canopy_portal.open':
-      // The Remote Control dialog follows device Remote Control, not the
-      // Portal flag: Portal only follows its opt-in (CAN-5985).
+      // A host from before Remote Control graduated may still say it is
+      // unavailable (CAN-5986).
       if (!useRemoteControlStore.getState().state.available) {
         useGitHubStore
           .getState()
@@ -14658,15 +14636,8 @@ async function routeAction(
       useNavigationStore.getState().closeCanopyPortal();
       return { ok: true };
     case 'canopy_portal.open_account_settings': {
-      if (
-        rejectIfPortalDisabled(`open ${PORTAL_NAME_INLINE} account settings`)
-      ) {
-        return canopyPortalDisabledResponse();
-      }
       useNavigationStore.getState().closeCanopyPortal();
       openCloudAccountSettings();
-      // Touch the Portal store so the reporter snapshot stays accurate.
-      void useCanopyPortalStore.getState().hydrate();
       return { ok: true };
     }
     case 'app_advisor.open': {

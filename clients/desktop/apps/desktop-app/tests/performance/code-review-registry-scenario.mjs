@@ -1300,10 +1300,29 @@ async function measureRegister(run, iterations) {
       clock: 'main',
     });
     run.handlerMs.register.push(handlerMs);
-    run.expected[`${request.projectId}--${request.worktreeId}`] = {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-    };
+    // Main builds the versioned scope key; find the row by its owner.
+    const targets = readRegistry(fixture.registryPath).file.targets;
+    const added = Object.keys(targets).filter(
+      (key) =>
+        !Object.hasOwn(run.expected, key) &&
+        targets[key]?.projectId === request.projectId &&
+        targets[key]?.worktreeId === request.worktreeId,
+    );
+    if (added.length !== 1)
+      throw new Error(
+        `Register ${request.worktreeId}: expected one new registry row, found ${added.length}`,
+      );
+    // Registration also writes a fresh incarnation and the active state.
+    const row = targets[added[0]];
+    if (
+      Object.keys(row).join() !== 'projectId,worktreeId,incarnation,state' ||
+      typeof row.incarnation !== 'string' ||
+      row.state !== 'active'
+    )
+      throw new Error(
+        `Register ${request.worktreeId}: unexpected registry row ${JSON.stringify(row)}`,
+      );
+    run.expected[added[0]] = { ...row };
   }
   assertRegistryNow(run, 'After register');
   assertNoRegistryTemps(fixture.registryDir, 'Register');

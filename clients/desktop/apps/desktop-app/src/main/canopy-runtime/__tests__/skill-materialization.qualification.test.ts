@@ -207,8 +207,11 @@ describe('desktop skill materialization (CAN-4124)', () => {
     async ({ state, content }) => {
       const indexPath = join(mockDataDir, 'plugin-cache-index.json');
       writeFileSync(indexPath, content);
-      expect(readPluginCacheIndex(indexPath).state).toBe(state);
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
+      expect(readPluginCacheIndex(indexPath)).toMatchObject({
+        state: 'valid',
+        recovered: state,
+      });
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       const dir = writeSkill('a', '---\nname: a\n---\n');
       const f = fakes();
       f.deps.loadMarketplacesCacheOnly = jest.fn(loadMarketplacesCacheOnly);

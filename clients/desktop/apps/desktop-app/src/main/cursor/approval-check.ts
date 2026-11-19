@@ -1,3 +1,5 @@
+import { getDesktopNodeRuntime } from '../lib/node-runtime';
+import { TRUSTED_NODE_POSIX_SCRUB } from '../lib/trusted-node-environment';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -199,10 +201,9 @@ export async function runCursorApprovalCheck(options: {
       '.cursor',
     );
     await mkdir(configDir, { recursive: true });
-    // Only the hook runs the host's Electron executable as standalone Node;
-    // the variable is scoped to that command rather than the whole CLI tree.
-    const command = `ELECTRON_RUN_AS_NODE=1 ${[
-      process.execPath,
+    const command = `${TRUSTED_NODE_POSIX_SCRUB}\nexec ${[
+      (await getDesktopNodeRuntime()).nodeProcess.command,
+      '--disable-sigusr1',
       script,
       connection,
     ]

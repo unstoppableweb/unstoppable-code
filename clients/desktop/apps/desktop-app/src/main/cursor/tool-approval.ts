@@ -283,6 +283,22 @@ export async function authorizeCursorMcpTool(
         decision: 'deny',
         message: `This tool is not available to ${providerLabel} chats.`,
       };
+    // The secret request form is not an approval: it needs the person in
+    // every mode, so a card before it would only ask twice (CONTRACTS.md §5).
+    // It lives only on the `_ui` server, and the proxy refuses it for a route
+    // that does not offer secret requests.
+    if (key === 'request_secrets')
+      return call.server === names.ui
+        ? { decision: 'allow' }
+        : { decision: 'deny' };
+    // RunWithSecrets raises its own approval, naming the command and the
+    // secrets, which no saved rule answers: a card here would ask twice. It
+    // runs a shell command, so plan mode refuses it as it does Shell. It
+    // lives only on the main server.
+    if (key === 'run_with_secrets')
+      return call.server === names.main && !context.planMode
+        ? { decision: 'allow' }
+        : { decision: 'deny' };
     // The native hook denies Write and Shell in plan mode. An app tool that
     // changes app state, or runs a shell command (WatchCommand), gets the same
     // answer before a remembered rule or Full Access could allow it silently.

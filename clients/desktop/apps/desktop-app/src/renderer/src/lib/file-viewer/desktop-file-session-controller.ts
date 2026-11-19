@@ -34,6 +34,11 @@ export interface DesktopFileSessionController {
     options: DesktopFileSessionControllerAttachOptions,
   ): () => void;
 
+  /**
+   * Binds a tab to `request`'s session and answers the key it is bound to.
+   * A tab whose session has unsaved changes stays bound to it, so the answer
+   * is then its current key.
+   */
   registerTab(tabId: string, request: PortalFileReadPayload): string;
   getFileKey(tabId: string): string | null;
   getSession(tabId: string): FileViewerSession | undefined;
@@ -239,6 +244,9 @@ export function createDesktopFileSessionController(): DesktopFileSessionControll
         return key;
       }
       if (existing) {
+        // Unsaved changes outlive a path change (CAN-6540): only a save, a
+        // discard or the close flow, which asks first, ends a dirty session.
+        if (getSession(tabId)?.dirty === true) return existing.key;
         // Registration changed to a different file: release the old key ref
         // (the last-reference timer/closeFile rule applies) before taking the
         // new one.

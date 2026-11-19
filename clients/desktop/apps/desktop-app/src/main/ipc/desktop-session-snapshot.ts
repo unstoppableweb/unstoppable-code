@@ -4,11 +4,11 @@ import type { DesktopSessionSnapshotArgs } from '@canopy/desktop-shared/types';
 import { subscribeChatSessionActivity } from '../agents/session-manager';
 import { buildDesktopSessionSnapshot } from '../services/desktop-session-snapshot-service';
 import {
-  scheduleDesktopSessionSnapshotInvalidation,
+  requestDesktopSessionSnapshotInvalidation,
   subscribeDesktopSessionSnapshotInvalidation,
 } from '../services/desktop-session-snapshot-invalidation';
 import { registerIpcHandler } from './register';
-import { sendToWebContents } from '../lib/web-contents-send';
+import { sendToWindow } from '../lib/window-send';
 
 let unsubscribeDesktopSessionSnapshotInvalidation: (() => void) | null = null;
 let unsubscribeChatSessionActivity: (() => void) | null = null;
@@ -31,19 +31,14 @@ export function registerDesktopSessionSnapshotHandlers(
   registerIpcHandler(
     IPC_CHANNELS.desktopSessionSnapshotInvalidate,
     (): void => {
-      scheduleDesktopSessionSnapshotInvalidation();
+      requestDesktopSessionSnapshotInvalidation('renderer.invalidate');
     },
   );
   unsubscribeDesktopSessionSnapshotInvalidation?.();
   unsubscribeDesktopSessionSnapshotInvalidation =
     subscribeDesktopSessionSnapshotInvalidation((): void => {
-      const window = getWindow();
-      if (window && !window.isDestroyed()) {
-        sendToWebContents(
-          window.webContents,
-          IPC_CHANNELS.desktopSessionSnapshotStale,
-        );
-      }
+      // Remote sessions still need invalidations while the local window is closed.
+      sendToWindow(getWindow(), IPC_CHANNELS.desktopSessionSnapshotStale);
     });
   // The snapshot projects each worktree's `isStreaming` from live chat
   // sessions, and the shared sidebar gates Archive and Delete on it. The
@@ -54,6 +49,6 @@ export function registerDesktopSessionSnapshotHandlers(
   // queue, unregister) are discrete and the invalidation is throttled.
   unsubscribeChatSessionActivity?.();
   unsubscribeChatSessionActivity = subscribeChatSessionActivity((): void => {
-    scheduleDesktopSessionSnapshotInvalidation();
+    requestDesktopSessionSnapshotInvalidation('chat.session-activity');
   });
 }

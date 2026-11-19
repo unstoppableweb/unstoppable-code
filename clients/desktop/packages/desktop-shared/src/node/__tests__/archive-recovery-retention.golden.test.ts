@@ -20,9 +20,10 @@ import {
   readdir,
   lstat,
   link,
+  cp,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   type ArchiveRecoveryPreparation,
@@ -35,7 +36,7 @@ import {
 describe('core.worktree.recovery.resolve persistence contract', () => {
   let root: string;
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'archive-hold-'));
+    root = await realpath(await mkdtemp(join(tmpdir(), 'archive-hold-')));
   });
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
@@ -120,6 +121,9 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
     'delete',
     'successor',
     'successor-chain',
+    'successor-device',
+    'successor-inode',
+    'successor-birthtime',
     'finish-v2',
     'finish-v3',
     'project-child',
@@ -150,7 +154,9 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
         workspaceId: 'ws',
         worktreeId: 'tree',
         createdAt: input.createdAt,
-        directoryIdentity: 'project-incarnation',
+        directoryIdentity: shape.startsWith('successor-')
+          ? '1:123:0'
+          : 'project-incarnation',
         steps: [{ phase: 'git-capture', state: 'failed' }],
         ownedPaths: [],
         ...(shape === 'project-child'
@@ -207,7 +213,13 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
         directoryIdentity:
           shape === 'changed-incarnation'
             ? 'replacement'
-            : record.directoryIdentity,
+            : shape === 'successor-device'
+              ? '2:123:0'
+              : shape === 'successor-inode'
+                ? '1:124:0'
+                : shape === 'successor-birthtime'
+                  ? '1:123:1'
+                  : record.directoryIdentity,
         steps: discard
           ? [
               {
@@ -282,19 +294,21 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
       }
       await store.normalizeWorkspace('ws');
       await store.normalizeWorkspace('ws');
-      const settled = [
-        'archive',
-        'delete',
-        'successor',
-        'successor-chain',
-        'finish-v2',
-        'finish-v3',
-        'project-child',
-        'discard',
-        'unlink-before',
-        'unlink-after',
-        'rmdir-after',
-      ].includes(shape);
+      const settled =
+        (shape === 'successor-device' && process.platform === 'darwin') ||
+        [
+          'archive',
+          'delete',
+          'successor',
+          'successor-chain',
+          'finish-v2',
+          'finish-v3',
+          'project-child',
+          'discard',
+          'unlink-before',
+          'unlink-after',
+          'rmdir-after',
+        ].includes(shape);
       expect(await store.read('ws', input.operationId)).toEqual(
         settled ? null : receipt,
       );
@@ -310,6 +324,155 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
           reason: 'repair-refused',
         });
       }
+    },
+  );
+
+  test.each(
+    ['payload', 'repository', 'both'].flatMap((evidence) =>
+      ['exact', 'device', 'inode', 'birthtime'].map((change) => ({
+        evidence,
+        change,
+      })),
+    ),
+  )(
+    'retained $evidence evidence survives only permitted drift: $change',
+    async ({ evidence, change }) => {
+      const {
+        freezeInternalRootArchiveRecovery,
+        relocateInternalRootArchiveRecovery,
+      } = await import('../internal-root-migration/archive-recovery');
+      const store = new ArchiveRecoveryStore(root);
+      const input: ArchiveRecoveryPreparation = {
+        ...preparation(),
+        capture: 'partial',
+      };
+      const repository = join(
+        root,
+        process.platform === 'win32' ? 'repository' : 'repository:with-colon',
+      );
+      await mkdir(repository);
+      const info = await lstat(repository);
+      const repositoryStat = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+      const mutate = (identity: string): string => {
+        const fields = identity.split(':');
+        const index = change === 'device' ? 0 : change === 'inode' ? 1 : 2;
+        if (change !== 'exact')
+          fields[index] = `${BigInt(Math.trunc(Number(fields[index]))) + 1n}`;
+        return fields.join(':');
+      };
+      input.repositories = [
+        {
+          repoId: 'repo',
+          referenceRepoPath: repository,
+          commonDir: repository,
+          identity: `${repository}:${evidence !== 'payload' ? mutate(repositoryStat) : repositoryStat}`,
+          refs: [
+            {
+              name: 'refs/app/archived-containers/ws/tree',
+              objectId: 'a'.repeat(40),
+            },
+          ],
+        },
+      ];
+      await mkdir(store.stagingPath(input), { recursive: true });
+      await writeFile(join(store.stagingPath(input), 'one'), 'first');
+      await writeFile(join(store.stagingPath(input), 'two'), 'second');
+      let receipt = await store.prepare(input);
+      if (!receipt.staging) throw new Error('Missing staging inventory');
+      receipt = {
+        ...receipt,
+        staging: {
+          ...receipt.staging,
+          identity:
+            evidence !== 'repository'
+              ? mutate(receipt.staging.identity)
+              : receipt.staging.identity,
+        },
+      };
+      await writeFile(
+        join(store.directory(receipt), 'receipt.json'),
+        JSON.stringify(receipt),
+      );
+      const accepted =
+        change === 'exact' ||
+        (change === 'device' && process.platform === 'darwin');
+      if (!accepted && evidence !== 'repository') {
+        await expect(store.publishRetention(receipt)).rejects.toBeInstanceOf(
+          ArchiveRecoveryRefusedError,
+        );
+        expect(
+          await readFile(join(store.stagingPath(receipt), 'one'), 'utf8'),
+        ).toBe('first');
+        return;
+      }
+      receipt = await store.publishRetention(receipt);
+      receipt = await store.resetStaging(receipt);
+      expect((await store.inspect(receipt)).payload).toBe('exact');
+      receipt = { ...receipt, stage: 'completed' };
+      await writeFile(
+        join(store.directory(receipt), 'receipt.json'),
+        JSON.stringify(receipt),
+      );
+      // Repository refusal must not be masked by an earlier payload refusal.
+      if (!accepted) {
+        const before = await readFile(
+          join(store.directory(receipt), 'receipt.json'),
+          'utf8',
+        );
+        await expect(freezeInternalRootArchiveRecovery(root)).rejects.toThrow(
+          'repository identity changed',
+        );
+        expect(
+          await readFile(
+            join(store.directory(receipt), 'receipt.json'),
+            'utf8',
+          ),
+        ).toBe(before);
+        expect(
+          await readFile(join(store.payloadPath(receipt), 'one'), 'utf8'),
+        ).toBe('first');
+        return;
+      }
+      const frozen = await freezeInternalRootArchiveRecovery(root);
+      expect(frozen).toEqual(expect.any(String));
+      const destination = await realpath(
+        await mkdtemp(join(tmpdir(), 'archive-hold-projected-')),
+      );
+      try {
+        await cp(root, destination, { recursive: true });
+        await relocateInternalRootArchiveRecovery(
+          {
+            version: 1,
+            installationId: 'fixture',
+            brandId: 'canopy',
+            from: { authorityId: 'source', canonicalDataRoot: root },
+            to: { authorityId: 'destination', canonicalDataRoot: destination },
+          },
+          destination,
+          {},
+          frozen,
+        );
+        const projectedStore = new ArchiveRecoveryStore(destination);
+        const projected = await projectedStore.read('ws', input.operationId);
+        if (!projected) throw new Error('Missing projected receipt');
+        expect((await projectedStore.inspect(projected)).payload).toBe('exact');
+        expect(projected.repositories[0]?.commonDir).toBe(
+          join(destination, relative(root, repository)),
+        );
+        expect(await projectedStore.beginDeletion(projected)).toMatchObject({
+          retention: 'deleting',
+        });
+      } finally {
+        await rm(destination, { recursive: true, force: true });
+      }
+      receipt = await store.beginDeletion(receipt);
+      await rm(join(store.payloadPath(receipt), 'one'));
+      expect((await store.inspect(receipt)).payload).toBe('subset');
+      expect(await freezeInternalRootArchiveRecovery(root)).toEqual(
+        expect.any(String),
+      );
+      receipt = await store.deletePayload(receipt);
+      expect(receipt.retention).toBe('deleted');
     },
   );
 

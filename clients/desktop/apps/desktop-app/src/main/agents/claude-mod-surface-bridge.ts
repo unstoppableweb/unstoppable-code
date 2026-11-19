@@ -12,12 +12,10 @@ import {
   type ClaudeModPaneRoster,
   type ClaudeModSurfaceCommand,
   type ClaudeModSurfaceCommandArgs,
-  type ClaudeModSurfaceRelayEvent,
   type ClaudeModSurfaceUpdate,
 } from '@canopy/protocol/extension-ui';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
-import type * as PortalRelay from '../portal/portal-claude-mod-surface';
 import { validateId } from '../lib/validation';
 import { sendToAllWindows } from '../lib/window-send';
 
@@ -94,8 +92,8 @@ export function claudeModSurfaceBridgeFor(
 }
 
 /**
- * Runs what a person did on a chat's Mod surface, from a window or the web
- * Portal. A chat whose session is gone, or not drawing its surface, ignores
+ * Runs what a person did on a chat's Mod surface, from a window or a Remote
+ * Control client. A chat whose session is gone, or not drawing its surface, ignores
  * it.
  */
 export async function runClaudeModSurfaceCommand(
@@ -106,15 +104,6 @@ export async function runClaudeModSurfaceCommand(
   validateId(chat.worktreeId, 'worktree id');
   validateId(chat.chatId, 'chat id');
   await claudeModSurfaceBridgeFor(chat)?.command(command);
-}
-
-// The Portal relay loads with its event bus only once a surface pushes.
-let portalRelay: Promise<typeof PortalRelay> | null = null;
-
-function relayToPortal(event: ClaudeModSurfaceRelayEvent): void {
-  portalRelay ??= import('../portal/portal-claude-mod-surface');
-  // One promise, so updates reach the relay in the order they were sent.
-  void portalRelay.then((relay) => relay.relayClaudeModSurfaceUpdate(event));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,13 +141,10 @@ export class ClaudeModSurfaceBridge {
   private readonly reports = new Map<string, number>();
   /** Each Mod's status line, for a client that asks for the surface again. */
   private readonly statuses = new Map<string, string>();
-  /** Each site's last tree and the CLI's own tree it came from, for the same. */
+  /** Each site's last tree, for the same. */
   private readonly trees = new Map<
     string,
-    {
-      readonly push: Extract<ClaudeModSurfaceUpdate, { kind: 'tree' }>;
-      readonly cliTree: unknown;
-    }
+    Extract<ClaudeModSurfaceUpdate, { kind: 'tree' }>
   >();
   /** Each pane's panel body, in cells, as the renderer measured it. */
   private readonly paneCells = new Map<
@@ -567,8 +553,8 @@ export class ClaudeModSurfaceBridge {
     }
     if (!this.surface) return;
     this.send({ kind: 'panes', roster: this.roster });
-    for (const { push, cliTree } of [...this.trees.values()]) {
-      this.send(push, cliTree);
+    for (const push of [...this.trees.values()]) {
+      this.send(push);
     }
   }
 
@@ -685,47 +671,31 @@ export class ClaudeModSurfaceBridge {
     }
     if (response.hooked === false) this.unhooked.add(key);
     const cliTree = response.tree ?? null;
-    this.send(
-      {
-        kind: 'tree',
-        site: component === 'Pane' ? 'pane' : 'band',
-        instanceId,
-        tree: cliTree === null ? null : validateExtensionUiTree(cliTree).tree,
-      },
-      cliTree,
-    );
+    this.send({
+      kind: 'tree',
+      site: component === 'Pane' ? 'pane' : 'band',
+      instanceId,
+      tree: cliTree === null ? null : validateExtensionUiTree(cliTree).tree,
+    });
   }
 
   /**
-   * Sends one update to the chat's windows and relays it to the web Portal.
-   * A tree's update carries the CLI's own tree for the relay: the receiving
-   * client validates it itself, as the bridge did.
+   * Sends one update to the chat's windows.
    */
-  private send(push: ClaudeModSurfaceUpdate, cliTree: unknown = null): void {
+  private send(push: ClaudeModSurfaceUpdate): void {
     if (push.kind === 'status') {
       if (push.text === null) this.statuses.delete(push.plugin);
       else this.statuses.set(push.plugin, push.text);
     } else if (push.kind === 'tree') {
-      this.trees.set([push.site, push.instanceId].join(SITE_SEPARATOR), {
-        push,
-        cliTree,
-      });
+      this.trees.set([push.site, push.instanceId].join(SITE_SEPARATOR), push);
     } else if (push.kind === 'panes') {
       const open = new Set(push.roster.panes.map((pane) => pane.id));
-      for (const [key, { push: tree }] of this.trees) {
+      for (const [key, tree] of this.trees) {
         if (tree.site === 'pane' && !open.has(tree.instanceId)) {
           this.trees.delete(key);
         }
       }
     }
     sendToAllWindows(IPC_CHANNELS.claudeModSurfacePush, { ...this.chat, push });
-    // To this client's windows only: a draft never goes to the Portal.
-    if (push.kind === 'composer-request' || push.kind === 'composer-withdraw') {
-      return;
-    }
-    relayToPortal({
-      ...this.chat,
-      push: push.kind === 'tree' ? { ...push, tree: cliTree } : push,
-    });
   }
 }

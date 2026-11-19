@@ -3,8 +3,9 @@ import { SidebarOfflineRow } from '@canopy/ui-app/sidebar';
 import type { CloudCoworkSidebarModel } from './useCloudCoworkSidebar';
 
 /**
- * The one row cloud projects leave while the web core is offline (CAN-4185
- * D7). Online cloud projects are rows of the shared sidebar list (CAN-6099).
+ * The row cloud projects show while the web core is offline (CAN-4185 D7).
+ * Cloud projects are rows of the shared sidebar list (CAN-6099); offline, the
+ * ones last listed stay there, as on the web (CAN-6374).
  */
 export function CloudCoworkOfflineRow({
   model,

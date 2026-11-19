@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
@@ -15,6 +15,7 @@ import {
 import { CopilotProcessReceipt } from './process-receipts';
 import type { CopilotReceiptStorage } from './receipt-storage';
 import { loadRequiredNodeModule } from './node-module-loader';
+import { CopilotRecipientFailure } from './failure';
 
 /**
  * The structural shape of a provider process host child (CAN-4118's
@@ -153,7 +154,13 @@ export async function startCopilotRuntime(
   let childExited = false;
   let childClosed = false;
   let childErrored = false;
+  let spawnEnoent = false;
   let startupFailure: ((error: Error) => void) | undefined;
+  let notStarted: Error | undefined;
+  const couldNotStart = (): Error =>
+    (notStarted ??= new Error(
+      'Copilot could not start. Reconnect it in Settings.',
+    ));
   // A descendant can hold the CLI's pipes open long after the CLI exits.
   child.once('exit', () => {
     childExited = true;
@@ -163,11 +170,10 @@ export async function startCopilotRuntime(
     reap();
   });
   // ProviderProcess emits error at most once, then close (CAN-4118).
-  child.once('error', () => {
+  child.once('error', (error) => {
     childErrored = true;
-    startupFailure?.(
-      new Error('Copilot could not start. Reconnect it in Settings.'),
-    );
+    spawnEnoent = Reflect.get(error, 'code') === 'ENOENT';
+    startupFailure?.(couldNotStart());
   });
   // Setup output can contain credentials. Drain it; never forward it to logs.
   child.stderr.resume();
@@ -320,16 +326,23 @@ export async function startCopilotRuntime(
       let settled = false;
       let output = '';
       const timeout = setTimeout(
-        () => finish(new Error('Copilot did not start in time.')),
+        () =>
+          finish(
+            new CopilotRecipientFailure(
+              'Copilot did not start in time.',
+              'start_timeout',
+            ),
+          ),
         30_000,
       );
       const onExit = (): void =>
         finish(
-          new Error(
-            childErrored
-              ? 'Copilot could not start. Reconnect it in Settings.'
-              : 'Copilot stopped during startup.',
-          ),
+          childErrored
+            ? couldNotStart()
+            : new CopilotRecipientFailure(
+                'Copilot stopped during startup.',
+                'exited_during_startup',
+              ),
         );
       const onAbort = (): void =>
         finish(new Error('Copilot startup cancelled.'));
@@ -397,11 +410,20 @@ export async function startCopilotRuntime(
         return client.getStatus();
       })(),
       exited.then(() => {
-        throw new Error('Copilot stopped during startup.');
+        throw new CopilotRecipientFailure(
+          'Copilot stopped during startup.',
+          'exited_during_startup',
+        );
       }),
       new Promise<never>((_resolve, reject) => {
         handshakeTimer = setTimeout(
-          () => reject(new Error('Copilot did not initialize in time.')),
+          () =>
+            reject(
+              new CopilotRecipientFailure(
+                'Copilot did not initialize in time.',
+                'start_timeout',
+              ),
+            ),
           30_000,
         );
       }),
@@ -410,8 +432,9 @@ export async function startCopilotRuntime(
     });
     options.signal.throwIfAborted();
     if (status.version !== options.expectedVersion)
-      throw new Error(
+      throw new CopilotRecipientFailure(
         `Copilot CLI ${options.expectedVersion} is required. Reconnect Copilot in Settings.`,
+        'version_mismatch',
       );
     // A failed first probe is transient like any other; polling retries it.
     await observeDescendants().catch((error: unknown) => {
@@ -445,6 +468,20 @@ export async function startCopilotRuntime(
     };
   } catch (error) {
     await close();
+    // A missing working directory is also ENOENT; only a missing executable
+    // has a closed cause. Other spawn errors stay unclassified.
+    if (
+      error === notStarted &&
+      spawnEnoent &&
+      !(await access(options.executable).then(
+        () => true,
+        () => false,
+      ))
+    )
+      throw new CopilotRecipientFailure(
+        'Copilot could not start. Reconnect it in Settings.',
+        'not_installed',
+      );
     throw error;
   }
 }

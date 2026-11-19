@@ -7,7 +7,7 @@ import { getFeatureFlagService } from '../../feature-flags/service';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import { recordActivationCampaignTelemetry } from '../../lib/desktop-telemetry';
 import { showOsNotification } from '../../ipc/os-notifications';
-import { onCanopyPortalStateChanged } from '../../portal/portal-session-manager';
+import { onRemoteControlStateChanged } from '../../remote-control/electron-remote-control';
 import {
   hasMeaningfullyActivated,
   isCampaignEligible,
@@ -127,17 +127,21 @@ function buildDeps(
   };
 }
 
-let unsubscribePortalState: (() => void) | null = null;
+let unsubscribeRemoteControlState: (() => void) | null = null;
 
 export async function initializeActivationJourney(
   options: ActivationJourneyWiringOptions,
 ): Promise<void> {
-  // Mobile pairing has no backfill, so a live portal session reaching `active`
-  // is the only observation available. Latching is idempotent, so re-entering
-  // `active` after a reconnect costs nothing.
-  unsubscribePortalState?.();
-  unsubscribePortalState = onCanopyPortalStateChanged((portalState) => {
-    if (portalState.connectionStatus === 'active') {
+  // Mobile pairing has no backfill, so a mobile controller connected over
+  // Remote Control is the only observation available. Latching is
+  // idempotent, so seeing it connected again after a reconnect costs nothing.
+  unsubscribeRemoteControlState?.();
+  unsubscribeRemoteControlState = onRemoteControlStateChanged((state) => {
+    if (
+      state.controllers.some(
+        (controller) => controller.kind === 'mobile' && controller.connected,
+      )
+    ) {
       void latchMobilePaired(new Date().toISOString());
     }
   });
@@ -194,8 +198,8 @@ export async function initializeActivationJourney(
 }
 
 export async function shutdownActivationJourney(): Promise<void> {
-  unsubscribePortalState?.();
-  unsubscribePortalState = null;
+  unsubscribeRemoteControlState?.();
+  unsubscribeRemoteControlState = null;
   stopActivationJourney();
   // Order matters: an evaluation in flight may still be between
   // `showNotification()` and `latchCampaignSent()`, so drain it before the

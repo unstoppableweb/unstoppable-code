@@ -16,20 +16,18 @@ differs from the app you download:
 
 - **No installers:** the commands below compile and launch the app from this
   folder. Packaging installers isn't supported from this source yet.
-- **Hosted services:** the build is configured for the same sign-in, cloud,
-  and feature-flag services as the released app. It sends the same PostHog
-  analytics events, without session replays, and the unpackaged app doesn't
-  check for updates. To turn analytics off, set `CANOPY_POSTHOG_ENABLED` to
-  `false` before `build:public`. To build without hosted services, set
-  `CANOPY_CLOUD_BASE_URL` and `CANOPY_UPDATE_BASE_URL` to a
-  local address such as `http://127.0.0.1:1` and set
-  `LAUNCHDARKLY_DESKTOP_CLIENT_SIDE_ID` to an empty value before
-  `build:public`. Features that need an account or cloud services won't work
-  in that build.
+- **Hosted services:** `build:public` is configured for the same sign-in,
+  cloud, and feature-flag services as the released app. It sends the same
+  PostHog analytics events, without session replays, and the unpackaged app
+  doesn't check for updates. To turn analytics off, set
+  `CANOPY_POSTHOG_ENABLED` to `false` before `build:public`. To build with
+  every hosted service off, use the
+  [local-only build](#build-without-our-services) instead.
 - **Some helpers aren't included:** the bundled command-line tool and the
   native dictation helper are left out of this source.
 - **macOS and Linux only:** building from source on Windows isn't supported
-  yet. Our CI builds and launches this source on macOS and Ubuntu 24.04.
+  yet. Our CI builds and launches this source on macOS and Ubuntu 24.04, and
+  runs the local-only smoke test on both.
 
 ## Requirements
 
@@ -62,11 +60,75 @@ pnpm run start:public
 
 - The install applies the reviewed dependency patches without running
   lifecycle scripts.
-- `build:public` compiles the app into `out/`.
+- `build:public` compiles the app into `out/` and its local core daemon into
+  `dist/core-daemon/`. The daemon owns workspace records and local execution.
 - `setup:public` installs Electron, compiles the native file broker, and
   rebuilds `node-pty` for Electron.
 - `start:public` launches the compiled app with the Unstoppable Code brand.
   Arguments after it go to Electron.
+
+## Build without our services
+
+The local-only build turns every hosted service off when it compiles, so the
+app never contacts our servers, whatever your environment says:
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm run build:local
+pnpm run setup:local
+pnpm run start:local
+```
+
+- `build:local` compiles the app and its core daemon with the local-only
+  profile, and marks the build as local-only. `build:public` removes that mark.
+- `setup:local` does what `setup:public` does, and also downloads the pinned
+  Claude Code CLI into `.cache/bin/`, checking its checksum. The smoke test
+  uses it. Use `setup:public` instead if you don't want the download.
+- `start:local` launches the local-only build. It refuses to start a build
+  made by `build:public`.
+- `pnpm run smoke:local` checks the local-only build without a display of its
+  own: it starts a local mock model server, creates a workspace and a
+  worktree, sends one Claude chat turn, and opens Settings and the model picker.
+  It tests an installation without Codex and does not use a Codex on PATH. It
+  fails if the app tried to reach any host it shouldn't, and it never retries.
+  On Linux, run it under `xvfb-run --auto-servernum`; extra Electron switches,
+  such as `--no-sandbox`, go in `CANOPY_LOCAL_SMOKE_ELECTRON_ARGS`.
+
+If `package.json` has no `build:local` script, this source is from before the
+local-only build existed.
+
+What's off:
+
+- Sign-in, accounts, and everything that needs them: AI credits, hosted
+  models, Remote Control, cloud chats, sharing, and the marketplace
+- Update checks, PostHog analytics, and hosted feature flags. The app uses
+  each feature flag's built-in local-only value.
+- Automatic calls to other services: the skill safety check and skill update
+  check, marketplace refreshes, runtime downloads (the app uses the staged
+  binary or the one on your `PATH`), GitHub avatars, and background pull
+  request polling. Plan usage meters refresh only when you open them.
+
+What still works, because you start or configure it:
+
+- Your own model provider, with your plan or a custom base URL
+- [Your own AI gateway](../../docs/ai-gateway.md) and Ollama
+- MCP servers you connect, and their sign-in (OAuth) providers
+- GitHub actions you start while GitHub is connected
+- Browsing in the app's built-in browser
+
+Anything else is blocked and logged to `local-only-egress.jsonl` in the app's
+data folder. To allow another host, add its exact name to the `allowedHosts`
+list in `local-only.json` in the same folder.
+
+Known limits:
+
+- The block covers the app itself. Programs it starts, such as agent CLIs,
+  `git`, and MCP servers, connect wherever their own settings say. That
+  includes automatic `git fetch` from your repository's remote.
+- Agent visuals that load a library from the internet don't render.
+- The smoke test waits a few seconds for startup tasks. Tasks the app delays
+  by up to a minute aren't covered by it.
+- Installers and Windows builds aren't supported from this source.
 
 ## Build and test everything
 

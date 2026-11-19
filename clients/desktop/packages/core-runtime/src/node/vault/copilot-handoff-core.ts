@@ -33,7 +33,11 @@ import {
   type MigrationWireFrame,
 } from './migration-protocol';
 import type { CopilotPilotState } from './repository/copilot-pilot-state';
-import type { CopilotGrantHead } from './copilot-grant-contracts';
+import type {
+  CopilotAuthorityRecord,
+  CopilotGrantHead,
+  CopilotGrantResult,
+} from './copilot-grant-contracts';
 import type {
   MigrationObservation,
   MigrationSourceIdentity,
@@ -46,6 +50,8 @@ export interface CopilotHandoffCore {
   cancelAdmission(): void;
   current(): boolean;
   unused(): boolean;
+  retiredBinding(): CopilotHandoffCorrelation['binding'];
+  ordinaryAuthority(): CopilotAuthorityRecord | null;
   phase(): CopilotHandoffPhase;
   exchange(
     raw: unknown,
@@ -59,6 +65,10 @@ export function createCopilotHandoffCore(options: {
   observe(): Promise<MigrationObservation>;
   closeAdmission(): void;
   published(head: CopilotGrantHead): void;
+  /** Shared P4 owner only; unpublished compensation never uses this port. */
+  removePublished?(accountEpoch: string): Promise<CopilotGrantResult>;
+  /** Same lazy P4 owner; reconcile local state before rebuilding the publication mirror. */
+  recoverPublished?(): Promise<CopilotGrantResult>;
   observeClaim?(operationId: string): Promise<MigrationObservation>;
   use?: MigrationFamilyPorts['use'];
   deletion?: MigrationFamilyPorts['deletion'];
@@ -167,7 +177,7 @@ export function createCopilotHandoffCore(options: {
   async function withCleanupQueue<T>(run: () => Promise<T>): Promise<T> {
     if (frozen) throw new Error('Recursive source queue acquisition.');
     const b = options.state.read().binding;
-    if (!b || !['published', 'cancelling'].includes(b.phase))
+    if (!b || !['published', 'cancelling', 'retired'].includes(b.phase))
       throw new Error('Cleanup binding unavailable.');
     const held = CopilotCleanupFreezeSchema.parse(
       JSON.parse(await action({ kind: 'freeze-cleanup' })),
@@ -192,7 +202,7 @@ export function createCopilotHandoffCore(options: {
     state: options.state,
     admitted: () =>
       admitted() &&
-      ['published', 'cancelling'].includes(
+      ['published', 'cancelling', 'retired'].includes(
         options.state.read().binding?.phase ?? '',
       ),
     action,
@@ -307,6 +317,36 @@ export function createCopilotHandoffCore(options: {
     );
   }
 
+  function retiredBinding(): CopilotHandoffCorrelation['binding'] {
+    try {
+      if (!admitted()) return null;
+      const state = options.state.read();
+      const b = state.binding;
+      const migration = options.state.migration.read();
+      if (
+        !b ||
+        b.phase !== 'retired' ||
+        migration.head.epoch <= b.migrationEpoch ||
+        migration.head.attemptId === b.attemptId ||
+        state.authority.head?.origin === 'import' ||
+        state.authority.mutation?.origin === 'import' ||
+        !state.controls.some(
+          (c) =>
+            c.kind === 'retirement' &&
+            c.phase === 'retired' &&
+            c.operationId === b.operationId &&
+            c.accountEpoch === b.accountEpoch &&
+            c.attemptId === b.attemptId &&
+            c.migrationEpoch === b.migrationEpoch,
+        )
+      )
+        return null;
+      return bindingFacts();
+    } catch {
+      return null;
+    }
+  }
+
   return {
     close: (): void => pump.close(),
     cancelAdmission: (): void => controls.cancelAdmission(),
@@ -337,6 +377,10 @@ export function createCopilotHandoffCore(options: {
     },
     current: () => admitted() && controls.current(),
     unused: (): boolean => admitted() && options.state.unused(),
+    retiredBinding,
+    ordinaryAuthority() {
+      return retiredBinding() ? options.state.read().authority : null;
+    },
     async exchange(
       raw: unknown,
       signal?: AbortSignal,
@@ -359,6 +403,7 @@ export function createCopilotHandoffCore(options: {
           );
           if (
             command.kind === 'cancel' ||
+            options.state.read().authority.removal ||
             ['cancelling', 'retired'].includes(
               options.state.read().binding?.phase ?? '',
             )
@@ -419,6 +464,59 @@ export function createCopilotHandoffCore(options: {
             )
               throw new Error('Import preflight refused.');
             const existing = options.state.read().binding;
+            const local = options.state.read().authority;
+            if (
+              existing?.phase === 'published' &&
+              !local.removal &&
+              local.mutation &&
+              (local.mutation.kind === 'refresh' ||
+                local.mutation.kind === 'replace') &&
+              command.kind !== 'cancel' &&
+              !controls.current()
+            ) {
+              const recovered = await options.recoverPublished?.();
+              if (
+                recovered?.kind !== 'ready' ||
+                recovered.head.epoch !== existing.accountEpoch ||
+                options.state.read().authority.mutation
+              )
+                throw new Error('Published local recovery unconfirmed.');
+            }
+            if (
+              existing?.phase === 'published' &&
+              (command.kind === 'cancel' ||
+                options.state.read().authority.removal)
+            ) {
+              controls.cancelAdmission();
+              if (!options.removePublished)
+                throw new Error('Published account removal unavailable.');
+              const result = await options.removePublished(
+                existing.accountEpoch,
+              );
+              const after = options.state.read();
+              if (
+                result.kind !== 'removed' ||
+                after.binding?.operationId !== existing.operationId ||
+                after.binding.phase !== 'retired' ||
+                after.authority.head ||
+                after.authority.mutation ||
+                after.authority.removal ||
+                after.authority.completed?.kind !== 'delete' ||
+                after.authority.completed.epoch !== existing.accountEpoch
+              )
+                throw new Error('Published account retirement unconfirmed.');
+              await action({
+                kind: 'abandon',
+                identity: {
+                  operationId: existing.operationId,
+                  epoch: existing.accountEpoch,
+                  account: existing.account,
+                  origin: 'import',
+                },
+                published: true,
+                destination: existing.destination,
+              });
+            }
             if (command.kind === 'cancel' && !existing) {
               const bundle = options.state.read();
               const journal = options.state.migration.read();
@@ -465,7 +563,9 @@ export function createCopilotHandoffCore(options: {
             if (
               existing &&
               (command.kind === 'cancel' ||
-                ['cancelling', 'retired'].includes(existing.phase))
+                ['cancelling', 'retired'].includes(
+                  options.state.read().binding?.phase ?? '',
+                ))
             ) {
               controls.beginCancellation(existing.operationId);
               CopilotHandoffSuccessSchema.parse(

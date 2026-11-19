@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { CLAUDE_NONESSENTIAL_TRAFFIC_OPT_OUT_ENV } from '@canopy/execution-engine/node/local-only-build';
 
 /** Preserve only the verified runtime's private paths and process basics. */
 export function buildDelegationCursorEnvironment(
@@ -36,7 +37,6 @@ export function buildDelegationCursorEnvironment(
   return {
     ...result,
     NO_OPEN_BROWSER: '1',
-    ELECTRON_RUN_AS_NODE: '1',
     LANG: 'en_US.UTF-8',
   };
 }
@@ -147,9 +147,11 @@ export function buildDelegationClaudeEnvironment(
   )
     throw new Error('Invalid delegation runtime paths');
   const environment = buildDelegationCommandEnvironment(options);
-  environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
+  environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC =
+    CLAUDE_NONESSENTIAL_TRAFFIC_OPT_OUT_ENV.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
   environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
-  environment.DISABLE_AUTOUPDATER = '1';
+  environment.DISABLE_AUTOUPDATER =
+    CLAUDE_NONESSENTIAL_TRAFFIC_OPT_OUT_ENV.DISABLE_AUTOUPDATER;
   if (options.backgroundTaskDirectory)
     environment.CLAUDE_CODE_TMPDIR = options.backgroundTaskDirectory;
   if (options.claudeConfigDirectory)

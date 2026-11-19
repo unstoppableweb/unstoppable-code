@@ -36,6 +36,7 @@ export const ANNOTATION_ERROR_REASONS = [
   'NOT_FOUND',
   'REVISION_CONFLICT',
   'READ_ONLY_SCOPE',
+  'DAMAGED_STATE',
 ] as const;
 export type AnnotationErrorReason = (typeof ANNOTATION_ERROR_REASONS)[number];
 
@@ -43,6 +44,11 @@ export const ANNOTATION_ERROR_CODES = {
   NOT_FOUND: 'core.annotation.notFound',
   REVISION_CONFLICT: 'core.annotation.revisionConflict',
   READ_ONLY_SCOPE: 'core.annotation.readOnlyScope',
+  /**
+   * The scope's state file can't be read, or a newer version wrote it, so a
+   * write is refused rather than replacing it (CAN-7094).
+   */
+  DAMAGED_STATE: 'core.annotation.damagedState',
 } as const satisfies Record<AnnotationErrorReason, string>;
 
 export const AnnotationOperationErrorDetailsSchema = z.strictObject({
@@ -60,6 +66,7 @@ export const AnnotationOperationErrorSchema = CanopyErrorPayloadSchema.extend({
       ANNOTATION_ERROR_CODES.NOT_FOUND,
       ANNOTATION_ERROR_CODES.REVISION_CONFLICT,
       ANNOTATION_ERROR_CODES.READ_ONLY_SCOPE,
+      ANNOTATION_ERROR_CODES.DAMAGED_STATE,
     ])
     .optional(),
   details: AnnotationOperationErrorDetailsSchema.optional(),

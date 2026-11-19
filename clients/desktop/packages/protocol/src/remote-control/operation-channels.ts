@@ -268,6 +268,11 @@ export const REMOTE_QUERY_CHANNELS = {
       { when: 'no worktree target', local: 'unsupported' },
     ],
   },
+  // The archive overview Portal's archived list served (CAN-5986).
+  'workEntries.archived': {
+    requires: ['archivedWorkEntries'],
+    invoke: [C.workEntriesListArchived],
+  },
 } as const satisfies OperationTable;
 
 export const REMOTE_COMMAND_CHANNELS = {

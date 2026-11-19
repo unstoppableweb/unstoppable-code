@@ -1,3 +1,4 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { inlineFailureText } from '@/lib/inline-app-error';
 import { prepareOpenCodeVisibleFork } from '@canopy/desktop-shared/lib/opencode-fork-context';
 import { chatStoreApi } from '../store-ref';
@@ -1596,6 +1597,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       // Never leave a selected worktree without a visible chat tab: fall back
       // to an in-memory default tab and keep the key un-hydrated so the next
       // selection retries against persistence.
+      reportClientAppError(error, { source: 'chat_tabs.hydrate_selected' });
       await applyFallbackWorktreeChatState(sel.projectId, sel.worktreeId);
       // eslint-disable-next-line no-console
       console.error(
@@ -1943,6 +1945,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         scheduleStreamingVerification();
       }
     } catch (error) {
+      reportClientAppError(error, { source: 'chat_tabs.hydrate_target' });
       await applyFallbackWorktreeChatState(projectId, worktreeId);
       // eslint-disable-next-line no-console
       console.error(
@@ -2186,6 +2189,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
               // the whole batch or strand this worktree's chat panel with no
               // visible tab. Fall back to an in-memory default tab and keep
               // the key un-hydrated so a later selection retries.
+              reportClientAppError(error, {
+                source: 'chat_tabs.hydrate_batch',
+              });
               await applyFallbackWorktreeChatState(wt.projectId, wt.worktreeId);
               // eslint-disable-next-line no-console
               console.error(
@@ -3175,6 +3181,9 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
             }
           }
         } catch (error: unknown) {
+          reportClientAppError(error, {
+            source: 'chat_tabs.codex_fork_persist',
+          });
           // eslint-disable-next-line no-console
           console.warn(
             '[chat-fork] Codex thread/fork failed; forked tab will restore copied history before continuing.',
@@ -4385,6 +4394,9 @@ ${summary}
             }
           }
         } catch (error: unknown) {
+          reportClientAppError(error, {
+            source: 'chat_tabs.codex_branch_persist',
+          });
           if (forkedThreadIdToRollback) {
             const rejectedForkedThreadId = forkedThreadIdToRollback;
             set((state) => {
@@ -4685,6 +4697,39 @@ ${summary}
       );
     }
     return tabId;
+  },
+
+  retargetFileTab: async (
+    tabId,
+    { absolutePath, filename, fileDiffContext },
+    target,
+  ): Promise<boolean> => {
+    // Commit-only, as for view modes: an optimistic path that a refresh
+    // reverted would rebind the tab's viewer to the old file.
+    if (!isScopeRevisionedLive(get(), target.projectId, target.worktreeId)) {
+      return false;
+    }
+    const command = {
+      type: 'chat.patch_tab_settings' as const,
+      tabId,
+      patch: {
+        filePath: absolutePath,
+        title: filename,
+        ...(fileDiffContext ? { fileDiffContext } : {}),
+      },
+    };
+    let disposition = await get().dispatchChatCommand(target, command);
+    if (
+      (disposition === 'transport_failed' || disposition === 'conflict') &&
+      (await waitForChatScopeLive(target.projectId, target.worktreeId))
+    ) {
+      disposition = await get().dispatchChatCommand(target, command);
+    }
+    // The cloud adapter keeps file-tab changes off its event stream; a
+    // re-read snapshot shows them.
+    if (disposition === 'accepted' && isWebCoreScope(target.projectId))
+      get().refreshChatScopeRevisioned(target.projectId, target.worktreeId);
+    return disposition === 'accepted';
   },
 
   setFileTabViewMode: (tabId, mode, target, diffContext): void => {

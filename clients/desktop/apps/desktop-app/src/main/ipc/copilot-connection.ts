@@ -8,7 +8,7 @@ import { sendToWebContents } from '../lib/web-contents-send';
 import { assertCopilotHarnessEnabled } from '../copilot/feature-flag';
 import { COPILOT_SETUP_TIMEOUT_MS } from '../copilot/connection';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
-import { notifyPortalModelCatalogChanged } from '../portal/portal-event-bus';
+import { notifyModelCatalogChanged } from '../remote-projection/agent-catalog-compatibility';
 
 const operations = new Set<{
   owner: number;
@@ -80,7 +80,7 @@ async function owned<T>(
 
 function publish(): void {
   broadcastModelRegistryUpdated();
-  void notifyPortalModelCatalogChanged().catch(() => undefined);
+  void notifyModelCatalogChanged().catch(() => undefined);
 }
 
 export async function shutdownCopilotConnections(): Promise<void> {

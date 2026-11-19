@@ -7,6 +7,13 @@
 export const CUSTOMIZE_SECTION_SUBTITLE =
   'Add and manage plugins, MCP servers, skills, workflows, collections, and agents.';
 
+/**
+ * The same line under New Customize: collections are bundles of the other
+ * kinds, reached from Browse, so the line doesn't name them.
+ */
+export const CUSTOMIZE_DISCOVERY_SUBTITLE =
+  'Add and manage plugins, MCP servers, skills, workflows, and agents.';
+
 /** The Workflows page's title, matching its nav label on every host. */
 export const WORKFLOWS_PAGE_TITLE = 'Workflows';
 

@@ -122,12 +122,18 @@ export function useInstalledItemStatuses(
         return mutationOutcome(result, target);
       } catch (error) {
         if (generation === sourceGenerationRef.current) load();
-        return {
+        // Fixed copy: a caught message can quote paths. The caught error
+        // stays on a non-enumerable `cause` for local debugging.
+        const outcome: InstalledItemMutationOutcome = {
           ok: false,
-          message:
-            error instanceof Error ? error.message : MUTATION_UNCONFIRMED,
+          message: MUTATION_UNCONFIRMED,
           notices: [],
         };
+        Object.defineProperty(outcome, 'cause', {
+          value: error,
+          enumerable: false,
+        });
+        return outcome;
       } finally {
         if (generation === sourceGenerationRef.current) {
           pendingRef.current.delete(key);

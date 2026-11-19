@@ -44,7 +44,7 @@ exports[`broker callers shared-container code materialization probes the reposit
 }
 `;
 
-exports[`broker callers the permission probe reads with the credential its source names 1`] = `
+exports[`broker callers the permission probe behind settings:github-permissions reads with the credential its source names 1`] = `
 [
   {
     "caller": null,

@@ -11,7 +11,9 @@ import {
   normalizeCodeReviewFile,
   type CodeReviewArtifact,
   type CodeReviewFile,
+  type CodeReviewGetResponse,
   type CodeReviewSaveCommentsRequest,
+  type CodeReviewStateMutationFailure,
   type DataModelDiffDiagram,
   type LogicDiffDiagram,
   type ReviewAnnotationSet,
@@ -19,6 +21,7 @@ import {
   type ReviewCommentThread,
 } from '@canopy/desktop-shared/types';
 import {
+  readReviewStateText,
   withReviewStateLock,
   writeReviewStateText,
 } from '@canopy/core-runtime/node/review';
@@ -43,6 +46,7 @@ const withFileLock = withReviewStateLock;
 
 interface StoredReview {
   readonly file: CodeReviewFile;
+  readonly mutationError?: CodeReviewStateAdmissionError;
   /**
    * Stored threads the reader rejects (CAN-6667). They aren't shown, and
    * writes carry them on disk as they were instead of erasing them.
@@ -50,31 +54,76 @@ interface StoredReview {
   readonly unreadable: readonly unknown[];
 }
 
+/** Refuses only this review file, never the application or another scope. */
+export class CodeReviewStateAdmissionError extends Error {
+  readonly code = 'code_review_state_unavailable';
+  readonly namespace = 'code_review_state';
+
+  constructor(
+    readonly projectId: string,
+    readonly worktreeId: string,
+    readonly filePath: string,
+    readonly reason: CodeReviewStateMutationFailure['reason'],
+    // Compiled with both ES2020 and ES2022 libs; don't redeclare Error.cause.
+    readonly underlyingError?: unknown,
+  ) {
+    super(
+      "Couldn't update this code review because code-review.json could not be read safely. Keep the original file and repair it before trying again.",
+    );
+    this.name = 'CodeReviewStateAdmissionError';
+  }
+}
+
 /** Each scope's unreadable thread count as of its last read or write. */
 const skippedThreadCounts = new Map<string, number>();
 const scopeKey = (projectId: string, worktreeId: string): string =>
   `${projectId}\u0000${worktreeId}`;
 
-async function readStoredState(
+async function readProjectedState(
   projectId: string,
   worktreeId: string,
   filePath = getCodeReviewStateFilePath(projectId, worktreeId),
 ): Promise<StoredReview> {
+  const refused = (
+    reason: CodeReviewStateMutationFailure['reason'],
+    cause?: unknown,
+    file = emptyCodeReviewFile(),
+    unreadable: readonly unknown[] = [],
+  ): StoredReview => ({
+    file,
+    unreadable,
+    mutationError: new CodeReviewStateAdmissionError(
+      projectId,
+      worktreeId,
+      filePath,
+      reason,
+      cause,
+    ),
+  });
+  let raw: string | null;
+  try {
+    raw = await readReviewStateText(filePath);
+  } catch (error) {
+    recordSkipped(projectId, worktreeId, 0);
+    return refused('read_failed', error);
+  }
+  recordSkipped(projectId, worktreeId, 0);
+  if (raw === null) return { file: emptyCodeReviewFile(), unreadable: [] };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(filePath, 'utf8'));
-  } catch {
-    skippedThreadCounts.delete(scopeKey(projectId, worktreeId));
-    return { file: emptyCodeReviewFile(), unreadable: [] };
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return refused('invalid_json', error);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return refused('lossy_state');
+  }
+  if (!('version' in parsed) || parsed.version !== 1) {
+    return refused('unsupported_version');
   }
   const file = normalizeCodeReviewFile(parsed);
   const unreadable =
-    typeof parsed === 'object' &&
-    parsed !== null &&
-    'version' in parsed &&
-    parsed.version === 1 &&
-    'commentThreads' in parsed &&
-    Array.isArray(parsed.commentThreads)
+    'commentThreads' in parsed && Array.isArray(parsed.commentThreads)
       ? parsed.commentThreads.filter(
           (thread: unknown) => !isReviewCommentThread(thread),
         )
@@ -85,7 +134,26 @@ async function readStoredState(
       `[code-review] skipped ${unreadable.length} unreadable comment thread${unreadable.length === 1 ? '' : 's'}`,
       { projectId, worktreeId, skipped: unreadable.length },
     );
+  // Only unreadable array members have a lossless carry-through path (CAN-6667).
+  // Refuse every other dropped/coerced field, including unknown extensions.
+  if (
+    !('commentThreads' in parsed) ||
+    !Array.isArray(parsed.commentThreads) ||
+    !isDeepStrictEqual({ ...parsed, commentThreads: file.commentThreads }, file)
+  ) {
+    return refused('lossy_state', undefined, file, unreadable);
+  }
   return { file, unreadable };
+}
+
+async function readStoredState(
+  projectId: string,
+  worktreeId: string,
+  filePath = getCodeReviewStateFilePath(projectId, worktreeId),
+): Promise<StoredReview> {
+  const stored = await readProjectedState(projectId, worktreeId, filePath);
+  if (stored.mutationError) throw stored.mutationError;
+  return stored;
 }
 
 function recordSkipped(
@@ -162,6 +230,37 @@ export async function readCodeReviewState(
   worktreeId: string,
 ): Promise<CodeReviewFile> {
   return readFileState(projectId, worktreeId);
+}
+
+/** Forgiving read-only projection; never use it as read-modify-write input. */
+export async function readCodeReviewStateProjection(
+  projectId: string,
+  worktreeId: string,
+): Promise<
+  Pick<
+    CodeReviewGetResponse,
+    'review' | 'mutationFailure' | 'skippedCommentThreads'
+  >
+> {
+  const { file, unreadable, mutationError } = await readProjectedState(
+    projectId,
+    worktreeId,
+  );
+  return {
+    review: file,
+    ...(unreadable.length > 0
+      ? { skippedCommentThreads: unreadable.length }
+      : {}),
+    ...(mutationError
+      ? {
+          mutationFailure: {
+            code: mutationError.code,
+            reason: mutationError.reason,
+            message: mutationError.message,
+          },
+        }
+      : {}),
+  };
 }
 
 export async function setCodeReviewArmed(
@@ -397,7 +496,12 @@ export async function readReviewCommentThread(request: {
   worktreeId: string;
   threadId?: string;
 }): Promise<ReadReviewCommentThreadResult> {
-  const file = await readFileState(request.projectId, request.worktreeId);
+  // Read-only comment lookup also serves file/plan tools. A refused review
+  // mutation must not block those namespaces; replies still admit under lock.
+  const { file } = await readProjectedState(
+    request.projectId,
+    request.worktreeId,
+  );
   if (request.threadId !== undefined) {
     const thread = file.commentThreads.find(
       (entry) => entry.id === request.threadId,

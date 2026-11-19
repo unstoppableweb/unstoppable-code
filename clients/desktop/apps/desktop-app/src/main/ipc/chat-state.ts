@@ -1,3 +1,4 @@
+import { logMainProcessError } from '../lib/main-process-logging';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   TrackedPlanImplementationInputSchema,
@@ -1220,7 +1221,14 @@ function validateCommand(
             'preserveModelSelectionMode',
             'autoRoutedMessageId',
           ])
-        : COMMAND_KEYS[commandType],
+        : commandType === 'chat.patch_tab_settings' && allowMainOnlyFields
+          ? // core.chat.update's compare-and-set for plugin selections
+            // (CAN-7221); the service answers conflict on a mismatch.
+            new Set([
+              ...Array.from(COMMAND_KEYS[commandType]),
+              'expectedPluginSelections',
+            ])
+          : COMMAND_KEYS[commandType],
     'command',
   );
 
@@ -1793,6 +1801,12 @@ function validateCommand(
       !isChatTabPluginSelections(command.patch.pluginSelections)
     ) {
       failInvalidRequest('command.patch.pluginSelections is malformed.');
+    }
+    if (
+      command.expectedPluginSelections !== undefined &&
+      !isChatTabPluginSelections(command.expectedPluginSelections)
+    ) {
+      failInvalidRequest('command.expectedPluginSelections is malformed.');
     }
     if (
       command.patch.selectedRepoId !== undefined &&
@@ -3473,8 +3487,12 @@ export function registerChatStateHandlers(
       if (!closed && !sawItem)
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
-  })().catch(() => {
-    process.stderr.write('Chat event stream stopped.\n');
+  })().catch((error) => {
+    try {
+      logMainProcessError('[chat-state] event stream stopped', error);
+    } catch {
+      // Consume the stream rejection even if diagnostics fail.
+    }
   });
   return (): void => {
     searches.forEach((controller) => controller.abort());

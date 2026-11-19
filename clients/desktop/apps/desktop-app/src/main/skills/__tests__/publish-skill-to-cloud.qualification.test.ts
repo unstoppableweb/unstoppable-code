@@ -199,6 +199,8 @@ describe('publishing a desktop skill to the cloud (CAN-6176)', () => {
         capabilityPackage: PACKAGE_REF,
         committedPackageUploadId: 'upload-1',
         expectedSourceSha256: HASH,
+        // An identical skill the account shares more widely is refused.
+        expectedAudience: 'private',
       },
     ]);
     expect(recorded.links).toEqual([
@@ -291,6 +293,49 @@ describe('publishing a desktop skill to the cloud (CAN-6176)', () => {
     ).resolves.toEqual(
       expect.objectContaining({ publicationId: 'remote-new' }),
     );
+  });
+
+  it('replaces a deleted team copy with a private one, asked and recorded as private (CAN-7037)', async () => {
+    // The dialog named the team, as the linked copy reached it; the copy is
+    // gone from the cloud, so the publish starts a new private one.
+    const link: ShareRemoteMetadata = {
+      accountId: 'acct-1',
+      remoteId: 'remote-old',
+      contentHash: 'd'.repeat(64),
+      shareScope: 'team',
+      sharedAt: AT,
+    };
+    const { deps, recorded } = fakes(
+      {
+        analysisSubject: () =>
+          Promise.resolve({
+            sourceId: 'custom:app',
+            skillName: 'helper',
+            contentHash: HASH,
+            cloudCopy: true,
+            accountId: 'acct-1',
+            audience: 'team',
+          }),
+        linkedCopyAudience: () => Promise.resolve(null),
+        updateSharedSkill: () =>
+          Promise.reject(
+            new CanopyCloudClientError('http-error', 'Not found', 404),
+          ),
+      },
+      [installed(link)],
+    );
+    await expect(
+      publishSkillToCloud(ENTRY, PKG, deps, CHOSEN),
+    ).resolves.toEqual(
+      expect.objectContaining({ publicationId: 'remote-new' }),
+    );
+    expect(recorded.created).toMatchObject([{ expectedAudience: 'private' }]);
+    expect(recorded.links.map(([, remote]) => remote.remoteId)).toEqual([
+      'remote-new',
+    ]);
+    expect(recorded.consents).toMatchObject([
+      ['custom:app/helper', { remoteId: 'remote-new', audience: 'private' }],
+    ]);
   });
 
   it('uploads nothing to a linked copy that reaches more people than the consent dialog said', async () => {
@@ -435,6 +480,46 @@ describe('publishing a desktop skill to the cloud (CAN-6176)', () => {
     expect(recorded.updated).toMatchObject([{ expectedAudience: 'private' }]);
     expect(recorded.created).toEqual([]);
     expect(recorded.links).toEqual([]);
+  });
+
+  it('says so, and links nothing, when a new copy meets an identical skill the account shares by link, with a team or with an organization (CAN-7037)', async () => {
+    const PUBLIC_SHARE = {
+      externalId: 'b1b2b3b4-c5c6-4d7d-8e9e-f0f1f2f3f4f5',
+      pinnedContentHash: HASH,
+      upToDate: true,
+      sharePath: '/s/skill',
+      createdAt: AT,
+      updatedAt: AT,
+    };
+    // A cloud with the precondition refuses it as the copy is created.
+    const refused = fakes({
+      createSharedSkill: (): Promise<never> =>
+        Promise.reject(
+          new CanopyCloudClientError(
+            'http-error',
+            'This skill is already in your cloud account, shared with more people than this copy would be.',
+            409,
+            'audience_changed',
+          ),
+        ),
+    });
+    // An older cloud returns the shared row itself, which is never linked.
+    const returned = [
+      { publicShare: PUBLIC_SHARE },
+      { shareScope: 'team' as const },
+      { shareScope: 'organization' as const },
+    ].map((wider) =>
+      fakes({
+        createSharedSkill: () => Promise.resolve(detail('shared-copy', wider)),
+      }),
+    );
+    for (const { deps, recorded } of [refused, ...returned]) {
+      await expect(
+        publishSkillToCloud(ENTRY, PKG, deps, CHOSEN),
+      ).rejects.toEqual(refusal('publish-audience-wider'));
+      expect(recorded.links).toEqual([]);
+      expect(recorded.consents).toEqual([]);
+    }
   });
 
   it('uploads nothing when the skill changed after its package was analysed', async () => {

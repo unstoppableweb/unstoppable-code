@@ -988,6 +988,25 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     access: 'read',
     executor: 'shared-engine',
   }),
+  'installed_items.list_mcp_removals': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'shared-engine',
+  }),
+  'installed_items.inspect_mcp_removal': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'shared-engine',
+  }),
+  'installed_items.force_mcp_removal': Object.freeze({
+    // The shared port still performs an ask-mode approval check; this grants
+    // no core.catalog.mcpServer.forceRemove authority to the advisor caller.
+    kind: 'core',
+    access: 'write',
+    executor: 'shared-engine',
+    grants: Object.freeze(['core.catalog.write'] as const),
+    revision: 'none',
+  }),
   'installed_items.set_status': Object.freeze({
     kind: 'core',
     access: 'write',

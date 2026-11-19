@@ -116,8 +116,47 @@ export interface ItemHarnessInstalls {
   readonly standIns?: Readonly<
     Partial<Record<HarnessCompatibilityHarness, ItemHarnessStandIn>>
   >;
+  /**
+   * Other copies of the same integration one Add installed for harnesses
+   * this item can't serve, natively there (Sergii's QA: Slack's Claude
+   * plugin beside its Codex one). They go when this item is uninstalled.
+   */
+  readonly companions?: readonly ItemHarnessCompanion[];
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+/** A native copy one Add installed for some harnesses (see `companions`). */
+export interface ItemHarnessCompanion {
+  readonly item: {
+    readonly kind: 'plugin';
+    readonly marketplaceId: string;
+    readonly pluginName: string;
+  };
+  readonly harnesses: readonly HarnessCompatibilityHarness[];
+}
+
+/** At most this many companions ride on one install. */
+export const ITEM_HARNESS_COMPANIONS_MAX = 4;
+
+/** Reads a companion list at a trust boundary; bad entries are dropped. */
+export function parseItemHarnessCompanions(
+  value: unknown,
+): ItemHarnessCompanion[] {
+  if (!Array.isArray(value)) return [];
+  const companions: ItemHarnessCompanion[] = [];
+  for (const candidate of value.slice(0, ITEM_HARNESS_COMPANIONS_MAX)) {
+    if (!isRecord(candidate) || !isRecord(candidate.item)) continue;
+    const item = parseHarnessInstallItemRef(candidate.item);
+    if (item === undefined || item.kind !== 'plugin') continue;
+    const listed: unknown = candidate.harnesses;
+    const harnesses = Array.isArray(listed)
+      ? ITEM_INSTALL_HARNESSES.filter((harness) => listed.includes(harness))
+      : [];
+    if (harnesses.length === 0) continue;
+    companions.push({ item, harnesses });
+  }
+  return companions;
 }
 
 /** The item one Add installed, as the record store keys it. */
@@ -157,6 +196,11 @@ export interface InstallItemForHarnessesRequest {
    * catalog grouping picked it. Absent: nothing stands in.
    */
   readonly standIn?: PluginStandInCandidate;
+  /**
+   * Native copies of the same integration to install for harnesses this
+   * item can't serve (see `ItemHarnessInstalls.companions`).
+   */
+  readonly companions?: readonly ItemHarnessCompanion[];
 }
 
 /** Whether an install request is a new Add or adds newly set-up harnesses. */
@@ -384,10 +428,12 @@ export function parseItemHarnessInstalls(
     const standIn = parseItemHarnessStandIn(servedStandIns[harness]);
     if (standIn !== undefined) standIns[harness] = standIn;
   }
+  const companions = parseItemHarnessCompanions(value.companions);
   return {
     version: ITEM_HARNESS_INSTALLS_VERSION,
     harnesses,
     ...(Object.keys(standIns).length > 0 ? { standIns } : {}),
+    ...(companions.length > 0 ? { companions } : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };

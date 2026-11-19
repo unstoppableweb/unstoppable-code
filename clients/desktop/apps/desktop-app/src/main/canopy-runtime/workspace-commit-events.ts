@@ -4,8 +4,16 @@ import {
   type CanopyEventsConnection,
   type CanopyWorkspaceInvalidationPlan,
 } from '@canopy/core-client';
+import {
+  CORE_WORKSPACE_COMMITTED_EVENT,
+  CoreWorkspaceCommittedPayloadSchema,
+  type CanopyEvent,
+} from '@canopy/protocol/canopy-core';
 import type { WorktreeMembershipRow } from '../lib/worktree-lifecycle-signals';
-import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  logMainProcessInfo,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 
 /*
  * The Electron subscriber for W5e workspace commit events (CAN-5497). It maps
@@ -35,8 +43,7 @@ export interface WorktreeListRead {
  * retries instead of acknowledging; the pushes read nothing.
  */
 export interface WorkspaceCommitEventHandlers {
-  schedulePortalStructuralSync(): void;
-  notifyPortalStructureChanged(): void;
+  scheduleDesktopStructureChanged(): void;
   /**
    * Re-reads the index and manifests into the type, external-path and id
    * registries, keeping what an unreadable index or manifest cannot decide,
@@ -77,6 +84,13 @@ export interface WorkspaceCommitEventBindingOptions {
   readonly handlers: WorkspaceCommitEventHandlers;
   /** Whether a `publishedBy` client instance id is this process's own. */
   readonly isOwnOrigin: (clientInstanceId: string) => boolean;
+  /**
+   * The read cache's step (CAN-7155), run before every handler so they read
+   * what it captured; it rejects when its capture failed.
+   */
+  readonly readCache?: (plan: CanopyWorkspaceInvalidationPlan) => Promise<void>;
+  /** The bridge's first broad re-read retry delay; tests inject their clock. */
+  readonly retryDelayMs?: number;
 }
 
 export interface WorkspaceCommitEventBinding {
@@ -104,9 +118,38 @@ export class WorkspaceCommitHandlersError extends Error {
   }
 }
 
+// Once per process (CAN-7155 q-45): proves `core.workspace.committed`
+// delivery is live in a shipped build. The commit id only; no paths or names.
+let committedDeliveryLogged = false;
+function noteFirstCommittedDelivery(
+  isOwnOrigin: (clientInstanceId: string) => boolean,
+): (event: CanopyEvent) => void {
+  return (event): void => {
+    if (
+      committedDeliveryLogged ||
+      event.name !== CORE_WORKSPACE_COMMITTED_EVENT
+    )
+      return;
+    committedDeliveryLogged = true;
+    const payload = CoreWorkspaceCommittedPayloadSchema.safeParse(
+      event.payload,
+    );
+    const publishedBy = payload.success ? payload.data.publishedBy : undefined;
+    logMainProcessInfo(
+      '[workspace-commit-events] first core.workspace.committed delivered',
+      {
+        commit: payload.success ? payload.data.commit : null,
+        ownOrigin: publishedBy !== undefined && isOwnOrigin(publishedBy),
+      },
+    );
+  };
+}
+
 export function createWorkspaceCommitEventBinding({
   handlers,
   isOwnOrigin,
+  readCache,
+  retryDelayMs,
 }: WorkspaceCommitEventBindingOptions): WorkspaceCommitEventBinding {
   // Each list's membership as this subscriber last read it.
   const memberships = new Map<string, readonly WorktreeMembershipRow[]>();
@@ -151,6 +194,8 @@ export function createWorkspaceCommitEventBinding({
     plan: CanopyWorkspaceInvalidationPlan,
     step: Step,
   ): Promise<void> => {
+    // First: a broad plan's last step re-runs the branch observer.
+    if (readCache) await step('readCache', () => readCache(plan));
     if (plan.broad) {
       memberships.clear();
       for (const workspaceId of handlers.listWorkspaceIds())
@@ -160,11 +205,8 @@ export function createWorkspaceCommitEventBinding({
       await step('refreshWorkspaceRegistries', () =>
         handlers.refreshWorkspaceRegistries(),
       );
-      await step('schedulePortalStructuralSync', () =>
-        handlers.schedulePortalStructuralSync(),
-      );
-      await step('notifyPortalStructureChanged', () =>
-        handlers.notifyPortalStructureChanged(),
+      await step('scheduleDesktopStructureChanged', () =>
+        handlers.scheduleDesktopStructureChanged(),
       );
       await step('publishWorktreeMembershipChange', () =>
         handlers.publishWorktreeMembershipChange(),
@@ -175,8 +217,8 @@ export function createWorkspaceCommitEventBinding({
     // the registries and pushes structure, as Electron's manifest writers do.
     const registries = plan.index || plan.manifests.length > 0;
     if (registries || plan.worktreeLists.length > 0)
-      await step('schedulePortalStructuralSync', () =>
-        handlers.schedulePortalStructuralSync(),
+      await step('scheduleDesktopStructureChanged', () =>
+        handlers.scheduleDesktopStructureChanged(),
       );
     if (registries)
       await step('refreshWorkspaceRegistries', () =>
@@ -188,15 +230,13 @@ export function createWorkspaceCommitEventBinding({
       );
     for (const workspaceId of plan.worktreeLists)
       await step('refreshWorktreeList', () => refreshList(workspaceId));
-    if (registries || plan.workspaces.length > 0)
-      await step('notifyPortalStructureChanged', () =>
-        handlers.notifyPortalStructureChanged(),
-      );
   };
 
   const bridge = createCanopyWorkspaceEventBridge({
     isOwnOrigin,
     apply,
+    ...(retryDelayMs !== undefined && { retryDelayMs }),
+    onDelivered: noteFirstCommittedDelivery(isOwnOrigin),
     onError: (error) =>
       logMainProcessWarn(
         '[workspace-commit-events] delivery or subscription failed',

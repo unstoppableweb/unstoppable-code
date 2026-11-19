@@ -1,3 +1,4 @@
+import { DetailFactError } from '@canopy/ui-shared/components';
 import { useCloudOrigin } from '@/lib/cloud-origin';
 import {
   marketplaceShareLink,
@@ -137,7 +138,10 @@ export function CollectionModal({
   onEditorOpenChange,
   onDeleted,
   onShare,
+  identity,
 }: {
+  /** New Customize: the tile's logo and publisher; the page uses the layout. */
+  identity?: { logo: ReactNode; publisher: ReactNode };
   collectionId: string | null; // null = create mode, string = edit mode
   onClose: () => void;
   onSaved: () => Promise<void>;
@@ -482,7 +486,11 @@ export function CollectionModal({
           }
         >
           <div className="flex flex-col gap-4">
-            <ErrorBanner errorSource="collection-modal" error={error} />
+            {/* New Customize says the failure under the page's facts once the
+                collection has loaded; a failed load keeps the banner. */}
+            {(!identity || !readCollection) && (
+              <ErrorBanner errorSource="collection-modal" error={error} />
+            )}
             {loading ? (
               <DelayedLoadingPlaceholder slowNote="Still loading collection…">
                 <CollectionReadDetailSkeleton
@@ -506,6 +514,19 @@ export function CollectionModal({
                 }
                 collection={readCollection}
                 resolvedMembers={readResolvedMembers}
+                {...(identity
+                  ? {
+                      layout: {
+                        ...identity,
+                        notice: error ? (
+                          <DetailFactError
+                            error={error}
+                            testId="collection-detail-error"
+                          />
+                        ) : undefined,
+                      },
+                    }
+                  : {})}
                 onOpenEntry={(member) => {
                   const row = tableRows.find(
                     (candidate) => candidate.key === member.entryKey,

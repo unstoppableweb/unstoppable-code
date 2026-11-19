@@ -56,6 +56,14 @@ export const CoreArtifactOwnerSchema = z.strictObject({
 });
 export type CoreArtifactOwner = z.output<typeof CoreArtifactOwnerSchema>;
 
+/**
+ * Revision 2 of core.artifact.list (CAN-7008): a workspace's files carry
+ * `versionId`, the id of each file's current version, which a new version's
+ * upload names as its `expectedVersionId`. A request without `revision`
+ * reads revision 1's rows, which carry none.
+ */
+export const CORE_ARTIFACT_LIST_VERSION_REVISION = 2;
+
 export const CoreArtifactSchema = z.strictObject({
   artifactId: id,
   owner: CoreArtifactOwnerSchema,
@@ -73,6 +81,8 @@ export const CoreArtifactSchema = z.strictObject({
       expiresAt: timestamp,
     })
     .nullable(),
+  /** A workspace file's current version; only at list revision 2. */
+  versionId: id.optional(),
 });
 export type CoreArtifact = z.output<typeof CoreArtifactSchema>;
 
@@ -82,6 +92,7 @@ export const CoreArtifactListParamsSchema = z.strictObject({
   states: z.array(z.enum(CORE_ARTIFACT_STATES)),
   cursor: id.nullable(),
   limit: z.number().int().min(1).max(500),
+  revision: z.literal(CORE_ARTIFACT_LIST_VERSION_REVISION).optional(),
 });
 
 export const CoreArtifactListResultSchema = z.strictObject({

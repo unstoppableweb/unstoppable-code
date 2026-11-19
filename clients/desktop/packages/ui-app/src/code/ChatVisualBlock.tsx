@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useState, type JSX } from 'react';
+import { allowsAgentVisualRemoteAssets } from '@canopy/app-core';
 import { useCapabilities } from '@canopy/app-state';
 import {
   AgentVisualFrame,
@@ -118,6 +119,7 @@ function ChatVisualBlockContent({
   const capabilities = useCapabilities();
   const host = useChatVisualHost();
   const enabled = capabilities.chatVisuals === true && host !== null;
+  const remoteAssets = allowsAgentVisualRemoteAssets(capabilities);
   const [block, setBlock] = useState<HTMLDivElement | null>(null);
   // Collapsed turns keep their visuals mounted, so a long chat would otherwise
   // read every artifact on open.
@@ -154,8 +156,14 @@ function ChatVisualBlockContent({
   const ownerDocument = block?.ownerDocument;
   const onSave = useCallback((): void => {
     if (document === undefined) return;
-    saveChatVisualAsHtml({ document, theme, title, ownerDocument });
-  }, [document, theme, title, ownerDocument]);
+    saveChatVisualAsHtml({
+      document,
+      theme,
+      title,
+      ownerDocument,
+      remoteAssets,
+    });
+  }, [document, theme, title, ownerDocument, remoteAssets]);
   if (!enabled) return null;
   return (
     <div
@@ -213,6 +221,7 @@ function ChatVisualBlockContent({
           // live frame before visuals in the transcript.
           prioritized={variant === 'panel'}
           frameUrl={host.frameUrl}
+          remoteAssets={remoteAssets}
           testIds={CHAT_VISUAL_TEST_IDS}
         />
       ) : null}

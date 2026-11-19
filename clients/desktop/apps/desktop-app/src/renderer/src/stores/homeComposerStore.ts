@@ -1685,14 +1685,6 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   },
 
   setModelSelectionMode: (mode): void => {
-    const state = get();
-    if (
-      mode === 'auto' &&
-      isAgentModel(
-        state.model ?? resolveHomeEffectiveDefaults(state.workspaceId).model,
-      )
-    )
-      return;
     set(
       mode === 'auto'
         ? { modelSelectionMode: 'auto', executionHarness: undefined }

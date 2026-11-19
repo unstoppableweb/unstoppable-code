@@ -12,6 +12,7 @@ import {
   type RemotePathPickerResponse,
 } from '@canopy/desktop-shared/types';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { isVoiceDictationPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { encodeRemoteWindowArgument } from '@canopy/desktop-shared/remote-control/window-context';
 import type { DevicePlatform } from '@canopy/protocol/device-relay';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
@@ -21,6 +22,7 @@ import type {
   DialogOpenParams,
   DialogOpenResult,
 } from '../remote-protocol';
+import { RpcPublicError } from '../transport/rpc-peer';
 import { uploadLocalFiles } from './upload-local-files';
 import {
   sendToWebContents,
@@ -68,7 +70,7 @@ export interface RemoteControlWindows {
 export interface RemoteWindowsOptions {
   preloadPath: string;
   title: (host: RemoteWindowHost, surface: RemoteSurface) => string;
-  /** Shared main-window chrome (title bar style, material, zoom). */
+  /** Shared main-window chrome (title bar style, background, zoom). */
   baseWindowOptions: () => BrowserWindowConstructorOptions;
   loadRenderer: (
     window: BrowserWindow,
@@ -88,6 +90,8 @@ export interface RemoteWindowsOptions {
   keepHidden?: () => boolean;
   /** Whether the app is quitting, when closing must not be turned into hiding. */
   isQuitting?: () => boolean;
+  /** Called with each window right after it is created. */
+  onWindowCreated?: (window: BrowserWindow) => void;
 }
 
 interface AppAdvisorWindowRecord {
@@ -121,11 +125,15 @@ function restrictRemoteWindowPermissions(window: BrowserWindow): void {
     (_webContents, permission, callback, details) => {
       const mediaTypes =
         'mediaTypes' in details ? (details.mediaTypes ?? []) : [];
+      const platform = hostPlatformOperatingSystem();
       callback(
-        hostPlatformOperatingSystem() === 'darwin' &&
+        isVoiceDictationPlatform(platform) &&
           permission === 'media' &&
           mediaTypes.length > 0 &&
-          mediaTypes.every((type) => type === 'audio'),
+          mediaTypes.every((type) => type === 'audio') &&
+          // Linux has no system microphone permission behind this one, so
+          // only the window's own page may ask, not a frame inside it.
+          (platform !== 'linux' || details.isMainFrame),
       );
     },
   );
@@ -200,6 +208,9 @@ export class RemoteMachineWindows implements RemoteControlWindows {
     const window = this.createWindow(host, 'main');
     this.windows.set(host.deviceId, window);
     primaryWindowFocus.track(window);
+    // Shown at first paint, as before. Its native background is visible only
+    // in the strip a live resize exposes, and it follows the paired computer's
+    // theme color as soon as this window's renderer publishes it.
     window.once('ready-to-show', () => window.show());
     window.on('closed', () => {
       if (this.windows.get(host.deviceId) === window) {
@@ -233,7 +244,7 @@ export class RemoteMachineWindows implements RemoteControlWindows {
     const main = this.windows.get(deviceId);
     if (!host || !main || main.isDestroyed()) {
       return Promise.reject(
-        new Error('This computer is not showing that computer.'),
+        new RpcPublicError('This computer is not showing that computer.'),
       );
     }
     if (params.action === 'focus_main') {
@@ -343,8 +354,15 @@ export class RemoteMachineWindows implements RemoteControlWindows {
   ): BrowserWindow {
     const base = this.options.baseWindowOptions();
     const mainBounds = this.options.getMainWindow()?.getBounds();
+    // App Advisor shows the same paired computer as its main window, so it
+    // starts on that window's native background, the paired computer's theme.
+    const pairedMain =
+      surface === 'app-advisor' ? this.windows.get(host.deviceId) : undefined;
     const window = new BrowserWindow({
       ...base,
+      ...(pairedMain && !pairedMain.isDestroyed()
+        ? { backgroundColor: pairedMain.getBackgroundColor() }
+        : {}),
       ...(mainBounds
         ? {
             x: mainBounds.x + 24,
@@ -385,6 +403,7 @@ export class RemoteMachineWindows implements RemoteControlWindows {
       openExternalIfSafe(url);
     });
     window.on('page-title-updated', (event) => event.preventDefault());
+    this.options.onWindowCreated?.(window);
     return window;
   }
 

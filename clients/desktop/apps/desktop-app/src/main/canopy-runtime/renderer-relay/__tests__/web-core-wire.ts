@@ -9,6 +9,7 @@
  * no tests (CAN-6351).
  */
 import {
+  WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
   composeCanopyOperationEnvelopes,
   type CanopyInstructionDefinition,
   type CanopyQueryDefinition,
@@ -34,6 +35,13 @@ export const WEB_CORE_DEFINITIONS: Readonly<Record<string, Definition>> = {
   ...WEB_CORE_RELAY_DEFINITIONS.instructions,
   ...WEB_CORE_RELAY_DEFINITIONS.streams,
   ...WEB_CORE_HOST_DEFINITIONS.instructions,
+  // A workspace file upload, on main's own connection (CAN-7008).
+  'worker.artifact.upload.open':
+    WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS['worker.artifact.upload.open'],
+  'worker.artifact.upload.write':
+    WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS['worker.artifact.upload.write'],
+  'worker.artifact.upload.commit':
+    WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS['worker.artifact.upload.commit'],
 };
 
 const requests = new Map<string, ZodType>();

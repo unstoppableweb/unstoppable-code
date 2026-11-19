@@ -5,8 +5,8 @@ import {
   w5WorktreesImagePath,
 } from '@canopy/core-runtime/node/w5/record-image-repositories';
 import { createHash } from 'node:crypto';
+import { agentSecretAmbientEnvDirUnder } from '@canopy/execution-engine/node/codex-runtime/confined-sandbox';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { existsSync } from 'node:fs';
 import { join } from 'path';
 import { scriptRunFileStem } from '@canopy/core-runtime/node/script/run-log-stem';
 import {
@@ -70,6 +70,19 @@ export function getDataDir(): string {
   const identity = codeReviewStorageIdentity.getStore();
   if (identity?.active) return identity.dataDir;
   return getCanopyDataDir();
+}
+
+/**
+ * Speech models the Linux dictation helper loads, one directory per model id
+ * (CAN-7231). Per user and per build, beside the app's other downloads.
+ */
+export function getDictationModelsDir(): string {
+  return join(getDataDir(), 'dictation', 'models');
+}
+
+/** Logos and site icons resolved for Customize tiles, kept across launches. */
+export function getRemoteImageCacheDir(): string {
+  return join(getDataDir(), 'remote-image-cache');
 }
 
 export function getRootMigrationChatNoticesDir(): string {
@@ -147,6 +160,15 @@ export function getAgentChatSecretsFilePath(): string {
   return join(getDataDir(), 'agent-secrets', 'chat-secrets.json');
 }
 
+/**
+ * Full-access ambient env files for chats' own shell commands: one owner-only
+ * directory per provider launch, deleted when the launch ends or leaves Full
+ * access. App data, never inside a checkout. See agent-secrets/ambient-env.ts.
+ */
+export function getAgentSecretAmbientEnvDir(): string {
+  return agentSecretAmbientEnvDirUnder(getDataDir());
+}
+
 /** Metadata-only audit events for agent secrets: names, never values. */
 export function getAgentSecretAuditFilePath(): string {
   return join(getDataDir(), 'agent-secrets', 'audit.jsonl');
@@ -214,6 +236,25 @@ export function getRepoShadowsRootDir(): string {
 
 export function getPreferencesFilePath(): string {
   return join(getDataDir(), 'preferences.json');
+}
+
+/**
+ * Optional settings of the local-only build profile
+ * (docs/local-only-build.md), for example `{ "allowedHosts": ["host"] }`.
+ * No UI writes it; a local-only build only reads it.
+ */
+export function getLocalOnlySettingsFilePath(): string {
+  return join(getDataDir(), 'local-only.json');
+}
+
+/** Blocked outbound attempts recorded by the local-only egress guard. */
+export function getLocalOnlyEgressLogPath(): string {
+  return join(getDataDir(), 'local-only-egress.jsonl');
+}
+
+/** Main-owned Bot identity registry, separate from every Bot workspace. */
+export function getBotsRegistryFilePath(): string {
+  return join(getDataDir(), 'bots.json');
 }
 
 export function getMigrationsFilePath(): string {
@@ -976,14 +1017,6 @@ export function getClaudeWorkerRuntimeDir(
   );
 }
 
-export function getElectronAsNodeBinaryPath(): string {
-  const execPath = process.execPath;
-  if (!execPath || !existsSync(execPath)) {
-    throw new Error('Electron runtime is unavailable for Claude Code hooks.');
-  }
-  return execPath;
-}
-
 export function getHookInvocationDir(
   workspaceId: string,
   worktreeId: string,
@@ -1331,6 +1364,15 @@ export function getPipelineLocalMetadataFilePath(): string {
   return join(getDataDir(), 'pipeline-local-metadata.json');
 }
 
+/**
+ * The project workflow share-link catalog (CAN-7058). It sits in the user
+ * pipeline definitions folder, under the same root as the definitions, but is
+ * its own storage row with its own writer.
+ */
+export function getProjectPipelineShareLinksFilePath(): string {
+  return join(getCanopyDataDir(), 'pipelines', '.project-share-links.json');
+}
+
 export function getPipelineDefinitionReplaysFilePath(): string {
   return join(getDataDir(), 'pipeline-definition-replays.json');
 }
@@ -1394,6 +1436,11 @@ function assertSafeMcpServerId(serverId: string): void {
 
 export function getMcpServersIndexFilePath(): string {
   return join(getMcpServersDir(), 'index.json');
+}
+
+/** Private removal custody, excluded from ordinary diagnostics and exports. */
+export function getMcpRemovalEvidenceDir(): string {
+  return join(getMcpServersDir(), 'removal-evidence');
 }
 
 /**
@@ -2011,6 +2058,15 @@ export function getLabsExperimentChoicesPath(): string {
 export function getLabsExperimentPendingSyncPath(): string {
   return join(getDataDir(), 'labs-experiments', 'pending-sync.json');
 }
+/**
+ * The organization skills and plugins each organization workspace on this
+ * computer last read from the web core, and what was installed for them
+ * (CAN-6236). A cache: losing it costs a re-read.
+ */
+export function getOrganizationCapabilitiesCachePath(): string {
+  return join(getDataDir(), 'organization-capabilities', 'cache.json');
+}
+
 export function getLabsExperimentAvailabilityCachePath(): string {
   return join(getDataDir(), 'feature-flags', 'labs-experiments-cache.json');
 }

@@ -35,7 +35,7 @@ import {
   recordWorkspaceCloudBinding,
 } from '../lib/workspace-ownership';
 import { readWorkspaceConfigDetailed } from '../lib/workspace-persistence';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import {
   boundedLocalWorkspaceId,
   scrubProjectName,
@@ -283,7 +283,7 @@ export async function cloudProjectDevice(): Promise<{
   deviceId: string;
   installationGeneration: number;
 }> {
-  const deviceId = (await readPortalStateStore()).clientDeviceId;
+  const deviceId = await getInstallId();
   return {
     deviceId,
     installationGeneration: await readInstallationGeneration(deviceId),

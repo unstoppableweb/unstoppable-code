@@ -554,6 +554,28 @@ export async function deleteAgentModel(
   return true;
 }
 
+/**
+ * Removes an Agent copy the organization capabilities layer made once its
+ * organization's set no longer holds it (CAN-6237, phase 10a). A copy the
+ * person changed, or that is not an import, is left as it is: it is theirs
+ * now. No workspace context check: the layer removes only its own copies.
+ */
+export async function removeOrganizationAgentCopy(
+  id: string,
+): Promise<boolean> {
+  const agents = await readAgentModelsFile();
+  const removed = agents.find((agent) => agent.id === id);
+  if (
+    !removed ||
+    removed.importedFromRemoteId === undefined ||
+    !importedContentUnchanged(removed)
+  )
+    return false;
+  await writeAgentModelsFile(agents.filter((agent) => agent.id !== id));
+  unregisterAgentInstalls(removed);
+  return true;
+}
+
 export async function writeAgentRemoteMetadata(
   update: RemoteMetadataUpdate,
 ): Promise<AgentModelDefinition | null> {
@@ -613,6 +635,67 @@ export async function clearAgentRemoteMetadataByRemoteId(
 
   await writeAgentModelsFile(updated);
   return clearedCount;
+}
+
+/**
+ * Updates an Agent copy the organization capabilities layer made when its
+ * organization's share changed (CAN-6237, phase 10a): the same id, the name
+ * kept unless the share renamed it, the new content and content hashes.
+ * Null, with nothing written, when the copy is gone, is not an import of
+ * this share, the person changed it (it is theirs now) or the share is
+ * unchanged: the caller imports as usual then. Never used for a person's
+ * own import.
+ */
+export async function updateOrganizationAgentCopy(
+  id: string,
+  detail: SharedAgentDetail,
+  pluginSelections: ChatTabPluginSelections,
+): Promise<AgentModelDefinition | null> {
+  const validation = validateSharedAgentDocument(detail.agent);
+  if (!validation.ok) throw new Error(validation.error);
+  const agents = await readAgentModelsFile();
+  const index = agents.findIndex((agent) => agent.id === id);
+  const existing = index >= 0 ? agents[index] : undefined;
+  if (
+    !existing ||
+    existing.importedFromRemoteId !== detail.id ||
+    !importedContentUnchanged(existing) ||
+    existing.remoteContentHash === detail.contentHash
+  )
+    return null;
+  const document = validation.document;
+  assertInstructions(document.instructions);
+  assertBaseModel(document.baseModel);
+  const updated = withLocalHash({
+    ...existing,
+    name: resolveCopyName(
+      document.name,
+      agents.filter((agent) => agent.id !== id),
+    ),
+    baseModel: document.baseModel,
+    instructions: document.instructions,
+    pluginSelections: normalizePluginSelections(pluginSelections),
+    updatedAt: new Date().toISOString(),
+    remoteContentHash: detail.contentHash,
+  });
+  updated.importedContentHash = updated.contentHash;
+  await recordSharedAgentInstall(detail, id);
+  // A save may have landed while the receipt was recorded: read the list
+  // again and write only if the copy is still the unchanged import checked
+  // above, so a person's edit is never overwritten (it is theirs then).
+  const latest = await readAgentModelsFile();
+  const current = latest.find((agent) => agent.id === id);
+  if (
+    !current ||
+    current.contentHash !== existing.contentHash ||
+    !importedContentUnchanged(current)
+  )
+    return null;
+  await writeAgentModelsFile(
+    latest.map((agent) => (agent.id === id ? updated : agent)),
+  );
+  registerSharedAgentImport(updated, detail);
+  return updated;
 }
 
 export async function importSharedAgent(

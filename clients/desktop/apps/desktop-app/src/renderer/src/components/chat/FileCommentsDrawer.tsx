@@ -26,7 +26,7 @@ interface FileCommentsDrawerProps {
   active: boolean;
   comments: UseFileComments;
   containerRef: RefObject<HTMLDivElement | null>;
-  onSubmitStaged: () => void;
+  onSubmitStaged?: () => void;
   onRevealAnchor: (anchor: ReviewCommentAnchor) => void;
   canRevealAnchor?: (anchor: ReviewCommentAnchor) => boolean;
   /** Diagram surfaces only support node-anchored comments. */
@@ -125,6 +125,7 @@ export function FileCommentsDrawer({
             compact
             dataTestId={`file-comment-thread-${thread.id}`}
             thread={thread}
+            readOnly={comments.isThreadReadOnly?.(thread.id)}
             onReply={(body): void => comments.addReply(thread.id, body)}
             onToggleResolved={(): void => comments.toggleResolved(thread.id)}
             onEditStagedComment={(commentId, body): void =>

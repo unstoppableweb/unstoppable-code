@@ -3,11 +3,7 @@ import {
   commitW5BoundaryStep,
   w5CompositionLocks,
 } from './w5-composition-operation';
-import {
-  afterW5Commit,
-  afterW5Apply,
-  outsideW5CommitScope,
-} from './w5-commit-scope';
+import { afterW5Apply, outsideW5CommitScope } from './w5-commit-scope';
 import {
   removeWorkspaceNonW5Children,
   removeWorkspaceDirectoryAfterRecordRemoval,
@@ -18,7 +14,6 @@ import type {
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import { w5RecordReadPaths } from './paths';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { IdentifierValidationError, validateId } from './validation';
 import { WorkspaceIndexUnreadableError } from './workspace-index-repository';
 import { WorkspaceConfigUnreadableError } from './workspace-persistence';
@@ -408,7 +403,6 @@ export async function indexTemporaryCompositionWorkspace(
         collapsed: workspace.collapsed,
       },
     });
-    await afterW5Commit(notifyPortalStructureChanged);
   } catch (error) {
     if (error instanceof WorkspaceIndexUnreadableError)
       throw refuse('index-unavailable', error.message);
@@ -516,5 +510,4 @@ async function promoteCompositionWorkspaceAdmitted(
     ],
     stageCompositionPromotion,
   );
-  await afterW5Commit(notifyPortalStructureChanged);
 }

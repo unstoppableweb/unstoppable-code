@@ -4,6 +4,7 @@ import type {
   AgentProviderType,
 } from '@canopy/desktop-shared/types';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { isLocalOnlyBuild } from '@/lib/local-only-build';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 
 /**
@@ -200,13 +201,20 @@ export function useProviderUsageAutoRefresh(
   provider: AgentProviderType | undefined,
   turnActive = false,
 ): void {
+  // A local-only build (docs/local-only-build.md) reads usage only when the
+  // person opens a surface that shows it (useUsageRefreshOnOpen), never on a
+  // timer, on focus or after a turn: main's matching policy id is
+  // `usage.anthropic-poll` (on-demand).
+  const watchedProvider = isLocalOnlyBuild() ? undefined : provider;
   const wasActive = useRef(turnActive);
   useEffect(() => {
     const ended = wasActive.current && !turnActive;
     wasActive.current = turnActive;
-    if (ended && provider !== undefined) scheduleAfterTurn(provider);
-  }, [provider, turnActive]);
+    if (ended && watchedProvider !== undefined)
+      scheduleAfterTurn(watchedProvider);
+  }, [watchedProvider, turnActive]);
   useEffect(() => {
+    const provider = watchedProvider;
     if (provider === undefined) return undefined;
     watched.set(provider, (watched.get(provider) ?? 0) + 1);
     stopListening ??= startListening();
@@ -225,7 +233,7 @@ export function useProviderUsageAutoRefresh(
         stopListening = null;
       }
     };
-  }, [provider]);
+  }, [watchedProvider]);
 }
 
 /** Forgets every provider's last request (tests start from a clean slate). */

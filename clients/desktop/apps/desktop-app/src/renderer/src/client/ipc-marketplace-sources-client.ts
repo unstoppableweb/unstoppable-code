@@ -14,7 +14,7 @@ import type {
   PluginsAPI,
   PluginsCache,
 } from '@canopy/execution-engine/types/plugins';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type { IPCResultWithAppError } from '@canopy/execution-engine/types/pipeline';
 import {
   getCurrentMarketplaceCache,
   marketplaceSourceOperations,
@@ -65,12 +65,16 @@ const DEFAULT_CACHE_SYNC: IpcMarketplaceSourcesCacheSync = {
 };
 
 async function unwrap<T>(
-  call: Promise<IPCResult<T>>,
+  call: Promise<IPCResultWithAppError<T>>,
   fallback: string,
 ): Promise<T> {
   const result = await call;
   if (!result.success || result.data === undefined) {
-    throw new Error(result.error || fallback);
+    // A failure main recorded keeps its record, so the caller links to it
+    // instead of recording the failure again.
+    throw Object.assign(new Error(result.error || fallback), {
+      appError: result.appError,
+    });
   }
   return result.data;
 }

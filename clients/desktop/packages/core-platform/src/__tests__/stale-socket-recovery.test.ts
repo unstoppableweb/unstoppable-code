@@ -346,3 +346,38 @@ test('Windows never recovers a departed claim; the pipe leaves no file behind', 
     recoverDeparted: false,
   });
 });
+
+posix(
+  'publication recovers an abandoned device-remapped socket and closes normally',
+  async () => {
+    await abandonSocket();
+    const identity = await lstat(socketPath, { bigint: true });
+    await writeFile(
+      join(dataRoot, 'runtime', 'core.json'),
+      JSON.stringify({
+        version: 1,
+        pid: 2000002,
+        startIdentity: 'before-boot',
+        endpoint: { kind: 'socket', path: socketPath },
+        protocolRange: { min: 1, max: 1 },
+        buildVersion: 'test',
+        tokenRef: join(dataRoot, 'runtime', 'old.token'),
+        socketIdentity: { device: '999999999999', inode: String(identity.ino) },
+      }),
+      { mode: 0o600 },
+    );
+    const base = socketHost();
+    const successor = await publishCanopyDaemon({
+      ...base,
+      platform: {
+        ...base.platform,
+        supervision: {
+          ...base.platform.supervision,
+          bootRelation: () => Promise.resolve('before_boot'),
+        },
+      },
+    });
+    await successor.close();
+    expect(await readdir(join(dataRoot, 'runtime'))).toEqual([]);
+  },
+);

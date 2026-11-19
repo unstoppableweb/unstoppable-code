@@ -1,6 +1,16 @@
-import { useEffect, useSyncExternalStore, type JSX } from 'react';
-import { WorkspaceFilesList } from '@canopy/ui-app/workspace-files';
-import { AttachmentIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+  type JSX,
+} from 'react';
+import { WorkspaceFilesCard } from '@canopy/ui-app/workspace-files';
+import { HeaderActionButton } from '@canopy/ui-shared/components';
+import {
+  AttachmentIcon,
+  PlusMediumIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import { formatByteSize, formatDate } from '@canopy/ui-shared/lib';
 import {
   PanelSection,
@@ -15,6 +25,8 @@ import {
   type CloudWorkspaceFileList,
 } from '@/cloud-chats/cloud-workspace-file-list';
 import { webCoreLocalId } from '@/lib/chat-authority';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
+import { cloudWorkspaceFilesHost } from '@/cloud-chats/cloud-workspace-file-writes';
 import type { ActivitySectionRenderProps } from './activity-sections';
 
 /**
@@ -60,6 +72,26 @@ export function CloudWorkspaceFilesSection({
   const list = useCloudWorkspaceFileList(projectId);
   const chrome = useCloudWorkspaceFilesHeaderChrome(projectId);
   const workspaceId = webCoreLocalId(projectId);
+  const capabilities = useScopeCapabilities({ projectId });
+  const writable =
+    capabilities.cloudWorkspaceFileWrite === true &&
+    workspaceId !== null &&
+    list?.kind !== 'unavailable';
+  const uploadTriggerRef = useRef<(() => void) | null>(null);
+  const host = useMemo(
+    () =>
+      workspaceId === null
+        ? undefined
+        : cloudWorkspaceFilesHost({
+            workspaceId,
+            cloudChats: window.api.cloudChats,
+            relay: window.canopyCore,
+            refresh: (): void => {
+              void refreshCloudWorkspaceFiles(window.canopyCore, workspaceId);
+            },
+          }),
+    [workspaceId],
+  );
   const rows = list?.kind === 'ready' ? list.rows : [];
   return (
     <PanelSection
@@ -67,14 +99,29 @@ export function CloudWorkspaceFilesSection({
       title="Workspace files"
       subtitle={chrome.subtitle}
       collapsedIconColor={chrome.collapsedIconColor}
-      hasExpandableContent={rows.length > 0 || list?.kind === 'error'}
+      // A writable card stays mounted with no files, so Add has its picker.
+      hasExpandableContent={
+        rows.length > 0 || list?.kind === 'error' || writable
+      }
+      headerAction={
+        writable ? (
+          <HeaderActionButton
+            iconOnly
+            aria-label="Add workspace file"
+            data-testid="workspace-files-header-add"
+            onClick={(): void => uploadTriggerRef.current?.()}
+          >
+            <PlusMediumIcon />
+          </HeaderActionButton>
+        ) : undefined
+      }
     >
       {list?.kind === 'unavailable' ? (
         <p className="text-xs fg-secondary">
           Workspace files aren't available for this project.
         </p>
       ) : (
-        <WorkspaceFilesList
+        <WorkspaceFilesCard
           phase={
             list === undefined || list.kind === 'loading'
               ? 'loading'
@@ -86,12 +133,22 @@ export function CloudWorkspaceFilesSection({
             id: row.id,
             name: row.name,
             meta: `${formatByteSize(row.sizeBytes)} · Added ${formatDate(row.createdAt)}`,
+            ...(row.versionId === undefined
+              ? {}
+              : { versionId: row.versionId }),
           }))}
           onRetry={(): void => {
             if (workspaceId !== null)
               void refreshCloudWorkspaceFiles(window.canopyCore, workspaceId);
           }}
-          emptySubtitle="Send an attachment in any chat, or add one on the web."
+          emptySubtitle={
+            writable
+              ? 'Upload a file here or send an attachment in any chat.'
+              : 'Send an attachment in any chat, or add one on the web.'
+          }
+          capabilities={capabilities}
+          {...(host === undefined ? {} : { host })}
+          uploadTriggerRef={uploadTriggerRef}
         />
       )}
     </PanelSection>

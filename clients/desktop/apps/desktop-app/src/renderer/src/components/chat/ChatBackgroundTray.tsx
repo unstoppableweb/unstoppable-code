@@ -73,6 +73,7 @@ import {
 import { useBackgroundTaskActions } from '../activity/useBackgroundTaskActions';
 import { reportBackgroundProcessSelection } from '@/lib/current-ui-state/backgroundProcessesUiState';
 import { useSubagentEntryActionsValue } from '@/components/subagents/subagent-entry-actions';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import {
   isFollowingWatcher,
   refreshGitHubWorkflowRunReceipt,
@@ -496,6 +497,9 @@ export function ChatBackgroundTray({
     processes,
     onSelectedTaskIdChange: reportSelectedProcess,
   });
+  // A scope that doesn't stop its delegates itself (a cloud chat's) offers
+  // neither Stop nor Stop all, as the web leaves both out.
+  const { delegationStop } = useScopeCapabilities({ projectId });
   const stopAll = useCallback(
     (): Promise<boolean> =>
       requestManagedDelegationStopAll({ projectId, worktreeId, chatId }),
@@ -713,9 +717,10 @@ export function ChatBackgroundTray({
       watchers={chatWatchers}
       onDeleteWatcher={deleteWatcher}
       onOpenAgent={subagentActions?.openSubagentChat}
-      onStopAgent={stopAgent}
+      {...(delegationStop === true
+        ? { onStopAgent: stopAgent, onStopAllDelegations: stopAll }
+        : {})}
       onViewTree={subagentActions?.viewTree}
-      onStopAllDelegations={stopAll}
       onStopRun={stopRun}
       onRespondRun={openRun}
       onResumeRun={resumeRun}

@@ -1090,7 +1090,8 @@ function RulePreviewText({ body }: { readonly body: string }): JSX.Element {
   return (
     <Surface variant="group" size="small" className="overflow-hidden">
       <CodeBlock
-        variant="compact-document"
+        variant="document"
+        inset="compact"
         size="xs"
         wrap="words"
         tone="secondary"

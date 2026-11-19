@@ -3,7 +3,10 @@ import {
   hostPlatformOperatingSystem,
   hostPlatformServices,
 } from '@canopy/core-platform';
-import type { PlatformSupervisionServices } from '@canopy/core-runtime';
+import type {
+  PlatformProcessIdentity,
+  PlatformSupervisionServices,
+} from '@canopy/core-runtime';
 
 /*
  * Best-effort reaping of a provider's descendants that left its process group
@@ -31,6 +34,11 @@ import type { PlatformSupervisionServices } from '@canopy/core-runtime';
 
 const LIST_ATTEMPTS = 3;
 const LIST_RETRY_MS = 50;
+/**
+ * Reads of a process that came back unverifiable, read again: an exiting
+ * process reads that way until it becomes a zombie (CAN-7026).
+ */
+const IDENTIFY_ATTEMPTS = 3;
 /** Identity reads in flight at once while tracing. */
 const TRACE_CONCURRENCY = 4;
 /** Recording while the child runs is bounded independently of its stop. */
@@ -62,6 +70,19 @@ const GROUP_PROOF_BUDGET_MS = 1_500;
  *   out of time. Never `reaped` without that proof.
  */
 export type DescendantCleanup = 'none' | 'reaped' | 'unverified';
+
+/**
+ * Why a reap is `unverified` (CAN-7026): `proof-inconclusive`, a group's
+ * proof before a signal did not settle within its budget; `verify-deadline`,
+ * a killed group was not proven gone before the check's deadline.
+ */
+export type DescendantReapReason = 'proof-inconclusive' | 'verify-deadline';
+
+export interface DescendantReap {
+  readonly cleanup: DescendantCleanup;
+  /** Set only when `cleanup` is `unverified`. */
+  readonly reason?: DescendantReapReason;
+}
 
 interface SignalRound {
   readonly signalled: number[];
@@ -106,6 +127,43 @@ export function delay(
     if (unref) timer.unref();
     signal?.addEventListener('abort', done, { once: true });
   });
+}
+
+type Identify = NonNullable<PlatformSupervisionServices['identifyProcess']>;
+
+/**
+ * A process identity, read again while it comes back unverifiable, within
+ * `signal`. On Linux a process that is exiting but not yet a zombie reads as
+ * running while its executable link is gone, so for a moment it is neither
+ * readable nor absent (CAN-7026); a stranger that stays unreadable is still
+ * reported unverifiable after the last attempt. A failed read is undefined.
+ */
+async function identifySettled(
+  identify: Identify,
+  pid: number,
+  signal: AbortSignal,
+): Promise<PlatformProcessIdentity | undefined> {
+  let found: PlatformProcessIdentity | undefined;
+  for (let attempt = 1; attempt <= IDENTIFY_ATTEMPTS; attempt += 1) {
+    if (attempt > 1) await delay(LIST_RETRY_MS, true, signal);
+    if (signal.aborted) return found;
+    found = await identify({ pid, signal }).catch(() => undefined);
+    if (found?.state !== 'unverifiable') return found;
+  }
+  return found;
+}
+
+/**
+ * A signal that aborts after `ms`, like `AbortSignal.timeout`, on a timer
+ * that does not hold the process open. It runs on the ordinary timer, so a
+ * test's fake clock drives every budget here.
+ */
+function timeoutSignal(ms: number): AbortSignal {
+  const controller = new AbortController();
+  void delay(ms, true).then(() => {
+    controller.abort(new DOMException('The budget elapsed.', 'TimeoutError'));
+  });
+  return controller.signal;
 }
 
 /**
@@ -179,7 +237,7 @@ async function trace(
   const identify = supervisor.identifyProcess?.bind(supervisor);
   if (!identify) return false;
   const confirmMs = Math.round(budgetMs * CONFIRM_SHARE);
-  const signal = AbortSignal.timeout(budgetMs - confirmMs);
+  const signal = timeoutSignal(budgetMs - confirmMs);
   const table = await supervisor
     .readProcessTable({ signal })
     .catch(() => undefined);
@@ -219,9 +277,7 @@ async function trace(
       const candidate = candidates[next];
       next += 1;
       if (!candidate) break;
-      const found = await identify({ pid: candidate.pid, signal }).catch(
-        () => undefined,
-      );
+      const found = await identifySettled(identify, candidate.pid, signal);
       if (found?.state === 'absent') continue;
       // A PID reused since the table read almost always has another group;
       // the second read below catches the rest. A descendant that moved to
@@ -248,7 +304,7 @@ async function trace(
   // exited and was reused between them has another parent or group in a
   // second read, unless the same parent PID (our own descendant) started it.
   const confirm = await supervisor
-    .readProcessTable({ signal: AbortSignal.timeout(confirmMs) })
+    .readProcessTable({ signal: timeoutSignal(confirmMs) })
     .catch(() => undefined);
   if (confirm?.kind !== 'sampled') return false;
   for (const entry of identified) {
@@ -300,7 +356,7 @@ async function recordedMemberRemains(
   let unknown = false;
   for (const [startIdentity, pid] of members) {
     if (signal.aborted) return 'unknown';
-    const found = await identify({ pid, signal }).catch(() => undefined);
+    const found = await identifySettled(identify, pid, signal);
     if (
       found?.state === 'running' &&
       found.startIdentity === startIdentity &&
@@ -400,7 +456,7 @@ async function signalProven(
   name: NodeJS.Signals,
   recordMembers: boolean,
 ): Promise<SignalRound> {
-  const round = AbortSignal.timeout(REAP_ROUND_BUDGET_MS);
+  const round = timeoutSignal(REAP_ROUND_BUDGET_MS);
   const queue = Array.from(candidates);
   const signalled: number[] = [];
   const unknown: number[] = [];
@@ -419,7 +475,7 @@ async function signalProven(
       if (!members || protectedGroup(group, rootPid)) continue;
       const signal = AbortSignal.any([
         round,
-        AbortSignal.timeout(GROUP_PROOF_BUDGET_MS),
+        timeoutSignal(GROUP_PROOF_BUDGET_MS),
       ]);
       // Signalled with no further await after the proving read. A group ID
       // cannot be reused while it has members, so only a group that emptied
@@ -458,7 +514,19 @@ export async function reapDescendantGroups(
   graceMs: number,
   services?: PlatformSupervisionServices,
 ): Promise<DescendantCleanup> {
-  if (groups.size === 0) return 'none';
+  return (
+    await reapDescendantGroupsWithReason(groups, rootPid, graceMs, services)
+  ).cleanup;
+}
+
+/** `reapDescendantGroups`, with why an `unverified` outcome is unverified. */
+export async function reapDescendantGroupsWithReason(
+  groups: DescendantGroups,
+  rootPid: number,
+  graceMs: number,
+  services?: PlatformSupervisionServices,
+): Promise<DescendantReap> {
+  if (groups.size === 0) return { cleanup: 'none' };
   const supervisor = services ?? supervisionServices();
   // Every group signalled in either round: one that ends on SIGTERM is no
   // longer ours by the SIGKILL round, yet it was reaped.
@@ -502,11 +570,12 @@ export async function reapDescendantGroups(
       unknown = killed.unknown;
     }
   }
-  if (unknown.length > 0) return 'unverified';
-  if (signalled.size === 0) return 'none';
+  if (unknown.length > 0)
+    return { cleanup: 'unverified', reason: 'proof-inconclusive' };
+  if (signalled.size === 0) return { cleanup: 'none' };
   return (await verifyGone(supervisor, groups, [...signalled]))
-    ? 'reaped'
-    : 'unverified';
+    ? { cleanup: 'reaped' }
+    : { cleanup: 'unverified', reason: 'verify-deadline' };
 }
 
 /**
@@ -526,7 +595,7 @@ async function verifyGone(
     for (;;) {
       const remaining = deadline - performance.now();
       if (remaining <= 0) return false;
-      const signal = AbortSignal.timeout(
+      const signal = timeoutSignal(
         Math.ceil(Math.min(GROUP_PROOF_BUDGET_MS, remaining)),
       );
       const proof = await settleBy(

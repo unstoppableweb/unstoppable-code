@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RpcPublicError } from '../transport/rpc-peer';
 import { mkdir, open, readdir, rm, stat } from 'node:fs/promises';
 import { dirname, join, relative, sep } from 'node:path';
 import {
@@ -82,7 +83,7 @@ export class RemoteUploadStore {
     bytes: Uint8Array,
   ): Promise<string> {
     if (bytes.byteLength > this.limits.maxBytes) {
-      throw new Error(this.limits.tooLargeMessage);
+      throw new RpcPublicError(this.limits.tooLargeMessage);
     }
     const file = await this.create(deviceId, fileName);
     try {
@@ -115,7 +116,7 @@ export class RemoteUploadStore {
       path,
       write: async (bytes: Uint8Array): Promise<void> => {
         if (written + bytes.byteLength > maxBytes) {
-          throw new Error(tooLargeMessage);
+          throw new RpcPublicError(tooLargeMessage);
         }
         let offset = 0;
         while (offset < bytes.byteLength) {
@@ -141,7 +142,7 @@ export class RemoteUploadStore {
     const directory = dirname(path);
     const segments = relative(this.rootDir, directory).split(sep);
     if (segments.length !== 2 || segments.some((s) => s === '' || s === '..')) {
-      throw new Error('Not a stored file.');
+      throw new RpcPublicError('Not a stored file.');
     }
     await rm(directory, { recursive: true, force: true });
   }

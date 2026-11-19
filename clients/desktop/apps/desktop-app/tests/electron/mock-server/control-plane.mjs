@@ -56,6 +56,7 @@ const stepAttempts = new Map();
 const requestObservations = new Map();
 
 const OBSERVATION_STRING_FIELDS = [
+  'model',
   'transport',
   'route',
   'stepId',
@@ -155,6 +156,8 @@ function snapshotObservation(observation) {
   snapshot.toolResultIds = Array.isArray(observation.toolResultIds)
     ? observation.toolResultIds.filter((value) => typeof value === 'string')
     : [];
+  if (observation.body !== undefined)
+    snapshot.body = structuredClone(observation.body);
   return snapshot;
 }
 

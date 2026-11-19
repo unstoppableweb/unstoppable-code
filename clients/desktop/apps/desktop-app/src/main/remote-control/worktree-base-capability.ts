@@ -1,4 +1,5 @@
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import { RpcPublicError } from './transport/rpc-peer';
 import { isExplicitWorktreeBaseBranch } from '@canopy/protocol/portal';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,5 +38,5 @@ export function assertLegacyWorktreeBaseRequest(
   request: unknown,
 ): void {
   if (isRecord(request) && usesExactBase(channel, request))
-    throw new Error('Update both desktops to use this base branch.');
+    throw new RpcPublicError('Update both desktops to use this base branch.');
 }

@@ -49,6 +49,16 @@ export function windowsUpdateErrorMessage(error: unknown): string | null {
   return null;
 }
 
+/** The closed code of a Windows update failure, or null for any other error. */
+export function windowsUpdateErrorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error))
+    return null;
+  for (const code of Object.keys(WINDOWS_UPDATE_MESSAGES)) {
+    if (error.code === code) return code;
+  }
+  return null;
+}
+
 function signatureCommand(file: string): string {
   const literalPath = file.replace(/'/g, "''");
   return [

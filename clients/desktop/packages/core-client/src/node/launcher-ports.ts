@@ -1,6 +1,7 @@
 // Host-injected stand-ins for the C5 startup claim and C2c supervised launch;
 // replace with their contracts once those land.
 import type { CanopyDaemonProcessInspector } from './daemon-ports';
+import type { CanopyClaimCause } from './daemon-refusal';
 
 /** Opaque, unique token per acquisition; never reused, retained on adoption. */
 export type CanopyStartupClaimHandle = object;
@@ -12,7 +13,14 @@ export type CanopyStartupClaimAcquisition =
       /** Bind proof retained when this acquisition replaced a departed lineage. */
       readonly recovered?: { readonly endpointBound: boolean };
     }
-  | { readonly kind: 'held' | 'ambiguous' };
+  | { readonly kind: 'held' }
+  | {
+      readonly kind: 'ambiguous';
+      /** Closed reason the claim state could not be proven; absent from older ports. */
+      readonly cause?: CanopyClaimCause;
+      /** Raw errno name; the launcher allowlists it before it crosses. */
+      readonly errno?: string;
+    };
 
 export interface CanopyStartupClaimPort {
   tryAcquire(signal: AbortSignal): Promise<CanopyStartupClaimAcquisition>;

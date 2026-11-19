@@ -43,7 +43,18 @@ export type CanopyStartupClaimResult =
       /** Present only when this acquisition replaced a departed owner's claim. */
       readonly recovered?: CanopyStartupClaimRecovery;
     }
-  | { readonly kind: 'held' | 'ambiguous' };
+  | { readonly kind: 'held' }
+  | {
+      readonly kind: 'ambiguous';
+      /** Why the guarded claim I/O could not be proven; absent otherwise. */
+      readonly cause?: CanopyStartupClaimAmbiguity;
+      /** Raw errno name of the I/O failure, when it had one. */
+      readonly errno?: string;
+    };
+export type CanopyStartupClaimAmbiguity =
+  | 'stale_guard'
+  | 'guard_io'
+  | 'record_io';
 export type CanopyStartupClaimReleaseResult =
   | 'released'
   | 'not_owner'
@@ -99,6 +110,19 @@ function hasCode(error: unknown, code: string): boolean {
     error.code === code
   );
 }
+function errnoOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error))
+    return undefined;
+  return typeof error.code === 'string' ? error.code : undefined;
+}
+const ambiguous = (
+  cause?: CanopyStartupClaimAmbiguity,
+  errno?: string,
+): CanopyStartupClaimResult => ({
+  kind: 'ambiguous',
+  ...(cause && { cause }),
+  ...(errno && { errno }),
+});
 function sameOwner(
   left: CanopyStartupClaimOwner,
   right: CanopyStartupClaimOwner,
@@ -127,7 +151,7 @@ export function createCanopyStartupClaimPort(
   const guardPath = join(runtimeDirectory, 'startup-claim.guard');
   const recordPath = join(runtimeDirectory, 'startup-claim.json');
   async function guarded<T>(
-    fallback: T,
+    fallback: (cause?: CanopyStartupClaimAmbiguity, errno?: string) => T,
     operation: () => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
@@ -135,30 +159,32 @@ export function createCanopyStartupClaimPort(
     // Exhausted/crashed guards still need offline repair.
     const deadline = performance.now() + 2_000;
     for (;;) {
-      if (signal?.aborted) return fallback;
+      if (signal?.aborted) return fallback();
       try {
         await mkdir(guardPath, { mode: 0o700 });
         break;
       } catch (error) {
-        if (!hasCode(error, 'EEXIST') || performance.now() >= deadline)
-          return fallback;
+        if (!hasCode(error, 'EEXIST'))
+          return fallback('guard_io', errnoOf(error));
+        if (performance.now() >= deadline) return fallback('stale_guard');
         try {
           await delay(5, undefined, { signal });
         } catch {
-          return fallback;
+          return fallback();
         }
       }
     }
-    let result = fallback;
+    let result: T;
     try {
       result = await operation();
-    } catch {
-      /* Uncertain I/O fails closed. */
+    } catch (error) {
+      // Uncertain I/O fails closed.
+      result = fallback('record_io', errnoOf(error));
     }
     try {
       await rmdir(guardPath);
-    } catch {
-      return fallback;
+    } catch (error) {
+      return fallback('guard_io', errnoOf(error));
     }
     return result;
   }
@@ -232,7 +258,7 @@ export function createCanopyStartupClaimPort(
     const snapshot = await guarded<
       CanopyStartupClaimResult | { kind: 'inspect'; record: ClaimRecord }
     >(
-      { kind: 'ambiguous' },
+      ambiguous,
       async () => {
         if (signal?.aborted) return { kind: 'ambiguous' };
         const existing = await read();
@@ -252,7 +278,7 @@ export function createCanopyStartupClaimPort(
     try {
       const state = await ownerState(snapshot.record, signal);
       return guarded<CanopyStartupClaimResult>(
-        { kind: 'ambiguous' },
+        ambiguous,
         async () => {
           if (signal?.aborted) return { kind: 'ambiguous' };
           const current = await read();
@@ -297,7 +323,7 @@ export function createCanopyStartupClaimPort(
     signal?: AbortSignal,
   ): Promise<CanopyStartupClaimResult> {
     return guarded<CanopyStartupClaimResult>(
-      { kind: 'ambiguous' },
+      () => ({ kind: 'ambiguous' }),
       async () => {
         const parsed = handleSchema.parse(handle);
         if (signal?.aborted) return { kind: 'ambiguous' };
@@ -338,7 +364,7 @@ export function createCanopyStartupClaimPort(
       'preserveEndpointBind' in options &&
       options.preserveEndpointBind === true;
     return guarded<CanopyStartupClaimReleaseResult>(
-      'ambiguous',
+      () => 'ambiguous',
       async () => {
         const parsed = handleSchema.safeParse(handle);
         if (!parsed.success || parsed.data.dataRoot !== dataRoot)
@@ -369,22 +395,28 @@ export function createCanopyStartupClaimPort(
   async function validatedRecord(
     accepts: (record: ClaimRecord) => boolean,
   ): Promise<ClaimRecord | null> {
-    const snapshot = await guarded<ClaimRecord | null>(null, async () => {
-      const record = await read();
-      return record && accepts(record) ? record : null;
-    });
+    const snapshot = await guarded<ClaimRecord | null>(
+      () => null,
+      async () => {
+        const record = await read();
+        return record && accepts(record) ? record : null;
+      },
+    );
     if (!snapshot) return null;
     try {
       // Host inspection can spawn a process; never hold the filesystem guard here.
       if (!(await live(snapshot))) return null;
-      return guarded<ClaimRecord | null>(null, async () => {
-        const current = await read();
-        return current &&
-          matches(current, snapshot) &&
-          sameOwner(current.owner, snapshot.owner)
-          ? current
-          : null;
-      });
+      return guarded<ClaimRecord | null>(
+        () => null,
+        async () => {
+          const current = await read();
+          return current &&
+            matches(current, snapshot) &&
+            sameOwner(current.owner, snapshot.owner)
+            ? current
+            : null;
+        },
+      );
     } catch {
       return null;
     }
@@ -402,18 +434,21 @@ export function createCanopyStartupClaimPort(
   async function markEndpointBind(handle: object): Promise<boolean> {
     const parsed = handleSchema.safeParse(handle);
     if (!parsed.success) return false;
-    return guarded(false, async () => {
-      const record = await read();
-      if (
-        !record ||
-        !matches(record, parsed.data) ||
-        !sameOwner(record.owner, owner)
-      )
-        return false;
-      if (!record.endpointBound)
-        await replaceRecord({ ...record, endpointBound: true });
-      return true;
-    });
+    return guarded(
+      () => false,
+      async () => {
+        const record = await read();
+        if (
+          !record ||
+          !matches(record, parsed.data) ||
+          !sameOwner(record.owner, owner)
+        )
+          return false;
+        if (!record.endpointBound)
+          await replaceRecord({ ...record, endpointBound: true });
+        return true;
+      },
+    );
   }
   return { tryAcquire, adopt, release, identity, verify, markEndpointBind };
 }

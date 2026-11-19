@@ -1,5 +1,20 @@
 /** @jest-environment jsdom */
 import './jsdom-globals';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import type { CoreCoworkInvoker } from '@canopy/app-state/core-cowork';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import {
+  createCloudSidebarTask,
+  useCloudCoworkSidebar,
+  type CloudCoworkSidebarModel,
+} from '../useCloudCoworkSidebar';
+// eslint-disable-next-line no-restricted-imports
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+// eslint-disable-next-line no-restricted-imports
+import path from 'node:path';
 import type { CanopyCapabilities, SessionViewModel } from '@canopy/app-core';
 import { appendCloudSidebarRows } from '../append-cloud-sidebar-rows';
 import { batchActionAvailability } from '@canopy/ui-app/code/shell/sidebar-selection-menu-items';
@@ -11,6 +26,15 @@ import {
 } from '../cloud-sidebar-intent';
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { deleteCloudTask } from '../archive-cloud-task';
+import { cloudCoworkStore } from '../cloud-cowork-store';
+import type { SingleRepoSidebarItem } from '@canopy/desktop-shared/types';
+import { useProjectsStore } from '@/stores/projectsStore';
+import {
+  loadWebCoreServedOperations,
+  resetWebCoreServedOperations,
+  webCoreServesTaskDelete,
+} from '@/lib/web-core-served-operations';
 
 const DESKTOP: CanopyCapabilities = {
   localExecution: true,
@@ -34,6 +58,61 @@ const DESKTOP: CanopyCapabilities = {
   worktreeMetadata: true,
   projectDeletionDiscard: true,
   worktreeDiscard: true,
+};
+
+/** Reads a manifest that lists `core.chat.delete` as served (CAN-7052). */
+async function serveTaskDelete(): Promise<void> {
+  resetWebCoreServedOperations();
+  const relay = {
+    invoke: jest.fn(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          runtime: {
+            runtimeId: 'web-core',
+            hostId: 'web',
+            authorityId: null,
+            profile: 'core',
+            daemonEpoch: 'e1',
+            protocolVersions: [1],
+            state: 'ready',
+          },
+          operations: [
+            {
+              name: 'core.chat.delete',
+              kind: 'instruction',
+              version: 1,
+              placement: 'core-only',
+              requiredGrants: ['core.chat.write'],
+              available: true,
+            },
+          ],
+          generatedAt: '2026-11-17T10:00:00.000Z',
+        },
+      }),
+    ),
+  };
+  loadWebCoreServedOperations(() => relay);
+  // The read settles with its reply, then lands one tick later.
+  await relay.invoke.mock.results[0]?.value;
+  await Promise.resolve();
+}
+
+/** A local single-repo project with one worktree, as the projects store holds it. */
+const LOCAL_PROJECT: SingleRepoSidebarItem = {
+  type: 'single-repo',
+  id: 'local-p',
+  name: 'Local',
+  repoPath: '/repo',
+  color: '#3B82F6',
+  collapsed: false,
+  order: 0,
+  worktrees: [],
+};
+const LOCAL_WORKTREE = {
+  id: 'wt-1',
+  branchName: 'feature',
+  createdAt: '2026-11-17T00:00:00Z',
 };
 
 describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
@@ -139,6 +218,215 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
     });
   });
 
+  it('a cloud task offers Delete beside Archive only while the web core serves it, and no project row does (CAN-7052)', () => {
+    // Archive only: the web core doesn't serve the delete, or cloud chats
+    // are offline.
+    for (const options of [{}, { taskDelete: false }]) {
+      const task = cloudSidebarRowCapabilities(DESKTOP, 'task', options);
+      expect(task).not.toHaveProperty('worktreeRetention');
+      expect(task.worktreeRemoval).toBe('archive');
+      const selected = batchActionAvailability(
+        [{ removal: task.worktreeRemoval, retention: task.worktreeRetention }],
+        { singular: 'task', plural: 'tasks' },
+      );
+      expect(selected.delete).toMatchObject({ enabled: false, offered: false });
+    }
+    // Served: Archive and Delete, alone and in a selection.
+    const task = cloudSidebarRowCapabilities(DESKTOP, 'task', {
+      taskDelete: true,
+    });
+    expect(task).toMatchObject({
+      worktreeRemoval: 'archive',
+      worktreeRetention: 'archive-or-delete',
+    });
+    const selected = batchActionAvailability(
+      [
+        { removal: task.worktreeRemoval, retention: task.worktreeRetention },
+        { removal: task.worktreeRemoval, retention: task.worktreeRetention },
+      ],
+      { singular: 'task', plural: 'tasks' },
+    );
+    expect(selected.archive).toMatchObject({ enabled: true, count: 2 });
+    expect(selected.delete).toMatchObject({ enabled: true, count: 2 });
+    // A project's rows never take the task's Delete.
+    for (const kind of ['cowork', 'git'] as const)
+      expect(
+        cloudSidebarRowCapabilities(DESKTOP, kind, { taskDelete: true }),
+      ).not.toHaveProperty('worktreeRetention');
+  });
+
+  it('deleting a cloud task sends nothing unless the web core serves it, and then deletes it to the Trash (CAN-7052)', async () => {
+    const deleteTask = jest.fn((): Promise<void> => Promise.resolve());
+    const archiveTask = jest.fn((): Promise<void> => Promise.resolve());
+    // The project's More row re-reads its archived tasks after a removal.
+    const listArchivedTasks = jest.fn(() => Promise.resolve([]));
+    cloudCoworkStore.setState({ deleteTask, archiveTask, listArchivedTasks });
+    resetWebCoreServedOperations();
+
+    // No manifest read, or one that doesn't list the delete: refused here.
+    await expect(deleteCloudTask('web-core:p1', 'web-core:t1')).rejects.toThrow(
+      'Deleting a cloud task is not available.',
+    );
+    expect(deleteTask).not.toHaveBeenCalled();
+    // A local id is never sent either.
+    await expect(deleteCloudTask('local', 'entry')).rejects.toThrow(
+      'Not a cloud task.',
+    );
+
+    await serveTaskDelete();
+    expect(webCoreServesTaskDelete()).toBe(true);
+
+    await deleteCloudTask('web-core:p1', 'web-core:t1');
+    expect(deleteTask).toHaveBeenCalledWith('p1', 't1');
+    expect(archiveTask).not.toHaveBeenCalled();
+    resetWebCoreServedOperations();
+  });
+
+  it('a cloud task is deleted only from the sidebar host (CAN-7052)', () => {
+    // The store defines deleteTask, the helper defines deleteCloudTask and
+    // calls it once, and only the shared sidebar host's cloud branches call
+    // the helper. No other desktop module or shared package names either;
+    // the web's own golden checks its sources (chat-delete.test.ts).
+    const root = path.resolve(__dirname, '../../../../../../..');
+    const sourceFiles = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory())
+          return /^(__|node_modules$|out$|dist$|generated$)/.test(entry.name)
+            ? []
+            : sourceFiles(full);
+        return /\.(ts|tsx|mjs|js)$/.test(entry.name) ? [full] : [];
+      });
+    const sourceDirs = [
+      path.join(root, 'apps/desktop-app/src'),
+      ...readdirSync(path.join(root, 'packages'))
+        .map((name) => path.join(root, 'packages', name, 'src'))
+        .filter((dir) => existsSync(dir)),
+    ];
+    const naming = (pattern: RegExp): string[] =>
+      sourceDirs
+        .flatMap(sourceFiles)
+        .filter((file) => pattern.test(readFileSync(file, 'utf8')))
+        .map((file) => path.relative(root, file))
+        .sort();
+    const HELPER =
+      'apps/desktop-app/src/renderer/src/cloud-chats/archive-cloud-task.ts';
+    const HOST =
+      'apps/desktop-app/src/renderer/src/components/sidebar/DesktopSharedSidebarHost.tsx';
+    expect(naming(/\b(deleteTask|deleteCloudTask)\b/)).toEqual([
+      HELPER,
+      HOST,
+      'packages/app-state/src/core-cowork/create-core-cowork-store.ts',
+    ]);
+    const helper = readFileSync(path.join(root, HELPER), 'utf8');
+    expect(helper.match(/\bdeleteCloudTask\b/g)).toHaveLength(1);
+    expect(helper.match(/\.deleteTask\(/g)).toHaveLength(1);
+    // Only the host tells a row it may delete, from the cloud hook's flag.
+    expect(naming(/\btaskDelete\s*:/)).toEqual([
+      'apps/desktop-app/src/renderer/src/cloud-chats/useCloudCoworkSidebar.ts',
+      HOST,
+    ]);
+  });
+
+  it("a local row's menu keeps exactly develop's items: only cloud rows take Delete from the cloud allowlist (CAN-7052)", () => {
+    // The host filters a row's menu inline (DesktopSharedSidebarHost.tsx):
+    // a store worktree keeps every item, another local row keeps only the
+    // non-store keys, and only a web core row reads the cloud keys. These are
+    // develop's lines byte for byte; part 1b adds 'delete' to the cloud keys
+    // alone.
+    const root = path.resolve(__dirname, '../../../../../../..');
+    const host = readFileSync(
+      path.join(
+        root,
+        'apps/desktop-app/src/renderer/src/components/sidebar/DesktopSharedSidebarHost.tsx',
+      ),
+      'utf8',
+    );
+    expect(host).toContain(
+      [
+        'const NON_STORE_ROW_MENU_KEYS: ReadonlySet<string> = new Set([',
+        "  'branch-info',",
+        "  'debug-info',",
+        ']);',
+      ].join('\n'),
+    );
+    expect(host).toContain(
+      [
+        '          const kept = isWebCoreScope(workspace.localId)',
+        '            ? CLOUD_ROW_MENU_KEYS',
+        '            : NON_STORE_ROW_MENU_KEYS;',
+        '          const items = isStoreWorktree(workspace.localId, worktree.localId)',
+        '            ? incomingItems',
+        '            : incomingItems.filter((item) => kept.has(item.key));',
+      ].join('\n'),
+    );
+    const cloudKeys =
+      /const CLOUD_ROW_MENU_KEYS: ReadonlySet<string> = new Set\(\[([^\]]*)\]\);/.exec(
+        host,
+      )?.[1];
+    expect(cloudKeys?.match(/'[a-z-]+'/g)).toEqual(["'archive'", "'delete'"]);
+    expect(cloudKeys).toContain('...NON_STORE_ROW_MENU_KEYS');
+  });
+
+  it('a batch removal sends each row to its own authority: a cloud task to the web core, a local worktree to the local store exactly as before (CAN-7052)', async () => {
+    const deleteTask = jest.fn((): Promise<void> => Promise.resolve());
+    const archiveTask = jest.fn((): Promise<void> => Promise.resolve());
+    const listArchivedTasks = jest.fn(() => Promise.resolve([]));
+    cloudCoworkStore.setState({ deleteTask, archiveTask, listArchivedTasks });
+    const archiveWorktree = jest.fn((): Promise<void> => Promise.resolve());
+    useProjectsStore.setState({
+      projects: [{ ...LOCAL_PROJECT, worktrees: [LOCAL_WORKTREE] }],
+      archiveWorktree,
+    });
+    const { removeDesktopWorktreeInBatch } =
+      await import('@/components/sidebar/DesktopSharedSidebarHost');
+    await serveTaskDelete();
+
+    // A mixed selection, Delete then Archive: the local row takes the local
+    // store's own options for each mode, unchanged; the cloud task takes
+    // the web core; neither reaches the other's.
+    for (const mode of ['delete', 'archive'] as const) {
+      await removeDesktopWorktreeInBatch('local-p', 'wt-1', { mode });
+      await removeDesktopWorktreeInBatch('web-core:p1', 'web-core:t1', {
+        mode,
+      });
+    }
+    expect(archiveWorktree.mock.calls).toEqual([
+      [
+        'local-p',
+        'wt-1',
+        {
+          deleteBranch: false,
+          expectedBranchName: 'feature',
+          deleteWithoutRetentionIfMissing: true,
+        },
+      ],
+      [
+        'local-p',
+        'wt-1',
+        {
+          deleteBranch: false,
+          expectedBranchName: 'feature',
+          lockAfterArchive: true,
+        },
+      ],
+    ]);
+    expect(deleteTask.mock.calls).toEqual([['p1', 't1']]);
+    expect(archiveTask.mock.calls).toEqual([['p1', 't1']]);
+
+    // Without the manifest's delete, a cloud row's Delete sends nothing,
+    // while a local row's still deletes as before.
+    resetWebCoreServedOperations();
+    await expect(
+      removeDesktopWorktreeInBatch('web-core:p1', 'web-core:t1', {
+        mode: 'delete',
+      }),
+    ).rejects.toThrow('Deleting a cloud task is not available.');
+    expect(deleteTask).toHaveBeenCalledTimes(1);
+    await removeDesktopWorktreeInBatch('local-p', 'wt-1', { mode: 'delete' });
+    expect(archiveWorktree).toHaveBeenCalledTimes(3);
+  });
+
   it('a cloud task opens through the same work-entry seam as a local one', () => {
     const openLocal = jest.fn(() => Promise.resolve());
     useStandaloneChatStore.setState({ openWorkEntryFromSidebar: openLocal });
@@ -209,5 +497,186 @@ describe('cloud projects in the shared desktop sidebar (CAN-6099)', () => {
     expect(restarted.useCloudProjectCollapse.getState().collapsed).toEqual({
       'web-core:p1': true,
     });
+  });
+});
+
+describe('the offline cloud list (CAN-6374)', () => {
+  const ORG = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const PERSONAL_PROJECT = '11111111-1111-4111-8111-111111111111';
+  const ORG_PROJECT = '22222222-2222-4222-8222-222222222222';
+  const ORG_TASK = '22222222-0000-4000-8000-000000000000';
+
+  /** Set to hold the next project listing until `landListing` runs. */
+  let holdListing = false;
+  let landListing = (): void => undefined;
+  /** Delivers one task stream frame to the open stream. */
+  let deliver: (value: unknown) => void = () => undefined;
+  let sequence = 0;
+
+  /** A web core listing a Personal project and an organization's, one task each. */
+  const invoker: CoreCoworkInvoker = {
+    request: (method, params) => {
+      if (method === 'core.workspace.list') {
+        const listing = {
+          ok: true as const,
+          value: {
+            items: [
+              [PERSONAL_PROJECT, null],
+              [ORG_PROJECT, ORG],
+            ].map(([workspaceId, ownerOrganizationId]) => ({
+              workspaceId,
+              name: workspaceId === ORG_PROJECT ? 'Org project' : 'Personal',
+              kind: 'cowork',
+              ownerOrganizationId,
+              revision: 1,
+              repositorySources: [],
+              settings: {},
+            })),
+            nextCursor: null,
+          },
+        };
+        if (!holdListing) return Promise.resolve(listing);
+        holdListing = false;
+        return new Promise((resolve) => {
+          landListing = (): void => resolve(listing);
+        });
+      }
+      const workspaceId = JSON.stringify(params).includes(ORG_PROJECT)
+        ? ORG_PROJECT
+        : PERSONAL_PROJECT;
+      return Promise.resolve({
+        ok: true,
+        value: {
+          items: [
+            {
+              workspaceId,
+              worktreeId: `${workspaceId.slice(0, 8)}-0000-4000-8000-000000000000`,
+              title: workspaceId === ORG_PROJECT ? 'Org task' : 'Personal task',
+              state: 'idle',
+              updatedAt: '2026-11-18T10:00:00Z',
+              revision: 1,
+            },
+          ],
+          nextCursor: null,
+        },
+      });
+    },
+    openStream: () =>
+      Promise.resolve({
+        next: () =>
+          new Promise((resolve) => {
+            deliver = (value): void => resolve({ done: false, value });
+          }),
+        close: () => Promise.resolve(),
+      }),
+  };
+
+  let model: CloudCoworkSidebarModel = { status: 'disabled' };
+  function Probe(): null {
+    model = useCloudCoworkSidebar();
+    return null;
+  }
+  /** The kept rows' titles, as the host appends them to the shared list. */
+  const titles = (): string[] =>
+    'rows' in model
+      ? [
+          ...model.rows.workspaces.map((row) => row.name),
+          ...model.rows.worktrees.map((row) => row.label ?? ''),
+        ]
+      : [];
+  const orgTitles = (): string[] =>
+    titles().filter((title) => title.startsWith('Org '));
+  const settle = async (fn: () => unknown, waitMs = 0): Promise<void> => {
+    await act(async () => {
+      void fn();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+      }
+    });
+  };
+
+  it('losing an organization drops its kept rows, whenever its listing lands, and commands still fail', async () => {
+    Reflect.set(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true);
+    useFeatureFlagsStore.setState({
+      isEnabled: (key) =>
+        key === CLIENT_FEATURE_FLAGS.canopyDesktopCloudChats.key ||
+        key === CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key,
+    });
+    const { applyBroadcast } = useWorkspaceContextStore.getState();
+    const start = useWorkspaceContextStore.getState().state;
+    let revision = start.revision;
+    // Main moves a member out of an organization they left (`departed`).
+    const join = (): void =>
+      applyBroadcast({
+        ...start,
+        revision: (revision += 1),
+        context: { kind: 'organization', organizationId: ORG },
+        organizations: [{ id: ORG, name: 'Org', role: 'MEMBER' }],
+        reason: 'organizations',
+      });
+    const leave = (): void =>
+      applyBroadcast({
+        ...start,
+        revision: (revision += 1),
+        context: { kind: 'personal' },
+        organizations: [],
+        reason: 'departed',
+      });
+    const goOffline = (): void =>
+      cloudCoworkStore.getState().disconnect('offline');
+
+    join();
+    const root = createRoot(document.createElement('div'));
+    await settle(() => root.render(createElement(Probe)));
+    await settle(() => cloudCoworkStore.getState().connect(invoker));
+    expect(model.status).toBe('online');
+    await settle(goOffline);
+    expect(model.status).toBe('offline');
+    expect(orgTitles()).toEqual(['Org project', 'Org task']);
+
+    // Lost while offline.
+    await settle(leave);
+    expect(model.status).toBe('offline');
+    expect(orgTitles()).toEqual([]);
+    await expect(
+      createCloudSidebarTask(`web-core:${ORG_PROJECT}`),
+    ).rejects.toThrow('Cloud chats are offline.');
+
+    // Lost while online, then the web core re-reads the organization's tasks.
+    await settle(join);
+    await settle(() => cloudCoworkStore.getState().connect(invoker));
+    await settle(leave);
+    const before = cloudCoworkStore.getState().listed;
+    await settle(
+      () =>
+        deliver({
+          kind: 'item',
+          cursor: { daemonEpoch: 'e1', sequence: (sequence += 1) },
+          item: {
+            kind: 'task',
+            workspaceId: ORG_PROJECT,
+            worktreeId: ORG_TASK,
+            batchId: 'b1',
+          },
+        }),
+      300,
+    );
+    expect(cloudCoworkStore.getState().listed).not.toBe(before);
+    await settle(goOffline);
+    expect(orgTitles()).toEqual([]);
+
+    // A listing already in flight when the organization is lost lands later.
+    await settle(join);
+    holdListing = true;
+    await settle(() => cloudCoworkStore.getState().connect(invoker));
+    await settle(leave);
+    await settle(() => landListing());
+    expect(model.status).toBe('online');
+    await settle(goOffline);
+    expect(orgTitles()).toEqual([]);
+    expect(titles()).toEqual(['Personal', 'Personal task']);
+    await settle(() => root.unmount());
   });
 });

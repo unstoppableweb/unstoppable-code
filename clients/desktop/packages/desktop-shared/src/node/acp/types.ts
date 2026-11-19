@@ -94,6 +94,8 @@ export interface AcpClient {
   readonly closed: Promise<void>;
   /** Returns a defensive copy, including negotiated extension metadata. */
   getInitialization(): InitializeResponse;
+  /** Whether initialization advertised `additionalDirectories` on sessions. */
+  supportsAdditionalDirectories(): boolean;
   authenticate(
     params: AuthenticateRequest,
     signal?: AbortSignal,

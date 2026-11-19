@@ -17,6 +17,12 @@ import type {
 import {
   BulkInstallButton,
   Button,
+  CapabilityDetailLayout,
+  DetailActionBar,
+  DetailFact,
+  DetailFactError,
+  ExternalTextLink,
+  MarketplaceKindLabel,
   ErrorBanner,
   ErrorState,
   MissingPluginsBadge,
@@ -27,10 +33,17 @@ import {
   SettingsSelect,
   Heading,
 } from '@canopy/ui-shared/components';
-import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '@canopy/ui-shared/lib/replay-privacy';
 import { MarketplaceDetailPageShell } from '../capability/MarketplaceDetailPageShell';
 import { MarketplaceEntityHeader } from '../capability/MarketplaceEntityHeader';
 import { MarketplaceSourceInvalidBanner } from './MarketplaceSourceInvalidBanner';
+import { useCustomizeDiscoveryEnabled } from '../capability/CustomizeDiscoveryProvider';
+import { MarketplaceSourceLogo } from './MarketplacesManagePage';
+import { RelatedItemsSection } from '@canopy/ui-shared/components';
+import { formatDateOrEmpty } from '@canopy/ui-shared/lib/format-date';
 import {
   countSourcePluginsNeedingInstall,
   EMPTY_MARKETPLACE_SOURCE_PLUGIN_FILTERS,
@@ -69,6 +82,8 @@ export interface MarketplaceSourceDetailProps {
    */
   readonly onOpenPlugin?: (sourceId: string, pluginKey: string) => void;
   readonly canOpenPlugin?: (sourceId: string, pluginKey: string) => boolean;
+  /** New Customize's Related: opens another marketplace's page. */
+  readonly onOpenSource?: (sourceId: string) => void;
   /** Controlled filters let a host keep them across plugin detail visits. */
   readonly filters?: MarketplaceSourcePluginFilters;
   readonly onFiltersChange?: (filters: MarketplaceSourcePluginFilters) => void;
@@ -84,6 +99,7 @@ export function MarketplaceSourceDetail({
   filters: controlledFilters,
   onFiltersChange,
   onBulkStateChange,
+  onOpenSource,
 }: MarketplaceSourceDetailProps): JSX.Element {
   const source = state.sources?.find((entry) => entry.id === sourceId);
 
@@ -134,6 +150,58 @@ export function MarketplaceSourceDetail({
       controlledFilters={controlledFilters}
       onFiltersChange={onFiltersChange}
       onBulkStateChange={onBulkStateChange}
+      {...(onOpenSource ? { onOpenSource } : {})}
+    />
+  );
+}
+
+/** Where a source comes from, less its name: `github.com/obra`. */
+function sourceOwner(source: MarketplaceSource): string | undefined {
+  const parts = source.sourceLabel.trim().toLowerCase().split('/');
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : undefined;
+}
+
+/**
+ * New Customize's Related on a marketplace: the other marketplaces added
+ * here, the same publisher's first, each opening its own page.
+ */
+function MarketplaceSourceRelated({
+  source,
+  sources,
+  onOpenSource,
+}: {
+  source: MarketplaceSource;
+  sources: readonly MarketplaceSource[];
+  onOpenSource: (sourceId: string) => void;
+}): JSX.Element {
+  const owner = sourceOwner(source);
+  const others = sources.filter((other) => other.id !== source.id);
+  const sameOwner = (other: MarketplaceSource): boolean =>
+    owner !== undefined && sourceOwner(other) === owner;
+  const related = [
+    ...others.filter(sameOwner),
+    ...others.filter((other) => !sameOwner(other)),
+  ].slice(0, 5);
+  return (
+    <RelatedItemsSection
+      title="Related"
+      presentation="list"
+      emptyLabel="Nothing related yet."
+      testId="marketplace-source-related"
+      items={related.map((other) => ({
+        key: other.id,
+        title: other.name,
+        // A marketplace's name and where it comes from are the user's own.
+        privateTitle: true,
+        subtitle: other.sourceLabel,
+        subtitleReplayClass: REPLAY_MASK_CLASS,
+        reason: sameOwner(other)
+          ? 'From the same publisher'
+          : 'Another marketplace you added',
+        reasonInline: true,
+        logo: <MarketplaceSourceLogo source={other} size="lg" />,
+        onOpen: (): void => onOpenSource(other.id),
+      }))}
     />
   );
 }
@@ -148,6 +216,7 @@ interface MarketplaceSourceDetailBodyProps {
   readonly canOpenPlugin?: (sourceId: string, pluginKey: string) => boolean;
   readonly controlledFilters?: MarketplaceSourcePluginFilters;
   readonly onFiltersChange?: (filters: MarketplaceSourcePluginFilters) => void;
+  readonly onOpenSource?: (sourceId: string) => void;
 }
 
 function MarketplaceSourceDetailBody({
@@ -160,6 +229,7 @@ function MarketplaceSourceDetailBody({
   controlledFilters,
   onFiltersChange,
   onBulkStateChange,
+  onOpenSource,
 }: MarketplaceSourceDetailBodyProps): JSX.Element {
   const detailRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -247,6 +317,9 @@ function MarketplaceSourceDetailBody({
   const installingKey = state.installingPlugins[source.id];
   const sourceBusy = operation !== undefined && operation !== 'install';
   const sourceUrl = safeMarketplaceSourceUrl(source.sourceUrl);
+  // New Customize: the shared detail layout for the header and facts.
+  const discovery = useCustomizeDiscoveryEnabled();
+  const updated = formatDateOrEmpty(source.lastUpdatedAt);
   const isInteractive = (plugin: MarketplaceSourcePlugin): boolean =>
     onOpenPlugin !== undefined &&
     (canOpenPlugin?.(source.id, plugin.key) ?? true);
@@ -308,6 +381,9 @@ function MarketplaceSourceDetailBody({
         {state.pluginErrors[errorKey] && (
           <Notice
             errorSource="marketplace-source-detail"
+            errorRecordingDisabled={state.recordedErrors.has(
+              state.pluginErrors[errorKey],
+            )}
             intent="destructive"
             actions={
               <NoticeButton onClick={() => void state.reload()}>
@@ -338,77 +414,210 @@ function MarketplaceSourceDetailBody({
         className="flex flex-col gap-6 outline-none"
         data-testid="marketplace-source-detail"
       >
-        <MarketplaceEntityHeader
-          privateName
-          name={source.name}
-          meta={
-            <>
-              <span className={REPLAY_MASK_CLASS}>
-                {sourceUrl ? (
-                  <TextLink
-                    href={sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    variant="inherited-hover"
-                  >
-                    {source.sourceLabel}
-                  </TextLink>
-                ) : (
-                  source.sourceLabel
-                )}
-              </span>
-              {' · '}
-              {marketplaceSourcePluginCountLabel(source.pluginCount)}
-            </>
-          }
-        >
-          {source.description && (
-            <p className={`pt-2 text-s fg-secondary ${REPLAY_MASK_CLASS}`}>
-              {source.description}
-            </p>
-          )}
-          <div className="pt-3 flex flex-wrap items-center gap-2">
-            <MissingPluginsBadge
-              count={missingCount}
-              testId="marketplace-source-detail-missing-count"
-            />
-            {source.actions.update && (
-              <Button
-                size="compact"
-                variant="secondary"
-                disabled={operation !== undefined || bulk.running}
-                onClick={() => void state.update(source.id)}
-              >
-                {operation === 'update' ? 'Updating…' : 'Update'}
-              </Button>
-            )}
-          </div>
-        </MarketplaceEntityHeader>
-
-        <MarketplaceSourceInvalidBanner source={source} state={state} />
-        {state.sourceErrors[source.id] ? (
-          <ErrorBanner
-            errorSource="marketplace-source-detail-body"
-            className=""
-            error={state.sourceErrors[source.id]}
-            blockMessageFromReplay
-            onRetry={() => void state.reload()}
-            retryLabel="Refresh status"
-          />
-        ) : state.sourceWarnings[source.id] ? (
-          <Notice
-            intent="attention"
-            actions={
-              <NoticeButton onClick={() => void state.reload()}>
-                Refresh status
-              </NoticeButton>
+        {discovery ? (
+          <CapabilityDetailLayout
+            dataTestId="marketplace-source-detail-layout"
+            logo={<MarketplaceSourceLogo source={source} size="xl" />}
+            title={<span className={REPLAY_MASK_CLASS}>{source.name}</span>}
+            titleId="plugin-detail-title"
+            typeLabel={<MarketplaceKindLabel />}
+            // The list row's line 2: where the marketplace comes from.
+            publisher={
+              <span className={REPLAY_MASK_CLASS}>{source.sourceLabel}</span>
             }
-          >
-            <span className={REPLAY_MASK_CLASS}>
-              {state.sourceWarnings[source.id]}
-            </span>
-          </Notice>
-        ) : null}
+            actions={
+              source.actions.update ? (
+                <DetailActionBar
+                  secondary={
+                    source.actions.update ? (
+                      <Button
+                        size="compact"
+                        variant="secondary"
+                        disabled={operation !== undefined || bulk.running}
+                        onClick={() => void state.update(source.id)}
+                        data-testid="marketplace-source-detail-update"
+                      >
+                        {operation === 'update' ? 'Updating…' : 'Update'}
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              ) : undefined
+            }
+            description={source.description}
+            descriptionReplay="mask"
+            facts={{
+              source: (
+                <DetailFact
+                  label="Source"
+                  testId="marketplace-source-detail-source"
+                >
+                  <span className={REPLAY_MASK_CLASS}>
+                    {sourceUrl ? (
+                      <ExternalTextLink
+                        href={sourceUrl}
+                        label={source.sourceLabel}
+                      />
+                    ) : (
+                      source.sourceLabel
+                    )}
+                  </span>
+                </DetailFact>
+              ),
+              updated: updated ? (
+                <DetailFact
+                  label="Updated"
+                  testId="marketplace-source-detail-updated"
+                >
+                  {updated}
+                </DetailFact>
+              ) : undefined,
+              entity: (
+                <DetailFact
+                  label="Plugins"
+                  testId="marketplace-source-detail-plugins"
+                >
+                  <span className="inline-flex flex-wrap items-center gap-2">
+                    {marketplaceSourcePluginCountLabel(source.pluginCount)}
+                    <MissingPluginsBadge
+                      count={missingCount}
+                      testId="marketplace-source-detail-missing-count"
+                    />
+                  </span>
+                </DetailFact>
+              ),
+            }}
+            factsFooter={
+              <>
+                {source.status.state === 'invalid' && (
+                  // New Customize: an invalid marketplace is said under the
+                  // facts; Update stays in the action bar.
+                  <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+                    <span className={REPLAY_BLOCK_CLASS}>
+                      <DetailFactError
+                        error={
+                          source.status.note
+                            ? `This marketplace could not be loaded: ${source.status.note}`
+                            : 'This marketplace could not be loaded'
+                        }
+                        testId="marketplace-source-invalid"
+                      />
+                    </span>
+                    <span aria-hidden>·</span>
+                    <Button
+                      variant="link"
+                      disabled={state.refreshing}
+                      onClick={() => void state.refresh()}
+                    >
+                      Refresh status
+                    </Button>
+                  </span>
+                )}
+                {(state.sourceErrors[source.id] ||
+                  state.sourceWarnings[source.id]) && (
+                  // New Customize: a failed read or a warning is said under
+                  // the facts with its retry, not in a banner.
+                  <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+                    <span className={REPLAY_MASK_CLASS}>
+                      <DetailFactError
+                        error={
+                          state.sourceErrors[source.id] ||
+                          state.sourceWarnings[source.id] ||
+                          ''
+                        }
+                        tone={
+                          state.sourceErrors[source.id] ? 'failed' : 'attention'
+                        }
+                        testId="marketplace-source-detail-status-error"
+                      />
+                    </span>
+                    <span aria-hidden>·</span>
+                    <Button variant="link" onClick={() => void state.reload()}>
+                      Refresh status
+                    </Button>
+                  </span>
+                )}
+              </>
+            }
+          />
+        ) : (
+          <>
+            <MarketplaceEntityHeader
+              privateName
+              name={source.name}
+              meta={
+                <>
+                  <span className={REPLAY_MASK_CLASS}>
+                    {sourceUrl ? (
+                      <TextLink
+                        href={sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        variant="inherited-hover"
+                      >
+                        {source.sourceLabel}
+                      </TextLink>
+                    ) : (
+                      source.sourceLabel
+                    )}
+                  </span>
+                  {' · '}
+                  {marketplaceSourcePluginCountLabel(source.pluginCount)}
+                </>
+              }
+            >
+              {source.description && (
+                <p className={`pt-2 text-s fg-secondary ${REPLAY_MASK_CLASS}`}>
+                  {source.description}
+                </p>
+              )}
+              <div className="pt-3 flex flex-wrap items-center gap-2">
+                <MissingPluginsBadge
+                  count={missingCount}
+                  testId="marketplace-source-detail-missing-count"
+                />
+                {source.actions.update && (
+                  <Button
+                    size="compact"
+                    variant="secondary"
+                    disabled={operation !== undefined || bulk.running}
+                    onClick={() => void state.update(source.id)}
+                  >
+                    {operation === 'update' ? 'Updating…' : 'Update'}
+                  </Button>
+                )}
+              </div>
+            </MarketplaceEntityHeader>
+
+            <MarketplaceSourceInvalidBanner source={source} state={state} />
+            {state.sourceErrors[source.id] ? (
+              <ErrorBanner
+                errorSource="marketplace-source-detail-body"
+                errorRecordingDisabled={state.recordedErrors.has(
+                  state.sourceErrors[source.id],
+                )}
+                className=""
+                error={state.sourceErrors[source.id]}
+                blockMessageFromReplay
+                onRetry={() => void state.reload()}
+                retryLabel="Refresh status"
+              />
+            ) : state.sourceWarnings[source.id] ? (
+              <Notice
+                intent="attention"
+                actions={
+                  <NoticeButton onClick={() => void state.reload()}>
+                    Refresh status
+                  </NoticeButton>
+                }
+              >
+                <span className={REPLAY_MASK_CLASS}>
+                  {state.sourceWarnings[source.id]}
+                </span>
+              </Notice>
+            ) : null}
+          </>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <SearchField
@@ -510,6 +719,14 @@ function MarketplaceSourceDetailBody({
               </section>
             )}
           </div>
+        )}
+        {/* New Customize: Related last, after the plugins it lists. */}
+        {discovery && onOpenSource && (
+          <MarketplaceSourceRelated
+            source={source}
+            sources={state.sources ?? []}
+            onOpenSource={onOpenSource}
+          />
         )}
       </div>
     </MarketplaceDetailPageShell>

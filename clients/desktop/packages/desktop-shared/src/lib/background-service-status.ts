@@ -1,22 +1,19 @@
-import { z } from 'zod';
+import type { BackgroundServiceStatus } from '@canopy/protocol/portal/background-service';
 
 /**
  * Health of this computer's connection to its local background service (the
  * core daemon), owned by Electron main and pushed on
- * `background-service:status-changed` (CAN-5541). Codes only: no message,
- * path or authority id ever crosses to the renderer.
+ * `background-service:status-changed` (CAN-5541). The status contract lives
+ * in `@canopy/protocol/portal`, which Portal also reads (CAN-7061).
  */
-
-/** Why the background service can't be reached. Additive. */
-export const BACKGROUND_SERVICE_UNREACHABLE_REASONS = [
-  'start_failed',
-  'connect_timeout',
-  'host_unavailable',
-  'connection_lost',
-  'reconnect_failed',
-] as const;
-export type BackgroundServiceUnreachableReason =
-  (typeof BACKGROUND_SERVICE_UNREACHABLE_REASONS)[number];
+export {
+  BACKGROUND_SERVICE_UNREACHABLE_REASONS,
+  BackgroundServiceStatusSchema,
+  INITIAL_BACKGROUND_SERVICE_STATUS,
+  type BackgroundServiceHandoffFailure,
+  type BackgroundServiceStatus,
+  type BackgroundServiceUnreachableReason,
+} from '@canopy/protocol/portal/background-service';
 
 /** Features that read through the background service. Additive. */
 export const BACKGROUND_SERVICE_CONSUMERS = [
@@ -34,29 +31,6 @@ export const BACKGROUND_SERVICE_CONSUMERS = [
 ] as const;
 export type BackgroundServiceConsumer =
   (typeof BACKGROUND_SERVICE_CONSUMERS)[number];
-
-export const BackgroundServiceStatusSchema = z.strictObject({
-  /**
-   * `unavailable`: a start, attach or reconnect failed; shown.
-   * `reconnecting`: a live connection dropped and the daemon is restarting;
-   * hidden until that restart fails (CAN-5541).
-   */
-  state: z.enum(['ok', 'reconnecting', 'unavailable']),
-  /** Present only while `state` is `unavailable`. */
-  reason: z.enum(BACKGROUND_SERVICE_UNREACHABLE_REASONS).optional(),
-  /** The latest Try again: `failed` until the service is reached again. */
-  retry: z.enum(['idle', 'running', 'failed']),
-  /** A degraded startup handoff cannot be retried until the next launch. */
-  recovery: z.literal('restart_app').optional(),
-  /** Increases with every change; a lower one is stale. */
-  sequence: z.number().int().nonnegative(),
-});
-export type BackgroundServiceStatus = z.infer<
-  typeof BackgroundServiceStatusSchema
->;
-
-export const INITIAL_BACKGROUND_SERVICE_STATUS: BackgroundServiceStatus =
-  Object.freeze({ state: 'ok', retry: 'idle', sequence: 0 });
 
 /** Preload surface: `window.api.backgroundService`. */
 export interface BackgroundServiceApi {

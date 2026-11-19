@@ -95,8 +95,11 @@ function argsFor(key: AgentActionToolKey): unknown {
       return { delaySeconds: 60 };
     case 'save_memory':
       return { text: 'Prefers short answers.', scope: 'user' };
+    case 'search_chats':
     case 'search_memory':
       return { query: 'short answers' };
+    case 'read_chat_excerpt':
+      return { matchId: '805066f8-1b32-46d7-8535-18d2b4d865da' };
     case 'read_memory':
       return { scope: 'user', file: 'MEMORY.md' };
     case 'delegate_task':

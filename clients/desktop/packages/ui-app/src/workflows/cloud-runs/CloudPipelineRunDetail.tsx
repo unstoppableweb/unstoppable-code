@@ -234,6 +234,7 @@ function CloudRunDetailBody({
   return (
     <PipelineRunDetail
       run={detailView}
+      appDependencyApplicable={false}
       summary={summary}
       executionState={cloudRunExecutionState(view)}
       selectedStep={selectedStep}

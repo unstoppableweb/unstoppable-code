@@ -415,7 +415,8 @@ export function HooksSectionBody({
                     className="overflow-hidden"
                   >
                     <CodeBlock
-                      variant="activity-command"
+                      variant="command"
+                      inset="compact"
                       size="2xs"
                       replay={action.type === 'pipeline' ? 'inherit' : 'block'}
                       className="max-h-20"

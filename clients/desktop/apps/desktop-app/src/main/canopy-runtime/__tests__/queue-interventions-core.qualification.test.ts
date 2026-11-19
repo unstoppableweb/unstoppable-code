@@ -3,23 +3,13 @@ import type {
   ChatCommandRequest,
   ChatCommandResult,
   ChatStateCommandPort,
-  PortalCommandEnvelope,
 } from '@canopy/desktop-shared/types';
-import { getChatQueueService } from '../../services/chat-queue-service';
 import {
   projectQueueCancel,
   projectQueueEdit,
   projectQueueEditLock,
   projectQueueForce,
 } from '../../ipc/chat-queue-projections';
-import {
-  handlePortalChatInputDelivery,
-  handlePortalChatQueueCancel,
-  handlePortalChatQueueEdit,
-  handlePortalChatQueueForce,
-  handlePortalChatQueueSetEditLock,
-} from '../../portal/adapters/chat-adapter';
-import type { PortalAdapterContext } from '../../portal/adapters/types';
 import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
@@ -89,42 +79,6 @@ function compose(): {
       }),
     );
   return { port, runtime, dispatch };
-}
-
-function portalContext(
-  port: ChatStateCommandPort | undefined,
-  dispatch: (request: ChatCommandRequest) => Promise<ChatCommandResult>,
-): PortalAdapterContext & {
-  completed: unknown[];
-  failures: Array<{ code: string; message: string }>;
-} {
-  const completed: unknown[] = [];
-  const failures: Array<{ code: string; message: string }> = [];
-  return {
-    completed,
-    failures,
-    ...(port ? { chatStatePort: port } : {}),
-    dispatchChatCommand: (request) => dispatch(request),
-    getWindow: () => null,
-    enqueueEvent: () => undefined,
-    complete: (_command, result) => {
-      completed.push(result);
-    },
-    fail: (_command, code, message) => {
-      failures.push({ code, message });
-    },
-  };
-}
-
-function portalCommand<T>(id: string, payload: T): PortalCommandEnvelope<T> {
-  return {
-    id,
-    sequence: 1,
-    type: 'portal.chat.queue.cancel',
-    payload,
-    createdAt: '2026-11-05T00:00:00.000Z',
-    expiresAt: null,
-  };
 }
 
 describe('queue interventions through core (CAN-4112)', () => {
@@ -224,121 +178,6 @@ describe('queue interventions through core (CAN-4112)', () => {
           dispatch,
         ),
       ).rejects.toThrow('This message is no longer available to edit.');
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-
-  it('Portal queue commands never reach the queue service directly', async () => {
-    const { port, runtime, dispatch } = compose();
-    try {
-      const context = portalContext(port, dispatch);
-      await handlePortalChatQueueCancel(
-        portalCommand('portal-cancel', { ...target, entryId: 'queue-1' }),
-        context,
-      );
-      await handlePortalChatQueueEdit(
-        portalCommand('portal-edit', {
-          ...target,
-          entryId: 'queue-1',
-          text: 'Updated',
-        }),
-        context,
-      );
-      await handlePortalChatQueueForce(
-        portalCommand('portal-force', { ...target, entryId: 'queue-1' }),
-        context,
-      );
-      await handlePortalChatQueueSetEditLock(
-        portalCommand('portal-lock', {
-          ...target,
-          entryId: 'queue-1',
-          locked: true,
-        }),
-        context,
-      );
-
-      expect(context.failures).toEqual([]);
-      expect(context.completed).toHaveLength(4);
-      expect(port.commands.at(-1)?.command).toEqual({
-        type: 'chat.set_queued_message_edit_lock',
-        chatId: 'chat-1',
-        queuedMessageId: 'queue-1',
-        locked: true,
-        acquisitionId: 'portal-lock',
-      });
-
-      const detached = portalContext(undefined, dispatch);
-      await handlePortalChatQueueCancel(
-        portalCommand('detached-cancel', { ...target, entryId: 'queue-1' }),
-        detached,
-      );
-      await handlePortalChatQueueEdit(
-        portalCommand('detached-edit', {
-          ...target,
-          entryId: 'queue-1',
-          text: 'Updated',
-        }),
-        detached,
-      );
-      await handlePortalChatQueueForce(
-        portalCommand('detached-force', { ...target, entryId: 'queue-1' }),
-        detached,
-      );
-      await handlePortalChatQueueSetEditLock(
-        portalCommand('detached-lock', {
-          ...target,
-          entryId: 'queue-1',
-          locked: true,
-        }),
-        detached,
-      );
-      expect(detached.failures.map((failure) => failure.code)).toEqual([
-        'execution_failed',
-        'execution_failed',
-        'execution_failed',
-        'execution_failed',
-      ]);
-      expect(getChatQueueService).not.toHaveBeenCalled();
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-  // CAN-5897: the Portal dismiss of an input-delivery row is one revisioned
-  // chat command, the proposed core.chat.inputDelivery.action's destination.
-  it('a Portal input-delivery dismiss commits one chat command for that row', async () => {
-    const { port, runtime, dispatch } = compose();
-    try {
-      const context = portalContext(port, dispatch);
-      await handlePortalChatInputDelivery(
-        {
-          ...portalCommand('portal-dismiss', {
-            ...target,
-            rowId: 'row-1',
-            rowRevision: 3,
-            action: 'dismiss',
-          }),
-          type: 'portal.chat.input_delivery',
-        },
-        context,
-      );
-
-      expect(context.failures).toEqual([]);
-      expect(context.completed).toHaveLength(1);
-      expect(port.commands).toHaveLength(1);
-      expect(port.commands[0]).toMatchObject({
-        projectId: 'ws-1',
-        worktreeId: 'wt-1',
-        commandId: 'portal-dismiss',
-        command: {
-          type: 'chat.input_delivery_action',
-          chatId: 'chat-1',
-          rowId: 'row-1',
-          rowRevision: 3,
-          action: 'dismiss',
-        },
-      });
-      expect(getChatQueueService).not.toHaveBeenCalled();
     } finally {
       await runtime.shutdown();
     }

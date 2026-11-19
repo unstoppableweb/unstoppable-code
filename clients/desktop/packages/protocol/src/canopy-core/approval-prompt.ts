@@ -47,6 +47,13 @@ export type ApprovalRequestDetails =
       tool: string;
       paramsDisplay?: string;
       reason?: string;
+      /**
+       * The connector and the account its tool acts as, when the person holds
+       * several accounts of that connector (CAN-6228). Display only: rules
+       * still match `server`. Absent for every other server.
+       */
+      connector?: string;
+      account?: string;
     }
   | { kind: 'network'; host: string; reason?: string }
   | {
@@ -78,6 +85,21 @@ export type ApprovalRequestDetails =
       /** Why the agent asks, in its own words. */
       purpose?: string;
       multiple: boolean;
+    }
+  | {
+      /**
+       * RunWithSecrets or WriteSecretsFile: the command or file path and the
+       * secret names it receives. Never a value.
+       */
+      kind: 'agent-secret-use';
+      tool: 'RunWithSecrets' | 'WriteSecretsFile';
+      /** RunWithSecrets: the command, exactly as the agent wrote it. */
+      command?: string;
+      /** RunWithSecrets: the working directory, relative to the worktree. */
+      cwd?: string;
+      /** WriteSecretsFile: the file, relative to the worktree. */
+      path?: string;
+      secretNames: string[];
     };
 
 export type ApprovalRuleTarget =

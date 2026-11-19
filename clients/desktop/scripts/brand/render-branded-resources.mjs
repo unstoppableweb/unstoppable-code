@@ -109,6 +109,19 @@ function copyWithTokens(sourceDir, targetDir, brand) {
   }
 }
 
+/**
+ * Renders only the bundled pipeline definitions, with the brand's tokens,
+ * into `targetDir` from the current sources, so a daemon build never stages
+ * a stale brand cache (CAN-5092).
+ */
+export function renderBrandedPipelines(brand, targetDir, options = {}) {
+  const sourceResources =
+    options.sourceResources ??
+    join(repoRoot, 'packages', 'desktop-shared', 'resources');
+  rmSync(targetDir, { recursive: true, force: true });
+  copyWithTokens(join(sourceResources, 'pipelines'), targetDir, brand);
+}
+
 function snapshotBuiltActionOutputs(targetResources) {
   const actionsDir = join(targetResources, 'actions');
   const snapshots = new Map();

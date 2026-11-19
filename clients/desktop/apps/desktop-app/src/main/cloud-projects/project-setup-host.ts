@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
+  backgroundFailureCode,
+  reportBackgroundFailure,
+} from '../observability/background-failure-reporter';
+import {
   appendFile,
   lstat,
   mkdir,
@@ -427,6 +431,10 @@ function sweep(): Promise<void> {
       },
       (error: unknown): void => {
         logMainProcessWarn('[cloud-project-setup] setup sweep failed', error);
+        reportBackgroundFailure(
+          'cloud-project-setup.resume_failed',
+          backgroundFailureCode(error),
+        );
       },
     );
 }

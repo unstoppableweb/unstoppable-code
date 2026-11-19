@@ -9,6 +9,10 @@ import { flushSharedItemSubscriptions } from './canopy-cloud/shared-item-subscri
 import { sendToWindowDetailed } from './lib/window-send';
 import { isE2eBuild } from './lib/e2e-gate';
 import {
+  allowsAutomaticCall,
+  runsDeferredStartupTasksImmediately,
+} from './local-only/policy';
+import {
   isRealisticStartupPerformanceEnabled,
   recordRealisticStartupPerformanceEvent,
 } from './lib/realistic-startup-performance';
@@ -173,28 +177,39 @@ async function runStartupBackgroundTasks(
   // primary flush trigger; this covers the case where the user was already
   // signed in and simply had no connectivity when they rated. Best-effort and
   // deliberately not awaited alongside the heavier refreshes below.
-  void flushTurnFeedbackOutbox();
-  // Install subscriptions recorded while signed out or offline, plus the
-  // one-time backfill for this account (CAN-2334). Same best-effort shape.
-  void flushSharedItemSubscriptions();
+  // A local-only build has no hosted service to flush to.
+  if (allowsAutomaticCall('cloud.startup-outbox-flush')) {
+    void flushTurnFeedbackOutbox();
+    // Install subscriptions recorded while signed out or offline, plus the
+    // one-time backfill for this account (CAN-2334). Same best-effort shape.
+    void flushSharedItemSubscriptions();
+  }
 
   recordRealisticStartupPerformanceEvent(
     'startup:skill-plugin-refresh:started',
   );
+  // A local-only build skips each of these; `null` marks a skipped task.
+  const skipped = Promise.resolve(null);
   const [skillResult, marketplaceResult, blueprintResult] =
     await Promise.allSettled([
-      checkUpdates((progress) => sendSkillProgress(getMainWindow, progress)),
+      allowsAutomaticCall('skills.update-check')
+        ? checkUpdates((progress) => sendSkillProgress(getMainWindow, progress))
+        : skipped,
       // Startup always re-runs marketplace discovery (so registration changes
       // and newly supported providers — e.g. a marketplace gaining Codex
       // support — are picked up), but only re-runs the expensive
       // per-marketplace provider update commands when the last full refresh is
       // stale. Those updates spawn the bundled claude/codex CLIs over the
       // network and were re-triggered by every app start from every instance.
-      refreshMarketplaces(
-        (progress) => sendMarketplaceProgress(getMainWindow, progress),
-        { providerUpdates: 'if-stale' },
-      ),
-      prefetchBlueprints(),
+      allowsAutomaticCall('marketplace.default-refresh')
+        ? refreshMarketplaces(
+            (progress) => sendMarketplaceProgress(getMainWindow, progress),
+            { providerUpdates: 'if-stale' },
+          )
+        : skipped,
+      allowsAutomaticCall('cloud.blueprint-prefetch')
+        ? prefetchBlueprints()
+        : skipped,
     ]);
 
   if (skillResult.status === 'rejected') {
@@ -202,7 +217,7 @@ async function runStartupBackgroundTasks(
       'skills_check_updates',
       errorMessage(skillResult.reason),
     );
-  } else if (!skillResult.value.success) {
+  } else if (skillResult.value !== null && !skillResult.value.success) {
     recordStartupBackgroundTaskFailure(
       'skills_check_updates',
       skillResult.value.error ?? 'Unknown error',
@@ -214,6 +229,8 @@ async function runStartupBackgroundTasks(
       'plugin_marketplace_refresh',
       errorMessage(marketplaceResult.reason),
     );
+  } else if (marketplaceResult.value === null) {
+    // Skipped in a local-only build.
   } else if (!marketplaceResult.value.success) {
     recordStartupBackgroundTaskFailure(
       'plugin_marketplace_refresh',
@@ -226,7 +243,7 @@ async function runStartupBackgroundTasks(
       'blueprint_catalog_refresh',
       errorMessage(blueprintResult.reason),
     );
-  } else if (!blueprintResult.value) {
+  } else if (blueprintResult.value === false) {
     recordStartupBackgroundTaskFailure(
       'blueprint_catalog_refresh',
       `${WORKSPACE_TEMPLATE_SHARE_LABEL} catalog unavailable`,
@@ -235,10 +252,12 @@ async function runStartupBackgroundTasks(
   recordRealisticStartupPerformanceEvent(
     'startup:skill-plugin-refresh:completed',
     {
-      skillsOk: skillResult.status === 'fulfilled' && skillResult.value.success,
+      skillsOk:
+        skillResult.status === 'fulfilled' &&
+        skillResult.value?.success === true,
       marketplacesOk:
         marketplaceResult.status === 'fulfilled' &&
-        marketplaceResult.value.success,
+        marketplaceResult.value?.success === true,
     },
   );
 }
@@ -259,8 +278,11 @@ export function scheduleDeferredStartupBackgroundTasks(
   // diagnosing this real post-shell pressure; production builds never consult
   // that E2E-only switch.
   const e2e = isE2eBuild();
+  // The local-only golden's seam runs every task at once (see policy.ts).
+  const runImmediately = runsDeferredStartupTasksImmediately();
   const runOrdinaryTasks =
     !e2e ||
+    runImmediately ||
     process.env[LIVE_E2E_STARTUP_BACKGROUND_ENV] === '1' ||
     isRealisticStartupPerformanceEnabled();
   // This switch is consulted only in the compile-time E2E build. It enables
@@ -309,6 +331,7 @@ export function scheduleDeferredStartupBackgroundTasks(
     const elapsed = now - scheduledAt;
     const idleFor = now - lastInteractionAt;
     if (
+      runImmediately ||
       elapsed >= STARTUP_BACKGROUND_MAX_DELAY_MS ||
       idleFor >= STARTUP_BACKGROUND_INTERACTION_IDLE_MS
     ) {
@@ -348,7 +371,7 @@ export function scheduleDeferredStartupBackgroundTasks(
 
   timeout = setTimeout(
     runWhenInteractionIdle,
-    STARTUP_BACKGROUND_TASK_DELAY_MS,
+    runImmediately ? 0 : STARTUP_BACKGROUND_TASK_DELAY_MS,
   );
 
   return () => {

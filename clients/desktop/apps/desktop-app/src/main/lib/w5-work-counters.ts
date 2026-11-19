@@ -11,6 +11,51 @@ import { recordW5Work } from '@canopy/desktop-shared/node/work-counters';
  * microsecond total. Counting never changes what the counted call does.
  */
 
+/**
+ * CAN-7064: the `w5` keys that split logical work from the captures that
+ * served it and the bytes decoded from them. The new keys use prefixes no
+ * CAN-5532 or CAN-6944 key uses, so caller attribution never charges them.
+ */
+export const W5_AGGREGATE_KEYS = {
+  /** One `runW5ReadView` query. */
+  queryReadView: 'logical.query.readView',
+  /** One `prepareW5ReadBinding` query. */
+  queryPreparation: 'logical.query.preparation',
+  /** One record read sent to the daemon record port (CAN-5532). */
+  recordReads: 'read.backend.capture',
+  /** One capture call over the record port (CAN-5532). */
+  portCaptures: 'port.capture',
+  /** One capture by an in-process host (CAN-5532). */
+  hostCaptures: 'host.capture',
+  portCapturedBytes: 'captured.port.bytes',
+  hostCapturedBytes: 'captured.host.bytes',
+  viewDecodedBytes: 'decoded.view.bytes',
+  recordDecodedBytes: 'decoded.record.bytes',
+  indexDecodedBytes: 'decoded.index.bytes',
+} as const;
+
+/**
+ * Decoded size of the present images in a capture. A record-port
+ * result is counted before the port validates it, so a malformed one counts
+ * as 0 instead of throwing.
+ */
+export function w5PresentImageBytes(capture: {
+  readonly files: readonly {
+    readonly state: string;
+    readonly base64?: string;
+  }[];
+}): number {
+  let bytes = 0;
+  try {
+    for (const file of capture.files)
+      if (file.state === 'present' && typeof file.base64 === 'string')
+        bytes += Buffer.byteLength(file.base64, 'base64');
+  } catch {
+    return 0;
+  }
+  return bytes;
+}
+
 export type W5RecordFileClass = 'index' | 'manifest' | 'worktrees' | 'other';
 
 /** The W5 record class a store path names, by its file name. */
@@ -99,6 +144,10 @@ export function countingW5HostPort(
       recordW5Work('host.capture');
       const result = await timed('host.capture', () => host.capture(request));
       recordW5Work('host.capture.files', result.files.length);
+      recordW5Work(
+        W5_AGGREGATE_KEYS.hostCapturedBytes,
+        w5PresentImageBytes(result),
+      );
       // The history each capture's chain evidence aggregates (CAN-5562):
       // every retained decision of each captured path, and the log's size.
       recordW5Work(
@@ -158,7 +207,15 @@ export function countingW5RecordPortTransport(
     }
   };
   return {
-    capture: (request) => call('capture', () => transport.capture(request)),
+    capture: (request) =>
+      call('capture', async () => {
+        const result = await transport.capture(request);
+        recordW5Work(
+          W5_AGGREGATE_KEYS.portCapturedBytes,
+          w5PresentImageBytes(result),
+        );
+        return result;
+      }),
     recovery: () => call('recovery', () => transport.recovery()),
     commit: (request) => call('commit', () => transport.commit(request)),
     lookupReceipt: (receipt) =>

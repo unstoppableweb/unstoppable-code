@@ -51,15 +51,8 @@ import { isPrReadyToMerge } from '@canopy/desktop-shared/types/github';
 import {
   clearStalePrCreationProgress,
   getPrCreationProgress,
-  rememberPortalPrState,
 } from './pr-creation-progress';
 import { getPrMergeProgressFeed } from './pr-merge-progress';
-import {
-  createPortalEvent,
-  enqueuePortalEvent,
-  isCanopyPortalActive,
-} from '../portal/portal-event-bus';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
 import { getResolvedGitExecutableForSpawn } from '../lib/git-executable';
 import {
   fetchPrStatusForWorktree,
@@ -76,10 +69,6 @@ import { runExclusiveGitMutation } from './git-action-exclusion';
 import { triggerWorktreePrecommitFailureHook } from '../lib/worktree-precommit-failure-hook';
 import { resolveFreshDefaultBranch } from '../lib/git-default-branch';
 import { refreshNow } from '../lib/github-poller';
-import {
-  addWorktreePrStatusChangeListener,
-  type WorktreePrStatusChangeListener,
-} from '../lib/pr-status-change-emitter';
 import { getSharedContainerPublishScheduler } from '../shared-containers/publish/scheduler';
 
 const execFileAsync = promisify(execFile);
@@ -231,8 +220,7 @@ export async function refreshPullRequestState(
 
 /**
  * Project an already-fetched worktree PR status onto the portal shape,
- * attaching live creation/merge feeds and remembering the result for
- * worktree-scope snapshots.
+ * attaching live creation/merge feeds.
  */
 function buildPortalPrState(
   request: PortalPrRefreshPayload,
@@ -283,7 +271,6 @@ function buildPortalPrState(
   if (mergeProgress !== undefined) {
     state.mergeProgress = mergeProgress;
   }
-  rememberPortalPrState(state);
   return state;
 }
 
@@ -296,83 +283,6 @@ async function refreshPullRequestStateAfterMutation(
     request.worktreeLocalId,
   );
   return state;
-}
-
-/**
- * Re-project the worktree's `pr_status` to a connected portal outside the
- * command path (CAN-1528 L2). The live creation-feed deltas carry the
- * last-remembered payload, which predates a just-created PR — this refreshes
- * the projection (re-reading the creation feed and remembering the fresh
- * payload) and pushes it as an unsolicited delta. Never throws; no-op
- * without an active portal session.
- */
-export async function projectPortalPrStatus(
-  workspaceLocalId: string,
-  worktreeLocalId: string,
-): Promise<void> {
-  if (!isCanopyPortalActive()) return;
-  try {
-    enqueuePortalPrStatusDelta(
-      await refreshPullRequestState({
-        workspaceLocalId,
-        worktreeLocalId,
-      }),
-    );
-  } catch {
-    // Best-effort: the next snapshot request reconciles the portal.
-  }
-}
-
-function enqueuePortalPrStatusDelta(state: PortalPullRequestState): void {
-  const { workspaceLocalId, worktreeLocalId } = state;
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'pr',
-      target: { workspaceLocalId, worktreeLocalId },
-      entities: [
-        {
-          entityType: 'pr_status',
-          localId: worktreeLocalId,
-          parentLocalId: worktreeScopedParentLocalId(
-            workspaceLocalId,
-            worktreeLocalId,
-          ),
-          payload: state,
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    }),
-  );
-}
-
-/**
- * Push each PR status change the desktop GitHub poller observes to a connected
- * portal, so remote clients hold current PR state without asking for it. The
- * poller already fetched the status; projecting it costs no GitHub requests.
- */
-const projectPolledPrStatus: WorktreePrStatusChangeListener = ({
-  projectId,
-  worktreeId,
-  status,
-}) => {
-  // A null worktree status means the poller had no repository targets to
-  // query, so it cannot confirm that a previously known PR was removed.
-  if (!isCanopyPortalActive() || status === null) return;
-  try {
-    enqueuePortalPrStatusDelta(
-      buildPortalPrState(
-        { workspaceLocalId: projectId, worktreeLocalId: worktreeId },
-        status,
-      ),
-    );
-  } catch {
-    // Best-effort: the next snapshot request reconciles the portal.
-  }
-};
-
-/** Idempotent: the emitter keeps listeners in a set. */
-export function registerPortalPrStatusProjection(): void {
-  addWorktreePrStatusChangeListener(projectPolledPrStatus);
 }
 
 export async function createPullRequest(
@@ -426,7 +336,6 @@ export async function createPullRequest(
     body: request.body,
     draft: request.draft,
   };
-  rememberPortalPrState(state);
   await refreshDesktopPrStatus(
     request.workspaceLocalId,
     request.worktreeLocalId,

@@ -1,7 +1,10 @@
 import { DESKTOP_INTEGRATION_TOKEN_ENV_VAR } from '@canopy/desktop-shared/lib/desktop-integration-transport';
-import { brandEnvName } from '@canopy/execution-engine/brand/env';
+import {
+  TRUSTED_NODE_POSIX_SCRUB,
+  TRUSTED_NODE_WINDOWS_SCRUB,
+  quoteTrustedNodePosixArg,
+} from '../lib/trusted-node-environment';
 
-const ELECTRON_NODE_PATH_ENV = brandEnvName('ELECTRON_NODE_PATH');
 const APPROVAL_TRANSPORT_TIMEOUT_MS = 590_000;
 
 export function buildClaudeTerminalHookCallbackScript(input: {
@@ -111,15 +114,42 @@ function postJson(url, body, token) {
 `;
 }
 
-export function buildPosixElectronNodeStub(jsFileName: string): string {
+export function buildPosixNodeStub(
+  jsFileName: string,
+  nodePath: string,
+): string {
+  const command = `${quoteTrustedNodePosixArg(nodePath)} --disable-sigusr1 "$script_dir/${jsFileName}" "$@"`;
+  // Claude treats ordinary nonzero hook exits as nonblocking errors, not denials.
   return `#!/bin/sh
-ELECTRON_RUN_AS_NODE=1 exec "$${ELECTRON_NODE_PATH_ENV}" "$(dirname "$0")/${jsFileName}" "$@"
+${TRUSTED_NODE_POSIX_SCRUB}
+script_dir=\${0%/*}
+[ "$script_dir" != "$0" ] || script_dir=.
+if [ "\${1-}" = PreToolUse ]; then
+  ${command}
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    printf '%s\\n' 'Approval hook failed. Restart this session to try again.' >&2
+    exit 2
+  fi
+  exit 0
+fi
+exec ${command}
 `;
 }
 
-export function buildWindowsElectronNodeStub(jsFileName: string): string {
+export function buildWindowsNodeStub(
+  jsFileName: string,
+  nodePath: string,
+): string {
   return `@echo off
-set ELECTRON_RUN_AS_NODE=1
-"%${ELECTRON_NODE_PATH_ENV}%" "%~dp0${jsFileName}" %*
+setlocal DisableDelayedExpansion
+${TRUSTED_NODE_WINDOWS_SCRUB}
+"${nodePath.replace(/%/g, '%%')}" --disable-sigusr1 "%~dp0${jsFileName}" %*
+set "hook_status=%errorlevel%"
+if "%~1"=="PreToolUse" if not "%hook_status%"=="0" (
+  >&2 echo Approval hook failed. Restart this session to try again.
+  exit /b 2
+)
+exit /b %hook_status%
 `;
 }

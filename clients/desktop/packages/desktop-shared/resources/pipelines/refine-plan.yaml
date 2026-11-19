@@ -1,7 +1,7 @@
 pipeline:
   name: 'Refine Plan'
   version: '3.0'
-  description: 'Review a plan with GPT-5.6 Sol and Opus, repeating only when Opus makes further edits.'
+  description: 'Review a plan with GPT-6.2 Sol and Opus, repeating only when Opus makes further edits.'
   icon: '📝'
   readonly: true
   scope: worktree
@@ -121,7 +121,7 @@ pipeline:
               Summarize this pipeline execution for the user in 2 short paragraphs.
 
               Include:
-              - whether GPT-5.6 Sol made updates in the final refine pass
+              - whether GPT-6.2 Sol made updates in the final refine pass
               - whether Opus made updates in the final refine pass
               - whether the refine job requested another pass
               - whether the refine job completed successfully

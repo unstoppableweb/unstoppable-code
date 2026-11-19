@@ -1,9 +1,10 @@
-// CAN-4165 golden: the tracked plan lifecycle as desktop serves it today,
-// captured before core.plan takes ownership. It drives the real
-// `tracked-plans:*` IPC handlers, plan persistence and the Portal publisher
-// on a temporary data root; only IPC registration, window sends and the
-// Portal emitter are replaced. A change here is a behaviour change: re-record
-// deliberately with `pnpm test <this file> -u` and review the snapshot diff.
+// CAN-4165 golden: the tracked plan lifecycle as desktop serves it, captured
+// before core.plan took ownership. It drives the real `tracked-plans:*` IPC
+// handlers, which since PR 3b-2 dispatch `core.plan.*` on a real desktop
+// dispatcher and plan persistence on a temporary data root; only IPC
+// registration and window sends are replaced. A change here is a behaviour
+// change: re-record deliberately with
+// `pnpm test <this file> -u` and review the snapshot diff.
 import {
   mkdirSync,
   mkdtempSync,
@@ -19,7 +20,12 @@ import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
+import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import type * as PlanPersistence from '../lib/plan-persistence';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { controllerMayInvoke } from '../remote-control/host/controller-profile';
+import { relayAllows } from '../canopy-runtime/renderer-relay/surface-allowlist';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type * as MainProcessLogging from '../lib/main-process-logging';
 
@@ -40,18 +46,13 @@ jest.mock('../lib/main-process-logging', () => ({
   ),
   logMainProcessWarn: jest.fn(),
 }));
+const broadcasts: { channel: string; payload: unknown }[] = [];
 jest.mock('../lib/window-send', () => ({
   sendToWindow: (_window: unknown, channel: string, payload: unknown): void => {
     windowSends.push({ channel, payload });
   },
-}));
-const portalEvents: { kind: 'upsert' | 'remove'; event: unknown }[] = [];
-jest.mock('../services/portal-feature-event-service', () => ({
-  emitPortalFeatureUpsert: (event: unknown): void => {
-    portalEvents.push({ kind: 'upsert', event });
-  },
-  emitPortalFeatureRemove: (event: unknown): void => {
-    portalEvents.push({ kind: 'remove', event });
+  sendToAllWindows: (channel: string, payload: unknown): void => {
+    broadcasts.push({ channel, payload });
   },
 }));
 
@@ -65,7 +66,21 @@ let worktreePath: string;
 // One persistence module for every case, captured before any restart case
 // loads an isolated copy.
 let persistence: typeof PlanPersistence;
+let dispatcher: DesktopCanopyDispatcher;
+// The dispatcher's calls since the case began, without their spies' types.
+let dispatcherCalls: { calls(): unknown[][]; clear(): void };
 const originalDataDir = process.env.CANOPY_DATA_DIR;
+
+const RENDERER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'desktop-local',
+  interfaceKind: 'desktop',
+  grants: [],
+};
+// The caller the IPC handlers resolve for the next call: the renderer, or a
+// paired controller's bridge.
+let ipcCaller: CanopyCallerDescriptor = RENDERER;
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(join(path, '..'), { recursive: true });
@@ -134,15 +149,35 @@ beforeAll(async () => {
   );
   expect(registry.isCoworkWorkspace(COWORK_ID)).toBe(true);
   expect(registry.getWorkspaceType(WORKSPACE_ID)).toBe('single-repo');
+  const { createDesktopRuntime } =
+    await import('../canopy-runtime/desktop-runtime');
+  dispatcher = createDesktopRuntime({ shutdownTimeoutMs: 25 });
+  const querySpy = jest.spyOn(dispatcher, 'query');
+  const instructionSpy = jest.spyOn(dispatcher, 'instruction');
+  dispatcherCalls = {
+    calls: (): unknown[][] =>
+      [...querySpy.mock.calls, ...instructionSpy.mock.calls].map(
+        (call): unknown[] => [...call],
+      ),
+    clear: (): void => {
+      querySpy.mockClear();
+      instructionSpy.mockClear();
+    },
+  };
   const { registerPlansHandlers } = await import('../ipc/plans');
-  registerPlansHandlers(() => null);
+  registerPlansHandlers(
+    () => null,
+    dispatcher,
+    () => ipcCaller,
+  );
   const { registerDetectedPlansHandlers } =
     await import('../ipc/detected-plans');
   registerDetectedPlansHandlers(() => null);
   persistence = await import('../lib/plan-persistence');
 });
 
-afterAll(() => {
+afterAll(async () => {
+  await dispatcher.shutdown();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;
   rmSync(root, { recursive: true, force: true });
@@ -150,8 +185,25 @@ afterAll(() => {
 
 beforeEach(() => {
   windowSends.length = 0;
-  portalEvents.length = 0;
+  broadcasts.length = 0;
+  dispatcherCalls.clear();
+  ipcCaller = RENDERER;
 });
+
+/** The core.plan operations dispatched since the case began, with their callers. */
+function dispatched(): { name: string; caller: unknown }[] {
+  return dispatcherCalls
+    .calls()
+    .map((call) => {
+      const [name, , options] = call;
+      const caller =
+        options && typeof options === 'object' && 'caller' in options
+          ? options.caller
+          : undefined;
+      return { name: String(name), caller };
+    })
+    .filter(({ name }) => name.startsWith('core.plan.'));
+}
 
 function invoke<T>(channel: string, request: unknown): Promise<T> {
   const handler = handlers.get(channel);
@@ -253,7 +305,7 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
       Date.parse(created.updatedAt),
     );
     expect(
-      stable({ created, updated, retitled, portalEvents, windowSends }),
+      stable({ created, updated, retitled, windowSends }),
     ).toMatchSnapshot();
     expect(
       stable(JSON.parse(readFileSync(plansFile(), 'utf8'))),
@@ -283,17 +335,13 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
     expect(before.map((plan) => plan.id)).toContain(second.id);
   });
 
-  it('publishes a direct persistence write to the Portal through the write hook', async () => {
-    const plan = await persistence.createTrackedPlan({
+  it('sends no renderer event for a direct persistence write', async () => {
+    await persistence.createTrackedPlan({
       ...scope,
       source: 'claude',
       content: '# Agent plan\n\nWritten by ExitPlanMode.',
     });
     expect(windowSends).toEqual([]);
-    expect(
-      portalEvents.filter((e) => JSON.stringify(e).includes(plan.id)),
-    ).toHaveLength(1);
-    expect(stable(portalEvents)).toMatchSnapshot();
   });
 
   it('imports a plan file from the worktree, without deduplication', async () => {
@@ -592,11 +640,310 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
     ).toMatchSnapshot();
   });
 
-  it('deletes through IPC and publishes the removal', async () => {
+  it('deletes through IPC', async () => {
     await invoke(IPC_CHANNELS.trackedPlansDelete, { ...scope, planId });
     await expect(
       invoke(IPC_CHANNELS.trackedPlansGet, { ...scope, planId }),
     ).resolves.toBeNull();
-    expect(stable(portalEvents)).toMatchSnapshot();
+  });
+});
+
+// CAN-4165 PR 3b-2: the tracked-plans channels dispatch core.plan.* on the
+// desktop dispatcher. These cases pin what the move keeps and what it adds.
+describe('tracked plans on core.plan (CAN-4165 equivalence)', () => {
+  const other = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-dispatch' };
+  const writer = (
+    key: string,
+  ): {
+    caller: CanopyCallerDescriptor;
+    metadata: { idempotencyKey: string };
+  } => ({
+    caller: { ...RENDERER, grants: ['core.plan.write'] },
+    metadata: { idempotencyKey: key },
+  });
+
+  it('serves each lifecycle channel through core.plan with only the grant it needs', async () => {
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'claude', content: '# One' },
+    );
+    await invoke(IPC_CHANNELS.trackedPlansGet, {
+      ...other,
+      planId: created.id,
+    });
+    await invoke(IPC_CHANNELS.trackedPlansList, other);
+    await invoke(IPC_CHANNELS.trackedPlansListWithSkipped, other);
+    await invoke(IPC_CHANNELS.trackedPlansUpdate, {
+      ...other,
+      planId: created.id,
+      content: '# Two',
+    });
+    await invoke(IPC_CHANNELS.trackedPlansDelete, {
+      ...other,
+      planId: created.id,
+    });
+    expect(
+      dispatched()
+        .map(({ name, caller }) => ({ name, caller }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    ).toEqual(
+      [
+        ['core.plan.create', 'core.plan.write'],
+        ['core.plan.delete', 'core.plan.write'],
+        ['core.plan.get', 'core.plan.read'],
+        ['core.plan.list', 'core.plan.read'],
+        ['core.plan.list', 'core.plan.read'],
+        ['core.plan.update', 'core.plan.write'],
+      ].map(([name, grant]) => ({
+        name,
+        caller: { ...RENDERER, grants: [grant] },
+      })),
+    );
+    // The renderer that asked applies each answer itself, as before.
+    expect(broadcasts).toEqual([]);
+  });
+
+  it("dispatches a paired controller's calls as its own device, which keeps every lifecycle channel", async () => {
+    ipcCaller = {
+      principalId: 'remote-device:golden-device',
+      clientInstanceId: 'remote-bridge:7',
+      authorityId: 'desktop-local',
+      interfaceKind: 'desktop',
+      grants: ['core.workspace.read', 'core.chat.write'],
+    };
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'claude', content: '# Remote' },
+    );
+    const updated = await invoke<TrackedPlanData | null>(
+      IPC_CHANNELS.trackedPlansUpdate,
+      { ...other, planId: created.id, content: '# Remote, edited' },
+    );
+    const listed = await invoke<TrackedPlanData[]>(
+      IPC_CHANNELS.trackedPlansList,
+      other,
+    );
+    await invoke(IPC_CHANNELS.trackedPlansDelete, {
+      ...other,
+      planId: created.id,
+    });
+    expect(must(updated).content).toBe('# Remote, edited');
+    expect(listed.map((plan) => plan.id)).toContain(created.id);
+    await expect(
+      invoke(IPC_CHANNELS.trackedPlansGet, { ...other, planId: created.id }),
+    ).resolves.toBeNull();
+    const callers = dispatched().map(({ caller }) => caller);
+    expect(callers.length).toBeGreaterThan(0);
+    for (const caller of callers)
+      expect(caller).toEqual(
+        expect.objectContaining({
+          principalId: 'remote-device:golden-device',
+          clientInstanceId: 'remote-bridge:7',
+        }),
+      );
+  });
+
+  it('announces a write from another binding to every window', async () => {
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'claude', content: '# Before relay' },
+    );
+    expect(broadcasts).toEqual([]);
+    await dispatcher.instruction(
+      'core.plan.update',
+      { scope: other, planId: created.id, content: '# From the relay' },
+      writer('relay-update-1'),
+    );
+    await dispatcher.instruction(
+      'core.plan.delete',
+      { scope: other, planId: created.id },
+      writer('relay-delete-1'),
+    );
+    expect(broadcasts.map(({ channel }) => channel)).toEqual([
+      IPC_CHANNELS.trackedPlansUpdated,
+      IPC_CHANNELS.trackedPlansUpdated,
+    ]);
+    expect(stable(broadcasts)).toMatchSnapshot();
+  });
+
+  it('replays a keyed write once and refuses its key with other parameters', async () => {
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'claude', content: '# Keyed' },
+    );
+    const params = { scope: other, planId: created.id, content: '# Keyed, v2' };
+    const first = await dispatcher.instruction(
+      'core.plan.update',
+      params,
+      writer('keyed-1'),
+    );
+    const repeat = await dispatcher.instruction(
+      'core.plan.update',
+      params,
+      writer('keyed-1'),
+    );
+    expect(repeat).toEqual(first);
+    const stored = await invoke<TrackedPlanData | null>(
+      IPC_CHANNELS.trackedPlansGet,
+      { ...other, planId: created.id },
+    );
+    expect(must(stored).latestRevisionNumber).toBe(
+      created.latestRevisionNumber + 1,
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.update',
+        { ...params, content: '# Keyed, other' },
+        writer('keyed-1'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+  });
+
+  it('refuses a stale expected revision', async () => {
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'claude', content: '# Revisioned' },
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.update',
+        {
+          scope: other,
+          planId: created.id,
+          expectedRevision: created.latestRevisionNumber + 1,
+          content: '# Stale',
+        },
+        writer('stale-1'),
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        code: 'core.plan.revisionConflict',
+        details: { currentRevision: created.latestRevisionNumber },
+      },
+    });
+  });
+
+  it('serves only plan reads to a read-only relay, and nothing to App Advisor', () => {
+    const lifecycle = {
+      query: ['core.plan.list', 'core.plan.get'],
+      instruction: ['core.plan.create', 'core.plan.update', 'core.plan.delete'],
+    } as const;
+    for (const method of lifecycle.query) {
+      expect(relayAllows('main', 'query', method, 'authority')).toBe(true);
+      expect(relayAllows('main', 'query', method, 'read-only')).toBe(true);
+      expect(relayAllows('app-advisor', 'query', method)).toBe(false);
+    }
+    for (const method of lifecycle.instruction) {
+      expect(relayAllows('main', 'instruction', method, 'authority')).toBe(
+        true,
+      );
+      expect(relayAllows('main', 'instruction', method, 'read-only')).toBe(
+        false,
+      );
+      expect(relayAllows('app-advisor', 'instruction', method)).toBe(false);
+    }
+  });
+
+  it('refuses a recipient scope and a scope with no plans as typed errors', async () => {
+    await expect(
+      dispatcher.instruction(
+        'core.plan.create',
+        {
+          scope: {
+            projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+            worktreeId: WORKTREE_ID,
+          },
+          source: 'claude',
+          content: 'x',
+        },
+        writer('viewer-1'),
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'permission_denied',
+        code: 'core.plan.readOnlyScope',
+        message: 'Shared-container recipient workspaces are read-only',
+      },
+    });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.create',
+        {
+          scope: { projectId: COWORK_ID, worktreeId: WORKTREE_ID },
+          source: 'claude',
+          content: 'x',
+        },
+        writer('cowork-1'),
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'core.plan.unsupportedScope',
+      },
+    });
+    // Through IPC the cowork refusal keeps the message it always had.
+    await expect(
+      invoke(IPC_CHANNELS.trackedPlansGet, {
+        projectId: COWORK_ID,
+        worktreeId: WORKTREE_ID,
+        planId: 'plan-1',
+      }),
+    ).rejects.toThrow(
+      `Tracked plans are not available for cowork project ${COWORK_ID}`,
+    );
+  });
+});
+
+// Remote Control reaches tracked plans through these channels. Pinned before
+// CAN-4165 PR 3b-2 moves them onto core.plan, so the move cannot widen or
+// narrow what a paired controller may do: a full desktop controller keeps
+// every lifecycle channel, and the read-only profiles stay read-only.
+describe('Remote Control access to tracked plans (CAN-4165 equivalence)', () => {
+  const channels = [
+    IPC_CHANNELS.trackedPlansList,
+    IPC_CHANNELS.trackedPlansListWithSkipped,
+    IPC_CHANNELS.trackedPlansGet,
+    IPC_CHANNELS.trackedPlansCreate,
+    IPC_CHANNELS.trackedPlansUpdate,
+    IPC_CHANNELS.trackedPlansDelete,
+  ];
+  const request = {
+    projectId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    planId: 'plan-1',
+    source: 'claude',
+    content: 'x',
+  };
+  const allowed = (
+    kind: 'desktop' | 'mobile' | 'browser' | 'hosted',
+  ): string[] =>
+    channels.filter((channel) =>
+      controllerMayInvoke(
+        kind,
+        channel,
+        [request],
+        getRemoteChannelDisposition,
+      ),
+    );
+
+  it('lets a desktop controller use every tracked-plan lifecycle channel', () => {
+    expect(allowed('desktop')).toEqual(channels);
+  });
+
+  it('keeps mobile, browser and hosted controllers to their plan channels', () => {
+    expect({
+      mobile: allowed('mobile'),
+      browser: allowed('browser'),
+      hosted: allowed('hosted'),
+    }).toMatchSnapshot();
+    // The read-only profiles never create, update or delete a plan.
+    for (const kind of ['mobile', 'hosted'] as const)
+      for (const channel of [
+        IPC_CHANNELS.trackedPlansCreate,
+        IPC_CHANNELS.trackedPlansUpdate,
+        IPC_CHANNELS.trackedPlansDelete,
+      ])
+        expect(allowed(kind)).not.toContain(channel);
   });
 });

@@ -1,4 +1,5 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import { TranscriptForkContext } from './transcript-fork-context';
 import { captureHomeCapabilities } from './delegation/capture-home-capabilities';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
@@ -15,6 +16,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import {
   getRawCopilotModelId,
   isCopilotModel,
@@ -182,9 +184,10 @@ export class CopilotProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (event: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('CopilotProvider.createSession');
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -471,6 +474,9 @@ export class CopilotProvider implements AgentProvider {
                   sessionId: key,
                   packageOverlay: opts.packageOverlay,
                   preferences: context.preferences,
+                  ...(opts.accountResolution
+                    ? { accountResolution: opts.accountResolution }
+                    : {}),
                   inheritedCursorCapabilities: inherited,
                   ...(inheritedPluginRefs.length > 0
                     ? { inheritedPluginRefs }
@@ -749,6 +755,18 @@ export class CopilotProvider implements AgentProvider {
           repoId: opts.selectedRepoId,
           sdkSessionId: sessionId ?? key,
           providerType: 'copilot',
+          // RequestSecrets on the `_ui` server: interactive root chats only,
+          // while the flag is on (re-checked per call). Tools only: this
+          // provider has no live environment for ambient secrets
+          // (agent-secrets/ambient-env.ts).
+          ...(serverMode === 'default' &&
+          opts.executionContext === undefined &&
+          isAgentSecretRequestsEnabled()
+            ? {
+                secretRequests: true,
+                getApprovalMode: (): ApprovalMode => approvalMode,
+              }
+            : {}),
           model: turnModel,
           authToken: token,
           createdAt: Date.now(),
@@ -841,7 +859,10 @@ export class CopilotProvider implements AgentProvider {
                   : undefined;
             return tool
               ? gate(
-                  toolKey === 'ask_user_question' ? names.ui : names.main,
+                  toolKey === 'ask_user_question' ||
+                    toolKey === 'request_secrets'
+                    ? names.ui
+                    : names.main,
                   tool,
                   args,
                   call?.requestId ?? randomUUID(),

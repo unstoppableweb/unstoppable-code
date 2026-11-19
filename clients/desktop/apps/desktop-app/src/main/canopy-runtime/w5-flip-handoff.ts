@@ -1,3 +1,5 @@
+import { w5FailureDiagnostics } from '@canopy/core-runtime/node/w5/error-diagnostics';
+import type { BackgroundServiceHandoffFailure } from '@canopy/desktop-shared/lib/background-service-status';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { installDesktopW5FileStore } from '../lib/w5-commit-log-file-store';
 import { isW5DaemonFlipCompiled } from '../lib/w5-flip-gate';
@@ -39,6 +41,13 @@ export type W5FlipHandoffStatus =
       readonly detail?: string;
     };
 
+/** A handoff code missing from the notice's contract fails to compile here. */
+function handoffFailureCode(
+  reason: Exclude<W5HandoffFailure, 'cancelled'>,
+): BackgroundServiceHandoffFailure {
+  return reason;
+}
+
 let status: W5FlipHandoffStatus | undefined;
 let settled: Promise<void> | undefined;
 const owner = new AbortController();
@@ -66,6 +75,16 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
       (store) => {
         status = { state: 'ready' };
         noteElectronW5Handoff('ready');
+        // CAN-7155: warm the read cache; first readers wait on the warm.
+        void import('./w5-read-cache')
+          .then((readCache) =>
+            readCache.isDesktopW5ReadCacheSelected()
+              ? readCache.getDesktopW5ReadCache().activate(store)
+              : undefined,
+          )
+          .catch((error: unknown) =>
+            logMainProcessWarn('W5 read cache did not start', { error }),
+          );
         return store;
       },
       (error: unknown) => {
@@ -78,13 +97,17 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
           reason: failure.reason,
           ...(failure.detail !== undefined && { detail: failure.detail }),
         };
-        noteElectronW5Handoff(
-          failure.reason === 'cancelled' ? 'cancelled' : 'degraded',
-        );
+        if (failure.reason === 'cancelled') noteElectronW5Handoff('cancelled');
+        else
+          noteElectronW5Handoff('degraded', handoffFailureCode(failure.reason));
         if (failure.reason !== 'cancelled')
           logMainProcessWarn(
             'W5 startup handoff failed; workspace records are read-only',
-            { reason: failure.reason, detail: failure.detail },
+            {
+              reason: failure.reason,
+              detail: failure.detail,
+              ...w5FailureDiagnostics(failure),
+            },
           );
         throw failure;
       },
@@ -114,5 +137,7 @@ export function cancelPendingW5FlipHandoff(): void {
 export async function disposeW5FlipHandoff(): Promise<void> {
   if (!isW5DaemonFlipCompiled()) return;
   owner.abort();
+  if (status?.state === 'ready')
+    (await import('./w5-read-cache')).disposeDesktopW5ReadCache();
   await disposeElectronDaemonConnections();
 }

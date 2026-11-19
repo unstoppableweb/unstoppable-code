@@ -25,7 +25,6 @@ jest.mock('../../agents/session-manager', () => ({
 }));
 
 import type * as WorkEntriesModule from '../../lib/cowork-work-entries';
-import type * as PortalEventBusModule from '../../portal/portal-event-bus';
 
 const mockRecordDiagnostic = jest.fn();
 jest.mock('../../observability/ingest', () => ({
@@ -41,12 +40,6 @@ jest.mock('../../lib/cowork-work-entries', () => ({
   ),
   resolveWorkEntryForChat: (): Promise<{ entryId: string }> =>
     Promise.resolve({ entryId: 'entry-1' }),
-}));
-jest.mock('../../portal/portal-event-bus', () => ({
-  ...jest.requireActual<typeof PortalEventBusModule>(
-    '../../portal/portal-event-bus',
-  ),
-  isCanopyPortalActive: (): boolean => false,
 }));
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';

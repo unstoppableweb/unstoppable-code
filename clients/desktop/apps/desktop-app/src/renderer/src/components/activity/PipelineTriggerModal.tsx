@@ -83,6 +83,11 @@ import {
   shouldIncludeSharedRows,
   type PipelineTriggerRow,
 } from '@/lib/pipelineTriggerRows';
+import {
+  pipelineDefinitionPublishesReview,
+  type ReviewApprovalReadinessInput,
+} from '@canopy/protocol/settings/github-review-approvals';
+import { ReviewApprovalLaunchNotice } from '@canopy/ui-app/review-approval-link';
 import { CapabilityPackageReadiness } from '@/components/shared/capability-package/CapabilityPackageReadiness';
 import {
   isPipelinePackageRunBlocked,
@@ -252,6 +257,13 @@ export interface PipelineTriggerModalProps {
   runError?: string | null;
   onClearError?: () => void;
   runLabel?: string;
+  /**
+   * The repositories a code review run here may publish to, under the run's
+   * owner (CAN-7162). A selected workflow that publishes a review shows the
+   * "Link GitHub" notice above Run when the person's reviews can't approve.
+   * It never disables or delays Run.
+   */
+  reviewApprovalInputs?: readonly ReviewApprovalReadinessInput[];
   runLoadingLabel?: string;
   ownerDocument?: Document;
   /**
@@ -616,6 +628,7 @@ export function PipelineTriggerModal({
   onClearError,
   runLabel = 'Run',
   runLoadingLabel = 'Running…',
+  reviewApprovalInputs,
   ownerDocument,
   watcherRecipientGroups,
   onWatcherSelectionChange,
@@ -2370,6 +2383,16 @@ export function PipelineTriggerModal({
             error={selectedPipelineError}
           />
         )}
+        {step === 'configure' &&
+          selectedPipeline &&
+          reviewApprovalInputs !== undefined &&
+          reviewApprovalInputs.length > 0 &&
+          pipelineDefinitionPublishesReview(selectedPipeline.content) && (
+            <ReviewApprovalLaunchNotice
+              inputs={reviewApprovalInputs}
+              brandName={brandText.appName}
+            />
+          )}
         {selectedPipeline && runContextBlockedReason && (
           <div
             className="text-xs fg-tertiary"

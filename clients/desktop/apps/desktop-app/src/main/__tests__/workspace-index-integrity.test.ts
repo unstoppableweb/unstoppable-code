@@ -57,11 +57,8 @@ jest.mock('../observability', () => ({
     recordAppDiagnostic: mockRecordAppDiagnostic,
   })),
 }));
-jest.mock('../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../agents/session-manager', () => ({}));
 jest.mock('../pipelines/execution-runtime', () => ({}));
@@ -127,8 +124,7 @@ import {
 import { discardCoworkWorkspaceRecord } from '../lib/cowork-workspace-records';
 import { removeSplitCreatedWorkspace } from '../lib/split-temporary-workspace-records';
 import { cleanupCompositionDestination } from '../lib/workspace-composition-records';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import * as worktreeDataCleanup from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
 import * as git from '../lib/git';
 import * as instructions from '../lib/instruction-files';
@@ -989,8 +985,7 @@ describe('workspace cleanup persistence integrity', () => {
       expect(await revision()).toBe(site === 'composition' ? 2 : 1);
       expect(await readIndexIds()).toEqual(['other']);
       if (site === 'split') {
-        expect(notifyPortalStructureChanged).toHaveBeenCalled();
-        expect(schedulePortalStructuralSync).toHaveBeenCalled();
+        expect(scheduleDesktopStructureChanged).toHaveBeenCalled();
       }
       expect((await host.recoveryReport()).recoveryRequired).toEqual([]);
     },
@@ -1014,8 +1009,7 @@ describe('workspace cleanup persistence integrity', () => {
       expectRecordsAbsent();
       expect(await revision()).toBe(1);
       expect(await readIndexIds()).toEqual(['other']);
-      expect(notifyPortalStructureChanged).toHaveBeenCalled();
-      expect(schedulePortalStructuralSync).toHaveBeenCalled();
+      expect(scheduleDesktopStructureChanged).toHaveBeenCalled();
       expect((await host.recoveryReport()).recoveryRequired).toEqual([]);
     },
   );

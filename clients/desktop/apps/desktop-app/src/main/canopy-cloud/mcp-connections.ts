@@ -1,4 +1,5 @@
 import { AccountMcpConnectionError } from '@canopy/execution-engine/types/mcp-servers';
+import { forgetAccountMcpServerAccounts } from '../mcp/account-mcp-server-accounts';
 import {
   ACCOUNT_MCP_CLIENT_CREDENTIALS_REQUIRED,
   ACCOUNT_MCP_SIGN_IN_UNAVAILABLE,
@@ -44,6 +45,18 @@ export function invalidateAccountMcpConnections(): void {
   generation += 1;
   cache = undefined;
   pending = undefined;
+}
+
+/**
+ * After an account is added, signed in, disconnected, renamed, made the
+ * default or removed: drops the cached list, and the record of which account
+ * each bound server name stands for, since that can change; its approvals
+ * name none until the next bind records it again (CAN-6228). A plain list
+ * refresh keeps the record.
+ */
+export function accountMcpConnectionsChanged(): void {
+  invalidateAccountMcpConnections();
+  forgetAccountMcpServerAccounts();
 }
 
 const CONNECTIONS_PATH = '/api/v1/mcp-connections';
@@ -121,6 +134,9 @@ function projectConnection(row: AccountMcpConnection): AccountMcpConnection {
       ? { hasExtraHeaders: row.hasExtraHeaders }
       : {}),
     ...(typeof row.enabled === 'boolean' ? { enabled: row.enabled } : {}),
+    // Several accounts per connector (CAN-6226); absent from older clouds.
+    ...(typeof row.label === 'string' && row.label ? { label: row.label } : {}),
+    ...(typeof row.isDefault === 'boolean' ? { isDefault: row.isDefault } : {}),
   };
 }
 
@@ -187,7 +203,7 @@ export async function startAccountMcpConnection(
       });
     throw error;
   }
-  invalidateAccountMcpConnections();
+  accountMcpConnectionsChanged();
   if (
     payload &&
     typeof payload === 'object' &&
@@ -307,7 +323,7 @@ export async function disconnectAccountMcpConnection(
   id: string,
 ): Promise<void> {
   await connectionRequest(`/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  invalidateAccountMcpConnections();
+  accountMcpConnectionsChanged();
 }
 
 export async function setAccountMcpConnectionTools(
@@ -385,7 +401,7 @@ export async function updateAccountMcpConnection(
   } catch (error) {
     throw editError(error);
   } finally {
-    invalidateAccountMcpConnections();
+    accountMcpConnectionsChanged();
   }
   return readConnection(payload);
 }
@@ -394,10 +410,17 @@ export async function updateAccountMcpConnection(
  * Deletes the connection outright. A cloud without removal only disconnects
  * it, which wipes its sign-in but keeps the row. A connection the cloud no
  * longer has counts as removed, so a retried removal finishes.
+ * `unlessConnected` is a sign-in's own cleanup, sent to its own route
+ * (`POST …/{id}/abandon`): the cloud keeps a connection that connected
+ * meanwhile, and a server without the route answers 404 and changes nothing.
+ * Both answer `removed: false`; no request an older server could read as a
+ * removal or a disconnect is ever sent for it.
  */
 export async function removeAccountMcpConnection(
   id: string,
+  { unlessConnected = false }: { unlessConnected?: boolean } = {},
 ): Promise<{ removed: boolean }> {
+  if (unlessConnected) return abandonAccountMcpConnection(id);
   const editable = await accountMcpConnectionsEditable();
   try {
     await connectionRequest(
@@ -413,9 +436,32 @@ export async function removeAccountMcpConnection(
       return { removed: true };
     throw error;
   } finally {
-    invalidateAccountMcpConnections();
+    accountMcpConnectionsChanged();
   }
   return { removed: editable };
+}
+
+async function abandonAccountMcpConnection(
+  id: string,
+): Promise<{ removed: boolean }> {
+  try {
+    await connectionRequest(`/${encodeURIComponent(id)}/abandon`, {
+      method: 'POST',
+    });
+    return { removed: true };
+  } catch (error) {
+    if (error instanceof CanopyCloudClientError) {
+      // The connection is already gone.
+      if (error.status === 404 && error.serverCode === 'not_found')
+        return { removed: true };
+      // It connected meanwhile, or the server has no such route.
+      if (error.serverCode === 'connection_connected' || error.status === 404)
+        return { removed: false };
+    }
+    throw error;
+  } finally {
+    accountMcpConnectionsChanged();
+  }
 }
 
 function readUpstreamTool(value: unknown): AccountMcpUpstreamTool | null {
@@ -501,7 +547,7 @@ export async function awaitAccountMcpConnection(
           serverCode: signInError,
         });
       if (connection.status !== 'PENDING') {
-        invalidateAccountMcpConnections();
+        accountMcpConnectionsChanged();
         return connection;
       }
       await new Promise<void>((resolve): void => {

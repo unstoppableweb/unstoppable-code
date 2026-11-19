@@ -48,6 +48,9 @@ import {
   type PullRequestSectionPrStatus,
   type PullRequestSectionRepo,
 } from '@canopy/ui-app/pull-request-section-body';
+import { PullRequestReviewApprovalNotice } from '@canopy/ui-app/review-approval-link';
+import { brandText } from '@/lib/brand';
+import { useProjectReviewApprovalRunOwner } from '@/lib/review-approval-run-owner';
 import { isPrReadyToMerge } from '@/lib/pr-mergeability';
 import {
   useActivitySectionChrome,
@@ -516,6 +519,7 @@ export function PullRequestSection({
   const { splitPrEnabled, splitPrThresholdLines } =
     useSplitPrGatingPreferences();
   const canopyDesktopPrSplitEnabled = useCanopyDesktopPrSplitEnabled();
+  const reviewApprovalRunOwner = useProjectReviewApprovalRunOwner(projectId);
   const isSingleRepoWorkspace = useProjectsStore(
     (state) =>
       state.projects.find((item) => item.id === projectId)?.type ===
@@ -835,6 +839,16 @@ export function PullRequestSection({
         isCreating={isCreating}
         creationProgress={creationProgress}
         framelessChecks={chrome === 'frameless'}
+        renderReviewNotice={(repo) =>
+          repo.status === null ? null : (
+            <PullRequestReviewApprovalNotice
+              runOwner={reviewApprovalRunOwner}
+              prUrl={repo.status.prUrl}
+              prState={repo.status.state}
+              brandName={brandText.appName}
+            />
+          )
+        }
       >
         {splitRefusal !== undefined && (
           <Notice

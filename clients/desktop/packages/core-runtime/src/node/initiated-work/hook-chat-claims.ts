@@ -129,7 +129,7 @@ export class HookChatClaims {
   async lookup(
     request: HookChatClaimRequest,
   ): Promise<ExistingHookChatClaim | null> {
-    const result = (await this.operations.ready()).lookupReceipt(
+    const result = await this.operations.lookupReceipt(
       CORE_INITIATED_WORK_HOOK_CHAT_KIND,
       claimReceipt(request),
     );

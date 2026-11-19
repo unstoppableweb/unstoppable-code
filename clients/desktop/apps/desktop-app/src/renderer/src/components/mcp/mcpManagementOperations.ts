@@ -1,3 +1,4 @@
+import { requestMcpRemovalRepair } from '@canopy/ui-app/capability';
 import type {
   AccountMcpConnection,
   AccountMcpConnectionSummary,
@@ -368,7 +369,14 @@ export async function deleteDesktopMcpTarget({
     throw new Error('This server is no longer available.');
   if (connection && expectedAccountId)
     await requireCapturedMcpAccount(expectedAccountId);
-  if (serverId) await window.mcpServers.deleteServer(serverId);
+  if (serverId) {
+    try {
+      await window.mcpServers.deleteServer(serverId);
+    } catch (error) {
+      requestMcpRemovalRepair(serverId);
+      throw error;
+    }
+  }
   if (!connection) return;
   if (!serverId) {
     const { removed } = await window.mcpServers.removeAccountConnection(
@@ -386,8 +394,12 @@ export async function deleteDesktopMcpTarget({
       useGitHubStore
         .getState()
         .addToast(DELETED_HERE_REMOVE_UNSUPPORTED, 'error');
-  } catch {
-    useGitHubStore.getState().addToast(DELETED_HERE_REMOVE_FAILED, 'error');
+  } catch (error) {
+    useGitHubStore
+      .getState()
+      .addToast(DELETED_HERE_REMOVE_FAILED, 'error', undefined, {
+        caught: error,
+      });
   }
 }
 
@@ -414,7 +426,9 @@ export async function moveDesktopMcpTarget({
     );
     if (!removed)
       useGitHubStore.getState().addToast(MOVED_REMOVE_UNSUPPORTED, 'error');
-  } catch {
-    useGitHubStore.getState().addToast(MOVED_REMOVE_FAILED, 'error');
+  } catch (error) {
+    useGitHubStore
+      .getState()
+      .addToast(MOVED_REMOVE_FAILED, 'error', undefined, { caught: error });
   }
 }

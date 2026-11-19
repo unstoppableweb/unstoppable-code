@@ -1,5 +1,5 @@
-// Direct (device-relay) Remote Control harness: the Portal harness's web
-// server and seeded accounts, plus a real relay, a desktop signed in to the
+// Direct (device-relay) Remote Control harness: the web server and seeded
+// accounts from `harness/`, plus a real relay, a desktop signed in to the
 // relay with its API key, and the hosted pairing and computer routes. Shared
 // by the hosted MCP golden and the browser direct-web golden. Test-only.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -11,9 +11,9 @@ import { seedDemoWorkspaces } from '../demoWorkspaces.mjs';
 import {
   PORTAL_WEB_ORIGIN,
   PORTAL_WEB_ORIGIN_LOOPBACK,
-} from '../portal/config.mjs';
-import { withPortalDbClient } from '../portal/db.mjs';
-import { resolvePortalWebBrandId } from '../portal/web-server.mjs';
+} from './harness/config.mjs';
+import { withPortalDbClient } from './harness/db.mjs';
+import { resolvePortalWebBrandId } from './harness/web-server.mjs';
 
 /**
  * Web server options for direct Remote Control: the relay it mints tokens
@@ -110,8 +110,6 @@ export async function launchRemoteControlDesktop({
           // The bundled agent SDK's MCP proxy otherwise binds a fixed port
           // another local app may hold.
           mcpProxyPort: 41000 + (Date.now() % 20000),
-          // Settings → Labs → Remote access.
-          remoteControlEnabled: true,
           ...desktopPreferences,
         },
       }),
@@ -184,9 +182,6 @@ async function startSignedInDesktop({ relay, seeded, env, userDataDir }) {
     userDataDir,
     env: {
       CANOPY_E2E_CLOUD_BASE_URL: PORTAL_WEB_ORIGIN_LOOPBACK,
-      CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
-        'canopy-device-remote-control': true,
-      }),
       ...env,
     },
   });

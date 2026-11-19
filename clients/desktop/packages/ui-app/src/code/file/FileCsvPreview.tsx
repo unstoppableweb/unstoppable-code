@@ -164,7 +164,8 @@ function FileCsvPreviewImpl({
           ref={scrollBinding?.ref}
           onScroll={scrollBinding?.onScroll}
           data-testid="file-viewer-csv-raw-scroll"
-          variant="file-document"
+          variant="document"
+          inset="roomy"
           size="xs"
           wrap="none"
           tone="primary"

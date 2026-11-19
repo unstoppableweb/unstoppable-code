@@ -7,6 +7,7 @@ import {
   type CloudChatFilesWakeResult,
   type CloudChatAttachmentUploadResult,
   type CloudChatsReconnectResult,
+  type CloudWorkspaceFileUploadResult,
 } from '@canopy/desktop-shared/types';
 import { getFeatureFlagService } from '../feature-flags';
 import {
@@ -31,6 +32,10 @@ import {
   createCloudFilesWake,
   createWebCoreFilesWaker,
 } from '../canopy-cloud/cloud-files-wake';
+import {
+  createCloudWorkspaceFileUpload,
+  createWebCoreWorkspaceFileWriter,
+} from '../canopy-cloud/cloud-workspace-files';
 import type {
   RendererRelayEvent,
   RendererRelaySurfaceResolution,
@@ -123,6 +128,20 @@ export function registerCloudChatsHandlers(
     (event, target, file) => {
       requireMainWindow(event);
       return upload(target, file);
+    },
+  );
+  // The renderer sends the bytes of a file the user picked for a cloud
+  // project's shared workspace files; main writes them on its own web core
+  // connection and never retries (CAN-7008).
+  const uploadWorkspaceFile = createCloudWorkspaceFileUpload({
+    isEnabled: binding.isEnabled,
+    withWriter: createWebCoreWorkspaceFileWriter(binding, app.getVersion()),
+  });
+  registerIpcHandler<[unknown], CloudWorkspaceFileUploadResult>(
+    IPC_CHANNELS.cloudChatsUploadWorkspaceFile,
+    (event, request) => {
+      requireMainWindow(event);
+      return uploadWorkspaceFile(request);
     },
   );
   // The renderer names a cloud chat and one of its files; main asks where

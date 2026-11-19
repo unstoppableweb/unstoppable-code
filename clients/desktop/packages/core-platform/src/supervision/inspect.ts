@@ -77,7 +77,7 @@ function parsePs(text: string, pid: number): Inspection {
   return running(`darwin:v1:${pid}:${instant / 1000}`);
 }
 
-async function readProc(
+export async function readProc(
   file: string,
   ops: SupervisionOperations,
   signal?: AbortSignal,

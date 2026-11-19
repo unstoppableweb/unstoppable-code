@@ -64,6 +64,7 @@ import {
   updateWorkspaceConfig,
   type WorkspaceConfigUpdateRead,
 } from './workspace-persistence';
+import { withSelectionRefOwner } from '@canopy/protocol/plugins';
 
 /**
  * The caller of a plugins update. The two settings dialogs record workspace
@@ -278,22 +279,28 @@ export function normalizeDefaultPluginSelections(
   return {
     collectionIds,
     skillRefs: Array.isArray(selections.skillRefs)
-      ? selections.skillRefs.map((ref) => ({
-          sourceId: ref.sourceId,
-          skillName: ref.skillName,
-        }))
+      ? selections.skillRefs.map((ref) =>
+          withSelectionRefOwner(
+            { sourceId: ref.sourceId, skillName: ref.skillName },
+            ref.owner,
+          ),
+        )
       : [],
     pluginRefs: Array.isArray(selections.pluginRefs)
-      ? selections.pluginRefs.map((ref) => ({
-          marketplaceId: ref.marketplaceId,
-          pluginName: ref.pluginName,
-        }))
+      ? selections.pluginRefs.map((ref) =>
+          withSelectionRefOwner(
+            { marketplaceId: ref.marketplaceId, pluginName: ref.pluginName },
+            ref.owner,
+          ),
+        )
       : [],
     mcpServerRefs: Array.isArray(selections.mcpServerRefs)
-      ? selections.mcpServerRefs.map((ref) => ({
-          serverId: ref.serverId,
-          configId: ref.configId,
-        }))
+      ? selections.mcpServerRefs.map((ref) =>
+          withSelectionRefOwner(
+            { serverId: ref.serverId, configId: ref.configId },
+            ref.owner,
+          ),
+        )
       : [],
     mcpHttpAuthPreferences: Array.isArray(selections.mcpHttpAuthPreferences)
       ? selections.mcpHttpAuthPreferences.map((preference) => ({

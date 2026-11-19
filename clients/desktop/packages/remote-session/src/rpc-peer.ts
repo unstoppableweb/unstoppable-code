@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  RemoteOperationFailureSchema,
+  readRemoteOperationFailure,
+  type RemoteOperationFailure,
+} from '@canopy/protocol/remote-control';
 import { RemoteSessionError } from './errors';
 import { MessageCodecError } from './message-codec';
 import { defaultScheduler, type SchedulerPort } from './scheduler';
@@ -24,7 +29,11 @@ const FailureSchema = z.object({
   kind: z.literal('response'),
   id: z.number().int().nonnegative(),
   ok: z.literal(false),
-  error: z.object({ message: z.string(), code: z.string().optional() }),
+  error: z.object({
+    message: z.string(),
+    code: z.string().optional(),
+    operationFailure: RemoteOperationFailureSchema.optional(),
+  }),
 });
 const EventSchema = z.object({
   kind: z.literal('event'),
@@ -43,11 +52,12 @@ const SessionMessageSchema = z.union([
   CloseSchema,
 ]);
 
-/** The peer answered a request with an error (its message and code). */
+/** The peer answered with an error and optional curated operation advice. */
 export class RpcRemoteError extends Error {
   constructor(
     message: string,
     readonly code: string | undefined,
+    readonly operationFailure?: RemoteOperationFailure,
   ) {
     super(message);
     this.name = 'RpcRemoteError';
@@ -248,7 +258,11 @@ export class RpcPeer {
         if (message.ok) pending.resolve(message.value);
         else
           pending.reject(
-            new RpcRemoteError(message.error.message, message.error.code),
+            new RpcRemoteError(
+              message.error.message,
+              message.error.code,
+              message.error.operationFailure,
+            ),
           );
         return;
       }
@@ -294,12 +308,17 @@ export class RpcPeer {
     const message =
       error instanceof Error ? error.message : 'Remote request failed.';
     const code = errorCode(error);
+    const operationFailure = readRemoteOperationFailure(error);
     await this.session
       .send({
         kind: 'response',
         id,
         ok: false,
-        error: code === undefined ? { message } : { message, code },
+        error: {
+          message,
+          ...(code === undefined ? {} : { code }),
+          ...(operationFailure ? { operationFailure } : {}),
+        },
       })
       .catch(() => undefined);
   }

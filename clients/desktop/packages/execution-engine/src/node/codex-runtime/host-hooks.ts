@@ -154,6 +154,11 @@ export interface CodexRuntimeHostHooks {
    * without the hook: one pending admission per owner.
    */
   ownerAdmissionBudget?(): CodexOwnerAdmissionBudget | undefined;
+  /**
+   * Absolute paths no sandboxed Codex thread on this host may read
+   * (`confined-sandbox.ts`). Undefined, or empty: the legacy sandboxes.
+   */
+  sandboxDeniedReadPaths?(): readonly string[];
 }
 
 /** What one owner may have delivered to it and not yet admitted. */

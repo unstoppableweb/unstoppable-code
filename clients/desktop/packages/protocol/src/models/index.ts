@@ -124,6 +124,11 @@ export interface ModelCatalogOption {
   /** Canonical registry model id (or Agent model id for `kind: 'agent'`). */
   id: string;
   /**
+   * Host-resolved aliases for this exact model. An empty array declares alias
+   * support; absence keeps older catalogs' unresolved selections unknown.
+   */
+  aliases?: readonly string[];
+  /**
    * Another catalog row for the same model, reached through this exact runtime
    * ID. Presentation may merge them; dispatch must retain the chosen route's ID.
    * Omitted for distinct variants and when the host cannot establish identity.

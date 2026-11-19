@@ -3,7 +3,7 @@
 // IPC handlers and the Portal `list_attachments` command before CAN-4105
 // routed them through `core.workspace.item.*`. Real data root, real source
 // files and the real workspace registry; only handler registration, the
-// native dialog, publication scheduling and the Portal session are mocked.
+// native dialog and publication scheduling are mocked.
 // The parallel same-name race of the worktree channel is scheduling-dependent
 // and deliberately not pinned (see attachment-import-ipc-changes.test.ts).
 import {
@@ -28,10 +28,6 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
-import type {
-  PortalCommandEnvelope,
-  PortalEventEnvelope,
-} from '@canopy/protocol/portal';
 
 // Jest runs tests in a separate realm, so built-in fs errors fail the
 // production `instanceof Error` checks. Rethrow them as same-realm errors with
@@ -103,16 +99,9 @@ jest.mock('../shared-containers/publish/scheduler', () => ({
     scheduleWorkspace: () => Promise<void>;
   } => ({ scheduleWorkspace: (): Promise<void> => Promise.resolve() }),
 }));
-jest.mock('../portal/portal-session-manager', () => ({
-  getCanopyPortalState: (): { sessionId: string } => ({
-    sessionId: 'golden-session',
-  }),
-}));
 
 import { registerWorktreeAttachmentHandlers } from '../ipc/worktree-attachments';
 import { registerWorkspaceItemHandlers } from '../ipc/workspace-items';
-import { handlePortalWorkspaceItemsListAttachments } from '../portal/adapters/workspace-items-adapter';
-import type { PortalAdapterContext } from '../portal/adapters/types';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import {
   createDesktopRuntime,
@@ -728,69 +717,5 @@ describe('CAN-4105 attachment list golden', () => {
       badWorktree: await listItems({ projectId: 'code-ws', worktreeId: 42 }),
       missingPayload: await listItems(undefined),
     }).toMatchSnapshot();
-  });
-});
-
-function portalContext(events: PortalEventEnvelope[]): PortalAdapterContext {
-  return {
-    sessionId: 'golden-session',
-    getWindow: () => null,
-    enqueueEvent: (event) => events.push(event),
-    complete: (command, result): void => {
-      events.push({
-        type: 'portal.command.completed',
-        commandId: command.id,
-        payload: { result: describeValue(result) },
-      } as PortalEventEnvelope);
-    },
-    fail: (command, code, message, retryable): void => {
-      events.push({
-        type: 'portal.command.failed',
-        commandId: command.id,
-        payload: { error: { code, message: scrub(message), retryable } },
-      } as PortalEventEnvelope);
-    },
-  };
-}
-
-async function portalList(payload: unknown): Promise<PortalEventEnvelope[]> {
-  const events: PortalEventEnvelope[] = [];
-  await handlePortalWorkspaceItemsListAttachments(
-    {
-      id: 'cmd-golden',
-      sequence: 1,
-      type: 'portal.workspace_items.list_attachments',
-      payload,
-      createdAt: '2026-10-31T00:00:00.000Z',
-      expiresAt: null,
-    } as PortalCommandEnvelope<{ projectId: string; worktreeId: string }>,
-    portalContext(events),
-  );
-  return events;
-}
-
-describe('CAN-4105 attachment list Portal golden', () => {
-  it('lists without host paths for each layout', async () => {
-    const store = join(dataDir, 'workspaces/code-ws/attachments/wt-1');
-    mkdirSync(store, { recursive: true });
-    writeFileSync(join(store, 'a.txt'), 'a');
-    writeFileSync(join(store, '.hidden'), 'hidden');
-    await seedSharedStore('cowork-ws');
-    const code = await portalList({ projectId: 'code-ws', worktreeId: 'wt-1' });
-    const cowork = await portalList({
-      projectId: 'cowork-ws',
-      worktreeId: 'wt-1',
-    });
-    expect({ code, cowork }).toMatchSnapshot();
-  });
-
-  it.each([
-    ['non-object', 'nope'],
-    ['missing ids', {}],
-    ['malformed project', { projectId: 'Bad Id!', worktreeId: 'wt-1' }],
-    ['numeric worktree', { projectId: 'code-ws', worktreeId: 7 }],
-    ['missing store', { projectId: 'code-ws', worktreeId: 'none' }],
-  ])('pins a list for %s', async (_name, payload) => {
-    expect(await portalList(payload)).toMatchSnapshot();
   });
 });

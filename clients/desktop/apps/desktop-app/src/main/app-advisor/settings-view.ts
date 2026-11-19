@@ -42,9 +42,9 @@ import {
   updatePreferencesFile,
 } from '../lib/preferences-store';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-import { buildProjectedModelCatalog } from '../portal/model-catalog-projection';
+import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
-import { isRecord } from '../portal/adapters/validation';
+import { isRecord } from '../remote-projection/validation';
 import type { AppAdvisorToolRuntimeSurfaces } from './runtime';
 
 const APP_ADVISOR_THINKING_LEVELS = new Set<string>(THINKING_LEVELS);

@@ -12,16 +12,13 @@ import { resolveTerminalRelativeCwd } from '@canopy/desktop-shared/node/terminal
 import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { waitForWorktreeGitSetup } from '../lib/worktree-git-setup';
 import { stat } from 'node:fs/promises';
-import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import {
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
   TERMINAL_USER_CLOSE_SIGNAL,
   type ManagedTerminalCommand,
   type PortalEntityEnvelope,
-  type PortalEventEnvelope,
   type PortalTarget,
-  type PortalTerminalOutputPayload,
   type TerminalKillRequest,
   type TerminalResizeRequest,
   type TerminalRestoreRequest,
@@ -38,7 +35,6 @@ import { assertNotSplitLocked } from './split-lock-service';
 import {
   isBlockedManagedEnvName,
   isRestorableExitSignal,
-  type WorkerTerminalEvent,
 } from '@canopy/core-runtime/node/terminal';
 import {
   desktopManagedTerminalEnvironmentFor,
@@ -49,7 +45,6 @@ import {
 import type { DaemonTerminalRouteContext } from '../terminal/daemon-terminal-route';
 import { terminalPersistenceStore } from '../terminal/persistence';
 import { withWorkspaceTargetRuntimeStartReservation } from '../lib/workspace-target-exclusion';
-import { createPortalEvent } from '../portal/portal-event-bus';
 import { getBundledClaudeBinaryPath } from '../pipelines/config-paths';
 import { detectGitExecutable } from '../lib/git-executable';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
@@ -70,7 +65,6 @@ import { buildSharedContainerRunEnv } from '../lib/shared-container-run-env';
 
 export const MAX_TERMINAL_WRITE_BYTES = 64 * 1024;
 const MAX_TERMINAL_WRITE_RECEIPTS = 4096;
-const terminalOutputDecoders = new Map<string, StringDecoder>();
 const terminalWriteReceipts = new Map<string, true>();
 
 function rememberTerminalWriteReceipt(receiptKey: string): void {
@@ -1094,121 +1088,4 @@ export function listTerminalPortalEntities(
         includeBuffer: target?.terminalLocalId === session.id,
       }),
     );
-}
-
-function toPortalTerminalOutputEvent(
-  event: WorkerTerminalEvent,
-): PortalEventEnvelope | null {
-  if (event.type !== 'output') {
-    return null;
-  }
-  const output = event.payload;
-  const portalPayload: PortalTerminalOutputPayload = {
-    terminalLocalId: output.terminalId,
-    workspaceLocalId: output.projectId,
-    worktreeLocalId: output.worktreeId,
-    chunk: decodeTerminalOutput(output.terminalId, output.data),
-    seq: output.seq,
-  };
-  return createPortalEvent('portal.terminal.output', portalPayload);
-}
-
-function decodeTerminalOutput(terminalId: string, data: Uint8Array): string {
-  let decoder = terminalOutputDecoders.get(terminalId);
-  if (!decoder) {
-    decoder = new StringDecoder('utf8');
-    terminalOutputDecoders.set(terminalId, decoder);
-  }
-  return decoder.write(Buffer.from(data));
-}
-
-function clearTerminalOutputDecoder(terminalId: string): void {
-  const decoder = terminalOutputDecoders.get(terminalId);
-  if (decoder) {
-    decoder.end();
-    terminalOutputDecoders.delete(terminalId);
-  }
-}
-
-function toPortalTerminalLifecycleEvent(
-  event: WorkerTerminalEvent,
-): PortalEventEnvelope | null {
-  if (event.type === 'exit') {
-    const exit = event.payload;
-    clearTerminalOutputDecoder(exit.terminalId);
-    return createPortalEvent('portal.state.delta', {
-      scope: 'terminal',
-      target: {
-        workspaceLocalId: exit.projectId,
-        worktreeLocalId: exit.worktreeId,
-        terminalLocalId: exit.terminalId,
-      },
-      entities: [
-        {
-          entityType: 'terminal_session',
-          localId: exit.terminalId,
-          parentLocalId: worktreeScopedParentLocalId(
-            exit.projectId,
-            exit.worktreeId,
-          ),
-          payload: {
-            terminalLocalId: exit.terminalId,
-            workspaceLocalId: exit.projectId,
-            worktreeLocalId: exit.worktreeId,
-            running: false,
-            exited: true,
-            exitCode: exit.exitCode,
-            signal: exit.signal,
-            endedAt: new Date().toISOString(),
-          },
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    });
-  }
-
-  if (event.type === 'runningChanged') {
-    const running = event.payload;
-    return createPortalEvent('portal.state.delta', {
-      scope: 'terminal',
-      target: {
-        workspaceLocalId: running.projectId,
-        worktreeLocalId: running.worktreeId,
-        terminalLocalId: running.terminalId,
-      },
-      entities: [
-        {
-          entityType: 'terminal_session',
-          localId: running.terminalId,
-          parentLocalId: worktreeScopedParentLocalId(
-            running.projectId,
-            running.worktreeId,
-          ),
-          payload: {
-            terminalLocalId: running.terminalId,
-            workspaceLocalId: running.projectId,
-            worktreeLocalId: running.worktreeId,
-            running: running.running,
-            processName: running.processName,
-          },
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    });
-  }
-
-  return null;
-}
-
-export function subscribeTerminalPortalEvents(
-  enqueue: (event: PortalEventEnvelope) => void,
-): () => void {
-  return workerTerminal.addEventListener((terminalEvent) => {
-    const event =
-      toPortalTerminalOutputEvent(terminalEvent) ??
-      toPortalTerminalLifecycleEvent(terminalEvent);
-    if (event) {
-      enqueue(event);
-    }
-  });
 }

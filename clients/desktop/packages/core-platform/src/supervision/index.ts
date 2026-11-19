@@ -5,6 +5,7 @@ import type {
 import { createChildServices } from './child';
 import { createProcessIdentifier } from './identify';
 import { createProcessInspector } from './inspect';
+import { createBootRelation } from './boot-relation';
 import { killProcessTree } from './kill-tree';
 import { createProcessGroupLister } from './process-group-members';
 import { createProcessTableReader } from './process-table';
@@ -33,6 +34,7 @@ export function createSupervisionServices(
     identifyProcess,
     readProcessTable,
     ...(listProcessGroup && { listProcessGroup }),
+    bootRelation: createBootRelation(os, ops),
   };
   return Object.freeze(services);
 }

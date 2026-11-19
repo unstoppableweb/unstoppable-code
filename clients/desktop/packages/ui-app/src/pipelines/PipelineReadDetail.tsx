@@ -6,10 +6,22 @@ import {
   PipelineDetailJobHeader,
 } from '@canopy/ui-shared/components';
 import { Count } from '@canopy/ui-shared/components/Badge';
-import { type JSX, useState } from 'react';
+import { type JSX, type ReactNode, useState } from 'react';
 import type { PortalPipelineDefinitionViewModel } from '@canopy/protocol/portal';
 import { PipelineIcon } from '@canopy/ui-shared';
-import { Stack, Button, Heading } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Button,
+  Heading,
+  CapabilityDetailLayout,
+  ComponentSection,
+  DataTable,
+  DetailFact,
+} from '@canopy/ui-shared/components';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '@canopy/ui-shared/lib/replay-privacy';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
 import { Surface } from '@canopy/ui-shared/components';
 import { PipelineStepRow } from './PipelineStepRow';
@@ -25,6 +37,47 @@ export interface PipelineReadDetailProps {
    * not the order they appear in the class attribute.
    */
   flushTop?: boolean;
+  /**
+   * New Customize: the shared detail layout, with the tile's identity, the
+   * page's actions (Run, Open in editor) and its Related section.
+   */
+  layout?: PipelineReadDetailLayout;
+}
+
+export interface PipelineReadDetailLayout {
+  /**
+   * The tile's name and description, so the header matches the list row;
+   * the definition's own fill in when the host has no row.
+   */
+  readonly title?: string;
+  readonly description?: string;
+  readonly logo?: ReactNode;
+  readonly publisher?: ReactNode;
+  /** `[⋯] [Open in editor] [Share] [Run]`, as a `DetailActionBar`. */
+  readonly actions?: ReactNode;
+  /** Where it comes from: Built-in, Yours, Shared by X, a project file. */
+  readonly source?: string;
+  /** The Source names a person ("Shared by …"): masked in session replay. */
+  readonly sourceIsPerson?: boolean;
+  /** A failure of the page's own reads, said under the facts. */
+  readonly notice?: ReactNode;
+  /** When it last changed, formatted; omitted when unknown. */
+  readonly updated?: string;
+  /** A header action's outcome (Run), said beside the actions. */
+  readonly actionsNotice?: ReactNode;
+  /**
+   * Shown in the Jobs section instead of the table while the definition
+   * loads, or when it could not be read (with its retry).
+   */
+  readonly jobsNotice?: ReactNode;
+  /** Said above the Jobs table, which still shows (a truncated read). */
+  readonly jobsCaption?: ReactNode;
+  /**
+   * Why this host shows no raw YAML (the Portal never receives a workflow's
+   * raw file); the YAML section says so instead of disappearing.
+   */
+  readonly yamlUnavailable?: string;
+  readonly related?: ReactNode;
 }
 
 function scopeLabel(
@@ -37,8 +90,12 @@ export function PipelineReadDetail({
   definition,
   onOpenEditor,
   flushTop = false,
+  layout,
 }: PipelineReadDetailProps): JSX.Element {
   const [showYaml, setShowYaml] = useState(false);
+  if (layout) {
+    return <PipelineLayoutDetail definition={definition} layout={layout} />;
+  }
 
   return (
     <article
@@ -140,7 +197,8 @@ export function PipelineReadDetail({
             {/* Raw YAML holds prompts, scripts, and env values. */}
             <Surface variant="group" className="overflow-hidden">
               <CodeBlock
-                variant="file-document"
+                variant="document"
+                inset="roomy"
                 size="xs"
                 wrap="none"
                 tone="primary"
@@ -200,5 +258,155 @@ export function PipelineReadDetail({
         )}
       </Stack>
     </article>
+  );
+}
+
+/** New Customize's workflow page on the shared detail layout. */
+function PipelineLayoutDetail({
+  definition,
+  layout,
+}: {
+  readonly definition: PortalPipelineDefinitionViewModel;
+  readonly layout: PipelineReadDetailLayout;
+}): JSX.Element {
+  return (
+    <CapabilityDetailLayout
+      dataTestId="pipeline-detail"
+      // A monogram shows the workflow name's first letter: masked with it.
+      logo={
+        layout.logo ? (
+          <span className={`inline-flex shrink-0 ${REPLAY_MASK_CLASS}`}>
+            {layout.logo}
+          </span>
+        ) : undefined
+      }
+      // The workflow file's own name and description: session replay masks
+      // the title and keeps a placeholder for the description.
+      title={
+        <span className={REPLAY_MASK_CLASS}>
+          {layout.title || definition.name}
+        </span>
+      }
+      titleId="plugin-detail-title"
+      publisher={layout.publisher}
+      actions={layout.actions}
+      actionsNotice={layout.actionsNotice}
+      description={
+        (layout.title ? layout.description : definition.description) ||
+        undefined
+      }
+      descriptionReplay="block"
+      factsFooter={layout.notice}
+      facts={{
+        source: layout.source ? (
+          <DetailFact label="Source" testId="pipeline-detail-source">
+            <span
+              className={layout.sourceIsPerson ? REPLAY_MASK_CLASS : undefined}
+            >
+              {layout.source}
+            </span>
+          </DetailFact>
+        ) : undefined,
+        updated: layout.updated ? (
+          <DetailFact label="Updated" testId="pipeline-detail-updated">
+            {layout.updated}
+          </DetailFact>
+        ) : undefined,
+        entity: (
+          <>
+            {/* A run's recorded snapshot keeps no triggers. */}
+            {definition.triggerSummary !== '' && (
+              <DetailFact label="Triggers" testId="pipeline-detail-triggers">
+                {definition.triggerSummary}
+              </DetailFact>
+            )}
+            {definition.scopes.length > 0 && (
+              <DetailFact label="Scopes" testId="pipeline-detail-scopes">
+                {definition.scopes.map(scopeLabel).join(', ')}
+              </DetailFact>
+            )}
+          </>
+        ),
+      }}
+      contents={
+        <ComponentSection title="Jobs">
+          {layout.jobsCaption}
+          {layout.jobsNotice ?? (
+            <DataTable
+              caption="Jobs"
+              testId="pipeline-detail-jobs"
+              rows={definition.jobs}
+              rowKey={(job) => job.id}
+              emptyLabel="No jobs yet"
+              columns={[
+                {
+                  key: 'name',
+                  header: 'Job',
+                  overflow: 'wrap',
+                  render: (job) => (
+                    <span
+                      className={`font-medium fg-primary ${REPLAY_BLOCK_CLASS}`}
+                    >
+                      {job.name}
+                    </span>
+                  ),
+                },
+                {
+                  key: 'needs',
+                  header: 'Runs after',
+                  overflow: 'wrap',
+                  render: (job) =>
+                    job.dependencies.length > 0 ? (
+                      <span
+                        className={`font-mono text-xs ${REPLAY_BLOCK_CLASS}`}
+                      >
+                        {job.dependencies.join(', ')}
+                      </span>
+                    ) : (
+                      <span className="fg-tertiary">—</span>
+                    ),
+                },
+                {
+                  key: 'steps',
+                  header: 'Steps',
+                  align: 'right',
+                  render: (job) => job.steps.length,
+                },
+              ]}
+            />
+          )}
+        </ComponentSection>
+      }
+      docs={
+        definition.canonicalYaml !== undefined ? (
+          <div data-testid="pipeline-detail-yaml-section">
+            <ComponentSection title="YAML" collapsible>
+              {definition.canonicalYamlTruncated === true && (
+                <p className="pb-2 text-xs fg-secondary">
+                  YAML truncated in transfer.
+                </p>
+              )}
+              {/* Raw YAML holds prompts, scripts, and env values. */}
+              <div className={REPLAY_BLOCK_CLASS}>
+                <CodeBlock
+                  variant="bare"
+                  className="max-h-144 overflow-auto"
+                  data-testid="pipeline-read-detail-yaml"
+                >
+                  {definition.canonicalYaml}
+                </CodeBlock>
+              </div>
+            </ComponentSection>
+          </div>
+        ) : layout.yamlUnavailable ? (
+          <div data-testid="pipeline-detail-yaml-section">
+            <ComponentSection title="YAML" collapsible>
+              <p className="text-s fg-secondary">{layout.yamlUnavailable}</p>
+            </ComponentSection>
+          </div>
+        ) : undefined
+      }
+      related={layout.related}
+    />
   );
 }

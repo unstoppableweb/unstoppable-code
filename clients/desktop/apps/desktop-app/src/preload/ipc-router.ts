@@ -84,6 +84,7 @@ const PRELOAD_REMOTE_DISPOSITIONS: Readonly<
   ...(__CANOPY_E2E__ && {
     'canopy:e2e:first-projects-load': 'local',
     'canopy:e2e:first-projects-load-stop': 'local',
+    'canopy:e2e:liveness-ping': 'local',
   }),
 };
 

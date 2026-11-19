@@ -1,3 +1,6 @@
+import { lifecycleJournalSlotName } from '@canopy/core-runtime/node/w5/destructive-journal';
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
 import {
   archiveRecoveryStore,
@@ -5,13 +8,15 @@ import {
 } from './archive-recovery-refs';
 import {
   destructiveFailureCode,
+  destructiveErrorProperty,
+  sanitizedDestructiveCode,
   rememberDestructiveFailure,
 } from './destructive-failure-context';
 import { canonicalizePossiblyMissingPath } from './worktree-registration-removal';
 import { isDeepStrictEqual } from 'node:util';
 import { isAbsolute, relative } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { RmOptions, Stats } from 'node:fs';
 import {
   link,
@@ -23,7 +28,7 @@ import {
   rm,
   rmdir,
 } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import {
   LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
@@ -57,6 +62,7 @@ import {
   type ArchiveTrigger,
 } from '@canopy/desktop-shared/node/w5-destructive-journal';
 export type { DestructiveRecoveryRecord } from '@canopy/desktop-shared/node/w5-destructive-journal';
+export { lifecycleJournalSlotName } from '@canopy/core-runtime/node/w5/destructive-journal';
 interface Lifecycle {
   record: DestructiveRecoveryRecord;
   exactJournal?: ExactArchiveJournal;
@@ -178,13 +184,32 @@ function isPreUpgradeRetainedGitCleanup(
   );
 }
 
-/** Each protected path still has its recorded identity, or is absent; never an unverifiable one. */
+/**
+ * Each protected path still has its recorded identity, or is absent; never an
+ * unverifiable one, except `releasedDataDir` (CAN-7013): an unverifiable
+ * Release candidate's worktree data directory may stay present, since Release
+ * removes no owned path.
+ */
 export async function areOwnedPathsUnreplaced(
   record: DestructiveRecoveryRecord,
+  releasedDataDir?: string,
 ): Promise<boolean> {
   for (const owned of record.ownedPaths) {
     const actual = await directoryIdentity(owned.path);
-    if (actual !== null && actual !== owned.identity) return false;
+    if (
+      actual !== null &&
+      !(
+        owned.path === releasedDataDir &&
+        owned.identity !== null &&
+        isUnverifiableLifecycleIdentity(owned.identity)
+      ) &&
+      !matchesRecordedDirectoryIdentity(
+        owned.identity,
+        actual,
+        hostOperatingSystem(),
+      )
+    )
+      return false;
   }
   return true;
 }
@@ -242,10 +267,10 @@ export async function withExclusiveLifecycleJournalAccess<T>(
   }
 }
 function journalPath(workspaceId: string, worktreeId?: string): string {
-  const key = createHash('sha256')
-    .update(JSON.stringify([workspaceId, worktreeId ?? null]))
-    .digest('hex');
-  return join(journalDirectory(), `${key}.json`);
+  return join(
+    journalDirectory(),
+    lifecycleJournalSlotName(workspaceId, worktreeId),
+  );
 }
 function missing(error: unknown): boolean {
   return (
@@ -301,9 +326,11 @@ function isRecordedProjectDirectory(
   recorded: string | null,
 ): boolean {
   if (actual === null || recorded === null) return actual === recorded;
-  return recorded.split(':').length === 3
-    ? actual.split(':').slice(0, 3).join(':') === recorded
-    : actual === recorded;
+  return matchesRecordedDirectoryIdentity(
+    recorded,
+    actual,
+    hostOperatingSystem(),
+  );
 }
 async function readIncarnationToken(directory: string): Promise<string | null> {
   const marker = join(directory, INCARNATION_MARKER);
@@ -425,9 +452,31 @@ function recordedStatIdentity(identity: string | null): string | null {
     ? identity.slice(UNVERIFIABLE_IDENTITY.length)
     : identity;
 }
+type JournalReadFailure = {
+  failure: 'read' | 'json' | 'schema';
+  causeCode: string;
+};
+function journalReadFailure(
+  error: unknown,
+  failure?: JournalReadFailure['failure'],
+): JournalReadFailure {
+  return {
+    failure:
+      failure ??
+      (error instanceof SyntaxError
+        ? 'json'
+        : error instanceof z.ZodError
+          ? 'schema'
+          : 'read'),
+    causeCode: sanitizedDestructiveCode(
+      destructiveErrorProperty(error, 'code'),
+    ),
+  };
+}
 function recoveryRequired(
   record?: DestructiveRecoveryRecord,
   check = 'destructive-lifecycle-state',
+  diagnostic?: JournalReadFailure,
 ): W5CommitRefusedError {
   const error = new W5CommitRefusedError(
     'recovery-required',
@@ -435,6 +484,7 @@ function recoveryRequired(
     {
       phase: 'destructive-lifecycle',
       check,
+      ...diagnostic,
       ...(record
         ? { operationId: record.operationId, operation: record.operation }
         : {}),
@@ -450,15 +500,21 @@ function recoveryRequired(
  */
 async function unreadableJournalEntry(
   name: string,
+  diagnostic?: JournalReadFailure,
 ): Promise<W5CommitRefusedError> {
   let stat: Stats;
   try {
     stat = await lstat(join(journalDirectory(), name));
   } catch (error) {
     // A vanished entry was not unreadable evidence; refuse as before.
-    if (missing(error)) return recoveryRequired();
+    if (missing(error))
+      return recoveryRequired(
+        undefined,
+        undefined,
+        journalReadFailure(error, 'read'),
+      );
     // EACCES or ENOTDIR: the folder itself can't be searched.
-    return journalDirectoryUnreadable();
+    return journalDirectoryUnreadable(journalReadFailure(error, 'read'));
   }
   return new W5CommitRefusedError(
     'recovery-required',
@@ -466,16 +522,23 @@ async function unreadableJournalEntry(
     {
       phase: 'lifecycle-journal',
       check: 'unreadable-entry',
+      ...diagnostic,
       entryName: name,
       entryIdentity: statIdentity(stat),
     },
   );
 }
-export function journalDirectoryUnreadable(): W5CommitRefusedError {
+export function journalDirectoryUnreadable(
+  diagnostic?: JournalReadFailure,
+): W5CommitRefusedError {
   return new W5CommitRefusedError(
     'recovery-required',
     LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
-    { phase: 'lifecycle-journal', check: 'journal-directory-unreadable' },
+    {
+      phase: 'lifecycle-journal',
+      check: 'journal-directory-unreadable',
+      ...diagnostic,
+    },
   );
 }
 
@@ -485,8 +548,8 @@ async function parseJournalEntry(
 ): Promise<DestructiveRecoveryRecord> {
   try {
     return await readDestructiveJournal(join(journalDirectory(), name));
-  } catch {
-    throw await unreadableJournalEntry(name);
+  } catch (error) {
+    throw await unreadableJournalEntry(name, journalReadFailure(error));
   }
 }
 
@@ -512,14 +575,6 @@ export async function lifecycleJournalEntryState(
     }
     return 'unreadable';
   }
-}
-
-/** The hashed slot a project (no worktree) or worktree journal uses. */
-export function lifecycleJournalSlotName(
-  workspaceId: string,
-  worktreeId?: string,
-): string {
-  return basename(journalPath(workspaceId, worktreeId));
 }
 
 /**
@@ -678,13 +733,13 @@ async function readSlotRecovery(
   } catch (error) {
     if (missing(error)) return null;
     // Unreadable evidence is never overwritten or treated as permission to retry.
-    throw await unreadableJournalEntry(name);
+    throw await unreadableJournalEntry(name, journalReadFailure(error, 'read'));
   }
   let record: DestructiveRecoveryRecord;
   try {
     record = journalSchema.parse(JSON.parse(text));
-  } catch {
-    throw await unreadableJournalEntry(name);
+  } catch (error) {
+    throw await unreadableJournalEntry(name, journalReadFailure(error));
   }
   if (record.workspaceId !== workspaceId || record.worktreeId !== worktreeId)
     throw recoveryRequired(record, 'journal-slot-identity');
@@ -709,7 +764,7 @@ export async function findCompletedDestructiveArchive(
       names = await readdir(journalDirectory());
     } catch (error) {
       if (missing(error)) return null;
-      throw journalDirectoryUnreadable();
+      throw journalDirectoryUnreadable(journalReadFailure(error, 'read'));
     }
     for (const name of names) {
       if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name)) continue;
@@ -895,7 +950,7 @@ export function readWorkspaceDestructiveRecoveries(
       names = await readdir(journalDirectory());
     } catch (error) {
       if (missing(error)) return [];
-      throw journalDirectoryUnreadable();
+      throw journalDirectoryUnreadable(journalReadFailure(error, 'read'));
     }
     const records: DestructiveRecoveryRecord[] = [];
     for (const name of names) {
@@ -1244,6 +1299,34 @@ const PRE_GIT_CAPTURE_ARCHIVE_PHASES: ReadonlySet<string> = new Set([
   'retained-payload-capture',
 ]);
 
+/**
+ * CAN-7013: the internal-root migration marks a project it could not
+ * re-verify `unverifiable:` for good, so {@link isRecoveryProjectUnreplaced}
+ * never holds. Such an archive may only be released, and only before Git
+ * capture; callers also require its row, checkout, quarantine, manifest and
+ * Git capture absent. Delete-hold re-qualifies refs and payload on its own.
+ */
+export function isUnverifiableReleaseCandidate(
+  record: DestructiveRecoveryRecord,
+): boolean {
+  return (
+    record.operation === 'worktree-archive' &&
+    record.state === 'recovery-required' &&
+    record.cleanupRepair === undefined &&
+    hasUnverifiableProjectIdentity(record) &&
+    record.steps.every((step) => PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase))
+  );
+}
+
+export function hasUnverifiableProjectIdentity(
+  record: DestructiveRecoveryRecord,
+): boolean {
+  return (
+    record.directoryIdentity !== null &&
+    isUnverifiableLifecycleIdentity(record.directoryIdentity)
+  );
+}
+
 function isInterruptedPreGitCaptureArchive(
   record: DestructiveRecoveryRecord,
 ): boolean {
@@ -1497,7 +1580,11 @@ async function assertArchiveCleanupRecovery(
   const owned = record.ownedPaths.find((entry) => entry.path === metadata);
   if (
     actual !== null &&
-    actual !== owned?.identity &&
+    !matchesRecordedDirectoryIdentity(
+      owned?.identity,
+      actual,
+      hostOperatingSystem(),
+    ) &&
     !(await isRecreatedEmptyMetadata(record, metadata))
   )
     throw recoveryRequired(record, 'assert-archive-cleanup-recovery');
@@ -1787,7 +1874,9 @@ export async function withDestructiveLifecycle<T>(
     checkIdentity: async () => {
       const actual = await projectDirectoryIdentity(input.workspaceId);
       if (
-        !isRecordedProjectDirectory(actual, identity) &&
+        !(resumingArchiveCleanup
+          ? isRecordedProjectDirectory(actual, identity)
+          : actual === identity) &&
         !(actual === null && lifecycle.canonicalRemoved)
       )
         throw recoveryRequired(lifecycle.record, 'check-identity');
@@ -1814,7 +1903,17 @@ export async function withDestructiveLifecycle<T>(
         const expected = resumingArchiveCleanup
           ? owned.identity
           : recordedStatIdentity(owned.identity);
-        if (actual === expected || actual === null) continue;
+        if (
+          actual === null ||
+          (resumingArchiveCleanup
+            ? matchesRecordedDirectoryIdentity(
+                expected,
+                actual,
+                hostOperatingSystem(),
+              )
+            : actual === expected)
+        )
+          continue;
         const adopted = lifecycle.adoptedMetadata;
         if (
           adopted?.path === owned.path &&
@@ -2509,7 +2608,11 @@ async function readLaunchRecovery(): Promise<DestructiveRecoveryRecord[]> {
     names = await readdir(journalDirectory());
   } catch (error) {
     if (missing(error)) return [];
-    throw recoveryRequired(undefined, 'launch-stranded-journal-scan');
+    throw recoveryRequired(
+      undefined,
+      'launch-stranded-journal-scan',
+      journalReadFailure(error),
+    );
   }
   const records: DestructiveRecoveryRecord[] = [];
   for (const name of names) {
@@ -2519,8 +2622,12 @@ async function readLaunchRecovery(): Promise<DestructiveRecoveryRecord[]> {
       record = journalSchema.parse(
         JSON.parse(await readFile(join(journalDirectory(), name), 'utf8')),
       );
-    } catch {
-      throw recoveryRequired(undefined, 'launch-stranded-journal-scan');
+    } catch (error) {
+      throw recoveryRequired(
+        undefined,
+        'launch-stranded-journal-scan',
+        journalReadFailure(error),
+      );
     }
     if (record.state !== 'completed' || record.cleanupRequired) {
       if (
@@ -2693,6 +2800,16 @@ export async function canFinishArchiveCleanup(
   } catch {
     return false;
   }
+}
+
+/** Explicit Discard keeps its historical exact exception, never device tolerance for unverifiable evidence. */
+export function matchesDiscardDirectoryIdentity(
+  recorded: string,
+  live: string,
+): boolean {
+  return isUnverifiableLifecycleIdentity(recorded)
+    ? statIdentityOf(recorded) === live
+    : matchesRecordedDirectoryIdentity(recorded, live, hostOperatingSystem());
 }
 
 /** The stat identity a recorded protected-path identity compares by. */
@@ -2923,10 +3040,12 @@ export async function withWorktreeDiscardLifecycle<T>(
     ...(supersedes ? { supersedes } : {}),
     checkIdentity: async () => {
       if (
-        !isRecordedProjectDirectory(
-          await projectDirectoryIdentity(input.workspaceId),
-          identity,
-        )
+        !(resumed
+          ? isRecordedProjectDirectory(
+              await projectDirectoryIdentity(input.workspaceId),
+              identity,
+            )
+          : (await projectDirectoryIdentity(input.workspaceId)) === identity)
       )
         throw recoveryRequired(lifecycle.record, 'check-identity');
       const createdAt = await input.readCreatedAt();
@@ -2940,7 +3059,9 @@ export async function withWorktreeDiscardLifecycle<T>(
         if (actual === null) continue;
         if (
           owned.identity === null ||
-          actual !== statIdentityOf(owned.identity)
+          !(resumed
+            ? matchesDiscardDirectoryIdentity(owned.identity, actual)
+            : actual === statIdentityOf(owned.identity))
         )
           throw recoveryRequired(lifecycle.record, 'check-identity');
       }

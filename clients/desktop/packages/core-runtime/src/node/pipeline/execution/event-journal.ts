@@ -85,6 +85,8 @@ interface Tracked {
   sentWhileAppending: number | null;
   /** Set once the worker stopped following the run for good. */
   ended: { readonly error: CanopyErrorPayload | null } | null;
+  /** Whether a stream has opened on this journal yet (CAN-6960). */
+  streamed: boolean;
   readonly listeners: Set<PipelineEventJournalListener>;
   /** Cancels the armed expiry. */
   expiry?: () => void;
@@ -189,6 +191,7 @@ export class PipelineEventJournal {
       carried: new Map(),
       sentWhileAppending: null,
       ended: null,
+      streamed: false,
       listeners: new Set(),
     };
     this.runs.set(executionId, tracked);
@@ -296,10 +299,14 @@ export class PipelineEventJournal {
 
   /**
    * Follows a run from just after `cursor`. Without one, the stream starts
-   * with a snapshot of the run as the journal last saw it, journaled with a
-   * cursor of its own in the same turn, so nothing the run journals later
-   * can precede or contradict it. Replayed entries reach `listener` before
-   * this returns.
+   * with the notifications no stream has sent (CAN-5868) and a snapshot of
+   * the run as the journal last saw it, journaled with a cursor of its own
+   * in the same turn, so nothing the run journals later can precede or
+   * contradict it. The journal's first stream starts from the run's start
+   * instead (CAN-6960): everything the journal keeps, the snapshot last, so
+   * what the run did before anyone followed it (a step's first output, a
+   * job that already ended) still reaches the web core, the run's only
+   * durable writer. Replayed entries reach `listener` before this returns.
    */
   public open(
     executionId: string,
@@ -312,19 +319,40 @@ export class PipelineEventJournal {
         ? { kind: 'untracked' }
         : { kind: 'snapshot_required' };
     let from = cursor;
+    // Where a first stream's replay ends: the snapshot it opens with.
+    let replayEnd = 0;
     if (from === null) {
       const snapshot = tracked.journal.append({
         kind: 'execution',
         event: 'snapshot',
         execution: tracked.latest,
       });
-      from = { ...snapshot.cursor, sequence: snapshot.cursor.sequence - 1 };
+      const { sequence } = snapshot.cursor;
+      if (!tracked.streamed) replayEnd = sequence;
+      // A first stream replays all the journal keeps; a later one starts at
+      // the snapshot.
+      const replayFrom = tracked.streamed
+        ? sequence
+        : sequence - tracked.journal.size + 1;
+      from = { ...snapshot.cursor, sequence: replayFrom - 1 };
+      // Unsent notifications the replay doesn't carry come first.
+      for (const entry of this.undelivered(executionId))
+        if (entry.cursor.sequence < replayFrom) listener.entry(entry);
     }
-    const subscribed = tracked.journal.subscribe(from, (entry) =>
-      listener.entry(entry),
-    );
+    const subscribed = tracked.journal.subscribe(from, (entry) => {
+      // A notification a stream already sent, as a retired journal's
+      // stream may have after it was carried here, is not sent again.
+      if (
+        entry.cursor.sequence < replayEnd &&
+        entry.event.kind === 'notification' &&
+        !tracked.undelivered.has(cursorKey(entry.cursor))
+      )
+        return;
+      listener.entry(entry);
+    });
     if (subscribed.kind === 'snapshot_required')
       return { kind: 'snapshot_required' };
+    tracked.streamed = true;
     tracked.listeners.add(listener);
     return {
       kind: 'opened',

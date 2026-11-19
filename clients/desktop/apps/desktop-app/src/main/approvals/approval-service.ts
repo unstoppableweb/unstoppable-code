@@ -25,6 +25,7 @@ import {
   savedRuleDeniedMessage,
   userDeniedMessage,
 } from '@canopy/protocol/approvals';
+import { lookupAccountMcpServerAccount } from '../mcp/account-mcp-server-accounts';
 import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { evaluateApproval } from '@canopy/desktop-shared/lib/approval-engine';
@@ -178,6 +179,11 @@ export interface ApprovalOutcome {
   decision: 'allow' | 'deny';
   message?: string;
   stopTurn?: boolean;
+  /**
+   * The allow came from a mode change that released the card while it was
+   * up, not from the person answering it.
+   */
+  grantedByModeChange?: true;
 }
 
 export interface ApprovalCheckDisplay {
@@ -278,6 +284,21 @@ function scopeForMatchedRule(
  * outcomes, persists scoped grants from prompt decisions, and emits one
  * `approval_decision` observability session event per decision.
  */
+/**
+ * Names the account an MCP approval acts as, when the person holds several
+ * accounts of its connector (CAN-6228). Display only: the check and any rule
+ * still match the raw server name.
+ */
+function withMcpServerAccount(
+  details: ApprovalRequestDetails,
+): ApprovalRequestDetails {
+  if (details.kind !== 'mcp' || details.account !== undefined) return details;
+  const account = lookupAccountMcpServerAccount(details.server);
+  return account
+    ? { ...details, connector: account.connector, account: account.account }
+    : details;
+}
+
 export function createApprovalSession(
   ctx: ApprovalSessionContext,
 ): ApprovalSessionHandle {
@@ -675,7 +696,7 @@ export function createApprovalSession(
           ...(display.description !== undefined
             ? { description: display.description }
             : {}),
-          details: display.details,
+          details: withMcpServerAccount(display.details),
           ...(display.suggestedTarget !== undefined
             ? { suggestedTarget: display.suggestedTarget }
             : {}),
@@ -897,6 +918,9 @@ export function createApprovalSession(
           : {}),
       ...(promptDecision.stopTurn !== undefined
         ? { stopTurn: promptDecision.stopTurn }
+        : {}),
+      ...(releasedByWidening && promptDecision.behavior === 'allow'
+        ? { grantedByModeChange: true as const }
         : {}),
     };
   }

@@ -1,3 +1,9 @@
+import {
+  allowlistedErrorCode,
+  allowlistedErrorName,
+  parseProviderAuthFailureKind,
+  type ProviderAuthFailureKind,
+} from './telemetry-error-details';
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
@@ -292,6 +298,7 @@ import type {
 import { CLAUDE_SYNTHETIC_MODEL_SENTINEL } from '../lib/claude-synthetic';
 import { skillSuggestionTurnRecorder } from '../skill-suggestions/turn-recorder';
 import { chatLearningTurnRecorder } from '../memory/local/transcript-learning-recorder';
+import { allowsAutomaticCall } from '../local-only/policy';
 import type {
   CloudOAuthDiagnosticOutcome,
   CloudOAuthDiagnosticStage,
@@ -497,7 +504,57 @@ const REMOTE_APP_DIAGNOSTIC_KINDS = new Set<AppDiagnosticRecord['kind']>([
   'cloud_oauth_login_failed',
   'main_uncaught_exception',
   'main_unhandled_rejection',
+  // Their reasons are closed codes (see `closedForwardedReason`); the free
+  // `error` text is never forwarded for these kinds.
+  'renderer_origin_storage_migration_failed',
+  'ledger_sync_failed',
+  'ledger_lifecycle_failed',
+  'shared_container_org_fork_failed',
+  'shared_container_listing_blocked',
 ]);
+
+const LEDGER_SYNC_CODES = new Set([
+  'repair',
+  'paused',
+  'drain_timeout',
+  'drain_incomplete',
+  'rebind_failed',
+  'global_waiting',
+  'unexpected',
+]);
+
+const LEDGER_LIFECYCLE_OPERATIONS = new Set([
+  'archive',
+  'delete',
+  'purge',
+  'restore',
+  'move',
+  'external_removal',
+  'workspace_deletion',
+  'intent_journal',
+  'reconcile',
+  'session_end_sweep',
+]);
+
+/** A constant-style code (`FULL`, `EACCES`), never prose, a path or an id. */
+const CLOSED_REASON_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+/**
+ * The reason sent to telemetry. Ledger sync details are free text and
+ * lifecycle reasons are plain strings, so only the closed part leaves.
+ */
+function closedForwardedReason(event: AppDiagnosticRecord): string | undefined {
+  if (event.kind === 'ledger_sync_failed') {
+    const code = event.reason?.split(':')[0] ?? '';
+    return LEDGER_SYNC_CODES.has(code) ? code : 'other';
+  }
+  if (event.kind === 'ledger_lifecycle_failed') {
+    const [operation = '', reason = ''] = (event.reason ?? '').split(': ');
+    if (!LEDGER_LIFECYCLE_OPERATIONS.has(operation)) return 'other';
+    return `${operation}: ${CLOSED_REASON_CODE.test(reason) ? reason : 'other'}`;
+  }
+  return event.reason;
+}
 
 /** Kinds whose `error` holds a described main-process error (name and stack
  * frames, no message), so the remote exception keeps its type and frames. */
@@ -506,15 +563,38 @@ const MAIN_PROCESS_ERROR_KINDS = new Set<AppDiagnosticRecord['kind']>([
   'main_unhandled_rejection',
 ]);
 
-function buildAppDiagnosticError(
+interface MainDiagnosticErrorDetails {
+  name: string;
+  code?: string;
+  frames: string[];
+}
+
+function mainDiagnosticErrorDetails(
   event: AppDiagnosticRecord,
+): MainDiagnosticErrorDetails | undefined {
+  if (!MAIN_PROCESS_ERROR_KINDS.has(event.kind) || !event.error)
+    return undefined;
+  const [head = '', ...lines] = event.error.split('\n');
+  const suffix = /[\r\u2028\u2029]/.test(head)
+    ? null
+    : /^[^\[\]]* \[([^\[\]]*)\]$/.exec(head);
+  return {
+    name: allowlistedErrorName(
+      suffix ? head.slice(0, head.lastIndexOf(' [')) : head,
+    ),
+    code: suffix ? allowlistedErrorCode(suffix[1]) : undefined,
+    frames: lines.filter((line) => /^\s+at /.test(line)),
+  };
+}
+
+function buildAppDiagnosticError(
+  details: MainDiagnosticErrorDetails | undefined,
   message: string,
 ): Error {
   const error = new Error(message);
-  if (!MAIN_PROCESS_ERROR_KINDS.has(event.kind) || !event.error) return error;
-  const [head = '', ...frames] = event.error.split('\n');
-  error.name = head.replace(/ \[[^\]]*\]$/, '') || 'Error';
-  error.stack = [`${error.name}: ${message}`, ...frames].join('\n');
+  if (!details) return error;
+  error.name = details.name;
+  error.stack = [`${error.name}: ${message}`, ...details.frames].join('\n');
   return error;
 }
 
@@ -1219,6 +1299,10 @@ export interface AppDiagnosticRecord {
   cleanupStatus?: 'started' | 'completed' | 'failed' | 'stalled' | 'timed_out';
   cleanupElapsedMs?: number;
   reason?: string;
+  /** Telemetry-only bounded metadata; legacy version-1 records may omit it. */
+  errorName?: string;
+  errorCode?: string;
+  failureKind?: ProviderAuthFailureKind;
   exitCode?: number | null;
   processType?: string;
   /** `child_process_gone` only: Electron's utility `serviceName`. */
@@ -1945,7 +2029,8 @@ export interface SessionDiagnosticRecord {
     | 'claude_prelude_without_turn'
     | 'codex_root_completion_stale'
     | 'codex_root_output_stale'
-    | 'canonical_admission_rejected';
+    | 'canonical_admission_rejected'
+    | 'agent_secret_redaction_unavailable';
   /** `chat_event_dropped`: a short fixed reason code, never provider text. */
   chatEventDropReason?: string;
   /** `chat_input_delivery_outcome`: one record per attempt, at its first settlement. */
@@ -2433,45 +2518,65 @@ function reportAppDiagnosticToDesktopInstrumentation(
     ? `${BRAND.displayName} renderer process gone: ${rendererCrashReason ?? 'unknown'}`
     : `${BRAND.displayName} desktop diagnostic: ${event.kind}`;
 
-  instrumentation.captureError(buildAppDiagnosticError(event, errorMessage), {
-    context: {
-      // Synthetic diagnostics are all `Error`s whose stack is this reporting
-      // path, and main frames shift every build, so group them by kind.
-      // Main-process exceptions keep PostHog's frame-based grouping.
-      ...(!MAIN_PROCESS_ERROR_KINDS.has(event.kind) && {
-        $exception_fingerprint: `app-diagnostic:${event.kind}`,
-      }),
-      kind: event.kind,
-      reason: event.reason,
-      exit_code: event.exitCode,
-      process_type: event.processType,
-      service_name: event.serviceName,
-      process_name: event.processName,
-      renderer_surface: event.rendererSurface,
-      renderer_crash_reason: rendererCrashReason,
-      renderer_crashed: rendererCrashed,
-      pressure_level: event.pressureLevel,
-      memory_rss_bytes: event.memoryRssBytes,
-      main_heap_used_bytes: event.mainHeapUsedBytes,
-      main_heap_total_bytes: event.mainHeapTotalBytes,
-      main_heap_limit_bytes: event.mainHeapLimitBytes,
-      main_rss_bytes: event.mainRssBytes,
-      main_external_bytes: event.mainExternalBytes,
-      main_array_buffer_bytes: event.mainArrayBufferBytes,
-      cpu_percent: event.cpuPercent,
-      active_chat_turn_count: event.activeChatTurnCount,
-      active_pipeline_execution_count: event.activePipelineExecutionCount,
-      cloud_oauth_stage: event.cloudOAuthStage,
-      cloud_oauth_outcome: event.cloudOAuthOutcome,
-      cloud_oauth_failure_class: event.cloudOAuthFailureClass,
-      cloud_oauth_http_status: event.cloudOAuthHttpStatus,
-      cloud_oauth_provider_error: event.cloudOAuthProviderError,
-      cloud_oauth_duration_ms: event.cloudOAuthDurationMs,
-      cloud_oauth_correlation_id: event.cloudOAuthCorrelationId,
-      cloud_oauth_platform: event.cloudOAuthPlatform,
-      cloud_oauth_app_version: event.cloudOAuthAppVersion,
+  const mainDetails = mainDiagnosticErrorDetails(event);
+  const authProbeFailed = event.kind === 'provider_auth_probe_failed';
+  instrumentation.captureError(
+    buildAppDiagnosticError(mainDetails, errorMessage),
+    {
+      context: {
+        // Synthetic diagnostics are all `Error`s whose stack is this reporting
+        // path, and main frames shift every build, so group them by kind.
+        // Main-process exceptions keep PostHog's frame-based grouping.
+        ...(!MAIN_PROCESS_ERROR_KINDS.has(event.kind) && {
+          $exception_fingerprint: `app-diagnostic:${event.kind}`,
+        }),
+        kind: event.kind,
+        reason: closedForwardedReason(event),
+        ...(mainDetails?.code !== undefined && {
+          error_code: mainDetails.code,
+        }),
+        ...(authProbeFailed && {
+          error_name: allowlistedErrorName(event.errorName),
+          error_code: allowlistedErrorCode(event.errorCode),
+          failure_kind:
+            parseProviderAuthFailureKind(event.failureKind) ?? 'other',
+        }),
+        exit_code: authProbeFailed
+          ? typeof event.exitCode === 'number' &&
+            Number.isFinite(event.exitCode) &&
+            Number.isInteger(event.exitCode)
+            ? event.exitCode
+            : undefined
+          : event.exitCode,
+        process_type: event.processType,
+        service_name: event.serviceName,
+        process_name: event.processName,
+        renderer_surface: event.rendererSurface,
+        renderer_crash_reason: rendererCrashReason,
+        renderer_crashed: rendererCrashed,
+        pressure_level: event.pressureLevel,
+        memory_rss_bytes: event.memoryRssBytes,
+        main_heap_used_bytes: event.mainHeapUsedBytes,
+        main_heap_total_bytes: event.mainHeapTotalBytes,
+        main_heap_limit_bytes: event.mainHeapLimitBytes,
+        main_rss_bytes: event.mainRssBytes,
+        main_external_bytes: event.mainExternalBytes,
+        main_array_buffer_bytes: event.mainArrayBufferBytes,
+        cpu_percent: event.cpuPercent,
+        active_chat_turn_count: event.activeChatTurnCount,
+        active_pipeline_execution_count: event.activePipelineExecutionCount,
+        cloud_oauth_stage: event.cloudOAuthStage,
+        cloud_oauth_outcome: event.cloudOAuthOutcome,
+        cloud_oauth_failure_class: event.cloudOAuthFailureClass,
+        cloud_oauth_http_status: event.cloudOAuthHttpStatus,
+        cloud_oauth_provider_error: event.cloudOAuthProviderError,
+        cloud_oauth_duration_ms: event.cloudOAuthDurationMs,
+        cloud_oauth_correlation_id: event.cloudOAuthCorrelationId,
+        cloud_oauth_platform: event.cloudOAuthPlatform,
+        cloud_oauth_app_version: event.cloudOAuthAppVersion,
+      },
     },
-  });
+  );
 }
 
 function isPersistedTranscriptContentLine(line: string): boolean {
@@ -3603,7 +3708,11 @@ export class ObservabilityService {
     this.plansAwaitingCountedIds = [];
     this.storedStateLoad = this.loadStoredStateAndCountPlans();
     await this.storedStateLoad;
-    await this.refreshUsageAdapters();
+    // A local-only build reads usage only when the user opens a surface
+    // that shows it (refreshProviderUsage).
+    if (allowsAutomaticCall('usage.anthropic-poll')) {
+      await this.refreshUsageAdapters();
+    }
     this.emitSnapshot();
     this.scheduleCostHistoryRepair();
   }
@@ -3633,7 +3742,12 @@ export class ObservabilityService {
     this.unsubscribeCopilotUsage = this.host.copilot.onUsageChanged(
       (ready): void => {
         this.invalidateCopilotUsage();
-        if (ready && !this.disposing) void this.refreshCopilotUsage();
+        if (
+          ready &&
+          !this.disposing &&
+          allowsAutomaticCall('usage.anthropic-poll')
+        )
+          void this.refreshCopilotUsage();
       },
     );
     this.unsubscribeOpenCodeAccounts = this.host.openCode.onAccountsChanged(
@@ -8954,6 +9068,7 @@ export class ObservabilityService {
   private scheduleTerminalProviderUsageRefresh(entry: AgentAuditEntry): void {
     const provider = entry.provider;
     if (
+      !allowsAutomaticCall('usage.anthropic-poll') ||
       !this.started ||
       this.disposing ||
       (entry.eventType !== 'worktree_chat' &&

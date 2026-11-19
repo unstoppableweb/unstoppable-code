@@ -30,12 +30,14 @@ const LOCAL_PIPE_NAME = /^\\\\[.?]\\pipe\\.+$/i;
 export function canopyConnectError(
   kind: CanopyErrorKind,
   message: string,
+  details?: Readonly<Record<string, string | number>>,
 ): CanopyClientError {
   return new CanopyClientError({
     kind,
     message,
     retry:
       kind === 'unavailable' ? { kind: 'same_request' } : { kind: 'never' },
+    ...(details && Object.keys(details).length > 0 ? { details } : {}),
   });
 }
 

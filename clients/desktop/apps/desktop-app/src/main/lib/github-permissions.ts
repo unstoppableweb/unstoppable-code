@@ -5,16 +5,13 @@ import type {
   GitHubTokenType,
   PermissionState,
 } from '@canopy/desktop-shared/types';
-import {
-  loadGhCliToken,
-  loadStoredPat,
-  resolveGitHubTokenWithSource,
-  type GitHubTokenSource,
-} from './github-auth';
+import type { GitHubTokenSource } from './github-auth';
 import { getGitHubClient } from './github-client';
-
-const CLASSIC_PAT_PREFIXES = ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'];
-const FINE_GRAINED_PAT_PREFIX = 'github_pat_';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialGrant,
+  type GitHubBrokerCredentialTokenFamily,
+} from './github-broker/credential-port';
 
 interface PermissionSpec {
   scope: string;
@@ -52,13 +49,13 @@ const PERMISSION_SPECS: PermissionSpec[] = [
 ];
 
 function detectTokenType(
-  token: string,
+  family: GitHubBrokerCredentialTokenFamily,
   source: GitHubTokenSource,
 ): GitHubTokenType {
-  if (token.startsWith(FINE_GRAINED_PAT_PREFIX)) {
+  if (family === 'fine-grained') {
     return 'fine-grained';
   }
-  if (CLASSIC_PAT_PREFIXES.some((prefix) => token.startsWith(prefix))) {
+  if (family === 'classic') {
     return source === 'gh-cli' ? 'gh-cli' : 'classic';
   }
   return source === 'gh-cli' ? 'gh-cli' : 'unknown';
@@ -116,20 +113,20 @@ function emptyPermissions(): GitHubPermission[] {
   }));
 }
 
-async function loadTokenForSource(
-  source: GitHubPermissionSource,
-): Promise<{ token: string; label: GitHubTokenSource }> {
+async function leaseForSource(source: GitHubPermissionSource): Promise<{
+  grant: GitHubBrokerCredentialGrant | null;
+  label: GitHubTokenSource;
+}> {
+  const port = getGitHubBrokerCredentialPort();
   if (source === 'pat') {
-    const token = await loadStoredPat();
-    return { token, label: 'pat' };
+    return { grant: await port.lease('pat'), label: 'pat' };
   }
   if (source === 'oauth') {
-    const token = await loadGhCliToken();
-    return { token, label: 'gh-cli' };
+    return { grant: await port.lease('gh-cli'), label: 'gh-cli' };
   }
   // 'any' — resolve whichever source has a token, PAT first then gh CLI.
-  const resolved = await resolveGitHubTokenWithSource();
-  return { token: resolved.token, label: resolved.source };
+  const grant = await port.lease('resolved');
+  return { grant, label: grant?.source ?? 'none' };
 }
 
 function missingTokenError(source: GitHubPermissionSource): string {
@@ -150,9 +147,9 @@ function missingTokenError(source: GitHubPermissionSource): string {
 export async function probeGitHubPermissions(
   source: GitHubPermissionSource,
 ): Promise<GitHubPermissionsStatus> {
-  const { token, label } = await loadTokenForSource(source);
+  const { grant, label } = await leaseForSource(source);
 
-  if (!token) {
+  if (!grant) {
     return {
       tokenAvailable: false,
       tokenType: source === 'oauth' ? 'gh-cli' : 'unknown',
@@ -163,13 +160,13 @@ export async function probeGitHubPermissions(
     };
   }
 
-  const tokenType = detectTokenType(token, label);
+  const tokenType = detectTokenType(grant.tokenFamily, label);
 
   try {
     const response = await getGitHubClient().enqueue(
       (octokit) => octokit.request('GET /user'),
       'high',
-      { authenticationToken: token },
+      { credential: grant.lease },
     );
     const scopes = parseScopes(response.headers['x-oauth-scopes']);
     const permissions = buildPermissions(scopes, tokenType);

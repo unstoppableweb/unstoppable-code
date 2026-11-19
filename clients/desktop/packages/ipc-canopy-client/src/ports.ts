@@ -14,6 +14,7 @@ import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import type { TerminalOutputEvent } from '@canopy/protocol/terminal';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import type { RemoteIpcMalformedReplyError } from './channel-client';
 import type { WireFileTreeRoot } from './wire';
 
 /** The active standalone (cowork) chat work this window shows, if any. */
@@ -96,6 +97,12 @@ export interface IpcCanopyClientPorts {
   ) => ScopedFileOperations | undefined;
   /** Report a recovered, non-fatal failure. Default: dropped. */
   readonly logError?: (message: string, details: { error: unknown }) => void;
+  /**
+   * Observes a reply that broke its channel's contract where the adapter
+   * settles a result instead of throwing (`worktree.archive` recovery), so a
+   * host can record it apart from a transport failure. Default: dropped.
+   */
+  readonly onContractMismatch?: (error: RemoteIpcMalformedReplyError) => void;
   /** Stamps `toolFamily` on projected `tool_use` parts. Absent leaves it unset. */
   readonly toolFamilyFor?: ToolFamilyResolver;
   /**

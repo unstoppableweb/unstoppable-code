@@ -9,9 +9,11 @@ import { z } from 'zod';
 import {
   WORKER_GIT_LOCAL_MUTATION_INSTRUCTION_DEFINITIONS,
   WORKER_GIT_WORKTREE_WRITE_INSTRUCTION_DEFINITIONS,
+  WORKER_GIT_COMMAND_ONLY_GRANTS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
+  chatInitiatedIsLive,
   CanopyCallerDescriptorSchema,
   CanopyErrorPayloadSchema,
   CanopyRequestMetadataSchema,
@@ -95,6 +97,7 @@ type _QueryNamesAreExact = Expect<
   Equal<
     CanopyQueryName,
     | 'worker.agent.provider.list'
+    | 'worker.agent.usageLimits.get'
     | 'worker.filesystem.roots.list'
     | 'worker.filesystem.directory.list'
     | 'worker.filesystem.file.read'
@@ -149,7 +152,10 @@ type _QueryNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.bots.list'
+    | 'core.bots.get'
     | 'core.update.status.get'
+    | 'core.dictation.model.status.get'
     | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
@@ -183,6 +189,7 @@ type _WorkerNamesAreExact = Expect<
   Equal<
     WorkerPlaneQueryName,
     | 'worker.agent.provider.list'
+    | 'worker.agent.usageLimits.get'
     | 'worker.filesystem.roots.list'
     | 'worker.filesystem.directory.list'
     | 'worker.filesystem.file.read'
@@ -233,7 +240,10 @@ type _CoreNamesAreExact = Expect<
     | 'core.cost.scope.get'
     | 'core.cost.chat.get'
     | 'core.cost.pipelineRun.get'
+    | 'core.bots.list'
+    | 'core.bots.get'
     | 'core.update.status.get'
+    | 'core.dictation.model.status.get'
     | 'core.search.query'
     | 'core.annotation.document.get'
     | 'core.annotation.thread.get'
@@ -1442,8 +1452,12 @@ describe('universal Canopy query registry', () => {
       'core.cost.scope.get',
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
+      'core.bots.list',
+      'core.bots.get',
       // CAN-5899.
       'core.update.status.get',
+      // CAN-7231.
+      'core.dictation.model.status.get',
       // CAN-4114.
       'core.summary.get',
       'core.search.query',
@@ -1492,6 +1506,7 @@ describe('universal Canopy query registry', () => {
     });
     expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toEqual([
       'worker.agent.provider.list',
+      'worker.agent.usageLimits.get',
       'worker.filesystem.roots.list',
       'worker.filesystem.directory.list',
       'worker.filesystem.file.read',
@@ -1673,7 +1688,11 @@ describe('universal Canopy query registry', () => {
         version: 1,
         placement: 'target-selectable',
         idempotency: 'inherent',
-        requiredGrants: [`worker.${domain}.read`],
+        requiredGrants: [
+          name === 'worker.agent.usageLimits.get'
+            ? 'worker.agent.usage.read'
+            : `worker.${domain}.read`,
+        ],
       });
     }
   });
@@ -2245,6 +2264,8 @@ describe('common request and error contracts', () => {
       'core.annotation.document.get',
       'core.annotation.thread.get',
       'core.annotation.thread.list',
+      'core.bots.get',
+      'core.bots.list',
       'core.chat.content.read',
       'core.chat.list',
       'core.chat.locate',
@@ -2259,6 +2280,7 @@ describe('common request and error contracts', () => {
       'core.cost.chat.get',
       'core.cost.pipelineRun.get',
       'core.cost.scope.get',
+      'core.dictation.model.status.get',
       'core.execution.status.get',
       'core.initiatedWork.source.get',
       'core.initiatedWork.source.list',
@@ -2310,6 +2332,10 @@ describe('common request and error contracts', () => {
       'core.annotation.document.dismiss',
       'core.annotation.document.save',
       'core.annotation.thread.reply',
+      'core.bots.create',
+      'core.bots.delete',
+      'core.bots.pins.set',
+      'core.bots.update',
       'core.chat.archive',
       'core.chat.create',
       'core.chat.delete',
@@ -2321,6 +2347,9 @@ describe('common request and error contracts', () => {
       'core.chat.turn.cancel',
       'core.chat.update',
       'core.cost.index.refresh',
+      'core.dictation.model.install',
+      'core.dictation.model.install.cancel',
+      'core.dictation.model.remove',
       'core.integration.credential.clear',
       'core.integration.credential.set',
       'core.integration.sourceRepository.star',
@@ -2950,7 +2979,142 @@ describe('worktree Git writes (CAN-5940)', () => {
         definition.params.safeParse({ ...params, repoPath: '/host' }).success,
       ).toBe(false);
       expect(definition.idempotency).toBe('none');
-      expect(definition.requiredGrants).toEqual(['worker.git.write']);
+      // CAN-7197: their own grant only; worker.git.write never admits them.
+      expect(definition.requiredGrants).toEqual(['worker.git.worktree.write']);
     },
   );
+
+  it('is the only family that requires worker.git.worktree.write', () => {
+    expect(
+      Object.entries(CANOPY_INSTRUCTION_DEFINITIONS)
+        .filter(([, definition]) =>
+          definition.requiredGrants.some(
+            (grant) => grant === 'worker.git.worktree.write',
+          ),
+        )
+        .map(([name]) => name)
+        .sort(),
+    ).toEqual([
+      'worker.git.worktree.add',
+      'worker.git.worktree.prune',
+      'worker.git.worktree.remove',
+    ]);
+    // Callers that derive grants from definitions leave it out.
+    expect([...WORKER_GIT_COMMAND_ONLY_GRANTS]).toEqual([
+      'worker.git.worktree.write',
+    ]);
+  });
+});
+
+describe('core.chat.events revision 4 chat.initiated (CAN-4174)', () => {
+  const definition = CANOPY_STREAM_DEFINITIONS['core.chat.events'];
+  const initiated = {
+    type: 'chat.initiated',
+    chatId: 'chat-1',
+    userMessageId: 'message-1',
+    origin: {
+      kind: 'automation',
+      sourceId: 'automation-1',
+      occurrenceKey: 'execution-1',
+    },
+    presentation: 'focus',
+    acceptedAt: '2026-11-16T12:00:00.000Z',
+  };
+  const item = {
+    schemaVersion: 1,
+    eventId: 'event-1',
+    occurredAt: '2026-11-16T12:00:00.000Z',
+    projectId: 'project-1',
+    worktreeId: 'worktree-1',
+    baseRevision: 0,
+    revision: 1,
+    changes: [initiated],
+  };
+
+  it('is a revision 4 change of the existing stream, carrying ids, an origin and a hint only', () => {
+    expect(
+      definition.params.safeParse({ scope: 'all', revision: 4 }).success,
+    ).toBe(true);
+    expect(definition.item.safeParse(item).success).toBe(true);
+    for (const presentation of ['open_window', 'foreground', undefined])
+      expect(
+        definition.item.safeParse({
+          ...item,
+          changes: [{ ...initiated, presentation }],
+        }).success,
+      ).toBe(false);
+    expect(
+      definition.item.safeParse({
+        ...item,
+        changes: [{ ...initiated, origin: { kind: 'automation' } }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('is live intent only for a client attached at or before its acceptance', () => {
+    // A batch replayed to a client that attached later is history: no reaction.
+    expect(chatInitiatedIsLive(initiated, '2026-11-16T12:00:00.001Z')).toBe(
+      false,
+    );
+    expect(chatInitiatedIsLive(initiated, '2026-11-16T12:00:00.000Z')).toBe(
+      true,
+    );
+    expect(chatInitiatedIsLive(initiated, '2026-11-16T11:59:59.999Z')).toBe(
+      true,
+    );
+    expect(
+      chatInitiatedIsLive(
+        { acceptedAt: 'not a time' },
+        '2026-11-16T12:00:00.000Z',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('core.chat.events revision 5 agent_work.changed (CAN-6746)', () => {
+  const definition = CANOPY_STREAM_DEFINITIONS['core.chat.events'];
+  const changed = {
+    type: 'agent_work.changed',
+    chatId: 'chat-1',
+    wakeParked: { reason: 'wake_limit', since: '2026-11-18T12:00:00.000Z' },
+    backgroundWork: {
+      liveTaskCount: 1,
+      capExpiresAt: '2026-11-18T13:00:00.000Z',
+      warnAt: '2026-11-18T12:55:00.000Z',
+      extendable: true,
+    },
+  };
+  const item = (change: Record<string, unknown>): Record<string, unknown> => ({
+    schemaVersion: 1,
+    eventId: 'event-1',
+    occurredAt: '2026-11-18T12:00:00.000Z',
+    projectId: 'project-1',
+    worktreeId: 'worktree-1',
+    baseRevision: 0,
+    revision: 1,
+    changes: [change],
+  });
+
+  it("is a revision 5 change carrying the chat's paused wake turns and background work, as core.chat.agentWork.get reads them", () => {
+    expect(
+      definition.params.safeParse({ scope: 'all', revision: 5 }).success,
+    ).toBe(true);
+    expect(definition.item.safeParse(item(changed)).success).toBe(true);
+    expect(
+      definition.item.safeParse(
+        item({ ...changed, wakeParked: null, backgroundWork: null }),
+      ).success,
+    ).toBe(true);
+    // Both are always sent: a missing one is not "unchanged".
+    for (const field of ['wakeParked', 'backgroundWork']) {
+      const missing: Record<string, unknown> = { ...changed };
+      delete missing[field];
+      expect(definition.item.safeParse(item(missing)).success).toBe(false);
+    }
+    expect(
+      definition.item.safeParse(
+        item({ ...changed, backgroundWork: { liveTaskCount: 1 } }),
+      ).success,
+    ).toBe(false);
+  });
 });

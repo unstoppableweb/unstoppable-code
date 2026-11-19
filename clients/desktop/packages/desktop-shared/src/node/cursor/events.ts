@@ -196,6 +196,12 @@ export class CursorEventProjection {
     | { message: string; action?: CursorTerminalAction }
     | undefined;
   private responseText = '';
+  /** Response text since the last tool call or plan opened a block. */
+  private finalResponseText = '';
+  /** The turn's one plan list, updated in place by each ACP `plan` update. */
+  private plan: { message: AssistantMessage; toolUseId: string } | undefined;
+  /** The session mode last confirmed or reported; announced only on change. */
+  private mode: string | undefined;
   /**
    * Counts one NEW block against the limit, refusing the one that would pass
    * it.
@@ -302,13 +308,16 @@ export class CursorEventProjection {
             }
           : { index: target.index, appendText: text },
       );
-      if (update.sessionUpdate === 'agent_message_chunk')
+      if (update.sessionUpdate === 'agent_message_chunk') {
         this.responseText += update.content.text;
+        this.finalResponseText += update.content.text;
+      }
     } else if (
       update.sessionUpdate === 'tool_call' ||
       update.sessionUpdate === 'tool_call_update'
     ) {
       this.terminalError = undefined;
+      if (update.sessionUpdate === 'tool_call') this.finalResponseText = '';
       const previous = this.tools.get(update.toolCallId);
       const name = update.title ?? previous?.name ?? 'Cursor tool';
       const input = update.rawInput ?? previous?.input ?? {};
@@ -387,6 +396,61 @@ export class CursorEventProjection {
         kind: tool.kind,
         status: update.status ?? undefined,
       });
+    } else if (update.sessionUpdate === 'plan') {
+      this.terminalError = undefined;
+      // A malformed or blank entry is skipped rather than failing the turn.
+      const entries = update.entries.filter(
+        (entry) =>
+          typeof entry.content === 'string' && entry.content.trim().length > 0,
+      );
+      // Only a plan with entries supersedes the reply before it; an empty
+      // one must not erase a plan the agent wrote as text.
+      if (entries.length > 0) this.finalResponseText = '';
+      // Each plan replaces the last, so the turn keeps one TodoWrite-style
+      // list and updates it in place.
+      this.plan ??= {
+        message: this.messageFor('activity'),
+        toolUseId: randomUUID(),
+      };
+      message = this.plan.message;
+      const input = JSON.stringify(
+        this.maskToolValue({
+          todos: entries.map((entry) => ({
+            content: entry.content,
+            activeForm: entry.content,
+            status: entry.status,
+          })),
+        }),
+      );
+      const blocks: PersistedChatBlock[] = [
+        {
+          type: 'tool_use',
+          toolUseId: this.plan.toolUseId,
+          toolName: 'TodoWrite',
+          input,
+        },
+        {
+          type: 'tool_result',
+          toolUseId: this.plan.toolUseId,
+          toolName: 'TodoWrite',
+          output: '',
+          isError: false,
+        },
+      ];
+      for (const block of blocks) {
+        const key: string = `${block.type}:${this.plan.toolUseId}`;
+        const index = message.toolBlockIndex.get(key) ?? message.blocks.length;
+        if (index === message.blocks.length) this.admitBlock();
+        message.toolBlockIndex.set(key, index);
+        message.blocks[index] = block;
+        patches.push({ index, block });
+      }
+    } else if (update.sessionUpdate === 'current_mode_update') {
+      const previous = this.mode;
+      this.mode = update.currentModeId;
+      return previous === undefined || previous === update.currentModeId
+        ? undefined
+        : this.notice(`Switched to ${update.currentModeId} mode.`);
     } else return undefined;
     this.revision += 1;
     return {
@@ -397,6 +461,14 @@ export class CursorEventProjection {
       revision: this.revision,
       patches,
     };
+  }
+
+  /**
+   * Records the mode the host applied, without a notice, so only a later
+   * change reported by `current_mode_update` is announced.
+   */
+  observeMode(modeId: string): void {
+    this.mode = modeId;
   }
 
   /** Host-authored guidance must never merge into collapsible model commentary. */
@@ -654,5 +726,13 @@ export class CursorEventProjection {
    */
   getResponseText(): string {
     return this.responseText;
+  }
+
+  /**
+   * The response text after the turn's last tool call or plan update: the
+   * agent's final answer, without the commentary that preceded its tools.
+   */
+  getFinalResponseText(): string {
+    return this.finalResponseText;
   }
 }

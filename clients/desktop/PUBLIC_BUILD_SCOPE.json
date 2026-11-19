@@ -4,6 +4,7 @@
   "brand": "unstoppable-code",
   "workspaces": [
     "apps/desktop-app",
+    "apps/core-daemon",
     "packages/protocol",
     "packages/artifact-crypto",
     "packages/plugin-interop",
@@ -34,6 +35,7 @@
     "native-dictation-binary"
   ],
   "distribution": false,
+  "localOnlyProfile": true,
   "excludedTestScopes": [
     "Windows native process identity qualification requiring the private helper build script",
     "internal migration native cold qualification requiring the private Windows process-helper build script",
@@ -45,6 +47,7 @@
     "omitted daemon/VM peer-identity consumer audit rows",
     "daemon workspace record-port fixture requiring apps/core-daemon",
     "daemon operation route golden requiring apps/core-daemon",
+    "daemon pipeline definition route golden requiring apps/core-daemon",
     "admitted storage path census cross-check requiring planning docs",
     "Windows, macOS and Linux native vault SEA qualification requiring private release/signing helpers",
     "four daemon host filesystem integrations requiring apps/core-daemon",

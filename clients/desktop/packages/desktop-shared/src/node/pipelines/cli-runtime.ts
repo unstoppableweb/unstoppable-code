@@ -902,7 +902,8 @@ async function runCliCursorPrompt(
         CURSOR_RUNTIME_VERSION,
         target,
       );
-    } catch (error) {
+    } catch {
+      // Fixed copy: the resolver's message can name an absolute runtime path.
       return {
         status: 'failure',
         transcript: '',
@@ -911,7 +912,7 @@ async function runCliCursorPrompt(
           provider: 'cursor',
           agent_harness: 'cursor',
           had_agent_activity: false,
-          message: `${CLI_CURSOR_CONNECT_MESSAGE} ${error instanceof Error ? error.message : String(error)}`,
+          message: CLI_CURSOR_CONNECT_MESSAGE,
         },
       };
     }

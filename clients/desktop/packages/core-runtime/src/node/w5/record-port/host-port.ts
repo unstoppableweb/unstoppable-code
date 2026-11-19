@@ -1,3 +1,8 @@
+import { WorkspaceConfigUnreadableError } from '../file-store';
+import {
+  w5UnderlyingFromDiagnostics,
+  isW5FilesystemCode,
+} from '../error-diagnostics';
 import { W5ProcessFileLockTimeoutError } from '../commit-log/errors';
 import {
   CanopyErrorPayloadSchema,
@@ -93,6 +98,8 @@ export interface W5RecordHostPortOptions {
     operation: string;
     reason: W5RecordUnservedReason;
   }) => void;
+  /** Bytes each served record read decoded from its captured image. */
+  readonly onRecordDecoded?: (bytes: number) => void;
 }
 
 const CAPTURE_OPERATION = 'core.workspaceRecords.capture';
@@ -254,6 +261,12 @@ export function createW5RecordHostPort(
     const operation = request?.operation ?? CAPTURE_OPERATION;
     const firstPath = request?.firstPath ?? root;
     switch (payload.code) {
+      case 'core.workspaceRecords.configUnreadable': {
+        const code = detail(payload, 'errorCode');
+        return new WorkspaceConfigUnreadableError(
+          isW5FilesystemCode(code) ? { code } : undefined,
+        );
+      }
       case 'core.workspaceRecords.fingerprintConflict':
         meter(operation, 'fingerprint');
         return new W5FileWriteRefusedError(
@@ -337,6 +350,7 @@ export function createW5RecordHostPort(
         return new W5CommitLogError(
           isLogCode(code) ? code : 'STORAGE_UNAVAILABLE',
           payload.message,
+          w5UnderlyingFromDiagnostics(payload.details),
         );
       }
       default:
@@ -367,6 +381,9 @@ export function createW5RecordHostPort(
     capturePreparation: (request) =>
       retryW5RecordCapture(() => capture(request)),
     onUnserved: (reason) => unserved(CAPTURE_OPERATION, reason),
+    ...(options.onRecordDecoded
+      ? { onRecordDecoded: options.onRecordDecoded }
+      : {}),
   });
 
   async function commit(request: W5CommitRequest): Promise<W5CommitOutcome> {

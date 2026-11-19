@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SelectionRefOwnerSchema } from '../../../plugins/selection-ref-owner';
 import { isSafePortableRelativePath } from '../../../safe-relative-path';
 import { CanopyRequestMetadataSchema } from '../../common';
 import { CoreWorkspaceCloudSettingsSchema } from './reads';
@@ -139,9 +140,21 @@ const ref = <Shape extends z.ZodRawShape>(
  */
 export const CoreWorkspacePluginSelectionsSchema = z.strictObject({
   collectionIds: z.array(z.string()),
-  skillRefs: ref({ sourceId: z.string(), skillName: z.string() }),
-  pluginRefs: ref({ marketplaceId: z.string(), pluginName: z.string() }),
-  mcpServerRefs: ref({ serverId: z.string(), configId: z.string() }).optional(),
+  skillRefs: ref({
+    sourceId: z.string(),
+    skillName: z.string(),
+    owner: SelectionRefOwnerSchema.optional(),
+  }),
+  pluginRefs: ref({
+    marketplaceId: z.string(),
+    pluginName: z.string(),
+    owner: SelectionRefOwnerSchema.optional(),
+  }),
+  mcpServerRefs: ref({
+    serverId: z.string(),
+    configId: z.string(),
+    owner: SelectionRefOwnerSchema.optional(),
+  }).optional(),
   mcpHttpAuthPreferences: z
     .array(
       z.strictObject({

@@ -1,4 +1,4 @@
-import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 
 /**
  * Host presentation state for the window between a desktop-created worktree's
@@ -29,11 +29,12 @@ export function beginWorktreePostCreateSetup(
   const token = Symbol(setupKey);
   const replaced = activeSetups.has(setupKey);
   activeSetups.set(setupKey, token);
-  if (!replaced) scheduleDesktopSessionSnapshotInvalidation();
+  if (!replaced)
+    requestDesktopSessionSnapshotInvalidation('worktree-setup.begin');
   return (): void => {
     if (activeSetups.get(setupKey) !== token) return;
     activeSetups.delete(setupKey);
-    scheduleDesktopSessionSnapshotInvalidation();
+    requestDesktopSessionSnapshotInvalidation('worktree-setup.end');
   };
 }
 
@@ -43,7 +44,7 @@ export function endWorktreePostCreateSetup(
   worktreeId: string,
 ): void {
   if (activeSetups.delete(key(workspaceId, worktreeId))) {
-    scheduleDesktopSessionSnapshotInvalidation();
+    requestDesktopSessionSnapshotInvalidation('worktree-setup.end');
   }
 }
 

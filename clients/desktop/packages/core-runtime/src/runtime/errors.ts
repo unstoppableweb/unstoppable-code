@@ -1,4 +1,5 @@
 import {
+  canopyErrorDiagnostic,
   CanopyErrorPayloadSchema,
   type CanopyErrorKind,
   type CanopyErrorPayload,
@@ -115,4 +116,48 @@ export function canopyInternalError(
   runtimeCause?: unknown,
 ): CanopyOperationError {
   return operationError('internal', message, NEVER_RETRY, runtimeCause);
+}
+
+/** The value-free facts of a failed process spawn: no path, argument or message. */
+export interface SpawnFailureDetails {
+  readonly errno: string;
+  readonly stage: 'spawn';
+}
+
+// The errnos a caller can act on; any other reads as `other` (CAN-7113).
+const ERRNOS: ReadonlySet<string> = new Set(['ENOENT', 'EACCES', 'ENOTDIR']);
+
+export function isAllowlistedErrno(value: unknown): value is string {
+  return typeof value === 'string' && ERRNOS.has(value);
+}
+
+/** A spawn error's own `code` when it is an allowlisted errno, else `other`. */
+export function spawnFailureDetails(error: unknown): SpawnFailureDetails {
+  const code: unknown =
+    typeof error === 'object' && error !== null
+      ? Reflect.get(error, 'code')
+      : undefined;
+  return { errno: isAllowlistedErrno(code) ? code : 'other', stage: 'spawn' };
+}
+
+/**
+ * The fixed-message `internal` error for a failure nobody typed. Its
+ * `details.diagnostic` keeps the original's class and frames over the wire,
+ * but only where the operation's error schema admits it: a client fails any
+ * other error closed as undeclared. The original stays the `runtimeCause`.
+ */
+export function canopyUnexpectedError(
+  error: unknown,
+  errorSchema: { safeParse(value: unknown): { success: boolean } },
+  message = 'The operation failed.',
+): CanopyOperationError {
+  const payload: CanopyErrorPayload = {
+    kind: 'internal',
+    message,
+    details: { diagnostic: canopyErrorDiagnostic(error) },
+    retry: NEVER_RETRY,
+  };
+  return errorSchema.safeParse(payload).success
+    ? new CanopyOperationError(payload, error)
+    : operationError('internal', message, NEVER_RETRY, error);
 }

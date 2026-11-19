@@ -4,7 +4,10 @@ import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/nod
 import { getChatStateService } from '../services/chat-state-service';
 import { getChatSearchService } from '../chat-search/service';
 import { cleanupWorktreeChatPluginDirs } from '../plugins/plugin-cleanup';
+import { logMainProcessWarn } from './main-process-logging';
 import {
+  detachCodeReviewTarget,
+  isAmbiguousHistoricalCodeReviewKey,
   listCodeReviewTargets,
   markCodeReviewTargetRetiring,
   removeCodeReviewTarget,
@@ -12,6 +15,8 @@ import {
 } from './code-review-registry';
 import {
   assertCodeReviewStorageWriter,
+  ensureCodeReviewNamespaceQualification,
+  noteCodeReviewNamespaceEffect,
   withCodeReviewTargetLifecycle,
 } from './code-review-storage-admission';
 import {
@@ -22,6 +27,7 @@ import {
   getCodeReviewRegistryFilePath,
   getWorktreeAttachmentsDir,
   getWorktreeDataRootDir,
+  withCodeReviewStorageIdentity,
 } from './paths';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
 
@@ -92,27 +98,81 @@ export async function retireCodeReviewTarget(
   });
 }
 
+/**
+ * Like retirement, drain admitted scope work first, so a send that resolved
+ * the deleted checkout cannot start a session after teardown. Then detach,
+ * so no later turn resolves it, and stop the scope's live sessions. Admission
+ * reopens afterwards: the kept chats stay readable. Every step repeats on
+ * every retry.
+ */
+async function keepCodeReviewTarget(
+  registryPath: string,
+  scopeKey: string,
+  owner: CodeReviewTargetEntry,
+): Promise<void> {
+  const scope = {
+    projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+    worktreeId: scopeKey,
+  };
+  await getChatStateService().runWithScopeDeletionLifecycle(scope, async () => {
+    await detachCodeReviewTarget(registryPath, scopeKey, owner);
+    await cleanupLiveWorktreeState(scope.projectId, scopeKey);
+  });
+}
+
 /** Ordinary cleanup warns; archive purge's caller rejects these warnings. */
 export async function removeCodeReviewChatsForWorktree(
   projectId: string,
   worktreeId: string,
 ): Promise<string[]> {
-  const warnings: string[] = [];
-  const registryPath = getCodeReviewRegistryFilePath();
-  for (const [scopeKey, owner] of Object.entries(
-    await listCodeReviewTargets(registryPath),
-  )) {
-    if (owner.projectId !== projectId || owner.worktreeId !== worktreeId)
-      continue;
-    try {
-      await withCodeReviewTargetLifecycle(registryPath, scopeKey, () =>
-        retireCodeReviewTarget(registryPath, scopeKey, owner),
-      );
-    } catch (error) {
-      warnings.push(
-        `Failed to remove legacy review chat ${scopeKey}: ${error instanceof Error ? error.message : 'unknown error'}`,
-      );
+  return withCodeReviewStorageIdentity(async () => {
+    const warnings: string[] = [];
+    // Read the registry after any in-flight reconciliation, failed or not.
+    await ensureCodeReviewNamespaceQualification();
+    noteCodeReviewNamespaceEffect('cleanup');
+    const registryPath = getCodeReviewRegistryFilePath();
+    for (const [scopeKey, owner] of Object.entries(
+      await listCodeReviewTargets(registryPath),
+    )) {
+      if (owner.projectId !== projectId || owner.worktreeId !== worktreeId)
+        continue;
+      // CAN-6848 PR 4: leak rather than delete chats another target may own.
+      // Not a warning: archive purge would reject it. A committed retirement
+      // already authorized deletion, so it still finishes, including one an
+      // earlier build (which ignores `detached`) started on a detached row.
+      if (
+        owner.state !== 'retiring' &&
+        (owner.detached === true ||
+          isAmbiguousHistoricalCodeReviewKey(scopeKey, owner))
+      ) {
+        try {
+          await withCodeReviewTargetLifecycle(registryPath, scopeKey, () =>
+            keepCodeReviewTarget(registryPath, scopeKey, owner),
+          );
+          logMainProcessWarn(
+            '[code-review-cleanup] Kept a legacy review chat whose key another worktree shares',
+            { scopeKey, projectId, worktreeId },
+          );
+        } catch (error) {
+          const message = `Failed to detach legacy review chat ${scopeKey}: ${error instanceof Error ? error.message : 'unknown error'}`;
+          // Base had already removed a detached row, so only a first
+          // detachment, which replaces a retirement, may warn.
+          if (owner.detached === true)
+            logMainProcessWarn(`[code-review-cleanup] ${message}`);
+          else warnings.push(message);
+        }
+        continue;
+      }
+      try {
+        await withCodeReviewTargetLifecycle(registryPath, scopeKey, () =>
+          retireCodeReviewTarget(registryPath, scopeKey, owner),
+        );
+      } catch (error) {
+        warnings.push(
+          `Failed to remove legacy review chat ${scopeKey}: ${error instanceof Error ? error.message : 'unknown error'}`,
+        );
+      }
     }
-  }
-  return warnings;
+    return warnings;
+  });
 }

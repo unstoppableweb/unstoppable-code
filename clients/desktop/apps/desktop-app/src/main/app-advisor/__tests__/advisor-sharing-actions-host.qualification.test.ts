@@ -4,14 +4,19 @@ jest.mock('electron', () => ({
   ipcMain: { on: jest.fn(), removeHandler: jest.fn(), handle: jest.fn() },
 }));
 
-const mockInstructions: Array<{
+interface MockInstruction {
   name: string;
-  params: unknown;
-  options: unknown;
-}> = [];
+  params: { commandId: string; _meta: { idempotencyKey: string } };
+  options: { metadata: { idempotencyKey: string } };
+}
+const mockInstructions: MockInstruction[] = [];
 jest.mock('../../canopy-runtime/desktop-runtime', () => ({
   getActiveDesktopRuntime: (): object => ({
-    instruction: (name: string, params: unknown, options: unknown): object => {
+    instruction: (
+      name: string,
+      params: MockInstruction['params'],
+      options: MockInstruction['options'],
+    ): object => {
       mockInstructions.push({ name, params, options });
       return Promise.resolve({
         commandId: 'k',
@@ -119,6 +124,7 @@ jest.mock('../../lib/web-contents-send', () => ({
 
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { RequestPersonAnswers } from '../../lib/ask-user-outcomes';
+import { validateId } from '../../lib/validation';
 import { mainAdvisorSharingActionHost } from '../advisor-sharing-actions-host';
 
 const TARGET = { projectId: 'proj', worktreeId: 'wt', chatId: 'chat-1' };
@@ -166,6 +172,26 @@ describe('App Advisor sharing action host (CAN-6003)', () => {
         },
       },
     });
+  });
+
+  it("keys each sharedRun marker write with a command id core's chat command validation accepts (CAN-7221)", async () => {
+    const h = host();
+    // runs.unshare clears the marker, and restores it when the unshare fails.
+    await h.setSharedRunMarker(TARGET, null);
+    await h.setSharedRunMarker(TARGET, null);
+    // A retried tool call builds a fresh host with the same key.
+    await host().setSharedRunMarker(TARGET, null);
+
+    const ids = mockInstructions.map(({ params, options }) => {
+      // The adapter requires the command id and both keys to match.
+      expect(params._meta.idempotencyKey).toBe(params.commandId);
+      expect(options.metadata.idempotencyKey).toBe(params.commandId);
+      expect(() => validateId(params.commandId, 'commandId')).not.toThrow();
+      return params.commandId;
+    });
+    expect(ids).toHaveLength(3);
+    expect(ids[1]).not.toBe(ids[0]);
+    expect(ids[2]).toBe(ids[0]);
   });
 
   it("reads the window's selected organization and the account's own memberships, even while the organization-projects rollout hides them", async () => {

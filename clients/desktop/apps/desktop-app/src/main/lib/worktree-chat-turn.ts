@@ -1,3 +1,4 @@
+import { turnAccountResolution } from '../agents/turn-account-resolution';
 import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { prepareRootMigrationChatNotice } from './root-migration-chat-notice';
 import { assertCoworkChatRootPresent } from './cowork-folder-guard';
@@ -24,6 +25,7 @@ import {
   getTurnRootAcceptance,
   sessionEventRouterTestExports,
 } from '../agents/session-event-router';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   classifyProviderRunEvent,
   copyProviderRunProvenance,
@@ -199,7 +201,6 @@ import {
   readPersistedChatExecutionContext,
 } from './chat-tabs-reader';
 import { resolveChatTurnApprovalAuthority } from './chat-turn-approval-authority';
-import { recordBackgroundProcessChatEvent } from '../portal/background-process-tracker';
 import { getWorktreeAttachmentsDir } from './paths';
 import { getCoworkManagedSubdir } from '@canopy/desktop-shared/node/lib/cowork-managed-dir';
 import { buildWorktreeInjectedToolPrompt } from '../canopy-tools/prompting';
@@ -379,19 +380,6 @@ function sendWorktreeChatEvent(
     model?: ChatModel;
   },
 ): void {
-  try {
-    recordBackgroundProcessChatEvent(
-      {
-        workspaceLocalId: projectId,
-        worktreeLocalId: worktreeId,
-        chatId,
-      },
-      data,
-    );
-  } catch (error: unknown) {
-    // The tracker is a side channel; it must never block chat delivery.
-    logMainProcessError('Background-process tracking failed', error);
-  }
   const delivery = sendToWindowDetailed(getWindow(), IPC_CHANNELS.chatEvent, {
     projectId,
     worktreeId,
@@ -1076,6 +1064,11 @@ export interface DispatchWorktreeChatTurnOptions<
   selectedRepoId?: string;
   initiationSource?: UsageInitiationSource;
   /**
+   * Main-only: an automation's own send facts, carried from the request.
+   * Marks the turn unattended for account resolution (CAN-6232).
+   */
+  automationDispatch?: ChatSendMessageRequest['automationDispatch'];
+  /**
    * Who started the turn for chat turn analytics, when that differs from
    * `initiationSource`, which also drives dispatch behavior.
    */
@@ -1600,7 +1593,9 @@ export async function prepareWorktreeTurnSession<
     // the dead end the substitution exists to remove, relocated one line down.
     laneSubstitutedProviderType === undefined
   ) {
-    throw new Error('Chat execution harness does not match host-owned routing');
+    throw new Error(
+      `Chat execution harness "${options.executionHarness}" does not match host-owned routing "${effectiveExecutionHarness}"`,
+    );
   }
   if (
     preparationOptions.checkModelAvailability !== false &&
@@ -1861,6 +1856,8 @@ export async function prepareWorktreeTurnSession<
     ...(options.packageOverlay
       ? { packageOverlay: options.packageOverlay }
       : {}),
+    // An automation's turn resolves accounts unattended (CAN-6232).
+    ...turnAccountResolution(options),
     applyGlobalPluginDefaults: chatSurfaceUsesGlobalPluginDefaults(
       options.projectId,
     ),
@@ -3353,7 +3350,7 @@ async function dispatchHeldWorktreeChatTurn<
             sessionApprovalRules: turnApprovalAuthority.sessionApprovalRules,
           },
           turnRun.observe(handleSessionEvent),
-          options.getWindow,
+          windowAgentInterfacePort(options.getWindow),
           {
             turnUserMessageId: executionUserMessageId,
             // An admitted dispatch is a pending destination, so a wake already

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { CanopyStreamCursorSchema } from '../../definitions';
+import type { UsageInitiationSource } from '../../../observability';
 import { isSafePortableRelativePath } from '../../../safe-relative-path';
 
 /*
@@ -66,6 +67,20 @@ export const PlanReviewStatusSchema = z.enum(PLAN_REVIEW_STATUSES);
 /** Which non-user writer made a plan's latest edit. */
 export const PlanEditSourceSchema = z.enum(['agent', 'pipeline']);
 
+/**
+ * Who started a write, for the plan usage events only; it changes nothing
+ * stored. An omitted source is recorded as unknown, as before.
+ */
+export const PLAN_INITIATION_SOURCES = [
+  'user',
+  'hook',
+  'automation',
+  'app_advisor',
+  'portal',
+  'unknown',
+] as const satisfies readonly UsageInitiationSource[];
+export const PlanInitiationSourceSchema = z.enum(PLAN_INITIATION_SOURCES);
+
 export const PlanRevisionSchema = z.looseObject({
   revisionNumber: z.number().int().min(1),
   content: z.string(),
@@ -111,6 +126,11 @@ export const PlanListParamsSchema = z.strictObject({
 export const PlanListResultSchema = z.strictObject({
   /** Most recently updated first. A cowork scope has none. */
   plans: z.array(PlanRecordSchema),
+  /**
+   * Stored records left out because they could not be read (CAN-6666);
+   * omitted when none were.
+   */
+  skipped: z.number().int().min(1).optional(),
 });
 
 export const PlanGetParamsSchema = z.strictObject({
@@ -135,6 +155,7 @@ export const PlanCreateParamsSchema = z.strictObject({
   chatId: id.optional(),
   sourceFilePath: PlanRelativePathSchema.optional(),
   sourceRepoId: id.optional(),
+  initiationSource: PlanInitiationSourceSchema.optional(),
 });
 
 export const PlanUpdateParamsSchema = z.strictObject({
@@ -153,6 +174,7 @@ export const PlanUpdateParamsSchema = z.strictObject({
   hidden: z.boolean().optional(),
   chatId: id.optional(),
   lastEditSource: PlanEditSourceSchema.optional(),
+  initiationSource: PlanInitiationSourceSchema.optional(),
 });
 
 export const PlanWriteResultSchema = z.strictObject({

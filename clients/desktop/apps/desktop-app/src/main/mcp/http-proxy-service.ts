@@ -1036,9 +1036,25 @@ export class McpHttpProxyService {
         params?.name,
         getClaudeCanopyToolSurface(route),
       ) === 'set_base_branch';
+    // RunWithSecrets and WriteSecretsFile wait on their approval, which can
+    // outlast the client's header timeout, and must stop when the client
+    // goes away: streamed, so the response's close aborts the call.
+    const secretUseKey = getClaudeCanopyToolKey(
+      params?.name,
+      getClaudeCanopyToolSurface(route),
+    );
+    const isDirectSecretUseCall =
+      !uiServer &&
+      route.assistantMode !== 'app-advisor' &&
+      route.assistantMode !== 'pipeline-editor' &&
+      (secretUseKey === 'run_with_secrets' ||
+        secretUseKey === 'write_secrets_file');
     if (
       isToolCall &&
-      (uiServer || isAppAdvisorBaseBranchCall || isDirectBaseBranchCall)
+      (uiServer ||
+        isAppAdvisorBaseBranchCall ||
+        isDirectBaseBranchCall ||
+        isDirectSecretUseCall)
     ) {
       await this.streamCanopyMcpJsonRpc(req, res, route, payload, uiServer);
       return;

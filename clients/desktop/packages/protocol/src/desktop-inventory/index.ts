@@ -282,6 +282,27 @@ export interface DesktopInventoryManifestResponse {
   documents: DesktopInventoryManifestEntry[];
 }
 
+/**
+ * Response of `DELETE /api/v1/[brandNamespace]/desktop-inventory/documents`:
+ * how many of the caller's documents for one device were removed. The
+ * desktop sends it when the user turns inventory sync off (CAN-5986). It is
+ * idempotent, so a repeat call answers `deleted: 0`.
+ */
+export interface DesktopInventoryDeleteResponse {
+  deleted: number;
+}
+
+/** Structural guard for {@link DesktopInventoryDeleteResponse}. */
+export function isDesktopInventoryDeleteResponse(
+  value: unknown,
+): value is DesktopInventoryDeleteResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const deleted: unknown = Reflect.get(value, 'deleted');
+  return (
+    typeof deleted === 'number' && Number.isInteger(deleted) && deleted >= 0
+  );
+}
+
 /** A device that has synced at least one document. */
 export interface DesktopInventoryDeviceSummary {
   clientDeviceId: string;

@@ -42,7 +42,9 @@ export function openCoworkWorkEntryFromSidebar(
       });
       useGitHubStore
         .getState()
-        .addToast("Couldn't open the task. Try again.", 'error');
+        .addToast("Couldn't open the task. Try again.", 'error', undefined, {
+          caught: error,
+        });
     });
 }
 
@@ -68,7 +70,12 @@ export function selectCoworkWorkspaceFromSidebar(projectId: string): void {
       });
       useGitHubStore
         .getState()
-        .addToast("Couldn't open the workspace. Try again.", 'error');
+        .addToast(
+          "Couldn't open the workspace. Try again.",
+          'error',
+          undefined,
+          { caught: error },
+        );
     });
 }
 

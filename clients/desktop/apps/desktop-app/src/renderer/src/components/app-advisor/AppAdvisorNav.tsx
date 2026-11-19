@@ -435,6 +435,8 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
           ? error.message
           : 'Group changes could not be saved. Try again.',
         'error',
+        undefined,
+        { caught: error },
       );
   const groupStore = useSidebarItemGroupsStore.getState();
   const commands: CodeSidebarItemGroupCommands = {
@@ -663,11 +665,18 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
         : { pinned: entry.pinned === true };
     },
     setPinned: (workspaceId, entryId, pinned) =>
-      setWorkEntryPinned(entryId, pinned, workspaceId).catch(() => {
-        useGitHubStore
-          .getState()
-          .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
-      }),
+      setWorkEntryPinned(entryId, pinned, workspaceId).catch(
+        (error: unknown) => {
+          useGitHubStore
+            .getState()
+            .addToast(
+              pinned ? 'Failed to pin' : 'Failed to unpin',
+              'error',
+              undefined,
+              { caught: error },
+            );
+        },
+      ),
   });
   const bulk = useSidebarBulk({
     ...selectionRows,
@@ -711,10 +720,15 @@ function AppAdvisorNavContent({ collapsed }: AppAdvisorNavProps): JSX.Element {
   const handleSetEntryPinned = useCallback(
     (entryId: string, pinned: boolean): void => {
       void setWorkEntryPinned(entryId, pinned, APP_ADVISOR_PROJECT_ID).catch(
-        () => {
+        (error: unknown) => {
           useGitHubStore
             .getState()
-            .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
+            .addToast(
+              pinned ? 'Failed to pin' : 'Failed to unpin',
+              'error',
+              undefined,
+              { caught: error },
+            );
         },
       );
     },

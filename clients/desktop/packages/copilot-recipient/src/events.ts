@@ -6,6 +6,7 @@ import {
   redactCopilotToolValue,
 } from './text-redaction';
 import { copilotNativeOperations, isCopilotRecord } from './tool-input';
+import { CopilotRecipientFailure } from './failure';
 
 /** Vendor events become the canonical patch format; raw SDK logs are not persisted. */
 export class CopilotEventProjection {
@@ -119,7 +120,10 @@ export class CopilotEventProjection {
     this.seen.add(event.id);
     this.bytes += Buffer.byteLength(JSON.stringify(event));
     if (this.bytes > 8 * 1024 * 1024)
-      throw new Error('Copilot response exceeded the local chat limit.');
+      throw new CopilotRecipientFailure(
+        'Copilot response exceeded the local chat limit.',
+        'limit',
+      );
     // Native subagents are excluded. Never flatten an unexpected child's output
     // into the root answer or imply that it ran under a managed child grant.
     if (event.agentId) return undefined;

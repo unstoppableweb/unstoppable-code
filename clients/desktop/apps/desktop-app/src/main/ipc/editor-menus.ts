@@ -28,7 +28,7 @@ import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-s
 import { appendEnableRef } from '@canopy/desktop-shared/lib/slash-invocable-inventory';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { validateId } from '../lib/validation';
-import { readInvocableChatTarget } from '../portal/adapters/chat-plugin-selections';
+import { readInvocableChatTarget } from '../remote-projection/chat-plugin-selections';
 import {
   listChatInvocables,
   listEditorSlashCommands,

@@ -34,6 +34,14 @@ const PACKAGE_ROOTS = [
 
 const BUNDLED_TOOLS = [
   {
+    label: 'Node.js (private desktop interpreter and standalone SEA runtime)',
+    packageKey: 'cli-node',
+    versionKey: 'version',
+    source: 'https://nodejs.org/',
+    license:
+      'MIT and bundled third-party licenses. The private desktop payload includes the complete upstream license at node-runtime/NODE-LICENSE; TSX and its dependencies carry their licenses under node-runtime/node_modules.',
+  },
+  {
     label: 'Claude Code CLI',
     packageKey: 'claude-code',
     versionKey: 'version',

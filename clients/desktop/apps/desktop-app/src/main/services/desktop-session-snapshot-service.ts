@@ -1,4 +1,4 @@
-import { buildProjectedModelCatalog } from '../portal/model-catalog-projection';
+import { buildProjectedModelCatalog } from '../remote-projection/model-catalog-projection';
 import { resolveCatalogAgentDefaultModel } from '../agents/agent-default-model';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
@@ -9,13 +9,18 @@ import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { getOrgProjectCatalogService } from './org-project-catalog-service';
 import { appendOrgProjectPlaceholderRows } from './org-project-placeholder-rows';
 import type { DesktopSessionSnapshotArgs } from '@canopy/desktop-shared/types';
+import { recordStaleWork } from '@canopy/desktop-shared/node/work-counters';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { validateId } from '../lib/validation';
 import { listWorktreeChatSummaryBatch } from './worktree-chat-summary-batch';
-import type {
-  PortalSessionShellState,
-  PortalTarget,
+import {
+  projectRemoteBackgroundService,
+  projectRemoteW5Recovery,
+  type PortalSessionShellState,
+  type PortalTarget,
 } from '@canopy/protocol/portal';
+import { peekDesktopW5RecoveryForRemote } from '../canopy-runtime/desktop-w5-recovery';
+import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { listWorkspacePortalEntities } from './workspace-portal-service';
 import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
 import { runW5ReadView } from '../lib/w5-commit-log-file-store';
@@ -45,10 +50,75 @@ function isActivityId(value: string): boolean {
   }
 }
 
+/** One session snapshot build, counted with its wall time (CAN-6970). */
 export async function buildDesktopSessionSnapshot(
   args?: DesktopSessionSnapshotArgs,
 ): Promise<PortalSessionShellState> {
-  const { includeChatSummaries, standaloneChatLocalId, ...scope } = args ?? {};
+  const startedAt = performance.now();
+  try {
+    return await composeDesktopSessionSnapshot(args);
+  } finally {
+    recordStaleWork('snapshot.build');
+    recordStaleWork(
+      'snapshot.build.us',
+      Math.round((performance.now() - startedAt) * 1000),
+    );
+  }
+}
+
+/** Remote Control shows the same notices as this computer (CAN-7061). */
+function desktopNotices(): Pick<
+  PortalSessionShellState,
+  'w5Recovery' | 'backgroundService'
+> {
+  const backgroundService = projectRemoteBackgroundService(
+    getElectronDaemonHealth().getStatus(),
+  );
+  return {
+    w5Recovery: projectRemoteW5Recovery(peekDesktopW5RecoveryForRemote()),
+    ...(backgroundService && { backgroundService }),
+  };
+}
+
+/**
+ * The notices alone: no workspace read, so they still arrive while the
+ * overview's discovery fails closed with the background service down.
+ */
+function desktopNoticesSnapshot(): PortalSessionShellState {
+  return {
+    ...desktopNotices(),
+    workspaces: [],
+    worktrees: [],
+    chatProjects: [],
+    standaloneChats: [],
+    scriptDescriptors: [],
+    scriptRuns: [],
+    hookDescriptors: [],
+    hookRuns: [],
+    plans: [],
+    pipelines: [],
+    pipelineRuns: [],
+    chatMessages: [],
+    chatSummaries: [],
+    terminalSessions: [],
+    terminalBuffers: {},
+    changedFiles: {},
+    diffSnapshots: {},
+    prStatuses: {},
+    fileRoots: [],
+    fileTree: {},
+    filePreviews: {},
+    refreshing: false,
+    connectionStatus: 'active',
+  };
+}
+
+async function composeDesktopSessionSnapshot(
+  args?: DesktopSessionSnapshotArgs,
+): Promise<PortalSessionShellState> {
+  const { includeChatSummaries, standaloneChatLocalId, noticesOnly, ...scope } =
+    args ?? {};
+  if (noticesOnly === true) return desktopNoticesSnapshot();
   const target = args === undefined ? undefined : scope;
   const includeStandalone =
     standaloneChatLocalId !== undefined ||
@@ -247,6 +317,7 @@ export async function buildDesktopSessionSnapshot(
     appAdvisor: true,
   });
   return {
+    ...(isOverviewTarget(target) && desktopNotices()),
     ...(appAdvisorItemGroups === undefined ? {} : { appAdvisorItemGroups }),
     ...(availableModels === undefined
       ? {}

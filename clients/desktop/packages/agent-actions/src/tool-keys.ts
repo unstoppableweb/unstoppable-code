@@ -19,6 +19,8 @@ export const AGENT_ACTION_TOOL_KEYS = [
   'save_memory',
   'search_memory',
   'read_memory',
+  'search_chats',
+  'read_chat_excerpt',
   'add_ledger_entry',
   'search_ledger_entries',
   'update_ledger_entry',
@@ -46,6 +48,8 @@ export const CLOUD_AGENT_ACTION_TOOL_KEYS = [
   'save_memory',
   'search_memory',
   'read_memory',
+  'search_chats',
+  'read_chat_excerpt',
   'add_ledger_entry',
   'search_ledger_entries',
   'update_ledger_entry',
@@ -71,6 +75,8 @@ export const AGENT_ACTION_TOOL_DISPLAY_NAMES = {
   save_memory: 'SaveMemory',
   search_memory: 'SearchMemory',
   read_memory: 'ReadMemory',
+  search_chats: 'SearchChats',
+  read_chat_excerpt: 'ReadChatExcerpt',
   add_ledger_entry: 'AddFeedEntry',
   search_ledger_entries: 'SearchFeedEntries',
   update_ledger_entry: 'UpdateFeedEntry',
@@ -116,6 +122,10 @@ export function agentActionCodexToolName(
       return codex.searchMemory;
     case 'read_memory':
       return codex.readMemory;
+    case 'search_chats':
+      return codex.searchChats;
+    case 'read_chat_excerpt':
+      return codex.readChatExcerpt;
     case 'add_ledger_entry':
       return codex.addLedgerEntry;
     case 'search_ledger_entries':

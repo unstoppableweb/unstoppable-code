@@ -1,3 +1,11 @@
+import {
+  searchChatsInputSchema,
+  readChatExcerptInputSchema,
+  SEARCH_CHATS_DESCRIPTION,
+  READ_CHAT_EXCERPT_DESCRIPTION,
+  SEARCH_CHATS_JSON_SCHEMA,
+  READ_CHAT_EXCERPT_JSON_SCHEMA,
+} from '../tools/chat-history';
 import { z } from 'zod';
 import type { AgentActionBrand } from '../brand';
 import { clampLimit } from '../catalog/limit';
@@ -437,14 +445,19 @@ export function createAgentActionSurface<H, THook extends string = string>(
   );
 
   function dispatchJsonSchema(): AgentJsonSchema {
-    return agentActionDispatchJsonSchema(brand, families, actionTypes);
+    return agentActionDispatchJsonSchema(
+      brand,
+      families,
+      actionTypes,
+      capabilities,
+    );
   }
 
   function descriptionOffer(): AgentActionDescriptionOffer {
     const entries = new Map(
       families.flatMap((family) =>
         family
-          .catalog(brand)
+          .catalog(brand, capabilities)
           .map((entry): [string, AgentActionCatalogEntry] => [
             entry.type,
             entry,
@@ -573,6 +586,27 @@ export function createAgentActionSurface<H, THook extends string = string>(
               inputSchema: SCHEDULE_WAKEUP_JSON_SCHEMA,
             }
           : null;
+      case 'search_chats':
+      case 'read_chat_excerpt':
+        return capabilities.chatHistory === true &&
+          actionTypes.includes(
+            key === 'search_chats'
+              ? 'chat.history.search'
+              : 'chat.history.excerpt',
+          )
+          ? {
+              key,
+              name,
+              description:
+                key === 'search_chats'
+                  ? SEARCH_CHATS_DESCRIPTION
+                  : READ_CHAT_EXCERPT_DESCRIPTION,
+              inputSchema:
+                key === 'search_chats'
+                  ? SEARCH_CHATS_JSON_SCHEMA
+                  : READ_CHAT_EXCERPT_JSON_SCHEMA,
+            }
+          : null;
       case 'save_memory':
         return memory && memoryReach && !capabilities.memoryReadOnly
           ? {
@@ -656,7 +690,7 @@ export function createAgentActionSurface<H, THook extends string = string>(
           .some((type) => actionTypes.includes(type)),
     );
     const results = offering.map((family): FamilySearchResult => {
-      const catalog = family.catalog(brand);
+      const catalog = family.catalog(brand, capabilities);
       if (family.search) {
         return { result: family.search(input, call, capabilities), catalog };
       }
@@ -814,6 +848,29 @@ export function createAgentActionSurface<H, THook extends string = string>(
           return (
             wakeups.scheduleWakeup?.(parsed.data, call) ?? unavailable(key)
           );
+        }
+        case 'search_chats':
+        case 'read_chat_excerpt': {
+          if (capabilities.chatHistory !== true) return unavailable(key);
+          const parsed = (
+            key === 'search_chats'
+              ? searchChatsInputSchema
+              : readChatExcerptInputSchema
+          ).safeParse(rawArgs);
+          return parsed.success
+            ? dispatchAction(
+                {
+                  action: {
+                    ...parsed.data,
+                    type:
+                      key === 'search_chats'
+                        ? 'chat.history.search'
+                        : 'chat.history.excerpt',
+                  },
+                },
+                call,
+              )
+            : invalidAgentActionArguments(AGENT_ACTION_TOOL_DISPLAY_NAMES[key]);
         }
         case 'save_memory': {
           if (!memory || capabilities.memoryReadOnly) return unavailable(key);

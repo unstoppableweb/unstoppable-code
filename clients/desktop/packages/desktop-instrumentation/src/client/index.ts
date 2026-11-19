@@ -46,6 +46,7 @@ import {
 } from '../app-error-telemetry';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
 import {
+  appErrorNativeFrames,
   createAppErrorHandler,
   isExpectedCanopyProxyAppError,
   type AppError,
@@ -131,6 +132,8 @@ async function initializePostHogClient(
   let revision = 0;
   let disposed = false;
   let unsubscribe: (() => void) | undefined;
+  let failureReason: DesktopInstrumentationInitResult['reason'] =
+    'sdk_init_failed';
   let unloadInstalled = false;
   let appErrorSession: AppErrorTelemetrySessions['posthog'];
   let posthog: PostHog | undefined;
@@ -321,13 +324,16 @@ async function initializePostHogClient(
         anonymousId,
       )
     ) {
+      failureReason = 'anonymous_id_unavailable';
       throw new Error('PostHog anonymous identity is unavailable');
     }
     if (disposed)
       return { enabled: false, provider: 'posthog', reason: 'disabled' };
     posthog = module.default;
-    if (!options.posthogSession)
+    if (!options.posthogSession) {
+      failureReason = 'session_bridge_unavailable';
       throw new Error('PostHog session bridge is unavailable');
+    }
     session = await connectPostHogSession(posthog, options.posthogSession);
     const surfaceRoute =
       options.surface === 'app-advisor'
@@ -416,6 +422,7 @@ async function initializePostHogClient(
                 },
                 {
                   preserveBrowserProjectToken: true,
+                  replaceUncodedExceptionText: true,
                   exceptionBuild: config,
                   ...(event.event === '$snapshot' && {
                     passthroughProperties: ['$snapshot_data'],
@@ -487,14 +494,11 @@ async function initializePostHogClient(
       safelyInvoke(() => reportException(error, properties));
     });
     return { enabled: true, provider: 'posthog' };
-  } catch (error) {
+  } catch {
     dispose();
     if (disposePostHog === dispose) disposePostHog = undefined;
-    return {
-      enabled: false,
-      provider: 'posthog',
-      reason: error instanceof Error ? error.message : String(error),
-    };
+    // Never the error's message: it can quote paths or received values.
+    return { enabled: false, provider: 'posthog', reason: failureReason };
   }
 }
 
@@ -722,7 +726,12 @@ export function reportClientAppError(
   } catch (error) {
     // Recovery must survive unavailable configuration, clocks or randomness.
     // Do not recursively report a failure of the reporting infrastructure.
-    captureClientInstrumentationError(error);
+    // Keep only its V8 frames: a validation message can quote received values.
+    const failure = new Error('App error reporting failed');
+    failure.stack = [failure.toString(), ...appErrorNativeFrames(error)].join(
+      '\n',
+    );
+    captureClientInstrumentationError(failure);
     return undefined;
   }
 }

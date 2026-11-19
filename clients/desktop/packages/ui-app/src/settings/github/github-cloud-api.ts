@@ -82,12 +82,12 @@ export const GITHUB_CLOUD_ACTION_ERROR_COPY: Readonly<
 > = {
   load: "Couldn't load your GitHub connection. Try again.",
   verify: "Couldn't check your GitHub connection. Try again.",
-  connect: "Couldn't connect GitHub. Try again.",
-  disconnect: "Couldn't disconnect GitHub. Try again.",
+  connect: "Couldn't link GitHub. Try again.",
+  disconnect: "Couldn't unlink GitHub. Try again.",
 };
 
 export const GITHUB_CLOUD_UNAVAILABLE_COPY =
-  "GitHub for cloud work isn't available for your account yet.";
+  "Linking GitHub isn't available for your account yet.";
 
 export const GITHUB_CLOUD_SIGNED_OUT_COPY =
   'Your session ended. Sign in again to continue.';

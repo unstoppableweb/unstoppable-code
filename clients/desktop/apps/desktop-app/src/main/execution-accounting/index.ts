@@ -43,7 +43,7 @@ import type { ResourceRegistrationHandle } from '../resource-monitor/service';
  * this module supplies what only the desktop host has: the host process
  * table reader, Electron's own process metrics, the performance-limit
  * preferences and product copy. Main installs the Electron wake-lock
- * composition and the diagnostics sink at startup, so modules that only take
+ * composition and the diagnostics and failure sinks at startup, so modules that only take
  * leases stay light. Each family's daemon enablement composes the same core
  * class there instead.
  */
@@ -51,6 +51,8 @@ import type { ResourceRegistrationHandle } from '../resource-monitor/service';
 export interface ExecutionAccountingHost {
   readonly wakeLock: ExecutionWakeLock;
   readonly recordDiagnostic: (record: AppDiagnosticRecord) => void;
+  /** Records a sample that threw; reads and the sampling timer drop it. */
+  readonly reportSampleFailure: (error: unknown) => void;
 }
 
 let host: ExecutionAccountingHost | null = null;
@@ -343,6 +345,9 @@ export function getExecutionAccounting(): DesktopExecutionAccounting {
     groupLabel: (id): string => GROUP_LABELS[id],
     executionIdOf: (metadata): string | undefined =>
       metadata?.type === 'pipeline' ? metadata.pipeline.executionId : undefined,
+    onSampleFailure: (error): void => {
+      host?.reportSampleFailure(error);
+    },
     wakeLock: {
       acquire: (key, reason): void => {
         host?.wakeLock.acquire(key, reason);

@@ -2,6 +2,8 @@ import {
   CatalogMutationRuns,
   createCoreCatalogHandlers,
   createCoreSkillCatalogHandlers,
+  createCoreMcpRemovalHandlers,
+  type CoreMcpRemovalHost,
   type CoreCatalogHost,
   type CoreSkillCatalogHost,
 } from '@canopy/core-runtime/node/catalog';
@@ -12,6 +14,7 @@ import {
 } from './core-catalog-host';
 import { createDesktopCatalogMutationHost } from './core-catalog-mutation-host';
 import { createDesktopSkillCatalogHost } from './core-skill-catalog-host';
+import { createDesktopMcpRemovalHost } from './core-mcp-removal-host';
 import type { DesktopDomainAdapter } from './desktop-runtime';
 
 /** `core.catalog.*` on the desktop dispatcher (CAN-4123) over Electron main's stores. */
@@ -20,6 +23,7 @@ export function createCoreCatalogAdapter(options: {
   host?: CoreCatalogHost;
   /** Host behind `core.catalog.skill.*` (CAN-4124); tests may inject one. */
   skillHost?: CoreSkillCatalogHost;
+  mcpRemovalHost?: CoreMcpRemovalHost;
   dispatchWorkspacePluginsUpdate: DesktopCatalogHostDeps['dispatchWorkspacePluginsUpdate'];
 }): DesktopDomainAdapter {
   const runs = new CatalogMutationRuns({ operations: options.operations });
@@ -35,8 +39,12 @@ export function createCoreCatalogAdapter(options: {
     host: options.skillHost ?? createDesktopSkillCatalogHost(),
     runs,
   });
+  const removal = createCoreMcpRemovalHandlers(
+    options.mcpRemovalHost ?? createDesktopMcpRemovalHost(),
+  );
   return {
     queries: {
+      ...removal.queries,
       'core.catalog.snapshot.get': (params, context) =>
         handlers.queries['core.catalog.snapshot.get'](params, context),
       'core.catalog.selection.get': (params, context) =>
@@ -55,6 +63,7 @@ export function createCoreCatalogAdapter(options: {
         skillHandlers.queries['core.catalog.skill.discover'](params, context),
     },
     instructions: {
+      ...removal.instructions,
       'core.catalog.selection.update': (params, context) =>
         handlers.instructions['core.catalog.selection.update'](params, context),
       'core.catalog.source.upsert': (params, context) =>

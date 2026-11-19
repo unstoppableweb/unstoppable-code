@@ -45,6 +45,9 @@ export function WorktreeGitActionError({
       key={failure.seq}
       error={failure.error}
       {...(failure.details === undefined ? {} : { details: failure.details })}
+      {...(failure.errorRecordingDisabled
+        ? { errorRecordingDisabled: true }
+        : {})}
       onDismiss={onDismiss}
       {...(failure.retry && !busy
         ? { onRetry: failure.retry, onStartOver: failure.retry }

@@ -49,7 +49,7 @@ import { writeFileAtomically } from '../lib/atomic-file';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import { getSpaceNotificationPolicyDir } from '../lib/paths';
 import { publishSpaceNotificationPolicy } from '../lib/space-notification-gate';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from './desktop-structure-signal';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 
@@ -450,7 +450,8 @@ export class SpaceNotificationPolicyService {
       if (changed) this.emit();
       // Remote Control rows carry each space's server id; republish once new
       // spaces are registered so web and mobile can offer their choices.
-      if (registered) schedulePortalStructuralSync();
+      if (registered)
+        scheduleDesktopStructureChanged('structural.space-notification-policy');
       // `syncedAt` alone is not worth a disk write every minute.
       if (changed) await this.persist();
     }

@@ -98,6 +98,8 @@ function approvalAnnouncementContext(
       return `To ${details.origin}`;
     case 'browser-file-request':
       return `For ${details.origin}`;
+    case 'agent-secret-use':
+      return details.command ?? details.path ?? details.tool;
     default:
       return '';
   }

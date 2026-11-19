@@ -21,6 +21,20 @@ export interface WebCoreScopeOptions {
    * declares (CAN-6941). It turns on the Session breakdown panel.
    */
   readonly sessionBreakdown?: boolean;
+  /**
+   * The scope's chats fork whole into a new task (CAN-7007): a listed cowork
+   * project's scope, when the web core's manifest serves `core.chat.fork`. A
+   * repository project's fork would stay in a worktree this window can't
+   * open yet (CAN-6177), so it stays off there.
+   */
+  readonly taskFork?: boolean;
+  /**
+   * A cloud chat's delegate cards read their child pages over the web core
+   * relay (CAN-7027), as `core.chat.transcript.page` serves them by a
+   * delegation target for the chat's owner. Off until it is switched on
+   * for review; unset reads as off.
+   */
+  readonly delegationTranscriptReads?: boolean;
 }
 
 /**
@@ -63,11 +77,13 @@ export function cloudTerminalsEnabled(
  * unavailable.
  *
  * Served so far: the sandbox's files, read and written through the web core
- * (CAN-6175 R9), its terminals when the desktop binds them (R10), its
+ * (CAN-6175 R9), the project's shared workspace files (CAN-7008), its terminals when the desktop binds them (R10), its
  * cost when the web core's manifest serves the cost reads (CAN-6180), and
  * the composer's context usage, folded from each answer's meter, which the
  * web core serves at revision 2 of the chat's transcript and events
  * (CAN-6509, CAN-6755); a chat whose answers carry no meter shows none.
+ * A cowork project's chats fork whole into a new task when the web core
+ * serves the fork (CAN-7007); the tab fork stays off.
  * Scripts stay off: a cloud terminal can't run a startup command.
  */
 function buildWebCoreScopeCapabilities(
@@ -87,6 +103,9 @@ function buildWebCoreScopeCapabilities(
       ? { cloudCapabilityLinks: true }
       : {}),
     ...(host.cloudReachBack === true ? { cloudReachBack: true } : {}),
+    // A project's shared workspace files: added through main's web core
+    // connection, removed over the relay (CAN-7008).
+    cloudWorkspaceFileWrite: true,
     localExecution: false,
     terminalPty: options.durableTerminals,
     fileSystemAccess: 'read-write',
@@ -105,6 +124,7 @@ function buildWebCoreScopeCapabilities(
     chatThinkingLevel: true,
     chatFastMode: true,
     chatTabFork: false,
+    ...(options.taskFork === true ? { chatTaskFork: true } : {}),
     chatRootTabLifecycle: false,
     chatPluginSelections: true,
     // Edit and Run now on a queued prompt reach Core with its revision (CAN-6651).
@@ -125,6 +145,11 @@ function buildWebCoreScopeCapabilities(
     ledgerLocal: false,
     costInsights: options.costInsights === true,
     sessionBreakdown: options.sessionBreakdown === true,
+    // A delegate card's child pages, over the web core (CAN-7027). Its
+    // bodies and block pages stay off: the web core doesn't serve them here.
+    ...(options.delegationTranscriptReads === true
+      ? { delegationTranscriptReads: true }
+      : {}),
     // Unset would mean "every section the workspace type shows" and "the
     // whole worktree's diff". A cloud scope shows the sections the web core
     // feeds: its agent tasks and background processes, which the web core
@@ -164,7 +189,7 @@ export function webCoreScopeCapabilities(
     entry = new Map();
     cache.set(host, entry);
   }
-  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}`;
+  const key = `${String(options.durableTerminals)}:${String(options.costInsights === true)}:${String(options.sessionBreakdown === true)}:${String(options.taskFork === true)}:${String(options.delegationTranscriptReads === true)}`;
   let capabilities = entry.get(key);
   if (capabilities === undefined) {
     capabilities = buildWebCoreScopeCapabilities(host, options);

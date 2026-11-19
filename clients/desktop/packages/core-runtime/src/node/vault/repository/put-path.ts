@@ -8,6 +8,7 @@ import {
 import type {
   VaultDeleteRequest,
   VaultFamilyWriter,
+  VaultMutationStep,
   VaultNotFound,
   VaultPutOutcome,
   VaultPutRequest,
@@ -29,7 +30,12 @@ import {
 import { isSupersededCommit, pruneExpiredTombstones } from './reconciliation';
 import { VAULT_SECRET_MAX_BYTES } from './record-format';
 import { sealVaultSecret } from './sealed-secret';
-import type { VaultMigrationUpdate, VaultStore } from './store';
+import {
+  vaultIoClass,
+  vaultStoreUnavailableOutcome,
+  type VaultMigrationUpdate,
+  type VaultStore,
+} from './store';
 import type { VaultIntentDraft } from './store-records';
 import type { VaultSubkeys } from './vault-keys';
 import {
@@ -478,11 +484,9 @@ export function createVaultWritePath(
       input.material,
     );
     const written = store.commitEntry(sequence, { ...fields, sealed });
+    if (written.kind === 'uncertain') return { kind: 'outcome_unknown', ref };
     if (written.kind !== 'written')
-      return {
-        kind: written.kind === 'uncertain' ? 'outcome_unknown' : 'unavailable',
-        ref,
-      };
+      return vaultStoreUnavailableOutcome(ref, written);
     const next = committedEntry(vaultId, written.value);
     // An accepted delete superseded this put already, so a delete closure here
     // is one that failed closed; the commit does not reopen it.
@@ -502,13 +506,15 @@ export function createVaultWritePath(
     input: PutInput,
   ): Promise<VaultPutOutcome> {
     const ref = refOf(receipt.entryId);
+    let step: VaultMutationStep = 'hold';
     store.setIntentRunning(sequence, true);
     try {
       await hold(sequence);
       if (receipt.superseded) return { kind: 'superseded', ref };
+      step = 'apply';
       return seal(family, receipt, sequence, revision, input);
-    } catch {
-      return { kind: 'unavailable', ref };
+    } catch (error) {
+      return { kind: 'unavailable', ref, step, io: vaultIoClass(error) };
     } finally {
       store.setIntentRunning(sequence, false);
       zeroBytes(input.material);

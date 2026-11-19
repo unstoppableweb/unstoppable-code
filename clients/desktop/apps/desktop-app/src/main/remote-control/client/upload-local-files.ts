@@ -4,6 +4,7 @@ import {
   REMOTE_UPLOAD_MAX_BYTES,
   REMOTE_UPLOAD_TOO_LARGE_MESSAGE,
 } from '@canopy/desktop-shared/types';
+import { RpcPublicError } from '../transport/rpc-peer';
 
 /**
  * Sends files picked on this computer to the other one and returns their
@@ -18,7 +19,7 @@ export async function uploadLocalFiles(
 ): Promise<string[]> {
   for (const path of paths) {
     if ((await stat(path)).size > maxBytes) {
-      throw new Error(REMOTE_UPLOAD_TOO_LARGE_MESSAGE);
+      throw new RpcPublicError(REMOTE_UPLOAD_TOO_LARGE_MESSAGE);
     }
   }
   const remotePaths: string[] = [];

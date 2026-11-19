@@ -7,6 +7,14 @@ export const EXECUTION_SECRET_OPERATIONS = [
   'worker.pipeline.matrixJob.retry',
   'worker.script.execute',
   'worker.catalog.materialize',
+  // RunWithSecrets and WriteSecretsFile in the host that owns the grants:
+  // an internal audience, not a protocol operation. The key is a fresh id
+  // per call (agent secret requests, CONTRACTS.md §8).
+  'agent.secret.use',
+  // Full-access ambient env for a chat's own shell commands, in the host
+  // that owns the grants: an internal audience, not a protocol operation.
+  // The key is a fresh id per read (agent secret requests, unit U3).
+  'agent.secret.ambient',
 ] as const;
 export type ExecutionSecretOperation =
   (typeof EXECUTION_SECRET_OPERATIONS)[number];
@@ -14,7 +22,7 @@ export type ExecutionSecretOperation =
 /** What may redeem a grant: one dispatch of one instruction. */
 export interface ExecutionSecretAudience {
   readonly operation: ExecutionSecretOperation;
-  /** The execution id for a start or script run; the control's `requestId` for a control; the materialization id for `worker.catalog.materialize`. */
+  /** The execution id for a start or script run; the control's `requestId` for a control; the materialization id for `worker.catalog.materialize`; a per-call id for `agent.secret.use`. */
   readonly key: string;
 }
 

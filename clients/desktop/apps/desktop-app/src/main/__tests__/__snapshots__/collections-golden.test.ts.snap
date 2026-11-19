@@ -1,0 +1,3005 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`with organization projects off hosted calls and installs skip the context checks 1`] = `
+[
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections",
+    ],
+    "step": "list shared collections",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Upstream kit description",
+          "id": "shared-upstream",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 0,
+          },
+          "name": "Upstream kit",
+          "owner": {
+            "id": "account-one",
+            "name": "Account One",
+            "type": "user",
+          },
+          "publicShare": null,
+          "shareScope": "private",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections",
+    ],
+    "step": "list again",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Upstream kit description",
+          "id": "shared-upstream",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 0,
+          },
+          "name": "Upstream kit",
+          "owner": {
+            "id": "account-one",
+            "name": "Account One",
+            "type": "user",
+          },
+          "publicShare": null,
+          "shareScope": "private",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-foreign-org",
+    ],
+    "step": "get a share owned by an organization the account is not in",
+    "value": {
+      "canDelete": false,
+      "canUpdate": false,
+      "collection": {
+        "description": "",
+        "items": [],
+        "name": "Foreign shared-foreign-org",
+        "version": 1,
+      },
+      "contentHash": "<sha:2>",
+      "createdAt": "2026-11-01T00:00:00.000Z",
+      "createdBy": {
+        "email": null,
+        "id": "someone-else",
+        "name": "Someone Else",
+      },
+      "customSkills": [],
+      "description": "",
+      "id": "shared-foreign-org",
+      "itemCounts": {
+        "customSkills": 0,
+        "plugins": 0,
+        "skills": 0,
+      },
+      "name": "Foreign shared-foreign-org",
+      "owner": {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "name": "Org 2222",
+        "type": "organization",
+      },
+      "publicShare": null,
+      "rawCollection": "{"version":1,"name":"Foreign shared-foreign-org","description":"","items":[]}",
+      "shareScope": "organization",
+      "updatedAt": "2026-11-01T00:00:00.000Z",
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share to an organization the account is not in",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "httpStatus": 403,
+        "kind": "permission",
+        "message": "You are not a member of this organization.",
+        "retryable": false,
+        "serverCode": "forbidden",
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share to a team",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Team kit description",
+          "items": [],
+          "name": "Team kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:3>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Team kit description",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Team kit",
+        "owner": {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "name": "Release team",
+          "organization": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Org 1111",
+          },
+          "type": "team",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Team kit","description":"Team kit description","items":[]}",
+        "shareScope": "team",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/shared-item-subscriptions/batch",
+      "  upsert collection:shared:shared-upstream hash=<sha:1>",
+    ],
+    "step": "install a collection from a share",
+    "value": {
+      "createdAt": "<time>",
+      "description": "",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Upstream kit",
+      "plugins": [],
+      "revision": "<uuid:1>",
+      "sharedSource": {
+        "contentHash": "<sha:1>",
+        "fetchedAt": "2026-11-01T00:00:00.000Z",
+        "remoteId": "shared-upstream",
+      },
+      "skills": [],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "load it",
+    "value": {
+      "createdAt": "<time>",
+      "description": "",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Upstream kit",
+      "plugins": [],
+      "revision": "<uuid:1>",
+      "sharedSource": {
+        "contentHash": "<sha:1>",
+        "fetchedAt": "2026-11-01T00:00:00.000Z",
+        "remoteId": "shared-upstream",
+      },
+      "skills": [],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "load the index",
+    "value": [
+      {
+        "description": "",
+        "hasExistingShare": false,
+        "hasSharedSource": true,
+        "id": "<uuid:2>",
+        "mcpServerCount": 0,
+        "name": "Upstream kit",
+        "pluginCount": 0,
+        "revision": "<uuid:1>",
+        "sharedSource": {
+          "contentHash": "<sha:1>",
+          "remoteId": "shared-upstream",
+        },
+        "skillCount": 0,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+    ],
+    "step": "apply the unchanged share",
+    "value": {
+      "collection": {
+        "createdAt": "<time>",
+        "description": "",
+        "id": "<uuid:2>",
+        "mcpServers": [],
+        "name": "Upstream kit",
+        "plugins": [],
+        "revision": "<uuid:3>",
+        "sharedSource": {
+          "contentHash": "<sha:1>",
+          "fetchedAt": "<time>",
+          "remoteId": "shared-upstream",
+        },
+        "skills": [],
+        "updatedAt": "<time>",
+      },
+      "preservedLegacyMcpRefs": false,
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/shared-item-subscriptions/batch",
+      "  removal collection:shared:shared-upstream",
+    ],
+    "step": "delete it",
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default App Advisor's collection sharing actions on their main host 1`] = `
+[
+  {
+    "cloud": [],
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Local collection <uuid:1> was not found.",
+      },
+      "ok": false,
+    },
+    "step": "share a missing collection",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "error": {
+        "code": "invalid_target",
+        "message": "Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.",
+      },
+      "ok": false,
+    },
+    "step": "share a collection holding MCP servers",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "error": {
+        "code": "invalid_target",
+        "message": "You aren't a member of that organization.",
+      },
+      "ok": false,
+    },
+    "step": "share to an organization the account is not in",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "error": {
+        "code": "surface_unavailable",
+        "message": "Choose an organization from the context switcher above the account in the sidebar, or pass organizationId, to share with an organization.",
+      },
+      "ok": false,
+    },
+    "step": "share to the organization while the Personal context is selected",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "kind": "organization",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+    },
+    "step": "switch to the organization context",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/plugins/curated",
+    ],
+    "result": {
+      "error": {
+        "code": "validation_failed",
+        "message": "Cannot share Collection: skill "builtin:examples/changelog" is not installed locally.",
+        "retryable": false,
+      },
+      "ok": false,
+      "requestId": "",
+    },
+    "step": "share a collection whose skill is not installed",
+  },
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "result": {
+      "ok": true,
+      "result": {
+        "sharedCollection": {
+          "canDelete": true,
+          "canUpdate": true,
+          "collection": {
+            "description": "Advisor kit description",
+            "items": [
+              {
+                "contentHash": "<sha:2>",
+                "skillId": "skill-shared-1-1",
+                "skill_name": "tone",
+                "type": "custom_skill",
+              },
+            ],
+            "name": "Advisor kit",
+            "version": 1,
+          },
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "customSkills": [
+            {
+              "canDelete": true,
+              "canUpdate": true,
+              "contentHash": "<sha:2>",
+              "createdAt": "2026-11-01T00:00:00.000Z",
+              "createdBy": {
+                "email": null,
+                "id": "account-one",
+                "name": "Account One",
+              },
+              "description": "",
+              "id": "skill-shared-1-1",
+              "name": "tone",
+              "owner": {
+                "id": "account-one",
+                "name": "Account One",
+                "type": "user",
+              },
+              "publicShare": null,
+              "rawSkill": "---
+name: tone
+description: tone skill
+---
+Keep it plain.
+",
+              "shareScope": "private",
+              "updatedAt": "2026-11-01T00:00:00.000Z",
+            },
+          ],
+          "description": "Advisor kit description",
+          "id": "shared-1",
+          "itemCounts": {
+            "customSkills": 1,
+            "plugins": 0,
+            "skills": 0,
+          },
+          "name": "Advisor kit",
+          "owner": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Org",
+            "type": "organization",
+          },
+          "publicShare": null,
+          "rawCollection": "{"version":1,"name":"Advisor kit","description":"Advisor kit description","items":[{"type":"custom_skill","skillId":"skill-shared-1-1","skill_name":"tone","contentHash":"<sha:2>"}]}",
+          "shareScope": "organization",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      },
+    },
+    "step": "share to a member organization",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections?limit=5&q=kit&shareScope=private",
+      "GET /api/v1/<brand-api>/collections?limit=5&q=kit&shareScope=organization&organizationId=11111111-1111-4111-8111-111111111111",
+    ],
+    "result": {
+      "ok": true,
+      "result": {
+        "collections": [
+          {
+            "canDelete": true,
+            "canUpdate": true,
+            "contentHash": "<sha:1>",
+            "createdAt": "2026-11-01T00:00:00.000Z",
+            "createdBy": {
+              "email": null,
+              "id": "account-one",
+              "name": "Account One",
+            },
+            "description": "Advisor kit description",
+            "id": "shared-1",
+            "itemCounts": {
+              "customSkills": 1,
+              "plugins": 0,
+              "skills": 0,
+            },
+            "name": "Advisor kit",
+            "owner": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "Org",
+              "type": "organization",
+            },
+            "publicShare": null,
+            "shareScope": "organization",
+            "updatedAt": "2026-11-01T00:00:00.000Z",
+          },
+        ],
+      },
+    },
+    "step": "list shared collections",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "PUT /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "result": {
+      "ok": true,
+      "result": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Advisor kit description",
+          "items": [
+            {
+              "contentHash": "<sha:2>",
+              "skillId": "skill-shared-1-1",
+              "skill_name": "tone",
+              "type": "custom_skill",
+            },
+          ],
+          "name": "Advisor kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:1>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Advisor kit description",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Advisor kit",
+        "owner": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org",
+          "type": "organization",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Advisor kit","description":"Advisor kit description","items":[{"type":"custom_skill","skillId":"skill-shared-1-1","skill_name":"tone","contentHash":"<sha:2>"}]}",
+        "shareScope": "organization",
+        "updatedAt": "2026-11-02T00:00:00.000Z",
+      },
+    },
+    "step": "update the share from the local collection",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "Local collection <uuid:1> was not found.",
+      },
+      "ok": false,
+    },
+    "step": "update from a missing local collection",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-incoming",
+    ],
+    "result": {
+      "error": {
+        "code": "authorization_conflict",
+        "message": "The person chose not to import the collection.",
+      },
+      "ok": false,
+    },
+    "step": "import declined by the person",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-incoming",
+    ],
+    "result": {
+      "error": {
+        "code": "authorization_conflict",
+        "message": "Only a person can confirm this, and nobody did.",
+      },
+      "ok": false,
+    },
+    "step": "import confirmed only by an agent",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-incoming",
+      "GET /api/v1/<brand-api>/collections/shared-incoming",
+      "GET /api/v1/collections/shared-incoming/package?expectedPackageDigest=pp%3Av1%3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    ],
+    "result": {
+      "ok": true,
+      "result": {
+        "createdAt": "<time>",
+        "description": "Incoming kit description",
+        "id": "<uuid:3>",
+        "mcpServers": [],
+        "memberFailures": [
+          {
+            "label": "Packaged files",
+            "message": "HTTP 404: Package not found.",
+            "required": false,
+          },
+        ],
+        "name": "Incoming kit",
+        "plugins": [],
+        "revision": "<uuid:2>",
+        "skills": [
+          {
+            "skillName": "changelog",
+            "sourceId": "builtin:examples",
+          },
+        ],
+        "updatedAt": "<time>",
+      },
+    },
+    "step": "import confirmed by the person, its package unavailable",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-missing",
+    ],
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "HTTP 404: Collection not found.",
+        "retryable": false,
+      },
+      "ok": false,
+      "requestId": "",
+    },
+    "step": "import a missing share",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "DELETE /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "result": {
+      "ok": true,
+      "result": {
+        "collectionId": "shared-1",
+      },
+    },
+    "step": "delete the share",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "result": {
+      "error": {
+        "code": "not_found",
+        "message": "HTTP 404: Collection not found.",
+        "retryable": false,
+      },
+      "ok": false,
+      "requestId": "",
+    },
+    "step": "delete it again",
+  },
+  {
+    "cloud": [],
+    "result": [
+      [
+        {
+          "allowOther": false,
+          "multiSelect": false,
+          "options": [
+            "Import",
+            "Cancel",
+          ],
+          "question": "Import the shared collection "Incoming kit" into <Brand>? It installs:
+- Skill changelog (built in)
+- Its packaged files",
+        },
+      ],
+      [
+        {
+          "allowOther": false,
+          "multiSelect": false,
+          "options": [
+            "Import",
+            "Cancel",
+          ],
+          "question": "Import the shared collection "Incoming kit" into <Brand>? It installs:
+- Skill changelog (built in)
+- Its packaged files",
+        },
+      ],
+      [
+        {
+          "allowOther": false,
+          "multiSelect": false,
+          "options": [
+            "Import",
+            "Cancel",
+          ],
+          "question": "Import the shared collection "Incoming kit" into <Brand>? It installs:
+- Skill changelog (built in)
+- Its packaged files",
+        },
+      ],
+    ],
+    "step": "questions asked",
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default apply a shared update to an installed collection 1`] = `
+[
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection changed. Reload it before updating.",
+      },
+      "thrown": {
+        "code": "conflict",
+        "message": "Collection changed. Reload it before updating.",
+        "name": "Error",
+      },
+    },
+    "step": "apply at a stale revision",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: A Collection revision is required.",
+      },
+      "thrown": {
+        "code": "invalid_payload",
+        "message": "A Collection revision is required.",
+        "name": "Error",
+      },
+    },
+    "step": "apply without a revision",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Invalid Collection id.",
+      },
+      "thrown": {
+        "code": "invalid_payload",
+        "message": "Invalid Collection id.",
+        "name": "Error",
+      },
+    },
+    "step": "apply to an invalid id",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection changed. Reload it before updating.",
+      },
+      "thrown": {
+        "code": "conflict",
+        "message": "Collection changed. Reload it before updating.",
+        "name": "Error",
+      },
+    },
+    "step": "apply to a collection with no shared source",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/skills/skill-shared-upstream-1",
+      "GET /api/v1/<brand-api>/skills/skill-shared-upstream-1",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "POST /api/v1/shared-item-subscriptions/batch",
+      "  upsert collection:shared:shared-upstream hash=<sha:1>",
+    ],
+    "step": "apply the update",
+    "value": {
+      "collection": {
+        "createdAt": "<time>",
+        "description": "Upstream kit description",
+        "id": "<uuid:2>",
+        "mcpServers": [],
+        "name": "Upstream kit",
+        "plugins": [],
+        "revision": "<uuid:1>",
+        "sharedSource": {
+          "contentHash": "<sha:1>",
+          "fetchedAt": "<time>",
+          "remoteId": "shared-upstream",
+        },
+        "skills": [
+          {
+            "skillName": "tone",
+            "sourceId": "custom:app",
+          },
+        ],
+        "updatedAt": "<time>",
+      },
+      "preservedLegacyMcpRefs": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: The exact skill reference could not be resolved. Some resources may have been added; refresh the inventory before retrying.",
+      },
+      "thrown": {
+        "code": "execution_failed",
+        "message": "The exact skill reference could not be resolved. Some resources may have been added; refresh the inventory before retrying.",
+        "name": "Error",
+      },
+    },
+    "step": "apply an update whose skill cannot be resolved",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+    ],
+    "step": "the collection keeps its last applied state",
+    "value": {
+      "createdAt": "<time>",
+      "description": "Upstream kit description",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Upstream kit",
+      "plugins": [],
+      "revision": "<uuid:1>",
+      "sharedSource": {
+        "contentHash": "<sha:1>",
+        "fetchedAt": "<time>",
+        "remoteId": "shared-upstream",
+      },
+      "skills": [
+        {
+          "skillName": "tone",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-upstream",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 404: Collection not found.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 404: Collection not found.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "apply after the share was deleted",
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default capability packages: analyze, the secret check, cancel, commit, readiness, install 1`] = `
+[
+  {
+    "cloud": [],
+    "step": "analyze a collection with a custom skill",
+    "value": {
+      "analysisId": "<uuid:1>",
+      "blockers": [],
+      "dismissedInvocations": [],
+      "expiresAt": "<time>",
+      "manifest": {
+        "bindings": [
+          {
+            "resourceIds": [
+              "9bcf5c3a56dffb42c5bf1314",
+              "a6dd07bbd2aadcda3f5d3158",
+            ],
+            "target": "subject",
+          },
+        ],
+        "environmentRequirements": [],
+        "pipelineContentHash": "<sha:1>",
+        "resources": [
+          {
+            "dependencyResourceIds": [],
+            "displayName": "/release-notes",
+            "id": "9bcf5c3a56dffb42c5bf1314",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "release-notes",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "/release-notes",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [
+                  {
+                    "mode": "read",
+                    "path": "SKILL.md",
+                    "sha256": "<sha:2>",
+                    "size": 86,
+                  },
+                ],
+                "provider": "claude",
+                "rootName": "release-notes",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+          {
+            "dependencyResourceIds": [],
+            "displayName": "$builtin-app-plugin:release-notes",
+            "id": "a6dd07bbd2aadcda3f5d3158",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "release-notes",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "$builtin-app-plugin:release-notes",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [
+                  {
+                    "mode": "read",
+                    "path": "SKILL.md",
+                    "sha256": "<sha:2>",
+                    "size": 86,
+                  },
+                ],
+                "provider": "codex",
+                "rootName": "release-notes",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+        ],
+        "totalBytes": 172,
+        "totalFiles": 2,
+        "version": 1,
+      },
+      "pipelineContentHash": "<sha:1>",
+      "state": "ready",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "analyze a collection whose skill holds a secret",
+    "value": {
+      "analysisId": "<uuid:2>",
+      "blockers": [
+        {
+          "code": "SUSPECTED_SECRET",
+          "message": "A dependency file may contain a credential.",
+          "occurrences": [],
+          "relativePath": "SKILL.md",
+          "subject": "SKILL.md",
+        },
+      ],
+      "dismissedInvocations": [],
+      "expiresAt": "<time>",
+      "manifest": {
+        "bindings": [
+          {
+            "resourceIds": [
+              "322ea3af53a437623d15a4cc",
+              "75bf492fc4468a8040ed6713",
+            ],
+            "target": "subject",
+          },
+        ],
+        "environmentRequirements": [],
+        "pipelineContentHash": "<sha:3>",
+        "resources": [
+          {
+            "dependencyResourceIds": [],
+            "displayName": "/deploy-keys",
+            "id": "322ea3af53a437623d15a4cc",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "deploy-keys",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "/deploy-keys",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [],
+                "provider": "claude",
+                "rootName": "deploy-keys",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+          {
+            "dependencyResourceIds": [],
+            "displayName": "$builtin-app-plugin:deploy-keys",
+            "id": "75bf492fc4468a8040ed6713",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "deploy-keys",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "$builtin-app-plugin:deploy-keys",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [],
+                "provider": "codex",
+                "rootName": "deploy-keys",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+        ],
+        "totalBytes": 0,
+        "totalFiles": 0,
+        "version": 1,
+      },
+      "pipelineContentHash": "<sha:3>",
+      "state": "blocked",
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection not found",
+      },
+      "thrown": {
+        "message": "Collection not found",
+        "name": "Error",
+      },
+    },
+    "step": "analyze a missing collection",
+  },
+  {
+    "cloud": [],
+    "step": "commit the blocked analysis",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "dependency-review",
+        "message": "Dependencies are not ready to package. Resolve the listed problems first.",
+        "retryable": false,
+        "stage": "prepare",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [],
+    "step": "analyze again",
+    "value": {
+      "analysisId": "<uuid:3>",
+      "blockers": [],
+      "dismissedInvocations": [],
+      "expiresAt": "<time>",
+      "manifest": {
+        "bindings": [
+          {
+            "resourceIds": [
+              "9bcf5c3a56dffb42c5bf1314",
+              "a6dd07bbd2aadcda3f5d3158",
+            ],
+            "target": "subject",
+          },
+        ],
+        "environmentRequirements": [],
+        "pipelineContentHash": "<sha:1>",
+        "resources": [
+          {
+            "dependencyResourceIds": [],
+            "displayName": "/release-notes",
+            "id": "9bcf5c3a56dffb42c5bf1314",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "release-notes",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "/release-notes",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [
+                  {
+                    "mode": "read",
+                    "path": "SKILL.md",
+                    "sha256": "<sha:2>",
+                    "size": 86,
+                  },
+                ],
+                "provider": "claude",
+                "rootName": "release-notes",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+          {
+            "dependencyResourceIds": [],
+            "displayName": "$builtin-app-plugin:release-notes",
+            "id": "a6dd07bbd2aadcda3f5d3158",
+            "installedItemRef": {
+              "kind": "skill",
+              "skillName": "release-notes",
+              "sourceId": "custom:app",
+            },
+            "invocationKeys": [
+              "$builtin-app-plugin:release-notes",
+            ],
+            "kind": "standalone_skill",
+            "sourceLabel": "<Brand> (custom)",
+            "sourceVisibility": "local",
+            "trees": [
+              {
+                "entries": [
+                  {
+                    "mode": "read",
+                    "path": "SKILL.md",
+                    "sha256": "<sha:2>",
+                    "size": 86,
+                  },
+                ],
+                "provider": "codex",
+                "rootName": "release-notes",
+                "runtimeKind": "standalone_skill",
+              },
+            ],
+          },
+        ],
+        "totalBytes": 172,
+        "totalFiles": 2,
+        "version": 1,
+      },
+      "pipelineContentHash": "<sha:1>",
+      "state": "ready",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "cancel the second analysis",
+  },
+  {
+    "cloud": [],
+    "step": "commit the cancelled analysis",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "dependency-review",
+        "message": "Dependency analysis expired. Run the analysis again.",
+        "retryable": false,
+        "stage": "prepare",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/pipeline-packages/uploads",
+      "PUT /api/v1/pipeline-packages/uploads/upload-1/blobs/<sha:2>",
+      "POST /api/v1/pipeline-packages/uploads/upload-1/commit",
+    ],
+    "step": "commit the clean analysis",
+    "value": {
+      "ok": true,
+      "value": {
+        "capabilityPackage": {
+          "digest": "<digest:1>",
+          "version": 1,
+        },
+        "committedPackageUploadId": "upload-1",
+      },
+    },
+  },
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share it with its package",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Release kit description",
+          "items": [],
+          "name": "Release kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:1>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Release kit description",
+        "distributionMode": "package",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Release kit",
+        "owner": {
+          "id": "account-one",
+          "name": "Account One",
+          "type": "user",
+        },
+        "package": {
+          "digest": "<digest:1>",
+          "environmentRequirements": [],
+          "resources": [
+            {
+              "affectedSteps": [],
+              "displayName": "/release-notes",
+              "fileCount": 1,
+              "id": "9bcf5c3a56dffb42c5bf1314",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+            {
+              "affectedSteps": [],
+              "displayName": "$builtin-app-plugin:release-notes",
+              "fileCount": 1,
+              "id": "a6dd07bbd2aadcda3f5d3158",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+          ],
+          "totalBytes": 172,
+          "totalFiles": 2,
+          "version": 1,
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[]}",
+        "shareScope": "private",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "step": "import readiness of the packaged share",
+    "value": {
+      "collection": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Release kit description",
+          "items": [],
+          "name": "Release kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:1>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Release kit description",
+        "distributionMode": "package",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Release kit",
+        "owner": {
+          "id": "account-one",
+          "name": "Account One",
+          "type": "user",
+        },
+        "package": {
+          "digest": "<digest:1>",
+          "environmentRequirements": [],
+          "resources": [
+            {
+              "affectedSteps": [],
+              "displayName": "/release-notes",
+              "fileCount": 1,
+              "id": "9bcf5c3a56dffb42c5bf1314",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+            {
+              "affectedSteps": [],
+              "displayName": "$builtin-app-plugin:release-notes",
+              "fileCount": 1,
+              "id": "a6dd07bbd2aadcda3f5d3158",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+          ],
+          "totalBytes": 172,
+          "totalFiles": 2,
+          "version": 1,
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[]}",
+        "shareScope": "private",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+      "requirements": [],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+    ],
+    "step": "import readiness when a required MCP server is missing",
+    "value": {
+      "collection": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Release kit description",
+          "items": [],
+          "name": "Release kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:1>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Release kit description",
+        "distributionMode": "package",
+        "id": "shared-needs-mcp",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Release kit",
+        "owner": {
+          "id": "account-one",
+          "name": "Account One",
+          "type": "user",
+        },
+        "package": {
+          "digest": "<digest:2>",
+          "environmentRequirements": [
+            {
+              "affectedSteps": [],
+              "displayName": "Linear",
+              "id": "mcp-linear",
+              "kind": "mcp",
+              "required": true,
+              "setupHint": "Connect the Linear MCP server.",
+            },
+          ],
+          "resources": [
+            {
+              "affectedSteps": [],
+              "displayName": "/release-notes",
+              "fileCount": 1,
+              "id": "9bcf5c3a56dffb42c5bf1314",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+            {
+              "affectedSteps": [],
+              "displayName": "$builtin-app-plugin:release-notes",
+              "fileCount": 1,
+              "id": "a6dd07bbd2aadcda3f5d3158",
+              "kind": "standalone_skill",
+              "sourceLabel": "<Brand> (custom)",
+              "totalBytes": 86,
+            },
+          ],
+          "totalBytes": 172,
+          "totalFiles": 2,
+          "version": 1,
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[]}",
+        "shareScope": "private",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+      "requirements": [
+        {
+          "affectedSteps": [],
+          "detail": "MCP server is not installed.",
+          "displayName": "Linear",
+          "id": "mcp-linear",
+          "kind": "mcp",
+          "required": true,
+          "setupHint": "Connect the Linear MCP server.",
+          "status": "missing",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-missing",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 404: Collection not found.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 404: Collection not found.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "import readiness of a missing share",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+      "GET /api/v1/collections/shared-needs-mcp/package?expectedPackageDigest=pp%3Av1%3AHeZkHpxTXDARAob7z-tatqfy0f-u03n5AXJZd4OV28M",
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+      "GET /api/v1/collections/shared-needs-mcp/package/blobs/<sha:2>?expectedPackageDigest=pp%3Av1%3AHeZkHpxTXDARAob7z-tatqfy0f-u03n5AXJZd4OV28M",
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+      "GET /api/v1/<brand-api>/collections/shared-needs-mcp",
+    ],
+    "step": "install into a new collection",
+    "subscriptions": [
+      "POST /api/v1/shared-item-subscriptions/batch",
+      "  upsert collection:shared:shared-needs-mcp hash=<sha:1>",
+    ],
+    "value": {
+      "collection": {
+        "createdAt": "<time>",
+        "description": "From a share",
+        "id": "<uuid:5>",
+        "mcpServers": [],
+        "name": "Installed kit",
+        "plugins": [],
+        "revision": "<uuid:4>",
+        "sharedSource": {
+          "contentHash": "<sha:1>",
+          "fetchedAt": "2026-11-01T00:00:00.000Z",
+          "remoteId": "shared-needs-mcp",
+        },
+        "skills": [
+          {
+            "skillName": "release-notes",
+            "sourceId": "custom:app",
+          },
+        ],
+        "updatedAt": "<time>",
+      },
+      "installedSkills": [
+        {
+          "localName": "release-notes",
+          "name": "release-notes",
+          "resourceId": "a6dd07bbd2aadcda3f5d3158",
+        },
+        {
+          "localName": "release-notes",
+          "name": "release-notes",
+          "resourceId": "9bcf5c3a56dffb42c5bf1314",
+        },
+      ],
+      "keptLocalFiles": [],
+      "mcpServerRefs": [],
+      "supportingFileCount": 0,
+      "uninstalledResourceLabels": [],
+      "unmetRequirements": [
+        {
+          "affectedSteps": [],
+          "displayName": "Linear",
+          "id": "mcp-linear",
+          "kind": "mcp",
+          "required": true,
+          "setupHint": "Connect the Linear MCP server.",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [],
+    "step": "the installed collection is listed",
+    "value": [
+      {
+        "description": "Release kit description",
+        "hasExistingShare": true,
+        "id": "<uuid:6>",
+        "mcpServerCount": 0,
+        "name": "Release kit",
+        "pluginCount": 0,
+        "remote": {
+          "accountId": "account-one",
+          "contentHash": "<sha:1>",
+          "remoteId": "shared-1",
+          "shareScope": "private",
+          "sharedAt": "2026-11-01T00:00:00.000Z",
+        },
+        "revision": "<uuid:7>",
+        "skillCount": 1,
+        "updatedAt": "<time>",
+      },
+      {
+        "description": "Deploy kit description",
+        "hasExistingShare": false,
+        "id": "<uuid:8>",
+        "mcpServerCount": 0,
+        "name": "Deploy kit",
+        "pluginCount": 0,
+        "revision": "<uuid:9>",
+        "skillCount": 1,
+        "updatedAt": "<time>",
+      },
+      {
+        "description": "From a share",
+        "hasExistingShare": false,
+        "hasSharedSource": true,
+        "id": "<uuid:5>",
+        "mcpServerCount": 0,
+        "name": "Installed kit",
+        "pluginCount": 0,
+        "revision": "<uuid:4>",
+        "sharedSource": {
+          "contentHash": "<sha:1>",
+          "remoteId": "shared-needs-mcp",
+        },
+        "skillCount": 1,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "GET /api/v1/collections/shared-1/package?expectedPackageDigest=pp%3Av1%3AFTlnVLyt6kFKHnVqTpFYejJ2Fwl3-x9entYAsg77Dow",
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "GET /api/v1/collections/shared-1/package/blobs/<sha:2>?expectedPackageDigest=pp%3Av1%3AFTlnVLyt6kFKHnVqTpFYejJ2Fwl3-x9entYAsg77Dow",
+    ],
+    "step": "install into an existing collection",
+    "value": {
+      "collection": {
+        "createdAt": "<time>",
+        "description": "Deploy kit description",
+        "id": "<uuid:8>",
+        "mcpServers": [],
+        "name": "Deploy kit",
+        "plugins": [],
+        "revision": "<uuid:10>",
+        "skills": [
+          {
+            "skillName": "deploy-keys",
+            "sourceId": "custom:app",
+          },
+          {
+            "skillName": "release-notes",
+            "sourceId": "custom:app",
+          },
+        ],
+        "updatedAt": "<time>",
+      },
+      "installedSkills": [
+        {
+          "localName": "release-notes",
+          "name": "release-notes",
+          "resourceId": "a6dd07bbd2aadcda3f5d3158",
+        },
+        {
+          "localName": "release-notes",
+          "name": "release-notes",
+          "resourceId": "9bcf5c3a56dffb42c5bf1314",
+        },
+      ],
+      "keptLocalFiles": [],
+      "mcpServerRefs": [],
+      "supportingFileCount": 0,
+      "uninstalledResourceLabels": [],
+      "unmetRequirements": [],
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Specify an existing collection or a new collection, exclusively.",
+      },
+      "thrown": {
+        "message": "Specify an existing collection or a new collection, exclusively.",
+        "name": "Error",
+      },
+    },
+    "step": "install naming both a new and an existing collection",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Specify an existing collection or a new collection, exclusively.",
+      },
+      "thrown": {
+        "message": "Specify an existing collection or a new collection, exclusively.",
+        "name": "Error",
+      },
+    },
+    "step": "install naming neither",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection install origin does not match the package.",
+      },
+      "thrown": {
+        "message": "Collection install origin does not match the package.",
+        "name": "Error",
+      },
+    },
+    "step": "install whose new collection names another origin",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection not found",
+      },
+      "thrown": {
+        "message": "Collection not found",
+        "name": "Error",
+      },
+    },
+    "step": "install into a missing collection",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "GET /api/v1/collections/shared-1/package?expectedPackageDigest=pp%3Av1%3AHeZkHpxTXDARAob7z-tatqfy0f-u03n5AXJZd4OV28M",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 409: The package changed.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 409: The package changed.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "install a package the share no longer carries",
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default hosted calls without the collections capability 1`] = `
+[
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "list",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "get",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "step": "create",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Sharing is unavailable for this item.",
+        "retryable": false,
+        "stage": "access",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "step": "update",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Sharing is unavailable for this item.",
+        "retryable": false,
+        "stage": "access",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "delete",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "publish",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "revoke",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: <Brand> Cloud does not support collections-crud-v1.",
+      },
+      "thrown": {
+        "code": "unsupported-capability",
+        "message": "<Brand> Cloud does not support collections-crud-v1.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "import readiness",
+  },
+  {
+    "cloud": [
+      "GET /.well-known/<brand>",
+    ],
+    "step": "package commit",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Sharing is unavailable for this item.",
+        "retryable": false,
+        "stage": "prepare",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default hosted sharing: create, list, get, update, publish, revoke, delete 1`] = `
+[
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share privately from a local collection",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Release kit description",
+          "items": [
+            {
+              "skill_name": "changelog",
+              "source": {
+                "id": "examples",
+                "type": "builtin",
+              },
+              "type": "skill",
+            },
+          ],
+          "name": "Release kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:1>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Release kit description",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 1,
+        },
+        "name": "Release kit",
+        "owner": {
+          "id": "account-one",
+          "name": "Account One",
+          "type": "user",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[{"type":"skill","source":{"type":"builtin","id":"examples"},"skill_name":"changelog"}]}",
+        "shareScope": "private",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [],
+    "step": "the local collection now links the share",
+    "value": {
+      "createdAt": "<time>",
+      "description": "Release kit description",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Release kit",
+      "plugins": [],
+      "remote": {
+        "accountId": "account-one",
+        "contentHash": "<sha:1>",
+        "remoteId": "shared-1",
+        "shareScope": "private",
+        "sharedAt": "2026-11-01T00:00:00.000Z",
+      },
+      "revision": "<uuid:1>",
+      "skills": [
+        {
+          "skillName": "release-notes",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "share a collection holding MCP servers",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Collections containing MCP servers cannot be shared.",
+        "retryable": false,
+        "stage": "access",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [],
+    "step": "share to a team without a team id",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unknown",
+        "message": "Couldn't share. Try again.",
+        "retryable": false,
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [],
+    "step": "share to an organization without its id",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unknown",
+        "message": "Couldn't share. Try again.",
+        "retryable": false,
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [],
+    "step": "share to a member organization from the Personal context",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Resource unavailable (context-mismatch)",
+        "retryable": false,
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections?shareScope=private",
+      "GET /api/v1/<brand-api>/collections?shareScope=organization&organizationId=33333333-3333-4333-8333-333333333333",
+    ],
+    "step": "list shared collections",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Release kit description",
+          "id": "shared-1",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 1,
+          },
+          "name": "Release kit",
+          "owner": {
+            "id": "account-one",
+            "name": "Account One",
+            "type": "user",
+          },
+          "publicShare": null,
+          "shareScope": "private",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections?shareScope=private if-none-match",
+      "GET /api/v1/<brand-api>/collections?shareScope=organization&organizationId=33333333-3333-4333-8333-333333333333 if-none-match",
+    ],
+    "step": "list again with nothing changed",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Release kit description",
+          "id": "shared-1",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 1,
+          },
+          "name": "Release kit",
+          "owner": {
+            "id": "account-one",
+            "name": "Account One",
+            "type": "user",
+          },
+          "publicShare": null,
+          "shareScope": "private",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections?limit=2&q=kit&createdBy=me&shareScope=private",
+      "GET /api/v1/<brand-api>/collections?limit=2&q=kit&createdBy=me&shareScope=organization&organizationId=33333333-3333-4333-8333-333333333333",
+    ],
+    "step": "list with a query and limit",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:1>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Release kit description",
+          "id": "shared-1",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 1,
+          },
+          "name": "Release kit",
+          "owner": {
+            "id": "account-one",
+            "name": "Account One",
+            "type": "user",
+          },
+          "publicShare": null,
+          "shareScope": "private",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "step": "get the share",
+    "value": {
+      "canDelete": true,
+      "canUpdate": true,
+      "collection": {
+        "description": "Release kit description",
+        "items": [
+          {
+            "skill_name": "changelog",
+            "source": {
+              "id": "examples",
+              "type": "builtin",
+            },
+            "type": "skill",
+          },
+        ],
+        "name": "Release kit",
+        "version": 1,
+      },
+      "contentHash": "<sha:1>",
+      "createdAt": "2026-11-01T00:00:00.000Z",
+      "createdBy": {
+        "email": null,
+        "id": "account-one",
+        "name": "Account One",
+      },
+      "customSkills": [],
+      "description": "Release kit description",
+      "id": "shared-1",
+      "itemCounts": {
+        "customSkills": 0,
+        "plugins": 0,
+        "skills": 1,
+      },
+      "name": "Release kit",
+      "owner": {
+        "id": "account-one",
+        "name": "Account One",
+        "type": "user",
+      },
+      "publicShare": null,
+      "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[{"type":"skill","source":{"type":"builtin","id":"examples"},"skill_name":"changelog"}]}",
+      "shareScope": "private",
+      "updatedAt": "2026-11-01T00:00:00.000Z",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-missing",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 404: Collection not found.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 404: Collection not found.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "get a missing share",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-foreign-org",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "ResourceContextUnavailableError: Resource unavailable (access-removed)",
+      },
+      "thrown": {
+        "message": "Resource unavailable (access-removed)",
+        "name": "ResourceContextUnavailableError",
+        "reason": "access-removed",
+      },
+    },
+    "step": "get a share owned by an organization the account is not in",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-other-user",
+    ],
+    "step": "get a share another person owns",
+    "value": {
+      "canDelete": false,
+      "canUpdate": false,
+      "collection": {
+        "description": "",
+        "items": [],
+        "name": "Foreign shared-other-user",
+        "version": 1,
+      },
+      "contentHash": "<sha:2>",
+      "createdAt": "2026-11-01T00:00:00.000Z",
+      "createdBy": {
+        "email": null,
+        "id": "someone-else",
+        "name": "Someone Else",
+      },
+      "customSkills": [],
+      "description": "",
+      "id": "shared-other-user",
+      "itemCounts": {
+        "customSkills": 0,
+        "plugins": 0,
+        "skills": 0,
+      },
+      "name": "Foreign shared-other-user",
+      "owner": {
+        "id": "someone-else",
+        "name": "Someone Else",
+        "type": "user",
+      },
+      "publicShare": null,
+      "rawCollection": "{"version":1,"name":"Foreign shared-other-user","description":"","items":[]}",
+      "shareScope": "private",
+      "updatedAt": "2026-11-01T00:00:00.000Z",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "PUT /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "step": "update at the current content hash",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Release kit description",
+          "items": [],
+          "name": "Release kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:3>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Release kit description",
+        "id": "shared-1",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Release kit",
+        "owner": {
+          "id": "account-one",
+          "name": "Account One",
+          "type": "user",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Release kit","description":"Release kit description","items":[]}",
+        "shareScope": "private",
+        "updatedAt": "2026-11-02T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "PUT /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "step": "update at a stale content hash",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "httpStatus": 409,
+        "kind": "conflict",
+        "message": "The collection changed since you loaded it.",
+        "retryable": false,
+        "serverCode": "conflict",
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-other-user",
+      "PUT /api/v1/<brand-api>/collections/shared-other-user",
+    ],
+    "step": "update a share another person owns",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "httpStatus": 403,
+        "kind": "permission",
+        "message": "You cannot change this collection.",
+        "retryable": false,
+        "serverCode": "forbidden",
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [],
+    "step": "the local link after the update",
+    "value": [
+      {
+        "description": "Release kit description",
+        "hasExistingShare": true,
+        "id": "<uuid:2>",
+        "mcpServerCount": 0,
+        "name": "Release kit",
+        "pluginCount": 0,
+        "remote": {
+          "accountId": "account-one",
+          "contentHash": "<sha:3>",
+          "remoteId": "shared-1",
+          "shareScope": "private",
+          "sharedAt": "2026-11-02T00:00:00.000Z",
+        },
+        "revision": "<uuid:3>",
+        "skillCount": 1,
+        "updatedAt": "<time>",
+      },
+      {
+        "description": "Connected kit description",
+        "hasExistingShare": false,
+        "id": "<uuid:4>",
+        "mcpServerCount": 1,
+        "name": "Connected kit",
+        "pluginCount": 0,
+        "revision": "<uuid:5>",
+        "skillCount": 0,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "POST /api/v1/<brand-api>/collections/shared-1/public-share",
+    ],
+    "step": "publish a public link",
+    "value": {
+      "createdAt": "2026-11-01T00:00:00.000Z",
+      "externalId": "pub-shared-1",
+      "pinnedContentHash": "<sha:3>",
+      "sharePath": "/share/collections/pub-shared-1",
+      "upToDate": true,
+      "updatedAt": "2026-11-01T00:00:00.000Z",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-other-user",
+      "POST /api/v1/<brand-api>/collections/shared-other-user/public-share",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 403: Only the owner can publish this collection.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 403: Only the owner can publish this collection.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "publish a share another person owns",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "DELETE /api/v1/<brand-api>/collections/shared-1/public-share",
+    ],
+    "step": "revoke the public link",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-missing",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 404: Collection not found.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 404: Collection not found.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "revoke a missing share",
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+      "DELETE /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "step": "delete the share",
+  },
+  {
+    "cloud": [],
+    "step": "the local link is cleared",
+    "value": {
+      "createdAt": "<time>",
+      "description": "Release kit description",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Release kit",
+      "plugins": [],
+      "revision": "<uuid:6>",
+      "skills": [
+        {
+          "skillName": "release-notes",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-1",
+    ],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "<Brand>CloudClientError: HTTP 404: Collection not found.",
+      },
+      "thrown": {
+        "code": "http-error",
+        "message": "HTTP 404: Collection not found.",
+        "name": "<Brand>CloudClientError",
+      },
+    },
+    "step": "delete a missing share",
+  },
+  {
+    "cloud": [],
+    "result": {
+      "kind": "organization",
+      "organizationId": "11111111-1111-4111-8111-111111111111",
+    },
+    "step": "switch to the organization context",
+  },
+  {
+    "cloud": [
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share to the member organization",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Org kit description",
+          "items": [],
+          "name": "Org kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:4>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Org kit description",
+        "id": "shared-2",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Org kit",
+        "owner": {
+          "id": "11111111-1111-4111-8111-111111111111",
+          "name": "Org",
+          "type": "organization",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Org kit","description":"Org kit description","items":[]}",
+        "shareScope": "organization",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [],
+    "step": "share to an organization the account is not in",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Resource unavailable (access-removed)",
+        "retryable": false,
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/teams",
+      "POST /api/v1/<brand-api>/collections",
+    ],
+    "step": "share to a team",
+    "value": {
+      "ok": true,
+      "value": {
+        "canDelete": true,
+        "canUpdate": true,
+        "collection": {
+          "description": "Team kit description",
+          "items": [],
+          "name": "Team kit",
+          "version": 1,
+        },
+        "contentHash": "<sha:5>",
+        "createdAt": "2026-11-01T00:00:00.000Z",
+        "createdBy": {
+          "email": null,
+          "id": "account-one",
+          "name": "Account One",
+        },
+        "customSkills": [],
+        "description": "Team kit description",
+        "id": "shared-3",
+        "itemCounts": {
+          "customSkills": 0,
+          "plugins": 0,
+          "skills": 0,
+        },
+        "name": "Team kit",
+        "owner": {
+          "id": "44444444-4444-4444-8444-444444444444",
+          "name": "Release team",
+          "organization": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Org 1111",
+          },
+          "type": "team",
+        },
+        "publicShare": null,
+        "rawCollection": "{"version":1,"name":"Team kit","description":"Team kit description","items":[]}",
+        "shareScope": "team",
+        "updatedAt": "2026-11-01T00:00:00.000Z",
+      },
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections?shareScope=private",
+      "GET /api/v1/<brand-api>/collections?shareScope=organization&organizationId=11111111-1111-4111-8111-111111111111",
+    ],
+    "step": "list in the organization context",
+    "value": {
+      "collections": [
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:4>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Org kit description",
+          "id": "shared-2",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 0,
+          },
+          "name": "Org kit",
+          "owner": {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Org",
+            "type": "organization",
+          },
+          "publicShare": null,
+          "shareScope": "organization",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+        {
+          "canDelete": true,
+          "canUpdate": true,
+          "contentHash": "<sha:5>",
+          "createdAt": "2026-11-01T00:00:00.000Z",
+          "createdBy": {
+            "email": null,
+            "id": "account-one",
+            "name": "Account One",
+          },
+          "description": "Team kit description",
+          "id": "shared-3",
+          "itemCounts": {
+            "customSkills": 0,
+            "plugins": 0,
+            "skills": 0,
+          },
+          "name": "Team kit",
+          "owner": {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "name": "Release team",
+            "organization": {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "Org 1111",
+            },
+            "type": "team",
+          },
+          "publicShare": null,
+          "shareScope": "team",
+          "updatedAt": "2026-11-01T00:00:00.000Z",
+        },
+      ],
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-other-user",
+    ],
+    "step": "get a personal share from the organization context",
+    "value": {
+      "canDelete": false,
+      "canUpdate": false,
+      "collection": {
+        "description": "",
+        "items": [],
+        "name": "Foreign shared-other-user",
+        "version": 1,
+      },
+      "contentHash": "<sha:2>",
+      "createdAt": "2026-11-01T00:00:00.000Z",
+      "createdBy": {
+        "email": null,
+        "id": "someone-else",
+        "name": "Someone Else",
+      },
+      "customSkills": [],
+      "description": "",
+      "id": "shared-other-user",
+      "itemCounts": {
+        "customSkills": 0,
+        "plugins": 0,
+        "skills": 0,
+      },
+      "name": "Foreign shared-other-user",
+      "owner": {
+        "id": "someone-else",
+        "name": "Someone Else",
+        "type": "user",
+      },
+      "publicShare": null,
+      "rawCollection": "{"version":1,"name":"Foreign shared-other-user","description":"","items":[]}",
+      "shareScope": "private",
+      "updatedAt": "2026-11-01T00:00:00.000Z",
+    },
+  },
+  {
+    "cloud": [
+      "GET /api/v1/<brand-api>/collections/shared-2",
+    ],
+    "step": "move the organization share to the personal scope",
+    "value": {
+      "failure": {
+        "commitState": "not-committed",
+        "kind": "unavailable",
+        "message": "Resource unavailable (unsupported-target)",
+        "retryable": false,
+        "stage": "publish",
+        "version": 1,
+      },
+      "ok": false,
+    },
+  },
+]
+`;
+
+exports[`with organization projects on, the unconfigured default local collections: save, index, load, revisions, delete, duplicate 1`] = `
+[
+  {
+    "cloud": [],
+    "step": "save a new collection",
+    "value": {
+      "createdAt": "<time>",
+      "description": "For releases",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Release kit",
+      "plugins": [
+        {
+          "marketplaceId": "local-tools",
+          "pluginName": "notes",
+        },
+      ],
+      "revision": "<uuid:1>",
+      "skills": [
+        {
+          "skillName": "release-notes",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection name is required",
+      },
+      "thrown": {
+        "message": "Collection name is required",
+        "name": "Error",
+      },
+    },
+    "step": "save without a name",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Invalid skill reference in Collection",
+      },
+      "thrown": {
+        "message": "Invalid skill reference in Collection",
+        "name": "Error",
+      },
+    },
+    "step": "save an invalid skill reference",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Invalid Collection id: ../escape",
+      },
+      "thrown": {
+        "message": "Invalid Collection id: ../escape",
+        "name": "Error",
+      },
+    },
+    "step": "save an unsafe id",
+  },
+  {
+    "cloud": [],
+    "step": "load the index",
+    "value": [
+      {
+        "description": "For releases",
+        "hasExistingShare": false,
+        "id": "<uuid:2>",
+        "mcpServerCount": 0,
+        "name": "Release kit",
+        "pluginCount": 1,
+        "revision": "<uuid:1>",
+        "skillCount": 1,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+  {
+    "cloud": [],
+    "step": "load the collection",
+    "value": {
+      "createdAt": "<time>",
+      "description": "For releases",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Release kit",
+      "plugins": [
+        {
+          "marketplaceId": "local-tools",
+          "pluginName": "notes",
+        },
+      ],
+      "revision": "<uuid:1>",
+      "skills": [
+        {
+          "skillName": "release-notes",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "step": "load a missing collection",
+    "value": null,
+  },
+  {
+    "cloud": [],
+    "step": "save an edit at the read revision",
+    "value": {
+      "createdAt": "<time>",
+      "description": "For releases",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Release kit v2",
+      "plugins": [
+        {
+          "marketplaceId": "local-tools",
+          "pluginName": "notes",
+        },
+      ],
+      "revision": "<uuid:3>",
+      "skills": [
+        {
+          "skillName": "release-notes",
+          "sourceId": "custom:app",
+        },
+      ],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection changed. Reload it before saving.",
+      },
+      "thrown": {
+        "code": "conflict",
+        "message": "Collection changed. Reload it before saving.",
+        "name": "Error",
+      },
+    },
+    "step": "save an edit at a stale revision",
+  },
+  {
+    "cloud": [],
+    "step": "save an edit without a revision",
+    "value": {
+      "createdAt": "<time>",
+      "description": "",
+      "id": "<uuid:2>",
+      "mcpServers": [],
+      "name": "Legacy editor",
+      "plugins": [],
+      "revision": "<uuid:4>",
+      "skills": [],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection not found.",
+      },
+      "thrown": {
+        "code": "not_found",
+        "message": "Collection not found.",
+        "name": "Error",
+      },
+    },
+    "step": "save an edit of a removed row",
+  },
+  {
+    "cloud": [],
+    "step": "duplicate it",
+    "value": {
+      "createdAt": "<time>",
+      "description": "",
+      "id": "<uuid:6>",
+      "mcpServers": [],
+      "name": "Legacy editor copy",
+      "plugins": [],
+      "revision": "<uuid:5>",
+      "skills": [],
+      "updatedAt": "<time>",
+    },
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Collection not found.",
+      },
+      "thrown": {
+        "code": "not_found",
+        "message": "Collection not found.",
+        "name": "Error",
+      },
+    },
+    "step": "duplicate a missing collection",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Invalid Collection id.",
+      },
+      "thrown": {
+        "code": "invalid_payload",
+        "message": "Invalid Collection id.",
+        "name": "Error",
+      },
+    },
+    "step": "duplicate an invalid id",
+  },
+  {
+    "cloud": [],
+    "step": "index after duplicate",
+    "value": [
+      {
+        "description": "",
+        "hasExistingShare": false,
+        "id": "<uuid:2>",
+        "mcpServerCount": 0,
+        "name": "Legacy editor",
+        "pluginCount": 0,
+        "revision": "<uuid:4>",
+        "skillCount": 0,
+        "updatedAt": "<time>",
+      },
+      {
+        "description": "",
+        "hasExistingShare": false,
+        "id": "<uuid:6>",
+        "mcpServerCount": 0,
+        "name": "Legacy editor copy",
+        "pluginCount": 0,
+        "revision": "<uuid:5>",
+        "skillCount": 0,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+  {
+    "cloud": [],
+    "step": "delete it",
+  },
+  {
+    "cloud": [],
+    "step": "delete it again",
+  },
+  {
+    "cloud": [],
+    "rejected": {
+      "renderer": {
+        "appError": "app.unexpected",
+        "legacy": "Error: Invalid Collection id: ../escape",
+      },
+      "thrown": {
+        "message": "Invalid Collection id: ../escape",
+        "name": "Error",
+      },
+    },
+    "step": "delete an unsafe id",
+  },
+  {
+    "cloud": [],
+    "step": "index after delete",
+    "value": [
+      {
+        "description": "",
+        "hasExistingShare": false,
+        "id": "<uuid:6>",
+        "mcpServerCount": 0,
+        "name": "Legacy editor copy",
+        "pluginCount": 0,
+        "revision": "<uuid:5>",
+        "skillCount": 0,
+        "updatedAt": "<time>",
+      },
+    ],
+  },
+]
+`;

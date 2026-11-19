@@ -70,6 +70,7 @@
     "./lib/sidebar-row-selection-gestures": "./src/lib/sidebar-row-selection-gestures.ts",
     "./lib/interrupted-work-copy": "./src/lib/interrupted-work-copy.ts",
     "./lib/shortcuts": "./src/lib/shortcuts.ts",
+    "./lib/token-color": "./src/lib/token-color.ts",
     "./lib/fuzzy-match": "./src/lib/fuzzy-match.ts",
     "./lib/above-browser": "./src/lib/above-browser.ts",
     "./lib/shortcut-platform": "./src/lib/shortcut-platform.ts",

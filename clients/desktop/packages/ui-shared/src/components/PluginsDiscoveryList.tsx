@@ -111,6 +111,12 @@ export interface PluginsEntryStatusBinding {
    * against another desktop. Omit when the scope cannot change.
    */
   readonly removalScope?: string;
+  /**
+   * Identifies the machine and project status changes act on, whatever the
+   * removal consent. A tile's failed status change and its Retry belong to
+   * it and are dropped when it changes. Omit when the scope cannot change.
+   */
+  readonly statusScope?: string;
 }
 
 interface PluginsEntryCardProps {

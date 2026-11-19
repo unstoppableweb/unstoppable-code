@@ -12,6 +12,7 @@ import {
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
+import { PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS } from '@canopy/protocol/pipelines';
 import type {
   PipelinePackageAnalysisBlocker,
   PipelinePackageInvocationDismissal,
@@ -31,7 +32,7 @@ import {
  * the card's headline; several get a count headline with the rows under it.
  * The card offers at most one button, Fix it with AI, which covers every
  * problem. A token that only looked like a command is marked from a link
- * inside its own sentence.
+ * inside its own sentence; when several are, a footer link marks them all.
  *
  * Display + intent only. Dismissing re-runs the main-process analysis, and
  * the hosting dialog rechecks on its own; this component never decides that
@@ -74,6 +75,15 @@ function referenceAriaLabel(
   return dismissal.kind === 'pipeline_reference'
     ? `Mark ${dismissal.token} as not a pipeline`
     : `Share without the child pipeline ${dismissal.token}`;
+}
+
+// One click for the common case of a prompt that mentions many slash-like
+// words. Counts every dismissible row, including rows behind Show all. When
+// the store's limit leaves room for only some, the label says how many.
+function dismissAllLabel(marking: number, total: number): string {
+  return marking === total
+    ? `Mark all ${String(total)} as not commands`
+    : `Mark ${String(marking)} of ${String(total)} as not commands`;
 }
 
 function stepsLabel(count: number): string {
@@ -141,7 +151,10 @@ export function CapabilityPackageProblems({
   const [expanded, setExpanded] = useState(false);
   const dismissedInvocations = dismissedInput ?? [];
   const dismissedReferences = dismissedReferencesInput ?? [];
-  const problems = buildCapabilityPackageProblems(blockers);
+  const problems = buildCapabilityPackageProblems(blockers, {
+    invocationDismissalsFull:
+      dismissedInvocations.length >= PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS,
+  });
   if (
     problems.length === 0 &&
     dismissedInvocations.length === 0 &&
@@ -157,6 +170,27 @@ export function CapabilityPackageProblems({
   const hidden = problems.length - visible.length;
   const [onlyProblem] = problems;
   const single = problems.length === 1 ? onlyProblem : undefined;
+  // Each call is a functional update in the host, so dismissing them in one
+  // handler batches into a single re-analysis.
+  const dismissibleInvocations =
+    onDismiss === undefined
+      ? []
+      : problems.flatMap((problem) =>
+          problem.dismissible && problem.dismissal !== undefined
+            ? [problem.dismissal]
+            : [],
+        );
+  // Main rejects a scope holding more than the limit, which would leave the
+  // dialog failing on every recheck, so queue only what still fits.
+  const dismissRoom = Math.max(
+    0,
+    PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS - dismissedInvocations.length,
+  );
+  const dismissBatch = dismissibleInvocations.slice(0, dismissRoom);
+  const showDismissAll =
+    dismissibleInvocations.length > 1 && dismissBatch.length > 0;
+  const showToggle =
+    (hidden > 0 || expanded) && problems.length > VISIBLE_LIMIT;
 
   const fixWithAI =
     problems.length > 0 && onFixWithAI !== undefined ? (
@@ -256,20 +290,41 @@ export function CapabilityPackageProblems({
         </PackageProblemItems>
       )}
 
-      {(hidden > 0 || expanded) && problems.length > VISIBLE_LIMIT && (
+      {(showToggle || showDismissAll) && (
         <PackageProblemSection small>
-          <Button
-            variant="link"
-            data-testid={`${testIdPrefix}-dependency-problems-show-all`}
-            aria-expanded={expanded}
-            onClick={(): void => {
-              setExpanded((open) => !open);
-            }}
-          >
-            {expanded
-              ? SHOW_FEWER_LABEL
-              : `Show all ${String(problems.length)} problems`}
-          </Button>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            {showToggle && (
+              <Button
+                variant="link"
+                data-testid={`${testIdPrefix}-dependency-problems-show-all`}
+                aria-expanded={expanded}
+                onClick={(): void => {
+                  setExpanded((open) => !open);
+                }}
+              >
+                {expanded
+                  ? SHOW_FEWER_LABEL
+                  : `Show all ${String(problems.length)} problems`}
+              </Button>
+            )}
+            {showDismissAll && onDismiss !== undefined && (
+              <Button
+                variant="link"
+                data-testid={`${testIdPrefix}-dependency-problems-dismiss-all`}
+                disabled={disabled}
+                onClick={(): void => {
+                  for (const dismissal of dismissBatch) {
+                    onDismiss(dismissal);
+                  }
+                }}
+              >
+                {dismissAllLabel(
+                  dismissBatch.length,
+                  dismissibleInvocations.length,
+                )}
+              </Button>
+            )}
+          </div>
         </PackageProblemSection>
       )}
 

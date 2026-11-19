@@ -17,6 +17,7 @@ import {
   isMigrationsDamagedFileName,
 } from './migrations-file-paths';
 import { getMigrationsFilePath } from './paths';
+import { reportStartupStepFailure } from './startup-step';
 import { isErrnoException, isRecord } from './type-guards';
 
 const MIGRATION_STATE_VERSION = 1;
@@ -137,6 +138,13 @@ function unavailable(
       '[migrations] Migration ledger unavailable; skipping gated migrations',
       { reason },
     );
+    // Reported once per ledger path with its closed reason; the source names it.
+    reportStartupStepFailure(
+      reason === 'damaged'
+        ? 'migration.ledger_unavailable.damaged'
+        : 'migration.ledger_unavailable.newer_version',
+      new MigrationLedgerUnavailableError(reason),
+    );
   }
   return new MigrationLedgerUnavailableError(reason);
 }
@@ -155,6 +163,7 @@ async function confirmLastGood(filePath: string, bytes: Buffer): Promise<void> {
       '[migrations] Failed to refresh the migration ledger last-good copy:',
       error,
     );
+    reportStartupStepFailure('migration.ledger_last_good', error);
   }
 }
 

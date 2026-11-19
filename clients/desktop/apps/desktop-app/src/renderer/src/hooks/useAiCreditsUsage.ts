@@ -189,9 +189,15 @@ async function readSnapshot(
       : Promise.resolve<CanopyCloudAiCreditsState | null>(null),
     typeof loadPreferences === 'function'
       ? loadPreferences()
-          .then((prefs) => prefs.aiCreditsRoutingMode ?? 'off')
-          .catch((): AiCreditsRoutingMode => 'off')
-      : Promise.resolve<AiCreditsRoutingMode>('off'),
+          .then(
+            (prefs): AiCreditsRoutingMode | null =>
+              prefs.aiCreditsRoutingMode ?? 'off',
+          )
+          // A failed read is an unknown mode, not `off`: main treats an
+          // unreadable mode as inconclusive (CAN-7062), so the composer keeps
+          // its loading-state lock instead of promising a refusal.
+          .catch((): AiCreditsRoutingMode | null => null)
+      : Promise.resolve<AiCreditsRoutingMode | null>('off'),
   ]);
 
   return {

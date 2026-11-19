@@ -63,6 +63,9 @@
       "path": "./packages/ui-rich"
     },
     {
+      "path": "./apps/core-daemon"
+    },
+    {
       "path": "./apps/desktop-app/tsconfig.node.json"
     },
     {

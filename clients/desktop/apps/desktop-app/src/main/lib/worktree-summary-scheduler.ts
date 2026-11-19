@@ -42,7 +42,6 @@ import {
   readWorktreeSummary,
   readWorktreeSummaryWriteAbortReason,
   writeWorktreeSummarySnapshot,
-  emitWorktreeSummaryPortalDelta,
   type WorktreeSummaryWriteResult,
 } from './worktree-summary-persistence';
 import { getWorkspaceWorktreeRepoDir } from './paths';
@@ -187,7 +186,6 @@ export async function generateDesktopWorktreeSummary(
   signal: AbortSignal,
 ): Promise<SummaryGenerationResult> {
   let emittedGenerating = false;
-  let lastKnownSummary: WorktreeSummaryData | null = null;
 
   try {
     const preferences = await readPreferencesFile();
@@ -212,7 +210,6 @@ export async function generateDesktopWorktreeSummary(
     }
 
     const previousSummary = await readWorktreeSummary(projectId, worktreeId);
-    lastKnownSummary = previousSummary;
     const isFullRefresh =
       mode === 'full' ||
       previousSummary === null ||
@@ -228,14 +225,6 @@ export async function generateDesktopWorktreeSummary(
     );
 
     emitGenerating(projectId, worktreeId, true, NO_WINDOW);
-    if (previousSummary) {
-      emitWorktreeSummaryPortalDelta(
-        projectId,
-        worktreeId,
-        previousSummary,
-        true,
-      );
-    }
     emittedGenerating = true;
 
     const cwd = resolveWorktreeCwd(projectId, worktreeId);
@@ -500,7 +489,6 @@ export async function generateDesktopWorktreeSummary(
     publishWrittenSnapshot(projectId, worktreeId, written);
     if (signal.aborted) return { result: 'cancelled' };
 
-    lastKnownSummary = nextSummary;
     emitUpdated(projectId, worktreeId, nextSummary, NO_WINDOW);
     return {
       result: written.isNewSnapshot ? 'written' : 'unchanged',
@@ -509,22 +497,6 @@ export async function generateDesktopWorktreeSummary(
   } finally {
     if (emittedGenerating) {
       emitGenerating(projectId, worktreeId, false, NO_WINDOW);
-      try {
-        lastKnownSummary =
-          (await readWorktreeSummary(projectId, worktreeId)) ??
-          lastKnownSummary;
-      } catch {
-        // The terminal delta and lock release are best-effort cleanup and must
-        // not be blocked by a transient persistence read failure.
-      }
-      if (lastKnownSummary) {
-        emitWorktreeSummaryPortalDelta(
-          projectId,
-          worktreeId,
-          lastKnownSummary,
-          false,
-        );
-      }
     }
   }
 }

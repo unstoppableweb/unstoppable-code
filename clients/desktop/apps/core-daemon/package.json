@@ -1,0 +1,17 @@
+{
+  "name": "@canopy/core-daemon",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Canopy core daemon executable: the bundled core+worker graph behind the published socket/pipe endpoint.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/main.ts",
+  "dependencies": {
+    "@canopy/copilot-recipient": "workspace:*",
+    "@canopy/code-graph": "workspace:*",
+    "@canopy/core-platform": "workspace:*",
+    "@canopy/core-runtime": "workspace:*",
+    "@canopy/core-transport": "workspace:*",
+    "@canopy/protocol": "workspace:*"
+  }
+}

@@ -1,9 +1,11 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { McpServerIcon } from '../icons/AppIcons';
 import { imageReferrerPolicyFor } from '../lib/first-party-image-referrer';
+import { useLogoOpaqueEdges } from '../lib/logo-edge-opacity';
 import {
   MCP_BRAND_LOGOS,
   MCP_FLOATING_BRAND_LOGOS,
+  tileBrandMark,
 } from '../lib/mcp-brand-logos';
 
 /**
@@ -11,6 +13,13 @@ import {
  * visual weight against either app theme. The half-pixel ring reads as a
  * hairline on Retina displays without changing the avatar's measured size.
  */
+/**
+ * The light plate's fill: the same neutral in both themes (zinc-100), so a
+ * logo reads as it would on a light page. The avatar chrome's hairline ring
+ * keeps it from glowing in light mode.
+ */
+const LOGO_PLATE_CLASSNAME = 'bg-[#f4f4f5]';
+
 const AVATAR_CHROME_CLASSNAME =
   'shadow-sm ring-[length:var(--border-hairline)] ring-line-secondary';
 
@@ -48,11 +57,12 @@ export interface McpServerLogoProps {
   /**
    * Tile shape. `circle` (default) is the avatar language used by chips,
    * pickers, and server lists; `squircle` remains available for square app
-   * marks where a caller explicitly needs it. Callers cannot express this through
+   * marks where a caller explicitly needs it; `tile` is the small rounded
+   * square of the curated plugin logos. Callers cannot express this through
    * `className` — the radius is set here, so a caller-supplied `rounded-*`
    * only ever ties with it.
    */
-  shape?: 'circle' | 'squircle';
+  shape?: 'circle' | 'squircle' | 'tile';
   /**
    * How a resolved logo fills its tile. `cover` (default) crops to fill, which
    * suits the square brand marks the catalogs ship; `contain` letterboxes the
@@ -82,6 +92,12 @@ export interface McpServerLogoProps {
   useRemoteLogo?: (logoUrl: string | undefined) => string | null | undefined;
   /** Host renderer for the active brand mark. Desktop supplies `BrandLogo`. */
   renderBrandMark?: (size: number) => ReactNode;
+  /**
+   * New Customize surfaces only (rows, detail pages, the tile benchmark): set
+   * a remote logo on a theme-neutral light plate so transparent dark art
+   * shows on dark rows. Every other surface keeps the plain image.
+   */
+  plate?: boolean;
 }
 
 /**
@@ -93,6 +109,7 @@ export interface McpServerLogoProps {
  * are host-injected so this component remains pure display code.
  */
 export function McpServerLogo({
+  plate = false,
   curatedKey,
   logoUrl,
   bundledLogo,
@@ -116,14 +133,32 @@ export function McpServerLogo({
         ? MCP_FLOATING_BRAND_LOGOS[curatedKey]
         : MCP_BRAND_LOGOS[curatedKey]
       : undefined;
-  const localLogo = bundledLogo ?? curatedLogo;
+  // A rounded-square tile frames a disc-composed mark with a square instead.
+  const localLogo =
+    shape === 'tile' && (bundledLogo ?? curatedLogo) !== undefined
+      ? tileBrandMark(bundledLogo ?? curatedLogo ?? '')
+      : (bundledLogo ?? curatedLogo);
   // The injected resolver is always called so it may be a React hook, but it
   // receives no URL when a local mark wins and therefore performs no fetch.
   const remoteLogo = useRemoteLogo(
     localLogo === undefined ? logoUrl : undefined,
   );
   const src = localLogo ?? remoteLogo ?? undefined;
-  const radiusClassName = shape === 'squircle' ? 'rounded-xl' : 'rounded-full';
+  const platesEnabled = plate === true;
+  // A logo that fills its own square (a UD tile, a photo avatar) skips the
+  // plate, which would only ring it; only plated surfaces measure.
+  const opaqueEdges = useLogoOpaqueEdges(
+    platesEnabled && localLogo === undefined ? (src ?? undefined) : undefined,
+  );
+  const radiusClassName =
+    shape === 'squircle'
+      ? 'rounded-xl'
+      : shape === 'tile'
+        ? ''
+        : 'rounded-full';
+  // The app-icon corner of a rounded-square tile: 22% of its side, at any
+  // size (New Customize's items; people stay round).
+  const radiusStyle = shape === 'tile' ? { borderRadius: '22%' } : undefined;
   const chromeClassName =
     chrome === 'transparent' ? '' : AVATAR_CHROME_CLASSNAME;
   const backgroundClassName =
@@ -135,7 +170,7 @@ export function McpServerLogo({
     return (
       <span
         className={`flex shrink-0 items-center justify-center ${radiusClassName} ${backgroundClassName} fg-primary ${chromeClassName} ${className}`}
-        style={{ width: size, height: size }}
+        style={{ width: size, height: size, ...radiusStyle }}
       >
         {renderBrandMark(Math.round(size * 0.62))}
       </span>
@@ -145,7 +180,7 @@ export function McpServerLogo({
   const fallbackTile = (
     <span
       className={`flex shrink-0 items-center justify-center ${radiusClassName} ${backgroundClassName} ${chromeClassName} ${className}`}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, ...radiusStyle }}
     >
       {fallback === 'monogram' && letter.length > 0 ? (
         <span
@@ -165,12 +200,41 @@ export function McpServerLogo({
     </span>
   );
   if (!src) return fallbackTile;
+  // New Customize (Sergii's QA): a remote logo sits on a theme-neutral light
+  // plate, so transparent dark artwork (Amazon's black "a") stays visible on
+  // a dark row. Bundled marks carry their own backing, and letters and the
+  // product mark never get one.
+  if (
+    platesEnabled &&
+    !opaqueEdges &&
+    localLogo === undefined &&
+    chrome !== 'transparent'
+  ) {
+    const padding = Math.max(1, Math.round(size * 0.06));
+    return (
+      <McpLogoImage
+        key={src}
+        src={src}
+        size={size - padding * 2}
+        className="shrink-0 object-contain"
+        imgTestId={imgTestId}
+        fallback={fallbackTile}
+        plate={{
+          className: `flex shrink-0 items-center justify-center overflow-hidden ${LOGO_PLATE_CLASSNAME} ${radiusClassName} ${chromeClassName} ${className}`,
+          size,
+          radiusStyle,
+        }}
+      />
+    );
+  }
   return (
     <McpLogoImage
       key={src}
       src={src}
       size={size}
-      className={`shrink-0 ${radiusClassName} ${fit === 'contain' ? 'object-contain' : 'object-cover'} ${chromeClassName} ${className}`}
+      // An opaque logo on a plated surface fills its tile edge to edge.
+      className={`shrink-0 ${radiusClassName} ${fit === 'contain' && !(platesEnabled && opaqueEdges) ? 'object-contain' : 'object-cover'} ${chromeClassName} ${className}`}
+      radiusStyle={radiusStyle}
       imgTestId={imgTestId}
       fallback={fallbackTile}
     />
@@ -183,16 +247,26 @@ function McpLogoImage({
   className,
   imgTestId,
   fallback,
+  plate,
+  radiusStyle,
 }: {
   src: string;
   size: number;
   className: string;
   imgTestId?: string;
   fallback: JSX.Element;
+  /** The light plate a remote logo sits on; a broken image drops it too. */
+  plate?: {
+    readonly className: string;
+    readonly size: number;
+    readonly radiusStyle?: { readonly borderRadius: string };
+  };
+  /** A rounded-square tile's corner, for an unplated image. */
+  radiusStyle?: { readonly borderRadius: string };
 }): JSX.Element {
   const [broken, setBroken] = useState(false);
   if (broken) return fallback;
-  return (
+  const image = (
     <img
       src={src}
       alt=""
@@ -201,9 +275,19 @@ function McpLogoImage({
       decoding="async"
       referrerPolicy={imageReferrerPolicyFor(src)}
       onError={() => setBroken(true)}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, ...radiusStyle }}
       className={className}
       data-testid={imgTestId}
     />
+  );
+  if (plate === undefined) return image;
+  return (
+    <span
+      data-logo-plate=""
+      className={plate.className}
+      style={{ width: plate.size, height: plate.size, ...plate.radiusStyle }}
+    >
+      {image}
+    </span>
   );
 }

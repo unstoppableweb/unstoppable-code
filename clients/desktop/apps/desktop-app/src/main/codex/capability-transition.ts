@@ -14,7 +14,12 @@ import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   isOllamaServerUnavailableError,
 } from '@canopy/desktop-shared/types';
-import { codexApprovalPolicyFor, codexSandboxModeFor } from './approval-policy';
+import {
+  codexApprovalPolicyFor,
+  codexCanopyPermissionProfiles,
+  codexDefaultPermissionsFor,
+  codexThreadSandboxFields,
+} from './approval-policy';
 import {
   createCodexCapabilitySnapshotId,
   loadCodexThreadSeedItemsWithLoadCount,
@@ -70,6 +75,25 @@ function appendMcpDiscoveryInstructions(
     '',
     'MCP resource and resource-template listings are not complete server inventories: tool-only plugin MCP servers do not appear in them. Use Codex tool search before concluding that a selected server is unavailable.',
   ].join('\n');
+}
+
+/**
+ * Adds the read-only profile sandboxed chats select (approval-policy.ts),
+ * and names the thread's own sandbox as its default: the profile for a
+ * sandboxed thread, `:danger-full-access` for a Full-access one.
+ */
+function withCanopyPermissionProfiles<T extends Record<string, unknown>>(
+  config: T,
+  approvalMode: ApprovalMode,
+): T {
+  const profiles = codexCanopyPermissionProfiles();
+  if (!profiles) return config;
+  const defaultPermissions = codexDefaultPermissionsFor(approvalMode);
+  return {
+    ...config,
+    permissions: profiles,
+    ...(defaultPermissions ? { default_permissions: defaultPermissions } : {}),
+  };
 }
 
 export interface CodexCapabilityTransition {
@@ -369,12 +393,15 @@ export async function materializeCodexCapabilityTransition(input: {
       params: {
         cwd,
         approvalPolicy: codexApprovalPolicyFor(approvalMode),
-        sandbox: codexSandboxModeFor(approvalMode),
+        ...codexThreadSandboxFields(approvalMode),
         ...(runtimeModel ? { model: runtimeModel } : {}),
-        config: applyCodexMultiAgentConfig(config, {
-          enabled: input.multiAgentEnabled,
-          maxConcurrentSubagents: input.maxConcurrentSubagents,
-        }),
+        config: applyCodexMultiAgentConfig(
+          withCanopyPermissionProfiles(config, approvalMode),
+          {
+            enabled: input.multiAgentEnabled,
+            maxConcurrentSubagents: input.maxConcurrentSubagents,
+          },
+        ),
         developerInstructions: appendMcpDiscoveryInstructions(
           baseInstructions,
           resolved.codexMcpServers,

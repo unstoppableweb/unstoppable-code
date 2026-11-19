@@ -304,9 +304,12 @@ export function PullRequestRepoDetail({
   status,
   hideGitHubLink,
   framelessChecks,
+  reviewNotice,
 }: {
   status: PullRequestSectionPrStatus | null;
   hideGitHubLink?: boolean;
+  /** Host content directly under the Reviews status (the approval notice). */
+  reviewNotice?: ReactNode;
   /**
    * `true` under the desktop frameless (single-section panel) chrome: the
    * checks list renders in plain flow instead of the capped scroll area.
@@ -418,6 +421,7 @@ export function PullRequestRepoDetail({
           isMergeReady={s.isMergeReady === true}
         />
       </Stack>
+      {reviewNotice}
 
       {/* Labels */}
       {s.labels && s.labels.length > 0 && (
@@ -472,6 +476,11 @@ export interface PullRequestSectionBodyProps {
   readonly children?: ReactNode;
   /** Opt-in extension spacing, including its initial inset when no PR body is visible. */
   readonly extensionGap?: SpaceRole;
+  /**
+   * Content under one repository's Reviews status (the review approval
+   * "Link GitHub" notice). The body stays display-only: the host decides.
+   */
+  readonly renderReviewNotice?: (repo: PullRequestSectionRepo) => ReactNode;
 }
 
 const EXTENSION_INITIAL_INSET_CLASS: Readonly<Record<SpaceRole, string>> = {
@@ -492,6 +501,7 @@ export function PullRequestSectionBody({
   framelessChecks,
   children,
   extensionGap,
+  renderReviewNotice,
 }: PullRequestSectionBodyProps): JSX.Element {
   const [expandedRepos, setExpandedRepos] = useState<Set<string>>(new Set());
 
@@ -616,6 +626,7 @@ export function PullRequestSectionBody({
                       status={repo.status}
                       hideGitHubLink
                       framelessChecks={framelessChecks}
+                      reviewNotice={renderReviewNotice?.(repo)}
                     />
                   </div>
                 )}
@@ -682,6 +693,7 @@ export function PullRequestSectionBody({
                     status={repo.status}
                     hideGitHubLink
                     framelessChecks={framelessChecks}
+                    reviewNotice={renderReviewNotice?.(repo)}
                   />
                 </div>
               )}
@@ -692,6 +704,9 @@ export function PullRequestSectionBody({
         <PullRequestRepoDetail
           status={repos[0]?.status ?? null}
           framelessChecks={framelessChecks}
+          reviewNotice={
+            repos[0] === undefined ? undefined : renderReviewNotice?.(repos[0])
+          }
         />
       ) : null}
       {children}

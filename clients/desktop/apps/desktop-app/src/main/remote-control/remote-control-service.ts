@@ -1,4 +1,5 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import type { LegacyPortalOptInRead } from './legacy-portal-opt-in';
 import type {
   PairingTelemetryAttempt,
   PairingTelemetryRecorder,
@@ -30,6 +31,7 @@ import type {
   RemoteControlPairingRequestOutcome,
   RemoteControlPairingWindowCloseReason,
   RemoteControlRespondToPairingRequest,
+  RemoteControlInventoryDeleteStatus,
   RemoteControlState,
   RemoteControlUpdateHostRequest,
   RemoteIncomingPairing,
@@ -47,10 +49,8 @@ import {
   remoteImageForLocalOpen,
 } from './client/remote-file-opens';
 import type { RemoteControlWindows } from './client/remote-windows';
-import type { RemoteControlFeatureState } from './availability';
 import { encodeBase64Url, type DeviceKeyPair } from './crypto/device-key';
 import type {
-  RemoteControlAvailability,
   RemoteControlDiagnostic,
   RemoteRelayStoppedDiagnostic,
 } from './diagnostics';
@@ -77,6 +77,7 @@ import {
   upsertPairedDevice,
   type PairedDevice,
   type RemoteAccessStore,
+  type RemoteControlFile,
 } from './remote-access-store';
 import {
   HelloParamsSchema,
@@ -127,20 +128,13 @@ export interface RemoteRelayFactoryOptions {
   onDiagnostic: (diagnostic: RelayClientDiagnostic) => void;
 }
 
-/**
- * The Portal opt-in as its state store reads it. `reliable: false` means the
- * store could not be read with confidence, so the migration waits.
- */
-export type PortalOptInRead =
-  | { reliable: true; active: boolean }
-  | { reliable: false };
-
-/** The Portal lifecycle the single Remote Control opt-in coordinates. */
-export interface RemotePortalPort {
-  /** Whether the Portal feature flag is on now. */
-  isEnabled(): boolean;
-  start(): Promise<void>;
-  stop(): Promise<void>;
+/** See {@link RemoteControlServiceDeps.onInventorySyncSettingChanged}. */
+export interface RemoteInventorySyncChange {
+  cause: 'loaded' | 'set';
+  allowIncoming: boolean;
+  inventorySyncEnabled: boolean;
+  /** The accounts whose documents still need deleting; empty for none. */
+  deletePendingForUserIds: readonly string[];
 }
 
 export interface RemoteControlServiceDeps {
@@ -152,19 +146,6 @@ export interface RemoteControlServiceDeps {
   store: RemoteAccessStore;
   createRelay: (options: RemoteRelayFactoryOptions) => RemoteRelay;
   fetchToken: (deviceId: string) => Promise<DeviceRelayTokenResponse>;
-  isFeatureEnabled: () => boolean;
-  /**
-   * `isFeatureEnabled`, with whether a "no" is transient: the flag has no
-   * live value right now. A running relay then stays up for a while (see
-   * `transientStopHoldMs`) instead of ending every session. Absent, every
-   * "no" stops the relay at once.
-   */
-  featureState?: () => RemoteControlFeatureState;
-  /**
-   * Why `isFeatureEnabled` answers as it does, for the diagnostic recorded
-   * when it stops the relay.
-   */
-  describeAvailability?: () => RemoteControlAvailability;
   /**
    * A stable key for the signed-in account, or null when signed out. The
    * relay and every session belong to the account they started under.
@@ -242,14 +223,18 @@ export interface RemoteControlServiceDeps {
   }) => AccountProxySignInListener;
   windows: RemoteControlWindows;
   broadcastState: (state: RemoteControlState) => void;
+  /**
+   * The inventory sync setting loaded or changed (CAN-5986). Main drives the
+   * inventory service from it: `loaded` restores a pending delete, `set`
+   * starts the opt-out or opt-in the user confirmed.
+   */
+  onInventorySyncSettingChanged?: (change: RemoteInventorySyncChange) => void;
   broadcastPairingEvent?: (event: RemoteControlPairingEvent) => void;
   /**
-   * Reads the Portal opt-in through the Portal state store's reader, for the
+   * Reads the legacy Portal opt-in from `portal-state.json`, read-only, for the
    * one-time `allowIncoming` migration.
    */
-  readPortalOptIn: () => Promise<PortalOptInRead>;
-  /** Portal sessions the opt-in starts and ends; absent when not wired. */
-  portal?: RemotePortalPort;
+  readLegacyPortalOptIn: () => Promise<LegacyPortalOptInRead>;
   /** The web origin pairing links open; throws when it is not configured. */
   webOrigin: () => string;
   /** How long a pairing link stays valid; tests shorten it. */
@@ -260,11 +245,6 @@ export interface RemoteControlServiceDeps {
   now?: () => number;
   /** How long a discovery request keeps the relay up; tests shorten it. */
   discoveryWindowMs?: number;
-  /**
-   * How long a transient flag change may keep a running relay up before it
-   * stops; tests shorten it.
-   */
-  transientStopHoldMs?: number;
 }
 
 /** The wake-lock holders a host takes; the desktop's wake-lock service. */
@@ -278,20 +258,13 @@ const PAIRING_DECISION_TIMEOUT_MS = 3 * 60_000;
 const PAIRING_WINDOW_MS = 10 * 60_000;
 const PAIRING_SECRET_BYTES = 32;
 const MIGRATION_RETRY_MS = 60_000;
-/**
- * The longest a transient flag change (the flag service initializing, or
- * in an outage without live values) keeps a running relay up. Meanwhile no
- * new session is admitted; when it ends with the flag still off, the relay
- * stops as it would have at once.
- */
-const TRANSIENT_STOP_HOLD_MS = 60_000;
 /** One holder for every hosted session: held while any is live. */
 const HOST_WAKE_LOCK_ID = 'host';
 
 /** What `stopRelay` was asked to stop for; the rest it fills in. */
 type RelayStop = Pick<
   RemoteRelayStoppedDiagnostic,
-  'cause' | 'accountFormChanged' | 'flagStatus' | 'heldMs'
+  'cause' | 'accountFormChanged'
 >;
 
 /** `account` or `key`: how `signedInAccount` identified the account. */
@@ -359,21 +332,112 @@ interface OutgoingPairingEntry {
   committed: boolean;
 }
 
+/** How many accounts' key forms `inventoryAccountKeyForms` keeps. */
+const INVENTORY_ACCOUNT_KEY_FORMS_LIMIT = 10;
+
+/**
+ * Credential digests kept per account, newest first. The server ID names
+ * the account for good, so it is always kept; a digest names one
+ * credential, and matters only for a sign-in that has not resolved its
+ * server ID yet. Three covers a few re-sign-ins or key rotations, so a delete
+ * queued under a recent credential still matches, while repeated sign-ins
+ * can't grow the list, or an opt-out's marker, without bound.
+ */
+const INVENTORY_ACCOUNT_DIGESTS_LIMIT = 3;
+
+/** A credential digest, as `signedInAccountKeys` spells it. */
+function isCredentialDigest(key: string): boolean {
+  return key.startsWith('key:');
+}
+
+/**
+ * One account's forms, newest first: every server ID (one, in practice), its
+ * newest digests, and any digest `pinned` (the pending-delete marker) still
+ * lists, which stays until that delete or an opt-in drops it, so the marker
+ * is always cleared under the forms it was saved with.
+ */
+function capAccountForms(
+  keys: readonly string[],
+  pinned: ReadonlySet<string>,
+): string[] {
+  const newest = keys
+    .filter(isCredentialDigest)
+    .slice(0, INVENTORY_ACCOUNT_DIGESTS_LIMIT);
+  return keys.filter(
+    (key) =>
+      !isCredentialDigest(key) || newest.includes(key) || pinned.has(key),
+  );
+}
+
+/** Every remembered form of the account `signedIn` names, uncapped. */
+function accountKeyForms(
+  forms: ReadonlyArray<readonly string[]>,
+  signedIn: readonly string[],
+): string[] {
+  const same = (keys: readonly string[]): boolean =>
+    keys.some((key) => signedIn.includes(key));
+  return [...new Set([...signedIn, ...forms.filter(same).flat()])];
+}
+
+/**
+ * The key forms of each account seen signed in, newest first, reading the
+ * single key an earlier build wrote as one account.
+ */
+function inventoryKeyForms(
+  file: RemoteControlFile,
+): ReadonlyArray<readonly string[]> {
+  if (file.inventoryAccountKeyForms !== undefined) {
+    return file.inventoryAccountKeyForms;
+  }
+  return file.inventoryLastSignedInAccount === undefined
+    ? []
+    : [[file.inventoryLastSignedInAccount]];
+}
+
+/**
+ * The key forms once `signedIn` (the signed-in account's keys, empty when
+ * signed out) is seen: every remembered account sharing a key with it is
+ * the same account, so their forms merge into one entry, first; the others
+ * follow, up to the limit. `pending`, the pending-delete marker, pins what
+ * it lists: neither cap drops a digest it lists or an account it names.
+ */
+function nextKeyForms(
+  forms: ReadonlyArray<readonly string[]>,
+  signedIn: readonly string[],
+  pending: readonly string[],
+): ReadonlyArray<readonly string[]> {
+  if (signedIn.length === 0) return forms;
+  const pinned = new Set(pending);
+  const same = (keys: readonly string[]): boolean =>
+    keys.some((key) => signedIn.includes(key));
+  const merged = capAccountForms(accountKeyForms(forms, signedIn), pinned);
+  return [merged, ...forms.filter((keys) => !same(keys))].filter(
+    (keys, index) =>
+      index < INVENTORY_ACCOUNT_KEY_FORMS_LIMIT ||
+      keys.some((key) => pinned.has(key)),
+  );
+}
+
+function sameKeyForms(
+  left: ReadonlyArray<readonly string[]>,
+  right: ReadonlyArray<readonly string[]>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (keys, i) =>
+        keys.length === right[i]?.length &&
+        keys.every((key, j) => right[i]?.[j] === key),
+    )
+  );
+}
+
 export class RemoteControlService {
   private relay: RemoteRelay | null = null;
   private sessions: RemoteSessionManager | null = null;
   private relayAccount: string | null = null;
   /** Every key `relayAccount`'s account was known by when last checked. */
   private relayAccountKeys: ReadonlySet<string> = new Set();
-  /**
-   * A transient flag change is holding the running relay up until `until`;
-   * no new session is admitted meanwhile.
-   */
-  private transientHold: {
-    since: number;
-    until: number;
-    timer: ReturnType<typeof setTimeout>;
-  } | null = null;
   private hostWakeLockHeld = false;
   /** When the current relay connection was started. */
   private relayStartedAt = 0;
@@ -413,6 +477,11 @@ export class RemoteControlService {
     allowRemoteUpdates: boolean;
   } = { allowIncoming: false, allowRemoteUpdates: false };
   private lastRemoteUpdatesAllowed = false;
+  /** Whether the first settings read reported the inventory sync setting. */
+  private inventorySyncSettingLoaded = false;
+  private inventoryDeleteStatus: RemoteControlInventoryDeleteStatus = 'idle';
+  /** `inventoryAccountKeyForms` as last read or written. */
+  private inventoryAccountKeyFormsCache: ReadonlyArray<readonly string[]> = [];
   /** Paired controllers' names, for the update notice and status. */
   private controllerNames = new Map<string, string>();
   private pairingWindow: PairingWindow | null = null;
@@ -480,6 +549,20 @@ export class RemoteControlService {
     if (this.disposed) return;
     const settings = await this.refreshCaches();
     const account = this.deps.signedInAccount();
+    const signedInKeys = this.signedInAccountKeys();
+    if (
+      settings.inventoryLastSignedInAccount !== undefined ||
+      !sameKeyForms(
+        inventoryKeyForms(settings),
+        nextKeyForms(
+          inventoryKeyForms(settings),
+          signedInKeys,
+          settings.inventoryDeletePendingForUserIds ?? [],
+        ),
+      )
+    ) {
+      await this.rememberInventoryAccountKeys(signedInKeys);
+    }
     if (this.relay && this.relayAccount !== account && account !== null) {
       this.adoptSameAccountKey(account);
     }
@@ -496,40 +579,23 @@ export class RemoteControlService {
             },
       );
     }
-    const feature = this.featureState();
-    const featureEnabled = feature.enabled;
-    const needed =
+    const wanted =
       account !== null &&
       (settings.allowIncoming ||
         settings.pairedHosts.length > 0 ||
         this.discoveryUntil > this.now() ||
         this.pairingInProgress());
-    const wanted = featureEnabled && needed;
-    let held = false;
     if (wanted && account !== null && !this.relay) {
       await this.startRelay(account);
     } else if (!wanted && this.relay) {
-      // Only a flag value still settling may hold the relay; Labs off,
-      // sign-out, a live "no" and nothing needing the relay stop it now.
-      held = !featureEnabled && feature.transient && needed && this.holdRelay();
-      if (!held) this.stopRelay(this.unwantedStop(featureEnabled));
+      this.stopRelay({ cause: 'not_wanted' });
     } else if (this.relay) {
       this.relay.announce();
     } else if (!wanted) {
       this.relayStatus = 'stopped';
       this.relayDetail = null;
     }
-    if (!held) this.endTransientHold();
     this.scheduleBroadcast();
-  }
-
-  private featureState(): RemoteControlFeatureState {
-    return (
-      this.deps.featureState?.() ?? {
-        enabled: this.deps.isFeatureEnabled(),
-        transient: false,
-      }
-    );
   }
 
   /**
@@ -551,63 +617,6 @@ export class RemoteControlService {
     });
     this.relayAccount = account;
     this.relayAccountKeys = keys;
-  }
-
-  /**
-   * Keeps the running relay up through a transient flag change, for at most
-   * `transientStopHoldMs` from the first one. False once that has passed.
-   */
-  private holdRelay(): boolean {
-    const now = this.now();
-    if (this.transientHold === null) {
-      const holdMs = this.deps.transientStopHoldMs ?? TRANSIENT_STOP_HOLD_MS;
-      const holdTimer = setTimeout(() => {
-        if (this.transientHold?.timer === holdTimer) {
-          this.transientHold = { ...this.transientHold, until: 0 };
-        }
-        void this.reconcile().catch(() => undefined);
-      }, holdMs);
-      holdTimer.unref?.();
-      this.transientHold = {
-        since: now,
-        until: now + holdMs,
-        timer: holdTimer,
-      };
-      this.deps.log?.('Remote control relay held for a transient flag change', {
-        holdMs,
-      });
-      return true;
-    }
-    return now < this.transientHold.until;
-  }
-
-  private endTransientHold(): void {
-    if (this.transientHold === null) return;
-    clearTimeout(this.transientHold.timer);
-    this.transientHold = null;
-  }
-
-  /** Why a running relay is no longer wanted, for its stop diagnostic. */
-  private unwantedStop(featureEnabled: boolean): RelayStop {
-    if (featureEnabled) return { cause: 'not_wanted' };
-    let availability: RemoteControlAvailability | undefined;
-    try {
-      availability = this.deps.describeAvailability?.();
-    } catch {
-      availability = undefined;
-    }
-    if (availability && !availability.labsEnabled) return { cause: 'labs_off' };
-    const heldMs =
-      this.transientHold === null
-        ? {}
-        : { heldMs: Math.max(0, this.now() - this.transientHold.since) };
-    return availability
-      ? {
-          cause: 'feature_flag',
-          flagStatus: availability.flagStatus,
-          ...heldMs,
-        }
-      : { cause: 'feature_flag', ...heldMs };
   }
 
   /** A finished pairing stays on screen but no longer needs the relay. */
@@ -648,9 +657,9 @@ export class RemoteControlService {
     const settings = await this.deps.store.read();
     if (settings.migratedOptIn === true) return;
     const generation = this.allowIncomingGeneration;
-    let portal: PortalOptInRead;
+    let portal: LegacyPortalOptInRead;
     try {
-      portal = await this.deps.readPortalOptIn();
+      portal = await this.deps.readLegacyPortalOptIn();
     } catch {
       portal = { reliable: false };
     }
@@ -695,6 +704,19 @@ export class RemoteControlService {
       allowIncoming: settings.allowIncoming,
       allowRemoteUpdates: this.remoteUpdatesSetting(settings),
     });
+    this.inventoryAccountKeyFormsCache = inventoryKeyForms(settings);
+    if (!this.inventorySyncSettingLoaded) {
+      // Reuses the read the service makes anyway, so start-up gains no file
+      // read for the inventory gate or a pending delete.
+      this.inventorySyncSettingLoaded = true;
+      this.deps.onInventorySyncSettingChanged?.({
+        cause: 'loaded',
+        allowIncoming: settings.allowIncoming,
+        inventorySyncEnabled: settings.inventorySyncEnabled ?? true,
+        deletePendingForUserIds:
+          settings.inventoryDeletePendingForUserIds ?? [],
+      });
+    }
     this.controllerNames = new Map(
       settings.pairedControllers.map((controller) => [
         controller.deviceId,
@@ -702,6 +724,15 @@ export class RemoteControlService {
       ]),
     );
     return settings;
+  }
+
+  /**
+   * This device's relay id when its key is already loaded, else null. Never
+   * loads or creates the key, so callers cannot make startup touch the OS
+   * keychain; the id appears once the relay has started.
+   */
+  loadedDeviceId(): string | null {
+    return this.identityCache?.deviceId ?? null;
   }
 
   /**
@@ -861,7 +892,6 @@ export class RemoteControlService {
       this.deps.windows.close(deviceId);
     }
     this.connections.clear();
-    this.endTransientHold();
     this.endPairingWindow('disabled');
     for (const session of Array.from(this.hostSessions))
       session.close('shutdown');
@@ -963,7 +993,9 @@ export class RemoteControlService {
       settings.pairedHosts.map((host) => host.deviceId),
     );
     return {
-      available: this.deps.isFeatureEnabled(),
+      // Always on since the Labs switch and its flag retired (CAN-5986);
+      // kept for controllers that still read it.
+      available: true,
       signedIn: this.deps.signedInAccount() !== null,
       relayStatus: this.relayStatus,
       relayDetail: this.relayDetail,
@@ -977,6 +1009,8 @@ export class RemoteControlService {
         : null,
       allowIncoming: settings.allowIncoming,
       allowRemoteUpdates: this.remoteUpdatesSetting(settings),
+      inventorySyncEnabled: settings.inventorySyncEnabled ?? true,
+      inventoryDeleteStatus: this.inventoryDeleteStatus,
       hosts: settings.pairedHosts.map((host) => {
         const connection = this.connections.get(host.deviceId);
         const peer = peers.get(host.deviceId);
@@ -1168,9 +1202,164 @@ export class RemoteControlService {
     return this.snapshot();
   }
 
+  /**
+   * This computer's inventory sync switch (CAN-5986). Turning it off
+   * persists the switch and adds the account whose documents must be
+   * deleted to the pending list, in one write; the inventory service then
+   * deletes them while that account is signed in. Signed out, that is the
+   * last account signed in on this install, so its delete runs at its next
+   * sign-in; with none ever signed in, nothing is added or deleted. Turning
+   * it on drops that same account's pending delete only: another account
+   * confirmed its own, and this account's re-sync does not replace its
+   * documents. Neither direction depends on Allow incoming. A data-sharing
+   * choice, not a grant, so it never reconciles the relay.
+   */
+  async setInventorySyncEnabled(enabled: boolean): Promise<RemoteControlState> {
+    const keys = this.signedInAccountKeys();
+    // `undefined` drops the key when the file is written.
+    const saved = await this.deps.store.update((current) => {
+      // Every form of the account this switch speaks for: the signed-in
+      // one (with any forms remembered for it), or signed out the last one
+      // signed in here. Matching on all of them drops or keeps a marker
+      // whichever form it was saved under.
+      const forms = nextKeyForms(
+        inventoryKeyForms(current),
+        keys,
+        current.inventoryDeletePendingForUserIds ?? [],
+      );
+      const accountKeys = forms[0] ?? [];
+      const stored = current.inventoryDeletePendingForUserIds ?? [];
+      const accountPending = stored.some((key) => accountKeys.includes(key));
+      let next = stored;
+      if (enabled) next = stored.filter((key) => !accountKeys.includes(key));
+      // Every form goes in, so the delete matches at a sign-in that knows
+      // only one of them, even after another account was remembered here.
+      else if (accountKeys.length > 0 && !accountPending)
+        next = [...stored, ...accountKeys];
+      return {
+        ...current,
+        inventorySyncEnabled: enabled,
+        inventoryDeletePendingForUserIds: next.length > 0 ? next : undefined,
+        inventoryAccountKeyForms:
+          forms.length > 0 ? forms.map((form) => [...form]) : undefined,
+        inventoryLastSignedInAccount: undefined,
+      };
+    });
+    this.inventoryAccountKeyFormsCache = inventoryKeyForms(saved);
+    const pending = saved.inventoryDeletePendingForUserIds ?? [];
+    this.inventoryDeleteStatus = pending.length === 0 ? 'idle' : 'pending';
+    this.deps.onInventorySyncSettingChanged?.({
+      cause: 'set',
+      allowIncoming: saved.allowIncoming,
+      inventorySyncEnabled: enabled,
+      deletePendingForUserIds: pending,
+    });
+    this.scheduleBroadcast();
+    return this.snapshot();
+  }
+
+  /**
+   * Records the signed-in account's key forms (`signedInKeys`, the same
+   * source `setInventorySyncEnabled` uses) as the last account signed in on
+   * this install, for an inventory opt-out made while signed out. Called
+   * only when they changed, so a reconcile adds no write otherwise; a
+   * failed write is retried by the next reconcile and never holds the relay
+   * back. It also migrates the single `inventoryLastSignedInAccount` an
+   * earlier build wrote: reconcile calls it while that field is present,
+   * even signed out, and every write drops the field, so the migration is
+   * idempotent and runs until the field is gone.
+   */
+  private async rememberInventoryAccountKeys(
+    signedInKeys: readonly string[],
+  ): Promise<void> {
+    try {
+      const saved = await this.deps.store.update((current) => {
+        const next = nextKeyForms(
+          inventoryKeyForms(current),
+          signedInKeys,
+          current.inventoryDeletePendingForUserIds ?? [],
+        );
+        return {
+          ...current,
+          inventoryAccountKeyForms:
+            next.length > 0 ? next.map((form) => [...form]) : undefined,
+          inventoryLastSignedInAccount: undefined,
+        };
+      });
+      this.inventoryAccountKeyFormsCache = inventoryKeyForms(saved);
+    } catch (error) {
+      this.deps.log?.(
+        'Remote control could not save the signed-in account',
+        error,
+      );
+    }
+  }
+
+  /**
+   * One account's delete succeeded: drop `accountKeys`, every form that
+   * account had when its delete started, from the pending list. Nothing is
+   * read from the current sign-in, which may have changed meanwhile. Other
+   * accounts' pending deletes stay.
+   */
+  async clearInventoryDeletePending(
+    accountKeys: readonly string[],
+  ): Promise<void> {
+    const done = new Set(accountKeys);
+    await this.deps.store.update((current) => {
+      const stored = current.inventoryDeletePendingForUserIds ?? [];
+      if (!stored.some((key) => done.has(key))) return current;
+      const next = stored.filter((key) => !done.has(key));
+      return {
+        ...current,
+        inventoryDeletePendingForUserIds: next.length > 0 ? next : undefined,
+      };
+    });
+  }
+
+  /** The inventory service reports its delete progress for the settings row. */
+  setInventoryDeleteStatus(status: RemoteControlInventoryDeleteStatus): void {
+    if (this.inventoryDeleteStatus === status) return;
+    this.inventoryDeleteStatus = status;
+    this.scheduleBroadcast();
+  }
+
+  /**
+   * The keys a pending inventory delete may be saved under for the
+   * signed-in account: its current forms and, when they share a key with
+   * the remembered account, every form remembered for it, so a marker saved
+   * under the server ID still matches a sign-in that knows only the
+   * digest. Empty when signed out: a delete runs only while signed in.
+   */
+  inventoryAccountKeys(): string[] {
+    const keys = this.signedInAccountKeys();
+    if (keys.length === 0) return [];
+    return [...accountKeyForms(this.inventoryAccountKeyFormsCache, keys)];
+  }
+
+  /**
+   * Every key the signed-in account is known by, the marker's form first,
+   * so a key that changed form between a credential digest and a server ID
+   * still matches its pending delete. Empty when signed out.
+   */
+  signedInAccountKeys(): string[] {
+    const primary = this.deps.signedInAccount();
+    if (primary === null) return [];
+    const others = (this.deps.signedInAccountKeys?.() ?? []).filter(
+      (key) => key !== primary,
+    );
+    return [primary, ...others];
+  }
+
+  /**
+   * Whether a paired device controls this computer right now: one or more
+   * host sessions are open. Chat waits count it as an attached client.
+   */
+  hasConnectedController(): boolean {
+    return this.hostSessions.size > 0;
+  }
+
   async setAllowIncoming(allow: boolean): Promise<RemoteControlState> {
     this.allowIncomingGeneration += 1;
-    const wasAllowed = this.settingsCache.allowIncoming;
     // An explicit choice also settles the one-time Portal migration.
     const saving = this.deps.store.update((current) => ({
       ...current,
@@ -1185,7 +1374,6 @@ export class RemoteControlService {
       this.setSettingsCache({ ...this.settingsCache, allowIncoming: false });
       this.endPairingWindow('disabled');
       this.endAllControl();
-      this.stopPortal();
     }
     try {
       await saving;
@@ -1197,27 +1385,8 @@ export class RemoteControlService {
       }
       this.setSettingsCache({ ...this.settingsCache, allowIncoming: allow });
     }
-    if (allow && !wasAllowed) this.startPortalIfEnabled();
     await this.reconcile();
     return this.snapshot();
-  }
-
-  /** Ends any Portal session; the direct pairings are kept. */
-  private stopPortal(): void {
-    const portal = this.deps.portal;
-    if (!portal) return;
-    void portal.stop().catch((error: unknown) => {
-      this.deps.log?.('Portal could not stop with Remote Control', error);
-    });
-  }
-
-  /** Re-enabling starts Portal only while its own flag is on. */
-  private startPortalIfEnabled(): void {
-    const portal = this.deps.portal;
-    if (!portal || !portal.isEnabled()) return;
-    void portal.start().catch((error: unknown) => {
-      this.deps.log?.('Portal could not start with Remote Control', error);
-    });
   }
 
   async forgetDevice(
@@ -1338,7 +1507,7 @@ export class RemoteControlService {
    * process: disabling Remote Control or restarting the app invalidates it.
    */
   async openPairingWindow(): Promise<RemoteControlOpenPairingWindowResult> {
-    if (!this.deps.isFeatureEnabled() || this.deps.signedInAccount() === null) {
+    if (this.deps.signedInAccount() === null) {
       throw new Error(`${REMOTE_CONTROL_LABEL} is not available.`);
     }
     await this.refreshCaches();
@@ -1421,8 +1590,6 @@ export class RemoteControlService {
     request: HandshakeAdmission,
   ): Promise<SessionGrant | null> {
     if (!this.incomingAllowed()) return null;
-    // The flag may be turning off: keep live sessions, admit no new ones.
-    if (this.transientHold !== null) return null;
     const presence = this.presenceKind(request.peerDeviceId);
     // A relay that authenticates kinds lists every connected peer, so a peer
     // missing from its presence is refused, never read as a legacy desktop.
@@ -1604,11 +1771,6 @@ export class RemoteControlService {
   }
 
   private handleIncomingSession(session: SecureSession): void {
-    // Admitted before the flag started turning off (see `holdRelay`).
-    if (this.transientHold !== null) {
-      session.close('closed');
-      return;
-    }
     if (session.purpose === 'pair') {
       this.handleIncomingPairing(session);
       return;

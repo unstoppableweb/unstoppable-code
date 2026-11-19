@@ -177,6 +177,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     delegationCyclesHistoryCards: 60,
     delegationCycles: 2,
     projectsReloadCycles: 40,
+    ownedAutomations: 770,
+    ownedAutomationListSamples: 3,
+    ownedAutomationWrites: 2,
     delegationCyclesDelegates: 3,
     delegationCyclesChildSteps: 60,
     delegationCyclesChildStepMs: 500,
@@ -356,6 +359,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     delegationCyclesHistoryCards: 300,
     delegationCycles: 4,
     projectsReloadCycles: 120,
+    ownedAutomations: 770,
+    ownedAutomationListSamples: 10,
+    ownedAutomationWrites: 5,
     delegationCyclesDelegates: 4,
     delegationCyclesChildSteps: 80,
     delegationCyclesChildStepMs: 600,
@@ -535,6 +541,9 @@ const WORKLOAD_PROFILES = Object.freeze({
     delegationCyclesHistoryCards: 600,
     delegationCycles: 6,
     projectsReloadCycles: 240,
+    ownedAutomations: 770,
+    ownedAutomationListSamples: 20,
+    ownedAutomationWrites: 10,
     delegationCyclesDelegates: 6,
     delegationCyclesChildSteps: 100,
     delegationCyclesChildStepMs: 600,
@@ -607,6 +616,8 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   retainedActiveMs: Object.freeze(['retained-worktrees-idle']),
   retainedStaleIntervalMs: Object.freeze(['retained-worktrees-idle']),
   retainedFocusIntervalMs: Object.freeze(['retained-worktrees-idle']),
+  // Opt-in, so no profile sizes it and default runs keep their fingerprint.
+  retainedActiveChatWatchers: Object.freeze(['retained-worktrees-idle']),
   browserActionWarmups: Object.freeze(['browser-actions']),
   browserActionIterations: Object.freeze(['browser-actions']),
   browserAgentActionsWarmups: Object.freeze(['browser-agent-actions']),
@@ -631,6 +642,9 @@ export const SCENARIO_SCOPED_CONFIG_KEYS = Object.freeze({
   delegationCyclesHistoryCards: DELEGATION_RESTART_CYCLES_SCENARIOS,
   delegationCycles: DELEGATION_RESTART_CYCLES_SCENARIOS,
   projectsReloadCycles: Object.freeze(['projects-reload-retention']),
+  ownedAutomations: Object.freeze(['owned-automations-list']),
+  ownedAutomationListSamples: Object.freeze(['owned-automations-list']),
+  ownedAutomationWrites: Object.freeze(['owned-automations-list']),
   delegationCyclesDelegates: DELEGATION_RESTART_CYCLES_SCENARIOS,
   delegationCyclesChildSteps: DELEGATION_RESTART_CYCLES_SCENARIOS,
   delegationCyclesChildStepMs: DELEGATION_RESTART_CYCLES_SCENARIOS,
@@ -693,6 +707,7 @@ export const SCENARIO_SCOPED_OPTIONS = Object.freeze({
   '--multi-chat-streaming-ms': 'multiChatStreamingMs',
   '--code-graph-queued-refreshes': 'codeGraphQueuedRefreshes',
   '--w5-store-workspaces': 'w5StoreWorkspaces',
+  '--retained-active-watchers': 'retainedActiveChatWatchers',
 });
 
 /** Opt-in switches only some scenarios read; no profile sizes them. */
@@ -730,6 +745,7 @@ export const OPT_IN_SCENARIO_NAMES = Object.freeze([
   'retained-worktrees-idle',
   'scope-residency',
   'projects-reload-retention',
+  'owned-automations-list',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
   ...W5_STORE_SCENARIOS,
 ]);
@@ -833,6 +849,7 @@ export const SCENARIO_NAMES = Object.freeze([
   'retained-worktrees-idle',
   'scope-residency',
   'projects-reload-retention',
+  'owned-automations-list',
   ...CODE_REVIEW_REGISTRY_SCENARIOS,
   ...W5_STORE_SCENARIOS,
 ]);
@@ -1026,6 +1043,7 @@ export function parsePerformanceArgs(argv) {
       option === '--multi-chat-streaming-ms' ||
       option === '--chat-switch-hover-ms' ||
       option === '--w5-store-workspaces' ||
+      option === '--retained-active-watchers' ||
       option === '--sample-interval-ms' ||
       option === '--repeat'
     ) {
@@ -1108,6 +1126,9 @@ export function parsePerformanceArgs(argv) {
       }
       if (option === '--w5-store-workspaces') {
         options.overrides.w5StoreWorkspaces = value;
+      }
+      if (option === '--retained-active-watchers') {
+        options.overrides.retainedActiveChatWatchers = value;
       }
       if (option === '--sample-interval-ms') {
         options.overrides.sampleIntervalMs = value;
@@ -1354,7 +1375,7 @@ export function performanceUsage() {
 
 Options:
   --profile <smoke|baseline|stress|counters> Workload size (default baseline); counters runs the smoke-sized work-counter ratchet
-  --scenarios <csv>                  sidebar-reorder,cloud-cowork-first-open,projects-retention,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,menu-surfaces,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,delegation-restart-cycles,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-feed-overview,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,lab-transcript-onscreen,lab-transcript-offscreen,lab-transcript-checkpoint,many-chat-residency,many-worktree-file-index,scope-residency,projects-reload-retention,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
+  --scenarios <csv>                  sidebar-reorder,cloud-cowork-first-open,projects-retention,startup-settle,startup-realistic,power-user-idle,power-user-active,loaded-ui,pipeline-history,large-transcripts,stress-transcript,transcript-streaming-tail,transcript-streaming-history,transcript-active-turn,transcript-active-turn-stop,transcript-active-turn-tools,transcript-retention-cycle,math-transcripts,linear-reference-transcripts,frame-smoothness,chat-search-indexing,plugin-picker,menu-surfaces,file-explorer,browser-panels,browser-actions,browser-agent-actions,inner-panels-collapse,plan-open,chats,mixed-provider-agent-concurrency,managed-delegation-concurrency,delegation-restart-cycles,multi-chat-streaming,multi-chat-streaming-sequential,background-streaming,chat-switch-catch-up,pipelines,scripts,worktrees,worktree-concurrency,large-transcript-concurrency,code-graph-concurrency,code-graph-background-concurrency,code-graph-new-worktree,code-graph-small-edit,claude-graph-orientation,ledger-panel,ledger-feed-overview,ledger-disabled-idle,cost-index-first-build,skill-suggestions-backfill,lab-transcript-onscreen,lab-transcript-offscreen,lab-transcript-checkpoint,many-chat-residency,many-worktree-file-index,scope-residency,projects-reload-retention,owned-automations-list,code-review-registry-cleanup,code-review-registry-cleanup-trace,w5-store-startup,w5-store-reload,w5-store-writes
   --output <path>                    JSON result path
   --label <text>                     Human-readable run label
   --repeat <n>                       Run every scenario n times, each a fresh launch, and keep every sample (default 1)
@@ -1391,13 +1412,14 @@ Options:
   --no-diagnostics                   Disable automatic failed-scenario profiling
   --live-startup-background          Run real skill/plugin startup refreshes (diagnostic)
   --startup-trace                    Record Chromium v8.compile trace events for startup and App Advisor opening (lab diagnostic)
-  --git-attribution                  Wrap Git for bounded source/request diagnostics (macOS; timings are non-comparable)
+  --git-attribution                  Wrap Git for bounded source/request diagnostics (macOS and Linux; timings are non-comparable)
   --renderer-code-cache-scheme       Seed the rendererCodeCacheSchemeEnabled Experiments preference on (renderer loads from the code-cache scheme)
   --cold-background-streams          background-streaming: start each stream through chat IPC without opening its chat, so no stream is focused or warm
   --chat-switch-hover-ms <ms>        chat-switch-catch-up: rest the pointer on each target worktree row for <ms> before the timed click (prefetch on intent)
   --warm-launches <1-3>              Before each startup scenario's measured launch, launch that profile n times unmeasured (repeat-state startup)
   --w5-store <${W5_STORE_ARMS.join('|')}> Launch every scenario with this W5 store arm (E2E builds only; recorded as the result's treatment)
   --w5-store-workspaces <n>          w5-store-* scenarios: seeded workspaces (at least 2; above 127 passes the capture limit)
+  --retained-active-watchers <n>     retained-worktrees-idle: seed n active chat-completion watchers on retained worktree chats (default none)
   --release-like                     Launch the existing production bundle under the deterministic scenario driver
   --release-like-root <path>         Checkout containing the production out/ bundle (default current checkout)
   --e2e-root <path>                  Checkout containing the E2E out-e2e/ bundle (default current checkout)

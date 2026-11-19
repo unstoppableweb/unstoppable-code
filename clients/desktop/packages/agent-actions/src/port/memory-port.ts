@@ -32,6 +32,12 @@ export interface AgentMemorySearchHit {
  * a refusal is an `AgentPortError` whose message the agent reads.
  */
 export interface AgentMemoryPort<H> {
+  /**
+   * The host owns durable replay and live authorization. Call it for every
+   * save, including retries, instead of replaying a surface receipt.
+   * Omitted keeps the existing receipt policy (desktop).
+   */
+  saveManagesIdempotency?: true;
   searchPage?(
     input: SearchMemoryInput,
     call: AgentActionCall<H>,
@@ -113,6 +119,14 @@ export function createMemoryTools<H>(options: {
         input,
       );
       try {
+        const write = async (): Promise<AgentActionToolResult> => {
+          const saved = await port.save(
+            { memory: input.scope, text: input.text, idempotencyKey },
+            call,
+          );
+          return { text: `Saved ${saved.memory} memory to ${saved.fileKey}` };
+        };
+        if (port.saveManagesIdempotency) return await write();
         return await runIdempotentWrite({
           receipts,
           limits: null,
@@ -124,15 +138,7 @@ export function createMemoryTools<H>(options: {
             Promise.resolve({
               ok: true,
               parentDepth: 0,
-              write: async (): Promise<AgentActionToolResult> => {
-                const saved = await port.save(
-                  { memory: input.scope, text: input.text, idempotencyKey },
-                  call,
-                );
-                return {
-                  text: `Saved ${saved.memory} memory to ${saved.fileKey}`,
-                };
-              },
+              write,
             }),
         });
       } catch (error) {

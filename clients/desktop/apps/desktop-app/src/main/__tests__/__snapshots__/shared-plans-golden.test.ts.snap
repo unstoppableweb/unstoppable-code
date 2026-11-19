@@ -1,0 +1,1348 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`shared plan collaboration (CAN-4166 golden) pulls on a realtime signal and resumes with Last-Event-ID after a reconnect 1`] = `
+{
+  "pulled": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "teammateComments": [
+      "comment-teammate-1",
+      "comment-teammate-2",
+    ],
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+  "reconnect": [
+    {
+      "authorization": "Bearer <api key>",
+      "lastEventId": "7",
+      "method": "GET",
+      "path": "<api>/plans/remote-plan-1/stream",
+    },
+  ],
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) pulls teammate comments through tracked-plans:refresh-comments 1`] = `
+{
+  "firstPull": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "threads": [
+      {
+        "comments": [
+          {
+            "author": "user",
+            "id": "comment-draft-1",
+            "remoteAuthor": null,
+          },
+        ],
+        "id": "thread-draft",
+        "status": "open",
+      },
+      {
+        "comments": [
+          {
+            "author": "user",
+            "id": "comment-owner-1",
+            "remoteAuthor": null,
+          },
+          {
+            "author": "user",
+            "id": "comment-owner-2",
+            "remoteAuthor": null,
+          },
+          {
+            "author": "agent",
+            "id": "<uuid 1>",
+            "remoteAuthor": null,
+          },
+        ],
+        "id": "thread-owner",
+        "status": "resolved",
+      },
+      {
+        "comments": [
+          {
+            "author": "remote",
+            "id": "comment-teammate-1",
+            "remoteAuthor": {
+              "displayName": "Teammate",
+              "userId": "teammate-1",
+            },
+          },
+        ],
+        "id": "thread-teammate",
+        "status": "open",
+      },
+    ],
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+  "notShared": {
+    "requests": [],
+    "share": null,
+  },
+  "unchangedPull": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "windowUpdates": [],
+  },
+  "unknownPlan": null,
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) pushes after a plan write and after a diagram write 1`] = `
+{
+  "afterDiagramWrite": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "body": {
+          "clientLocalPlanId": "<uuid 1>",
+          "commentThreads": [
+            {
+              "anchor": {
+                "lineEnd": 5,
+                "lineStart": 5,
+                "quote": "Second step.",
+              },
+              "anchorState": "matched",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Should this run before the migration?",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-1",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-owner",
+              "status": "open",
+            },
+          ],
+          "content": "# Rollout plan
+
+First step.
+
+Second step.
+
+Third step.",
+          "diagrams": {
+            "sequence": {
+              "data": {
+                "edges": [],
+                "nodes": [],
+                "schemaVersion": 1,
+              },
+              "derivedFromRevision": 2,
+              "generatedAt": "<time>",
+              "status": "ready",
+            },
+          },
+          "expectedSnapshotHash": "<hash 1>",
+          "localCreatedAt": "<time>",
+          "localRevisionNumber": 2,
+          "localUpdatedAt": "<time>",
+          "repositories": [
+            {
+              "branch": "golden",
+              "commitSha": "<commit>",
+              "defaultBranch": "main",
+              "remoteUrl": "https://git.example.test/acme/widgets.git",
+              "repoId": "__single_repo__",
+              "repoName": "Widgets",
+            },
+          ],
+          "reviewStatus": "pending",
+          "snapshotHash": "<hash 3>",
+          "source": "claude",
+          "title": "Rollout plan",
+          "workspaceLocalId": "shared-plans-golden",
+          "worktreeLocalId": "golden-wt",
+        },
+        "method": "PUT",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "stored": {
+      "lastSyncedAt": "<time>",
+      "lastSyncedLocalRevisionNumber": 2,
+      "lastSyncedRemoteRevisionNumber": 3,
+      "lastSyncedSnapshotHash": "<hash 3>",
+      "remoteId": "remote-plan-1",
+      "serverId": "canopy-cloud",
+      "shareScope": "team",
+      "syncStatus": "synced",
+      "teamId": "team-golden",
+    },
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "pending",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "syncing",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+  "afterPlanWrite": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "body": {
+          "clientLocalPlanId": "<uuid 1>",
+          "commentThreads": [
+            {
+              "anchor": {
+                "lineEnd": 5,
+                "lineStart": 5,
+                "quote": "Second step.",
+              },
+              "anchorState": "matched",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Should this run before the migration?",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-1",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-owner",
+              "status": "open",
+            },
+          ],
+          "content": "# Rollout plan
+
+First step.
+
+Second step.
+
+Third step.",
+          "expectedSnapshotHash": "<hash 2>",
+          "localCreatedAt": "<time>",
+          "localRevisionNumber": 2,
+          "localUpdatedAt": "<time>",
+          "repositories": [
+            {
+              "branch": "golden",
+              "commitSha": "<commit>",
+              "defaultBranch": "main",
+              "remoteUrl": "https://git.example.test/acme/widgets.git",
+              "repoId": "__single_repo__",
+              "repoName": "Widgets",
+            },
+          ],
+          "reviewStatus": "pending",
+          "snapshotHash": "<hash 1>",
+          "source": "claude",
+          "title": "Rollout plan",
+          "workspaceLocalId": "shared-plans-golden",
+          "worktreeLocalId": "golden-wt",
+        },
+        "method": "PUT",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "stored": {
+      "lastSyncedAt": "<time>",
+      "lastSyncedLocalRevisionNumber": 2,
+      "lastSyncedRemoteRevisionNumber": 2,
+      "lastSyncedSnapshotHash": "<hash 1>",
+      "remoteId": "remote-plan-1",
+      "serverId": "canopy-cloud",
+      "shareScope": "team",
+      "syncStatus": "synced",
+      "teamId": "team-golden",
+    },
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "pending",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "syncing",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) pushes saved comments and agent replies, and refuses a draft-only reply 1`] = `
+{
+  "afterAgentReply": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "body": {
+          "clientLocalPlanId": "<uuid 1>",
+          "commentThreads": [
+            {
+              "anchor": {
+                "lineEnd": 5,
+                "lineStart": 5,
+                "quote": "Second step.",
+              },
+              "anchorState": "matched",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Should this run before the migration?",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-1",
+                },
+                {
+                  "author": "user",
+                  "body": "Also check the rollback.",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-2",
+                },
+                {
+                  "author": "agent",
+                  "body": "It runs after the migration; I moved it.",
+                  "createdAt": "<time>",
+                  "id": "<uuid 2>",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-owner",
+              "status": "resolved",
+            },
+          ],
+          "content": "# Rollout plan
+
+First step.
+
+Second step.
+
+Third step.",
+          "diagrams": {
+            "sequence": {
+              "data": {
+                "edges": [],
+                "nodes": [],
+                "schemaVersion": 1,
+              },
+              "derivedFromRevision": 2,
+              "generatedAt": "<time>",
+              "status": "ready",
+            },
+          },
+          "expectedSnapshotHash": "<hash 1>",
+          "localCreatedAt": "<time>",
+          "localRevisionNumber": 2,
+          "localUpdatedAt": "<time>",
+          "repositories": [
+            {
+              "branch": "golden",
+              "commitSha": "<commit>",
+              "defaultBranch": "main",
+              "remoteUrl": "https://git.example.test/acme/widgets.git",
+              "repoId": "__single_repo__",
+              "repoName": "Widgets",
+            },
+          ],
+          "reviewStatus": "pending",
+          "snapshotHash": "<hash 1>",
+          "source": "claude",
+          "title": "Rollout plan",
+          "workspaceLocalId": "shared-plans-golden",
+          "worktreeLocalId": "golden-wt",
+        },
+        "method": "PUT",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "result": {
+      "error": null,
+      "ok": true,
+    },
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "pending",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "syncing",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+  "afterSave": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "body": {
+          "clientLocalPlanId": "<uuid 1>",
+          "commentThreads": [
+            {
+              "anchor": {
+                "lineEnd": 5,
+                "lineStart": 5,
+                "quote": "Second step.",
+              },
+              "anchorState": "matched",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Should this run before the migration?",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-1",
+                },
+                {
+                  "author": "user",
+                  "body": "Also check the rollback.",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-2",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-owner",
+              "status": "open",
+            },
+          ],
+          "content": "# Rollout plan
+
+First step.
+
+Second step.
+
+Third step.",
+          "diagrams": {
+            "sequence": {
+              "data": {
+                "edges": [],
+                "nodes": [],
+                "schemaVersion": 1,
+              },
+              "derivedFromRevision": 2,
+              "generatedAt": "<time>",
+              "status": "ready",
+            },
+          },
+          "expectedSnapshotHash": "<hash 1>",
+          "localCreatedAt": "<time>",
+          "localRevisionNumber": 2,
+          "localUpdatedAt": "<time>",
+          "repositories": [
+            {
+              "branch": "golden",
+              "commitSha": "<commit>",
+              "defaultBranch": "main",
+              "remoteUrl": "https://git.example.test/acme/widgets.git",
+              "repoId": "__single_repo__",
+              "repoName": "Widgets",
+            },
+          ],
+          "reviewStatus": "pending",
+          "snapshotHash": "<hash 1>",
+          "source": "claude",
+          "title": "Rollout plan",
+          "workspaceLocalId": "shared-plans-golden",
+          "worktreeLocalId": "golden-wt",
+        },
+        "method": "PUT",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "returnedThreads": [
+      {
+        "anchor": {
+          "lineEnd": 5,
+          "lineStart": 5,
+          "quote": "Second step.",
+        },
+        "anchorState": "matched",
+        "comments": [
+          {
+            "author": "user",
+            "body": "Should this run before the migration?",
+            "createdAt": "<time>",
+            "id": "comment-owner-1",
+            "staged": false,
+          },
+          {
+            "author": "user",
+            "body": "Also check the rollback.",
+            "createdAt": "<time>",
+            "id": "comment-owner-2",
+            "staged": false,
+          },
+        ],
+        "createdAt": "<time>",
+        "id": "thread-owner",
+        "status": "open",
+      },
+    ],
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "pending",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "syncing",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "synced",
+      },
+    ],
+  },
+  "draftOnlyReply": {
+    "requests": [],
+    "result": {
+      "error": "Comment thread has not been submitted.",
+      "ok": false,
+      "reason": "not-submitted",
+    },
+  },
+  "missingThreadReply": {
+    "error": "Comment thread not found.",
+    "ok": false,
+  },
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) queues sync and reopens subscriptions from the startup inventory 1`] = `
+{
+  "inventory": [
+    {
+      "plans": [
+        {
+          "shared": false,
+          "title": "Local only",
+        },
+        {
+          "shared": true,
+          "title": "Rollout plan",
+        },
+      ],
+      "projectId": "shared-plans-golden",
+      "worktreeId": "golden-wt",
+    },
+  ],
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/plans/remote-plan-1/stream",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "clientLocalPlanId": "<uuid 1>",
+        "commentThreads": [
+          {
+            "anchor": {
+              "lineEnd": 3,
+              "lineStart": 3,
+              "quote": "First step.",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": "user",
+                "body": "Draft, not sent yet.",
+                "createdAt": "<time>",
+                "id": "comment-draft-1",
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-draft",
+            "status": "open",
+          },
+          {
+            "anchor": {
+              "lineEnd": 5,
+              "lineStart": 5,
+              "quote": "Second step.",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": "user",
+                "body": "Should this run before the migration?",
+                "createdAt": "<time>",
+                "id": "comment-owner-1",
+              },
+              {
+                "author": "user",
+                "body": "Also check the rollback.",
+                "createdAt": "<time>",
+                "id": "comment-owner-2",
+              },
+              {
+                "author": "agent",
+                "body": "It runs after the migration; I moved it.",
+                "createdAt": "<time>",
+                "id": "<uuid 2>",
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-owner",
+            "status": "resolved",
+          },
+          {
+            "anchor": {
+              "lineEnd": 7,
+              "lineStart": 7,
+              "quote": "Third step.",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": "remote",
+                "body": "Can we split this step?",
+                "createdAt": "<time>",
+                "id": "comment-teammate-1",
+                "remoteAuthor": {
+                  "displayName": "Teammate",
+                  "userId": "teammate-1",
+                },
+              },
+              {
+                "author": "remote",
+                "body": "Pushed over the live stream.",
+                "createdAt": "<time>",
+                "id": "comment-teammate-2",
+                "remoteAuthor": {
+                  "displayName": "Teammate",
+                  "userId": "teammate-1",
+                },
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-teammate",
+            "status": "open",
+          },
+        ],
+        "content": "# Rollout plan
+
+First step.
+
+Second step.
+
+Third step.",
+        "diagrams": {
+          "sequence": {
+            "data": {
+              "edges": [],
+              "nodes": [],
+              "schemaVersion": 1,
+            },
+            "derivedFromRevision": 2,
+            "generatedAt": "<time>",
+            "status": "ready",
+          },
+        },
+        "expectedSnapshotHash": "<hash 1>",
+        "localCreatedAt": "<time>",
+        "localRevisionNumber": 2,
+        "localUpdatedAt": "<time>",
+        "repositories": [
+          {
+            "branch": "golden",
+            "commitSha": "<commit>",
+            "defaultBranch": "main",
+            "remoteUrl": "https://git.example.test/acme/widgets.git",
+            "repoId": "__single_repo__",
+            "repoName": "Widgets",
+          },
+        ],
+        "reviewStatus": "pending",
+        "snapshotHash": "<hash 1>",
+        "source": "claude",
+        "title": "Rollout plan",
+        "workspaceLocalId": "shared-plans-golden",
+        "worktreeLocalId": "golden-wt",
+      },
+      "method": "PUT",
+      "path": "<api>/plans/remote-plan-1",
+    },
+  ],
+  "stored": {
+    "lastSyncedAt": "<time>",
+    "lastSyncedLocalRevisionNumber": 2,
+    "lastSyncedRemoteRevisionNumber": 3,
+    "lastSyncedSnapshotHash": "<hash 1>",
+    "remoteId": "remote-plan-1",
+    "serverId": "canopy-cloud",
+    "shareScope": "team",
+    "syncStatus": "synced",
+    "teamId": "team-golden",
+  },
+  "windowUpdates": [
+    {
+      "channel": "tracked-plans:updated",
+      "syncStatus": "pending",
+    },
+    {
+      "channel": "tracked-plans:updated",
+      "syncStatus": "syncing",
+    },
+    {
+      "channel": "tracked-plans:updated",
+      "syncStatus": "synced",
+    },
+  ],
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) refuses a share without the needed audience or permission 1`] = `
+{
+  "audienceRequests": [],
+  "missingPlan": {
+    "ok": true,
+    "share": null,
+  },
+  "organizationWithoutId": {
+    "failure": {
+      "commitState": "not-committed",
+      "kind": "unknown",
+      "message": "Couldn't share. Try again.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+  "requests": [
+    {
+      "method": "POST",
+      "path": "<api>/plans",
+    },
+  ],
+  "teamWithoutTeamId": {
+    "failure": {
+      "commitState": "not-committed",
+      "kind": "unknown",
+      "message": "Couldn't share. Try again.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+  "viewerRole": {
+    "failure": {
+      "commitState": "not-committed",
+      "httpStatus": 403,
+      "kind": "permission",
+      "message": "Viewers cannot share plans with this team.",
+      "reason": "publisher_role_required",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) refuses read-only and recipient-scope callers 1`] = `
+{
+  "refreshComments": null,
+  "requests": [],
+  "saveComments": "Shared-container recipient workspaces are read-only",
+  "share": {
+    "failure": {
+      "commitState": "not-committed",
+      "kind": "unknown",
+      "message": "Couldn't share. Try again.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+  "unshare": {
+    "failure": {
+      "commitState": "not-committed",
+      "kind": "unknown",
+      "message": "Couldn't share. Try again.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) refuses writes to a revoked share and still clears it on unshare 1`] = `
+{
+  "reshare": {
+    "failure": {
+      "commitState": "not-committed",
+      "httpStatus": 404,
+      "kind": "unavailable",
+      "message": "Shared plan not found.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+  "reshareRequests": [
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "clientLocalPlanId": "<uuid 1>",
+        "commentThreads": [
+          {
+            "anchor": {
+              "lineEnd": 3,
+              "lineStart": 3,
+              "quote": "First step.",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": "user",
+                "body": "Draft, not sent yet.",
+                "createdAt": "<time>",
+                "id": "comment-draft-1",
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-draft",
+            "status": "open",
+          },
+          {
+            "anchor": {
+              "lineEnd": 5,
+              "lineStart": 5,
+              "quote": "Second step.",
+            },
+            "anchorState": "outdated",
+            "comments": [
+              {
+                "author": "user",
+                "body": "Should this run before the migration?",
+                "createdAt": "<time>",
+                "id": "comment-owner-1",
+              },
+              {
+                "author": "user",
+                "body": "Also check the rollback.",
+                "createdAt": "<time>",
+                "id": "comment-owner-2",
+              },
+              {
+                "author": "agent",
+                "body": "It runs after the migration; I moved it.",
+                "createdAt": "<time>",
+                "id": "<uuid 2>",
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-owner",
+            "status": "resolved",
+          },
+          {
+            "anchor": {
+              "lineEnd": 7,
+              "lineStart": 7,
+              "quote": "Third step.",
+            },
+            "anchorState": "outdated",
+            "comments": [
+              {
+                "author": "remote",
+                "body": "Can we split this step?",
+                "createdAt": "<time>",
+                "id": "comment-teammate-1",
+                "remoteAuthor": {
+                  "displayName": "Teammate",
+                  "userId": "teammate-1",
+                },
+              },
+              {
+                "author": "remote",
+                "body": "Pushed over the live stream.",
+                "createdAt": "<time>",
+                "id": "comment-teammate-2",
+                "remoteAuthor": {
+                  "displayName": "Teammate",
+                  "userId": "teammate-1",
+                },
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-teammate",
+            "status": "open",
+          },
+        ],
+        "content": "# Rollout plan
+
+First step.
+
+Revoked edit.",
+        "diagrams": {
+          "sequence": {
+            "data": {
+              "edges": [],
+              "nodes": [],
+              "schemaVersion": 1,
+            },
+            "derivedFromRevision": 2,
+            "generatedAt": "<time>",
+            "status": "stale",
+          },
+        },
+        "expectedSnapshotHash": "<hash 2>",
+        "localCreatedAt": "<time>",
+        "localRevisionNumber": 3,
+        "localUpdatedAt": "<time>",
+        "repositories": [
+          {
+            "branch": "golden",
+            "commitSha": "<commit>",
+            "defaultBranch": "main",
+            "remoteUrl": "https://git.example.test/acme/widgets.git",
+            "repoId": "__single_repo__",
+            "repoName": "Widgets",
+          },
+        ],
+        "reviewStatus": "pending",
+        "snapshotHash": "<hash 1>",
+        "source": "claude",
+        "title": "Rollout plan",
+        "workspaceLocalId": "shared-plans-golden",
+        "worktreeLocalId": "golden-wt",
+      },
+      "method": "PUT",
+      "path": "<api>/plans/remote-plan-1",
+    },
+  ],
+  "retriesAfterRefusal": 0,
+  "revokedPush": {
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "body": {
+          "clientLocalPlanId": "<uuid 1>",
+          "commentThreads": [
+            {
+              "anchor": {
+                "lineEnd": 3,
+                "lineStart": 3,
+                "quote": "First step.",
+              },
+              "anchorState": "matched",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Draft, not sent yet.",
+                  "createdAt": "<time>",
+                  "id": "comment-draft-1",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-draft",
+              "status": "open",
+            },
+            {
+              "anchor": {
+                "lineEnd": 5,
+                "lineStart": 5,
+                "quote": "Second step.",
+              },
+              "anchorState": "outdated",
+              "comments": [
+                {
+                  "author": "user",
+                  "body": "Should this run before the migration?",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-1",
+                },
+                {
+                  "author": "user",
+                  "body": "Also check the rollback.",
+                  "createdAt": "<time>",
+                  "id": "comment-owner-2",
+                },
+                {
+                  "author": "agent",
+                  "body": "It runs after the migration; I moved it.",
+                  "createdAt": "<time>",
+                  "id": "<uuid 2>",
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-owner",
+              "status": "resolved",
+            },
+            {
+              "anchor": {
+                "lineEnd": 7,
+                "lineStart": 7,
+                "quote": "Third step.",
+              },
+              "anchorState": "outdated",
+              "comments": [
+                {
+                  "author": "remote",
+                  "body": "Can we split this step?",
+                  "createdAt": "<time>",
+                  "id": "comment-teammate-1",
+                  "remoteAuthor": {
+                    "displayName": "Teammate",
+                    "userId": "teammate-1",
+                  },
+                },
+                {
+                  "author": "remote",
+                  "body": "Pushed over the live stream.",
+                  "createdAt": "<time>",
+                  "id": "comment-teammate-2",
+                  "remoteAuthor": {
+                    "displayName": "Teammate",
+                    "userId": "teammate-1",
+                  },
+                },
+              ],
+              "createdAt": "<time>",
+              "id": "thread-teammate",
+              "status": "open",
+            },
+          ],
+          "content": "# Rollout plan
+
+First step.
+
+Revoked edit.",
+          "diagrams": {
+            "sequence": {
+              "data": {
+                "edges": [],
+                "nodes": [],
+                "schemaVersion": 1,
+              },
+              "derivedFromRevision": 2,
+              "generatedAt": "<time>",
+              "status": "stale",
+            },
+          },
+          "expectedSnapshotHash": "<hash 2>",
+          "localCreatedAt": "<time>",
+          "localRevisionNumber": 3,
+          "localUpdatedAt": "<time>",
+          "repositories": [
+            {
+              "branch": "golden",
+              "commitSha": "<commit>",
+              "defaultBranch": "main",
+              "remoteUrl": "https://git.example.test/acme/widgets.git",
+              "repoId": "__single_repo__",
+              "repoName": "Widgets",
+            },
+          ],
+          "reviewStatus": "pending",
+          "snapshotHash": "<hash 1>",
+          "source": "claude",
+          "title": "Rollout plan",
+          "workspaceLocalId": "shared-plans-golden",
+          "worktreeLocalId": "golden-wt",
+        },
+        "method": "PUT",
+        "path": "<api>/plans/remote-plan-1",
+      },
+    ],
+    "stored": {
+      "lastSyncError": "HTTP 404: Shared plan not found.",
+      "lastSyncedAt": "<time>",
+      "lastSyncedLocalRevisionNumber": 2,
+      "lastSyncedRemoteRevisionNumber": 3,
+      "lastSyncedSnapshotHash": "<hash 2>",
+      "remoteId": "remote-plan-1",
+      "serverId": "canopy-cloud",
+      "shareScope": "team",
+      "syncStatus": "error",
+      "teamId": "team-golden",
+    },
+    "windowUpdates": [
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "pending",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "syncStatus": "syncing",
+      },
+      {
+        "channel": "tracked-plans:updated",
+        "lastSyncError": "HTTP 404: Shared plan not found.",
+        "syncStatus": "error",
+      },
+    ],
+  },
+  "unshare": {
+    "ok": true,
+    "share": null,
+  },
+  "unshareRequests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "<api>/plans/remote-plan-1",
+    },
+  ],
+  "writeAfterUnshare": [],
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) shares a plan to a team through tracked-plans:share 1`] = `
+{
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "clientLocalPlanId": "<uuid 1>",
+        "commentThreads": [
+          {
+            "anchor": {
+              "lineEnd": 5,
+              "lineStart": 5,
+              "quote": "Second step.",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": "user",
+                "body": "Should this run before the migration?",
+                "createdAt": "<time>",
+                "id": "comment-owner-1",
+              },
+            ],
+            "createdAt": "<time>",
+            "id": "thread-owner",
+            "status": "open",
+          },
+        ],
+        "content": "# Rollout plan
+
+First step.
+
+Second step.",
+        "localCreatedAt": "<time>",
+        "localRevisionNumber": 1,
+        "localUpdatedAt": "<time>",
+        "repositories": [
+          {
+            "branch": "golden",
+            "commitSha": "<commit>",
+            "defaultBranch": "main",
+            "remoteUrl": "https://git.example.test/acme/widgets.git",
+            "repoId": "__single_repo__",
+            "repoName": "Widgets",
+          },
+        ],
+        "reviewStatus": "pending",
+        "shareScope": "team",
+        "snapshotHash": "<hash 1>",
+        "source": "claude",
+        "teamId": "team-golden",
+        "title": "Rollout plan",
+        "workspaceLocalId": "shared-plans-golden",
+        "worktreeLocalId": "golden-wt",
+      },
+      "method": "POST",
+      "path": "<api>/plans",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/plans/remote-plan-1/stream",
+    },
+  ],
+  "result": {
+    "ok": true,
+    "share": {
+      "lastSyncedAt": "<time>",
+      "lastSyncedLocalRevisionNumber": 1,
+      "lastSyncedRemoteRevisionNumber": 1,
+      "lastSyncedSnapshotHash": "<hash 1>",
+      "remoteId": "remote-plan-1",
+      "serverId": "canopy-cloud",
+      "shareScope": "team",
+      "syncStatus": "synced",
+      "teamId": "team-golden",
+    },
+  },
+  "stored": {
+    "lastSyncedAt": "<time>",
+    "lastSyncedLocalRevisionNumber": 1,
+    "lastSyncedRemoteRevisionNumber": 1,
+    "lastSyncedSnapshotHash": "<hash 1>",
+    "remoteId": "remote-plan-1",
+    "serverId": "canopy-cloud",
+    "shareScope": "team",
+    "syncStatus": "synced",
+    "teamId": "team-golden",
+  },
+  "windowUpdates": [
+    {
+      "channel": "tracked-plans:updated",
+      "syncStatus": null,
+    },
+    {
+      "channel": "tracked-plans:updated",
+      "syncStatus": "synced",
+    },
+  ],
+}
+`;
+
+exports[`shared plan collaboration (CAN-4166 golden) shares and unshares through App Advisor 1`] = `
+{
+  "failedUnshare": {
+    "failure": {
+      "commitState": "unknown",
+      "httpStatus": 503,
+      "kind": "connection",
+      "message": "Couldn't reach <Brand> Cloud. Check your connection and try again.",
+      "retryable": false,
+      "stage": "publish",
+      "version": 1,
+    },
+    "ok": false,
+  },
+  "failedUnshareRequests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "<api>/plans/remote-plan-2",
+    },
+  ],
+  "forgedOrganization": {
+    "error": {
+      "code": "invalid_target",
+      "message": "You aren't a member of that organization.",
+    },
+    "ok": false,
+  },
+  "keptShare": {
+    "lastSyncedAt": "<time>",
+    "lastSyncedLocalRevisionNumber": 1,
+    "lastSyncedRemoteRevisionNumber": 1,
+    "lastSyncedSnapshotHash": "<hash 1>",
+    "organizationId": "org-golden",
+    "remoteId": "remote-plan-2",
+    "serverId": "canopy-cloud",
+    "shareScope": "organization",
+    "syncStatus": "synced",
+  },
+  "missingPlan": {
+    "error": {
+      "code": "not_found",
+      "message": "Tracked plan plan-missing was not found or could not be shared.",
+    },
+    "ok": false,
+  },
+  "organizationWithoutContext": {
+    "error": {
+      "code": "surface_unavailable",
+      "message": "Choose an organization from the context switcher above the account in the sidebar, or pass organizationId, to share with an organization.",
+    },
+    "ok": false,
+  },
+  "refusalRequests": [],
+  "shareRequests": [
+    {
+      "method": "POST",
+      "organizationId": "org-golden",
+      "path": "<api>/plans",
+      "shareScope": "organization",
+    },
+    {
+      "method": "GET",
+      "path": "<api>/plans/remote-plan-2/stream",
+    },
+  ],
+  "shared": {
+    "ok": true,
+    "result": {
+      "planId": "<uuid 1>",
+      "remoteId": "remote-plan-2",
+      "shareScope": "organization",
+      "syncStatus": "synced",
+    },
+  },
+  "unshareMissing": {
+    "error": {
+      "code": "not_found",
+      "message": "Tracked plan plan-missing was not found.",
+    },
+    "ok": false,
+  },
+  "unshareRequests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "<api>/plans/remote-plan-2",
+    },
+  ],
+  "unshared": {
+    "ok": true,
+    "result": {
+      "planId": "<uuid 1>",
+      "unshared": true,
+    },
+  },
+  "unsharedAgain": {
+    "ok": true,
+    "result": {
+      "planId": "<uuid 1>",
+      "unshared": false,
+    },
+  },
+}
+`;

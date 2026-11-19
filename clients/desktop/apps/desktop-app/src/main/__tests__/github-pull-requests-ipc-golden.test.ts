@@ -70,11 +70,8 @@ jest.mock('../lib/github-pr', () => ({
   fetchRepoPrTrackingData: (...args: unknown[]): unknown =>
     mockFetchRepoPrTrackingData(...args),
 }));
-jest.mock('../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../services/portal-pr-delta', () => ({
-  emitPrStatusDelta: jest.fn(),
+jest.mock('../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 let mockQueueReadsEnabled = false;
 // No request reaches GitHub: queue tests run the broker callback on a fake client.

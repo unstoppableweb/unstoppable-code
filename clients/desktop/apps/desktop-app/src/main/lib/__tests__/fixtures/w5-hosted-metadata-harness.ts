@@ -21,7 +21,10 @@ import {
 import type { PlatformByteStream } from '@canopy/core-runtime';
 import { createCanopyFramedConnection } from '@canopy/core-transport';
 import {
+  CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CORE_TRANSPORT_STREAM_DEFINITIONS,
   CORE_WORKSPACE_COMMITTED_EVENT,
+  CORE_WORKSPACE_EVENT_FAMILY,
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   type CanopyEvent,
@@ -31,10 +34,10 @@ import type { W5RecordPortClient } from '../../w5-daemon-record-store';
 
 /*
  * W5d1 (CAN-5522) test harness: the daemon side of the `core.workspace.*`
- * metadata commands (W7a-3) in its own module registry. It holds a real W5 commit-log host, the
- * W5e event source, W6g's record authority and the hosted module, served
- * through the daemon control-stream code to framed clients over in-memory
- * duplexes. Its own registry keeps its repository locks and commit scope
+ * metadata commands (W7a-3) in its own module registry. It holds a real W5
+ * commit-log host, the W5e event source with its `core.events` journal, W6g's
+ * record authority and the hosted module, served through the daemon
+ * control-stream code to framed clients over in-memory duplexes. Its own registry keeps its repository locks and commit scope
  * apart from Electron's in the default registry, as two processes keep them:
  * shared, a hosted call injected under an Electron lock would wait on it.
  * Mocks are shared, so both sides read the one storage ownership table.
@@ -46,6 +49,16 @@ export type W5HostedMetadataClient = CanopyClient<
   Record<never, never>,
   typeof CORE_WORKSPACE_METADATA_COMMAND_DEFINITIONS,
   Record<never, never>
+>;
+
+/** A `core.events` client, as Electron's W5e subscriber uses its session's. */
+export type W5HostedEventsClient = CanopyClient<
+  Record<never, never>,
+  Pick<
+    typeof CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+    'core.events.ack' | 'core.client.lease.acquire'
+  >,
+  Pick<typeof CORE_TRANSPORT_STREAM_DEFINITIONS, 'core.events.subscribe'>
 >;
 
 /** One public metadata request, its key beside its params. */
@@ -126,6 +139,8 @@ export interface W5HostedMetadataHarness {
   host(): CommitLogHostModule.W5CommitLogHost;
   /** A routed record-port client, as Electron's daemon-backed store uses. */
   connectRecords(clientInstanceId?: string): Promise<W5RecordPortClient>;
+  /** A `core.events` client: the daemon's journal, served as W5e serves it. */
+  connectEvents(clientInstanceId?: string): Promise<W5HostedEventsClient>;
   /** A client of the metadata commands. */
   connectMetadata(
     clientInstanceId?: string,
@@ -144,6 +159,10 @@ export interface W5HostedMetadataHarnessOptions {
   readonly isRepository?: (repoPath: string) => Promise<boolean>;
   /** The W5 namespaces daemon-owned from the start. */
   readonly daemonOwned?: readonly string[];
+  /** The journal's retained entries, so a test can evict a cursor. */
+  readonly journalMaxEntries?: number;
+  /** Entries one subscriber may lag by before its stream ends. */
+  readonly eventsMaxPending?: number;
 }
 
 /** A platform byte stream over one end of an in-memory duplex. */
@@ -200,9 +219,8 @@ export async function startW5HostedMetadataHarness(
       '@canopy/core-runtime/node/w5/repository-locks',
     );
     isolated = locks.withW5RepositoryLock !== outerLocks.withW5RepositoryLock;
-    const { createRuntimeProfileGraph } = jest.requireActual<
-      typeof CoreRuntime
-    >('@canopy/core-runtime');
+    const { createCoreEventsModule, createRuntimeProfileGraph } =
+      jest.requireActual<typeof CoreRuntime>('@canopy/core-runtime');
     const { serveCanopyControlStream } = jest.requireActual<
       typeof CoreRuntimeNode
     >('@canopy/core-runtime/node');
@@ -266,9 +284,13 @@ export async function startW5HostedMetadataHarness(
       revision: (resource) => host.revision(resource),
       capture: (request) => host.capture(request),
     };
+    const epoch = options.epoch ?? 'runtime:w5d1-test';
     const events = createW5CommitEventSource({
       host: recording,
-      epoch: options.epoch ?? 'runtime:w5d1-test',
+      epoch,
+      ...(options.journalMaxEntries !== undefined && {
+        maxEntries: options.journalMaxEntries,
+      }),
     });
     const selections = options.repositorySelections;
     const hosted = createW5HostedMetadata({
@@ -299,7 +321,15 @@ export async function startW5HostedMetadataHarness(
             events.port({ publishedBy: caller.clientInstanceId }),
         }),
         hosted.module,
+        createCoreEventsModule({
+          journal: events.journal,
+          families: [CORE_WORKSPACE_EVENT_FAMILY],
+          ...(options.eventsMaxPending !== undefined && {
+            maxPending: options.eventsMaxPending,
+          }),
+        }),
       ],
+      daemonEpoch: epoch,
       principalFor: () => 'interface',
       phaseDeadlineMs: 5_000,
     });
@@ -341,6 +371,8 @@ export async function startW5HostedMetadataHarness(
             'core.workspaceRecords.read',
             'core.workspaceRecords.write',
             'core.workspace.write',
+            'core.events.read',
+            'core.client.manage',
           ],
         },
         obligations: { hold: () => (): void => undefined },
@@ -400,6 +432,40 @@ export async function startW5HostedMetadataHarness(
         },
       });
       clients.push(client);
+      return client;
+    },
+    async connectEvents(clientInstanceId = 'electron-main') {
+      const client = await createCanopyClient({
+        connection: await connection(clientInstanceId, 'local-user'),
+        clientName: 'w5d1-events',
+        clientVersion: '1',
+        definitions: {
+          queries: {},
+          instructions: {
+            'core.events.ack':
+              CORE_TRANSPORT_INSTRUCTION_DEFINITIONS['core.events.ack'],
+            'core.client.lease.acquire':
+              CORE_TRANSPORT_INSTRUCTION_DEFINITIONS[
+                'core.client.lease.acquire'
+              ],
+          },
+          streams: {
+            'core.events.subscribe':
+              CORE_TRANSPORT_STREAM_DEFINITIONS['core.events.subscribe'],
+          },
+        },
+      });
+      clients.push(client);
+      // Streams need a live lease on their connection, as Electron's session holds.
+      await client.instruction('core.client.lease.acquire', {
+        clientInstanceId,
+        interfaceKind: 'desktop',
+        label: 'Desktop',
+        interactive: true,
+        foreground: true,
+        renewalIntervalMs: 300_000,
+        _meta: { idempotencyKey: randomUUID() },
+      });
       return client;
     },
     async connectMetadata(

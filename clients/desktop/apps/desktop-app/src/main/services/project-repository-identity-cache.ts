@@ -18,7 +18,7 @@ import { readWorkspaceConfigDetailed } from '../lib/workspace-persistence';
 import { peekDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { readRepositoryRemoteUrl } from '../canopy-runtime/worker-git-dispatch';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from './desktop-structure-signal';
 
 /** How long a definite repository identity is served before a background refresh. */
 export const PROJECT_REPOSITORY_IDENTITY_REFRESH_MS = 10 * 60_000;
@@ -120,7 +120,7 @@ function recordLookup(
     refreshAt: Date.now() + PROJECT_REPOSITORY_IDENTITY_REFRESH_MS,
   });
   if (!sameRepositoryIdentity(previousIdentity, lookup.repositoryIdentity)) {
-    schedulePortalStructuralSync();
+    scheduleDesktopStructureChanged('structural.project-repository-identity');
   }
 }
 

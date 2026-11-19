@@ -61,15 +61,7 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
  * up. Unknown or ended ids no-op.
  */
 export interface RelayBindingConnection extends CanopyFramedConnection {
-  /**
-   * `ended`: the core delivered its end; `unsubscribed`: abandoned and the
-   * client asked the core to drop it (`core.events.unsubscribe`, CAN-5970);
-   * `cancelled`: abandoned while the core may still serve it.
-   */
-  releaseStream?(
-    subscriptionId: string,
-    reason?: 'ended' | 'unsubscribed' | 'cancelled',
-  ): void;
+  releaseStream?(subscriptionId: string): void;
 }
 
 /** Opens one authenticated framed connection bound to `caller`. */

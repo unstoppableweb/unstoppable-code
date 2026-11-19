@@ -35,7 +35,11 @@ import {
 } from '../../lib/cursor-capabilities';
 import { materializeSelectedCapabilityRoot } from '../cursor/capability-root';
 import type { OpenCodePipelineCapabilities } from '../pipelines/opencode-prompt-runner';
-import { buildOpenCodeMcpServers, getOpenCodeMcpBaseEnv } from './mcp-servers';
+import {
+  buildOpenCodeMcpServers,
+  getOpenCodeMcpBaseEnv,
+  openCodeMcpServersForAcp,
+} from './mcp-servers';
 import {
   readOpenCodeMcpSnapshot,
   openCodeMcpCallMatchesSnapshot,
@@ -396,10 +400,12 @@ export async function prepareCliOpenCodeCapabilities(
       if (disposed || signal.aborted)
         throw new Error('OpenCode capability setup stopped.');
     }
-    const mcpServers: McpServer[] = buildOpenCodeMcpServers({
-      definitions,
-      cwd: request.cwd,
-    });
+    const mcpServers: McpServer[] = openCodeMcpServersForAcp(
+      buildOpenCodeMcpServers({
+        definitions,
+        cwd: request.cwd,
+      }),
+    );
     snapshot = await readOpenCodeMcpSnapshot(
       mcpServers,
       identities,

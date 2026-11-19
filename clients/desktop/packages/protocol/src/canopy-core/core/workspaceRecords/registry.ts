@@ -421,6 +421,8 @@ export const CORE_WORKSPACE_RECORDS_ERROR_KINDS = {
   'core.workspaceRecords.identityConflict': 'conflict',
   /** A target changed since the caller's read; nothing was decided. */
   'core.workspaceRecords.fingerprintConflict': 'conflict',
+  /** A pre-decision read failed. Optional details.errorCode is a filesystem code. */
+  'core.workspaceRecords.configUnreadable': 'failed_precondition',
   /** An expected revision moved; nothing was decided. */
   'core.workspaceRecords.revisionConflict': 'conflict',
   'core.workspaceRecords.recoveryRequired': 'failed_precondition',
@@ -449,6 +451,7 @@ export type CoreWorkspaceRecordsErrorCode =
 const CODE = z.enum([
   'core.workspaceRecords.identityConflict',
   'core.workspaceRecords.fingerprintConflict',
+  'core.workspaceRecords.configUnreadable',
   'core.workspaceRecords.revisionConflict',
   'core.workspaceRecords.recoveryRequired',
   'core.workspaceRecords.unappliedChange',

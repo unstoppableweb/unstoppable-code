@@ -368,8 +368,5 @@ export async function prepareCursorRuntimeEnvironment(
     CURSOR_DATA_DIR: data,
     NODE_COMPILE_CACHE: cache,
     NO_OPEN_BROWSER: '1',
-    // Any child that resolves to this app's Electron executable (hook launchers
-    // in packaged builds) must behave as plain Node rather than start Electron.
-    ELECTRON_RUN_AS_NODE: '1',
   };
 }

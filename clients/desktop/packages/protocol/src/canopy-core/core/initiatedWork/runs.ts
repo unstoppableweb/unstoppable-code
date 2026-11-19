@@ -180,6 +180,39 @@ export type InitiatedWorkCodeGraphBaseMaintenanceOriginContext = z.output<
   typeof InitiatedWorkCodeGraphBaseMaintenanceOriginContextSchema
 >;
 
+/** The source of a pipeline's automatic transient retries (CAN-4175). */
+export const INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE =
+  'pipeline.transient-retry';
+
+/**
+ * What a `system` origin from the transient-retry scheduler keeps in its
+ * context: the paused execution and the status reasons the retry resumes,
+ * which attempt this is and when it is due, and the attempts each step had
+ * used when it was scheduled, with the steps this retry resumes marked, so a
+ * restart continues the count. Steps are kept by digest, so the context stays
+ * within an origin's size limit however long their IDs are.
+ */
+export const InitiatedWorkPipelineTransientRetryOriginContextSchema =
+  z.strictObject({
+    executionId: z.string().min(1).max(256),
+    statusReasonIds: z.array(z.uuid()).min(1).max(256),
+    attempt: z.number().int().min(1).max(64),
+    notBefore: z.iso.datetime({ offset: true }),
+    stepAttempts: z
+      .array(
+        z.strictObject({
+          /** The first 16 hex digits of the SHA-256 of `jobId\0stepId`. */
+          step: z.string().regex(/^[0-9a-f]{16}$/),
+          used: z.number().int().min(0).max(64),
+          scheduled: z.boolean(),
+        }),
+      )
+      .max(256),
+  });
+export type InitiatedWorkPipelineTransientRetryOriginContext = z.output<
+  typeof InitiatedWorkPipelineTransientRetryOriginContextSchema
+>;
+
 export const CORE_INITIATED_WORK_HOOK_CHAT_KIND = 'core.initiatedWork.hookChat';
 
 export const InitiatedWorkHookChatOutcomeSchema = z.strictObject({

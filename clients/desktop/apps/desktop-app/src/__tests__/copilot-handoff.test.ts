@@ -1,5 +1,9 @@
 import type * as FsPromises from 'node:fs/promises';
+import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
+import { CopilotAuthorityRecordSchema } from '@canopy/core-runtime/node/vault';
+import { createCopilotSetupLineage } from '../main/copilot/setup-lineage';
 import type * as AtomicFile from '../main/lib/atomic-file';
+import type * as CanopyCoreProtocol from '@canopy/protocol/canopy-core';
 import { createCopilotVaultPilot } from '../../../core-daemon/src/copilot-pilot';
 import { createCopilotSelectionReceipt } from '../main/copilot/selection-receipt';
 import { CopilotLocalFrameSchema } from '@canopy/protocol/copilot-recipient';
@@ -57,13 +61,19 @@ import {
 } from '../main/copilot/qualification-handoff';
 import { readCopilotSelectionPreferences as initialReadSelection } from '../main/copilot/selection-receipt';
 import {
+  readPreferencesFile as initialReadPreferences,
   updatePreferencesFile as initialUpdatePreferences,
   flushPreferencesWrites as initialFlushPreferences,
   observeCopilotSelectionAuthority as initialObserveSelection,
 } from '../main/lib/preferences-store';
 import { getDataDir } from '../main/lib/paths';
 
+// Loaded composition rows measured 4.5 s; allow 2x headroom without faking durable I/O.
+const COPILOT_COMPOSITION_ROW_TIMEOUT_MS = 10_000;
+jest.setTimeout(COPILOT_COMPOSITION_ROW_TIMEOUT_MS);
+
 let readCopilotCredential = initialReadCredential;
+let readPreferencesFile = initialReadPreferences;
 let readCopilotSelectionPreferences = initialReadSelection;
 let updatePreferencesFile = initialUpdatePreferences;
 let flushPreferencesWrites = initialFlushPreferences;
@@ -71,6 +81,13 @@ let observeCopilotSelectionAuthority = initialObserveSelection;
 let previousHostOwner: object | undefined;
 let mockSource: string;
 let mockDecryptFails = false;
+let mockPreferenceWriteFails = false;
+let mockPreferenceAckLost = false;
+let onSetupPrepare: (() => Promise<void>) | undefined;
+let onSetupConfirm: (() => Promise<void>) | undefined;
+let onSetupPredecessor: (() => Promise<void>) | undefined;
+let onOrdinaryAuthorityRead: (() => Promise<void>) | undefined;
+let mockOnControlRead: (() => Promise<void>) | undefined;
 let mockCleanupFault: string | undefined;
 let mockOnClaimDirectorySync: (() => Promise<void>) | undefined;
 function mockFault(edge: string): void {
@@ -82,6 +99,17 @@ jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
   return {
     ...actual,
+    async readFile(
+      ...args: Parameters<typeof actual.readFile>
+    ): ReturnType<typeof actual.readFile> {
+      const bytes = await actual.readFile(...args);
+      if (
+        typeof args[0] === 'string' &&
+        args[0].endsWith('/handoff-control.v1.json')
+      )
+        await mockOnControlRead?.();
+      return bytes;
+    },
     async link(...args: Parameters<typeof actual.link>): Promise<void> {
       if (String(args[1]).includes('/claims/')) mockFault('link-before');
       await actual.link(...args);
@@ -117,6 +145,17 @@ jest.mock('../main/lib/atomic-file', () => {
   );
   return {
     ...actual,
+    async writeFileAtomically(
+      ...args: Parameters<typeof actual.writeFileAtomically>
+    ): Promise<void> {
+      if (mockPreferenceWriteFails && args[0].endsWith('/preferences.json'))
+        throw new Error('P8 definite preference failure');
+      await actual.writeFileAtomically(...args);
+      if (mockPreferenceAckLost && args[0].endsWith('/preferences.json')) {
+        mockPreferenceAckLost = false;
+        throw new Error('P8 lost preference acknowledgement');
+      }
+    },
     async syncDirectory(
       ...args: Parameters<typeof actual.syncDirectory>
     ): Promise<void> {
@@ -138,6 +177,18 @@ jest.mock('../main/lib/atomic-file', () => {
         mockFault('claim-directory-durable-after');
     },
   };
+});
+declare global {
+  var mockCanopyCoreProtocol: typeof CanopyCoreProtocol | undefined;
+}
+// compose()'s restarts share one copy of this catalog: it holds only readonly
+// schemas, and rebuilding it per restart doubled each case's time under load.
+// Reload it per restart if it ever gains module state.
+jest.mock('@canopy/protocol/canopy-core', () => {
+  globalThis.mockCanopyCoreProtocol ??= jest.requireActual<
+    typeof CanopyCoreProtocol
+  >('@canopy/protocol/canopy-core');
+  return globalThis.mockCanopyCoreProtocol;
 });
 jest.mock('../main/lib/paths', () => ({
   ...jest.requireActual<typeof PathsModule>('../main/lib/paths'),
@@ -184,6 +235,8 @@ let main: ReturnType<typeof createCopilotQualificationHandoff> | undefined;
 let core: ReturnType<typeof createCopilotHandoffCore> | undefined;
 let endpoint: Awaited<ReturnType<typeof encodedCopilotEndpoint>> | undefined;
 let interruptAt: string | undefined;
+let useCommitFault: 'before' | 'after' | undefined;
+let armedCommitFault: 'before' | 'after' | undefined;
 let frames: MigrationWireFrame[];
 let dataRoot: string;
 let holdPut: (() => Promise<void>) | undefined;
@@ -204,6 +257,8 @@ let refreshForUse = false;
 let refreshCalls = 0;
 let discoveryCalls = 0;
 let modelPilot: ReturnType<typeof createCopilotVaultPilot> | undefined;
+let coreProcessLifetime = {};
+let pilotForSetup: () => ReturnType<typeof createCopilotVaultPilot>;
 let completeDiscovery: ((evidence: CopilotUseCompletion) => void) | undefined;
 async function closeEndpoint(): Promise<void> {
   modelPilot?.close();
@@ -216,7 +271,15 @@ async function closeEndpoint(): Promise<void> {
 async function reopen(): Promise<void> {
   vault?.dispose();
   store?.close();
-  store = await folder.opened();
+  store = await folder.opened({
+    sync(commit): void {
+      const fault = armedCommitFault;
+      armedCommitFault = undefined;
+      if (fault !== 'before') commit();
+      if (fault) throw new Error('injected actual use COMMIT uncertainty');
+    },
+  });
+  coreProcessLifetime = {}; // Reacquired exclusive store models a fresh core process in this fixture.
   const opened = await openVaultReadRepository({
     store,
     slots: slots.port,
@@ -237,6 +300,7 @@ function mainHost(): ReturnType<typeof createCopilotQualificationHandoff> {
 async function compose(): Promise<void> {
   await flushPreferencesWrites();
   let createHost = createCopilotQualificationHandoff;
+  let createSelection = createCopilotSelectionReceipt;
   // Reconstruct main's actual queue, gate, preferences owner and all source module state.
   // Only filesystem bytes and the synthetic OS key-slot provider survive a restart.
   await jest.isolateModulesAsync(async () => {
@@ -247,14 +311,18 @@ async function compose(): Promise<void> {
     const selection = await import('../main/copilot/selection-receipt');
     const handoff = await import('../main/copilot/qualification-handoff');
     readCopilotCredential = authority.readCopilotCredential;
+    readPreferencesFile = preferences.readPreferencesFile;
     readCopilotSelectionPreferences = selection.readCopilotSelectionPreferences;
     updatePreferencesFile = preferences.updatePreferencesFile;
     flushPreferencesWrites = preferences.flushPreferencesWrites;
     observeCopilotSelectionAuthority =
       preferences.observeCopilotSelectionAuthority;
     createHost = handoff.createCopilotQualificationHandoff;
+    createSelection = selection.createCopilotSelectionReceipt;
   });
   const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const setupLineage = createCopilotSetupLineage();
+  const ordinarySelection = createSelection(undefined, setupLineage);
   const realCompare = state.compareExchange.bind(state);
   const realPut = state.writer.put.bind(state.writer);
   const qualifiedState = {
@@ -284,6 +352,11 @@ async function compose(): Promise<void> {
     },
     migration: {
       ...state.migration,
+      recordUse(...args: Parameters<typeof state.migration.recordUse>): void {
+        armedCommitFault = useCommitFault;
+        useCommitFault = undefined;
+        state.migration.recordUse(...args);
+      },
       retiredDeletionReceipt(
         ...args: Parameters<typeof state.migration.retiredDeletionReceipt>
       ): void {
@@ -339,8 +412,106 @@ async function compose(): Promise<void> {
     source,
     admittedHost: hostFacts,
   };
+  function getPilot(): ReturnType<typeof createCopilotVaultPilot> {
+    return (modelPilot ??= createCopilotVaultPilot({
+      journal: qualifiedState.journal,
+      processLifetime: coreProcessLifetime,
+      repository: () => Promise.resolve(vault.repository),
+      writer: () => Promise.resolve(qualifiedState.writer),
+      probeKeyIfDue: () => vault.probeKeyIfDue(),
+      now: () =>
+        refreshForUse
+          ? Date.parse(grant.accessTokenExpiresAt) - 1000
+          : Date.now(),
+      refresh: () => {
+        refreshCalls++;
+        return Promise.resolve({
+          kind: 'success',
+          grant: {
+            ...grant,
+            accessToken: 'synthetic-successor-access',
+            accessTokenExpiresAt: '2100-01-01T00:00:00.000Z',
+          },
+        });
+      },
+      selection: {
+        ...ordinarySelection,
+        async confirm(request) {
+          await onSetupConfirm?.();
+          return ordinarySelection.confirm(request);
+        },
+        async setupPredecessor(): Promise<CopilotHostSelection | undefined> {
+          await onSetupPredecessor?.();
+          return ordinarySelection.setupPredecessor?.();
+        },
+        async prepare(identity, generation): Promise<boolean> {
+          await onSetupPrepare?.();
+          return ordinarySelection.prepare(identity, generation);
+        },
+      },
+      platform: 'darwin',
+      capable: () => true,
+      qualificationAdmission: () =>
+        coreHost().current() || coreHost().retiredBinding() !== null,
+      classifyProbeFailure: () => 'network',
+      completed: (evidence) => {
+        replayCompletion = structuredClone(evidence);
+        completeDiscovery?.(
+          useFault === 'provisional'
+            ? {
+                ...evidence,
+                presentations: evidence.presentations.map((p) => ({
+                  ...p,
+                  committedPin: null,
+                })),
+              }
+            : useFault === 'stale'
+              ? {
+                  ...evidence,
+                  presentations: evidence.presentations.map((p) => ({
+                    ...p,
+                    binding: {
+                      ...p.binding,
+                      publicationGeneration:
+                        p.binding.publicationGeneration + 1,
+                    },
+                  })),
+                }
+              : evidence,
+        );
+      },
+      start: () =>
+        Promise.resolve({
+          identity: {
+            runtimeId: 'synthetic-model-provider',
+            pid: 123,
+            started: 1,
+          },
+          isClosed: () => false,
+          exited: new Promise<void>(() => undefined),
+          close: () => Promise.resolve(),
+          async execute(purpose, context) {
+            context.admit();
+            expect([grant.accessToken, 'synthetic-successor-access']).toContain(
+              await context.token(),
+            );
+            context.admit();
+            if (useFault === 'provider')
+              throw new Error('Synthetic provider failure');
+            if (purpose === 'setup-probe')
+              return { kind: 'setup-probe', available: true };
+            if (purpose !== 'models')
+              throw new Error('Only model discovery supported by fixture');
+            return { kind: 'models', models: [] };
+          },
+        }),
+    }));
+  }
+  pilotForSetup = getPilot;
   core = createCopilotHandoffCore({
     state: qualifiedState,
+    removePublished: (epoch) => getPilot().authority.remove(epoch),
+    recoverPublished: () => getPilot().authority.demand(),
     channel,
     migration: {
       admission: {
@@ -367,82 +538,7 @@ async function compose(): Promise<void> {
           return;
         }
         completeDiscovery = completed;
-        const pilot = (modelPilot ??= createCopilotVaultPilot({
-          journal: qualifiedState.journal,
-          repository: () => Promise.resolve(vault.repository),
-          writer: () => Promise.resolve(qualifiedState.writer),
-          probeKeyIfDue: () => vault.probeKeyIfDue(),
-          now: () =>
-            refreshForUse
-              ? Date.parse(grant.accessTokenExpiresAt) - 1000
-              : Date.now(),
-          refresh: () => {
-            refreshCalls++;
-            return Promise.resolve({
-              kind: 'success',
-              grant: {
-                ...grant,
-                accessToken: 'synthetic-successor-access',
-                accessTokenExpiresAt: '2100-01-01T00:00:00.000Z',
-              },
-            });
-          },
-          selection: createCopilotSelectionReceipt(),
-          platform: 'darwin',
-          capable: () => true,
-          qualificationAdmission: () => coreHost().current(),
-          classifyProbeFailure: () => 'network',
-          completed: (evidence) => {
-            replayCompletion = structuredClone(evidence);
-            completeDiscovery?.(
-              useFault === 'provisional'
-                ? {
-                    ...evidence,
-                    presentations: evidence.presentations.map((p) => ({
-                      ...p,
-                      committedPin: null,
-                    })),
-                  }
-                : useFault === 'stale'
-                  ? {
-                      ...evidence,
-                      presentations: evidence.presentations.map((p) => ({
-                        ...p,
-                        binding: {
-                          ...p.binding,
-                          publicationGeneration:
-                            p.binding.publicationGeneration + 1,
-                        },
-                      })),
-                    }
-                  : evidence,
-            );
-          },
-          start: () =>
-            Promise.resolve({
-              identity: {
-                runtimeId: 'synthetic-model-provider',
-                pid: 123,
-                started: 1,
-              },
-              isClosed: () => false,
-              exited: new Promise<void>(() => undefined),
-              close: () => Promise.resolve(),
-              async execute(purpose, context) {
-                context.admit();
-                expect([
-                  grant.accessToken,
-                  'synthetic-successor-access',
-                ]).toContain(await context.token());
-                context.admit();
-                if (useFault === 'provider')
-                  throw new Error('Synthetic provider failure');
-                if (purpose !== 'models')
-                  throw new Error('Only model discovery supported by fixture');
-                return { kind: 'models', models: [] };
-              },
-            }),
-        }));
+        const pilot = getPilot();
         try {
           const messages: unknown[] = [];
           const audience = {
@@ -523,11 +619,17 @@ async function compose(): Promise<void> {
   const wire = endpoint;
   let lastAction: string | undefined;
   main = createHost({
+    setupLineage,
     dataRoot,
     source,
     retireChannel: (): void => handler.close(),
     cancelAdmission: (): void => handler.cancelAdmission(),
     corePhase: () => Promise.resolve(handler.phase()),
+    retiredBinding: () => Promise.resolve(handler.retiredBinding()),
+    ordinaryAuthority: async () => {
+      await onOrdinaryAuthorityRead?.();
+      return handler.ordinaryAuthority();
+    },
     proveUnused: (): Promise<boolean> => Promise.resolve(handler.unused()),
     async exchange(frame, metadata) {
       expect(metadata.deadlineMs).toBeGreaterThan(Date.now());
@@ -581,6 +683,7 @@ async function compose(): Promise<void> {
 }
 beforeEach(async () => {
   readCopilotCredential = initialReadCredential;
+  readPreferencesFile = initialReadPreferences;
   readCopilotSelectionPreferences = initialReadSelection;
   updatePreferencesFile = initialUpdatePreferences;
   flushPreferencesWrites = initialFlushPreferences;
@@ -596,6 +699,11 @@ beforeEach(async () => {
   discoveryCalls = 0;
   onChannelRead = undefined;
   mockDecryptFails = false;
+  mockPreferenceWriteFails = false;
+  onSetupPrepare = undefined;
+  onSetupPredecessor = undefined;
+  onOrdinaryAuthorityRead = undefined;
+  mockOnControlRead = undefined;
   holdPut = undefined;
   onHostAction = undefined;
   onPut = undefined;
@@ -610,7 +718,10 @@ beforeEach(async () => {
     copilotAccount: undefined,
     copilotEnabled: false,
   }));
+  await flushPreferencesWrites();
   interruptAt = undefined;
+  useCommitFault = undefined;
+  armedCommitFault = undefined;
   frames = [];
   await reopen();
   vault.openCopilotPilotState({
@@ -619,6 +730,8 @@ beforeEach(async () => {
   });
 });
 afterEach(async () => {
+  mockPreferenceWriteFails = false;
+  mockPreferenceAckLost = false;
   core?.close();
   await main?.close();
   await closeEndpoint();
@@ -630,8 +743,1617 @@ afterEach(async () => {
   store.close();
   folder.remove();
 });
+it('P8 round 2 retires a published import after rejected refresh deletes under the removal fence', async () => {
+  await compose();
+  await mainHost().connect();
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const before = state.read();
+  const head = before.authority.head;
+  if (!head) throw new Error('Missing published account');
+  let entered = (): void => undefined;
+  const deleting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { createCopilotVaultGrantAuthority } =
+    await import('@canopy/core-runtime/node/vault');
+  const a = createCopilotVaultGrantAuthority({
+    repository: () => Promise.resolve(vault.repository),
+    writer: () =>
+      Promise.resolve({
+        ...state.writer,
+        delete: async (request) => {
+          entered();
+          await held;
+          return state.writer.delete(request);
+        },
+      }),
+    journal: state.journal,
+    probeKeyIfDue: () => vault.probeKeyIfDue(),
+    probe: () => Promise.resolve(),
+    now: () => Date.parse(grant.accessTokenExpiresAt) - 1000,
+    refresh: () => Promise.resolve({ kind: 'rejected' }),
+    selection: createCopilotSelectionReceipt(),
+    recipient: {
+      admitted: () => true,
+      deliver: () => undefined,
+      revoke: () => undefined,
+    },
+  });
+  let retained = false;
+  const cas = state.journal.compareExchange.bind(state.journal);
+  jest
+    .spyOn(state.journal, 'compareExchange')
+    .mockImplementation(async (sequence, next) => {
+      const result = await cas(sequence, next);
+      if (result && next.removal) release();
+      if (
+        result &&
+        next.head &&
+        next.removal &&
+        !next.mutation &&
+        next.completed?.kind === 'delete'
+      )
+        retained = true;
+      return result;
+    });
+  const presenting = a.present('round-2-recipient', head.epoch);
+  await deleting;
+  const removed = await a.remove(head.epoch);
+  await presenting;
+  expect(retained).toBe(true);
+  expect(store.readEntry(head.pin.ref.entryId)).toBeNull();
+  expect(removed).toEqual({ kind: 'removed' });
+  expect(state.read().authority).toMatchObject({
+    head: null,
+    mutation: null,
+    removal: null,
+    completed: { kind: 'delete', epoch: head.epoch },
+  });
+  expect(state.read().binding?.phase).toBe('retired');
+  expect(state.read().controls).toContainEqual(
+    expect.objectContaining({
+      kind: 'retirement',
+      phase: 'retired',
+      destination: head.pin,
+    }),
+  );
+  expect(store.listIntents().filter((i) => i.kind === 'delete')).toHaveLength(
+    1,
+  );
+  expect(await a.remove(head.epoch)).toEqual({ kind: 'removed' });
+});
+
+it.each(['success', 'failed-disable', 'abort', 'busy', 'busy-removal'])(
+  'P8 round 2 Change account revalidates retirement before preparing its successor (%s)',
+  async (admission) => {
+    const generation = await retireForOrdinarySetup();
+    const first = await pilotForSetup().setup(grant, generation);
+    if (first.kind !== 'ready') throw new Error('Missing first setup');
+    const { createCopilotVaultConnection } =
+      await import('../main/copilot/vault-connection');
+    const flag = await import('../main/copilot/feature-flag');
+    const enabled = jest
+      .spyOn(flag, 'assertCopilotHarnessEnabled')
+      .mockImplementation(() => undefined);
+    let authorized = 0;
+    let holdStatus = false;
+    let holdRemoval = false;
+    let entered = (): void => undefined;
+    const entering = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    function backend(): CopilotConnectionBackend {
+      const pilot = pilotForSetup();
+      return createCopilotVaultConnection({
+        port: {
+          status: async () => {
+            if (holdStatus) {
+              holdStatus = false;
+              entered();
+              await held;
+            }
+            return pilot.authority.status();
+          },
+          demand: () => pilot.demand(),
+          recoverRuntimeReceipts: () => pilot.recoverRuntimeReceipts(),
+          setup: (...args) => pilot.setup(...args),
+          resume: (id) => pilot.authority.resume(id),
+          cancel: (id) => pilot.authority.cancel(id),
+          remove: async (epoch) => {
+            if (holdRemoval) {
+              holdRemoval = false;
+              entered();
+              await held;
+            }
+            return pilot.authority.remove(epoch);
+          },
+          removePending: (id) => pilot.removePending(id),
+          revoke: () => pilot.revoke(),
+          reopen: () => pilot.reopen(),
+          close: () => pilot.close(),
+          quiesce: () => pilot.quiesce(),
+          projectPolicy: () => Promise.resolve('test-policy'),
+          releasePolicy: () => undefined,
+          open: (...args) => pilot.open(...args),
+        },
+        preferences: readCopilotSelectionPreferences,
+        authorize: () => {
+          authorized++;
+          return Promise.resolve(grant);
+        },
+        installation: () =>
+          Promise.resolve({
+            supported: true,
+            installed: true,
+            version: 'test',
+            enabled: false,
+            phase: 'idle',
+            account: null,
+          }),
+      });
+    }
+    let routed = connection(undefined, undefined, backend());
+    try {
+      if (admission === 'abort') {
+        const controller = new AbortController();
+        onOrdinaryAuthorityRead = (): Promise<void> => {
+          onOrdinaryAuthorityRead = undefined;
+          controller.abort(new Error('Abort during ordinary admission'));
+          return Promise.resolve();
+        };
+        await expect(
+          routed.facade.connectCopilot(
+            controller.signal,
+            () => undefined,
+            true,
+          ),
+        ).rejects.toThrow('Abort during ordinary admission');
+        expect(
+          vault.openCopilotPilotState({ kind: 'existing' }).read().authority
+            .head,
+        ).toEqual(first.head);
+        expect(store.readEntry(first.head.pin.ref.entryId)).not.toBeNull();
+        expect(authorized).toBe(0);
+        return;
+      }
+      if (admission === 'busy' || admission === 'busy-removal') {
+        holdStatus = admission === 'busy';
+        holdRemoval = admission === 'busy-removal';
+        const connecting = routed.facade.connectCopilot(
+          new AbortController().signal,
+          () => undefined,
+          holdRemoval,
+        );
+        await entering;
+        try {
+          await expect(
+            routed.facade.connectCopilot(
+              new AbortController().signal,
+              () => undefined,
+              true,
+            ),
+          ).rejects.toThrow('already in progress');
+          expect(
+            vault.openCopilotPilotState({ kind: 'existing' }).read().authority
+              .head,
+          ).toEqual(first.head);
+          expect(store.readEntry(first.head.pin.ref.entryId)).not.toBeNull();
+          expect(authorized).toBe(0);
+        } finally {
+          release();
+          await connecting;
+        }
+        expect(await mainHost().ordinarySetup()).toBe(true);
+        return;
+      }
+      if (admission === 'failed-disable') {
+        mockPreferenceWriteFails = true;
+        try {
+          await expect(
+            routed.facade.connectCopilot(
+              new AbortController().signal,
+              () => undefined,
+              true,
+            ),
+          ).rejects.toThrow();
+        } finally {
+          mockPreferenceWriteFails = false;
+        }
+        expect(authorized).toBe(0);
+        const state = vault.openCopilotPilotState({ kind: 'existing' }).read();
+        expect(state.authority.head).toEqual(first.head);
+        expect(state.authority.removal).toBeNull();
+        expect(store.readEntry(first.head.pin.ref.entryId)).not.toBeNull();
+        expect(await mainHost().ordinarySetup()).toBe(false);
+        await expect(mainHost().custody()).rejects.toThrow(
+          'Host receipt changed.',
+        );
+        await expect(mainHost().custody()).rejects.toThrow('unavailable');
+        expect(
+          vault.openCopilotPilotState({ kind: 'existing' }).read(),
+        ).toEqual(state);
+        coreHost().close();
+        await mainHost().close();
+        await closeEndpoint();
+        await reopen();
+        await compose();
+        expect(await mainHost().ordinarySetup()).toBe(true);
+        routed = connection(undefined, undefined, backend());
+      }
+      await expect(
+        routed.facade.connectCopilot(
+          new AbortController().signal,
+          () => undefined,
+          true,
+        ),
+      ).resolves.toMatchObject({ phase: 'connected' });
+      expect(authorized).toBe(1);
+      expect(routed.legacyCalls()).toBe(0);
+      await expect(mainHost().custody()).resolves.toBe('pending');
+      expect(await mainHost().ordinarySetup()).toBe(true);
+      const selected = (await readCopilotSelectionPreferences())
+        .copilotVaultSelection;
+      expect(selected?.state).toBe('selected');
+      expect(selected?.identity.epoch).not.toBe(first.head.epoch);
+      expect(selected?.identity.operationId).not.toBe(first.head.operationId);
+    } finally {
+      enabled.mockRestore();
+    }
+  },
+);
+
+it('P8 published clear with definite preference failure preserves the destination and reversible published history', async () => {
+  await compose();
+  await mainHost().connect();
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const before = state.read();
+  if (!before.authority.head) throw new Error('Missing published account');
+  mockPreferenceWriteFails = true;
+  await expect(mainHost().connect(true)).rejects.toThrow();
+  expect(store.readEntry(before.authority.head.pin.ref.entryId)).not.toBeNull();
+  expect(state.read().binding?.phase).toBe('published');
+  expect(state.read().authority.removal).toBeNull();
+});
+
+async function retireForOrdinarySetup(): Promise<string> {
+  await compose();
+  await mainHost().connect();
+  await mainHost().verify();
+  await mainHost().cleanup();
+  await mainHost().connect(true);
+  const disabled = (await readCopilotSelectionPreferences())
+    .copilotVaultSelection;
+  if (!disabled) throw new Error('Missing retired import receipt');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  return disabled.pinGeneration;
+}
+it.each(
+  (['disconnect', 'change-account'] as const).flatMap((removal) =>
+    [
+      { scenario: 'definite failure then retry', faults: ['definite', 'none'] },
+      {
+        scenario: 'acknowledgement-loss successor',
+        faults: ['acknowledgement'],
+      },
+      { scenario: 'repeated successful B to C', faults: ['none', 'none'] },
+    ].map((scenario) => ({ removal, ...scenario })),
+  ),
+)(
+  'P8 routed lineage oracle: $removal with prepare polling and $scenario',
+  async ({ removal, faults }) => {
+    const generation = await retireForOrdinarySetup();
+    const a = await pilotForSetup().setup(grant, generation);
+    if (a.kind !== 'ready') throw new Error('Missing A');
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    await writeFile(mockSource, 'unrelated-new-legacy-file');
+    const { createCopilotVaultConnection } =
+      await import('../main/copilot/vault-connection');
+    const flag = await import('../main/copilot/feature-flag');
+    const enabled = jest
+      .spyOn(flag, 'assertCopilotHarnessEnabled')
+      .mockImplementation(() => undefined);
+    const pilot = pilotForSetup();
+    const backend = createCopilotVaultConnection({
+      port: {
+        ...pilot,
+        status: () => pilot.authority.status(),
+        resume: (id) => pilot.authority.resume(id),
+        cancel: (id) => pilot.authority.cancel(id),
+        remove: (epoch) => pilot.authority.remove(epoch),
+        projectPolicy: () => Promise.resolve('test-policy'),
+        releasePolicy: () => undefined,
+      },
+      preferences: readCopilotSelectionPreferences,
+      authorize: () => Promise.resolve(grant),
+      installation: (): Promise<CopilotConnectionStatus> =>
+        Promise.resolve({
+          supported: true,
+          installed: true,
+          enabled: false,
+          phase: 'idle',
+          version: 'fixture',
+        }),
+    });
+    const routed = connection(undefined, undefined, backend);
+    try {
+      let prior = a.head;
+      for (const fault of faults) {
+        if (removal === 'disconnect') await routed.facade.disconnectCopilot();
+        let polledStatus: CopilotConnectionStatus | undefined;
+        onSetupPrepare = async (): Promise<void> => {
+          onSetupPrepare = undefined;
+          polledStatus = await routed.facade.copilotConnectionStatus();
+          mockPreferenceWriteFails = fault === 'definite';
+          mockPreferenceAckLost = fault === 'acknowledgement';
+        };
+        const connect = (): Promise<CopilotConnectionStatus> =>
+          routed.facade.connectCopilot(
+            new AbortController().signal,
+            () => undefined,
+            removal === 'change-account',
+          );
+        if (fault === 'definite') {
+          await expect(connect()).rejects.toThrow();
+          expect(polledStatus).toMatchObject({ supported: true });
+          mockPreferenceWriteFails = false;
+          expect(await mainHost().ordinarySetup()).toBe(true);
+          continue;
+        }
+        await expect(connect()).resolves.toMatchObject({ phase: 'connected' });
+        expect(polledStatus).toMatchObject({ supported: true });
+        const selected = (await readCopilotSelectionPreferences())
+          .copilotVaultSelection;
+        const head = vault.openCopilotPilotState({ kind: 'existing' }).read()
+          .authority.head;
+        if (!head) throw new Error('Missing successor');
+        expect(head.epoch).not.toBe(prior.epoch);
+        expect(head.operationId).not.toBe(prior.operationId);
+        expect(selected?.pinGeneration).not.toBe(prior.pinGeneration);
+        prior = head;
+        expect(await mainHost().ordinarySetup()).toBe(true);
+      }
+      expect(await readFile(mockSource, 'utf8')).toBe(
+        'unrelated-new-legacy-file',
+      );
+    } finally {
+      enabled.mockRestore();
+    }
+  },
+);
+async function retiredSetupPredecessor(): Promise<
+  NonNullable<
+    Awaited<
+      ReturnType<typeof readCopilotSelectionPreferences>
+    >['copilotVaultSelection']
+  >
+> {
+  const generation = await retireForOrdinarySetup();
+  const created = await pilotForSetup().setup(grant, generation);
+  if (created.kind !== 'ready') throw new Error('Missing setup predecessor');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  expect(await pilotForSetup().authority.remove(created.head.epoch)).toEqual({
+    kind: 'removed',
+  });
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  const predecessor = (await readCopilotSelectionPreferences())
+    .copilotVaultSelection;
+  if (
+    !predecessor ||
+    predecessor.identity.origin !== 'setup' ||
+    predecessor.state !== 'disabled'
+  )
+    throw new Error('Missing disabled setup predecessor');
+  return predecessor;
+}
+
+it('P8 lineage oracle: v2 retains predecessor facts after an unprepared successor cancellation overwrites completion', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  expect(state.read().authority.completed?.epoch).toBe(
+    predecessor.identity.epoch,
+  );
+  let successor: { operationId: string; epoch: string } | undefined;
+  onSetupPrepare = (): Promise<void> => {
+    onSetupPrepare = undefined;
+    const mutation = state.read().authority.mutation;
+    if (!mutation) throw new Error('Missing successor intent');
+    successor = { operationId: mutation.operationId, epoch: mutation.epoch };
+    return Promise.resolve();
+  };
+  mockPreferenceWriteFails = true;
+  const failed = await pilotForSetup().setup(grant, predecessor.pinGeneration);
+  mockPreferenceWriteFails = false;
+  expect(failed.kind).toBe('blocked');
+  if (!successor) throw new Error('Successor did not reach prepare');
+  const bundle = state.read();
+  expect(bundle.authority).toMatchObject({
+    head: null,
+    mutation: null,
+    removal: null,
+    completed: {
+      operationId: `${successor.operationId}:cancel`,
+      epoch: successor.epoch,
+      kind: 'delete',
+    },
+  });
+  expect(
+    (await readCopilotSelectionPreferences()).copilotVaultSelection,
+  ).toEqual(predecessor);
+  expect(bundle.authority).toMatchObject({
+    version: 2,
+    setupLineage: { predecessor, successor, phase: 'cancelled' },
+  });
+  expect(JSON.stringify(bundle)).toContain(predecessor.identity.epoch);
+  expect(JSON.stringify(bundle)).toContain(predecessor.pinGeneration);
+  expect(JSON.stringify(state.migration.read())).not.toContain(
+    predecessor.identity.epoch,
+  );
+  expect(JSON.stringify(store.listIntents())).not.toContain(
+    predecessor.identity.epoch,
+  );
+  const successorId = successor.operationId;
+  expect(
+    store.listIntents().some((i) => i.idempotencyKey === successorId),
+  ).toBe(false);
+});
+
+it.each(['valid', 'foreign-epoch'])(
+  'P8 lineage oracle: reconstruct after unprepared successor cancellation (%s)',
+  async (damage) => {
+    const predecessor = await retiredSetupPredecessor();
+    mockPreferenceWriteFails = true;
+    const failed = await pilotForSetup().setup(
+      grant,
+      predecessor.pinGeneration,
+    );
+    mockPreferenceWriteFails = false;
+    expect(failed.kind).toBe('blocked');
+    const retained = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    expect(retained.authority.completed?.operationId).toMatch(/:cancel$/);
+    expect(retained.authority.completed?.epoch).not.toBe(
+      predecessor.identity.epoch,
+    );
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    if (damage === 'foreign-epoch') {
+      await updatePreferencesFile(() => ({
+        copilotVaultSelection: {
+          ...predecessor,
+          identity: {
+            ...predecessor.identity,
+            epoch: 'foreign-predecessor-epoch',
+          },
+        },
+      }));
+    }
+    await compose();
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retained,
+    );
+    expect(await mainHost().ordinarySetup()).toBe(damage === 'valid');
+    if (damage === 'valid') {
+      expect(
+        (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+      ).toBe('ready');
+      expect(await mainHost().ordinarySetup()).toBe(true);
+    } else {
+      await updatePreferencesFile(() => ({
+        copilotVaultSelection: predecessor,
+      }));
+      expect(await mainHost().ordinarySetup()).toBe(false);
+      await expect(mainHost().custody()).rejects.toThrow('unavailable');
+    }
+  },
+);
+
+it('P8 lineage oracle: crash before successor prepare recovers the exact predecessor and retries', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  let admittedBefore: boolean | undefined;
+  let resumed: unknown;
+  let admittedAfter: boolean | undefined;
+  onSetupPrepare = async (): Promise<void> => {
+    onSetupPrepare = undefined;
+    const pending = vault.openCopilotPilotState({ kind: 'existing' }).read()
+      .authority.mutation;
+    if (!pending) throw new Error('Missing successor');
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    admittedBefore = await mainHost().ordinarySetup();
+    resumed = await pilotForSetup().authority.resume(pending.operationId);
+    admittedAfter = await mainHost().ordinarySetup();
+    throw new Error('Synthetic previous process ended');
+  };
+  expect(
+    (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+  ).not.toBe('ready');
+  expect(admittedBefore).toBe(true);
+  expect(resumed).toEqual({ kind: 'removed' });
+  expect(admittedAfter).toBe(true);
+  expect(
+    (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+  ).toBe('ready');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+
+it('P8 witness oracle: cancellation keeps an authenticated versioned predecessor and rejects tampering and v1 relabelling', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  mockPreferenceWriteFails = true;
+  expect(
+    (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+  ).toBe('blocked');
+  mockPreferenceWriteFails = false;
+  const retained = vault.openCopilotPilotState({ kind: 'existing' }).read();
+  expect(retained).toMatchObject({
+    version: 2,
+    authority: {
+      version: 2,
+      setupLineage: {
+        version: 1,
+        predecessor,
+        phase: 'cancelled',
+      },
+    },
+  });
+  expect(
+    CopilotAuthorityRecordSchema.safeParse({
+      ...retained.authority,
+      version: 1,
+    }).success,
+  ).toBe(false);
+  const stored = store.readCopilotAuthority();
+  if (!stored) throw new Error('Missing authenticated authority');
+  // Change authenticated bytes, not a trusted journal projection.
+  const damaged = stored.replace(
+    predecessor.identity.epoch,
+    'tampered-predecessor',
+  );
+  expect(damaged).not.toBe(stored);
+  expect(
+    store.writeCopilotAuthority({ expected: stored, next: damaged }).kind,
+  ).toBe('written');
+  expect(() =>
+    vault.openCopilotPilotState({ kind: 'existing' }).read(),
+  ).toThrow();
+});
+
+it('P8 improver stale-authority oracle: an unprepared cancellation cannot let an older admission interrupt its successor', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  let releasePrepare = (): void => undefined;
+  const paused = new Promise<void>((resolve) => {
+    releasePrepare = resolve;
+  });
+  let enterPrepare = (): void => undefined;
+  const entered = new Promise<void>((resolve) => {
+    enterPrepare = resolve;
+  });
+  onSetupPrepare = async (): Promise<void> => {
+    onSetupPrepare = undefined;
+    enterPrepare();
+    await paused;
+  };
+  const pilot = pilotForSetup();
+  const setup = pilot.setup(grant, predecessor.pinGeneration);
+  await entered;
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const mutation = state.read().authority.mutation;
+  if (!mutation) throw new Error('Missing unprepared successor');
+  try {
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    let reads = 0;
+    let cancellation:
+      | Awaited<ReturnType<typeof pilot.authority.cancel>>
+      | undefined;
+    let newerAdmission: boolean | undefined;
+    mockOnControlRead = async (): Promise<void> => {
+      if (++reads !== 2) return;
+      mockOnControlRead = undefined;
+      cancellation = await pilot.authority.cancel(mutation.operationId);
+      newerAdmission = await mainHost().ordinarySetup();
+    };
+    const staleAdmission = await mainHost().ordinarySetup();
+    expect(cancellation).toEqual({ kind: 'removed' });
+    expect(newerAdmission).toBe(true);
+    expect(
+      (await readCopilotSelectionPreferences()).copilotVaultSelection,
+    ).toEqual(predecessor);
+    expect(staleAdmission).toBe(false);
+    expect(await mainHost().ordinarySetup()).toBe(true);
+  } finally {
+    mockOnControlRead = undefined;
+    await mainHost().close();
+    releasePrepare();
+    await setup;
+  }
+});
+
+it('P8 improver witness oracle: interrupted predecessor cannot be authenticated by an already-entered create', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const original = state.read();
+  const foreign = {
+    ...predecessor,
+    pinGeneration: 'foreign-predecessor-nonce',
+  };
+  let entered = false;
+  onSetupPredecessor = async (): Promise<void> => {
+    onSetupPredecessor = undefined;
+    entered = true;
+    await updatePreferencesFile(() => ({ copilotVaultSelection: foreign }));
+  };
+  const result = await pilotForSetup().setup(grant, predecessor.pinGeneration);
+  expect(entered).toBe(true);
+  expect(result.kind).not.toBe('ready');
+  expect(state.read()).toEqual(original);
+  expect(await mainHost().ordinarySetup()).toBe(false);
+});
+
+it.each(['account', 'nonce', 'pin'] as const)(
+  'P8 improver oracle: reconstructed pending import predecessor matches its witness (%s)',
+  async (damage) => {
+    await retireForOrdinarySetup();
+    const predecessor = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    if (!predecessor?.pin) throw new Error('Missing import predecessor');
+    const foreign = {
+      account: {
+        ...predecessor,
+        identity: {
+          ...predecessor.identity,
+          account: {
+            ...predecessor.identity.account,
+            login: 'foreign-predecessor',
+          },
+        },
+      },
+      nonce: { ...predecessor, pinGeneration: 'foreign-predecessor' },
+      pin: {
+        ...predecessor,
+        pin: { ...predecessor.pin, revision: predecessor.pin.revision + 1 },
+      },
+    }[damage];
+    let admitted: boolean | undefined;
+    let restored: boolean | undefined;
+    let observedPredecessor: unknown;
+    let selectedAtAdmission: unknown;
+    onSetupPrepare = async (): Promise<void> => {
+      onSetupPrepare = undefined;
+      const authority = vault
+        .openCopilotPilotState({ kind: 'existing' })
+        .read().authority;
+      observedPredecessor = authority.setupLineage?.predecessor;
+      coreHost().close();
+      await mainHost().close();
+      await closeEndpoint();
+      await reopen();
+      await updatePreferencesFile(() => ({ copilotVaultSelection: foreign }));
+      await compose();
+      selectedAtAdmission = (await readCopilotSelectionPreferences())
+        .copilotVaultSelection;
+      admitted = await mainHost().ordinarySetup();
+      await updatePreferencesFile(() => ({
+        copilotVaultSelection: predecessor,
+      }));
+      restored = await mainHost().ordinarySetup();
+      throw new Error('Synthetic previous process ended');
+    };
+    expect(
+      (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+    ).not.toBe('ready');
+    expect(observedPredecessor).toEqual(predecessor);
+    expect(selectedAtAdmission).toEqual(foreign);
+    expect(admitted).toBe(false);
+    expect(restored).toBe(false);
+  },
+);
+
+it('P8 lineage oracle: disabled predecessor loss fences a successor already awaiting prepare', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  let admitted: boolean | undefined;
+  onSetupPrepare = async (): Promise<void> => {
+    onSetupPrepare = undefined;
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: {
+        ...predecessor,
+        identity: {
+          ...predecessor.identity,
+          account: {
+            ...predecessor.identity.account,
+            login: 'foreign-predecessor',
+          },
+        },
+      },
+    }));
+    admitted = await mainHost().ordinarySetup();
+    await updatePreferencesFile(() => ({ copilotVaultSelection: predecessor }));
+  };
+  expect(
+    (await pilotForSetup().setup(grant, predecessor.pinGeneration)).kind,
+  ).not.toBe('ready');
+  expect(admitted).toBe(false);
+  expect(await mainHost().ordinarySetup()).toBe(false);
+});
+
+it('P8 lineage oracle: committed cancellation retains routing while its exact delete is pending', async () => {
+  const predecessor = await retiredSetupPredecessor();
+  onPutSettled = (): void => {
+    onPutSettled = undefined;
+    mockPreferenceWriteFails = true;
+  };
+  const pending = await pilotForSetup().setup(grant, predecessor.pinGeneration);
+  mockPreferenceWriteFails = false;
+  expect(pending).toMatchObject({ kind: 'blocked', reason: 'unconfirmed' });
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const owned = state.read().authority.mutation;
+  if (!owned?.committed) throw new Error('Missing committed setup');
+  expect(state.read().authority.mutation?.committed).not.toBeNull();
+  const compare = state.journal.compareExchange.bind(state.journal);
+  let polled = false;
+  jest
+    .spyOn(state.journal, 'compareExchange')
+    .mockImplementation(async (sequence, next) => {
+      const saved = await compare(sequence, next);
+      if (
+        saved &&
+        next.mutation?.kind === 'delete' &&
+        next.mutation.operationId === `${owned.operationId}:cancel`
+      ) {
+        expect(
+          (await readCopilotSelectionPreferences()).copilotVaultSelection
+            ?.state,
+        ).toBe('disabled');
+        expect(await mainHost().ordinarySetup()).toBe(true);
+        polled = true;
+      }
+      return saved;
+    });
+  expect(await pilotForSetup().authority.cancel(owned.operationId)).toEqual({
+    kind: 'removed',
+  });
+  expect(polled).toBe(true);
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+
+it.each(['operation', 'epoch', 'account', 'nonce', 'pin', 'absent'] as const)(
+  'P8 lineage oracle: disabled predecessor L01 is permanent (%s)',
+  async (damage) => {
+    const predecessor = await retiredSetupPredecessor();
+    if (!predecessor.pin) throw new Error('Missing retired setup pin');
+    const foreign = {
+      operation: {
+        ...predecessor,
+        identity: {
+          ...predecessor.identity,
+          operationId: 'foreign-predecessor',
+        },
+      },
+      epoch: {
+        ...predecessor,
+        identity: { ...predecessor.identity, epoch: 'foreign-epoch' },
+      },
+      account: {
+        ...predecessor,
+        identity: {
+          ...predecessor.identity,
+          account: { ...predecessor.identity.account, login: 'foreign-login' },
+        },
+      },
+      nonce: { ...predecessor, pinGeneration: 'foreign-predecessor-nonce' },
+      pin: {
+        ...predecessor,
+        pin: {
+          ...predecessor.pin,
+          ref: { ...predecessor.pin.ref, entryId: 'foreign-predecessor-entry' },
+        },
+      },
+      absent: undefined,
+    }[damage];
+    const retained = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: foreign,
+      copilotEnabled: false,
+    }));
+    expect(await mainHost().ordinarySetup()).toBe(false);
+    await updatePreferencesFile(() => ({ copilotVaultSelection: predecessor }));
+    expect(await mainHost().ordinarySetup()).toBe(false);
+    await expect(mainHost().custody()).rejects.toThrow('unavailable');
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retained,
+    );
+  },
+);
+
+it.each([
+  ...(
+    ['valid', 'operation', 'account', 'nonce', 'pin', 'revision'] as const
+  ).map((damage) => ({ origin: 'setup' as const, damage })),
+  // The handoff binding already pins an import's operation and epoch.
+  ...(['valid', 'account', 'nonce', 'pin'] as const).map((damage) => ({
+    origin: 'import' as const,
+    damage,
+  })),
+])(
+  'P8 lineage oracle: restart after a completed $origin delete admits only the exact retired receipt ($damage)',
+  async ({ origin, damage }) => {
+    let predecessor: Awaited<ReturnType<typeof retiredSetupPredecessor>>;
+    if (origin === 'setup') predecessor = await retiredSetupPredecessor();
+    else {
+      await retireForOrdinarySetup();
+      const retiredImport = (await readCopilotSelectionPreferences())
+        .copilotVaultSelection;
+      if (!retiredImport) throw new Error('Missing retired import receipt');
+      predecessor = retiredImport;
+    }
+    const pin = predecessor.pin;
+    if (!pin) throw new Error('Missing retired pin');
+    expect(predecessor).toMatchObject({
+      state: 'disabled',
+      identity: { origin },
+    });
+    const retained = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    // Every row keeps the retired epoch: only exact identity may bind it.
+    const foreign = {
+      valid: predecessor,
+      operation: {
+        ...predecessor,
+        identity: { ...predecessor.identity, operationId: 'foreign-operation' },
+      },
+      account: {
+        ...predecessor,
+        identity: {
+          ...predecessor.identity,
+          account: { ...predecessor.identity.account, login: 'foreign-login' },
+        },
+      },
+      nonce: { ...predecessor, pinGeneration: 'foreign-nonce' },
+      pin: {
+        ...predecessor,
+        pin: { ...pin, ref: { ...pin.ref, entryId: 'foreign-entry' } },
+      },
+      revision: { ...predecessor, pin: { ...pin, revision: pin.revision + 1 } },
+    }[damage];
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: foreign,
+      copilotEnabled: false,
+    }));
+    await compose();
+    const observed = {
+      retained: vault.openCopilotPilotState({ kind: 'existing' }).read(),
+      admitted: await mainHost().ordinarySetup(),
+      setup: (await pilotForSetup().setup(grant, foreign.pinGeneration)).kind,
+    };
+    expect(observed).toEqual({
+      retained,
+      admitted: damage === 'valid',
+      setup: damage === 'valid' ? 'ready' : 'blocked',
+    });
+    expect(retained.authority).toMatchObject({
+      version: 2,
+      head: null,
+      mutation: null,
+      removal: null,
+      completed: { kind: 'delete', epoch: predecessor.identity.epoch },
+      setupLineage: {
+        version: 1,
+        phase: 'retired',
+        predecessor,
+        successor: {
+          operationId: retained.authority.completed?.operationId,
+          epoch: predecessor.identity.epoch,
+        },
+      },
+    });
+    if (damage === 'valid') {
+      expect(await mainHost().ordinarySetup()).toBe(true);
+      return;
+    }
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retained,
+    );
+    // L01: a refused reconstruction stays refused for this lineage instance.
+    await updatePreferencesFile(() => ({ copilotVaultSelection: predecessor }));
+    expect(await mainHost().ordinarySetup()).toBe(false);
+  },
+);
+
+it.each([
+  'valid',
+  'operation',
+  'epoch',
+  'account',
+  'nonce',
+  'pin',
+  'origin',
+  'enabled',
+] as const)(
+  'P8 lineage oracle: restart after a cancelled successor admits only its exact surviving receipt (%s)',
+  async (damage) => {
+    const predecessor = await retiredSetupPredecessor();
+    const pin = predecessor.pin;
+    if (!pin) throw new Error('Missing retired pin');
+    useFault = 'provider';
+    const cancelled = (
+      await pilotForSetup().setup(grant, predecessor.pinGeneration)
+    ).kind;
+    useFault = undefined;
+    const survivor = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    if (!survivor) throw new Error('Missing surviving receipt');
+    const retained = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    // Each damaged row changes one field of the successor's own receipt.
+    const foreign = {
+      valid: survivor,
+      operation: {
+        ...survivor,
+        identity: { ...survivor.identity, operationId: 'foreign-operation' },
+      },
+      epoch: {
+        ...survivor,
+        identity: { ...survivor.identity, epoch: 'foreign-epoch' },
+      },
+      account: {
+        ...survivor,
+        identity: {
+          ...survivor.identity,
+          account: { ...survivor.identity.account, login: 'foreign-login' },
+        },
+      },
+      nonce: { ...survivor, pinGeneration: 'foreign-nonce' },
+      pin: { ...survivor, pin },
+      origin: {
+        ...survivor,
+        identity: { ...survivor.identity, origin: 'import' as const },
+      },
+      enabled: survivor,
+    }[damage];
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: foreign,
+      copilotEnabled: damage === 'enabled',
+    }));
+    await compose();
+    const observed = {
+      cancelled: cancelled !== 'ready',
+      survivor: {
+        state: survivor.state,
+        isSuccessor:
+          survivor.identity.operationId !== predecessor.identity.operationId,
+        pin: survivor.pin,
+      },
+      phase: retained.authority.setupLineage?.phase,
+      witnessPredecessor: retained.authority.setupLineage?.predecessor,
+      retained: vault.openCopilotPilotState({ kind: 'existing' }).read(),
+      admitted: await mainHost().ordinarySetup(),
+      setup: (await pilotForSetup().setup(grant, foreign.pinGeneration)).kind,
+    };
+    expect(observed).toEqual({
+      cancelled: true,
+      survivor: { state: 'disabled', isSuccessor: true, pin: null },
+      phase: 'cancelled',
+      witnessPredecessor: survivor,
+      retained,
+      admitted: damage === 'valid',
+      setup: damage === 'valid' ? 'ready' : 'blocked',
+    });
+    if (damage === 'valid') {
+      expect(await mainHost().ordinarySetup()).toBe(true);
+      return;
+    }
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retained,
+    );
+    // L01: a refused reconstruction stays refused for this lineage instance.
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: survivor,
+      copilotEnabled: false,
+    }));
+    expect(await mainHost().ordinarySetup()).toBe(false);
+  },
+);
+
+it.each(['poll', 'save-failure', 'cancel-intermediate'])(
+  'P8 live lineage oracle: repeated setup remains owned through %s',
+  async (edge) => {
+    const predecessor = await retiredSetupPredecessor();
+    const state = vault.openCopilotPilotState({ kind: 'existing' });
+    let observed = false;
+    if (edge === 'poll') {
+      onSetupPrepare = async (): Promise<void> => {
+        onSetupPrepare = undefined;
+        expect(await mainHost().ordinarySetup()).toBe(true);
+        observed = true;
+      };
+    } else if (edge === 'save-failure') {
+      mockPreferenceWriteFails = true;
+    } else {
+      useFault = 'provider';
+      const compare = state.journal.compareExchange.bind(state.journal);
+      jest
+        .spyOn(state.journal, 'compareExchange')
+        .mockImplementation(async (sequence, next) => {
+          if (
+            !observed &&
+            !next.head &&
+            !next.mutation &&
+            next.completed?.operationId.endsWith(':cancel')
+          ) {
+            const current = state.read().authority.mutation;
+            expect(current).toMatchObject({ kind: 'create', cancelling: true });
+            expect(
+              (await readCopilotSelectionPreferences()).copilotVaultSelection
+                ?.state,
+            ).toBe('disabled');
+            expect(await mainHost().ordinarySetup()).toBe(true);
+            observed = true;
+          }
+          return compare(sequence, next);
+        });
+    }
+    const result = await pilotForSetup().setup(
+      grant,
+      predecessor.pinGeneration,
+    );
+    mockPreferenceWriteFails = false;
+    useFault = undefined;
+    if (edge === 'poll') {
+      expect(result.kind).toBe('ready');
+      if (result.kind !== 'ready') throw new Error('Missing successor');
+      expect(await mainHost().ordinarySetup()).toBe(true);
+      expect(await pilotForSetup().authority.remove(result.head.epoch)).toEqual(
+        { kind: 'removed' },
+      );
+    } else expect(result.kind).not.toBe('ready');
+    expect(edge === 'save-failure' || observed).toBe(true);
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    const disabled = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    if (!disabled) throw new Error('Missing surviving receipt');
+    expect(
+      (await pilotForSetup().setup(grant, disabled.pinGeneration)).kind,
+    ).toBe('ready');
+    expect(await mainHost().ordinarySetup()).toBe(true);
+  },
+);
+
+it('P8 review admits a status poll before ordinary setup prepares its receipt', async () => {
+  const generation = await retireForOrdinarySetup();
+  let polled = false;
+  onSetupPrepare = async (): Promise<void> => {
+    onSetupPrepare = undefined;
+    const mutation = vault.openCopilotPilotState({ kind: 'existing' }).read()
+      .authority.mutation;
+    expect(mutation).toMatchObject({ kind: 'create', origin: 'setup' });
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    polled = true;
+  };
+  expect((await pilotForSetup().setup(grant, generation)).kind).toBe('ready');
+  expect(polled).toBe(true);
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+it('P8 lifetime oracle: submitted selection settlement stays unusable after real-store restart and P4 cleans it', async () => {
+  const generation = await retireForOrdinarySetup();
+  let entered = (): void => undefined;
+  const entering = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  onSetupConfirm = async (): Promise<void> => {
+    onSetupConfirm = undefined;
+    entered();
+    await held;
+  };
+  const pilot = pilotForSetup();
+  const setup = pilot.setup(grant, generation);
+  try {
+    await entering;
+    await pilot.quiesce();
+    release();
+    expect((await setup).kind).not.toBe('ready');
+    expect((await readCopilotSelectionPreferences()).copilotEnabled).toBe(true);
+    const before = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    const mutation = before.authority.mutation;
+    if (!mutation?.committed) throw new Error('Missing committed setup intent');
+    expect(before.authority.head).toBeNull();
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    const admission = await mainHost().ordinarySetup();
+    const custody = await mainHost()
+      .custody()
+      .catch(() => 'unavailable');
+    const next = pilotForSetup();
+    const demand = await next.authority.demand();
+    const open = await next
+      .open(
+        'models',
+        { kind: 'create', operationId: mutation.operationId },
+        undefined,
+        () => Promise.resolve(),
+      )
+      .then(
+        (channel) => {
+          channel.disconnect();
+          return channel.opened.kind;
+        },
+        () => 'unavailable',
+      );
+    const cancelled = await next.authority.cancel(mutation.operationId);
+    const after = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    expect({ admission, custody, demand, open, cancelled }).toEqual({
+      admission: true,
+      custody: 'pending',
+      demand: { kind: 'blocked', reason: 'absent' },
+      open: 'unavailable',
+      cancelled: { kind: 'removed' },
+    });
+    expect(after.authority.head).toBeNull();
+    expect(after.authority.mutation).toBeNull();
+    expect(store.readEntry(mutation.committed.ref.entryId)).toBeNull();
+    expect((await readCopilotSelectionPreferences()).copilotEnabled).toBe(
+      false,
+    );
+    expect(
+      store
+        .listIntents()
+        .filter(
+          (intent) =>
+            intent.kind === 'delete' &&
+            intent.entryId === mutation.committed?.ref.entryId,
+        ),
+    ).toHaveLength(1);
+  } finally {
+    release();
+    await setup;
+    onSetupConfirm = undefined;
+  }
+});
+
+it('P8 review reconstructs a crash before ordinary setup prepares its receipt', async () => {
+  const generation = await retireForOrdinarySetup();
+  let admitted: boolean | undefined;
+  onSetupPrepare = async (): Promise<void> => {
+    onSetupPrepare = undefined;
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    admitted = await mainHost().ordinarySetup();
+    throw new Error('Synthetic setup process ended');
+  };
+  await pilotForSetup().setup(grant, generation);
+  expect(admitted).toBe(true);
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+it('P8 review retries ordinary setup after definite preference failure and restart', async () => {
+  const generation = await retireForOrdinarySetup();
+  mockPreferenceWriteFails = true;
+  const failed = await pilotForSetup().setup(grant, generation);
+  mockPreferenceWriteFails = false;
+  expect(failed.kind).toBe('blocked');
+  const state = vault.openCopilotPilotState({ kind: 'existing' }).read();
+  expect(state.authority.mutation).toBeNull();
+  expect(state.authority.completed).toMatchObject({ kind: 'delete' });
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  coreHost().close();
+  await mainHost().close();
+  await closeEndpoint();
+  await reopen();
+  await compose();
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  expect((await pilotForSetup().setup(grant, generation)).kind).toBe('ready');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+it('P8 review observes setup selection loss without waiting for another admission', async () => {
+  const generation = await retireForOrdinarySetup();
+  expect((await pilotForSetup().setup(grant, generation)).kind).toBe('ready');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  const selected = (await readCopilotSelectionPreferences())
+    .copilotVaultSelection;
+  await updatePreferencesFile(() => ({ copilotVaultSelection: undefined }));
+  await updatePreferencesFile(() => ({ copilotVaultSelection: selected }));
+  expect(await mainHost().ordinarySetup()).toBe(false);
+  await expect(mainHost().custody()).rejects.toThrow('unavailable');
+});
+it('P8 review refuses Connect when authority is lost during final control read', async () => {
+  await retireForOrdinarySetup();
+  const { getPreferencesFilePath } = await import('../main/lib/paths');
+  const path = getPreferencesFilePath();
+  const saved = await readFile(path);
+  let reads = 0;
+  let lost = false;
+  const stop = observeCopilotSelectionAuthority((change) => {
+    if (change.kind === 'unavailable') lost = true;
+  });
+  mockOnControlRead = async (): Promise<void> => {
+    if (++reads !== 3) return; // custody, initial admission, final revalidation
+    mockOnControlRead = undefined;
+    await writeFile(path, '{');
+    mockPreferenceWriteFails = true;
+    try {
+      await expect(readCopilotSelectionPreferences()).rejects.toThrow();
+      await readPreferencesFile(); // Failed served-read recovery notifies authority loss.
+      expect(lost).toBe(true);
+    } finally {
+      mockPreferenceWriteFails = false;
+      await writeFile(path, saved);
+    }
+  };
+  const setup = jest.fn(() => Promise.reject(new Error('Stale Connect ran')));
+  const routed = connection(undefined, setup);
+  try {
+    await expect(
+      routed.facade.connectCopilot(
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).rejects.not.toThrow('Stale Connect ran');
+  } finally {
+    stop();
+  }
+  expect(lost).toBe(true);
+  expect(setup).not.toHaveBeenCalled();
+});
+it('P8 improver refuses stale prepared admission without retiring an owned publication', async () => {
+  const generation = await retireForOrdinarySetup();
+  let releasePut = (): void => undefined;
+  const paused = new Promise<void>((resolve) => {
+    releasePut = resolve;
+  });
+  let enteredPut = (): void => undefined;
+  const entered = new Promise<void>((resolve) => {
+    enteredPut = resolve;
+  });
+  holdPut = async (): Promise<void> => {
+    holdPut = undefined;
+    enteredPut();
+    await paused;
+  };
+  const setup = pilotForSetup().setup(grant, generation);
+  await entered;
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  onOrdinaryAuthorityRead = async (): Promise<void> => {
+    onOrdinaryAuthorityRead = undefined;
+    releasePut();
+    expect((await setup).kind).toBe('ready');
+  };
+  expect(await mainHost().ordinarySetup()).toBe(false);
+  expect(await mainHost().ordinarySetup()).toBe(true);
+});
+it('P8 improver retains newer confirmation when stale completed-removal admission finishes', async () => {
+  const generation = await retireForOrdinarySetup();
+  const first = await pilotForSetup().setup(grant, generation);
+  if (first.kind !== 'ready') throw new Error('Missing first setup');
+  expect(await mainHost().ordinarySetup()).toBe(true);
+  expect((await pilotForSetup().authority.remove(first.head.epoch)).kind).toBe(
+    'removed',
+  );
+  let reads = 0;
+  let overlapped = false;
+  mockOnControlRead = async (): Promise<void> => {
+    if (++reads !== 2) return;
+    mockOnControlRead = undefined;
+    // The older call has already validated the deleted authority snapshot.
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    const disabled = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    if (!disabled) throw new Error('Missing disabled setup');
+    expect(
+      (await pilotForSetup().setup(grant, disabled.pinGeneration)).kind,
+    ).toBe('ready');
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    overlapped = true;
+  };
+  await mainHost().ordinarySetup();
+  expect(overlapped).toBe(true);
+  const selected = (await readCopilotSelectionPreferences())
+    .copilotVaultSelection;
+  await updatePreferencesFile(() => ({ copilotVaultSelection: undefined }));
+  await updatePreferencesFile(() => ({ copilotVaultSelection: selected }));
+  expect(await mainHost().ordinarySetup()).toBe(false);
+  await expect(mainHost().custody()).rejects.toThrow('unavailable');
+});
+it('P8 P4 completion against published binding retires head and binding together', async () => {
+  await compose();
+  await mainHost().connect();
+  const state = vault.openCopilotPilotState({ kind: 'existing' });
+  const before = state.read();
+  if (!before.authority.head) throw new Error('Missing published account');
+  const { createCopilotVaultGrantAuthority } =
+    await import('@canopy/core-runtime/node/vault');
+  const a = createCopilotVaultGrantAuthority({
+    repository: () => Promise.resolve(vault.repository),
+    writer: () => Promise.resolve(state.writer),
+    journal: state.journal,
+    probeKeyIfDue: () => vault.probeKeyIfDue(),
+    probe: () => Promise.resolve(),
+    refresh: () => Promise.resolve({ kind: 'rejected' }),
+    selection: createCopilotSelectionReceipt(),
+    recipient: {
+      admitted: () => true,
+      deliver: () => undefined,
+      revoke: () => undefined,
+    },
+  });
+  expect(await a.remove(before.authority.head.epoch)).toEqual({
+    kind: 'removed',
+  });
+  expect(state.read().authority.head).toBeNull();
+  expect(state.read().binding?.phase).toBe('retired');
+  expect(store.listIntents().filter((i) => i.kind === 'delete')).toHaveLength(
+    1,
+  );
+});
+it.each(['operation', 'epoch', 'nonce', 'entry', 'absent'] as const)(
+  'P8 retired import uses a fresh ordinary setup after source cleanup without touching a replacement legacy file (%s receipt)',
+  async (damage) => {
+    await compose();
+    await mainHost().connect();
+    const original = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    if (!original) throw new Error('Missing import receipt');
+    await mainHost().verify();
+    await mainHost().cleanup();
+    await expect(readFile(mockSource)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    let partial = false;
+    onHostAction = async (edge): Promise<void> => {
+      if (edge !== 'freeze') return;
+      expect(coreHost().retiredBinding()).not.toBeNull();
+      expect(await mainHost().ordinarySetup()).toBe(false);
+      partial = true;
+    };
+    await mainHost().connect(true);
+    expect(partial).toBe(true);
+    onHostAction = undefined;
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    await writeFile(mockSource, 'new legacy bytes must not be read or deleted');
+    const setup = jest.fn(async () => {
+      const disabled = (await readCopilotSelectionPreferences())
+        .copilotVaultSelection;
+      if (!disabled) throw new Error('Missing disabled receipt');
+      const created = await pilotForSetup().setup(
+        grant,
+        disabled.pinGeneration,
+      );
+      if (created.kind !== 'ready')
+        throw new Error('Ordinary setup failed: ' + JSON.stringify(created));
+      return {
+        supported: true,
+        installed: true,
+        enabled: true,
+        version: '1',
+        phase: 'connected' as const,
+        account: created.head.account,
+      };
+    });
+    const routed = connection(undefined, setup);
+    await expect(
+      routed.facade.connectCopilot(
+        new AbortController().signal,
+        () => undefined,
+      ),
+    ).resolves.toMatchObject({ phase: 'connected' });
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(routed.legacyCalls()).toBe(0);
+    const selected = (await readCopilotSelectionPreferences())
+      .copilotVaultSelection;
+    expect(selected?.state).toBe('selected');
+    expect(selected?.identity.origin).toBe('setup');
+    expect(selected?.identity.epoch).not.toBe(original.identity.epoch);
+    expect(selected?.identity.operationId).not.toBe(
+      original.identity.operationId,
+    );
+    expect(selected?.pinGeneration).not.toBe(original.pinGeneration);
+    expect(await readFile(mockSource, 'utf8')).toBe(
+      'new legacy bytes must not be read or deleted',
+    );
+    if (!selected?.pin) throw new Error('Missing setup pin');
+    const retainedAuthority = vault
+      .openCopilotPilotState({ kind: 'existing' })
+      .read();
+    const foreign = {
+      operation: {
+        ...selected,
+        identity: { ...selected.identity, operationId: 'foreign-setup' },
+      },
+      epoch: {
+        ...selected,
+        identity: { ...selected.identity, epoch: original.identity.epoch },
+      },
+      nonce: { ...selected, pinGeneration: 'foreign-nonce' },
+      entry: {
+        ...selected,
+        pin: {
+          ...selected.pin,
+          ref: { ...selected.pin.ref, entryId: 'foreign-entry' },
+        },
+      },
+      absent: undefined,
+    }[damage];
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: foreign,
+      copilotEnabled: true,
+    }));
+    expect(await mainHost().ordinarySetup()).toBe(false);
+    const refused = connection();
+    await expect(refused.facade.copilotConnectionStatus()).rejects.toThrow(
+      'unavailable',
+    );
+    expect(refused.legacyCalls()).toBe(0);
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retainedAuthority,
+    );
+    await updatePreferencesFile(() => ({
+      copilotVaultSelection: selected,
+      copilotEnabled: true,
+    }));
+    expect(await mainHost().ordinarySetup()).toBe(false); // A revoked channel never reopens.
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    expect(
+      (await readCopilotSelectionPreferences()).copilotVaultSelection,
+    ).toEqual(selected);
+    expect(vault.openCopilotPilotState({ kind: 'existing' }).read()).toEqual(
+      retainedAuthority,
+    );
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    expect(coreHost().current()).toBe(false);
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    expect((await pilotForSetup().authority.status()).kind).toBe('ready');
+    const messages: unknown[] = [];
+    const audience = { kind: 'create' as const, operationId: 'post-import' };
+    const channel = await pilotForSetup().open(
+      'models',
+      audience,
+      undefined,
+      (encoded) => {
+        messages.push(JSON.parse(encoded));
+        return Promise.resolve();
+      },
+    );
+    if (channel.opened.kind !== 'opened')
+      throw new Error('Reconstructed setup runtime unavailable');
+    await channel.receive(
+      JSON.stringify({
+        requestId: 1,
+        command: {
+          version: 1,
+          kind: 'run',
+          handle: channel.opened.handle,
+          generation: channel.opened.generation,
+          purpose: 'models',
+          audience,
+        },
+      }),
+    );
+    expect(
+      messages
+        .map((message) => CopilotLocalFrameSchema.parse(message))
+        .find((frame) => frame.kind === 'response'),
+    ).toMatchObject({ outcome: { kind: 'completed' } });
+    channel.disconnect();
+    expect(
+      await pilotForSetup().authority.remove(selected.identity.epoch),
+    ).toEqual({
+      kind: 'removed',
+    });
+    expect(await mainHost().ordinarySetup()).toBe(true);
+    expect(
+      vault.openCopilotPilotState({ kind: 'existing' }).read().binding,
+    ).toEqual(retainedAuthority.binding);
+    expect(await readFile(mockSource, 'utf8')).toBe(
+      'new legacy bytes must not be read or deleted',
+    );
+  },
+);
+it.each(['refresh', 'replace'] as const)(
+  'P8 imported restart resolves %s before rebuilding publication without source recapture',
+  async (kind) => {
+    await compose();
+    await mainHost().connect();
+    await mainHost().verify();
+    await mainHost().cleanup();
+    const state = vault.openCopilotPilotState({ kind: 'existing' });
+    const old = state.read().authority;
+    const head = old.head;
+    if (!head) throw new Error('Missing head');
+    const operationId = 'P8-imported-local-' + kind;
+    expect(
+      await state.journal.compareExchange(old.sequence, {
+        ...old,
+        sequence: old.sequence + 1,
+        mutation: {
+          operationId,
+          epoch: head.epoch,
+          origin: head.origin,
+          account: head.account,
+          kind,
+          from: head.pin,
+          committed: null,
+          probeConfirmed: true,
+          cancelling: false,
+        },
+      }),
+    ).toBe(true);
+    if (kind === 'replace') {
+      const result = await state.writer.put({
+        ref: head.pin.ref,
+        expectedRevision: head.pin.revision,
+        idempotencyKey: operationId,
+        label: 'Copilot',
+        material: Buffer.from(
+          JSON.stringify({
+            ...grant,
+            accessToken: 'synthetic-successor-access',
+          }),
+        ),
+        expiresAt: null,
+      });
+      expect(result.kind).toBe('committed');
+    }
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    const before = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    expect(coreHost().current()).toBe(false);
+    expect(before.authority.mutation?.operationId).toBe(operationId);
+    const providerCount = refreshCalls;
+    await expect(mainHost().connect()).resolves.toBeDefined();
+    const recovered = vault.openCopilotPilotState({ kind: 'existing' }).read();
+    expect(recovered.authority.mutation).toBeNull();
+    expect(recovered.authority.head?.pin.revision).toBe(
+      head.pin.revision + (kind === 'replace' ? 1 : 0),
+    );
+    expect(coreHost().current()).toBe(true);
+    expect(refreshCalls).toBe(providerCount);
+    expect(store.listIntents().filter((i) => i.kind === 'delete')).toHaveLength(
+      0,
+    );
+    await expect(readFile(mockSource)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  },
+);
 function connection(
   open?: CopilotConnectionBackend['openManagedCopilotRuntime'],
+  setup?: CopilotConnectionBackend['connectCopilot'],
+  vaultBackend?: CopilotConnectionBackend,
 ): {
   facade: CopilotConnectionBackend;
   legacyCalls(): number;
@@ -650,7 +2372,7 @@ function connection(
   const selected: CopilotConnectionBackend = {
     copilotConnectionStatus: () => Promise.resolve(status),
     openManagedCopilotRuntime: open ?? unavailable,
-    connectCopilot: () => Promise.resolve(status),
+    connectCopilot: setup ?? (() => Promise.resolve(status)),
     disconnectCopilot: () => Promise.resolve(),
     listCopilotModels: unavailable,
     readCopilotAccountUsage: unavailable,
@@ -681,8 +2403,9 @@ function connection(
     facade: createCopilotQualificationConnection({
       handoff: mainHost(),
       legacy,
-      vault: selected,
-      agreed: () => coreHost().current(),
+      vault: vaultBackend ?? selected,
+      agreed: () =>
+        coreHost().current() || coreHost().retiredBinding() !== null,
       closeAdmission: (): void => undefined,
     }),
     legacyCalls: (): number => calls,
@@ -1546,10 +3269,12 @@ it('Inertness executes ordinary production startup/Connect without initializing 
       Promise.reject(new Error('Synthetic legacy device flow reached.')),
   );
   const recover = jest.fn((): Promise<void> => Promise.resolve());
+  const shutdown = jest.fn((): Promise<void> => Promise.resolve());
   // Exercise connection.ts itself, with only its external legacy provider/feature ports synthetic.
   jest.doMock('../main/copilot/legacy-connection', () => ({
     connectCopilot: connect,
     recoverCopilotAtStartup: recover,
+    shutdownCopilotRuntimes: shutdown,
     revokeCopilotRuntimes: (): Promise<void> => Promise.resolve(),
   }));
   jest.doMock('../main/copilot/feature-flag', () => ({
@@ -1565,6 +3290,8 @@ it('Inertness executes ordinary production startup/Connect without initializing 
           (): void => undefined,
         ),
       ).rejects.toThrow('Synthetic legacy device flow');
+      await production.shutdownCopilotRuntimes();
+      await production.shutdownCopilotRuntimes();
     });
   } finally {
     jest.dontMock('../main/copilot/legacy-connection');
@@ -1572,6 +3299,7 @@ it('Inertness executes ordinary production startup/Connect without initializing 
   }
   expect(connect).toHaveBeenCalledTimes(1);
   expect(recover).toHaveBeenCalledTimes(1);
+  expect(shutdown).toHaveBeenCalledTimes(1);
   expect(await createCopilotHandoffFile(dataRoot).read()).toBeNull();
   expect(
     (await readCopilotSelectionPreferences()).copilotVaultSelection,
@@ -1602,6 +3330,7 @@ it('Handoff reconstructs a durable local preparing fence written before capture 
   await closeEndpoint();
   await reopen();
   mockDecryptFails = false;
+  mockPreferenceWriteFails = false;
   await compose();
   const routed = connection();
   expect(await mainHost().custody()).toBe('pending');
@@ -1702,6 +3431,62 @@ it.each(['pre-ingress', 'prepare-reply', 'commit', 'confirm-reply', 'release'])(
     expect(
       (await readCopilotSelectionPreferences()).copilotVaultSelection?.state,
     ).not.toBe('selected');
+  },
+);
+
+it.each(['before', 'after'] as const)(
+  'P8 actual use receipt reconciles %s-COMMIT uncertainty before any source deletion',
+  async (where) => {
+    await compose();
+    await mainHost().connect();
+    const original = await readFile(mockSource);
+    useCommitFault = where;
+    // Migration's exclusive owner reports storage uncertainty as a typed terminal,
+    // not a transport exception. Neither outcome is successful verification.
+    const failed = parseCopilotHandoffFrame((await mainHost().verify())[0]);
+    expect(failed.type).toBe('terminal');
+    expect(JSON.parse(failed.payload)).toEqual({ kind: 'unavailable' });
+    expect(useCommitFault).toBeUndefined();
+    expect(armedCommitFault).toBeUndefined();
+    expect(discoveryCalls).toBe(1);
+    expect(await readFile(mockSource)).toEqual(original);
+    coreHost().close();
+    await mainHost().close();
+    await closeEndpoint();
+    await reopen();
+    await compose();
+    await mainHost().connect();
+    const state = vault.openCopilotPilotState({ kind: 'existing' });
+    const attempt = state.migration.read().attempts[0];
+    expect(attempt?.deletion).toBeNull();
+    expect(state.read().controls.filter((c) => c.kind === 'deletion')).toEqual(
+      [],
+    );
+    expect(attempt?.state).toBe(
+      where === 'after' ? 'verified' : 'imported_unverified',
+    );
+    if (where === 'before') {
+      expect(attempt?.use).toBeNull();
+      await mainHost().cleanup();
+      expect(await readFile(mockSource)).toEqual(original);
+      expect(state.migration.read().attempts[0]?.deletion).toBeNull();
+      expect(discoveryCalls).toBe(1);
+    } else {
+      expect(attempt?.use?.provenance).toContain('admittedCompletion');
+      expect(attempt?.use?.pin).toEqual(state.read().authority.head?.pin);
+    }
+    await mainHost().verify();
+    expect(discoveryCalls).toBe(where === 'before' ? 2 : 1);
+    expect(state.migration.read().attempts[0]?.state).toBe('verified');
+    if (where === 'after')
+      expect(state.migration.read().attempts[0]?.use).toEqual(attempt?.use);
+    await mainHost().cleanup();
+    expect(state.migration.read().attempts[0]?.state).toBe('legacy_deleted');
+    await expect(readFile(mockSource)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(store.listIntents().filter((i) => i.kind === 'delete')).toEqual([]);
+    expect(refreshCalls).toBe(0);
   },
 );
 
@@ -2144,10 +3929,23 @@ it.each(['missing', 'foreign-disabled', 'enabled-disabled'] as const)(
     await compose();
     await expect(mainHost().connect(true)).rejects.toThrow();
     const state = vault.openCopilotPilotState({ kind: 'existing' });
-    expect(state.read().binding?.phase).toBe('cancelling');
-    expect(state.migration.read().head.epoch).toBeGreaterThan(1);
+    const pending = state.read();
+    const removal = pending.authority.removal;
+    if (!removal) throw new Error('Missing exact removal fence');
+    expect(pending.binding?.phase).toBe('published');
+    expect(removal.epoch).toBe(original.identity.epoch);
+    expect(pending.authority.head?.pin).toEqual(pin);
+    expect(pending.authority.mutation).toBeNull();
+    expect(state.migration.read().head).toMatchObject({
+      epoch: 1,
+      authority: 'vault',
+    });
+    expect(store.readEntry(pin.ref.entryId)).not.toBeNull();
+    expect(store.listIntents().filter((i) => i.kind === 'delete')).toHaveLength(
+      0,
+    );
     expect((await createCopilotHandoffFile(dataRoot).read())?.disposition).toBe(
-      'cancelling',
+      'selected',
     );
     expect(await readFile(mockSource, 'utf8')).toContain('synthetic:');
     coreHost().close();
@@ -2160,6 +3958,12 @@ it.each(['missing', 'foreign-disabled', 'enabled-disabled'] as const)(
     await reopen();
     await compose();
     await mainHost().connect();
+    expect(
+      store
+        .listIntents()
+        .filter((i) => i.kind === 'delete')
+        .map((i) => i.idempotencyKey),
+    ).toEqual([`${removal.operationId}:${pin.revision}`]);
     expect(
       vault.openCopilotPilotState({ kind: 'existing' }).read().binding?.phase,
     ).toBe('retired');
@@ -2187,7 +3991,18 @@ it('Cancellation durably fences P4 and supersedes P1 before recovering an accept
   onHostAction = (edge): Promise<void> => {
     if (!edge.startsWith('cleanup-')) return Promise.resolve();
     const state = vault.openCopilotPilotState({ kind: 'existing' });
-    expect(state.read().binding?.phase).toBe('cancelling');
+    const retired = state.read();
+    expect(retired.binding?.phase).toBe('retired');
+    expect(retired.authority.head).toBeNull();
+    expect(retired.authority.mutation).toBeNull();
+    expect(retired.authority.removal).toBeNull();
+    expect(retired.controls.find((c) => c.kind === 'retirement')?.phase).toBe(
+      'retired',
+    );
+    expect(
+      store.listEntries().filter((e) => e.family === 'copilot-account'),
+    ).toHaveLength(0);
+    expect(coreHost().current()).toBe(false);
     expect(state.migration.read().head.epoch).toBeGreaterThan(1);
     const attempt = state.migration.read().attempts[0];
     if (!attempt?.deletion) throw new Error('Missing submitted cleanup');

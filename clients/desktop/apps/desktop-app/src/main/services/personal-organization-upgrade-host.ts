@@ -18,7 +18,6 @@ import {
 import { createOrgProjectMigrationPassStore } from '../lib/org-project-migration-passes';
 import {
   createPersonalOrganizationUpgradeService,
-  isBoundPortalSessionCurrent,
   type UpgradeWorkspace,
   type UpgradeIdentity,
   type PersonalOrganizationUpgradeService,
@@ -36,7 +35,6 @@ import {
   CanopyCloudClientError,
 } from '../canopy-cloud/client';
 import type { OrgProjectDetail } from '@canopy/protocol/org-projects';
-import { getCanopyPortalState } from '../portal/portal-session-manager';
 import { reprobeAndApplyCanopyCloudEnforcedSettings } from '../ipc/settings';
 import { getObservabilityService } from '../observability';
 import { isMovablePersonalProject } from './org-project-auto-conversion';
@@ -69,8 +67,9 @@ async function identity(): Promise<UpgradeIdentity> {
 export function getPersonalOrganizationUpgradeService(): PersonalOrganizationUpgradeService {
   service ??= createPersonalOrganizationUpgradeService({
     identity,
-    sessionCurrent: (sessionId) =>
-      isBoundPortalSessionCurrent(getCanopyPortalState(), sessionId),
+    // Portal is retired (CAN-5986): no desktop session can be current, so
+    // work bound to one never resumes.
+    sessionCurrent: () => false,
     destination: async (organizationId, captured) => {
       const policy = await readPersonalProjectConversionPolicy(
         captured.accountId,

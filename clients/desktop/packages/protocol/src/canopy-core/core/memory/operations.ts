@@ -114,7 +114,23 @@ export const MemoryChatSearchParamsSchema = z.strictObject({
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 
+// Revision 2 adds cloud coverage and exact message provenance; desktop v1 is unchanged.
+export const MEMORY_CHAT_READ_SCHEMA_REVISION = 2;
+const MemoryChatSourceSchema = z.strictObject({
+  kind: z.literal('cloud'),
+  chatId: ID,
+  messageId: ID,
+  role: z.enum(['USER', 'ASSISTANT']),
+});
 export const MemoryChatSearchResultSchema = z.strictObject({
+  coverage: z
+    .strictObject({
+      incomplete: z.boolean(),
+      scannedChats: z.number().int().min(0).max(20),
+      scannedPages: z.number().int().min(0).max(8),
+      notice: z.string().max(1024),
+    })
+    .optional(),
   hits: z
     .array(
       z.strictObject({
@@ -122,6 +138,7 @@ export const MemoryChatSearchResultSchema = z.strictObject({
         title: z.string().max(512),
         date: z.iso.datetime(),
         snippet: z.string().max(1200),
+        source: MemoryChatSourceSchema.optional(),
       }),
     )
     .max(10),
@@ -137,6 +154,7 @@ export const MemoryChatExcerptResultSchema = z.strictObject({
   title: z.string().max(512),
   date: z.iso.datetime(),
   excerpt: z.string().max(6000),
+  source: MemoryChatSourceSchema.optional(),
 });
 
 export type MemoryChatSearchParams = z.output<

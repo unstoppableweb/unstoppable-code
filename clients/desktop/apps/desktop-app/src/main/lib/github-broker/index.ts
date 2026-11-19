@@ -1,10 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { createHash } from 'node:crypto';
 import type { Octokit } from '@octokit/rest';
-import { invalidateTokenCache, resolveGitHubToken } from '../github-auth';
-import { resolveOctokitClientOptions } from '../github-octokit-options';
+import { invalidateTokenCache } from '../github-auth';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialLease,
+} from './credential-port';
+import {
+  resolveOctokitBrokerClientOptions,
+  type OctokitClientLog,
+} from '../github-octokit-options';
 import { loadOctokitConstructor } from '../github-octokit-loader';
-import { logMainProcessInfo } from '../main-process-logging';
+import {
+  logMainProcessInfo,
+  logMainProcessWarn,
+} from '../main-process-logging';
 import { GitHubConditionalCache } from './conditional-cache';
 import {
   GitHubBrokerCredentialResetError,
@@ -68,8 +77,11 @@ export interface GitHubBrokerRequestOptions<T = unknown> {
   isCachedData?: (value: unknown) => value is T;
   timeoutMs: number;
   signal?: AbortSignal;
-  /** Use a caller-selected credential while retaining broker request policy. */
-  authenticationToken?: string;
+  /**
+   * A caller-selected credential lease from the credential port, authorized
+   * again for every request attempt. Omitted: the broker default.
+   */
+  credential?: GitHubBrokerCredentialLease;
   /**
    * The quota bucket the request spends, checked before it is sent: `core`
    * (the default) for REST, `graphql` for GraphQL, `search` for REST search.
@@ -129,7 +141,7 @@ export interface GitHubBroker {
   /** GitHub's latest count for one bucket, or undefined when none is known. */
   currentQuota(
     resource?: GitHubRateLimitResource,
-    authenticationToken?: string,
+    credential?: GitHubBrokerCredentialLease,
   ): GitHubQuotaSnapshot | undefined;
   resetCredentials(): void;
   shutdown(): void;
@@ -139,6 +151,7 @@ export interface GitHubBroker {
 interface GitHubRequestAttempt {
   signal: AbortSignal;
   generation: number;
+  lease: GitHubBrokerCredentialLease;
   scope: string;
   caller?: string;
   priority: GitHubRequestPriority;
@@ -218,6 +231,58 @@ function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Checks a lease within the caller's timeout and cancellation, for the checks
+ * that run outside a scheduled attempt: a stalled credential lookup rejects
+ * with `timeout` once `timeoutMs` passes and with `cancelled` on abort.
+ */
+function verifyWithin(
+  lease: GitHubBrokerCredentialLease,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const cancelled = (): GitHubBrokerError =>
+    new GitHubBrokerError('cancelled', 'GitHub request was cancelled.');
+  if (signal?.aborted) return Promise.reject(cancelled());
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(cancelled());
+    };
+    const timer = setTimeout(
+      () => {
+        cleanup();
+        reject(new GitHubBrokerTimeoutError());
+      },
+      Math.max(1, timeoutMs),
+    );
+    timer.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    credentialPort.verify(lease).then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(
+          errorFromUnknown(
+            error,
+            new GitHubBrokerError(
+              'not_authenticated',
+              'The GitHub credential check failed.',
+            ),
+          ),
+        );
+      },
+    );
+  });
+}
+
 function readGitHubQuotaResource(
   headers: GitHubHeaders | undefined,
 ): GitHubRateLimitResource | undefined {
@@ -226,17 +291,39 @@ function readGitHubQuotaResource(
   return resource ? resource : undefined;
 }
 
-function credentialScopeKey(authenticationToken?: string): string {
-  return authenticationToken
-    ? `custom:${createHash('sha256').update(authenticationToken).digest('hex')}`
-    : 'resolved';
+const credentialPort = getGitHubBrokerCredentialPort();
+
+function leaseFor(
+  credential?: GitHubBrokerCredentialLease,
+): GitHubBrokerCredentialLease {
+  return credential ?? credentialPort.defaultLease;
 }
+
+function credentialScopeKey(credential?: GitHubBrokerCredentialLease): string {
+  return credentialPort.scopeId(leaseFor(credential));
+}
+
+/**
+ * Octokit's logger for the broker client. Request options (and so headers)
+ * are never logged: debug and info are dropped, and warnings and errors keep
+ * only their message.
+ */
+const OCTOKIT_LOG: OctokitClientLog = {
+  debug: () => undefined,
+  info: () => undefined,
+  warn: (message) => logMainProcessWarn(`[github] ${message}`),
+  error: (message) => logMainProcessWarn(`[github] ${message}`),
+};
+
+type OctokitRequest = Octokit['request'];
+type OctokitEndpoint = Required<
+  ReturnType<OctokitRequest['endpoint']['merge']>
+>;
 
 class GitHubBrokerImpl implements GitHubBroker {
   private scheduler = new GitHubRequestScheduler();
   private conditionalCache = new GitHubConditionalCache();
   private octokit: Octokit | null = null;
-  private octokitGeneration = -1;
   private credentialGeneration = 0;
   private stopped = false;
   private listeners = new Set<(state: GitHubRateLimitState) => void>();
@@ -268,25 +355,39 @@ class GitHubBrokerImpl implements GitHubBroker {
     while (true) {
       const generation = this.credentialGeneration;
       try {
-        if (
+        const result =
           options.operation === 'read' &&
           options.idempotency === 'safe' &&
           options.conditional === true &&
           options.resourceKey
-        ) {
-          return await this.executeShared(
-            request,
-            options,
-            generation,
-            authenticationRefreshes,
-          );
-        }
-        return await this.executeForGeneration(
-          request,
-          options,
-          generation,
-          authenticationRefreshes,
+            ? await this.executeShared(
+                request,
+                options,
+                generation,
+                authenticationRefreshes,
+              )
+            : await this.executeForGeneration(
+                request,
+                options,
+                generation,
+                authenticationRefreshes,
+              );
+        // A write GitHub has applied is returned as it is: dropping or
+        // re-sending it would repeat or hide the write.
+        if (options.operation === 'mutation') return result;
+        // A read, fresh, shared or replayed from the conditional cache on a
+        // 304, is handed over only while the caller's own lease still holds.
+        await verifyWithin(
+          leaseFor(options.credential),
+          options.timeoutMs,
+          options.signal,
         );
+        // A reset while that check ran means the read belongs to the previous
+        // credential: drop it and read again under the new one.
+        if (generation !== this.credentialGeneration) {
+          throw new GitHubBrokerCredentialResetError('credential_reset');
+        }
+        return result;
       } catch (error) {
         if (!(error instanceof GitHubBrokerCredentialResetError)) throw error;
         if (error.reason === 'authentication_refresh') {
@@ -317,10 +418,10 @@ class GitHubBrokerImpl implements GitHubBroker {
 
   currentQuota(
     resource: GitHubRateLimitResource = DEFAULT_GITHUB_RATE_LIMIT_RESOURCE,
-    authenticationToken?: string,
+    credential?: GitHubBrokerCredentialLease,
   ): GitHubQuotaSnapshot | undefined {
     return this.quotaLedger.get(
-      credentialScopeKey(authenticationToken),
+      credentialScopeKey(credential),
       resource,
       Date.now(),
     );
@@ -380,7 +481,15 @@ class GitHubBrokerImpl implements GitHubBroker {
     generation: number,
     authenticationRefreshes: number,
   ): Promise<GitHubBrokerResult<T>> {
-    const key = `${generation}:${credentialScopeKey(options.authenticationToken)}:${options.resourceKey}`;
+    // Leases for the same credential share a scope, so a read one lease starts
+    // can be joined under another: each caller's own lease is checked before
+    // it joins (and, in execute, before the result is handed over).
+    const lease = leaseFor(options.credential);
+    await verifyWithin(lease, options.timeoutMs, options.signal);
+    if (generation !== this.credentialGeneration) {
+      throw new GitHubBrokerCredentialResetError('credential_reset');
+    }
+    const key = `${generation}:${credentialPort.scopeId(lease)}:${options.resourceKey}`;
     const typeIdentity = options.isCachedData ?? request;
     const existing = this.inFlight.get(key);
     let shared =
@@ -544,7 +653,7 @@ class GitHubBrokerImpl implements GitHubBroker {
     authenticationRefreshes: number,
   ): Promise<GitHubBrokerResult<T>> {
     const cacheKey = options.resourceKey
-      ? `${generation}:${credentialScopeKey(options.authenticationToken)}:${options.resourceKey}`
+      ? `${generation}:${credentialScopeKey(options.credential)}:${options.resourceKey}`
       : undefined;
     const cacheEntry =
       options.operation === 'read' &&
@@ -560,7 +669,8 @@ class GitHubBrokerImpl implements GitHubBroker {
     let safeRetryIndex = 0;
     let secondaryRetryIndex = 0;
     let primaryRetryIndex = 0;
-    const scope = credentialScopeKey(options.authenticationToken);
+    const lease = leaseFor(options.credential);
+    const scope = credentialPort.scopeId(lease);
     const resource = options.resource ?? DEFAULT_GITHUB_RATE_LIMIT_RESOURCE;
 
     while (true) {
@@ -571,13 +681,11 @@ class GitHubBrokerImpl implements GitHubBroker {
       try {
         const response = await this.scheduler.schedule(
           async (signal) => {
-            const octokit = await this.getOctokit(
-              generation,
-              options.authenticationToken,
-            );
+            const octokit = await this.prepareAttempt(generation, lease);
             const current: GitHubRequestAttempt = {
               signal,
               generation,
+              lease,
               scope,
               ...(options.caller ? { caller: options.caller } : {}),
               priority: options.priority,
@@ -665,7 +773,18 @@ class GitHubBrokerImpl implements GitHubBroker {
         if (cacheKey && options.conditional) {
           const headers = normalizeGitHubHeaders(response.headers);
           const etag = headers.etag;
-          if (etag) this.conditionalCache.set(cacheKey, etag, response.data);
+          // Cached only while the lease that fetched it still holds, so
+          // nothing is cached on behalf of a lease revoked mid-flight.
+          const leaseHolds = await verifyWithin(
+            lease,
+            options.timeoutMs,
+            options.signal,
+          ).then(
+            () => true,
+            () => false,
+          );
+          if (etag && leaseHolds)
+            this.conditionalCache.set(cacheKey, etag, response.data);
           else this.conditionalCache.delete(cacheKey);
         }
         return {
@@ -723,7 +842,7 @@ class GitHubBrokerImpl implements GitHubBroker {
           };
         }
         if (status === 401) {
-          if (options.authenticationToken) {
+          if (!credentialPort.isDefault(lease)) {
             throw new GitHubBrokerError(
               'not_authenticated',
               'The selected GitHub credential was rejected.',
@@ -846,40 +965,40 @@ class GitHubBrokerImpl implements GitHubBroker {
     }
   }
 
-  private async getOctokit(
+  /**
+   * Check the attempt's lease before the request runs, so a missing or
+   * revoked credential is refused before the request function runs, and
+   * return the broker's one client. The client holds no credential: the lease
+   * is authorized again for every HTTP request the attempt makes.
+   */
+  private async prepareAttempt(
     generation: number,
-    authenticationToken?: string,
+    lease: GitHubBrokerCredentialLease,
   ): Promise<Octokit> {
     if (generation !== this.credentialGeneration) {
       throw new GitHubBrokerCredentialResetError('credential_reset');
     }
-    if (
-      !authenticationToken &&
-      this.octokit &&
-      this.octokitGeneration === generation
-    ) {
-      return this.octokit;
-    }
-    const token = authenticationToken ?? (await resolveGitHubToken());
-    if (!token) {
-      throw new GitHubBrokerError(
-        'not_authenticated',
-        'No GitHub token is available. Configure a PAT or sign in with the GitHub CLI.',
-      );
-    }
+    await credentialPort.verify(lease);
     if (generation !== this.credentialGeneration) {
       throw new GitHubBrokerCredentialResetError('credential_reset');
     }
+    this.octokit ??= this.createOctokit();
+    return this.octokit;
+  }
+
+  private createOctokit(): Octokit {
     const OctokitConstructor = loadOctokitConstructor();
-    const octokit = new OctokitConstructor(resolveOctokitClientOptions(token));
+    const octokit = new OctokitConstructor(
+      resolveOctokitBrokerClientOptions(
+        () => this.leaseAuthentication(),
+        OCTOKIT_LOG,
+      ),
+    );
     octokit.hook?.wrap('request', async (request, requestOptions) => {
       const attempt = this.requestAttempt.getStore();
       if (!attempt) return request(requestOptions);
       try {
-        const response = await request({
-          ...requestOptions,
-          request: { ...requestOptions.request, signal: attempt.signal },
-        });
+        const response = await request(requestOptions);
         this.observeResponse(attempt, response.status, response.headers);
         return response;
       } catch (error) {
@@ -890,19 +1009,55 @@ class GitHubBrokerImpl implements GitHubBroker {
         throw error;
       }
     });
-    if (!authenticationToken) {
-      this.octokit = octokit;
-      this.octokitGeneration = generation;
-    }
     return octokit;
+  }
+
+  /**
+   * The client's auth strategy. Octokit wraps this hook first, so it runs
+   * innermost: every plugin hook (request logging included) sees the request
+   * without its `authorization` header. The header is set on a fresh endpoint
+   * object for one HTTP request and removed when that request settles.
+   */
+  private leaseAuthentication(): unknown {
+    const hook = async (
+      request: OctokitRequest,
+      options: OctokitEndpoint,
+    ): ReturnType<OctokitRequest> => {
+      const attempt = this.requestAttempt.getStore();
+      if (!attempt) {
+        throw new GitHubBrokerError(
+          'not_authenticated',
+          'GitHub requests are authorized only inside a broker attempt.',
+        );
+      }
+      // Each Octokit hook receives the options its request started with, not
+      // what an outer hook passes on, so the attempt's signal is attached here,
+      // next to the header, where the HTTP request is actually sent.
+      const endpoint = request.endpoint.merge(options);
+      endpoint.request = { ...endpoint.request, signal: attempt.signal };
+      const authorization = await credentialPort.authorize(attempt.lease);
+      // A reset while the lease was being authorized means the header may be
+      // the previous credential's: send nothing and let the attempt reissue.
+      if (attempt.generation !== this.credentialGeneration) {
+        throw new GitHubBrokerCredentialResetError('credential_reset');
+      }
+      endpoint.headers.authorization = authorization;
+      try {
+        return await request(endpoint);
+      } finally {
+        delete endpoint.headers.authorization;
+      }
+    };
+    return Object.assign(
+      (): Promise<{ type: 'lease' }> => Promise.resolve({ type: 'lease' }),
+      { hook },
+    );
   }
 
   private bumpCredentialGeneration(
     reason: 'credential_reset' | 'authentication_refresh',
   ): void {
     this.credentialGeneration += 1;
-    this.octokit = null;
-    this.octokitGeneration = -1;
     this.conditionalCache.clear();
     this.quotaLedger.clear();
     this.abortSharedRequests(reason);

@@ -1,8 +1,12 @@
 'use client';
 
+import type { ItemHarnessInstalls } from '@canopy/protocol/plugins';
+import { useCustomizeDiscoveryEnabled } from './CustomizeDiscoveryProvider';
 import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
 import {
+  linkRecordedError,
   pluginDisplayName,
+  recordedErrorOf,
   type UnifiedEntryAlternative,
   type UnifiedEntryBundledServerRow,
 } from '@canopy/ui-shared';
@@ -15,9 +19,13 @@ import type {
 } from '@canopy/protocol/plugins';
 import {
   DetailFact,
+  DetailFactError,
+  DetailVersionUpdateFact,
   ProviderSupportIcons,
   TextLink,
+  type DetailVersionUpdate,
 } from '@canopy/ui-shared/components';
+import { customizeHarnessTableRows } from './customizeHarnessTable';
 import {
   Button,
   ErrorBanner,
@@ -130,6 +138,8 @@ export interface PluginDetailHostPlugin extends PluginDetailContentPlugin {
     codex?: BuiltInProviderInstallStatus;
     checkedAt: string;
   };
+  /** One Add's record (CAN-6816), with the companion copies it installed. */
+  harnessInstalls?: Pick<ItemHarnessInstalls, 'companions'>;
 }
 
 export type PluginDetailInstallRequest =
@@ -187,6 +197,15 @@ export interface PluginDetailHostProps {
   /** A notice right under the metadata, such as an available update. */
   updateNotice?: ReactNode;
   /**
+   * New Customize: the tile's line 2 under the title (`customizePublisherText`
+   * of the entry the page opened from).
+   */
+  publisher?: ReactNode;
+  /** New Customize: an available update, shown as the Version row. */
+  versionUpdate?: DetailVersionUpdate;
+  /** New Customize: an Add or harness install failure, under Works with. */
+  worksWithNotice?: ReactNode;
+  /**
    * The Status row, under the metadata. Its `DetailPageActions` join this
    * detail's action bar, so an Uninstall ⋯ stays in the header.
    */
@@ -216,6 +235,12 @@ export interface PluginDetailHostProps {
   sourceName?: string;
   /** Opens a linked entry; alternatives render disabled without it. */
   onOpenEntryId?: (entryId: string) => void;
+  /**
+   * New Customize: installs the native copies an installed plugin is
+   * missing for harnesses a copy would serve. Omit where the host can't, and
+   * those rows only say what Add brings.
+   */
+  onAddHarnessCopies?: () => void;
   /** Installed MCP rows hidden behind this plugin; each opens its settings. */
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   relatedItems?: readonly PluginDetailRelatedItem[];
@@ -326,8 +351,17 @@ interface BuiltInInstall {
   /** Available providers that do not have the plugin yet. */
   installable: PluginProvider[];
   installing: PluginProvider[] | null;
-  message: { tone: 'success' | 'error'; text: string } | null;
-  install: (providers: PluginProvider[]) => Promise<void>;
+  message: {
+    tone: 'success' | 'error';
+    text: string;
+    /** Main already recorded this failure, so the banner records nothing. */
+    recorded?: true;
+    /** The one harness provider a failure belongs to. */
+    provider?: PluginProvider;
+    /** The Works with row that started it (Cursor installs via Claude). */
+    harness?: string;
+  } | null;
+  install: (providers: PluginProvider[], harness?: string) => Promise<void>;
 }
 
 function useBuiltInInstall(
@@ -363,7 +397,10 @@ function useBuiltInInstall(
     setMessage(null);
   }, [plugin.marketplaceId, plugin.name]);
 
-  const install = async (providers: PluginProvider[]): Promise<void> => {
+  const install = async (
+    providers: PluginProvider[],
+    harness?: string,
+  ): Promise<void> => {
     if (!onInstall) return;
     setInstalling(providers);
     setMessage(null);
@@ -387,6 +424,10 @@ function useBuiltInInstall(
         const failure = failures[0];
         setMessage({
           tone: 'error',
+          ...(failures.length === 1 ? { provider: failure } : {}),
+          ...(failures.length === 1 && harness !== undefined
+            ? { harness }
+            : {}),
           text:
             failures.length === providers.length && providers.length > 1
               ? `Could not install plugin: ${outcomes?.[failure]?.error ?? 'Unknown error.'}`
@@ -399,8 +440,11 @@ function useBuiltInInstall(
         });
       }
     } catch (error) {
+      // Main recorded it; the banner records nothing but links it to this session.
+      linkRecordedError(error, 'built-in-install-message');
       setMessage({
         tone: 'error',
+        ...(recordedErrorOf(error) ? { recorded: true as const } : {}),
         text: `Could not install plugin: ${errorMessage(error)}`,
       });
     } finally {
@@ -429,6 +473,7 @@ function BuiltInInstallMessage({
   ) : (
     <ErrorBanner
       errorSource="built-in-install-message"
+      errorRecordingDisabled={message.recorded === true}
       error={message.text}
       testId="built-in-install-message"
     />
@@ -453,6 +498,9 @@ export function PluginDetailHost({
   sourceName,
   mcpTarget,
   updateNotice,
+  publisher,
+  versionUpdate,
+  worksWithNotice,
   statusContent,
   harnessRows,
   sharedContent,
@@ -462,6 +510,7 @@ export function PluginDetailHost({
   onOpenRelated,
   alternatives,
   onOpenEntryId,
+  onAddHarnessCopies,
   bundledServerRows,
   relatedItems = [],
   relatedContent,
@@ -476,9 +525,12 @@ export function PluginDetailHost({
   compatibilityError = '',
   formatDate = (value): string => new Date(value).toLocaleDateString(),
 }: PluginDetailHostProps): JSX.Element {
+  const discoveryEnabled = useCustomizeDiscoveryEnabled();
   const Title = titleAs;
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState('');
+  // Main already recorded the failure `installError` shows.
+  const [installErrorRecorded, setInstallErrorRecorded] = useState(false);
   const [compatError, setCompatError] = useState('');
   const [compatBusy, setCompatBusy] = useState(false);
   const builtIn = useBuiltInInstall(plugin, onInstall, onPluginUpdated);
@@ -542,6 +594,9 @@ export function PluginDetailHost({
       );
       onPluginUpdated?.(installedPlugin(result));
     } catch (installFailure) {
+      // Main recorded it; the banner records nothing but links it to this session.
+      linkRecordedError(installFailure, 'plugin-detail-host-install');
+      setInstallErrorRecorded(recordedErrorOf(installFailure) !== undefined);
       setInstallError(errorMessage(installFailure));
     } finally {
       setInstalling(false);
@@ -555,74 +610,124 @@ export function PluginDetailHost({
   // A copy built for a harness this one can't run on sits on that harness's
   // Not supported row. Other copies keep the Other versions row.
   const usedAlternatives = new Set<string>();
-  const linkedHarnessRows = harnessRows?.map((row) => {
-    if (row.installation !== 'Not supported' || !onOpenEntryId) return row;
-    const copy = alternatives?.find((alternative) =>
-      (alternative.marketplaceVariant?.provider ?? alternative.label)
-        .toLowerCase()
-        .startsWith(row.name.toLowerCase()),
-    );
-    if (!copy) return row;
-    usedAlternatives.add(copy.entryId);
-    return {
-      ...row,
-      alternative: {
-        label: `Use ${copy.label}`,
-        onOpen: (): void => onOpenEntryId(copy.entryId),
-      },
-    };
-  });
+  // New Customize (Sergii's QA): the table reads the same harness rows a
+  // tile's chips do; a harness another copy serves names that copy. A host
+  // that sends no per-copy rows (an older paired desktop) keeps the earlier
+  // table, with its links to the other copies.
+  const copiesHaveRows =
+    (alternatives ?? []).length === 0 ||
+    (alternatives ?? []).some((copy) => copy.harnessRows !== undefined);
+  const discoveryTable =
+    discoveryEnabled && harnessRows && copiesHaveRows
+      ? customizeHarnessTableRows(
+          harnessRows,
+          alternatives,
+          onOpenEntryId,
+          onAddHarnessCopies,
+        )
+      : undefined;
+  for (const entryId of discoveryTable?.usedCopies ?? [])
+    usedAlternatives.add(entryId);
+  const mcpServerVia = discoveryTable?.mcpServerVia ?? [];
+  const linkedHarnessRows =
+    discoveryTable?.rows ??
+    harnessRows?.map((row) => {
+      if (row.installation !== 'Not supported') return row;
+      const copy = alternatives?.find((alternative) =>
+        (alternative.marketplaceVariant?.provider ?? alternative.label)
+          .toLowerCase()
+          .startsWith(row.name.toLowerCase()),
+      );
+      if (!copy || !onOpenEntryId) return row;
+      usedAlternatives.add(copy.entryId);
+      return {
+        ...row,
+        alternative: {
+          label: `Use ${copy.label}`,
+          onOpen: (): void => onOpenEntryId(copy.entryId),
+        },
+      };
+    });
   const otherAlternatives = alternatives?.filter(
     (alternative) =>
       !alternative.marketplaceVariant &&
       !usedAlternatives.has(alternative.entryId),
   );
+  const marketplaceFact =
+    nativeProviders.length > 0 ? (
+      <DetailFact label="Marketplace" testId="plugin-detail-provider">
+        <ProviderSupportIcons
+          support={{
+            claude:
+              plugin.providerSupport.claude === 'native' ? 'native' : 'none',
+            codex:
+              plugin.providerSupport.codex === 'native' ? 'native' : 'none',
+          }}
+          size={14}
+        />
+        {onOpenSource ? (
+          <Button
+            variant="link"
+            data-testid="plugin-detail-source-link"
+            onClick={onOpenSource}
+          >
+            {sourceName ?? nativeProviders.join(' and ')}
+          </Button>
+        ) : (
+          (sourceName ?? nativeProviders.join(' and '))
+        )}
+      </DetailFact>
+    ) : undefined;
+  const otherVersionsFacts = (
+    <>
+      {(otherAlternatives?.length ?? 0) > 0 && (
+        <DetailFact label="Other versions">
+          <PluginAlternatives
+            alternatives={otherAlternatives}
+            onOpenEntryId={onOpenEntryId}
+            testIdPrefix="plugin-detail-also-available"
+            linksOnly
+          />
+        </DetailFact>
+      )}
+      <PluginVariantDifferences
+        alternatives={alternatives}
+        onOpenEntryId={onOpenEntryId}
+      />
+    </>
+  );
   const metadataFacts =
     nativeProviders.length > 0 || (alternatives?.length ?? 0) > 0 ? (
       <>
-        {nativeProviders.length > 0 && (
-          <DetailFact label="Marketplace" testId="plugin-detail-provider">
-            <ProviderSupportIcons
-              support={{
-                claude:
-                  plugin.providerSupport.claude === 'native'
-                    ? 'native'
-                    : 'none',
-                codex:
-                  plugin.providerSupport.codex === 'native' ? 'native' : 'none',
-              }}
-              size={14}
-            />
-            {onOpenSource ? (
-              <Button
-                variant="link"
-                data-testid="plugin-detail-source-link"
-                onClick={onOpenSource}
-              >
-                {sourceName ?? nativeProviders.join(' and ')}
-              </Button>
-            ) : (
-              (sourceName ?? nativeProviders.join(' and '))
-            )}
-          </DetailFact>
-        )}
-        {(otherAlternatives?.length ?? 0) > 0 && (
-          <DetailFact label="Other versions">
-            <PluginAlternatives
-              alternatives={otherAlternatives}
-              onOpenEntryId={onOpenEntryId}
-              testIdPrefix="plugin-detail-also-available"
-              linksOnly
-            />
-          </DetailFact>
-        )}
-        <PluginVariantDifferences
-          alternatives={alternatives}
-          onOpenEntryId={onOpenEntryId}
-        />
+        {marketplaceFact}
+        {otherVersionsFacts}
       </>
     ) : undefined;
-  const metadataFooter = (
+  const compatToggle =
+    plugin.providerSupport.codex === 'compat' && onToggleCodexCompat ? (
+      <ToggleSwitch
+        label="Codex compatibility mode"
+        checked={plugin.codexCompatDisabled !== true}
+        disabled={compatBusy}
+        onChange={() => {
+          setCompatBusy(true);
+          setCompatError('');
+          void onToggleCodexCompat(plugin.codexCompatDisabled !== true)
+            .then((updated) => onPluginUpdated?.(updated))
+            .catch((toggleFailure: unknown) =>
+              setCompatError(errorMessage(toggleFailure)),
+            )
+            .finally(() => setCompatBusy(false));
+        }}
+        dataTestId="plugin-detail-codex-compat-disable-toggle"
+      />
+    ) : undefined;
+  // New Customize: the toggle and its failure sit on the Codex row of Works
+  // with; the footer keeps them only when the table has no Codex row.
+  const codexRowTakesCompat =
+    discoveryEnabled &&
+    (linkedHarnessRows?.some((row) => row.id === 'codex') ?? false);
+  const metadataFooter = codexRowTakesCompat ? undefined : (
     <>
       <div className="pt-2 empty:hidden">
         <ErrorBanner
@@ -631,7 +736,7 @@ export function PluginDetailHost({
           error={compatError || compatibilityError}
         />
       </div>
-      {plugin.providerSupport.codex === 'compat' && onToggleCodexCompat && (
+      {compatToggle && (
         <div className="pt-4 empty:hidden">
           <Surface variant="group">
             <div className="flex items-center justify-between gap-4 px-4 py-3">
@@ -643,22 +748,7 @@ export function PluginDetailHost({
                   When off, this Claude plugin is not used under Codex.
                 </p>
               </div>
-              <ToggleSwitch
-                label="Codex compatibility mode"
-                checked={plugin.codexCompatDisabled !== true}
-                disabled={compatBusy}
-                onChange={() => {
-                  setCompatBusy(true);
-                  setCompatError('');
-                  void onToggleCodexCompat(plugin.codexCompatDisabled !== true)
-                    .then((updated) => onPluginUpdated?.(updated))
-                    .catch((toggleFailure: unknown) =>
-                      setCompatError(errorMessage(toggleFailure)),
-                    )
-                    .finally(() => setCompatBusy(false));
-                }}
-                dataTestId="plugin-detail-codex-compat-disable-toggle"
-              />
+              {compatToggle}
             </div>
           </Surface>
         </div>
@@ -756,13 +846,15 @@ export function PluginDetailHost({
 
   const hasInstallActions =
     (canInstall && builtInPanel) ||
-    !!plugin.externalSource ||
+    (!!plugin.externalSource && !discoveryEnabled) ||
     showInstallPrompt ||
     installing;
   const installActions = hasInstallActions ? (
     <>
-      {canInstall && builtInPanel && <BuiltInInstallMessage state={builtIn} />}
-      {plugin.externalSource && (
+      {canInstall && builtInPanel && !discoveryEnabled && (
+        <BuiltInInstallMessage state={builtIn} />
+      )}
+      {plugin.externalSource && !discoveryEnabled && (
         <Surface variant="group" className="min-w-0">
           <div className="px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -787,16 +879,20 @@ export function PluginDetailHost({
           </div>
         </Surface>
       )}
-      {!showInstallPrompt && !installing && installError && (
-        // Update runs from the ⋯ menu, which closes on select, so its failure
-        // shows here.
-        <ErrorBanner
-          errorSource="plugin-detail-update-error"
-          className=""
-          error={installError}
-          testId="plugin-detail-update-error"
-        />
-      )}
+      {!showInstallPrompt &&
+        !installing &&
+        installError &&
+        !discoveryEnabled && (
+          // Update runs from the ⋯ menu, which closes on select, so its failure
+          // shows here.
+          <ErrorBanner
+            errorSource="plugin-detail-update-error"
+            errorRecordingDisabled={installErrorRecorded}
+            className=""
+            error={installError}
+            testId="plugin-detail-update-error"
+          />
+        )}
       {showInstallPrompt && !installing && (
         <div className="flex flex-col items-center justify-center py-12 text-center gap-4">
           <p className="text-s fg-secondary">
@@ -805,6 +901,7 @@ export function PluginDetailHost({
           </p>
           <ErrorBanner
             errorSource="plugin-detail-host-install"
+            errorRecordingDisabled={installErrorRecorded}
             className=""
             error={installError}
           />
@@ -840,8 +937,20 @@ export function PluginDetailHost({
 
   // The Works with table is where a provider install starts, so the built-in
   // install lives on its row rather than in a second table.
-  const harnessRowsWithActions = linkedHarnessRows?.map((row) => {
-    if (!canInstall || !builtInPanel) return row;
+  const harnessRowsWithActions = linkedHarnessRows?.map((plain) => {
+    const row =
+      codexRowTakesCompat && plain.id === 'codex'
+        ? {
+            ...plain,
+            control: compatToggle,
+            error: compatError || compatibilityError || undefined,
+          }
+        : plain;
+    // A host that owns installation (the Portal's install panel) installs
+    // there, so the rows offer no built-in install of their own.
+    if (!canInstall || !builtInPanel || installContent) return row;
+    // Another copy serves this harness; its own page installs it.
+    if ('support' in row && row.support === 'copy') return row;
     // Cursor and OpenCode load the Claude package when there is one, else the
     // Codex one, so their install is that provider's install.
     const direct: PluginProvider | undefined =
@@ -866,11 +975,69 @@ export function PluginDetailHost({
         iconOnly: provider.installed,
         onOpen: (): void => {
           if (builtIn.installing === null)
-            void builtIn.install([provider.provider]);
+            void builtIn.install([provider.provider], row.id);
         },
       },
     };
   });
+  // New Customize: a harness install's result sits with Works with, where it
+  // started; a failure for one harness on that harness's row.
+  const rowInstallError =
+    discoveryEnabled &&
+    builtIn.message?.tone === 'error' &&
+    builtIn.message.provider !== undefined
+      ? builtIn.message
+      : undefined;
+  const shownHarnessRows = rowInstallError
+    ? harnessRowsWithActions?.map((row) =>
+        row.id === (rowInstallError.harness ?? rowInstallError.provider)
+          ? { ...row, error: rowInstallError.text }
+          : row,
+      )
+    : harnessRowsWithActions;
+  const rowTakesError =
+    rowInstallError !== undefined &&
+    (shownHarnessRows ?? []).some(
+      (row) => row.id === (rowInstallError.harness ?? rowInstallError.provider),
+    );
+  const shownWorksWithNotice =
+    discoveryEnabled &&
+    canInstall &&
+    builtInPanel &&
+    builtIn.message &&
+    !rowTakesError ? (
+      <>
+        {worksWithNotice}
+        <BuiltInInstallMessage state={builtIn} />
+      </>
+    ) : (
+      worksWithNotice
+    );
+  // New Customize's fact rows, in the shared order.
+  const discoveryFacts = discoveryEnabled
+    ? {
+        source: marketplaceFact,
+        otherVersions: otherVersionsFacts,
+        version: versionUpdate ? (
+          <DetailVersionUpdateFact
+            update={versionUpdate}
+            name={pluginDisplayName(plugin)}
+          />
+        ) : undefined,
+        entity: plugin.externalSource ? (
+          // Update re-fetches the repository; its failure stays on this row.
+          <DetailFact label="Repository" testId="plugin-detail-repository">
+            <ExternalSourceLink source={plugin.externalSource} />
+            {!showInstallPrompt && !installing && installError && (
+              <DetailFactError
+                error={installError}
+                testId="plugin-detail-update-error"
+              />
+            )}
+          </DetailFact>
+        ) : undefined,
+      }
+    : undefined;
   return (
     <div data-testid="plugin-detail-host">
       {truncated && (
@@ -900,6 +1067,9 @@ export function PluginDetailHost({
         metadataFooter={metadataFooter}
         metadataFacts={metadataFacts}
         updateNotice={updateNotice}
+        publisher={publisher}
+        facts={discoveryFacts}
+        worksWithNotice={shownWorksWithNotice}
         statusContent={
           statusContent ? (
             <DetailActionSlotsProvider slots={actionSlots}>
@@ -909,7 +1079,7 @@ export function PluginDetailHost({
             </DetailActionSlotsProvider>
           ) : undefined
         }
-        harnessRows={harnessRowsWithActions}
+        harnessRows={shownHarnessRows}
         installActions={
           installContent || installActions ? (
             <DetailActionSlotsProvider slots={actionSlots}>
@@ -936,6 +1106,7 @@ export function PluginDetailHost({
         headerActions={chromeActions}
         bundledServerRows={bundledServerRows}
         onOpenEntryId={onOpenEntryId}
+        mcpServerVia={mcpServerVia}
         {...(mcpServerHealth
           ? {
               renderMcpServerStatus: (server: PluginMcpServerInfo) =>

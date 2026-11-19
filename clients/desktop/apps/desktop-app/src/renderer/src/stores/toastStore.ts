@@ -178,6 +178,12 @@ export interface ToastMeta {
    * (CAN-4005) while notifications are off.
    */
   agentCompletion?: boolean;
+  /**
+   * The value caught from the failure behind an error toast, so the recorded
+   * sighting is the failure's own (linked) record rather than a second, text
+   * only one. Read when the toast is raised and never stored with it.
+   */
+  caught?: unknown;
 }
 
 export interface Toast {
@@ -580,8 +586,14 @@ export function addToast(
   meta?: ToastMeta,
   onDismiss?: () => void,
 ): void {
-  const gate = readToastGate(meta);
-  const entry = createToastEntry(message, type, onClick, meta, onDismiss);
+  // The caught value is for the recorder alone: keeping it out of the entry
+  // keeps the raw error out of the queue and notification history.
+  const hasCaught =
+    meta !== undefined && Object.prototype.hasOwnProperty.call(meta, 'caught');
+  const { caught, ...withoutCaught } = meta ?? {};
+  const entryMeta = hasCaught ? withoutCaught : meta;
+  const gate = readToastGate(entryMeta);
+  const entry = createToastEntry(message, type, onClick, entryMeta, onDismiss);
   if (type === 'error') {
     recordSurfacedError({
       chokePoint: 'toast',
@@ -591,10 +603,14 @@ export function addToast(
       ...(gate.deliverable && gate.showInApp
         ? { surface: 'toast' as const }
         : {}),
-      text: message,
-      // Every error toast is blocked from replay (toastMessageReplayClass);
-      // showing it locally does not clear it for export.
-      textIsSensitive: true,
+      ...(hasCaught
+        ? { error: caught }
+        : {
+            text: message,
+            // Every error toast is blocked from replay (toastMessageReplayClass);
+            // showing it locally does not clear it for export.
+            textIsSensitive: true,
+          }),
     });
   }
   deliverToast(entry, gate);

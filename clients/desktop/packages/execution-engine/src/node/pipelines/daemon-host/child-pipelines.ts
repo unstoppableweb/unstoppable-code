@@ -4,12 +4,17 @@ import {
   type DaemonPipelineClassifierContext,
   type DaemonPipelineClassifierOptions,
 } from '../daemon-eligibility';
-import type { ChildPipelineAdmissionRequest } from '../executor/types';
+import type {
+  ChildPipelineAdmission,
+  ChildPipelineAdmissionRequest,
+} from '../executor/types';
 import {
   declaresOwnCapabilities,
   type ChildCapabilities,
   type ChildCapabilityStore,
 } from './child-capabilities';
+import { isRunPipelineStep } from '@canopy/pipeline-interop/cloud-child-workflows';
+import { hasCloudModelSteps } from '@canopy/pipeline-interop/cloud-model-preflight';
 import { codexServablePluginCollections } from './codex-plugin-mcp';
 
 /*
@@ -33,6 +38,11 @@ import { codexServablePluginCollections } from './codex-plugin-mcp';
  *   `child-capabilities.ts`) and is classified with those, kept for it
  *   alone: the launch's are its parent's, keyed by id. Without a core to
  *   ask, such a child is refused.
+ * - With a core to ask, a child with model steps or children of its own
+ *   asks it too (CAN-7044), and a starting child runs the definition the
+ *   core answers with: the one its step resolved, with the cloud models the
+ *   run's person chose for it when the run started. A resumed child runs its
+ *   stored definition, which has them already.
  *
  * A refusal fails the `run-pipeline` step before the child runs, with a
  * message that names the child and the step it refused, never its contents.
@@ -58,38 +68,59 @@ export interface ChildAdmissionSetup {
   readonly capabilities?: ChildCapabilityStore;
 }
 
+/**
+ * Whether a child asks its run's core before it starts: for its own
+ * collections and aliases, for the cloud models chosen for its model steps
+ * (CAN-7044), or to have its choices kept for its own children.
+ */
+function asksItsCore(
+  pipeline: ChildPipelineAdmissionRequest['pipeline'],
+): boolean {
+  return (
+    declaresOwnCapabilities(pipeline) ||
+    hasCloudModelSteps(pipeline) ||
+    Object.values(pipeline.jobs).some(
+      (job) => Array.isArray(job.steps) && job.steps.some(isRunPipelineStep),
+    )
+  );
+}
+
 /** The check a launch that admitted children runs on each of them. */
 export function childAdmissionFor(
   setup: ChildAdmissionSetup,
-): (request: ChildPipelineAdmissionRequest) => Promise<void> {
+): (request: ChildPipelineAdmissionRequest) => Promise<ChildPipelineAdmission> {
   return async (request) => {
     const refuse = (detail: string): never => {
       throw new Error(`${CHILD_REFUSED_MESSAGE(request.pipelineId)} ${detail}`);
     };
-    const { pipeline } = request;
     let own: ChildCapabilities | undefined;
-    if (declaresOwnCapabilities(pipeline)) {
-      if (setup.capabilities === undefined)
+    if (setup.capabilities === undefined) {
+      if (declaresOwnCapabilities(request.pipeline))
         refuse(
           'Cloud runs only use plugin collections and model aliases the parent workflow declares.',
         );
-      else
-        try {
-          own = await setup.capabilities.resolve(request);
-        } catch (error) {
-          // A withdrawn step's abort is its own, not the child's refusal.
-          if (request.signal?.aborted === true) throw error;
-          refuse(error instanceof Error ? error.message : String(error));
-        }
-    }
+    } else if (asksItsCore(request.pipeline))
+      try {
+        own = await setup.capabilities.resolve(request);
+      } catch (error) {
+        // A withdrawn step's abort is its own, not the child's refusal.
+        if (request.signal?.aborted === true) throw error;
+        refuse(error instanceof Error ? error.message : String(error));
+      }
+    // A starting child runs its models as its core chose them; a resumed
+    // one its stored definition, which has them already.
+    const replaced = request.kind === 'start' ? own?.pipeline : undefined;
     const classification = classifyDaemonPipeline(
-      pipeline,
+      replaced ?? request.pipeline,
       {
         runtime: setup.runtime,
         repoPath: request.repoPath ?? setup.repoPath,
         inputs:
           request.kind === 'start'
-            ? resolveDaemonPipelineInputs(request.pipeline, request.inputs)
+            ? resolveDaemonPipelineInputs(
+                replaced ?? request.pipeline,
+                request.inputs,
+              )
             : request.inputs,
         env: setup.env,
         // The child's own, as its core resolved them, never its parent's.
@@ -111,5 +142,6 @@ export function childAdmissionFor(
       refuse("This run's host has no models to run the child's agent steps.");
     if (classification.modelHarnesses.includes('codex') && !setup.codexReady)
       refuse("This run's host can't run the child's Codex steps.");
+    return replaced === undefined ? {} : { pipeline: replaced };
   };
 }

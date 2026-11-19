@@ -1,11 +1,19 @@
-import { requestSecrets } from '../agent-secrets/request-secrets';
-import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import {
+  requestSecrets,
+  secretToolAgentName,
+} from '../agent-secrets/request-secrets';
+import { agentSecretUseTools } from '../agent-secrets/secret-tool-runtime';
+import {
+  isAgentSecretRequestsEnabled,
+  isRunWithSecretsSupported,
+} from '../agent-secrets/feature-gate';
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { randomUUID } from 'node:crypto';
 import { createShowVisualHost } from '../canopy-tools/show-visual-host';
 import { BRAND } from '@canopy/brand/current';
 import type { ClaudeTerminalHookCallbackBody } from '@canopy/desktop-shared/lib/desktop-integration-transport';
 import {
+  isAgentSecretInjectedToolKey,
   ASK_USER_TIMEOUT_MS,
   CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
@@ -112,9 +120,10 @@ export interface CanopyWorktreeSessionRoute {
   assistantMode?: 'default' | 'app-advisor' | 'pipeline-editor';
   toolSurface?: CanopyInjectedToolSurface;
   /**
-   * The session offers RequestSecrets on its UI server: a root local Claude
-   * chat started with the flag on. Delegates, pipelines and other providers
-   * leave it unset. The flag is re-checked on every listing and call.
+   * The session offers RequestSecrets on its UI server and RunWithSecrets on
+   * its main server: a root local Claude, Cursor, OpenCode or Copilot chat
+   * started with the flag on. Delegates and pipelines leave it unset. The
+   * flag is re-checked on every listing and call.
    */
   secretRequests?: boolean;
   /** The chat's live approval mode, for RequestSecrets' Full-access path. */
@@ -652,8 +661,10 @@ export class CanopyToolRouter {
     }
     // Unadvertised here: refuse at dispatch too, as for an unknown tool.
     if (
-      canonicalKey === 'request_secrets' &&
-      (route.secretRequests !== true || !isAgentSecretRequestsEnabled())
+      isAgentSecretInjectedToolKey(canonicalKey) &&
+      (route.secretRequests !== true ||
+        !isAgentSecretRequestsEnabled() ||
+        (canonicalKey === 'run_with_secrets' && !isRunWithSecretsSupported()))
     ) {
       return jsonRpcError(id, -32602, `Unknown ${BRAND.displayName} MCP tool`);
     }
@@ -750,7 +761,7 @@ export class CanopyToolRouter {
         KEYED_BY_TOOL_CALL.has(args.action.type);
       const toolCallOptions: CanopyInjectedToolContext = {
         ...(canonicalKey !== 'ask_user_question' &&
-        canonicalKey !== 'request_secrets' &&
+        !isAgentSecretInjectedToolKey(canonicalKey) &&
         canonicalKey !== 'set_base_branch' &&
         (typeof id === 'string' || typeof id === 'number')
           ? {
@@ -871,6 +882,20 @@ export class CanopyToolRouter {
                 options,
               ),
           }
+        : {}),
+      // RunWithSecrets and WriteSecretsFile, on the main server of the same
+      // sessions. Commands run in the session's folder: the chat's
+      // worktree, or its selected repository in a multi-repository project.
+      ...(route.secretRequests === true && route.cwd
+        ? agentSecretUseTools({
+            scope: {
+              projectId: route.projectId,
+              worktreeId: route.worktreeId,
+              chatId: route.chatId,
+            },
+            root: route.cwd,
+            agentName: secretToolAgentName(route.providerType ?? 'claude'),
+          })
         : {}),
       requestUserAnswers: (
         questions,

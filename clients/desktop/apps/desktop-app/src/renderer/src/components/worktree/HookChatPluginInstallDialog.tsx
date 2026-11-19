@@ -2,6 +2,7 @@ import { Badge } from '@canopy/ui-shared/components/Badge';
 import { Stack, Button, Surface } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { Checkbox } from '@canopy/ui-shared/components';
+import { linkRecordedAppError } from '@canopy/ui-shared/lib';
 import type { HookChatPluginDependencyItem } from '@canopy/desktop-shared/types';
 import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import { DialogModal } from '../shared';
@@ -130,6 +131,8 @@ async function installSkillItem(
       item.installSpec.skillName,
     ]);
     if (!result.success) {
+      // The failure shows as plain text here; link main's record to this session.
+      linkRecordedAppError(result.appError, 'hook-chat-plugin-install');
       return { ok: false, error: result.error || 'Failed to install skill.' };
     }
     return { ok: true };
@@ -166,6 +169,7 @@ async function installPluginItem(
     if (!marketplaceId) {
       const added = await window.plugins.addMarketplace(repo);
       if (!added.success) {
+        linkRecordedAppError(added.appError, 'hook-chat-plugin-install');
         return {
           ok: false,
           error: added.error || 'Failed to add marketplace.',
@@ -232,6 +236,7 @@ async function installPluginItem(
       lookup.sourceUrl,
     );
     if (!installed.success) {
+      linkRecordedAppError(installed.appError, 'hook-chat-plugin-install');
       return {
         ok: false,
         error: installed.error || 'Failed to install plugin.',

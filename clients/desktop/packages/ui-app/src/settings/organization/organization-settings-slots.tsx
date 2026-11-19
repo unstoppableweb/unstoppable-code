@@ -1,5 +1,6 @@
 'use client';
 
+import type { ProjectLocalSetupPort } from '../../capability/project-setup/project-local-setup';
 import {
   createContext,
   useCallback,
@@ -93,6 +94,16 @@ export interface OrganizationSettingsSlots {
   readonly PromotionDialog?: ComponentType<OrganizationPromotionDialogProps>;
   /** Local project status and Set up / Open on this device. */
   readonly orgProjectLocalSetup?: OrgProjectLocalSetupSlot;
+  /**
+   * An organization project's scripts and hooks on this device, for the
+   * project editor's Shared setup (CAN-6239). Only a host that can check the
+   * project out supplies it; without it the section says to open the desktop
+   * app. Call it with the same ids for the same port.
+   */
+  readonly projectLocalSetup?: (
+    organizationId: string,
+    projectId: string,
+  ) => ProjectLocalSetupPort;
   /**
    * The host's inline data-sharing opt-in, which resolves the viewer's
    * sharing itself and saves in place. Without it the hint hands off to the

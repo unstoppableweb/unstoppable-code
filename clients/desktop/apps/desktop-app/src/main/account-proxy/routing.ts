@@ -91,6 +91,7 @@ type AccountProxyRouteCheck = Pick<
  */
 async function checkAccountProxySessionRoute(
   options: AccountProxyRouteCheck,
+  requireKnownAbsence = false,
 ): Promise<AccountProxyRouteTarget | null> {
   // Cheap checks first: with the flag off this costs a session nothing.
   if (!isAccountProxyFlagEnabled()) return null;
@@ -102,7 +103,10 @@ async function checkAccountProxySessionRoute(
   // A proxy that cannot be checked is treated like one that cannot be
   // reached: the work uses its usual billing instead of failing.
   const target = await getAccountProxyRouteTarget(options.harness).catch(
-    () => null,
+    (error: unknown) => {
+      if (requireKnownAbsence) throw error;
+      return null;
+    },
   );
   if (!target) return null;
   const gateway = await getModelGatewayRequirementForOwner(
@@ -119,8 +123,12 @@ async function checkAccountProxySessionRoute(
  */
 export async function previewAccountProxySessionRoute(
   options: AccountProxyRouteCheck,
+  requireKnownAbsence = false,
 ): Promise<boolean> {
-  const target = await checkAccountProxySessionRoute(options);
+  const target = await checkAccountProxySessionRoute(
+    options,
+    requireKnownAbsence,
+  );
   return (
     target !== null &&
     (!options.requiredConnectionId ||

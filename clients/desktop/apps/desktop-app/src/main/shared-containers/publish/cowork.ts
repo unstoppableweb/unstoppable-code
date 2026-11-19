@@ -1,5 +1,5 @@
 import type { SharedContainerStageRevisionRequest } from '@canopy/protocol/shared-containers';
-import { readPortalStateStore } from '../../portal/portal-state-store';
+import { getInstallId } from '../../lib/install-identity';
 import { listWorkEntries } from '../../lib/cowork-work-entries';
 import {
   commitSharedContainerRevision,
@@ -90,7 +90,7 @@ const DEFAULT_DEPENDENCIES: PublishCoworkRevisionDependencies = {
   upload: uploadSharedContainerArtifact,
   commit: commitSharedContainerRevision,
   fetchRevision: fetchSharedContainerRevision,
-  readDeviceId: async () => (await readPortalStateStore()).clientDeviceId,
+  readDeviceId: getInstallId,
   resolveTitles: resolveCoworkSharedContainerTitles,
   // Deferred: the package analyzer is heavy and only needed while publishing.
   prepareCapabilityPackage: async (input) => {

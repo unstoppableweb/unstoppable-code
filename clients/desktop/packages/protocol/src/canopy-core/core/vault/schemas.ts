@@ -62,6 +62,16 @@ export const VAULT_PROTECTION_UNAVAILABLE_REASONS = [
   'authority_unavailable',
 ] as const;
 
+/** Closed reason a shipped protection backend did not load; never a message. */
+export const VAULT_PROTECTION_LOAD_FAILURES = [
+  'identity_mismatch',
+  'prepare_failed',
+  'aborted',
+  'owner_failed',
+] as const;
+export type VaultProtectionLoadFailure =
+  (typeof VAULT_PROTECTION_LOAD_FAILURES)[number];
+
 const lockedProtection = {
   state: z.literal('locked'),
   backend: VaultBackendSchema,
@@ -75,6 +85,7 @@ const unavailableProtection = {
   state: z.literal('unavailable'),
   backend: VaultBackendSchema.nullable(),
   reason: z.enum(VAULT_PROTECTION_UNAVAILABLE_REASONS),
+  loadFailure: z.enum(VAULT_PROTECTION_LOAD_FAILURES).optional(),
 };
 
 /** Vault-wide protection, served from the last observation; never prompts. */

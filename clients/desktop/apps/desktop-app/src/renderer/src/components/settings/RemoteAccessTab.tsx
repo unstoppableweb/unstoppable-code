@@ -45,6 +45,29 @@ const ALLOW_INCOMING_HELPER =
 /** B3: turning Remote Control off keeps every pairing. */
 const TURN_OFF_MESSAGE =
   "Paired devices disconnect now and can't reconnect until you turn it back on. Their pairings are kept.";
+/**
+ * Inventory sync (CAN-5986): a data-sharing opt-out, paused while Allow
+ * incoming is off. Turning it off removes this computer's synced lists from
+ * the web for the signed-in account, so it asks first. The tab renders only
+ * while signed in, and main falls back to the last account signed in here
+ * if the sign-in ended meanwhile, so the confirmation can always say the
+ * lists are removed. Turning it off stays available while Allow incoming
+ * is off; only turning it on waits for Allow incoming.
+ */
+const INVENTORY_SYNC_LABEL = 'Sync lists to the web';
+const INVENTORY_SYNC_HELPER =
+  "Show this computer's plugin, MCP server and pipeline lists on the web while your other devices can control it. Only the lists are shared, not files or credentials.";
+// Shown only while the switch is on but nothing syncs, so an on switch
+// isn't read as syncing now.
+const INVENTORY_SYNC_PAUSED =
+  "Paused while your other devices can't control this computer.";
+const INVENTORY_SYNC_TURN_OFF_MESSAGE =
+  "This computer's synced plugin, MCP server and pipeline lists are removed from the web. Turn it back on to sync them again.";
+// One status covers both failure paths: a transient failure retries on a
+// timer, and a refused one (401/403) retries once you sign in again, so the
+// copy names both instead of promising an automatic retry.
+const INVENTORY_DELETE_FAILED =
+  "Couldn't remove this computer's lists from the web yet. It tries again later, or after you sign in again.";
 
 /**
  * Settings → Remote Control: the single opt-in that lets this account's
@@ -58,6 +81,7 @@ export function RemoteAccessTab(): JSX.Element {
     state,
     setAllowIncoming,
     setAllowRemoteUpdates,
+    setInventorySyncEnabled,
     openMachine,
     forgetDevice,
     openPairDialog,
@@ -67,6 +91,7 @@ export function RemoteAccessTab(): JSX.Element {
       state: store.state,
       setAllowIncoming: store.setAllowIncoming,
       setAllowRemoteUpdates: store.setAllowRemoteUpdates,
+      setInventorySyncEnabled: store.setInventorySyncEnabled,
       openMachine: store.openMachine,
       forgetDevice: store.forgetDevice,
       openPairDialog: store.openPairDialog,
@@ -77,7 +102,9 @@ export function RemoteAccessTab(): JSX.Element {
   );
   const [savingAllow, setSavingAllow] = useState(false);
   const [savingUpdates, setSavingUpdates] = useState(false);
+  const [savingInventorySync, setSavingInventorySync] = useState(false);
   const [confirmingTurnOff, setConfirmingTurnOff] = useState(false);
+  const [confirmingInventoryOff, setConfirmingInventoryOff] = useState(false);
   const [error, setError] = useState<InlineFailure | null>(null);
   const devicePorts = useMemo<RemoteControlDevicesPorts>(
     () => ({
@@ -176,6 +203,31 @@ export function RemoteAccessTab(): JSX.Element {
       .finally(() => setSavingUpdates(false));
   };
 
+  const saveInventorySync = (next: boolean): Promise<void> => {
+    setSavingInventorySync(true);
+    setError(null);
+    return setInventorySyncEnabled(next)
+      .catch((cause: unknown) => {
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't save the setting."));
+      })
+      .finally(() => setSavingInventorySync(false));
+  };
+
+  // Turning sync on re-syncs at once; turning it off deletes the synced
+  // lists from the web, so it asks first.
+  const toggleInventorySync = (next: boolean): void => {
+    if (next) {
+      void saveInventorySync(true);
+      return;
+    }
+    setConfirmingInventoryOff(true);
+  };
+
+  // Hosts that predate the field omit it; absent reads as on.
+  const inventorySyncEnabled = state.inventorySyncEnabled ?? true;
+
   // Turning on takes effect at once; turning off disconnects paired devices,
   // so it asks first (B3).
   const toggleAllow = (next: boolean): void => {
@@ -204,6 +256,14 @@ export function RemoteAccessTab(): JSX.Element {
         {...(error?.details === undefined ? {} : { details: error.details })}
         testId="settings-remote-access-error"
       />
+      {state.inventoryDeleteStatus === 'failed' ? (
+        <DesktopErrorBanner
+          errorSource="settings-remote-access-inventory-delete-error"
+          className=""
+          error={INVENTORY_DELETE_FAILED}
+          testId="settings-remote-access-inventory-delete-error"
+        />
+      ) : null}
 
       <SettingsSection>
         <SettingsGroup>
@@ -239,6 +299,31 @@ export function RemoteAccessTab(): JSX.Element {
               />
             }
           />
+          <SettingsRow
+            label={INVENTORY_SYNC_LABEL}
+            description={
+              !state.allowIncoming && inventorySyncEnabled
+                ? `${INVENTORY_SYNC_HELPER} ${INVENTORY_SYNC_PAUSED}`
+                : INVENTORY_SYNC_HELPER
+            }
+            htmlFor="settings-remote-access-inventory-sync"
+            dataTestId="settings-remote-access-inventory-sync-row"
+            control={
+              <ToggleSwitch
+                id="settings-remote-access-inventory-sync"
+                checked={inventorySyncEnabled}
+                label={INVENTORY_SYNC_LABEL}
+                dataTestId="settings-remote-access-inventory-sync"
+                // Turning it off (and deleting) never waits for Allow
+                // incoming; turning it on does.
+                disabled={
+                  savingInventorySync ||
+                  (!state.allowIncoming && !inventorySyncEnabled)
+                }
+                onChange={toggleInventorySync}
+              />
+            }
+          />
         </SettingsGroup>
       </SettingsSection>
 
@@ -263,6 +348,24 @@ export function RemoteAccessTab(): JSX.Element {
           onCancel={() => setConfirmingTurnOff(false)}
           confirmTestId="settings-remote-access-turn-off-confirm"
           dataTestId="settings-remote-access-turn-off-dialog"
+        />
+      ) : null}
+      {confirmingInventoryOff ? (
+        <ConfirmDialog
+          title="Stop syncing lists to the web?"
+          message={INVENTORY_SYNC_TURN_OFF_MESSAGE}
+          confirmLabel="Turn off"
+          busyLabel="Turning off…"
+          busy={savingInventorySync}
+          destructive
+          onConfirm={() => {
+            void saveInventorySync(false).finally(() =>
+              setConfirmingInventoryOff(false),
+            );
+          }}
+          onCancel={() => setConfirmingInventoryOff(false)}
+          confirmTestId="settings-remote-access-inventory-sync-off-confirm"
+          dataTestId="settings-remote-access-inventory-sync-off-dialog"
         />
       ) : null}
     </>,

@@ -11,6 +11,8 @@
   "include": [
     "apps/desktop-app/src/**/*.ts",
     "apps/desktop-app/src/**/*.tsx",
+    "apps/core-daemon/src/**/*.ts",
+    "apps/core-daemon/src/**/*.tsx",
     "packages/protocol/src/**/*.ts",
     "packages/protocol/src/**/*.tsx",
     "packages/artifact-crypto/src/**/*.ts",

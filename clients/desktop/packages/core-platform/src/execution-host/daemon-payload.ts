@@ -38,6 +38,15 @@ export const CODE_GRAPH_RUNTIME_ROOTS = Object.freeze([
   ...CODE_GRAPH_RUNTIME_MODULES.map((name) => `node_modules/${name}`),
 ]);
 
+/**
+ * The bundled pipeline definitions `build:core-daemon` stages beside the
+ * daemon (CAN-5092), as path segments under the executable's directory.
+ */
+export const DAEMON_BUNDLED_PIPELINES_DIRECTORY = Object.freeze([
+  'resources',
+  'pipelines',
+]);
+
 /** Inert vault payload beside every daemon; delivery does not enable a key slot. */
 export const DAEMON_SECRET_PROTECTION_FILE = 'core-secret-protection.node';
 export const DAEMON_SECRET_PROTECTION_RECEIPT =

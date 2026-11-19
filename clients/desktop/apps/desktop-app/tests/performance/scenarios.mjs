@@ -17,14 +17,21 @@ import {
   prepareCodeReviewRegistry,
   runCodeReviewRegistryCleanup,
 } from './code-review-registry-scenario.mjs';
+import {
+  prepareOwnedAutomations,
+  runOwnedAutomations,
+  setupOwnedAutomations,
+} from './owned-automations-scenario.mjs';
 import { perfettoTraceEvents } from './perfetto-trace.mjs';
 import { w5StoreScenarios } from './w5-store-scenario.mjs';
 import {
   padRetainedWorktreeRow,
   retainedIdleRates,
   retainedEventWork,
+  retainedPerEventFromRates,
+  retainedActiveChatWatchersAfterRun,
   retainedWorktreesIdleConfig,
-  scaled,
+  seedRetainedActiveChatWatchers,
 } from './retained-worktrees.mjs';
 import { w5StoreLaunchEnv } from './w5-store-arms.mjs';
 import { execFileSync } from 'node:child_process';
@@ -97,7 +104,10 @@ import {
   closePanelTab,
   expandDefaultActivityRail,
 } from '../electron/canopyApp.mjs';
-import { selectModelOption } from '../electron/model-selection-fixture.mjs';
+import {
+  selectModelOnHarness,
+  selectModelOption,
+} from '../electron/model-selection-fixture.mjs';
 import {
   commitArchiveSiblingProviderMarker,
   deleteArchiveActivityWorktree,
@@ -200,7 +210,7 @@ import { seedCostIndexAudit } from './cost-index-fixture.mjs';
 import { measureAppQuit, scenarioWithQuit } from './quit-latency.mjs';
 import { performanceScenarioStatus } from './scenario-status.mjs';
 import { settlePerformanceScenario } from './smoke-acceptance.mjs';
-import { percentile, roundMetric } from './statistics.mjs';
+import { percentile } from './statistics.mjs';
 
 // apps/desktop-app/tests/performance/ -> repository root
 const PERF_REPO_ROOT = path.resolve(
@@ -366,7 +376,8 @@ export async function drainTransientItems({
  * Opt out of the CAN-2836 activity-rail harness shim (`CanopyAppDriver.selectWorktree`
  * re-expands the rail by default for spec compatibility).
  *
- * Use in any scenario that never renders the activity rail: the shim adds
+ * Use in any scenario that never renders the activity rail, or that opens the
+ * rail itself with `openActivityRail`: the shim adds
  * renderer round-trips — and possibly a click plus a poll — inside measured,
  * responsiveness-budgeted blocks, whose breach triggers a CPU-profile replay.
  *
@@ -381,6 +392,10 @@ const NO_ACTIVITY_RAIL = { expandDefaultActivityRail: false };
  * Opens the default-collapsed activity rail through its own expand control,
  * as a user would. Unlike `expandDefaultActivityRail`, this needs no E2E panel
  * test API, so release-like runs reveal the rail too.
+ *
+ * Pair it with `NO_ACTIVITY_RAIL` on every `selectWorktree` call of the
+ * scenario, including measured navigation, because the shim otherwise waits
+ * 2 s for that test API in release-like runs.
  */
 async function openActivityRail(page) {
   const section = page.getByTestId('panel-content-activity-section');
@@ -3849,7 +3864,21 @@ function retainedWorktreeLists(userDataDir) {
   });
 }
 
-function prepareRetainedWorktreesIdle(userDataDir, config) {
+/**
+ * CAN-6970: one reply streamed into the selected worktree's chat at about 25
+ * chunks a second, a little longer than the measured window, so the chat
+ * phase measures what intra-turn provider events cost while no turn starts
+ * or ends inside it.
+ */
+const RETAINED_CHAT_MARKER = 'Canopy-CRETAINED';
+const RETAINED_CHAT_CHUNK_CHARACTERS = 16;
+const RETAINED_CHAT_CHUNKS_PER_SECOND = 25;
+
+function retainedChatStreamMs(config) {
+  return config.retainedActiveMs + 15_000;
+}
+
+async function prepareRetainedWorktreesIdle(userDataDir, config) {
   const fixture = preparePowerUserIdle(
     userDataDir,
     retainedWorktreesIdleConfig(config),
@@ -3889,9 +3918,37 @@ function prepareRetainedWorktreesIdle(userDataDir, config) {
       operationId: `00000000-0000-4000-8000-${String(journals).padStart(12, '0')}`,
     });
   }
+  const activeChatWatchers = config.retainedActiveChatWatchers
+    ? seedRetainedActiveChatWatchers(
+        userDataDir,
+        config.retainedActiveChatWatchers,
+        { excludeBranch: WORKTREE_BRANCH },
+      )
+    : null;
+  const streamMs = retainedChatStreamMs(config);
+  const chunks = Math.ceil((streamMs / 1000) * RETAINED_CHAT_CHUNKS_PER_SECOND);
+  await registerScenario(PERFORMANCE_MOCK_BASE_URL, RETAINED_CHAT_MARKER, {
+    llm: {
+      steps: [
+        {
+          text: 'Retained worktrees streaming reply. '
+            .repeat(chunks)
+            .slice(0, chunks * RETAINED_CHAT_CHUNK_CHARACTERS),
+          stopReason: 'end_turn',
+          streamMs,
+          chunkChars: RETAINED_CHAT_CHUNK_CHARACTERS,
+        },
+      ],
+    },
+  });
   return {
     ...fixture,
-    retained: { configFiles, journals, userDataDir },
+    retained: {
+      configFiles,
+      journals,
+      userDataDir,
+      ...(activeChatWatchers ? { activeChatWatchers } : {}),
+    },
   };
 }
 
@@ -3916,6 +3973,9 @@ function readRetainedIdleSample(electronApp) {
       w5: counters?.w5 ?? null,
       ipc: counters?.ipc ?? null,
       metadata: counters?.metadata ?? null,
+      provider: counters?.provider ?? null,
+      stale: counters?.stale ?? null,
+      w5Caller: counters?.w5Caller ?? null,
     };
   });
 }
@@ -3983,44 +4043,44 @@ async function runRetainedWorktreesIdle({
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     },
   });
-  const perFocus = (value) => roundMetric(value / Math.max(focuses, 1));
   const focusRates = {
     ...focus,
     events: {
       key: 'window.focus',
       count: focuses,
-      perEvent: {
-        metadataReads: perFocus(focus.metadataReadsPerSecond * focus.seconds),
-        configReads:
-          focus.configReadsPerSecond === null
-            ? null
-            : perFocus(focus.configReadsPerSecond * focus.seconds),
-        metadata:
-          focus.metadataPerSecond === null
-            ? null
-            : scaled(
-                Object.fromEntries(
-                  Object.entries(focus.metadataPerSecond).map(([key, rate]) => [
-                    key,
-                    rate * focus.seconds,
-                  ]),
-                ),
-                Math.max(focuses, 1),
-              ),
-      },
+      perEvent: retainedPerEventFromRates(focus, focuses),
     },
   };
+  await page.waitForTimeout(config.retainedSettleMs);
+  const chat = await retainedChatPhase({ page, electronApp, config });
   const rowsAfter = retainedRowBytes(userDataDir);
-  const retainedWork = retainedEventWork({ idle, stale, focus: focusRates });
+  if (retained.activeChatWatchers) {
+    retained.activeChatWatchers = {
+      ...retained.activeChatWatchers,
+      afterRun: retainedActiveChatWatchersAfterRun(
+        await page.evaluate(() => window.api.appAdvisor.listWatchers()),
+        retained.activeChatWatchers,
+      ),
+    };
+  }
+  const retainedWork = retainedEventWork({
+    idle,
+    stale,
+    focus: focusRates,
+    chat,
+  });
   if (retainedWork) tasks.extraWork.retained = retainedWork;
   for (const [label, phase] of [
     ['idle', idle],
     ['stale', stale],
     ['focus', focusRates],
-  ])
+    ['chat', chat],
+  ]) {
+    if (!phase) continue;
     console.log(
-      `[perf] retained-worktrees-idle ${label}: main ${phase.mainCpuPercentOfCore}% of one core; ${phase.metadataReadsPerSecond} metadata reads/s; ${phase.configReadsPerSecond} config reads/s${phase.events ? `; ${phase.events.count} events, ${phase.events.perEvent?.metadataReads ?? 0} metadata and ${phase.events.perEvent?.configReads ?? 0} config reads each` : ''}`,
+      `[perf] retained-worktrees-idle ${label}: main ${phase.mainCpuPercentOfCore}% of one core; ${phase.metadataReadsPerSecond} metadata reads/s; ${phase.configReadsPerSecond} config reads/s; ${phase.snapshotBuildsPerSecond ?? 'n/a'} snapshot builds/s${phase.events ? `; ${phase.events.count} events, ${phase.events.perEvent?.metadataReads ?? 'n/a'} metadata and ${phase.events.perEvent?.configReads ?? 'n/a'} config reads and ${phase.events.perEvent?.snapshotBuilds ?? 'n/a'} snapshot builds each` : ''}`,
     );
+  }
   return {
     ...fixture.shape,
     retainedWorktrees: config.retainedWorktrees,
@@ -4029,7 +4089,52 @@ async function runRetainedWorktreesIdle({
     idle,
     stale,
     focus: focusRates,
+    chat,
   };
+}
+
+/**
+ * CAN-6970: a chat reply streaming in the selected worktree, measured once
+ * its first provider event lands and before the turn ends, then given up to
+ * a minute to settle.
+ */
+async function retainedChatPhase({ page, electronApp, config }) {
+  const before = await readRetainedIdleSample(electronApp);
+  // Release-like builds carry no work counters, so nothing could show the
+  // stream starting: the phase reports null rather than wait it out.
+  if (before.provider === null) return null;
+  const applied = (sample) => sample.provider?.eventsApplied ?? 0;
+  const panel = visibleChatPanel(page);
+  await panel
+    .getByRole('textbox')
+    .first()
+    .fill(`[${RETAINED_CHAT_MARKER}] Stream the retained-worktrees reply.`);
+  await panel.getByRole('button', { name: 'Send message' }).click();
+  await waitUntil(
+    async () =>
+      applied(await readRetainedIdleSample(electronApp)) > applied(before),
+    { timeoutMs: 60_000, label: 'retained-worktrees chat stream to start' },
+  );
+  const chat = await retainedActivePhase({
+    page,
+    electronApp,
+    durationMs: config.retainedActiveMs,
+    intervalMs: 1_000,
+    act: () => Promise.resolve(),
+    events: { source: 'provider', key: 'eventsApplied' },
+  });
+  // Let the reply settle before the app closes, but never fail on it: the
+  // measurement is taken, and at 110 worktrees the reply can outlast its
+  // scripted stream by minutes.
+  let last = -1;
+  const settleUntil = performance.now() + 60_000;
+  while (performance.now() < settleUntil) {
+    const now = applied(await readRetainedIdleSample(electronApp));
+    if (now === last) break;
+    last = now;
+    await page.waitForTimeout(3_000);
+  }
+  return chat;
 }
 
 async function runPowerUserIdle(args) {
@@ -4144,9 +4249,7 @@ async function runPowerUserActive(args) {
     cards,
   });
   const overlapTurns = await activeTurnCount(page);
-  const overlapRuns = (await cards.allTextContents()).filter((text) =>
-    text.toLowerCase().includes('running'),
-  ).length;
+  const overlapRuns = countRunningPipelineCards(await cards.allTextContents());
   if (overlapTurns === 0 || overlapRuns === 0) {
     throw new Error(
       `Power-user foreground work did not overlap (chat turns=${overlapTurns}, pipeline runs=${overlapRuns})`,
@@ -4251,6 +4354,14 @@ async function runPowerUserActive(args) {
 }
 
 export async function runLoadedUi({ page, app, config, tasks }) {
+  // Unbudgeted: the legacy seed's one-time V2 upgrade, kept out of
+  // select_worktree (see settleLegacyChatScopes).
+  await recordTask(
+    tasks,
+    'migrate_loaded_ui_fixture',
+    () => settleLegacyChatScopes(page, [WORKTREE_ID]),
+    { chatTabs: config.loadedChatTabs },
+  );
   await recordTask(tasks, 'select_worktree', async () => {
     await openMainPage(page);
     // This fixture already seeds the expanded activity panel. Production
@@ -5764,7 +5875,7 @@ function writeLargeTranscriptArchives(
 async function prepareLargeTranscriptFixture(
   userDataDir,
   config,
-  { concurrent },
+  { concurrent, releaseLike = false },
 ) {
   if (concurrent) {
     // Pin the background chat-summary helper so this foreground-concurrency
@@ -5793,6 +5904,19 @@ async function prepareLargeTranscriptFixture(
   const persisted = JSON.parse(
     readFileSync(path.join(workspaceDir, 'worktrees.json'), 'utf8'),
   );
+  // The chat runLargeTranscriptConcurrency sends its first turn from: the
+  // primary tab of the worktree it selects.
+  const largeWorktrees = persisted.worktrees.slice(
+    0,
+    config.largeTranscriptWorktrees,
+  );
+  const pinnedWorktreeId =
+    concurrent && releaseLike
+      ? (
+          largeWorktrees.find((worktree) => worktree.id === WORKTREE_ID) ??
+          largeWorktrees[0]
+        )?.id
+      : undefined;
   const worktrees = persisted.worktrees
     .slice(0, config.largeTranscriptWorktrees)
     .map((worktree, worktreeIndex) => {
@@ -5820,6 +5944,9 @@ async function prepareLargeTranscriptFixture(
             title: `Large Live Transcript ${worktreeIndex + 1}.${tabIndex + 1}`,
             createdAt: '2026-07-01T12:00:00.000Z',
             providerType: 'claude',
+            ...(tabIndex === 0 && worktree.id === pinnedWorktreeId
+              ? releaseLikeTabPin('claude')
+              : {}),
             messages: buildSyntheticTranscriptMessages({
               transcriptId,
               ...(tabIndex === 0 ? primaryDimensions : reducedDimensions),
@@ -6230,10 +6357,35 @@ async function runChatSearchIndexing({
   };
 }
 
-function prepareLargeTranscriptConcurrency(userDataDir, config) {
-  return prepareLargeTranscriptFixture(userDataDir, config, {
-    concurrent: true,
-  });
+async function prepareLargeTranscriptConcurrency(userDataDir, config, options) {
+  const releaseLike = options?.releaseLike === true;
+  return {
+    ...(await prepareLargeTranscriptFixture(userDataDir, config, {
+      concurrent: true,
+      releaseLike,
+    })),
+    releaseLike,
+  };
+}
+
+// Fixtures seeded with legacy v1 chat files (and no `chatBadges`) upgrade
+// every scope to V2 storage once, starting at launch. Loading each scope
+// through the production preload joins that in-flight upgrade and returns when
+// it is done, so the one-time cost is recorded as its own task and stays out
+// of the measured selections, as `migrate_skill_suggestion_history_fixture`
+// does. `chat:load-tabs` returns tab metadata and one page of the active tab.
+async function settleLegacyChatScopes(page, worktreeIds) {
+  let liveTabs = 0;
+  for (const worktreeId of worktreeIds) {
+    liveTabs += await page.evaluate(
+      ({ projectId, worktreeId: id }) =>
+        window.api.chat
+          .loadTabs({ projectId, worktreeId: id })
+          .then((file) => file.tabs.length),
+      { projectId: WORKSPACE_ID, worktreeId },
+    );
+  }
+  return { scopes: worktreeIds.length, liveTabs };
 }
 
 async function selectLargeTranscriptWorktree({ page, app, descriptor }) {
@@ -6314,6 +6466,21 @@ async function runLargeTranscripts({ page, app, config, tasks, fixture }) {
         label: `${fixture.preexistingWorktrees} pre-existing worktrees with ${fixture.worktrees.length} large-transcript worktrees`,
       },
     ),
+  );
+  // Unbudgeted: remaining settlement time of the launch-time V2 upgrade.
+  await recordTask(
+    tasks,
+    'migrate_large_transcript_fixture',
+    () =>
+      settleLegacyChatScopes(
+        page,
+        fixture.worktrees.map((worktree) => worktree.id),
+      ),
+    {
+      scopes: fixture.worktrees.length,
+      liveTranscriptBytes: fixture.liveBytes,
+      archivedTranscriptBytes: fixture.archiveBytes,
+    },
   );
 
   let archiveViews = 0;
@@ -8668,16 +8835,36 @@ async function registerPerformanceChatScenarios(config) {
   }
 }
 
-async function prepareChats(userDataDir, config) {
+async function prepareChats(userDataDir, config, options) {
+  const releaseLike = options?.releaseLike === true;
   seedWorkspace(userDataDir);
   seedWorktreeChat({
     userDataDir,
     workspaceId: WORKSPACE_ID,
     worktreeId: WORKTREE_ID,
     providerType: 'claude',
-    tabs: [{ id: 'performance-chat-1', title: 'Performance Chat 1' }],
+    tabs: [
+      {
+        id: 'performance-chat-1',
+        title: 'Performance Chat 1',
+        ...(releaseLike ? releaseLikeTabPin('claude') : {}),
+      },
+    ],
   });
   await registerPerformanceChatScenarios(config);
+  return { releaseLike };
+}
+
+/**
+ * Seed a tab with the release-like pin for its provider. The pin is an
+ * explicit model choice so lane resolution keeps it, without a billing
+ * override: forcing subscription billing would leave the AI Credits route.
+ */
+function releaseLikeTabPin(providerType) {
+  return {
+    model: releaseLikePinForProvider(providerType),
+    modelExplicitlyChosen: true,
+  };
 }
 
 function seedMixedProviderAgentPreferences(userDataDir) {
@@ -8805,7 +8992,12 @@ export async function registerMixedProviderAgentScenarios(config, descriptors) {
   return { streamMs };
 }
 
-async function prepareMixedProviderAgentConcurrency(userDataDir, config) {
+async function prepareMixedProviderAgentConcurrency(
+  userDataDir,
+  config,
+  options,
+) {
+  const releaseLike = options?.releaseLike === true;
   seedWorkspace(userDataDir);
   seedMixedProviderAgentPreferences(userDataDir);
   const descriptors = mixedProviderAgentDescriptors(config);
@@ -8822,13 +9014,14 @@ async function prepareMixedProviderAgentConcurrency(userDataDir, config) {
       // This deterministic benchmark intentionally exercises background agent
       // tools without stopping on an interactive approval prompt.
       approvalMode: 'full-access',
+      ...(releaseLike ? releaseLikeTabPin(descriptor.providerType) : {}),
     })),
   });
   const { streamMs } = await registerMixedProviderAgentScenarios(
     config,
     descriptors,
   );
-  return { descriptors, streamMs };
+  return { descriptors, streamMs, releaseLike };
 }
 
 async function installMixedProviderAgentEventMonitor(page, descriptors) {
@@ -9052,7 +9245,12 @@ async function activeTurnSnapshot(page) {
   );
 }
 
-async function startMixedProviderAgentChats({ page, fixture, tasks }) {
+async function startMixedProviderAgentChats({
+  page,
+  fixture,
+  tasks,
+  releaseLikeStartTasks,
+}) {
   const panel = visibleChatPanel(page);
   await expect(panel).toBeVisible();
   let peak = { total: 0, claude: 0, codex: 0 };
@@ -9061,6 +9259,7 @@ async function startMixedProviderAgentChats({ page, fixture, tasks }) {
     const expectedChatIds = fixture.descriptors
       .slice(0, index + 1)
       .map((candidate) => candidate.id);
+    const activationLabel = `${index + 1} mixed-provider chat turn(s) to overlap`;
     await recordTask(
       tasks,
       'start_mixed_provider_agent_turn',
@@ -9087,7 +9286,7 @@ async function startMixedProviderAgentChats({ page, fixture, tasks }) {
           },
           {
             timeoutMs: 60_000,
-            label: `${index + 1} mixed-provider chat turn(s) to overlap`,
+            label: activationLabel,
           },
         );
       },
@@ -9096,7 +9295,23 @@ async function startMixedProviderAgentChats({ page, fixture, tasks }) {
         providerType: descriptor.providerType,
         usesSubagent: descriptor.usesSubagent,
       },
+    ).catch((error) =>
+      rethrowChatStartFailure(error, {
+        page,
+        tasks,
+        label: activationLabel,
+        resolveChatId: () => descriptor.id,
+        marker: descriptor.marker,
+      }),
     );
+    if (fixture.releaseLike) {
+      const startTask = tasks.at(-1);
+      startTask.releaseLikeRoute = await assertReleaseLikeSessionRoute(page, {
+        chatId: descriptor.id,
+        pin: releaseLikePinForProvider(descriptor.providerType),
+      });
+      releaseLikeStartTasks.set(descriptor.id, startTask);
+    }
     const snapshot = await activeTurnSnapshot(page);
     if (snapshot.total > peak.total) {
       peak = {
@@ -9148,7 +9363,14 @@ async function runMixedProviderAgentConcurrency({
   await openMainPage(page);
   await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
   await installMixedProviderAgentEventMonitor(page, fixture.descriptors);
-  const peak = await startMixedProviderAgentChats({ page, fixture, tasks });
+  // Release-like only: each chat's start task, to record its request route.
+  const releaseLikeStartTasks = new Map();
+  const peak = await startMixedProviderAgentChats({
+    page,
+    fixture,
+    tasks,
+    releaseLikeStartTasks,
+  });
   const expectedClaudeTurns = fixture.descriptors.filter(
     (descriptor) => descriptor.providerType === 'claude',
   ).length;
@@ -9160,6 +9382,13 @@ async function runMixedProviderAgentConcurrency({
   ) {
     throw new Error(
       `Mixed-provider overlap was incomplete (total=${peak.total}/${fixture.descriptors.length}, Claude=${peak.claude}/${expectedClaudeTurns}, Codex=${peak.codex}/${expectedCodexTurns})`,
+    );
+  }
+  if (fixture.releaseLike) {
+    await waitForReleaseLikeRequestEvidence(
+      fixture.descriptors,
+      config,
+      releaseLikeStartTasks,
     );
   }
 
@@ -12807,6 +13036,436 @@ async function scenarioLlmRequestCount(marker, requestTag) {
   return result.activity[`llmRequests:${requestTag}`] ?? 0;
 }
 
+/**
+ * The latest saved failure row in a chat transcript: the reducer saves a
+ * failed turn as a system message whose text starts with `Error: `, or a
+ * text block carrying provider error details.
+ */
+export function latestChatErrorText(messages) {
+  for (let index = (messages ?? []).length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'system') continue;
+    for (const block of message.blocks ?? []) {
+      if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+      if (
+        block.text.startsWith('Error: ') ||
+        typeof block.providerErrorDetails === 'string'
+      ) {
+        return block.text;
+      }
+    }
+  }
+  return null;
+}
+
+function formatChatStartSession(session) {
+  if (!session) return 'absent';
+  return [
+    `turnActive=${String(session.turnActive)}`,
+    `pending=${String(session.pendingMessageCount ?? 'unreported')}`,
+    `model=${session.model ?? 'unreported'}`,
+    `harness=${session.executionHarness ?? 'unreported'}`,
+  ].join(',');
+}
+
+/**
+ * The mock's marker-level counters that name how far a chat's turn got:
+ * every request (`llmRequests`), the model and AI Credits proxy each request
+ * used, and the tagged request count when the chat sends a request tag.
+ */
+export function chatStartActivityCounters(activity, requestTag) {
+  const counters = { llmRequests: activity?.llmRequests ?? 0 };
+  if (requestTag) {
+    counters[`llmRequests:${requestTag}`] =
+      activity?.[`llmRequests:${requestTag}`] ?? 0;
+  }
+  for (const key of Object.keys(activity ?? {}).sort()) {
+    if (key.startsWith('llmModel:') || key.startsWith('llmProxy:')) {
+      counters[key] = activity[key];
+    }
+  }
+  return counters;
+}
+
+/** Why a chat turn did not start, from state read after the wait failed. */
+export function formatChatStartFailure({
+  message,
+  chatId,
+  lastError,
+  session,
+  activity,
+  requestTag,
+}) {
+  const counters =
+    activity === null
+      ? 'llmRequests=unavailable (mock activity read failed)'
+      : Object.entries(chatStartActivityCounters(activity, requestTag))
+          .map(([key, value]) => `${key}=${String(value)}`)
+          .join(' ');
+  return `${message}; chat=${chatId} lastError=${lastError ?? 'none'} session=${formatChatStartSession(session)} ${counters}`;
+}
+
+async function describeChatStartFailure(
+  page,
+  { message, chatId, marker, requestTag },
+) {
+  const parts = { message, chatId, requestTag };
+  try {
+    const state = await page.evaluate(
+      async ({ projectId, worktreeId, chatId: targetChatId }) => {
+        const [tabsData, sessionsData] = await Promise.all([
+          window.api.chat.loadTabs({ projectId, worktreeId }),
+          window.api.chat.activeSessions({ projectId, worktreeId }),
+        ]);
+        return {
+          messages:
+            (tabsData.tabs ?? []).find((tab) => tab.id === targetChatId)
+              ?.messages ?? [],
+          session:
+            (sessionsData.sessions ?? []).find(
+              (session) => session.chatId === targetChatId,
+            ) ?? null,
+        };
+      },
+      { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId },
+    );
+    parts.lastError = latestChatErrorText(state.messages);
+    parts.session = state.session;
+  } catch (error) {
+    parts.lastError = `unavailable (${error instanceof Error ? error.message : String(error)})`;
+  }
+  try {
+    parts.activity = (
+      await getScenarioActivity(PERFORMANCE_MOCK_BASE_URL, marker)
+    ).activity;
+  } catch {
+    parts.activity = null;
+  }
+  return formatChatStartFailure(parts);
+}
+
+/**
+ * Name the stage a chat-start wait stopped at. Only the turn-activation
+ * timeout is rewritten; the failed task keeps its measured duration, because
+ * the state is read after `recordTask` has recorded it.
+ */
+async function rethrowChatStartFailure(
+  error,
+  { page, tasks, label, resolveChatId, marker, requestTag },
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!message.startsWith(`Timed out waiting for ${label}`)) throw error;
+  let chatId;
+  try {
+    chatId = await resolveChatId();
+  } catch {
+    chatId = 'unresolved';
+  }
+  const detailed = await describeChatStartFailure(page, {
+    message,
+    chatId,
+    marker,
+    requestTag,
+  });
+  const failedTask = tasks.at(-1);
+  if (failedTask?.status !== 'ok' && failedTask?.error === message) {
+    failedTask.error = detailed;
+  }
+  throw new Error(detailed, { cause: error });
+}
+
+// CAN-6888 plan, assumption A3: a release-like run has no native provider
+// login, so its turns take the AI Credits route as the mock guest, which may
+// run only guest-allowed models. Pin one per harness. A confirmed sign-out
+// routes to credits in any mode except `off` (CAN-7062; `off` refuses the turn
+// with `no_billing_source`), so `seedReleaseLikeAiCreditsRoutingMode` writes
+// `on-quota` into every release-like fixture's preferences.
+const RELEASE_LIKE_CLAUDE_PIN = 'haiku';
+const RELEASE_LIKE_CODEX_PIN = 'gpt-6-luna';
+const RELEASE_LIKE_PIN_ROUTES = {
+  [RELEASE_LIKE_CLAUDE_PIN]: {
+    catalog: 'claude-code',
+    providerType: 'claude',
+    harness: 'claude',
+    proxyTag: 'anthropic',
+  },
+  [RELEASE_LIKE_CODEX_PIN]: {
+    catalog: 'codex',
+    providerType: 'codex',
+    harness: 'codex',
+    proxyTag: 'openai',
+  },
+};
+
+/**
+ * Merge `aiCreditsRoutingMode: 'on-quota'` into the fixture's preferences, after
+ * the scenario's own seeding, so the release-like signed-out turns keep the
+ * `no-native-auth` AI Credits route the pins above describe (CAN-7062).
+ */
+function seedReleaseLikeAiCreditsRoutingMode(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  const stored = existsSync(preferencesPath)
+    ? JSON.parse(readFileSync(preferencesPath, 'utf8'))
+    : { version: 1, preferences: {} };
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...stored,
+        version: stored.version ?? 1,
+        preferences: {
+          ...(stored.preferences ?? {}),
+          aiCreditsRoutingMode: 'on-quota',
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+export function releaseLikePinForProvider(providerType) {
+  if (providerType === 'claude') return RELEASE_LIKE_CLAUDE_PIN;
+  if (providerType === 'codex') return RELEASE_LIKE_CODEX_PIN;
+  throw new Error(`No release-like model pin for provider ${providerType}`);
+}
+
+let packageModelCatalogs;
+function packageGatewayId(catalog, modelId) {
+  packageModelCatalogs ??= JSON.parse(
+    readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'),
+  );
+  const gatewayId = packageModelCatalogs[catalog]?.models?.find(
+    (model) => model.id === modelId,
+  )?.gatewayId;
+  if (typeof gatewayId !== 'string' || gatewayId.length === 0) {
+    throw new Error(
+      `package.json ${catalog} model ${modelId} has no gateway id for the release-like pin`,
+    );
+  }
+  return gatewayId;
+}
+
+/**
+ * The `llmModel:` spellings a pinned AI Credits request may carry: the pin,
+ * its package.json gateway id, and that id without the vendor prefix.
+ */
+export function releaseLikeAcceptedModelSpellings(pin) {
+  const route = RELEASE_LIKE_PIN_ROUTES[pin];
+  if (!route) throw new Error(`Unknown release-like model pin ${pin}`);
+  const gatewayId = packageGatewayId(route.catalog, pin);
+  return [...new Set([pin, gatewayId, gatewayId.replace(/^[^/]+\//, '')])];
+}
+
+/**
+ * Route check phase 1, at activation: the chat's active session runs the
+ * pin's provider and harness, and its model when the session reports one.
+ * Returns the failure message, or null when the session matches.
+ */
+export function releaseLikeSessionRouteFailure({ chatId, pin, session }) {
+  const route = RELEASE_LIKE_PIN_ROUTES[pin];
+  if (!route) throw new Error(`Unknown release-like model pin ${pin}`);
+  if (!session) {
+    return `Release-like chat ${chatId} route unknown: no active session at activation`;
+  }
+  if (session.executionHarness === undefined) {
+    return `Release-like chat ${chatId} route unknown: the ${session.providerType} session reports no execution harness`;
+  }
+  if (
+    session.providerType !== route.providerType ||
+    session.executionHarness !== route.harness ||
+    (session.model !== undefined && session.model !== pin)
+  ) {
+    return `Release-like chat ${chatId} ran ${session.model ?? 'unreported model'}/${session.executionHarness} via a ${session.providerType} session; expected ${pin} via AI Credits`;
+  }
+  return null;
+}
+
+/**
+ * Route check phase 2, after request evidence: the mock saw the pin's AI
+ * Credits proxy and an accepted model spelling for the chat's marker. With
+ * no request, the route is unknown; missing counters never read as native.
+ */
+export function releaseLikeRequestRouteFailure({
+  chatId,
+  pin,
+  activity,
+  waitedMs,
+}) {
+  const route = RELEASE_LIKE_PIN_ROUTES[pin];
+  if (!route) throw new Error(`Unknown release-like model pin ${pin}`);
+  if (!((activity?.llmRequests ?? 0) >= 1)) {
+    return `Release-like chat ${chatId} route unknown: no provider request within ${String(waitedMs)} ms`;
+  }
+  const observed = (prefix) =>
+    Object.keys(activity)
+      .filter((key) => key.startsWith(prefix) && activity[key] > 0)
+      .map((key) => key.slice(prefix.length))
+      .sort();
+  const proxyTags = observed('llmProxy:');
+  const models = observed('llmModel:');
+  const accepted = releaseLikeAcceptedModelSpellings(pin);
+  if (
+    proxyTags.includes(route.proxyTag) &&
+    models.some((model) => accepted.includes(model))
+  ) {
+    return null;
+  }
+  const harnesses = proxyTags.map(
+    (tag) =>
+      Object.values(RELEASE_LIKE_PIN_ROUTES).find(
+        (candidate) => candidate.proxyTag === tag,
+      )?.harness ?? `unknown(${tag})`,
+  );
+  return `Release-like chat ${chatId} ran ${models.join(',') || 'unreported model'}/${harnesses.join(',') || 'unknown harness'} via ${proxyTags.length > 0 ? proxyTags.map((tag) => `llmProxy:${tag}`).join(',') : 'no proxy tag'}; expected ${pin} via AI Credits`;
+}
+
+async function assertReleaseLikeSessionRoute(page, { chatId, pin }) {
+  const session = await page.evaluate(
+    async ({ projectId, worktreeId, chatId: targetChatId }) => {
+      const result = await window.api.chat.activeSessions({
+        projectId,
+        worktreeId,
+      });
+      return (
+        (result.sessions ?? []).find(
+          (candidate) => candidate.chatId === targetChatId,
+        ) ?? null
+      );
+    },
+    { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId },
+  );
+  const failure = releaseLikeSessionRouteFailure({ chatId, pin, session });
+  if (failure) throw new Error(failure);
+  return releaseLikeRouteEvidence({ pin, session });
+}
+
+/**
+ * What a passing route check observed, kept on the task it follows so the
+ * result file shows the route each chat ran. Never part of a timing.
+ */
+export function releaseLikeRouteEvidence({ pin, session, activity }) {
+  return {
+    pin,
+    ...(session
+      ? {
+          session: {
+            providerType: session.providerType,
+            executionHarness: session.executionHarness ?? null,
+            model: session.model ?? null,
+          },
+        }
+      : {}),
+    ...(activity ? { requests: chatStartActivityCounters(activity) } : {}),
+  };
+}
+
+async function assertReleaseLikeRequestRoute({
+  chatId,
+  marker,
+  pin,
+  waitedMs,
+}) {
+  const { activity } = await getScenarioActivity(
+    PERFORMANCE_MOCK_BASE_URL,
+    marker,
+  );
+  const failure = releaseLikeRequestRouteFailure({
+    chatId,
+    pin,
+    activity,
+    waitedMs,
+  });
+  if (failure) throw new Error(failure);
+  return releaseLikeRouteEvidence({ pin, activity });
+}
+
+/**
+ * Pin a chat tab created through the UI to the release-like Claude model,
+ * through the composer's own picker. Runs outside every measured task.
+ */
+async function pinReleaseLikeTabModel(page, panel, chatId) {
+  const pin = RELEASE_LIKE_CLAUDE_PIN;
+  try {
+    await panel.getByTestId('chat-model-picker').click();
+    await selectModelOnHarness(page, pin, 'claude');
+    await waitUntil(
+      async () => {
+        const model = await page.evaluate(
+          async ({ projectId, worktreeId, chatId: targetChatId }) => {
+            const snapshot = await window.api.chat.getState({
+              projectId,
+              worktreeId,
+            });
+            return (
+              snapshot.tabsFile.tabs.find((tab) => tab.id === targetChatId)
+                ?.model ?? null
+            );
+          },
+          { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID, chatId },
+        );
+        return model === pin;
+      },
+      {
+        timeoutMs: 30_000,
+        label: `release-like chat ${chatId} to store ${pin}`,
+      },
+    );
+  } catch (error) {
+    throw new Error(
+      `Release-like chat ${chatId} could not pin ${pin} (S1 connectivity: the picker needs the gateway catalog from the cloud origin): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Release-like only: wait, outside every measured task, until each
+ * mixed-provider chat's marker has a provider request, then check its route.
+ */
+async function waitForReleaseLikeRequestEvidence(
+  descriptors,
+  config,
+  startTasks,
+) {
+  const timeoutMs = providerRequestWaitTimeoutMs(config);
+  // One bound for every marker, so the wait adds at most timeoutMs.
+  const startedAt = performance.now();
+  for (const descriptor of descriptors) {
+    try {
+      await waitUntil(
+        async () =>
+          ((
+            await getScenarioActivity(
+              PERFORMANCE_MOCK_BASE_URL,
+              descriptor.marker,
+            )
+          ).activity.llmRequests ?? 0) >= 1,
+        {
+          timeoutMs: Math.max(0, timeoutMs - (performance.now() - startedAt)),
+          label: `provider request for release-like chat ${descriptor.id}`,
+        },
+      );
+    } catch {
+      // Fall through: phase 2 reports "route unknown" for a missing request.
+    }
+    const evidence = await assertReleaseLikeRequestRoute({
+      chatId: descriptor.id,
+      marker: descriptor.marker,
+      pin: releaseLikePinForProvider(descriptor.providerType),
+      waitedMs: Math.round(performance.now() - startedAt),
+    });
+    const startTask = startTasks.get(descriptor.id);
+    if (startTask) {
+      startTask.releaseLikeRoute = {
+        ...startTask.releaseLikeRoute,
+        requests: evidence.requests,
+      };
+    }
+  }
+}
+
 export function providerRequestWaitTimeoutMs(config) {
   return config.chatStreamMs + 120_000;
 }
@@ -12840,7 +13499,12 @@ async function persistedAssistantReplyCount(page, expectedText) {
   return countPersistedAssistantReplies(data.tabs, expectedText);
 }
 
-async function startConcurrentChats({ page, config, tasks }) {
+async function startConcurrentChats({
+  page,
+  config,
+  tasks,
+  releaseLike = false,
+}) {
   let panel = visibleChatPanel(page);
   await expect(panel).toBeVisible();
   let peakConcurrentTurns = 0;
@@ -12853,6 +13517,7 @@ async function startConcurrentChats({ page, config, tasks }) {
     const activationStartedAt = performance.now();
     const marker = `Canopy-CPERF${index + 1}`;
     const requestTag = `initial-${index + 1}`;
+    const activationLabel = `${expectedTurns} active chat turn(s)`;
     await recordTask(
       tasks,
       'start_chat_turn',
@@ -12871,20 +13536,34 @@ async function startConcurrentChats({ page, config, tasks }) {
           () => activeTurnCount(page).then((count) => count >= expectedTurns),
           {
             timeoutMs: 60_000,
-            label: `${expectedTurns} active chat turn(s)`,
+            label: activationLabel,
           },
         );
         turnActiveMs = performance.now() - activationStartedAt;
       },
       { chat: index + 1 },
+    ).catch((error) =>
+      rethrowChatStartFailure(error, {
+        page,
+        tasks,
+        label: activationLabel,
+        resolveChatId: async () =>
+          chatIdFromPanelId(
+            (await panel.getAttribute('data-panel-id', { timeout: 5_000 })) ??
+              '',
+          ),
+        marker,
+        requestTag,
+      }),
     );
     Object.assign(tasks.at(-1), { turnActiveMs });
-    providerRequests.push({
+    const providerRequest = {
       chat: index + 1,
       marker,
       requestTag,
       activationStartedAt,
-    });
+    };
+    providerRequests.push(providerRequest);
 
     peakConcurrentTurns = Math.max(
       peakConcurrentTurns,
@@ -12895,6 +13574,14 @@ async function startConcurrentChats({ page, config, tasks }) {
       throw new Error(
         `Could not resolve visible performance chat panel ${index + 1}`,
       );
+    }
+    if (releaseLike) {
+      providerRequest.chatId = chatIdFromPanelId(panelId);
+      const startTask = tasks.at(-1);
+      startTask.releaseLikeRoute = await assertReleaseLikeSessionRoute(page, {
+        chatId: providerRequest.chatId,
+        pin: RELEASE_LIKE_CLAUDE_PIN,
+      });
     }
     const testId = `panel-tab-${panelId}`;
     await expect(page.getByTestId(testId)).toHaveAttribute(
@@ -12945,6 +13632,13 @@ async function startConcurrentChats({ page, config, tasks }) {
         `[data-testid="panel-content-chat"][data-panel-id=${JSON.stringify(nextPanelId)}]`,
       );
       await expect(panel).toBeVisible({ timeout: 30_000 });
+      if (releaseLike) {
+        await pinReleaseLikeTabModel(
+          page,
+          panel,
+          chatIdFromPanelId(nextPanelId),
+        );
+      }
     }
   }
 
@@ -12969,9 +13663,25 @@ async function startConcurrentChats({ page, config, tasks }) {
       { chat: request.chat },
     );
     Object.assign(tasks.at(-1), { providerRequestMs });
+    if (releaseLike) {
+      tasks.at(-1).releaseLikeRoute = await assertReleaseLikeRequestRoute({
+        chatId: request.chatId,
+        marker: request.marker,
+        pin: RELEASE_LIKE_CLAUDE_PIN,
+        waitedMs: providerRequestWaitTimeoutMs(config),
+      });
+    }
   }
 
   return { peakConcurrentTurns, tabIds };
+}
+
+export function chatIdFromPanelId(panelId) {
+  const prefix = 'panel-chat-';
+  if (!panelId.startsWith(prefix) || panelId.length === prefix.length) {
+    throw new Error(`Invalid chat panel id: ${panelId}`);
+  }
+  return panelId.slice(prefix.length);
 }
 
 export function panelIdFromTabTestId(tabId) {
@@ -13161,13 +13871,14 @@ async function createResponsivenessChat(page, tasks) {
   });
 }
 
-async function runChats({ page, app, config, tasks }) {
+async function runChats({ page, app, config, tasks, fixture }) {
   await openMainPage(page);
   await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
   const { peakConcurrentTurns, tabIds } = await startConcurrentChats({
     page,
     config,
     tasks,
+    releaseLike: fixture?.releaseLike === true,
   });
 
   const probeTabId = await createResponsivenessChat(page, tasks);
@@ -13912,6 +14623,68 @@ function pipelineRunCards(page, pipelineName) {
     .filter({ hasText: pipelineName });
 }
 
+/** Run cards whose status reads running, from their text contents. */
+export function countRunningPipelineCards(texts) {
+  return texts.filter((text) => text.toLowerCase().includes('running')).length;
+}
+
+/**
+ * How long a dispatched run may take to show running after its card appears:
+ * half the hold, so the earlier runs are still inside theirs, capped at 10 s.
+ */
+export function pipelineRunRunningDeadlineMs(config) {
+  return Math.min(10_000, Math.floor(config.pipelineHoldMs / 2));
+}
+
+/**
+ * Waits until at least `expected` run cards read running, or the deadline.
+ * Never throws on timeout: the caller's concurrency assertion reports it.
+ */
+export async function waitForPipelineRunsRunning({
+  cards,
+  expected,
+  deadlineMs,
+  intervalMs = 25,
+}) {
+  const deadline = performance.now() + deadlineMs;
+  for (;;) {
+    const runningCount = countRunningPipelineCards(
+      await cards.allTextContents(),
+    );
+    if (runningCount >= expected) return { runningCount, reached: true };
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) return { runningCount, reached: false };
+    await delay(Math.min(intervalMs, remainingMs));
+  }
+}
+
+/**
+ * Counts running cards when the new run's card appears, waits for the run to
+ * show running, and records both counts and the wait on its dispatch task.
+ * The wait is not a task of its own: a task kind adds timing and work metric
+ * keys, and older baselines without them could no longer be compared.
+ */
+export async function notePipelineRunRunning(
+  dispatchTask,
+  { cards, expected, deadlineMs },
+) {
+  const runningAtCard = countRunningPipelineCards(
+    await cards.allTextContents(),
+  );
+  const startedAt = performance.now();
+  const { runningCount } = await waitForPipelineRunsRunning({
+    cards,
+    expected,
+    deadlineMs,
+  });
+  Object.assign(dispatchTask, {
+    runningAtCard,
+    runningCount,
+    runningWaitMs: performance.now() - startedAt,
+  });
+  return runningCount;
+}
+
 async function dispatchConcurrentPipelines({ page, config, tasks, cards }) {
   let peakConcurrentRuns = 0;
 
@@ -14024,11 +14797,19 @@ async function dispatchConcurrentPipelines({ page, config, tasks, cards }) {
       },
       { pipeline: index + 1 },
     );
-    const texts = await cards.allTextContents();
-    peakConcurrentRuns = Math.max(
-      peakConcurrentRuns,
-      texts.filter((text) => text.toLowerCase().includes('running')).length,
+    // CAN-6887: a daemon-run card can appear as pending and read running one
+    // event later (CAN-6988), so count after the new run shows running. The
+    // wait runs after the dispatch task, so its duration is unchanged.
+    const dispatchTask = tasks.findLast(
+      (task) =>
+        task.kind === 'dispatch_pipeline' && task.pipeline === index + 1,
     );
+    const runningCount = await notePipelineRunRunning(dispatchTask, {
+      cards,
+      expected: index + 1,
+      deadlineMs: pipelineRunRunningDeadlineMs(config),
+    });
+    peakConcurrentRuns = Math.max(peakConcurrentRuns, runningCount);
   }
 
   assertRequestedPipelineConcurrency(
@@ -14099,10 +14880,8 @@ async function verifyPerformancePipelineOutput(page, cards) {
 
 async function runPipelines({ page, app, config, tasks }) {
   await openMainPage(page);
-  await app.selectWorktree(WORKTREE_BRANCH);
-  await expect(
-    page.getByTestId('panel-content-activity-section'),
-  ).toBeVisible();
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await openActivityRail(page);
   const cards = pipelineRunCards(page, PERFORMANCE_PIPELINE_NAME);
   const peakConcurrentRuns = await dispatchConcurrentPipelines({
     page,
@@ -14142,7 +14921,7 @@ async function runPipelines({ page, app, config, tasks }) {
       'navigate_during_pipeline_load',
       async () => {
         await openPipelinesPage(page);
-        await app.selectWorktree(WORKTREE_BRANCH);
+        await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
         await expect(page.getByTestId('page-main')).toBeVisible({
           timeout: 30_000,
         });
@@ -14151,6 +14930,11 @@ async function runPipelines({ page, app, config, tasks }) {
       { iteration: index + 1, activeRuns },
       config.responsivenessBudgetMs,
     );
+    // The rail opened above must survive the round-trip, or later samples
+    // measure a different layout.
+    await expect(
+      page.getByTestId('panel-content-activity-section'),
+    ).toBeVisible({ timeout: 30_000 });
   }
   if (interactionsWithActiveRuns === 0) {
     throw new Error(
@@ -15599,9 +16383,7 @@ async function runWorktreeConcurrency({ page, app, config, tasks }) {
     cards,
   });
   const overlapTurns = await activeTurnCount(page);
-  const overlapRuns = (await cards.allTextContents()).filter((text) =>
-    text.toLowerCase().includes('running'),
-  ).length;
+  const overlapRuns = countRunningPipelineCards(await cards.allTextContents());
   if (overlapTurns === 0 || overlapRuns === 0) {
     throw new Error(
       `Concurrent work did not overlap after loading ${preexistingWorktreeCount} worktrees (chat turns=${overlapTurns}, pipeline runs=${overlapRuns})`,
@@ -15735,10 +16517,11 @@ async function runLargeTranscriptConcurrency({
     page,
     config,
     tasks,
+    releaseLike: fixture.releaseLike === true,
   });
   // Keep the large-transcript cold-open path collapsed, then reveal the
   // pipeline action before dispatching runs from the activity rail.
-  await expandDefaultActivityRail(page);
+  await openActivityRail(page);
   const cards = pipelineRunCards(page, PERFORMANCE_PIPELINE_NAME);
   const peakConcurrentRuns = await dispatchConcurrentPipelines({
     page,
@@ -15747,9 +16530,7 @@ async function runLargeTranscriptConcurrency({
     cards,
   });
   const overlapTurns = await activeTurnCount(page);
-  const overlapRuns = (await cards.allTextContents()).filter((text) =>
-    text.toLowerCase().includes('running'),
-  ).length;
+  const overlapRuns = countRunningPipelineCards(await cards.allTextContents());
   if (overlapTurns === 0 || overlapRuns === 0) {
     throw new Error(
       `Concurrent work did not overlap with the large-transcript fixture (chat turns=${overlapTurns}, pipeline runs=${overlapRuns})`,
@@ -21270,6 +22051,12 @@ const SCENARIOS = {
     afterMeasurement: captureLabTranscriptDiagnostics,
     headlessOnly: true,
   },
+  // The probe and the fixture check (a first list) run before the window.
+  'owned-automations-list': {
+    prepare: prepareOwnedAutomations,
+    beforeCapture: setupOwnedAutomations,
+    run: runOwnedAutomations,
+  },
   'code-review-registry-cleanup': {
     prepare: prepareCodeReviewRegistry,
     run: (context) => runCodeReviewRegistryCleanup(context, { trace: false }),
@@ -21324,10 +22111,12 @@ const RELEASE_LIKE_E2E_PROVIDER_SCENARIOS = new Set([
 // Production builds have no E2E chat-event ingress to commit seeded events.
 const RELEASE_LIKE_E2E_INGRESS_SCENARIOS = new Set(['chat-search-indexing']);
 
-// The production build never enables the Code Graph performance scheduler.
+// The production build never enables the Code Graph performance scheduler or
+// its build-scheduling IPC.
 const RELEASE_LIKE_E2E_SCHEDULER_SCENARIOS = new Set([
   'code-graph-new-worktree',
   'code-graph-small-edit',
+  'code-graph-background-concurrency',
 ]);
 
 // The Ledger-off switch, the storage-worker probe, the skill suggestion
@@ -21408,6 +22197,92 @@ export function performanceElectronArgs(
 export function assertReleaseLikeRootSupported(releaseLike, releaseLikeRoot) {
   if (releaseLike || !releaseLikeRoot) return;
   throw new Error('A release-like root requires release-like mode');
+}
+
+// The production main bundle keeps names (`esbuild.keepNames`), so its
+// build-time fold of `getBuildTimeBaseUrl` is a named function returning one
+// literal: `function x(){return"<origin>"}h(x,"getBuildTimeBaseUrl")`. Match
+// only that shape; other loopback literals in the bundle are unrelated.
+const BUILD_TIME_CLOUD_ORIGIN_PATTERN =
+  /function ([\w$]+)\(\)\{return"([^"\\]*)"\}[\w$]+\(\1,"getBuildTimeBaseUrl"\)/g;
+
+/** Trim, then drop one trailing `/`, as `normalizeCanopyCloudBaseUrl` does. */
+function normalizeCloudOrigin(value) {
+  const trimmed = String(value).trim();
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+/**
+ * The cloud origin a production main bundle was built with, read from its
+ * folded `getBuildTimeBaseUrl`. Throws when the shape is missing, ambiguous,
+ * empty, or not an http(s) URL; never guesses from other literals.
+ */
+export function extractReleaseLikeCloudOrigin(mainEntrySource) {
+  const values = new Set(
+    Array.from(
+      mainEntrySource.matchAll(BUILD_TIME_CLOUD_ORIGIN_PATTERN),
+      (match) => match[2],
+    ),
+  );
+  if (values.size === 0) {
+    throw new Error(
+      "Cannot locate the configured cloud origin; the bundle's getBuildTimeBaseUrl has an unexpected shape",
+    );
+  }
+  if (values.size > 1) {
+    throw new Error(
+      `Ambiguous configured cloud origin: ${[...values].map((value) => JSON.stringify(value)).join(', ')}`,
+    );
+  }
+  const origin = normalizeCloudOrigin([...values][0]);
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    parsed = null;
+  }
+  if (
+    origin.length === 0 ||
+    !parsed ||
+    (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+  ) {
+    throw new Error(
+      `The configured cloud origin ${JSON.stringify(origin)} is not an http(s) URL`,
+    );
+  }
+  return origin;
+}
+
+/**
+ * Release-like runs serve the cloud account and AI Credits gateway from the
+ * performance mock, and a production bundle ignores runtime origin
+ * overrides. Refuse a bundle built for another origin before any launch.
+ */
+export function assertReleaseLikeCloudOrigin(rootPath, mockBaseUrl) {
+  const outDir = path.join(rootPath, 'out');
+  const mainEntryPath = path.join(outDir, 'main', '_index.js');
+  const mockOrigin = normalizeCloudOrigin(mockBaseUrl);
+  const rebuild = `Rebuild with CANOPY_CLOUD_BASE_URL=${mockOrigin} pnpm run build, or set CANOPY_PERFORMANCE_MOCK_BASE_URL.`;
+  if (!existsSync(mainEntryPath)) {
+    throw new Error(
+      `Release-like bundle has no main entry at ${mainEntryPath}; the performance mock is ${mockOrigin}. ${rebuild}`,
+    );
+  }
+  let origin;
+  try {
+    origin = extractReleaseLikeCloudOrigin(readFileSync(mainEntryPath, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `Release-like bundle at ${outDir}: ${error instanceof Error ? error.message : String(error)}; the performance mock is ${mockOrigin}. ${rebuild}`,
+      { cause: error },
+    );
+  }
+  if (origin !== mockOrigin) {
+    throw new Error(
+      `Release-like bundle at ${outDir} is configured for cloud origin ${origin}; the performance mock is ${mockOrigin}. ${rebuild}`,
+    );
+  }
+  return origin;
 }
 
 export function assertE2eRootSupported(releaseLike, e2eRoot) {
@@ -21513,6 +22388,7 @@ async function runPerformanceScenarioAttempt(
   let monitoring;
   let diagnosticCapture;
   let gitAttributionCapture;
+  let gitAttributionMainPid;
   let diagnostics;
   let monitor;
   let diskIo = null;
@@ -21522,6 +22398,9 @@ async function runPerformanceScenarioAttempt(
     fixture = await definition.prepare(userDataDir, config, {
       releaseLike: options.releaseLike === true,
     });
+    if (options.releaseLike === true) {
+      seedReleaseLikeAiCreditsRoutingMode(userDataDir);
+    }
     // `--renderer-code-cache-scheme`: launchCanopy seeds the Experiments
     // preference from its local env switch before every launch.
     const diagnosticLaunch = options.diagnosticOutputDir
@@ -21636,6 +22515,13 @@ async function runPerformanceScenarioAttempt(
     });
     electronApp = launched.electronApp;
     rendererCrashes = await observeRendererCrashes(electronApp);
+    // Electron main's own PID: Playwright's child process is the process-tree
+    // supervisor, so attribution reads it from main to classify launchers.
+    if (gitAttributionCapture) {
+      gitAttributionMainPid = await electronApp
+        .evaluate(() => process.pid)
+        .catch(() => undefined);
+    }
     if (options.releaseLike) {
       const nativeDataRoots = await electronApp.evaluate(({ app }) => ({
         userData: app.getPath('userData'),
@@ -21929,7 +22815,12 @@ async function runPerformanceScenarioAttempt(
         monitoring,
         responsiveness,
         ...(gitAttributionCapture
-          ? { gitAttribution: gitAttributionCapture.summarize() }
+          ? {
+              gitAttribution: gitAttributionCapture.summarize({
+                tasks,
+                mainPid: gitAttributionMainPid,
+              }),
+            }
           : {}),
         ...(diagnostics ? { diagnostics } : {}),
         ...rendererCrashRecordFields(
@@ -21997,7 +22888,12 @@ async function runPerformanceScenarioAttempt(
           monitoring,
           responsiveness,
           ...(gitAttributionCapture
-            ? { gitAttribution: gitAttributionCapture.summarize() }
+            ? {
+                gitAttribution: gitAttributionCapture.summarize({
+                  tasks,
+                  mainPid: gitAttributionMainPid,
+                }),
+              }
             : {}),
           ...(diagnostics ? { diagnostics } : {}),
           ...rendererCrashFields,
@@ -22011,7 +22907,12 @@ async function runPerformanceScenarioAttempt(
           launch: { firstWindowMs, domContentLoadedMs, shellReadyMs },
           monitoring,
           ...(gitAttributionCapture
-            ? { gitAttribution: gitAttributionCapture.summarize() }
+            ? {
+                gitAttribution: gitAttributionCapture.summarize({
+                  tasks,
+                  mainPid: gitAttributionMainPid,
+                }),
+              }
             : {}),
           ...(diagnostics ? { diagnostics } : {}),
           ...rendererCrashFields,

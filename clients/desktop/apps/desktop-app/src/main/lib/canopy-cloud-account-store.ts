@@ -6,12 +6,8 @@ import {
   type OrganizationAccessLossState,
 } from './organization-access-loss-record';
 import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
-import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
-import { randomBytes } from 'node:crypto';
 import { normalizeMemorySearchOrganizationExternalIds } from '@canopy/desktop-shared/lib/org-memory';
-import { access, mkdir, readFile, rename, rm } from 'node:fs/promises';
-import { basename, dirname } from 'node:path';
 import { BRAND } from '@canopy/brand/current';
 import type {
   CanopyOrgBillingState,
@@ -49,29 +45,23 @@ import {
   CanopyCloudConfigError,
   getCanopyCloudBaseUrl,
 } from '../canopy-cloud/config';
-import { logMainProcessWarn } from './main-process-logging';
-import {
-  getCanopyCloudAccountFilePath,
-  getInternalLegacySharedCanopyCloudAccountFilePath,
-  getLegacyCanopyCloudAccountFilePath,
-} from './paths';
-import { writeFileAtomically } from './atomic-file';
 import {
   normalizeCanopyOrganizationSummaries,
   normalizeCanopyOrganizationSummary,
 } from '../canopy-cloud/organization-summary';
-import { migrateSecureStorageFile } from './secure-storage-migration';
-import { isErrnoException } from './type-guards';
 import {
-  getSecretStoragePolicy,
-  getSecureStorageFailure,
-} from './secure-storage-policy';
+  CloudAccountOperationQueue,
+  CloudAccountPublisher,
+  CloudAccountReadCache,
+} from '@canopy/core-runtime/node/cloud-account';
+import {
+  assertCanopyCloudStorageWritable,
+  createCanopyCloudCredentialPort,
+} from './canopy-cloud-credential-port';
 
-const CACHE_TTL_MS = 5_000;
 const CLOUD_DISPLAY_NAME = `${BRAND.displayName} Cloud`;
-const ACCOUNT_OPERATION_QUEUE_TIMEOUT_MS = 30_000;
 
-export const CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR = `Secure storage is unavailable for ${CLOUD_DISPLAY_NAME} credentials.`;
+export { CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR } from './canopy-cloud-credential-port';
 
 export interface CanopyCloudAccountEntry {
   /** Recoverable handoff; private to main, never projected to clients. */
@@ -127,23 +117,6 @@ export function hasCanopyCloudIdentityChanged(
 export type CanopyCloudAccountTransition<T> = (
   persist: () => Promise<T>,
 ) => Promise<T>;
-
-let cachedEntry: CanopyCloudAccountEntry | null | undefined;
-let cachedAt = 0;
-let cachedBackend: string | undefined;
-type AccountOperationRelease = () => void;
-
-interface AccountOperationWaiter {
-  resolve: (release: AccountOperationRelease) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
-let accountOperationLocked = false;
-const accountOperationWaiters: AccountOperationWaiter[] = [];
-const accountChangeListeners = new Set<
-  (entry: CanopyCloudAccountEntry | null) => void
->();
-const accountConfirmationListeners = new Set<() => void>();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -380,10 +353,12 @@ function normalizeStoredAccountEntry(
 function cloneEntry(
   entry: CanopyCloudAccountEntry | null,
 ): CanopyCloudAccountEntry | null {
-  if (!entry) {
-    return null;
-  }
+  return entry ? cloneStoredEntry(entry) : null;
+}
 
+function cloneStoredEntry(
+  entry: CanopyCloudAccountEntry,
+): CanopyCloudAccountEntry {
   return {
     ...entry,
     organizationAccessLossState: entry.organizationAccessLossState
@@ -420,28 +395,16 @@ function cloneEntry(
   };
 }
 
-function observedStorageBackend(): string {
-  const status = getSecretStoragePolicy().getStatus();
-  return JSON.stringify([hostOperatingSystem(), status.backend]);
-}
-
-function readCache(
-  backend: string,
-): CanopyCloudAccountEntry | null | undefined {
-  if (
-    cachedEntry === undefined ||
-    Date.now() - cachedAt >= CACHE_TTL_MS ||
-    cachedBackend !== backend
-  ) {
-    return undefined;
-  }
-
-  return cloneEntry(cachedEntry);
-}
+const credentialPort = createCanopyCloudCredentialPort(
+  normalizeStoredAccountEntry,
+);
+const accountCache = new CloudAccountReadCache(cloneStoredEntry);
+const accountOperations = new CloudAccountOperationQueue();
+const accountPublisher = new CloudAccountPublisher(cloneStoredEntry);
 
 /** Last account snapshot already loaded by the main process; never performs IO. */
 export function peekCanopyCloudAccount(): CanopyCloudAccountEntry | null {
-  return cachedEntry === undefined ? null : cloneEntry(cachedEntry);
+  return accountCache.peek();
 }
 
 /**
@@ -449,54 +412,32 @@ export function peekCanopyCloudAccount(): CanopyCloudAccountEntry | null {
  * entry has no id), `undefined` when main holds no snapshot yet.
  */
 export function peekCanopyCloudAccountId(): string | null | undefined {
-  if (cachedEntry === undefined) return undefined;
-  return cachedEntry?.account?.id ?? null;
+  const held = accountCache.peekHeld();
+  if (held === undefined) return undefined;
+  return held?.account?.id ?? null;
 }
 
 function writeCache(
   entry: CanopyCloudAccountEntry | null,
-  backend = observedStorageBackend(),
+  backend = credentialPort.backendKey(),
 ): void {
-  cachedEntry = cloneEntry(entry);
-  cachedAt = Date.now();
-  cachedBackend = backend;
+  accountCache.set(entry, backend);
 }
 
 function notifyAccountChange(entry: CanopyCloudAccountEntry | null): void {
-  accountChangeListeners.forEach((listener) => {
-    try {
-      listener(cloneEntry(entry));
-    } catch {
-      // Account persistence must never fail because a subscriber failed.
-    }
-  });
+  accountPublisher.notify(entry);
 }
 
 function notifyAccountChangeOrThrow(
   entry: CanopyCloudAccountEntry | null,
 ): void {
-  let firstError: unknown;
-  accountChangeListeners.forEach((listener) => {
-    try {
-      listener(cloneEntry(entry));
-    } catch (error) {
-      firstError ??= error;
-    }
-  });
-  if (firstError) {
-    throw firstError instanceof Error
-      ? firstError
-      : new Error('Cloud account change subscriber failed');
-  }
+  accountPublisher.notifyOrThrow(entry);
 }
 
 export function subscribeCanopyCloudAccountChanges(
   listener: (entry: CanopyCloudAccountEntry | null) => void,
 ): () => void {
-  accountChangeListeners.add(listener);
-  return (): void => {
-    accountChangeListeners.delete(listener);
-  };
+  return accountPublisher.addChangeListener(listener);
 }
 
 /**
@@ -508,54 +449,19 @@ export function subscribeCanopyCloudAccountChanges(
 export function subscribeCanopyCloudAccountConfirmations(
   listener: () => void,
 ): () => void {
-  accountConfirmationListeners.add(listener);
-  return (): void => {
-    accountConfirmationListeners.delete(listener);
-  };
+  return accountPublisher.addConfirmationListener(listener);
 }
 
 function notifyAccountConfirmation(): void {
-  accountConfirmationListeners.forEach((listener) => {
-    try {
-      listener();
-    } catch {
-      // Account persistence must never fail because a subscriber failed.
-    }
-  });
+  accountPublisher.notifyConfirmation();
 }
 
 export function isCanopyCloudStorageAvailable(): boolean {
-  return getSecretStoragePolicy().isWriteAvailable();
-}
-
-function decodeStoredCanopyCloudAccount(
-  encrypted: Buffer,
-): CanopyCloudAccountEntry {
-  const normalized = normalizeStoredAccountEntry(
-    JSON.parse(getSecretStoragePolicy().decrypt(encrypted)),
-  );
-  if (!normalized) {
-    throw new Error(`Invalid stored ${CLOUD_DISPLAY_NAME} account entry.`);
-  }
-  return normalized;
-}
-
-function encodeStoredCanopyCloudAccount(
-  entry: CanopyCloudAccountEntry,
-): Buffer {
-  return getSecretStoragePolicy().encrypt(JSON.stringify(entry));
+  return credentialPort.isWritable();
 }
 
 export function assertCanopyCloudStorageAvailable(): void {
-  try {
-    getSecretStoragePolicy().assertCanWrite();
-  } catch (error) {
-    const secureStorageFailure = getSecureStorageFailure(error);
-    if (!secureStorageFailure) throw error;
-    throw Object.assign(new Error(CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR), {
-      secureStorageFailure,
-    });
-  }
+  assertCanopyCloudStorageWritable();
 }
 
 export type CanopyCloudAccountReadResult =
@@ -578,87 +484,30 @@ export type CanopyCloudAccountReadResult =
 export async function readCanopyCloudAccountWithStatus(
   options: { cache?: boolean } = {},
 ): Promise<CanopyCloudAccountReadResult> {
-  const useCache = options.cache !== false;
-  try {
-    // A held cache never grants permission to expose unreadable credentials.
-    getSecretStoragePolicy().assertCanRead();
-    const backend = observedStorageBackend();
-    const cached = useCache ? readCache(backend) : undefined;
-    if (cached !== undefined) return { status: 'ok', entry: cached };
-
-    const filePath = getCanopyCloudAccountFilePath();
-    const migration = await migrateSecureStorageFile<CanopyCloudAccountEntry>({
-      currentPath: filePath,
-      legacyPath: getInternalLegacySharedCanopyCloudAccountFilePath(),
-      decode: decodeStoredCanopyCloudAccount,
-      encode: encodeStoredCanopyCloudAccount,
-      storeKind: 'cloud-account',
-      beforeWrite: async () => {
-        await mkdir(dirname(filePath), { recursive: true });
-        assertCanopyCloudStorageAvailable();
-      },
-      writeOptions: { mode: 0o600 },
-    });
-    if (
-      migration.status === 'storage-error' ||
-      migration.status === 'current-error'
-    )
-      throw migration.error;
-    if (migration.status === 'unavailable') {
-      getSecretStoragePolicy().assertCanRead();
-      throw new Error(CANOPY_CLOUD_STORAGE_UNAVAILABLE_ERROR);
-    }
-    if (migration.status === 'foreign-legacy-skipped') {
-      if (!migration.secureStorageFailure) {
-        throw new Error(`Invalid stored ${CLOUD_DISPLAY_NAME} account entry.`);
-      }
-      // Foreign identity data is not our account. Do not cache absence, so
-      // changing back to the original backend can still recover the source.
-      return { status: 'ok', entry: null };
-    }
-    let normalized =
-      migration.status === 'current' ||
-      migration.status === 'migrated' ||
-      migration.status === 'legacy-decoded-write-deferred'
-        ? migration.value
-        : null;
-    if (!normalized) {
-      normalized = decodeStoredCanopyCloudAccount(
-        await readFile(getLegacyCanopyCloudAccountFilePath()),
-      );
-    }
-    // Retry deferred migrations on the next ordinary read, not just at TTL.
-    if (useCache && migration.status !== 'legacy-decoded-write-deferred')
-      writeCache(normalized, backend);
-    return {
-      status: 'ok',
-      entry: cloneEntry(normalized),
-      ...(migration.status === 'legacy-decoded-write-deferred' &&
-      migration.secureStorageFailure
-        ? { migrationWriteFailure: migration.secureStorageFailure }
-        : {}),
-    };
-  } catch (error) {
-    const secureStorageFailure = getSecureStorageFailure(error);
-    if (secureStorageFailure)
+  const result = await credentialPort.read(
+    options.cache !== false ? accountCache : undefined,
+  );
+  switch (result.status) {
+    case 'ok':
       return {
-        status:
-          secureStorageFailure.code === 'SECURE_STORAGE_DECRYPT_FAILED' &&
-          !secureStorageFailure.retryable
-            ? 'error'
-            : 'unavailable',
-        error,
-        secureStorageFailure,
+        status: 'ok',
+        entry: cloneEntry(result.record),
+        ...(result.migrationWriteFailure
+          ? { migrationWriteFailure: result.migrationWriteFailure }
+          : {}),
       };
-    if (isErrnoException(error) && error.code === 'ENOENT') {
-      if (useCache) writeCache(null);
-      return { status: 'ok', entry: null };
-    }
-    logMainProcessWarn(
-      '[canopy-cloud-account-store] Failed to decrypt account file:',
-      { reason: error instanceof Error ? error.name : 'unknown' },
-    );
-    return { status: 'error', error };
+    case 'unavailable':
+      return {
+        status: 'unavailable',
+        error: result.error,
+        secureStorageFailure: result.failure,
+      };
+    case 'error':
+      return {
+        status: 'error',
+        error: result.error,
+        ...(result.failure ? { secureStorageFailure: result.failure } : {}),
+      };
   }
 }
 
@@ -741,15 +590,7 @@ async function persistCanopyCloudAccount(
     throw new Error(`Invalid ${CLOUD_DISPLAY_NAME} account entry.`);
   }
 
-  const backend = observedStorageBackend();
-  const encrypted = encodeStoredCanopyCloudAccount(normalized);
-  const filePath = getCanopyCloudAccountFilePath();
-  await mkdir(dirname(filePath), { recursive: true });
-  assertCanopyCloudStorageAvailable();
-  await writeFileAtomically(filePath, encrypted, { mode: 0o600 });
-  await rm(getLegacyCanopyCloudAccountFilePath(), { force: true }).catch(
-    () => undefined,
-  );
+  const backend = await credentialPort.write(normalized);
   writeCache(normalized, backend);
   if (replaceCredential) resetCanopyCloudSessionCredential();
   const persisted = cloneEntry(normalized);
@@ -761,55 +602,8 @@ async function persistCanopyCloudAccount(
   return persisted;
 }
 
-class AccountOperationQueueTimeoutError extends Error {
-  constructor() {
-    super('Timed out waiting for another account operation to finish.');
-    this.name = 'AccountOperationQueueTimeoutError';
-  }
-}
-
-function createAccountOperationRelease(): AccountOperationRelease {
-  let released = false;
-  return (): void => {
-    if (released) return;
-    released = true;
-    const next = accountOperationWaiters.shift();
-    if (!next) {
-      accountOperationLocked = false;
-      return;
-    }
-    clearTimeout(next.timer);
-    next.resolve(createAccountOperationRelease());
-  };
-}
-
-function acquireAccountOperationLock(): Promise<AccountOperationRelease> {
-  if (!accountOperationLocked) {
-    accountOperationLocked = true;
-    return Promise.resolve(createAccountOperationRelease());
-  }
-
-  return new Promise<AccountOperationRelease>((resolve, reject) => {
-    const waiter: AccountOperationWaiter = {
-      resolve,
-      timer: setTimeout(() => {
-        const index = accountOperationWaiters.indexOf(waiter);
-        if (index < 0) return;
-        accountOperationWaiters.splice(index, 1);
-        reject(new AccountOperationQueueTimeoutError());
-      }, ACCOUNT_OPERATION_QUEUE_TIMEOUT_MS),
-    };
-    accountOperationWaiters.push(waiter);
-  });
-}
-
 async function withAccountSaveLock<T>(operation: () => Promise<T>): Promise<T> {
-  const release = await acquireAccountOperationLock();
-  try {
-    return await operation();
-  } finally {
-    release();
-  }
+  return accountOperations.run(operation);
 }
 
 async function loadCanopyCloudAccountForGuard(): Promise<CanopyCloudAccountEntry | null> {
@@ -1136,16 +930,7 @@ export async function mergeCanopyCloudAccountCapabilities(
 }
 
 async function persistCanopyCloudAccountClear(): Promise<void> {
-  await rm(getLegacyCanopyCloudAccountFilePath(), { force: true });
-  await rm(getCanopyCloudAccountFilePath(), { force: true }).catch(
-    (error: unknown) => {
-      logMainProcessWarn(
-        '[canopy-cloud-account-store] Failed to remove account file:',
-        { reason: error instanceof Error ? error.name : 'unknown' },
-      );
-      throw error;
-    },
-  );
+  await credentialPort.clear();
   invalidateCanopyCloudAccountCache();
   writeCache(null);
   resetCanopyCloudSessionCredential();
@@ -1179,92 +964,36 @@ export async function clearCanopyCloudAccountUnlessGuest(
   });
 }
 
-function buildRecoveryBackupPath(filePath: string): string {
-  const timestamp = new Date()
-    .toISOString()
-    .replace(
-      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$/,
-      '$1$2$3-$4$5$6-$7Z',
-    );
-  return `${filePath}.bak-${timestamp}-${randomBytes(8).toString('hex')}`;
-}
-
-async function chooseUnusedRecoveryBackupPath(
-  filePath: string,
-): Promise<string> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const candidate = buildRecoveryBackupPath(filePath);
-    try {
-      await access(candidate);
-    } catch (error) {
-      if (isErrnoException(error) && error.code === 'ENOENT') {
-        return candidate;
-      }
-      throw error;
-    }
-  }
-  throw new Error('Unable to reserve a unique secure account backup name.');
-}
-
 export async function resetUnreadableCanopyCloudAccount(
   withReplicaPurgeFence: CanopyCloudAccountTransition<void>,
 ): Promise<ResetUnreadableCanopyCloudAccountResult> {
   return withAccountSaveLock(async () => {
-    getSecretStoragePolicy().assertCanRead();
-    let filePath = getCanopyCloudAccountFilePath();
-    let encrypted: Buffer;
-    try {
-      encrypted = await readFile(filePath);
-    } catch (error) {
-      if (isErrnoException(error) && error.code === 'ENOENT') {
-        filePath = getLegacyCanopyCloudAccountFilePath();
-        try {
-          encrypted = await readFile(filePath);
-        } catch (legacyError) {
-          if (isErrnoException(legacyError) && legacyError.code === 'ENOENT') {
-            writeCache(null);
-            resetCanopyCloudSessionCredential();
-            return {
-              status: 'not-needed',
-              account: toPublicCanopyCloudAccountState(null),
-            };
-          }
-          throw legacyError;
-        }
-      } else {
-        throw error;
-      }
-    }
-
-    try {
-      const entry = decodeStoredCanopyCloudAccount(encrypted);
-      writeCache(entry);
+    const recovery = await credentialPort.inspectForRecovery();
+    if (recovery.status === 'absent') {
+      writeCache(null);
+      resetCanopyCloudSessionCredential();
       return {
         status: 'not-needed',
-        account: toPublicCanopyCloudAccountState(entry),
+        account: toPublicCanopyCloudAccountState(null),
       };
-    } catch (error) {
-      const failure = getSecureStorageFailure(error);
-      if (
-        failure &&
-        (failure.code !== 'SECURE_STORAGE_DECRYPT_FAILED' ||
-          failure.state === 'unavailable' ||
-          failure.state === 'locked')
-      )
-        throw error;
-      // Explicit recovery preserves unreadable bytes, including ciphertext
-      // encrypted under a lost key, by renaming them to a backup.
+    }
+    if (recovery.status === 'readable') {
+      writeCache(recovery.record);
+      return {
+        status: 'not-needed',
+        account: toPublicCanopyCloudAccountState(recovery.record),
+      };
     }
 
-    const backupPath = await chooseUnusedRecoveryBackupPath(filePath);
-    await withReplicaPurgeFence(async () => rename(filePath, backupPath));
+    const quarantine = await recovery.prepareQuarantine();
+    await withReplicaPurgeFence(() => quarantine.move());
     writeCache(null);
     resetCanopyCloudSessionCredential();
     notifyAccountChangeOrThrow(null);
     return {
       status: 'reset',
       account: toPublicCanopyCloudAccountState(null),
-      backupFileName: basename(backupPath),
+      backupFileName: quarantine.backupFileName,
     };
   });
 }
@@ -1321,9 +1050,7 @@ export async function getCanopyCloudCredentials({
 }
 
 export function invalidateCanopyCloudAccountCache(): void {
-  cachedEntry = undefined;
-  cachedAt = 0;
-  cachedBackend = undefined;
+  accountCache.invalidate();
 }
 
 export function toPublicCanopyCloudAccountState(
@@ -1331,7 +1058,7 @@ export function toPublicCanopyCloudAccountState(
   read: CanopyCloudAccountReadStatus = 'ok',
   secureStorageFailure?: SecureStorageFailure,
 ): CanopyCloudAccountPublicState {
-  const storage = getSecretStoragePolicy().getStatus();
+  const storage = credentialPort.storageStatus();
   return {
     secureStorageStatus: {
       version: 1,

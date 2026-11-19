@@ -2122,3 +2122,129 @@ export function isSharedAutomationDocument(
 ): value is SharedAutomationDocument {
   return validateSharedAutomationDocument(value).ok;
 }
+
+// ---------------------------------------------------------------------------
+// Workflow form of a shared chat document (CAN-6455).
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a shared chat document's meaning can't travel in its workflow form:
+ * one installed with a capability package or with packaged prompt
+ * dependencies (installs of those stay chat actions too), one with
+ * repository file references or a branch suggestion, which only the install
+ * dialog binds, and one restricted to other run targets than its action
+ * implies.
+ */
+export type SharedChatDocumentRefusal =
+  /** Its capability package binds the chat action. */
+  | 'capability_package'
+  /** Its prompt names packaged pipelines the install dialog rewrites. */
+  | 'pipeline_dependencies'
+  /** A file reference the install dialog checks against the chosen project. */
+  | 'file_prompt_references'
+  /** A branch suggestion the install dialog asks the recipient to confirm. */
+  | 'existing_branch'
+  /** A run restriction other than the one its action implies. */
+  | 'target_requirement';
+
+/**
+ * Why a desktop shares a chat document as it is rather than as a workflow:
+ * a {@link SharedChatDocumentRefusal} for a document without a rebound
+ * package, or one of the refusals further down the desktop's converter that
+ * the document alone decides.
+ */
+export type SharedChatWorkflowFormRefusal =
+  | SharedChatDocumentRefusal
+  /** Its shared Agent must be installed, which the install mapping refuses. */
+  | 'agent_reference'
+  /** Its workflow form might exceed the document size limit. */
+  | 'document_size';
+
+/**
+ * A bound on the size of a chat document's workflow form, which the desktop's
+ * converter refuses over {@link MAX_SHARED_AUTOMATION_BYTES}. The workflow
+ * form carries the prompt inside the workflow's YAML, which the document then
+ * escapes again as JSON, beside the workflow's own steps and plugin defaults:
+ * measured, it is at most about 1.5 times the chat document, plus about 15
+ * bytes of indentation for each line break in the prompt. This doubles the
+ * document and counts 16 bytes a line break, so it errs toward "too big",
+ * which leaves such a document shareable in its chat form.
+ */
+function sharedChatWorkflowFormSizeBound(
+  document: SharedAutomationDocument,
+  prompt: string,
+): number {
+  const lineBreaks = prompt.split('\n').length - 1;
+  return 2 * serializedByteLength(document) + 16 * lineBreaks;
+}
+
+/**
+ * Why the workflow form can't carry a chat document exactly, or `null` when
+ * it can, or the document has no chat action. `rebindsPackage` says the
+ * caller rebinds the document's capability package to the workflow, so the
+ * package alone doesn't refuse it.
+ */
+export function sharedChatDocumentRefusal(
+  document: SharedAutomationDocument,
+  options: { rebindsPackage: boolean },
+): SharedChatDocumentRefusal | null {
+  const { action } = document;
+  if (action.type === 'worktree_pipeline') return null;
+  if (document.capabilityPackage !== undefined && !options.rebindsPackage)
+    return 'capability_package';
+  if ((action.pipelineDependencies?.length ?? 0) > 0)
+    return 'pipeline_dependencies';
+  if (action.promptReferences?.some((reference) => reference.kind === 'file'))
+    return 'file_prompt_references';
+  if (action.type === 'worktree_prompt' && action.existingBranch !== undefined)
+    return 'existing_branch';
+  const required = document.targetRequirement?.contexts;
+  if (required !== undefined) {
+    const implied = impliedTargetContexts(action.type);
+    if (
+      required.length !== implied.length ||
+      required.some((context) => !implied.includes(context))
+    )
+      return 'target_requirement';
+  }
+  return null;
+}
+
+/**
+ * Why a desktop that shares workflows would share `document` in its chat
+ * form, or `null` when it would share the workflow form instead or the
+ * document is a workflow already. The rule the desktop's shared chat
+ * converter applies to a document it builds, stated over the document alone
+ * so the server can check it; the converter's golden pins the two together.
+ */
+export function sharedChatWorkflowFormRefusal(
+  document: SharedAutomationDocument,
+): SharedChatWorkflowFormRefusal | null {
+  const { action } = document;
+  if (action.type === 'worktree_pipeline') return null;
+  const refusal = sharedChatDocumentRefusal(document, {
+    rebindsPackage: false,
+  });
+  if (refusal !== null) return refusal;
+  if (action.modelConfig?.agent !== undefined) return 'agent_reference';
+  if (
+    sharedChatWorkflowFormSizeBound(document, action.prompt) >
+    MAX_SHARED_AUTOMATION_BYTES
+  )
+    return 'document_size';
+  return null;
+}
+
+/**
+ * Whether `document` is a chat document a desktop that shares workflows
+ * would share as a workflow instead: the chat form that stops accruing once
+ * the server refuses it.
+ */
+export function sharedChatDocumentHasWorkflowForm(
+  document: SharedAutomationDocument,
+): boolean {
+  return (
+    document.action.type !== 'worktree_pipeline' &&
+    sharedChatWorkflowFormRefusal(document) === null
+  );
+}

@@ -47,16 +47,24 @@ export function resolveModelSelectionMetadata(input: {
   const agentRow = catalog?.find(
     (row) => row.kind === 'agent' && row.id === agentId,
   );
-  const concreteModelId =
+  const requestedModelId =
     route?.baseModel ??
     (agentId
       ? agentRow?.agentSelection?.preferredModel
       : (selection ??
         input.defaultModelId ??
         catalog?.find((row) => row.kind === 'model' && row.isDefault)?.id));
-  const modelRow = catalog?.find(
-    (row) => row.kind === 'model' && row.id === concreteModelId,
-  );
+  const modelRow =
+    catalog?.find(
+      (row) => row.kind === 'model' && row.id === requestedModelId,
+    ) ??
+    catalog?.find(
+      (row) =>
+        row.kind === 'model' &&
+        requestedModelId !== undefined &&
+        row.aliases?.includes(requestedModelId),
+    );
+  const concreteModelId = modelRow?.id ?? requestedModelId;
   const source = modelRow ?? (agentId && !route ? agentRow : undefined);
   const support = agentRow?.agentSelection?.supportedModels.find(
     (row) => row.modelId === concreteModelId,

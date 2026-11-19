@@ -1,6 +1,8 @@
 import {
+  isDismissibleInvocationToken,
   PIPELINE_PACKAGE_MAX_FILE_BYTES,
   PIPELINE_PACKAGE_MAX_FILES,
+  PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS,
   PIPELINE_PACKAGE_MAX_TOTAL_BYTES,
 } from '@canopy/protocol/pipelines';
 import { formatPipelinePackageBytes } from '@canopy/ui-shared/lib/pipeline-package-display';
@@ -70,6 +72,7 @@ const SEVERITY_RANK: Record<PipelinePackageBlockerCode, number> = {
   ASSET_OVERLAPS_LOCAL_STATE: 5,
   ASSETS_NOT_ALLOWED_FOR_PUBLIC: 5,
   MISSING_DEPENDENCY_SOURCE: 6,
+  DEPENDENCY_SOURCE_UNREADABLE: 6,
   MISSING_REQUIRED_ASSET: 6,
   DEPENDENCY_HAS_INSTALLED_PACKAGE: 6,
   LOCAL_ONLY_PIPELINE_TRIGGER: 6,
@@ -144,6 +147,10 @@ function titleFor(
       return subject
         ? `${subject} is no longer on this machine`
         : 'A dependency is no longer on this machine';
+    case 'DEPENDENCY_SOURCE_UNREADABLE':
+      return subject
+        ? `${subject} could not be read`
+        : 'A dependency could not be read';
     case 'SUSPECTED_SECRET':
       return subject
         ? `${subject} may contain a credential`
@@ -203,13 +210,22 @@ function titleFor(
   }
 }
 
+/** Shown instead of the dismiss link once the scope holds the most it can. */
+const DISMISSAL_LIMIT_DETAIL = `You can mark up to ${String(PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS)} names as not commands.`;
+
 function detailFor(
   code: PipelinePackageBlockerCode,
   origin: PipelinePackageAnalysisBlocker['origin'],
   dismissible: boolean,
+  dismissalLimitReached: boolean,
 ): string {
   switch (code) {
     case 'UNRESOLVED_INVOCATION':
+      if (dismissalLimitReached) {
+        return origin === 'transitive'
+          ? `A packaged dependency references it. Install it. ${DISMISSAL_LIMIT_DETAIL}`
+          : `Install it, or remove the mention. ${DISMISSAL_LIMIT_DETAIL}`;
+      }
       if (origin === 'transitive') {
         return dismissible
           ? `A packaged dependency references it. Install it, or ${DISMISS_INVOCATION_PHRASE}.`
@@ -226,6 +242,8 @@ function detailFor(
         : 'Set the pipeline ID as a literal in env and reference that instead.';
     case 'MISSING_DEPENDENCY_SOURCE':
       return 'Reinstall it, or remove it from the step.';
+    case 'DEPENDENCY_SOURCE_UNREADABLE':
+      return 'Check that you can read it, or remove it from the step.';
     case 'LOCAL_ONLY_PIPELINE_TRIGGER':
       return "Workflows with a Workflow trigger can't be shared yet. Remove the trigger, or leave that pipeline out of the share.";
     case 'SUSPECTED_SECRET':
@@ -318,7 +336,15 @@ function stableProblemSlugSuffix(value: string): string {
  */
 export function buildCapabilityPackageProblems(
   blockers: readonly PipelinePackageAnalysisBlocker[],
+  options: {
+    /**
+     * The scope already holds the most "not a command" marks the store
+     * accepts, so another would fail every recheck.
+     */
+    readonly invocationDismissalsFull?: boolean;
+  } = {},
 ): CapabilityPackageProblem[] {
+  const invocationDismissalsFull = options.invocationDismissalsFull ?? false;
   const identities = blockers.map(
     (blocker) => blocker.subject ?? blocker.relativePath ?? blocker.message,
   );
@@ -346,10 +372,16 @@ export function buildCapabilityPackageProblems(
     const referenceDismissible =
       DISMISS_REFERENCE_PHRASES[blocker.code] !== undefined &&
       blocker.referenceDismissal !== undefined;
+    // The store rejects a whole set when one token fails its check, so a
+    // token it would refuse is never offered for dismissal.
+    const invocationDismissible =
+      DISMISSIBLE_BLOCKER_CODES.has(blocker.code) &&
+      blocker.dismissal !== undefined &&
+      isDismissibleInvocationToken(blocker.dismissal.token);
+    const dismissalLimitReached =
+      invocationDismissible && invocationDismissalsFull;
     const dismissible =
-      (DISMISSIBLE_BLOCKER_CODES.has(blocker.code) &&
-        blocker.dismissal !== undefined) ||
-      referenceDismissible;
+      (invocationDismissible && !dismissalLimitReached) || referenceDismissible;
     return {
       slug,
       code: blocker.code,
@@ -360,7 +392,12 @@ export function buildCapabilityPackageProblems(
         blocker.message,
         blocker.limit,
       ),
-      detail: detailFor(blocker.code, blocker.origin, dismissible),
+      detail: detailFor(
+        blocker.code,
+        blocker.origin,
+        dismissible,
+        dismissalLimitReached,
+      ),
       message: blocker.message,
       ...(blocker.relativePath !== undefined
         ? { relativePath: blocker.relativePath }

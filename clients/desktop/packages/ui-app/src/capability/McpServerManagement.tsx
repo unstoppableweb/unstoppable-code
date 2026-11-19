@@ -1,5 +1,6 @@
 'use client';
 
+import { createPortal } from 'react-dom';
 import {
   useCallback,
   useEffect,
@@ -8,6 +9,8 @@ import {
   useState,
   type JSX,
   type ReactNode,
+  createContext,
+  useContext,
 } from 'react';
 import {
   Button,
@@ -30,6 +33,7 @@ import {
   useContributeDetailMoreItems,
   useItemStateMarks,
   type DetailMoreMenuItem,
+  DetailFactError,
 } from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -605,6 +609,7 @@ function McpServerManagementActionsForTarget({
   registerErrorClearer,
 }: McpServerManagementActionsProps): JSX.Element {
   const idPrefix = useId();
+  const inlineError = useItemStateMarks();
   const [pending, setPending] = useState<ManagementActionId | null>(null);
   const pendingRef = useRef<ManagementActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -821,12 +826,19 @@ function McpServerManagementActionsForTarget({
         className={`${DETAIL_FACT_VALUE_OFFSET_CLASS} flex flex-col gap-2 empty:hidden`}
       >
         {reasonLines}
-        <ErrorBanner
-          errorSource="mcp-management-error"
-          className=""
-          error={error}
-          testId="mcp-management-error"
-        />
+        {/* New Customize: the failure on this row, not a banner. */}
+        {inlineError ? (
+          error && (
+            <DetailFactError error={error} testId="mcp-management-error" />
+          )
+        ) : (
+          <ErrorBanner
+            errorSource="mcp-management-error"
+            className=""
+            error={error}
+            testId="mcp-management-error"
+          />
+        )}
         {!deleteInHostMenu && deleteItems.length > 0 && (
           <DetailPageActions
             more={
@@ -870,6 +882,15 @@ function McpServerManagementActionsForTarget({
   );
 }
 
+/**
+ * New Customize: where the card's Placement row goes, so the page lists it
+ * with the entity's rows (after Website, Updated and Connection) while the
+ * card keeps one instance and its state. Absent, Placement follows Health.
+ */
+const McpPlacementSlotContext = createContext<HTMLElement | null>(null);
+
+export const McpPlacementSlotProvider = McpPlacementSlotContext.Provider;
+
 export interface McpServerManagementCardProps {
   /** Each section's host wiring, unchanged; the card owns the presentation. */
   readonly health: Omit<McpServerHealthSectionProps, 'presentation' | 'label'>;
@@ -884,6 +905,7 @@ export function McpServerManagementCard({
   health,
   management,
 }: McpServerManagementCardProps): JSX.Element {
+  const placementSlot = useContext(McpPlacementSlotContext);
   return (
     <div
       role="group"
@@ -892,7 +914,14 @@ export function McpServerManagementCard({
       className="flex flex-col gap-1"
     >
       <McpServerHealthSection {...health} presentation="row" />
-      <McpServerManagementActions {...management} />
+      {placementSlot ? (
+        createPortal(
+          <McpServerManagementActions {...management} />,
+          placementSlot,
+        )
+      ) : (
+        <McpServerManagementActions {...management} />
+      )}
     </div>
   );
 }

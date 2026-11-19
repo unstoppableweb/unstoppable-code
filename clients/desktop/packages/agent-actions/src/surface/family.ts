@@ -34,6 +34,8 @@ export interface AgentActionCall<H> {
   actorKey?: string;
   toolUseId?: string;
   signal?: AbortSignal;
+  /** The host's report of an unexpected (untyped) action failure; never given the error text. */
+  reportUnexpectedError?: (error: unknown) => void;
   host: H;
 }
 
@@ -51,11 +53,21 @@ export interface AgentActionFamilyJsonSchema {
   allOf?: readonly AgentJson[];
 }
 
+/** A static schema or one projected from the host's capabilities. */
+export type AgentActionFamilyJsonSchemaSource =
+  | AgentActionFamilyJsonSchema
+  | ((
+      capabilities?: AgentActionHostCapabilities,
+    ) => AgentActionFamilyJsonSchema);
+
 interface AgentActionFamilyBase<H> {
   readonly id: string;
   /** Every action type the family defines, independent of capabilities. */
   readonly types: readonly string[];
-  catalog(brand: AgentActionBrand): readonly AgentActionCatalogEntry[];
+  catalog(
+    brand: AgentActionBrand,
+    capabilities?: AgentActionHostCapabilities,
+  ): readonly AgentActionCatalogEntry[];
   /** The action types the family offers under these capabilities. */
   supportedTypes(capabilities: AgentActionHostCapabilities): readonly string[];
   /** Replaces the generic catalog search for this family. */
@@ -75,7 +87,7 @@ interface AgentActionFamilyBase<H> {
   readonly targetFields?: readonly AgentActionScopeField[];
   /** Pins the advertised DispatchAction type enum order. */
   readonly jsonEnumOrder?: readonly string[];
-  readonly dispatchJsonSchema?: AgentActionFamilyJsonSchema;
+  readonly dispatchJsonSchema?: AgentActionFamilyJsonSchemaSource;
 }
 
 export interface AgentActionFamilyDefinition<
@@ -128,7 +140,7 @@ export function defineAgentActionFamily<H, A extends AgentActionPayload>(
   return {
     id: definition.id,
     types: definition.types,
-    catalog: (brand) => definition.catalog(brand),
+    catalog: (brand, capabilities) => definition.catalog(brand, capabilities),
     supportedTypes: (capabilities) => definition.supportedTypes(capabilities),
     ...(definition.search ? { search: definition.search } : {}),
     ...(definition.hiddenFields

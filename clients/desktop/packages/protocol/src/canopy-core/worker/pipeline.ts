@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorkerPipelineSurvivalAssessmentSchema } from '../pipeline-native-routing';
 import {
   ExecutionSecretBindingsSchema,
   WORKER_EXECUTION_SECRET_ERROR_CODES,
@@ -45,6 +46,12 @@ import {
   WorkerPipelineExecutionDetailSchema,
 } from './pipeline-detail';
 import { WorkerPipelinePortableLaunchSchema } from './pipeline-portable-launch';
+import {
+  ReviewPublishApprovalFactsSchema,
+  ReviewPublishPayloadSchema,
+  ReviewPublishPullRequestSchema,
+  ReviewPublishReviewedHeadSchema,
+} from '../core/pullRequest/review-publish';
 
 /*
  * `worker.pipeline.execution.*` (CAN-4140): start, status, cancel and bounded
@@ -129,6 +136,8 @@ export const WorkerPipelineExecutionSchema = z.strictObject({
   completedAt: timestamp.nullable(),
   /** Pause checkpoints a resume may answer. */
   pendingPauseCount: z.number().int().min(0),
+  /** Absent on older runs; never infer survival from its absence. */
+  survival: WorkerPipelineSurvivalAssessmentSchema.optional(),
   /**
    * The kinds of the run's active status reasons, each once; absent when it
    * has none (CAN-6102).
@@ -985,6 +994,8 @@ export const WORKER_PIPELINE_HOST_ACTIONS = [
   'create-bot-entry',
   'send-agent-message',
   'wait-for-agent-reply',
+  // A packaged code review posted as the GitHub App; the web core publishes.
+  'github-publish-review',
   // A child workflow on another target, run as a run of its own (CAN-6868).
   'run-pipeline',
 ] as const;
@@ -1241,6 +1252,20 @@ export const WorkerPipelineHostActionRequestSchema = z.discriminatedUnion(
       chat: WorkerPipelineChatAddressSchema,
       messageId: id.optional(),
       replyTimeoutMinutes: z.number().positive().max(720),
+    }),
+    /**
+     * A packaged code review for the web core's publisher
+     * (`core.pullRequest.review.publish`). The review is already normalized
+     * and fitted by the executor; the diff never crosses. The envelope
+     * carries the run's owner and the idempotency key.
+     */
+    z.strictObject({
+      action: z.literal('github-publish-review'),
+      pr: ReviewPublishPullRequestSchema,
+      reviewedHead: ReviewPublishReviewedHeadSchema,
+      reviewedUncommitted: z.boolean(),
+      payload: ReviewPublishPayloadSchema,
+      approvalFacts: ReviewPublishApprovalFactsSchema,
     }),
     /**
      * A child workflow on another target, which its owner runs as a run of

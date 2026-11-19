@@ -286,6 +286,10 @@ export const RAIL_INSET_CLASSES = {
 export const SHARED_CONTROL_RECIPES = {
   'disclosure-inline':
     'focus-ring inline-flex max-w-full items-center gap-1 rounded-md py-0.5 pr-1 text-left text-xs font-medium fg-secondary hover:fg-primary',
+  // A section heading that folds its section: it keeps the heading's own type
+  // and takes a quiet fill on hover, chevron and title together.
+  'section-heading-toggle':
+    'focus-ring inline-flex min-w-0 max-w-full items-center gap-2 rounded-md px-3 py-1 text-left hover:bg-subtle',
   'disclosure-box':
     'focus-ring flex w-full items-center gap-2 rounded-lg px-4 py-3 text-left text-s font-medium fg-primary hover:bg-subtle',
   'archived-chat-row':

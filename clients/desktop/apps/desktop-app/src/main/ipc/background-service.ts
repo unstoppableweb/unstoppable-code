@@ -14,6 +14,7 @@ import { registerIpcHandler } from './register';
  * The background service notice (CAN-5541): main's health status, its pushes
  * to every window, and Try again. Blocked for remote control: a window that
  * shows another computer reads Files through the bridge, never a daemon.
+ * Remote controllers read the status from session snapshots (CAN-7061).
  */
 export function registerBackgroundServiceHandlers(
   resolveCaller: (event: IpcMainInvokeEvent) => CanopyCallerDescriptor,
@@ -32,8 +33,17 @@ export function registerBackgroundServiceHandlers(
   let previous = health.getStatus().state;
   return health.onStatusChanged((status) => {
     const recovered = previous !== 'ok' && status.state === 'ok';
+    // Remote Control carries only a shown failure.
+    const remoteChanged =
+      previous === 'unavailable' || status.state === 'unavailable';
     previous = status.state;
     sendToAllWindows(IPC_CHANNELS.backgroundServiceStatusChanged, status);
+    if (remoteChanged)
+      void import('../services/desktop-structure-signal')
+        .then(({ scheduleDesktopStructureChanged }) =>
+          scheduleDesktopStructureChanged('structural.background-service'),
+        )
+        .catch(() => undefined);
     if (recovered) {
       const event: WorktreesFileChangedEvent = { scope: 'all' };
       sendToAllWindows(IPC_CHANNELS.worktreesFileChanged, event);

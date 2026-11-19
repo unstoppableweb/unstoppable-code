@@ -1,4 +1,6 @@
+import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { safeErrorProperty } from '@canopy/desktop-shared/ipc/app-error-rejection';
 import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import type { IpcMainInvokeEvent } from 'electron';
 import { DESKTOP_FILE_IMAGE_SAVE_SUPPORT } from '@canopy/protocol/file-image-save';
@@ -41,7 +43,15 @@ function rethrowLegacyFileTreeError(error: unknown): never {
     if (error.runtimeCause instanceof Error) {
       throw error.runtimeCause;
     }
-    throw new Error(error.payload.message);
+    // A daemon failure has no cause here; keep its allowlisted system code
+    // (CAN-7114) so the reported error has it. Never a message or path.
+    const errno = AppErrorErrnoSchema.safeParse(
+      safeErrorProperty(error.payload.details, 'errno'),
+    );
+    throw Object.assign(
+      new Error(error.payload.message),
+      errno.success ? { code: errno.data } : {},
+    );
   }
   throw error;
 }
@@ -395,6 +405,9 @@ export function registerFileTreeHandlers(
             isSymlink: entry.isSymlink,
             hasChildren: entry.hasChildren,
           })),
+          ...(canonicalResult.ignoreStateUnknown === true && {
+            ignoreStateUnknown: true,
+          }),
         };
       } catch (error) {
         return rethrowLegacyFileTreeError(error);

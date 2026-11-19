@@ -1,4 +1,7 @@
-import { assertCodeReviewStorageWriter } from './code-review-storage-admission';
+import {
+  ensureCodeReviewNamespaceQualification,
+  isCodeReviewWorkspaceTreePending,
+} from './code-review-storage-admission';
 import {
   cp,
   lstat,
@@ -13,7 +16,6 @@ import {
 import { dirname, join } from 'node:path';
 import {
   APP_ADVISOR_PROJECT_ID,
-  CODE_REVIEW_CHAT_PROJECT_ID,
   PIPELINE_EDITOR_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
@@ -22,17 +24,14 @@ import {
   w5RecordReadPaths,
   getAppManagedChatWorkspaceDir,
   getAppAdvisorHomeDir,
-  getCodeReviewChatsDir,
   getDataDir,
-  getLegacyCodeReviewChatsDir,
+  withCodeReviewStorageIdentity,
   getPipelineEditorHomeDir,
 } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
 
 export const APP_WORKSPACES_MIGRATION_KEY = 'app_workspaces';
 export const APP_ADVISOR_HOME_MIGRATION_KEY = 'app_advisor_home';
-export const CODE_REVIEW_CHATS_APP_WORKSPACE_MIGRATION_KEY =
-  'code_review_chats_app_workspace';
 export const PIPELINE_EDITOR_APP_WORKSPACE_MIGRATION_KEY =
   'pipeline_editor_app_workspace';
 export const PIPELINE_EDITOR_HOME_MIGRATION_KEY = 'pipeline_editor_home';
@@ -41,7 +40,6 @@ const APP_MANAGED_CHAT_WORKSPACE_IDS = [
   // Default Bot only: legacy home migration has a single Orchestrator root.
   APP_ADVISOR_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
-  CODE_REVIEW_CHAT_PROJECT_ID,
   PIPELINE_EDITOR_PROJECT_ID,
 ] as const;
 
@@ -182,25 +180,6 @@ async function migrateLegacyAppWorkspace(workspaceId: string): Promise<void> {
     // A previous launch already created the destination. Move only missing
     // legacy entries across; leave conflicting source files in place rather
     // than overwriting newer destination data.
-    await mergeMissingEntries(source, destination);
-    return;
-  }
-  await movePath(source, destination);
-}
-
-async function migrateLegacyCodeReviewChats(): Promise<void> {
-  for (const namespace of [
-    'code_review_chats_legacy',
-    'code_review_chats_dir',
-    'code_review_registry',
-  ] as const)
-    assertCodeReviewStorageWriter(namespace, 'main/lib/app-managed-workspaces');
-  const source = getLegacyCodeReviewChatsDir();
-  const destination = getCodeReviewChatsDir();
-  if (!(await pathExists(source))) {
-    return;
-  }
-  if (await pathExists(destination)) {
     await mergeMissingEntries(source, destination);
     return;
   }
@@ -358,11 +337,18 @@ async function migrateLegacyPipelineEditorHome(): Promise<void> {
 }
 
 export async function migrateAppManagedChatWorkspaces(): Promise<void> {
+  // A failed reconciliation is reported and never blocks startup (q-34).
+  const reviewTreePending = await withCodeReviewStorageIdentity(async () => {
+    await ensureCodeReviewNamespaceQualification(true);
+    return isCodeReviewWorkspaceTreePending();
+  });
   if (!(await hasMigrationRun(APP_WORKSPACES_MIGRATION_KEY))) {
     for (const workspaceId of APP_MANAGED_CHAT_WORKSPACE_IDS) {
       await migrateLegacyAppWorkspace(workspaceId);
     }
-    await markMigrationRun(APP_WORKSPACES_MIGRATION_KEY);
+    // Unrecorded, the next launch retries the incomplete Code Review move.
+    if (!reviewTreePending)
+      await markMigrationRun(APP_WORKSPACES_MIGRATION_KEY);
   }
   if (!(await hasMigrationRun(APP_ADVISOR_HOME_MIGRATION_KEY))) {
     await migrateLegacyAppAdvisorHome();
@@ -372,10 +358,6 @@ export async function migrateAppManagedChatWorkspaces(): Promise<void> {
     recursive: true,
     force: true,
   });
-  if (!(await hasMigrationRun(CODE_REVIEW_CHATS_APP_WORKSPACE_MIGRATION_KEY))) {
-    await migrateLegacyCodeReviewChats();
-    await markMigrationRun(CODE_REVIEW_CHATS_APP_WORKSPACE_MIGRATION_KEY);
-  }
   // The pipeline editor became app-managed after the original aggregate
   // migration shipped. Give it a distinct marker so installations that
   // already recorded `app_workspaces` still move any legacy metadata.

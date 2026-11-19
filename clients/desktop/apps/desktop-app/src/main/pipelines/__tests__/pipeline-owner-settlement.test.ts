@@ -58,6 +58,14 @@ const mockCreateApprovalSession = jest.fn(() => ({
   dispose: jest.fn(),
 }));
 const mockLedgerDispose = jest.fn();
+const mockLedgerOperate = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve({
+    entries: [],
+    hasMore: false,
+    nextCursor: null,
+    watermark: '0',
+  }),
+);
 const mockModAdmission = jest.fn<Promise<unknown>, unknown[]>(() =>
   Promise.resolve(undefined),
 );
@@ -101,6 +109,8 @@ jest.mock('../../canopy-tools/ledger-tools-runtime', () => ({
     Promise.resolve({
       systemPrompt: (): string => 'LEDGER',
       dispose: mockLedgerDispose,
+      operatePipeline: (...args: unknown[]): Promise<unknown> =>
+        Reflect.apply(mockLedgerOperate, undefined, args),
       scope: { container: { kind: 'task' }, containerCreatedAt: 't' },
     }),
 }));
@@ -431,6 +441,64 @@ describe('PipelineOwnerRunContext', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it('forwards only a known Ledger attempt in the run folder and keeps its approval gate', async () => {
+    const context = new PipelineOwnerRunContext(run());
+    const opened = ownerValue(
+      await context.apply(
+        ownerRequest({
+          action: 'owner.ledger.open',
+          physicalJobId: 'job',
+          logicalJobId: 'job',
+          jobName: 'Job',
+          stepId: 'step',
+          stepName: 'Step',
+          attempt: 1,
+          iteration: 0,
+          harness: 'claude',
+          permissionPreset: 'read_only',
+        }),
+        signal,
+      ),
+    );
+    if (opened?.kind !== 'ledger.open' || !opened.attempt)
+      throw new Error('No attempt.');
+    const attemptKey = opened.attempt.attemptKey;
+    mockCreateApprovalSession.mockImplementation(() => ({
+      check: jest.fn().mockResolvedValue({ decision: 'allow' }),
+      dispose: jest.fn(),
+    }));
+    const action = {
+      action: 'owner.ledger.operation',
+      attemptKey,
+      cwd: worktree,
+      operation: 'core.ledger.entries.search',
+      params: {},
+    } as const;
+    expect(
+      ownerValue(await context.apply(ownerRequest(action), signal)),
+    ).toMatchObject({ kind: 'ledger.operation', outcome: { kind: 'result' } });
+    expect(mockLedgerOperate).toHaveBeenCalledWith(
+      'core.ledger.entries.search',
+      {},
+      expect.any(AbortSignal),
+    );
+    mockLedgerOperate.mockClear();
+    expect(
+      (
+        await context.apply(
+          ownerRequest({ ...action, attemptKey: 'foreign' }),
+          signal,
+        )
+      ).result.status,
+    ).toBe('failure');
+    expect(
+      (await context.apply(ownerRequest({ ...action, cwd: undefined }), signal))
+        .result.status,
+    ).toBe('failure');
+    expect(mockLedgerOperate).not.toHaveBeenCalled();
+    await context.close(state());
   });
 
   it('settles only its own run, and releases only the routes it issued', async () => {

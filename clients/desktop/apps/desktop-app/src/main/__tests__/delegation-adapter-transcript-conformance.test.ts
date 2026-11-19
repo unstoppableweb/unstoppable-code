@@ -24,6 +24,7 @@ import type {
 } from '@canopy/desktop-shared/node/opencode/turn-driver';
 import type { CopilotCapabilitySnapshot } from '@canopy/desktop-shared/node/copilot/capability-snapshot';
 import type { DelegationNativePolicy } from '../agents/delegation/native-policy';
+import type * as OpenCodeMcpServers from '../opencode/mcp-servers';
 import { DelegationNativePolicy as NativePolicy } from '../agents/delegation/native-policy';
 import {
   delegationBlockId,
@@ -174,6 +175,7 @@ jest.mock('../opencode/capability-snapshot', () => ({
   snapshotOpenCodeMcpTools: jest.fn(() => Promise.resolve([])),
 }));
 jest.mock('../opencode/mcp-servers', () => ({
+  ...jest.requireActual<typeof OpenCodeMcpServers>('../opencode/mcp-servers'),
   buildOpenCodeMcpServers: jest.fn(() => []),
   resolveOpenCodeMcpCall: jest.fn(() => undefined),
 }));
@@ -203,6 +205,7 @@ jest.mock('@canopy/desktop-shared/node/cursor/capability-root', () => ({
     mockMaterialize(...args),
 }));
 const mockProxy = {
+  setSessionToolCallGate: jest.fn(),
   getMcpCapabilityDigests: jest.fn(() => ({})),
   getCanopyWorktreeMcpUrl: jest.fn(() => 'http://127.0.0.1/fixture'),
   registerCanopyWorktreeSessionRoute: jest.fn(() => Promise.resolve()),

@@ -7,20 +7,9 @@ export {
   PORTAL_CHAT_SEED_MESSAGE_LIMIT,
   PORTAL_CHAT_TRANSCRIPT_MESSAGE_LIMIT,
   limitPortalChatTranscript,
-  limitPortalChatTranscriptForSeed,
   limitPortalChatTranscriptForSeedWithMetadata,
-  portalChatMessageAttachmentsFromPaths,
   type PortalChatTranscriptSeed,
   persistedMessageToPortalMessage,
-  persistedParts,
   projectPersistedChatTranscript,
-  turnTimerAutoRoutedModelData,
 } from '@canopy/desktop-shared/portal/persisted-chat-projection';
-export {
-  createCursorAssistantPatchProjector,
-  isCursorAssistantPatchEvent,
-  isTerminalRuntimeChatEvent,
-  projectCanonicalPortalTurnTimers,
-  runtimeChatEventToPortalMessage,
-  type CursorAssistantPatchProjector,
-} from '@canopy/desktop-shared/portal/runtime-chat-projection';
+export { isTerminalRuntimeChatEvent } from '@canopy/desktop-shared/portal/runtime-chat-projection';

@@ -4,6 +4,7 @@ import { collectScheduledAutomationTargetKeys } from '../lib/auto-archive';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import {
+  ShareOperationError,
   toShareOperationResult,
   withShareStage,
 } from '../sharing/share-operation-result';
@@ -82,7 +83,15 @@ import {
   createAutomationFromForm,
   updateAutomationFromForm,
 } from '../automations/chat-automation-save';
-import { projectOwnedChatAutomations } from '../automations/owned-chat-projection';
+import {
+  ownedChatProjector,
+  projectOwnedChatAutomation,
+  projectOwnedChatAutomations,
+  withOwnedChatProjectionPass,
+  type OwnedChatProjector,
+} from '../automations/owned-chat-projection';
+import { installedPackageWorkflowActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
+import { isSharedAutomationsWorkflowFormEnabled } from '../automations/shared-workflow-form-flag';
 import { createWebCoreCloudScheduleRemote } from '../automations/cloud-schedule-remote';
 import { DESKTOP_CLOUD_SCHEDULE_HOST } from '../automations/cloud-schedule-host';
 import {
@@ -122,6 +131,7 @@ import {
   analyzeAutomationCapabilityPackage,
   cancelPackageAnalysis,
   createPackagedAutomationCapabilityPackage,
+  createReboundAutomationCapabilityPackage,
   getAutomationCapabilityPackageReadiness,
   getSharedPipelineAutomationInstallPin,
   installAutomationCapabilityPackage,
@@ -440,6 +450,20 @@ export async function resolveSharedPipelinePinForCaller(
   return getSharedPipelineAutomationInstallPin(request.remoteId);
 }
 
+/** The windows' list; a failed projection is logged and not sent. */
+function projectPublishedAutomations(
+  stored: AutomationsListResponse,
+  activities: readonly ScheduledActivity[],
+  project: OwnedChatProjector,
+): AutomationsListResponse | undefined {
+  try {
+    return projectOwnedChatAutomations(stored, activities, project);
+  } catch (error) {
+    logMainProcessError('Failed to publish the automations list', error);
+    return undefined;
+  }
+}
+
 export function registerAutomationsHandlers(
   accessors: AutomationsWindowAccessors,
 ): void {
@@ -462,36 +486,46 @@ export function registerAutomationsHandlers(
     ensureAppAdvisorWindow: accessors.ensureAppAdvisorWindow,
     sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
     onChange: (stored: AutomationsListResponse) => {
-      publishAutoDeleteActivity(
-        'automations',
-        collectScheduledAutomationTargetKeys(
+      const activities = service.loadedActivities();
+      // CAN-7087: one synchronous pass projects the target keys and the list,
+      // reading each owned pipeline once. The projector caches what it read,
+      // so it must not outlive the pass.
+      const project = ownedChatProjector();
+      const { keys, snapshot } = withOwnedChatProjectionPass(() => ({
+        keys: collectScheduledAutomationTargetKeys(
           stored.activities,
           new Set(
             stored.recentRuns
               .filter((run) => run.status === 'running')
               .map((run) => run.activityId),
           ),
+          project,
         ),
-      );
-      // Windows edit a converted automation as its chat action (CAN-4551),
-      // with its workflow-page facts counted across every context (CAN-5782).
-      void service.allActivities().then(
-        (activities) => {
-          const snapshot = projectOwnedChatAutomations(stored, activities);
-          sendToWindow(
-            accessors.getMainWindow(),
-            IPC_CHANNELS.automationsChanged,
-            snapshot,
-          );
-          sendToWindow(
-            accessors.getAppAdvisorWindow(),
-            IPC_CHANNELS.automationsChanged,
-            snapshot,
-          );
-        },
-        (error: unknown) => {
+        // Windows edit a converted automation as its chat action (CAN-4551),
+        // with its workflow-page facts counted across every context (CAN-5782).
+        snapshot:
+          activities === undefined
+            ? undefined
+            : projectPublishedAutomations(stored, activities, project),
+      }));
+      publishAutoDeleteActivity('automations', keys);
+      if (activities === undefined) {
+        // The file isn't read yet; republishing reads it and lands here again.
+        void service.republish().catch((error: unknown) => {
           logMainProcessError('Failed to publish the automations list', error);
-        },
+        });
+        return;
+      }
+      if (snapshot === undefined) return;
+      sendToWindow(
+        accessors.getMainWindow(),
+        IPC_CHANNELS.automationsChanged,
+        snapshot,
+      );
+      sendToWindow(
+        accessors.getAppAdvisorWindow(),
+        IPC_CHANNELS.automationsChanged,
+        snapshot,
       );
     },
   });
@@ -786,6 +820,38 @@ export function registerAutomationsHandlers(
           await service.assertActivityResourceContext(
             request.localAutomationId,
           );
+      }
+      if ('reboundWorkflow' in request) {
+        // CAN-6455: a packaged install shared as its workflow. The workflow
+        // comes from the saved automation, as the renderer lists it.
+        if (!isSharedAutomationsWorkflowFormEnabled())
+          throw new ShareOperationError(
+            'unavailable',
+            'Sharing this automation as a workflow is turned off.',
+          );
+        const { activities } = await service.list();
+        const saved = activities.find(
+          (activity) => activity.id === request.localAutomationId,
+        );
+        const workflow = saved
+          ? installedPackageWorkflowActivity(
+              projectOwnedChatAutomation(saved, activities),
+            )
+          : null;
+        if (
+          workflow?.action.type !== 'worktree_pipeline' ||
+          workflow.installedFrom?.capabilityPackage?.digest !==
+            request.packageRef.digest
+        )
+          throw new ShareOperationError(
+            'unavailable',
+            'This automation can’t share its installed package as a workflow.',
+          );
+        return createReboundAutomationCapabilityPackage(
+          request,
+          workflow.action.pipelineId,
+          () => accessors.getMainWindow(),
+        );
       }
       return createPackagedAutomationCapabilityPackage(request, () =>
         accessors.getMainWindow(),

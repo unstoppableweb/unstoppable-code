@@ -25,8 +25,6 @@ import {
   IPC_CHANNELS,
   SINGLE_REPO_USAGE_REPO_ID,
   type WorkspaceType,
-  type PortalCommandEnvelope,
-  type PortalPrActionPayload,
 } from '@canopy/desktop-shared/types';
 import type {
   CommitPushProgressEvent,
@@ -88,8 +86,6 @@ import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import { readPreferencesFile } from '../ipc/preferences';
 
 import { runPrAction } from '../services/pr-service';
-import { handlePortalPrAction } from '../portal/adapters/pr-adapter';
-import type { PortalAdapterContext } from '../portal/adapters/types';
 import {
   acquireSplitLock,
   releaseSplitLock,
@@ -1146,68 +1142,6 @@ it('cancel never kills an active commit, excludes concurrent actions, and preven
 });
 
 describe('Portal commit_and_push / push baseline', () => {
-  it.each(['commit_and_push', 'push'] as const)(
-    '%s mutates the real checkout and refreshes Portal state',
-    async (action) => {
-      const name = action === 'push' ? 'portal-push' : 'portal-commit';
-      const path = checkout(name);
-      if (action === 'push') commit(path, 'existing.txt');
-      writeFileSync(join(path, 'pending.txt'), 'pending\n');
-      const command: PortalCommandEnvelope<PortalPrActionPayload> = {
-        id: `command-${name}`,
-        sequence: 1,
-        type: 'portal.pr.action',
-        createdAt: '2026-11-06T00:00:00.000Z',
-        expiresAt: null,
-        payload: {
-          workspaceLocalId: WORKSPACE,
-          worktreeLocalId: name,
-          ...(action === 'push'
-            ? { action }
-            : { action, commitMessage: '  Portal commit  ' }),
-        },
-      };
-      const context = {
-        getWindow: (): BrowserWindow | null => null,
-        enqueueEvent: jest.fn(),
-        complete: jest.fn<
-          ReturnType<PortalAdapterContext['complete']>,
-          Parameters<PortalAdapterContext['complete']>
-        >(),
-        fail: jest.fn(),
-      } satisfies PortalAdapterContext;
-      await handlePortalPrAction(command, context);
-      const state = {
-        workspaceLocalId: WORKSPACE,
-        worktreeLocalId: name,
-        number: null,
-        url: null,
-      };
-      expect(context.fail).not.toHaveBeenCalled();
-      expect(context.complete).toHaveBeenCalledTimes(1);
-      expect(context.complete).toHaveBeenCalledWith(command, state);
-      exact(context.complete.mock.calls[0]?.[1], state);
-      expect(context.enqueueEvent).toHaveBeenCalledTimes(1);
-      const payloadMatcher: unknown = expect.objectContaining({
-        scope: 'pr',
-        entities: [expect.objectContaining({ payload: state })],
-      });
-      expect(context.enqueueEvent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'portal.state.delta',
-          commandId: command.id,
-          payload: payloadMatcher,
-        }),
-      );
-      expect(remoteHead(name)).toBe(git(path, ['rev-parse', 'HEAD']));
-      expect(git(path, ['status', '--porcelain'])).toBe(
-        action === 'push' ? '?? pending.txt' : '',
-      );
-      if (action === 'commit_and_push')
-        expect(git(path, ['log', '-1', '--format=%s'])).toBe('Portal commit');
-      exact(progress(), []);
-    },
-  );
   it('rejects blank messages and read-only mutations', async () => {
     await expect(
       runPrAction({

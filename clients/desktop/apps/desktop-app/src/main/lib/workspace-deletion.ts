@@ -1,3 +1,4 @@
+/// <reference lib="es2021.promise" />
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -122,7 +123,7 @@ import { readWorkspaceConfigDetailed } from './workspace-persistence';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { validateId } from './validation';
 import { getChatSearchService } from '../chat-search/service';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { publishWorktreeLifecycleChange } from './worktree-lifecycle-signals';
 import {
   acquireWorkspaceDeletionLease,
@@ -1005,7 +1006,8 @@ export async function settleWorkspaceArchiveRecoveryCleanup(
   }
   if (failures.length)
     throw Object.assign(
-      new Error(
+      new AggregateError(
+        failures.map(({ error }) => error),
         `Archive recovery cleanup remains incomplete for ${failures.map(({ operationId }) => operationId).join(', ')}.`,
       ),
       { failures },
@@ -1280,7 +1282,7 @@ async function deleteWorkspaceWithLease(
   // Deletion removes the workspace directory without rewriting the index (it
   // self-heals on the next read), so the shared index-write hook never fires;
   // push the portal overview refresh explicitly (CAN-1304).
-  schedulePortalStructuralSync();
+  scheduleDesktopStructureChanged('structural.workspace-deletion');
   publishWorktreeLifecycleChange('workspace-deleted');
 
   // Best-effort, non-blocking: reap repo shadows for repos no remaining

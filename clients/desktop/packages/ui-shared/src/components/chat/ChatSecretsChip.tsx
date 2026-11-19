@@ -3,9 +3,10 @@
 import { useRef, useState, type JSX } from 'react';
 import { ChevronDownIcon, KeyIcon } from '../../icons/AppIcons';
 import { formatRelativeTime } from '../../lib/format-relative-time';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import { Chip } from '../Chip';
-import { Notice } from '../Notice';
+import { Notice, NoticeButton } from '../Notice';
 import { Popover } from '../Popover';
 
 /** One secret a chat's agent holds: metadata only, never a value. */
@@ -14,6 +15,40 @@ export interface ChatSecretsChipItem {
   /** Where it is kept; `chat` until project secrets land. */
   readonly scope?: 'chat' | 'project';
   readonly lastUsedAt: string | null;
+}
+
+/**
+ * What the chat's own shell commands get, on a host whose agent can hold
+ * secrets in its environment (desktop Full access):
+ * - `live`: held secrets are set in them too.
+ * - `restart`: Codex started before some of them; Restart to apply.
+ * - `restart-pending`: a restart happens once the chat is idle.
+ * - `off`: only commands run with secrets get them.
+ * - `none` (or omitted): nothing to say, as in cloud chats.
+ */
+export type ChatSecretsAmbient =
+  | 'live'
+  | 'restart'
+  | 'restart-pending'
+  | 'off'
+  | 'none';
+
+/** The popover's line about the agent's own commands, by ambient state. */
+export function chatSecretsAmbientLine(
+  ambient: ChatSecretsAmbient,
+  agentName: string,
+): string {
+  switch (ambient) {
+    case 'live':
+      return "Full access: also set in the agent's own commands. It could print them, so redaction is best effort.";
+    case 'restart':
+      return `${agentName} started before some of these. Restart to apply them to its own commands.`;
+    case 'restart-pending':
+      return `${agentName} restarts when it's idle, or at your next message.`;
+    case 'off':
+    case 'none':
+      return 'The agent uses these by name in commands. It never sees the values.';
+  }
 }
 
 export interface ChatSecretsChipProps {
@@ -27,6 +62,14 @@ export interface ChatSecretsChipProps {
   readonly onOpen?: () => void;
   /** The clock for "used 2m ago"; defaults to now. */
   readonly now?: number;
+  /** What the agent's own commands get; omitted where that can't apply. */
+  readonly ambient?: ChatSecretsAmbient;
+  /** The agent's name for the restart line, such as Codex. */
+  readonly agentName?: string;
+  /** Codex's Restart to apply, offered while `ambient` is `restart`. */
+  readonly onRestart?: () => void;
+  /** Where the list opens: below a header (default) or above a composer row. */
+  readonly placement?: 'bottom-right' | 'top-right';
 }
 
 function usage(item: ChatSecretsChipItem, now: number | undefined): string {
@@ -49,6 +92,10 @@ export function ChatSecretsChip({
   onRevoke,
   onOpen,
   now,
+  ambient = 'none',
+  agentName = 'The agent',
+  onRestart,
+  placement = 'bottom-right',
 }: ChatSecretsChipProps): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
@@ -56,7 +103,12 @@ export function ChatSecretsChip({
   const label = secrets.length === 1 ? '1 secret' : `${secrets.length} secrets`;
   return (
     <>
-      <span ref={anchorRef} className="inline-flex">
+      <span
+        ref={anchorRef}
+        className="inline-flex"
+        data-testid="chat-secrets"
+        data-ambient={ambient}
+      >
         <Chip
           icon={KeyIcon}
           selected={open}
@@ -76,14 +128,30 @@ export function ChatSecretsChip({
         open={open}
         onOpenChange={setOpen}
         anchorRef={anchorRef}
-        placement="bottom-right"
+        placement={placement}
         width="lg"
         aria-label="Secrets"
         data-testid="chat-secrets-popover"
       >
         <div className="flex flex-col gap-2">
-          <div className="text-xs fg-tertiary">
-            The agent uses these by name in commands. It never sees the values.
+          <div className="flex items-start gap-2">
+            <div
+              className="min-w-0 flex-1 text-xs text-pretty fg-tertiary"
+              data-testid="chat-secrets-ambient"
+            >
+              {chatSecretsAmbientLine(ambient, agentName)}
+            </div>
+            {ambient === 'restart' && onRestart ? (
+              <Button
+                type="button"
+                size="compact"
+                variant="secondary"
+                onClick={onRestart}
+                data-testid="chat-secrets-restart"
+              >
+                Restart to apply
+              </Button>
+            ) : null}
           </div>
           {secrets.length === 0 ? (
             <div className="text-s fg-secondary">No secrets.</div>
@@ -96,7 +164,9 @@ export function ChatSecretsChip({
                   data-testid={`chat-secrets-row-${item.name}`}
                 >
                   <div className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate font-mono text-s fg-primary">
+                    <span
+                      className={`${REPLAY_BLOCK_CLASS} truncate font-mono text-s fg-primary`}
+                    >
                       {item.name}
                     </span>
                     <span className="text-xs fg-tertiary">
@@ -129,5 +199,45 @@ export function ChatSecretsChip({
         </div>
       </Popover>
     </>
+  );
+}
+
+/**
+ * Codex's **Restart to apply** above the composer: shown while the chat holds
+ * secrets its running process started without. Restarting keeps the thread.
+ */
+export function ChatSecretsRestartNotice({
+  agentName,
+  pending,
+  onRestart,
+}: {
+  readonly agentName: string;
+  /** A restart was asked for and happens once the chat is idle. */
+  readonly pending: boolean;
+  readonly onRestart: () => void;
+}): JSX.Element {
+  return (
+    <Notice
+      intent="attention"
+      icon={<KeyIcon size="sm" />}
+      shape="composer"
+      data-testid="chat-secrets-restart-notice"
+      title={pending ? `${agentName} will restart` : 'New secrets'}
+      actions={
+        pending ? null : (
+          <NoticeButton
+            variant="primary"
+            data-testid="chat-secrets-restart-notice-button"
+            onClick={onRestart}
+          >
+            Restart to apply
+          </NoticeButton>
+        )
+      }
+    >
+      {pending
+        ? "When it's idle, or at your next message, so its own commands get this chat's secrets."
+        : `${agentName}'s own commands get them after a restart. The conversation is kept.`}
+    </Notice>
   );
 }

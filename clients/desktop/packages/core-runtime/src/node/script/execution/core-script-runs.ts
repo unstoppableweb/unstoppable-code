@@ -251,7 +251,7 @@ export class CoreScriptRuns {
       return sameScriptRun(live, target)
         ? { status: 'in_flight' }
         : { status: 'conflict' };
-    const recorded = (await this.options.operations.ready()).lookupReceipt(
+    const recorded = await this.options.operations.lookupReceipt(
       CORE_SCRIPT_RUN_KIND,
       runReceipt(target),
     );
@@ -379,9 +379,9 @@ export class CoreScriptRuns {
         .get(parent.operationId)
         .catch(() => null);
       if (signal?.aborted || current?.cancellation) {
-        await operations
-          .finish(parent.operationId, { status: 'cancelled' })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'cancelled',
+        });
         return {
           status: 'cancelled',
           executionId,
@@ -389,16 +389,14 @@ export class CoreScriptRuns {
           error: null,
         };
       }
-      await operations
-        .finish(parent.operationId, {
-          status: 'failed',
-          error: {
-            kind: 'internal',
-            message: 'This script run could not be dispatched.',
-            retry: { kind: 'never' },
-          },
-        })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: {
+          kind: 'internal',
+          message: 'This script run could not be dispatched.',
+          retry: { kind: 'never' },
+        },
+      });
       throw error;
     } finally {
       signal?.removeEventListener('abort', onAbort);
@@ -418,26 +416,28 @@ export class CoreScriptRuns {
     if (child.status === 'completed' && parsed.success) {
       const result = parsed.data;
       if (result.status === 'cancelled') {
-        await operations
-          .finish(parent.operationId, { status: 'cancelled' })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'cancelled',
+        });
         return { ...base, status: 'cancelled', error: null };
       }
-      await operations
-        .finish(parent.operationId, { status: 'completed', outcome: result })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'completed',
+        outcome: result,
+      });
       return { ...base, status: 'completed', result };
     }
     if (child.status === 'cancelled') {
-      await operations
-        .finish(parent.operationId, { status: 'cancelled' })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'cancelled',
+      });
       return { ...base, status: 'cancelled', error: null };
     }
     const error = child.error ? toErrorPayload(child.error) : OUTCOME_UNKNOWN;
-    await operations
-      .finish(parent.operationId, { status: 'failed', error })
-      .catch(() => undefined);
+    await operations.finishOrRecord(parent.operationId, {
+      status: 'failed',
+      error,
+    });
     return { ...base, status: 'failed', error };
   }
 }

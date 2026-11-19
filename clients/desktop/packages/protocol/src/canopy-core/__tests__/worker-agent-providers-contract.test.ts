@@ -5,8 +5,110 @@ import {
   type WorkerAgentModel,
   type WorkerAgentProviderListResult,
 } from '../worker/agent-providers';
+import { WorkerAgentUsageLimitsGetParamsSchema } from '../worker/agent-usage-limits';
+import {
+  UsageLimitsSnapshotSchema,
+  type UsageLimitsSnapshot,
+} from '../../provider-usage';
 
 const checkedAt = '2026-11-05T12:00:00.000Z';
+
+function usageSnapshot(): UsageLimitsSnapshot {
+  return {
+    schemaVersion: 1,
+    snapshotAt: checkedAt,
+    completeness: 'partial',
+    sources: [
+      { source: 'account_proxy', state: 'observed', observedAt: checkedAt },
+    ],
+    accounts: [
+      {
+        accountId: 'snapshot-account-1',
+        provider: 'codex',
+        source: 'account_proxy',
+        authState: 'authenticated',
+        status: 'cooling',
+        inventoryObservedAt: checkedAt,
+        usageObservedAt: checkedAt,
+        usageSource: 'passive',
+        usageState: 'reported',
+        limits: [
+          {
+            id: 'review',
+            label: 'Code review',
+            scope: {
+              model: { id: 'gpt', displayName: null },
+              surface: 'review',
+            },
+            windows: [
+              {
+                kind: 'secondary',
+                usedPercent: 120,
+                remaining: 0,
+                limit: 100,
+                resetsAt: checkedAt,
+                windowDurationMs: 604_800_000,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+it('usage snapshots retain scoped over-limit observations but refuse raw and monetary fields', () => {
+  const fixture = usageSnapshot();
+  expect(UsageLimitsSnapshotSchema.parse(fixture)).toEqual(fixture);
+  for (const leak of [
+    (snapshot: UsageLimitsSnapshot): void => {
+      Object.assign(snapshot, { raw: {} });
+    },
+    (snapshot: UsageLimitsSnapshot): void => {
+      Object.assign(snapshot.accounts[0], { fileName: 'credential.json' });
+    },
+    (snapshot: UsageLimitsSnapshot): void => {
+      Object.assign(snapshot.accounts[0]?.limits[0] ?? {}, {
+        credits: { remaining: 1 },
+      });
+    },
+    (snapshot: UsageLimitsSnapshot): void => {
+      Object.assign(snapshot.accounts[0]?.limits[0]?.windows[0] ?? {}, {
+        spend: 1,
+      });
+    },
+    (snapshot: UsageLimitsSnapshot): void => {
+      Object.assign(snapshot.sources[0], { statusMessage: 'raw error' });
+    },
+  ]) {
+    const snapshot = usageSnapshot();
+    leak(snapshot);
+    expect(UsageLimitsSnapshotSchema.safeParse(snapshot).success).toBe(false);
+  }
+  for (const value of [Infinity, -Infinity, NaN]) {
+    const snapshot = usageSnapshot();
+    Object.assign(snapshot.accounts[0]?.limits[0]?.windows[0] ?? {}, {
+      usedPercent: value,
+    });
+    expect(UsageLimitsSnapshotSchema.safeParse(snapshot).success).toBe(false);
+  }
+});
+
+it('usage queries accept only worker selection, never refresh or caller-supplied grants', () => {
+  expect(
+    WorkerAgentUsageLimitsGetParamsSchema.safeParse({
+      scope: { authorityId: 'local-desktop', targetId: 'in_process_worker' },
+    }).success,
+  ).toBe(true);
+  for (const params of [
+    { scope: {}, refresh: true },
+    { scope: { workspaceId: 'workspace' } },
+    { scope: {}, grants: ['worker.agent.usage.read'] },
+  ])
+    expect(
+      WorkerAgentUsageLimitsGetParamsSchema.safeParse(params).success,
+    ).toBe(false);
+});
 
 function model(
   modelId: string,

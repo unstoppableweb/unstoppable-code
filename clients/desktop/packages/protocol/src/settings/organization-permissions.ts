@@ -160,8 +160,8 @@ export interface OrganizationSettingsSubtabAccess {
 }
 
 /**
- * The organization Settings pages (General, Policies, Integrations, Usage,
- * AI gateway, Billing) the viewer can open, in rail order. Each page shows only when at
+ * The organization Settings pages (General, Policies, Project defaults,
+ * Integrations, Usage, AI gateway, Billing) the viewer can open, in rail order. Each page shows only when at
  * least one of its sections renders for this viewer, so neither the settings
  * rail nor the page offers an empty page. The page and the rail share this
  * one rule; the server stays the enforcement boundary.
@@ -170,6 +170,9 @@ export interface OrganizationSettingsSubtabAccess {
  * - Integrations stays while lapsed only to disconnect an existing connection,
  *   since connecting is refused.
  * - Policies stays while lapsed only for the outside-agents card.
+ * - Project defaults shows to every member: owners and admins change them,
+ *   members read them (CAN-6237). It stays while lapsed, since the defaults
+ *   keep loading and an admin must still be able to turn one off.
  */
 export function visibleOrganizationSettingsSubtabs(
   access: OrganizationSettingsSubtabAccess,
@@ -183,6 +186,7 @@ export function visibleOrganizationSettingsSubtabs(
     access.externalAgentsPolicy
   )
     visible.push('policies');
+  visible.push('project-defaults');
   if (canEdit && (healthy || access.githubConnected !== false))
     visible.push('integrations');
   if (

@@ -24,7 +24,10 @@ import type {
   WorkerScriptExecutionListResult,
   WorkerScriptScope,
 } from '@canopy/protocol/canopy-core';
-import { WORKER_SCRIPT_GROUP_MAX_MEMBERS } from '@canopy/protocol/canopy-core';
+import {
+  canopyErrorDiagnostic,
+  WORKER_SCRIPT_GROUP_MAX_MEMBERS,
+} from '@canopy/protocol/canopy-core';
 import { SCRIPT_RUN_MARKER_ENV } from './script-run-stop';
 
 import { KeyedOutcomes } from '../../operations/keyed-outcomes';
@@ -180,6 +183,7 @@ function toExecuteResult(
   outcome: ScriptProcessResult &
     Partial<Pick<ScriptProcessOutcome, 'outputBytes' | 'outputTruncated'>>,
   recorded: boolean,
+  logTruncated?: WorkerScriptExecuteResult['logTruncated'],
 ): WorkerScriptExecuteResult {
   return {
     executionId,
@@ -195,7 +199,16 @@ function toExecuteResult(
       outcome.outputBytes ?? Buffer.byteLength(outcome.output, 'utf8'),
     outputTruncated: outcome.outputTruncated ?? false,
     recorded,
+    ...(logTruncated && { logTruncated }),
   };
+}
+
+/** A failed log append's system code, never its message or path. */
+function logDrop(
+  error: unknown,
+): NonNullable<WorkerScriptExecuteResult['logTruncated']> {
+  const { code } = canopyErrorDiagnostic(error);
+  return code === undefined ? {} : { errno: code };
 }
 
 /**
@@ -474,6 +487,8 @@ export class ScriptExecutionWorker {
         })
         .catch(() => null);
     let appending: Promise<void> = Promise.resolve();
+    // The first dropped append: the log misses lines, so it is not recorded.
+    const log: { dropped?: WorkerScriptExecuteResult['logTruncated'] } = {};
     let outcome: ScriptProcessOutcome;
     if (signal.aborted) {
       // Stopped while it was starting: nothing is spawned.
@@ -508,7 +523,9 @@ export class ScriptExecutionWorker {
             if (logRef)
               appending = appending
                 .then(() => this.logs.append({ ref: logRef, lines }))
-                .catch(() => undefined);
+                .catch((error: unknown) => {
+                  log.dropped ??= logDrop(error);
+                });
             this.notify(executionId, (observer) => observer.onLines?.(lines));
           }
         : undefined;
@@ -616,13 +633,14 @@ export class ScriptExecutionWorker {
     let recorded = ref !== null;
     if (ref) {
       await appending;
-      recorded = await this.logs.complete({ ref, response: outcome }).then(
-        () => true,
-        () => false,
-      );
+      recorded =
+        (await this.logs.complete({ ref, response: outcome }).then(
+          () => true,
+          () => false,
+        )) && log.dropped === undefined;
     }
     this.notify(executionId, (observer) => observer.onFinished?.(outcome));
-    return toExecuteResult(executionId, outcome, recorded);
+    return toExecuteResult(executionId, outcome, recorded, log.dropped);
   }
 
   async cancel(

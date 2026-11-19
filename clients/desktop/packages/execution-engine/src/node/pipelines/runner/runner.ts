@@ -329,6 +329,79 @@ export const PIPELINE_RUNNER_BUNDLE_LAYOUT = Object.freeze({
   launcher: 'pipeline-runner',
 });
 
+/** The Codex environment id a runner's Codex app-servers start under (CAN-7235). */
+export const PIPELINE_RUNNER_CODEX_ENVIRONMENT_ID = 'pipeline:cloud-runner';
+
+/**
+ * Where a runner looks for `setpriv`, which starts its host without the
+ * capabilities the sandbox hands every process (CAN-7235).
+ */
+export const PIPELINE_RUNNER_SETPRIV_PATHS: readonly string[] = Object.freeze([
+  '/usr/bin/setpriv',
+  '/bin/setpriv',
+]);
+
+/** How a runner starts its pipeline host and what Codex steps launch MCP with. */
+export interface PipelineRunnerHostCommands {
+  /** The command the host port runs, before the host's own arguments. */
+  readonly shell: { readonly executable: string; readonly args: string[] };
+  /** The Codex MCP launcher the host's Codex steps use: the bundle's daemon. */
+  readonly codexMcpLauncher: PipelineHostLauncherCommand;
+  /**
+   * Why the host keeps the runner's capabilities though it holds some, so
+   * the runner can say so: `null` when it drops them or holds none.
+   */
+  readonly capabilitiesKept: 'no_setpriv' | null;
+}
+
+/** Whether a `/proc/<pid>/status` text names a nonzero ambient capability set. */
+function holdsAmbientCapabilities(processStatus: string): boolean {
+  const line = /^CapAmb:\s*([0-9a-fA-F]+)\s*$/m.exec(processStatus);
+  return line !== null && /[1-9a-fA-F]/.test(line[1] ?? '');
+}
+
+/**
+ * The runner's host commands (CAN-7235, CAN-6629). The cloud sandbox runs
+ * every process as an unprivileged user holding the full capability set as
+ * ambient capabilities, and bubblewrap, which Codex runs its read-only and
+ * workspace-write shell commands in, refuses a caller that holds
+ * capabilities without being setuid: every such command failed. When the
+ * runner holds ambient capabilities, `setpriv` clears the inheritable and
+ * ambient sets and execs the daemon in place, so the host and every step and
+ * app-server under it run as an ordinary user. The bounding set is kept, so
+ * a step may still use `sudo`.
+ */
+export function pipelineRunnerHostCommands(options: {
+  /** The bundle's daemon executable, fully qualified. */
+  readonly daemon: string;
+  /** The runner's own `/proc/self/status`, or `''` where there is none. */
+  readonly processStatus: string;
+  /** The `setpriv` executable found, if any. */
+  readonly setpriv: string | undefined;
+}): PipelineRunnerHostCommands {
+  const codexMcpLauncher = { command: options.daemon, args: [] };
+  if (!holdsAmbientCapabilities(options.processStatus))
+    return {
+      shell: { executable: options.daemon, args: [] },
+      codexMcpLauncher,
+      capabilitiesKept: null,
+    };
+  if (options.setpriv === undefined)
+    return {
+      shell: { executable: options.daemon, args: [] },
+      codexMcpLauncher,
+      capabilitiesKept: 'no_setpriv',
+    };
+  return {
+    shell: {
+      executable: options.setpriv,
+      args: ['--inh-caps=-all', '--ambient-caps=-all', '--', options.daemon],
+    },
+    codexMcpLauncher,
+    capabilitiesKept: null,
+  };
+}
+
 /**
  * What one run's events journal keeps on a runner (CAN-6161), tuned to the
  * five-minute relay outage a run must survive without losing events (CP-11).
@@ -373,6 +446,12 @@ export function pipelineRunnerLayout(options: {
       providerBinaries: {
         claude: at(PIPELINE_RUNNER_BUNDLE_LAYOUT.claude),
         codex: at(PIPELINE_RUNNER_BUNDLE_LAYOUT.codex),
+      },
+      // The runner's own Codex environment (CAN-7235): a run brings none,
+      // so its Codex app-servers start with the runner's environment alone.
+      codexEnvironment: {
+        environment: {},
+        logicalWorkspaceEnvironmentId: PIPELINE_RUNNER_CODEX_ENVIRONMENT_ID,
       },
     }),
     processEnvironment: { ...options.processEnvironment },

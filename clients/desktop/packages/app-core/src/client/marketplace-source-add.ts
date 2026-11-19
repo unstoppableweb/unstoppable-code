@@ -32,7 +32,12 @@ export interface MarketplaceSourceAddCompletion {
 }
 
 export type MarketplaceSourceAddSnapshot =
-  | { readonly phase: 'input'; readonly error?: string }
+  | {
+      readonly phase: 'input';
+      readonly error?: string;
+      /** The host already recorded `error`, so its banner records nothing. */
+      readonly recorded?: true;
+    }
   | { readonly phase: 'registering' | 'cancelling' }
   | {
       readonly phase: 'previewing' | 'review' | 'confirming';

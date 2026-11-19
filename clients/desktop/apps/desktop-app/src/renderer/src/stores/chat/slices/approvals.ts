@@ -56,9 +56,9 @@ async function liveApprovalEvent(
     return (await chatBackendFor(scope).approvals.pendingRequests()).find(
       (event) => event.requestId === requestId,
     );
-  } catch {
+  } catch (cause) {
     // The card is removed as before; record that the live check failed.
-    reportClientAppError(new Error('Approval pending-request refresh failed'));
+    reportClientAppError(cause);
     return undefined;
   }
 }
@@ -343,9 +343,10 @@ export const createApprovalsSlice: StateCreator<
           ? { policyRevision: pending.policyRevision }
           : {}),
       });
-    } catch {
-      // Never send secret-input transport details to telemetry.
-      reportClientAppError(new Error('Secret approval response failed'));
+    } catch (cause) {
+      // Preserve IPC linkage with the caught value. appErrorException emits only
+      // catalog summary/code and permitted native frames, never transport messages or secrets.
+      reportClientAppError(cause);
       return;
     }
     // A refused response leaves the card for another try or Deny.

@@ -68,6 +68,7 @@ import { useGitHubCliStatus } from '@/hooks/useGitHubCliStatus';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
+import { isLocalOnlyBuild } from '@/lib/local-only-build';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import { brand, brandText } from '@/lib/brand';
@@ -307,9 +308,13 @@ function ImportProjectsRow(): JSX.Element {
 
 export function CanopyTab(): JSX.Element {
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
+  // A local-only build (docs/local-only-build.md) has no update feed, so the
+  // update controls are hidden and the Version row says why.
+  const localOnlyBuild = isLocalOnlyBuild();
   const targetedUpdatesEnabled =
-    __CANOPY_RELEASE_FLAVOR__ === 'internal' ||
-    __CANOPY_RELEASE_FLAVOR__ === 'rc';
+    !localOnlyBuild &&
+    (__CANOPY_RELEASE_FLAVOR__ === 'internal' ||
+      __CANOPY_RELEASE_FLAVOR__ === 'rc');
   const ghStatus = useGitHubCliStatus();
   const {
     appVersion,
@@ -947,56 +952,82 @@ export function CanopyTab(): JSX.Element {
           <SettingsRow
             label="Version"
             description={
-              <span data-testid="settings-app-version">
-                {brandText.appName}{' '}
-                <span className="tabular-nums">
-                  {appVersion ? (
-                    formatVersionLabel(appVersion)
-                  ) : (
-                    <Skeleton
-                      loading
-                      label="Loading version"
-                      className="inline-block"
-                      testId="settings-app-version-loading"
-                    >
-                      {SAMPLE_VERSION}
-                    </Skeleton>
-                  )}
+              <span
+                className={
+                  localOnlyBuild ? 'flex flex-col items-start gap-1' : undefined
+                }
+              >
+                <span data-testid="settings-app-version">
+                  {brandText.appName}{' '}
+                  <span className="tabular-nums">
+                    {appVersion ? (
+                      formatVersionLabel(appVersion)
+                    ) : (
+                      <Skeleton
+                        loading
+                        label="Loading version"
+                        className="inline-block"
+                        testId="settings-app-version-loading"
+                      >
+                        {SAMPLE_VERSION}
+                      </Skeleton>
+                    )}
+                  </span>
                 </span>
+                {localOnlyBuild && (
+                  <>
+                    <Badge
+                      tone="neutral"
+                      data-testid="settings-local-only-badge"
+                    >
+                      Local-only build
+                    </Badge>
+                    {/* Names what a person would otherwise look for and not
+                        find in this build: sign-in, cloud features, update
+                        checks, and usage data. Updates are named because the
+                        update controls are hidden in this row. */}
+                    <span data-testid="settings-local-only-build">
+                      Accounts, cloud features, updates, and usage data are off
+                      in this build.
+                    </span>
+                  </>
+                )}
               </span>
             }
             control={
-              <>
-                {targetedUpdatesEnabled && (
+              localOnlyBuild ? undefined : (
+                <>
+                  {targetedUpdatesEnabled && (
+                    <Button
+                      size="compact"
+                      onClick={() => {
+                        setVersionPickerOpen(true);
+                      }}
+                      disabled={
+                        updateState.phase === 'checking' || targetUpdatePending
+                      }
+                      data-testid="settings-update-select-version"
+                    >
+                      Select version
+                    </Button>
+                  )}
                   <Button
                     size="compact"
                     onClick={() => {
-                      setVersionPickerOpen(true);
+                      setManualCheckRequested(true);
+                      void window.api.update.checkForUpdates().catch(() => {
+                        // Update failures are surfaced through the update store.
+                      });
                     }}
-                    disabled={
-                      updateState.phase === 'checking' || targetUpdatePending
-                    }
-                    data-testid="settings-update-select-version"
+                    disabled={updateState.phase === 'checking'}
+                    data-testid="settings-update-check"
                   >
-                    Select version
+                    {updateState.phase === 'checking'
+                      ? 'Checking…'
+                      : 'Check for updates'}
                   </Button>
-                )}
-                <Button
-                  size="compact"
-                  onClick={() => {
-                    setManualCheckRequested(true);
-                    void window.api.update.checkForUpdates().catch(() => {
-                      // Update failures are surfaced through the update store.
-                    });
-                  }}
-                  disabled={updateState.phase === 'checking'}
-                  data-testid="settings-update-check"
-                >
-                  {updateState.phase === 'checking'
-                    ? 'Checking…'
-                    : 'Check for updates'}
-                </Button>
-              </>
+                </>
+              )
             }
           >
             {manualUpdateStatus.text && (
@@ -1147,31 +1178,34 @@ export function CanopyTab(): JSX.Element {
           )}
           {/* Every platform: the Linux timers call the same check. A change
               applies at the updater's next tick; turning it back on does not
-              check at once. The manual check above still works. */}
-          <SettingsRow
-            label="Check for updates automatically"
-            htmlFor="settings-automatic-update-checks"
-            description="Look for new versions at launch and every few hours. Turn off to check only when you choose."
-            control={
-              <ToggleSwitch
-                id="settings-automatic-update-checks"
-                checked={automaticUpdateChecks}
-                label="Check for updates automatically"
-                onChange={(nextValue) => {
-                  const previous = automaticUpdateChecks;
-                  setAutomaticUpdateChecks(nextValue);
-                  void window.api
-                    .savePreferences({ automaticUpdateChecks: nextValue })
-                    .catch((error: unknown) => {
-                      setAutomaticUpdateChecks(previous);
-                      reportClientAppError(error);
-                    });
-                }}
-                dataTestId="settings-automatic-update-checks"
-              />
-            }
-          />
-          {window.platform !== 'linux' && (
+              check at once. The manual check above still works. A local-only
+              build has no update feed, so neither toggle is shown there. */}
+          {!localOnlyBuild && (
+            <SettingsRow
+              label="Check for updates automatically"
+              htmlFor="settings-automatic-update-checks"
+              description="Look for new versions at launch and every few hours. Turn off to check only when you choose."
+              control={
+                <ToggleSwitch
+                  id="settings-automatic-update-checks"
+                  checked={automaticUpdateChecks}
+                  label="Check for updates automatically"
+                  onChange={(nextValue) => {
+                    const previous = automaticUpdateChecks;
+                    setAutomaticUpdateChecks(nextValue);
+                    void window.api
+                      .savePreferences({ automaticUpdateChecks: nextValue })
+                      .catch((error: unknown) => {
+                        setAutomaticUpdateChecks(previous);
+                        reportClientAppError(error);
+                      });
+                  }}
+                  dataTestId="settings-automatic-update-checks"
+                />
+              }
+            />
+          )}
+          {!localOnlyBuild && window.platform !== 'linux' && (
             <SettingsRow
               label="Download updates automatically"
               htmlFor="settings-auto-download-updates"

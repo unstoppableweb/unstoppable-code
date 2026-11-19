@@ -1,9 +1,12 @@
+import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
+
 /**
  * Copy for the notice shown on Workflows → Library after a shared
  * automation is installed or updated from a share link (CAN-3651).
  *
  * The message follows the automation's live enabled state, so it stays true
- * after the user turns the automation on or off from the row.
+ * after the user turns the automation on or off from the row. The Library
+ * shows the automation as a workflow, so the copy names it one.
  */
 
 export type AutomationRevealOutcome = 'installed' | 'updated';
@@ -22,7 +25,7 @@ export interface AutomationRevealNoticeCopy {
 }
 
 export const AUTOMATION_REVEAL_UNAVAILABLE_MESSAGE =
-  "The automation couldn't be shown. Refresh the list to find it.";
+  "The workflow couldn't be shown. Refresh the list to find it.";
 
 /** The secondary line on the revealed row. */
 export function automationRevealRowCue(
@@ -35,12 +38,11 @@ export function automationRevealNoticeCopy(
   outcome: AutomationRevealOutcome,
   resolution: AutomationRevealResolution,
 ): AutomationRevealNoticeCopy {
-  const title =
-    outcome === 'installed' ? 'Automation installed' : 'Automation updated';
+  const title = `${WORKFLOW_ITEM_LABEL} ${outcome}`;
   const dismissLabel =
     outcome === 'installed'
-      ? 'Dismiss installed automation notice'
-      : 'Dismiss updated automation notice';
+      ? 'Dismiss installed workflow notice'
+      : 'Dismiss updated workflow notice';
   if (resolution.kind === 'unavailable') {
     return {
       title,

@@ -30,7 +30,7 @@ import {
 } from '../lib/workspace-persistence';
 import { getObservabilityService } from '../observability';
 import type { AppDiagnosticRecord } from '../observability/service';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import {
   getTelemetrySyncService,
   type TelemetrySummariesSharing,
@@ -182,7 +182,7 @@ let launchSession: Promise<LedgerWriterSession | null> | undefined;
 
 async function buildWriterSession(): Promise<LedgerWriterSession | null> {
   try {
-    const deviceId = (await readPortalStateStore()).clientDeviceId;
+    const deviceId = await getInstallId();
     launchNonce ??= randomUUID();
     const parsed = LedgerWriterSessionSchema.safeParse({
       deviceId,

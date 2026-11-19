@@ -4,6 +4,7 @@ import {
   selectedOrganizationId,
 } from './advisor-sharing-actions-host';
 import { mainPipelineReadPort } from './pipeline-read-port';
+import { isSharedAutomationsWorkflowFormEnabled } from '../automations/shared-workflow-form-flag';
 
 /**
  * The owners behind App Advisor's automation sharing actions (CAN-6003 part
@@ -44,5 +45,6 @@ export function mainAdvisorAutomationSharingHost(): AdvisorAutomationSharingHost
         ).loadCanopyCloudAccount()
       )?.capabilities ?? [],
     pipelines: mainPipelineReadPort,
+    sharesChatAsWorkflow: isSharedAutomationsWorkflowFormEnabled,
   };
 }

@@ -350,15 +350,36 @@ export const CopilotRecipientRefusalSchema = z.enum([
   'limit',
   'invalid',
   'cancelled',
+  // Closed failure causes (CAN-7117); the failure's message never crosses.
+  'provider_error',
+  'auth',
+  'start_timeout',
+  'exited_during_startup',
+  'version_mismatch',
+  'not_installed',
+  'refresh_failed',
 ]);
 export type CopilotRecipientRefusal = z.infer<
   typeof CopilotRecipientRefusalSchema
 >;
+/** The SDK `session.error` categories we act on; any other reads as `other`. */
+export const CopilotSdkErrorTypeSchema = z.enum([
+  'authentication',
+  'authorization',
+  'quota',
+  'rate_limit',
+  'context_limit',
+  'query',
+  'other',
+]);
+export type CopilotSdkErrorType = z.infer<typeof CopilotSdkErrorTypeSchema>;
 export const CopilotRecipientOutcomeSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('refused'),
       reason: CopilotRecipientRefusalSchema,
+      /** Only with `provider_error`. */
+      errorType: CopilotSdkErrorTypeSchema.optional(),
     })
     .strict(),
   z

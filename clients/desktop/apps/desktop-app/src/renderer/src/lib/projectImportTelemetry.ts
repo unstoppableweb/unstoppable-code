@@ -7,6 +7,7 @@ import type {
   AgentProviderAuthStatus,
   ExternalProjectCandidate,
   ExternalProjectDiscoverResponse,
+  ExternalProjectImportItemResult,
   ExternalProjectImportResponse,
 } from '@canopy/desktop-shared/types';
 import type { ImportProjectsSource } from '@/stores/importProjectsModalStore';
@@ -120,6 +121,15 @@ export interface ProjectImportResultCounts {
   readonly importedClaudeCount: number;
   readonly importedCodexCount: number;
   readonly failedCount: number;
+  /**
+   * `failedCount` split by a closed reason, from each result's status and
+   * `retryable` flag only (never its message): skipped, failed but
+   * retryable, failed for good, or a selection the response did not mention.
+   */
+  readonly skippedCount: number;
+  readonly failedRetryableCount: number;
+  readonly failedFinalCount: number;
+  readonly unconfirmedCount: number;
   readonly chatsImportedCount: number;
 }
 
@@ -144,6 +154,10 @@ export function deriveProjectImportResult(
       importedClaudeCount: 0,
       importedCodexCount: 0,
       failedCount: selected.size,
+      skippedCount: 0,
+      failedRetryableCount: 0,
+      failedFinalCount: 0,
+      unconfirmedCount: selected.size,
       chatsImportedCount: 0,
     };
   const byId = new Map(candidates.map((c) => [c.id, c]));
@@ -163,6 +177,23 @@ export function deriveProjectImportResult(
   }
   const importedCount = imported.size;
   const failedCount = selected.size - importedCount;
+  const notImported = new Map<string, ExternalProjectImportItemResult>();
+  for (const result of response.results) {
+    if (
+      selected.has(result.candidateId) &&
+      !imported.has(result.candidateId) &&
+      !notImported.has(result.candidateId)
+    )
+      notImported.set(result.candidateId, result);
+  }
+  let skipped = 0;
+  let failedRetryable = 0;
+  let failedFinal = 0;
+  for (const result of notImported.values()) {
+    if (result.status === 'skipped') skipped += 1;
+    else if (result.retryable) failedRetryable += 1;
+    else failedFinal += 1;
+  }
   return {
     outcome:
       importedCount === 0
@@ -175,6 +206,10 @@ export function deriveProjectImportResult(
     importedClaudeCount: claude,
     importedCodexCount: codex,
     failedCount,
+    skippedCount: skipped,
+    failedRetryableCount: failedRetryable,
+    failedFinalCount: failedFinal,
+    unconfirmedCount: failedCount - notImported.size,
     chatsImportedCount: chats,
   };
 }
@@ -262,11 +297,22 @@ export function startProjectImportSubmission(
         imported_claude_count: counts.importedClaudeCount,
         imported_codex_count: counts.importedCodexCount,
         failed_count: counts.failedCount,
+        skipped_count: counts.skippedCount,
+        failed_retryable_count: counts.failedRetryableCount,
+        failed_final_count: counts.failedFinalCount,
+        unconfirmed_count: counts.unconfirmedCount,
         chats_imported_count: counts.chatsImportedCount,
       };
-      if (counts.importedCount > 0)
+      // A partial import is neither a success nor a total failure: it fails
+      // as `other`, so each of the three outcomes is separable downstream.
+      if (counts.outcome === 'imported')
         succeedClientOperation(SUBMISSION, { operationKey, context });
-      else failClientOperation(SUBMISSION, 'error', { operationKey, context });
+      else
+        failClientOperation(
+          SUBMISSION,
+          counts.outcome === 'partial' ? 'other' : 'error',
+          { operationKey, context },
+        );
     });
     return counts;
   };

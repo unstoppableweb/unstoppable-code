@@ -669,7 +669,8 @@ function isWorktreeHealthIssueCode(
     value === 'missing-git-metadata' ||
     value === 'invalid-git-worktree' ||
     value === 'missing-repository' ||
-    value === 'git-error'
+    value === 'git-error' ||
+    value === 'unreadable'
   );
 }
 

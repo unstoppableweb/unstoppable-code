@@ -35,6 +35,23 @@ export const PIPELINE_PACKAGE_MAX_FILES = 1_024;
 export const PIPELINE_PACKAGE_MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const PIPELINE_PACKAGE_MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 export const PIPELINE_PACKAGE_MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
+/**
+ * Most "not a command" dismissals one share scope keeps. The desktop store
+ * rejects a larger set, so the share dialog never queues more than this.
+ */
+export const PIPELINE_PACKAGE_MAX_INVOCATION_DISMISSALS = 50;
+
+const DISMISSIBLE_INVOCATION_TOKEN =
+  /^[/$][A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$/;
+
+/**
+ * Whether the desktop dismissal store accepts this token. The analyzer can
+ * report tokens it would reject (a bare `/`), and one such token in a set
+ * fails the whole save, so the dialog only offers dismissal for these.
+ */
+export function isDismissibleInvocationToken(token: string): boolean {
+  return token.length <= 128 && DISMISSIBLE_INVOCATION_TOKEN.test(token);
+}
 
 export type PipelineDistributionMode = 'package' | 'definition_only';
 
@@ -1277,6 +1294,8 @@ export type PipelinePackageBlockerCode =
   | 'NATIVE_EXECUTABLE_BLOCKED'
   | 'OPAQUE_EXECUTABLE_BLOCKED'
   | 'MISSING_DEPENDENCY_SOURCE'
+  /** A dependency source exists but could not be read (permissions, I/O). */
+  | 'DEPENDENCY_SOURCE_UNREADABLE'
   | 'UNRESOLVED_INVOCATION'
   | 'AMBIGUOUS_INVOCATION'
   | 'PACKAGE_LIMIT_EXCEEDED'
@@ -1388,6 +1407,8 @@ export interface PipelinePackageAnalysisBlocker {
   relativePath?: string;
   /** Set only on `PACKAGE_LIMIT_EXCEEDED`. */
   limit?: PipelinePackageLimit;
+  /** Set only on `DEPENDENCY_SOURCE_UNREADABLE`. */
+  errno?: string;
   jobId?: string;
   stepId?: string;
   occurrences: Array<{ jobId: string; stepId: string }>;

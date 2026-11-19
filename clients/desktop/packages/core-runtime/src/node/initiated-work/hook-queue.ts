@@ -194,7 +194,7 @@ export class HookQueue {
     runOperationId: string,
     actionIndex: number,
   ): Promise<HookQueueLookup> {
-    const result = (await this.operations.ready()).lookupReceipt(
+    const result = await this.operations.lookupReceipt(
       KINDS[kind],
       receipt(kind, queueId, runOperationId, actionIndex),
     );
@@ -396,10 +396,7 @@ export class HookQueue {
     });
     host.reserve(ref);
     void (async (): Promise<void> => {
-      const before = await this.operations.write((ledger) => ({
-        value: ledger.statusBeforeRestart(ref.operationId),
-        events: [],
-      }));
+      const before = await this.operations.statusBeforeRestart(ref.operationId);
       const read = await this.payloads.read(ref.queueId);
       if (read.status !== 'ok') {
         host.release(ref);
@@ -414,18 +411,15 @@ export class HookQueue {
         return;
       }
       const saved = read.entry;
-      const matched = await this.operations.write((ledger) => ({
-        value: ledger.lookupReceipt(
-          KINDS[saved.kind],
-          receipt(
-            saved.kind,
-            saved.queueId,
-            saved.runOperationId,
-            saved.actionIndex,
-          ),
+      const matched = await this.operations.lookupReceipt(
+        KINDS[saved.kind],
+        receipt(
+          saved.kind,
+          saved.queueId,
+          saved.runOperationId,
+          saved.actionIndex,
         ),
-        events: [],
-      }));
+      );
       if (
         saved.kind !== ref.kind ||
         !('operation' in matched) ||
@@ -480,7 +474,7 @@ export class HookQueue {
         const saved = await this.payloads.read(queueId);
         if (saved.status !== 'ok') return;
         const entry = saved.entry;
-        const result = (await this.operations.ready()).lookupReceipt(
+        const result = await this.operations.lookupReceipt(
           KINDS[entry.kind],
           receipt(entry.kind, queueId, entry.runOperationId, entry.actionIndex),
         );

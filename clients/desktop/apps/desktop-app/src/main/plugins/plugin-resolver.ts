@@ -1,3 +1,5 @@
+import { isOrganizationSkillSourceId } from '@canopy/desktop-shared/lib/organization-capabilities';
+import { organizationSkillAllowed } from '../organization-capabilities/service';
 import {
   inheritedPluginMcpTransportDigest,
   inheritedPluginInstallDigest,
@@ -5,9 +7,16 @@ import {
 import type { AgentMcpHttpAuthPin } from '@canopy/desktop-shared/node/delegation/agent-artifacts';
 import { STANDALONE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
+  isAccountMcpInstanceConfigId,
   mcpCapabilityIdentityKey,
+  type AccountMcpRefResolution,
   type McpCapabilityIdentity,
 } from '@canopy/protocol/mcp-servers';
+import {
+  accountMcpServerAccount,
+  forgetAccountMcpServerAccount,
+  recordAccountMcpServerAccount,
+} from '../mcp/account-mcp-server-accounts';
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
 import { readInstalledItemPolicy } from '../installed-items/installed-item-policy';
 import {
@@ -21,6 +30,7 @@ import {
 } from '../mcp/account-catalog';
 import {
   accountMcpConnectionForRef,
+  accountPickedOver,
   isCustomAccountMcpServerKey,
   legacyAccountMcpConnectionId,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
@@ -167,6 +177,7 @@ import {
   projectClaudePluginForLaunch,
   projectClaudePluginWithoutMcpServers,
 } from './claude-plugin-projection';
+import { reportPluginLaunchFailure } from '../lib/plugin-launch-failure-reporting';
 import {
   isPluginInstallRoot,
   registeredClaudePluginId,
@@ -384,6 +395,14 @@ export interface ResolvePluginsOptions {
     pluginName: string;
     installPath: string;
   }[];
+  /**
+   * How a connector with several accounts resolves (CAN-6232). `attended`
+   * (the default) is a chat a person runs: a ref with no exact account
+   * reaches their default account. `unattended` is a pipeline prompt or an
+   * automation's turn: only the exact account, or the connector's only
+   * account; with several and none named, the connector is left out.
+   */
+  accountResolution?: AccountMcpRefResolution;
 }
 
 const parentBrokeredStdioServers = new WeakSet<object>();
@@ -1024,6 +1043,7 @@ export async function resolveEffectivePluginSelectionRefs(
   warnings: string[] = [],
   projectId?: string,
   preferences?: PreferencesData,
+  accountResolution: AccountMcpRefResolution = 'attended',
 ): Promise<EffectivePluginSelectionRefs> {
   const selections = normalizePluginSelections(rawSelections);
   const policy = await readInstalledItemPolicy(preferences);
@@ -1041,13 +1061,18 @@ export async function resolveEffectivePluginSelectionRefs(
   >();
   const mcpRefs = new Map<string, { serverId: string; configId: string }>();
 
-  for (const ref of selections.skillRefs) {
+  // Installed-item identity is the ref's own fields: an owner (CAN-6235)
+  // says who selected it, not which installed item it is.
+  for (const { sourceId, skillName } of selections.skillRefs) {
+    const ref = { sourceId, skillName };
     skillRefs.set(installedItemKey({ kind: 'skill', ...ref }), ref);
   }
-  for (const ref of selections.pluginRefs) {
+  for (const { marketplaceId, pluginName } of selections.pluginRefs) {
+    const ref = { marketplaceId, pluginName };
     pluginRefs.set(installedItemKey({ kind: 'plugin', ...ref }), ref);
   }
-  for (const ref of selections.mcpServerRefs ?? []) {
+  for (const { serverId, configId } of selections.mcpServerRefs ?? []) {
+    const ref = { serverId, configId };
     mcpRefs.set(installedItemKey({ kind: 'mcp-config', ...ref }), ref);
   }
 
@@ -1078,6 +1103,10 @@ export async function resolveEffectivePluginSelectionRefs(
       }
     }
     for (const ref of collectionFile.collection.mcpServers ?? []) {
+      // The selection's own account pick of a connector stands in for a
+      // collection's other account of it (CAN-6233), as it does for the
+      // project's and the person's.
+      if (accountPickedOver(ref, selections.mcpServerRefs ?? [])) continue;
       const key = installedItemKey({ kind: 'mcp-config', ...ref });
       if (!mcpRefs.has(key)) {
         mcpRefs.set(key, ref);
@@ -1112,9 +1141,13 @@ export async function resolveEffectivePluginSelectionRefs(
     }
     if (enabled === undefined && accountMcpConnectionsEnabled()) {
       accountConnections ??= await loadAccountMcpRefConnections();
+      // The account the session would load (CAN-6226): its own, else the
+      // default when none carries its config id; unattended, the only
+      // account (CAN-6232).
       enabled = accountMcpConnectionForRef(
         ref,
         accountConnections ?? [],
+        accountResolution,
       )?.enabled;
     }
     if (enabled === false) {
@@ -1124,6 +1157,18 @@ export async function resolveEffectivePluginSelectionRefs(
     }
   }
   for (const ref of Array.from(skillRefs.values())) {
+    // An organization's skill copy has no install receipt: it loads only
+    // while its workspace's organization layer holds it (CAN-6240), however
+    // it was reached (a pick, the layer, or a collection).
+    if (isOrganizationSkillSourceId(ref.sourceId)) {
+      if (!(await organizationSkillAllowed(projectId, ref))) {
+        skillRefs.delete(installedItemKey({ kind: 'skill', ...ref }));
+        warnings.push(
+          `Skill "${ref.skillName}" isn't available in this project, skipping.`,
+        );
+      }
+      continue;
+    }
     await assertStoredSkillContext(
       `${ref.sourceId}/${ref.skillName}`,
       projectId,
@@ -1252,6 +1297,7 @@ export async function resolvePlugins(
     warnings,
     skillTargetProjectId,
     preferences,
+    options?.accountResolution,
   );
   const policy = await readInstalledItemPolicy(preferences);
   const disabledRefs = new Map(
@@ -1708,24 +1754,30 @@ export async function resolvePlugins(
         : resolvedPlugins.find(
             (plugin) => path.resolve(plugin.pluginPath) === sourcePath,
           );
-      const projectedPath = mcpOnlySource
-        ? projectClaudePluginWithoutMcpServers({
-            sourcePluginPath: mcpOnlySource.pluginPath,
-            marketplaceId: mcpOnlySource.marketplaceId,
-            pluginName: mcpOnlySource.pluginName,
-            projectionRootDir,
-            warnings,
-          })
+      const projection = mcpOnlySource
+        ? {
+            ok: true as const,
+            path: projectClaudePluginWithoutMcpServers({
+              sourcePluginPath: mcpOnlySource.pluginPath,
+              marketplaceId: mcpOnlySource.marketplaceId,
+              pluginName: mcpOnlySource.pluginName,
+              projectionRootDir,
+              warnings,
+            }),
+          }
         : projectClaudePluginForLaunch({
             sourcePluginPath: sourcePath,
             projectionRootDir,
             removeModules,
             removeMcpServers,
           });
-      if (projectedPath) {
-        projectionSources.set(projectedPath, sourcePath);
-        sdkPlugin.path = projectedPath;
+      if (projection.ok) {
+        projectionSources.set(projection.path, sourcePath);
+        sdkPlugin.path = projection.path;
         continue;
+      }
+      if (projection.error !== undefined) {
+        reportPluginLaunchFailure(projection.error, 'plugin.claude_projection');
       }
 
       failedPaths.add(sourcePath);
@@ -1839,6 +1891,7 @@ export async function resolvePlugins(
     } finally {
       if (nativeProjectionRoot) {
         try {
+          // eslint-disable-next-line admitted-writers/no-unadmitted-write -- removes this call's mkdtemp <data>/codex-capability-build-* directory, never mcp-servers/server-*.json; remove when MCP server files are read through an admitted MCP module.
           await fs.promises.rm(nativeProjectionRoot, {
             recursive: true,
             force: true,
@@ -1988,6 +2041,7 @@ function buildClaudeSkillPluginDir(
   }
 
   if (fs.existsSync(pluginDir)) {
+    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- removes the chat skill plugin directory checked inside <data>/chat-plugins, never mcp-servers/server-*.json; remove when MCP server files are read through an admitted MCP module.
     fs.rmSync(pluginDir, { recursive: true, force: true });
   }
 
@@ -2002,6 +2056,7 @@ function buildClaudeSkillPluginDir(
     }
 
     fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+    // eslint-disable-next-line admitted-writers/no-unadmitted-write -- links a skill inside the chat skill plugin directory, never mcp-servers/server-*.json; remove when MCP server files are read through an admitted MCP module.
     fs.symlinkSync(skill.sourceDir, targetDir, getDirectorySymlinkType());
     linkedCount += 1;
   }
@@ -2012,6 +2067,7 @@ function buildClaudeSkillPluginDir(
 
   const manifestDir = path.join(pluginDir, '.claude-plugin');
   fs.mkdirSync(manifestDir, { recursive: true });
+  // eslint-disable-next-line admitted-writers/no-unadmitted-write -- writes the chat skill plugin's .claude-plugin/plugin.json, never mcp-servers/server-*.json; remove when MCP server files are read through an admitted MCP module.
   fs.writeFileSync(
     path.join(manifestDir, 'plugin.json'),
     JSON.stringify({ name: 'canopy-chat-skills' }, null, 2),
@@ -2244,9 +2300,24 @@ async function bindAccountMcpConnection(args: {
       displayName: connection.displayName,
       upstreamUrl,
     });
+    // One of several accounts of a connector (CAN-6228): an added account's
+    // tools carry its name, and approvals name every account. The original
+    // account keeps its name, which saved approval rules match exactly.
+    const account = accountMcpServerAccount(
+      connection,
+      (await loadSharedAccountMcpConnections(context)) ?? [],
+    );
+    const serverName = buildAccountMcpServerName(
+      connection,
+      account && isAccountMcpInstanceConfigId(connection.configId)
+        ? account.account
+        : undefined,
+    );
+    if (account) recordAccountMcpServerAccount(serverName, account);
+    else forgetAccountMcpServerAccount(serverName);
     return {
       entry: recordBoundServer(context, [key], {
-        serverName: buildAccountMcpServerName(connection),
+        serverName,
         server,
         binding: {
           binding: {
@@ -2432,6 +2503,11 @@ async function resolveDeviceHttpMcpServer(args: {
         curatedKey: definition.curated?.key,
         accountConnectionId: indexEntry?.accountConnectionId,
         configId: config.id,
+        // A device row routed to the account: unattended, only the
+        // connector's sole account (CAN-6232).
+        ...(options?.accountResolution
+          ? { resolution: options.accountResolution }
+          : {}),
       },
       displayName: definition.name,
       source: args.source,
@@ -2609,6 +2685,40 @@ function recordDeviceHttpMcpServer(
   });
 }
 
+/**
+ * A selected server's device file, or `undefined` when it is missing,
+ * unreadable or damaged; the launch then treats all three alike. Only an
+ * unreadable or damaged file is reported, since a missing one is expected.
+ */
+async function readStandaloneMcpServerFile(
+  serverId: string,
+): Promise<McpServerFile | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(getMcpServerFilePath(serverId), 'utf-8');
+  } catch (error) {
+    // An unsafe id throws before any read, with no errno.
+    const code: unknown =
+      typeof error === 'object' && error !== null
+        ? Reflect.get(error, 'code')
+        : undefined;
+    if (typeof code === 'string' && code !== 'ENOENT' && code !== 'ENOTDIR') {
+      reportPluginLaunchFailure(error, 'plugin.mcp_server_read');
+    }
+    return undefined;
+  }
+  try {
+    return normalizeMcpServerFile(JSON.parse(raw), serverId);
+  } catch {
+    // The parse or shape error can quote the file, so report a fixed one.
+    reportPluginLaunchFailure(
+      new Error('MCP server file is damaged'),
+      'plugin.mcp_server_read',
+    );
+    return undefined;
+  }
+}
+
 async function resolveStandaloneMcpServers(
   mcpRefs: ReadonlyMap<string, { serverId: string; configId: string }>,
   warnings: string[],
@@ -2626,17 +2736,9 @@ async function resolveStandaloneMcpServers(
     const accountOnly =
       legacyAccountMcpConnectionId(ref.serverId) !== undefined ||
       isCustomAccountMcpServerKey(ref.serverId);
-    let serverFile: McpServerFile | undefined;
-    if (!accountOnly) {
-      try {
-        serverFile = normalizeMcpServerFile(
-          safeReadJson<unknown>(getMcpServerFilePath(ref.serverId)),
-          ref.serverId,
-        );
-      } catch {
-        serverFile = undefined;
-      }
-    }
+    const serverFile = accountOnly
+      ? undefined
+      : await readStandaloneMcpServerFile(ref.serverId);
     if (!serverFile) {
       if (!accountMcpConnectionsEnabled()) {
         warnings.push(
@@ -2646,9 +2748,13 @@ async function resolveStandaloneMcpServers(
         );
         continue;
       }
+      // A curated ref with no exact account reaches the person's default
+      // account; an added account's ref only that account (CAN-6226). An
+      // unattended run reaches only the connector's sole account (CAN-6232).
       const connection = accountMcpConnectionForRef(
         ref,
         (await loadSharedAccountMcpConnections(context)) ?? [],
+        options?.accountResolution ?? 'attended',
       );
       if (!connection) {
         warnings.push(
@@ -3100,7 +3206,16 @@ async function bindCuratedPluginMcpMember(args: {
       );
       return undefined;
     }
-    const lookup = findCuratedAccountMcpConnection(connections, curatedKey);
+    // The account the selection picks for this connector, else the default
+    // (CAN-6232): a project that chose an account reaches it through its
+    // plugins too. The picks are read before any is turned off, so turning
+    // the chosen account off never moves a plugin onto another one.
+    const lookup = findCuratedAccountMcpConnection(connections, curatedKey, {
+      ...(options?.accountResolution
+        ? { resolution: options.accountResolution }
+        : {}),
+      directRefs: context.selections.mcpServerRefs ?? [],
+    });
     if (lookup.kind === 'ambiguous') {
       warnings.push(
         `Account MCP server "${label}" skipped: ${CURATED_PLUGIN_MCP_AMBIGUOUS}`,

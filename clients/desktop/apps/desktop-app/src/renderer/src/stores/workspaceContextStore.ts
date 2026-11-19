@@ -78,6 +78,10 @@ const INITIAL_STATE: WorkspaceContextState = {
   organizations: [],
 };
 
+// Initial hydration and Home recovery share outstanding reads per account. A
+// timeout never releases an IPC call; only settlement permits another read.
+const hydrationInFlight = new Map<number, Promise<void>>();
+
 export const useWorkspaceContextStore = create<WorkspaceContextStoreState>(
   (set, get) => ({
     state: INITIAL_STATE,
@@ -94,28 +98,37 @@ export const useWorkspaceContextStore = create<WorkspaceContextStoreState>(
       }));
     },
     appliedGeneration: 0,
-    hydrate: async (): Promise<void> => {
+    hydrate: (): Promise<void> => {
       const epoch = get().accountEpoch;
+      const outstanding = hydrationInFlight.get(epoch);
+      if (outstanding) return outstanding;
       const generation = get().appliedGeneration;
-      try {
-        const state = await window.api.workspaceContext.get();
-        // A broadcast that arrived while the reply was in flight is newer
-        // than the reply; never let the late reply roll it back.
-        if (
-          get().accountEpoch !== epoch ||
-          get().appliedGeneration !== generation ||
-          state.revision < get().state.revision
-        ) {
-          set({ hydrated: true });
-          return;
+      const attempt = (async (): Promise<void> => {
+        try {
+          const state = await window.api.workspaceContext.get();
+          // A broadcast that arrived while the reply was in flight is newer
+          // than the reply; never let the late reply roll it back.
+          if (
+            get().accountEpoch !== epoch ||
+            get().appliedGeneration !== generation ||
+            state.revision < get().state.revision
+          ) {
+            set({ hydrated: true });
+            return;
+          }
+          set({ state, hydrated: true });
+        } catch (error) {
+          reportRendererConsoleError('Failed to hydrate workspace context', {
+            error,
+          });
+          // Keep the unresolved state so Home can offer recovery.
         }
-        set({ state, hydrated: true });
-      } catch (error) {
-        reportRendererConsoleError('Failed to hydrate workspace context', {
-          error,
-        });
-        // Never block render: Personal is the safe default until main answers.
-      }
+      })().finally(() => {
+        if (hydrationInFlight.get(epoch) === attempt)
+          hydrationInFlight.delete(epoch);
+      });
+      hydrationInFlight.set(epoch, attempt);
+      return attempt;
     },
     applyBroadcast: (broadcast): void => {
       const current = get().state;

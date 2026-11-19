@@ -10,6 +10,7 @@ import type {
 } from '../../vault/contracts';
 import type {
   GitHubCredentialAdmission,
+  GitHubCredentialFenceReadFailure,
   GitHubCredentialUse,
   GitHubCredentialReason,
   GitHubCredentialResolution,
@@ -28,9 +29,29 @@ export interface GitHubCredentialFence {
   readonly legacyGeneration: string;
 }
 export interface GitHubCredentialFenceStore {
-  /** Missing, unreadable and malformed records return null and fail closed. */
+  /** Missing or well-formed rejected records return null; read failures throw. */
   read(): Promise<GitHubCredentialFence | null>;
   write(fence: GitHubCredentialFence): Promise<void>;
+}
+
+/** Only an errno-shaped code survives; anything else becomes read_failed. */
+export function fenceReadFailureFromCode(
+  code: unknown,
+): GitHubCredentialFenceReadFailure {
+  return typeof code === 'string' && /^E[A-Z0-9]{1,31}$/.test(code)
+    ? `E${code.slice(1)}`
+    : 'read_failed';
+}
+
+/** Carries only content-free diagnostics across the fence-store boundary. */
+export class GitHubCredentialFenceReadError extends Error {
+  readonly reason: GitHubCredentialFenceReadFailure;
+  constructor(reason: GitHubCredentialFenceReadFailure) {
+    super('Credential fence read unavailable.');
+    this.reason = reason.startsWith('E')
+      ? fenceReadFailureFromCode(reason)
+      : reason;
+  }
 }
 export interface GitHubCredentialWrite {
   readonly source: GitHubCredentialIdentity;
@@ -69,7 +90,11 @@ type Failure = Exclude<
 >;
 const blocked = (
   reason: Exclude<GitHubCredentialReason, 'absent' | 'stale'>,
-): Failure => ({ kind: 'blocked', reason });
+  fenceReadFailure?: GitHubCredentialFenceReadFailure,
+): Failure =>
+  fenceReadFailure
+    ? { kind: 'blocked', reason, fenceReadFailure }
+    : { kind: 'blocked', reason };
 const absent = (reason: 'absent' | 'stale'): Failure => ({
   kind: 'absent',
   reason,
@@ -103,7 +128,13 @@ function mutationFailure(outcome: VaultMutationFailure): Failure {
         outcome.reason === 'managed_family' ? 'denied' : 'unconfirmed',
       );
     case 'unavailable':
-      return blocked('unavailable');
+      return outcome.step && outcome.io
+        ? {
+            kind: 'blocked',
+            reason: 'unavailable',
+            storage: { step: outcome.step, io: outcome.io },
+          }
+        : blocked('unavailable');
     default:
       return blocked('unconfirmed');
   }
@@ -156,7 +187,8 @@ export function createGitHubCredentialAuthority(
   async function remove(
     entry: VaultEntryMetadata,
   ): Promise<{ readonly kind: 'committed' } | Failure> {
-    // Delete closes admission without loading the key, even if fence IO failed.
+    // Delete closes admission without loading the key. Fence read failures
+    // never reach here: they block resolution and keep the credential.
     const result = await (
       await familyWriter()
     ).delete({
@@ -182,8 +214,14 @@ export function createGitHubCredentialAuthority(
     let fence: GitHubCredentialFence | null;
     try {
       fence = await options.fences.read();
-    } catch {
-      fence = null;
+    } catch (error) {
+      // Only a missing fence (null) is unbound; a failed read deletes nothing.
+      return blocked(
+        'unavailable',
+        error instanceof GitHubCredentialFenceReadError
+          ? error.reason
+          : 'read_failed',
+      );
     }
     const bound =
       fence &&
@@ -208,7 +246,14 @@ export function createGitHubCredentialAuthority(
   ): Promise<GitHubCredentialAdmission> {
     const repository = await options.repository();
     const found = await lookup(repository);
-    if (!('entry' in found)) return { kind: 'refused', reason: found.reason };
+    if (!('entry' in found))
+      return found.kind === 'blocked' && found.fenceReadFailure
+        ? {
+            kind: 'refused',
+            reason: found.reason,
+            fenceReadFailure: found.fenceReadFailure,
+          }
+        : { kind: 'refused', reason: found.reason };
     if (!samePin(pin, { ref: found.entry.ref, revision: found.entry.revision }))
       return { kind: 'refused', reason: 'stale' };
     return admission(repository.admit(pin));
@@ -283,7 +328,7 @@ export function createGitHubCredentialAuthority(
           if (checked.kind !== 'admitted')
             return checked.reason === 'absent' || checked.reason === 'stale'
               ? absent(checked.reason)
-              : blocked(checked.reason);
+              : blocked(checked.reason, checked.fenceReadFailure);
           delivered = true;
           return {
             kind: 'available',

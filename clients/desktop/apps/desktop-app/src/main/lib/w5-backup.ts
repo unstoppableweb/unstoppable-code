@@ -1,3 +1,7 @@
+import {
+  w5ErrorDiagnostics,
+  isW5FilesystemCode,
+} from '@canopy/core-runtime/node/w5/error-diagnostics';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdir,
@@ -51,12 +55,23 @@ export type W5BackupRefusal =
   | 'exclusive-required';
 
 export class W5BackupRefusedError extends Error {
+  declare readonly cause?: unknown;
+  readonly errorCode?: string;
   constructor(
     readonly reason: W5BackupRefusal,
     readonly resource: string,
+    readonly underlying?: unknown,
   ) {
     super(`W5 recovery refused (${reason}): ${resource}`);
+    const { errorCode } = w5ErrorDiagnostics(underlying);
+    if (isW5FilesystemCode(errorCode)) this.errorCode = errorCode;
     this.name = 'W5BackupRefusedError';
+    if (underlying !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: underlying,
+        configurable: true,
+        writable: true,
+      });
   }
 }
 
@@ -131,8 +146,8 @@ export async function desktopW5BackupRootScope(): Promise<W5RootEvidenceScope> {
     throw new W5BackupRefusedError('source-unreadable', 'W5 root projection');
   try {
     return await w5RootEvidenceScope(dataDir);
-  } catch {
-    throw new W5BackupRefusedError('source-unreadable', 'data root');
+  } catch (error) {
+    throw new W5BackupRefusedError('source-unreadable', 'data root', error);
   }
 }
 
@@ -205,13 +220,14 @@ export async function readW5FileBytes(
         throw new W5BackupRefusedError('source-unreadable', path);
     } catch (error) {
       if (isErrnoException(error) && error.code === 'ENOENT') return null;
-      throw new W5BackupRefusedError('source-unreadable', path);
+      if (error instanceof W5BackupRefusedError) throw error;
+      throw new W5BackupRefusedError('source-unreadable', path, error);
     }
   }
   try {
     return await readFile(current);
-  } catch {
-    throw new W5BackupRefusedError('source-unreadable', path);
+  } catch (error) {
+    throw new W5BackupRefusedError('source-unreadable', path, error);
   }
 }
 export function validateW5Document(
@@ -225,8 +241,8 @@ export function validateW5Document(
   let value: unknown;
   try {
     value = JSON.parse(raw);
-  } catch {
-    throw new W5BackupRefusedError('source-unreadable', path);
+  } catch (error) {
+    throw new W5BackupRefusedError('source-unreadable', path, error);
   }
   if (!isRecord(value))
     throw new W5BackupRefusedError('source-unreadable', path);
@@ -244,8 +260,8 @@ export function validateW5Document(
         throw new W5BackupRefusedError('source-unreadable', path);
       try {
         validateId(row.id, 'row id');
-      } catch {
-        throw new W5BackupRefusedError('source-unreadable', path);
+      } catch (error) {
+        throw new W5BackupRefusedError('source-unreadable', path, error);
       }
       if (ids.has(row.id))
         throw new W5BackupRefusedError('source-unreadable', path);
@@ -317,15 +333,15 @@ async function scan(root: string, position: Position): Promise<Image[]> {
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
-  } catch {
-    throw new W5BackupRefusedError('source-unreadable', 'workspaces');
+  } catch (error) {
+    throw new W5BackupRefusedError('source-unreadable', 'workspaces', error);
   }
   for (const entry of entries) {
     if (entry.isDirectory() || entry.isSymbolicLink()) {
       try {
         validateId(entry.name, 'workspace directory');
-      } catch {
-        throw new W5BackupRefusedError('source-unreadable', entry.name);
+      } catch (error) {
+        throw new W5BackupRefusedError('source-unreadable', entry.name, error);
       }
       ids.add(entry.name);
     }

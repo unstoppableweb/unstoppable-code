@@ -18,10 +18,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  decodeWorktreeBaseBranch,
-  type PortalCommandEnvelope,
-} from '@canopy/protocol/portal';
+import { decodeWorktreeBaseBranch } from '@canopy/protocol/portal';
 import { baseBranchRef } from '@canopy/ui-app';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
@@ -70,7 +67,6 @@ jest.mock('../ipc/register', () => ({
 
 import { registerWorktreeHandlers } from '../ipc/worktrees';
 import { registerHomeSurfaceHandlers } from '../ipc/home-surface';
-import { handlePortalWorktreeBranchesList } from '../portal/adapters/worktree-adapter';
 import { createSingleRepoWorktree } from '../lib/worktree-service';
 import {
   createOptionsForNewWorktreeBaseTarget,
@@ -661,74 +657,6 @@ describe('worktree:list-branches', () => {
         repos[OFFLINE_CONVENTIONAL_WS],
       ),
     ).toMatchSnapshot('conventional refs');
-  });
-
-  it('shows the cached default branch in the Portal catalogue and keeps a tag-shadowed remote branch', async () => {
-    const command: PortalCommandEnvelope = {
-      id: 'portal-branch-golden',
-      sequence: 1,
-      type: 'portal.worktree.branches.list',
-      payload: {
-        workspaceId: OFFLINE_STALE_WS,
-        baseBranchEncoding: 'explicit-v2',
-      },
-      createdAt: '2026-11-11T00:00:00.000Z',
-      expiresAt: null,
-    };
-    const complete = jest.fn();
-    const fail = jest.fn();
-
-    const repo = repos[OFFLINE_STALE_WS];
-    git(repo, ['tag', 'origin/release']);
-    git(repo, ['tag', 'main']);
-    git(repo, ['update-ref', 'refs/heads/origin/release', 'refs/heads/main']);
-    git(repo, ['update-ref', 'refs/heads/refs/heads/main', 'refs/heads/main']);
-    try {
-      await handlePortalWorktreeBranchesList(command, {
-        sessionId: 'portal-branch-golden',
-        getWindow: () => null,
-        enqueueEvent: jest.fn(),
-        complete,
-        fail,
-      });
-    } finally {
-      git(repo, ['tag', '-d', 'origin/release', 'main']);
-      git(repo, ['update-ref', '-d', 'refs/heads/origin/release']);
-      git(repo, ['update-ref', '-d', 'refs/heads/refs/heads/main']);
-    }
-
-    const branches: unknown = expect.arrayContaining([
-      expect.objectContaining({
-        name: 'main',
-        hasLocalRef: true,
-        hasRemoteRef: true,
-      }),
-      expect.objectContaining({
-        name: 'origin/release',
-        hasLocalRef: true,
-        hasRemoteRef: false,
-      }),
-      expect.objectContaining({
-        name: 'refs/heads/main',
-        hasLocalRef: true,
-        hasRemoteRef: false,
-      }),
-      expect.objectContaining({
-        name: 'release',
-        isRemote: true,
-        hasRemoteRef: true,
-        hasLocalRef: false,
-      }),
-    ]);
-    expect(fail).not.toHaveBeenCalled();
-    expect(complete).toHaveBeenCalledWith(
-      command,
-      expect.objectContaining({
-        supported: true,
-        defaultBranch: 'release',
-        branches,
-      }),
-    );
   });
 
   it('lists a repository without origin and no default branch', async () => {

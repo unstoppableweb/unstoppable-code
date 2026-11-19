@@ -163,7 +163,6 @@ function ComposerInstance({
   onChange,
   context,
   selectionMode,
-  allowAgents = false,
   dataTestId,
   effectiveModel,
   effectiveModelConfig,
@@ -869,13 +868,6 @@ function ComposerInstance({
         />
         <ModelPicker
           currentModel={effective}
-          separateAgents={allowAgents}
-          selectionModel={
-            value.model?.startsWith('$')
-              ? undefined
-              : (value.model ??
-                (isAgentModel(effectiveModel) ? effectiveModel : undefined))
-          }
           inheritedDefaultModel={
             resolveHomeEffectiveDefaults(defaultsWorkspaceId).model
           }

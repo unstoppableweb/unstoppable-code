@@ -5,13 +5,22 @@ import type { ResourceOwner } from '@canopy/protocol/resource-owner';
 import { parseHarnessCompatibility } from '@canopy/protocol/plugins';
 import type { PluginsCache, PluginsCacheV1 } from '../../types/plugins';
 
+export type PluginReadProblem = 'damaged' | 'unsupported' | 'unreadable';
+
+/** Reads never refuse (CAN-4481): `recovered` marks a best-effort read of a problem file. */
 export type PluginReadHealth<Current, Legacy = never> =
   | { state: 'absent' }
+  | { state: 'valid'; data: Current; recovered?: PluginReadProblem }
+  | ([Legacy] extends [never]
+      ? never
+      : { state: 'legacy'; data: Legacy; recovered?: PluginReadProblem });
+
+/** Strict decode for outgoing documents; reads go through the best-effort readers. */
+export type PluginDecodeResult<Current, Legacy = never> =
   | { state: 'valid'; data: Current }
   | ([Legacy] extends [never] ? never : { state: 'legacy'; data: Legacy })
   | { state: 'unsupported'; version: number }
-  | { state: 'damaged' }
-  | { state: 'unreadable' };
+  | { state: 'damaged' };
 
 export interface PluginCacheIndex {
   version: 1;
@@ -235,40 +244,62 @@ const legacyPlugin = z.looseObject({
   cachePath: text.nullable(),
   cachedAt: text.nullable(),
 });
+const legacyMarketplace = z
+  .looseObject({
+    id: text,
+    name: z.unknown(),
+    description: requiredDisplayText,
+    sourceType: text,
+    sourceUrl: text,
+    installLocation: text,
+    lastUpdated: text,
+    pluginCount: count,
+    plugins: z.array(legacyPlugin),
+  })
+  .transform((row) => ({
+    ...row,
+    name: typeof row.name === 'string' ? row.name : row.id,
+  }));
 const legacyCatalog: z.ZodType<PluginsCacheV1> = z.looseObject({
   version: z.literal(1),
   lastRefreshed: text,
-  marketplaces: z.array(
-    z
-      .looseObject({
-        id: text,
-        name: z.unknown(),
-        description: requiredDisplayText,
-        sourceType: text,
-        sourceUrl: text,
-        installLocation: text,
-        lastUpdated: text,
-        pluginCount: count,
-        plugins: z.array(legacyPlugin),
-      })
-      .transform((row) => ({
-        ...row,
-        name: typeof row.name === 'string' ? row.name : row.id,
-      })),
-  ),
+  marketplaces: z.array(legacyMarketplace),
+});
+const indexEntry = z.looseObject({
+  cachePath: text,
+  sourceUrl: text,
+  cachedAt: text,
 });
 const index: z.ZodType<PluginCacheIndex> = z.looseObject({
   version: z.literal(1),
-  entries: z.record(
-    text,
-    z.looseObject({ cachePath: text, sourceUrl: text, cachedAt: text }),
-  ),
+  entries: z.record(text, indexEntry),
 });
 const versioned = z.looseObject({ version: z.number().int().nonnegative() });
 
+function withCodexAcceptance(data: PluginsCache): PluginsCache {
+  return {
+    ...data,
+    marketplaces: data.marketplaces.map((row) => {
+      const codex = row.providerStatus.codex;
+      return codex.state === 'invalid' && codex.accepted
+        ? {
+            ...row,
+            validProviders: row.validProviders.filter(
+              (provider) => provider !== 'codex',
+            ),
+            providerStatus: {
+              ...row.providerStatus,
+              codex: { ...codex, accepted: false },
+            },
+          }
+        : row;
+    }),
+  };
+}
+
 export function decodePluginCatalog(
   value: unknown,
-): PluginReadHealth<PluginsCache, PluginsCacheV1> {
+): PluginDecodeResult<PluginsCache, PluginsCacheV1> {
   const version = versioned.safeParse(value);
   if (!version.success) return { state: 'damaged' };
   if (version.data.version === 1) {
@@ -281,32 +312,12 @@ export function decodePluginCatalog(
     return { state: 'unsupported', version: version.data.version };
   const result = catalog.safeParse(value);
   if (!result.success) return { state: 'damaged' };
-  return {
-    state: 'valid',
-    data: {
-      ...result.data,
-      marketplaces: result.data.marketplaces.map((row) => {
-        const codex = row.providerStatus.codex;
-        return codex.state === 'invalid' && codex.accepted
-          ? {
-              ...row,
-              validProviders: row.validProviders.filter(
-                (provider) => provider !== 'codex',
-              ),
-              providerStatus: {
-                ...row.providerStatus,
-                codex: { ...codex, accepted: false },
-              },
-            }
-          : row;
-      }),
-    },
-  };
+  return { state: 'valid', data: withCodexAcceptance(result.data) };
 }
 
 export function decodePluginCacheIndex(
   value: unknown,
-): PluginReadHealth<PluginCacheIndex> {
+): PluginDecodeResult<PluginCacheIndex> {
   const version = versioned.safeParse(value);
   if (!version.success) return { state: 'damaged' };
   if (version.data.version !== 1)
@@ -317,12 +328,110 @@ export function decodePluginCacheIndex(
     : { state: 'damaged' };
 }
 
-type ReadBytes = (filePath: string) => Uint8Array;
-function readPluginFile<Current, Legacy>(
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Read as-is, keeping each marketplace row and plugin that decodes. Authority
+// types are still decoded, so a malformed plugin is skipped, never trusted.
+function salvageCatalogRows(
+  value: unknown,
+  version: 1 | 2,
+): Record<string, unknown> {
+  const record = isRecord(value) ? value : {};
+  const { lastProviderRefreshAt, ...rest } = record;
+  const row: z.ZodType = version === 1 ? legacyMarketplace : marketplace;
+  const item: z.ZodType = version === 1 ? legacyPlugin : plugin;
+  const rows = Array.isArray(record.marketplaces) ? record.marketplaces : [];
+  return {
+    ...rest,
+    version,
+    lastRefreshed:
+      typeof record.lastRefreshed === 'string' ? record.lastRefreshed : '',
+    ...(typeof lastProviderRefreshAt === 'string'
+      ? { lastProviderRefreshAt }
+      : {}),
+    marketplaces: rows.flatMap((entry) => {
+      if (!isRecord(entry)) return [];
+      const plugins = Array.isArray(entry.plugins)
+        ? entry.plugins.filter((candidate) => item.safeParse(candidate).success)
+        : [];
+      const candidate = { ...entry, plugins };
+      return row.safeParse(candidate).success ? [candidate] : [];
+    }),
+  };
+}
+
+function recoverCatalog(
+  value: unknown,
+  problem: PluginReadProblem,
+): PluginReadHealth<PluginsCache, PluginsCacheV1> {
+  const version = versioned.safeParse(value);
+  if (version.success && version.data.version === 1) {
+    const legacy = legacyCatalog.safeParse(salvageCatalogRows(value, 1));
+    if (legacy.success)
+      return { state: 'legacy', data: legacy.data, recovered: problem };
+  }
+  const current = catalog.safeParse(salvageCatalogRows(value, 2));
+  return {
+    state: 'valid',
+    data: current.success
+      ? withCodexAcceptance(current.data)
+      : { version: 2, lastRefreshed: '', marketplaces: [] },
+    recovered: problem,
+  };
+}
+
+function recoverIndex(
+  value: unknown,
+  problem: PluginReadProblem,
+): PluginReadHealth<PluginCacheIndex> {
+  const record = isRecord(value) ? value : {};
+  const entries = isRecord(record.entries) ? record.entries : {};
+  const result = index.safeParse({
+    ...record,
+    version: 1,
+    entries: Object.fromEntries(
+      Object.entries(entries).filter(
+        ([, entry]) => indexEntry.safeParse(entry).success,
+      ),
+    ),
+  });
+  return {
+    state: 'valid',
+    data: result.success ? result.data : { version: 1, entries: {} },
+    recovered: problem,
+  };
+}
+
+const warned = new Set<string>();
+
+// Once per file and problem until it reads healthy again, since every
+// resolution rereads the catalog.
+function noteReadProblem(
   filePath: string,
-  decode: (value: unknown) => PluginReadHealth<Current, Legacy>,
-  read: ReadBytes,
-): PluginReadHealth<Current, Legacy> {
+  problem: PluginReadProblem | undefined,
+): void {
+  if (!problem) {
+    for (const entry of ['damaged', 'unsupported', 'unreadable'])
+      warned.delete(`${filePath}\0${entry}`);
+    return;
+  }
+  const key = `${filePath}\0${problem}`;
+  if (warned.has(key)) return;
+  warned.add(key);
+  process.stderr.write(
+    `[plugins] ${filePath} is ${problem}. Using the parts that can be read; the next plugin change rewrites it.\n`,
+  );
+}
+
+type ReadBytes = (filePath: string) => Uint8Array;
+type RawRead =
+  | { state: 'absent' }
+  | { state: 'parsed'; value: unknown }
+  | { state: 'failed'; problem: 'damaged' | 'unreadable' };
+
+function readPluginJson(filePath: string, read: ReadBytes): RawRead {
   let bytes: Uint8Array;
   try {
     bytes = read(filePath);
@@ -332,15 +441,15 @@ function readPluginFile<Current, Legacy>(
       'code' in error &&
       error.code === 'ENOENT'
       ? { state: 'absent' }
-      : { state: 'unreadable' };
+      : { state: 'failed', problem: 'unreadable' };
   }
   try {
     const value: unknown = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(bytes),
     );
-    return decode(value);
+    return { state: 'parsed', value };
   } catch {
-    return { state: 'damaged' };
+    return { state: 'failed', problem: 'damaged' };
   }
 }
 
@@ -348,20 +457,42 @@ export function readPluginCatalog(
   filePath: string,
   read: ReadBytes = (file) => fs.readFileSync(file),
 ): PluginReadHealth<PluginsCache, PluginsCacheV1> {
-  return readPluginFile<PluginsCache, PluginsCacheV1>(
-    filePath,
-    decodePluginCatalog,
-    read,
-  );
+  const raw = readPluginJson(filePath, read);
+  if (raw.state === 'absent') {
+    noteReadProblem(filePath, undefined);
+    return raw;
+  }
+  if (raw.state === 'failed') {
+    noteReadProblem(filePath, raw.problem);
+    return recoverCatalog(undefined, raw.problem);
+  }
+  const decoded = decodePluginCatalog(raw.value);
+  if (decoded.state === 'valid' || decoded.state === 'legacy') {
+    noteReadProblem(filePath, undefined);
+    return decoded;
+  }
+  noteReadProblem(filePath, decoded.state);
+  return recoverCatalog(raw.value, decoded.state);
 }
 
 export function readPluginCacheIndex(
   filePath: string,
   read: ReadBytes = (file) => fs.readFileSync(file),
 ): PluginReadHealth<PluginCacheIndex> {
-  return readPluginFile<PluginCacheIndex, never>(
-    filePath,
-    decodePluginCacheIndex,
-    read,
-  );
+  const raw = readPluginJson(filePath, read);
+  if (raw.state === 'absent') {
+    noteReadProblem(filePath, undefined);
+    return raw;
+  }
+  if (raw.state === 'failed') {
+    noteReadProblem(filePath, raw.problem);
+    return recoverIndex(undefined, raw.problem);
+  }
+  const decoded = decodePluginCacheIndex(raw.value);
+  if (decoded.state === 'valid') {
+    noteReadProblem(filePath, undefined);
+    return decoded;
+  }
+  noteReadProblem(filePath, decoded.state);
+  return recoverIndex(raw.value, decoded.state);
 }

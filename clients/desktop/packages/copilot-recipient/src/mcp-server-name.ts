@@ -111,14 +111,25 @@ export function managedMcpServerFriendlyLabel(
  * share one `mcpServers` entry (REG-3033). Delegation and auth-failure
  * attribution recompute the same digest from `proxy` + [serverKey, configId].
  */
-export function buildAccountMcpServerName(connection: {
-  serverKey: string;
-  configId: string;
-  displayName: string;
-}): string {
+export function buildAccountMcpServerName(
+  connection: {
+    serverKey: string;
+    configId: string;
+    displayName: string;
+  },
+  /**
+   * The account's name, when the person holds several accounts of this
+   * connector and this is an added one (CAN-6228), so the agent tells the
+   * tools apart. It never enters the digest.
+   */
+  account?: string,
+): string {
   return buildManagedMcpServerName({
     kind: 'proxy',
-    friendlyParts: [connection.displayName],
+    friendlyParts:
+      account === undefined
+        ? [connection.displayName]
+        : [connection.displayName, account],
     identityParts: [connection.serverKey, connection.configId],
   });
 }

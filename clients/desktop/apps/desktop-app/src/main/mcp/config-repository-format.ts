@@ -11,6 +11,7 @@ import type {
 } from '@canopy/execution-engine/types/mcp-servers';
 import {
   isMcpServersIndexFile,
+  normalizeCuratedMetadata,
   normalizeMcpServerFile,
 } from '@canopy/execution-engine/types/mcp-servers';
 
@@ -55,6 +56,17 @@ export class McpConfigNotFoundError extends Error {
   }
 }
 
+export class McpCuratedTransitionError extends Error {
+  readonly code = 'curated_extensions_would_be_lost';
+
+  constructor() {
+    super(
+      'This catalog change would discard saved data. Remove the device server explicitly, then add the replacement.',
+    );
+    this.name = 'McpCuratedTransitionError';
+  }
+}
+
 export type DocumentRead = { text: string } | { error: unknown };
 
 export async function readDocument(
@@ -69,7 +81,14 @@ export async function readDocument(
 
 /** Only an ENOENT code proves absence; message text does not. */
 export function isAbsentError(error: unknown): boolean {
-  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+  // Node filesystem errors can originate outside this realm (for example in
+  // a VM host). Their code, not their prototype or message, proves absence.
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
 }
 
 /** `server-<id>.json` per `lib/paths.ts`; excludes the catalog and tools cache. */
@@ -335,6 +354,15 @@ export function overlayServerDocument(
   const rawCurated = child(rawDefinition, 'curated');
   const rawConfigs = objectsById(child(rawServer, 'configs'));
   const { curated, oauth } = server.definition;
+  const previousCurated = normalizeCuratedMetadata({
+    type: 'http',
+    ...(rawCurated === undefined ? {} : { curated: rawCurated }),
+  });
+  const nextCurated = normalizeCuratedMetadata(server.definition);
+  const retainedCurated = previousCurated?.key === nextCurated?.key;
+  const curatedExtensions = extensions(rawCurated, CURATED_FIELDS);
+  if (!retainedCurated && Object.keys(curatedExtensions).length > 0)
+    throw new McpCuratedTransitionError();
   const definition = {
     ...extensions(rawDefinition, DEFINITION_FIELDS),
     ...server.definition,
@@ -346,13 +374,10 @@ export function overlayServerDocument(
           },
         }
       : {}),
-    // A different curated key is a different catalog entry, not a retained one.
     ...(curated
       ? {
           curated: {
-            ...(child(rawCurated, 'key') === curated.key
-              ? extensions(rawCurated, CURATED_FIELDS)
-              : {}),
+            ...(retainedCurated ? curatedExtensions : {}),
             ...curated,
           },
         }

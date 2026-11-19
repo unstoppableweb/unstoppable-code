@@ -9,6 +9,7 @@ import {
   type LabsSettingsPort,
 } from '@canopy/ui-app/settings/labs';
 import { EARLY_ACCESS_EXPERIMENT_ID } from '@canopy/protocol/experiments';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { LABS_EXPERIMENTS } from '@canopy/desktop-shared/lib/labs-experiments';
 import { isPageFeatureFlagGateOpen } from '@/lib/navigation/page-availability';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -52,13 +53,18 @@ export function DesktopLabsSettingsSection(): JSX.Element {
 
   const rows = useMemo((): LabsExperimentRowView[] => {
     if (!snapshot?.ready) {
-      return LABS_EXPERIMENTS.filter(
-        (entry) =>
+      return LABS_EXPERIMENTS.filter((entry) => {
+        const flag = Object.values(CLIENT_FEATURE_FLAGS).find(
+          (candidate) => candidate.key === entry.flagKey,
+        );
+        return (
           entry.id !== EARLY_ACCESS_EXPERIMENT_ID &&
           entry.id !== 'sidebar' &&
           entry.id !== 'activity-card' &&
-          entry.pages.length === 0,
-      ).map((entry) => ({
+          entry.pages.length === 0 &&
+          flag?.launchDarklyDisabledDefaultValue !== 'hidden'
+        );
+      }).map((entry) => ({
         id: entry.id,
         name: entry.name,
         description: entry.description,
@@ -78,19 +84,29 @@ export function DesktopLabsSettingsSection(): JSX.Element {
     return [
       ...listed.filter((entry) => entry.id === EARLY_ACCESS_EXPERIMENT_ID),
       ...listed.filter((entry) => entry.id !== EARLY_ACCESS_EXPERIMENT_ID),
-    ].map((entry) => ({
-      id: entry.id,
-      name: entry.name,
-      description: entry.description,
-      checked: Object.prototype.hasOwnProperty.call(pending, entry.id)
-        ? (pending[entry.id] ?? entry.enabled)
-        : entry.enabled,
-      disabled: Object.prototype.hasOwnProperty.call(pending, entry.id),
-      group:
-        entry.id === EARLY_ACCESS_EXPERIMENT_ID || entry.requiresEarlyAccess
-          ? 'early-access'
-          : 'pages',
-    }));
+    ].map((entry) => {
+      const blocked = entry.blockedBy !== undefined;
+      const hasPendingChoice = Object.prototype.hasOwnProperty.call(
+        pending,
+        entry.id,
+      );
+      return {
+        id: entry.id,
+        name: entry.name,
+        description: entry.description,
+        checked: blocked
+          ? false
+          : hasPendingChoice
+            ? (pending[entry.id] ?? entry.enabled)
+            : entry.enabled,
+        disabled: blocked || hasPendingChoice,
+        disabledReason: blocked ? entry.requiresExperimentReason : undefined,
+        group:
+          entry.id === EARLY_ACCESS_EXPERIMENT_ID || entry.requiresEarlyAccess
+            ? 'early-access'
+            : 'pages',
+      };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `featureFlags` is the invalidation key for the flag gates
   }, [snapshot, pending, featureFlags]);
 

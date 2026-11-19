@@ -7,6 +7,7 @@ import { getChatStateService } from '../services/chat-state-service';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { whenPipelineInstallsRecovered } from '../pipelines/pipeline-install-intents';
 import { configureDesktopPipelineOwnerFence } from '../pipelines/pipeline-owner-fence';
+import type { PipelineRecoveryFailure } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import { sweepOrphanedPipelinesThroughLocalWorker } from '../pipelines/pipeline-worker-dispatch';
 import type { InterruptedWorkScan } from './interrupted-work-scan-worker';
 
@@ -108,7 +109,7 @@ export function sweepInterruptedPipelinesAtStartup(): Promise<void> | null {
   interruptedPipelineIds = [];
   daemonCommitHookIds = [];
   if (pipelineIds.length === 0 && commitHookIds.length === 0) return null;
-  const swept: Promise<string[]> =
+  const swept: Promise<PipelineRecoveryFailure[]> =
     pipelineIds.length === 0
       ? Promise.resolve([])
       : sweepOrphanedPipelinesThroughLocalWorker(pipelineIds);
@@ -122,6 +123,14 @@ export function sweepInterruptedPipelinesAtStartup(): Promise<void> | null {
       await followSurvivingDaemonRuns(pipelineIds, executionsDir);
     // Commit results that settled while nothing followed their run (CAN-6012 D3).
     await catchUpDaemonCommitHooksFor(commitHookIds, executionsDir);
-    if (errors.length) throw new Error(errors.join('\n'));
+    if (errors.length)
+      throw new Error(
+        errors
+          .map(
+            ({ executionId, name, code }) =>
+              `Pipeline ${executionId}: ${name}${code ? ` ${code}` : ''}`,
+          )
+          .join('\n'),
+      );
   });
 }

@@ -75,6 +75,9 @@ class FakeWebCore implements CoreCoworkInvoker {
   projectRevision = 3;
   /** Refusals for the next project updates, as a stale revision answers. */
   readonly updateRefusals: CanopyErrorPayload[] = [];
+  updateWarnings: string[] | undefined = undefined;
+  /** As the web core: a write at another revision is refused; one that lands moves it. */
+  enforceRevision = false;
   /** `undefined` leaves the field off, as an authority that doesn't scope by organization does. */
   repoOwner: string | null | undefined = null;
   /** Holds each `core.chat.create` until released, in call order. */
@@ -91,6 +94,10 @@ class FakeWebCore implements CoreCoworkInvoker {
   readonly foreignContainers: unknown[] = [];
   /** Refusals for the next restores. */
   readonly restoreRefusals: CanopyErrorPayload[] = [];
+  /** Refusals for the next deletes. */
+  readonly deleteRefusals: CanopyErrorPayload[] = [];
+  /** Deletes that apply but lose their reply. */
+  lostDeleteReplies = 0;
   /**
    * The git project's tasks (its worktree root chats), which the web core
    * serves since CAN-6106; null refuses the listing, as before it.
@@ -138,6 +145,19 @@ class FakeWebCore implements CoreCoworkInvoker {
         ? this.updateRefusals.shift()
         : undefined;
     if (refusal) return { ok: false, error: refusal };
+    if (method === 'core.workspace.update' && this.enforceRevision) {
+      if (params.expectedRevision !== this.projectRevision)
+        return {
+          ok: false,
+          error: {
+            kind: 'conflict',
+            code: 'core.workspace.revisionConflict',
+            message: 'The project changed.',
+            retry: { kind: 'never' },
+          },
+        };
+      this.projectRevision += 1;
+    }
     if (method === 'core.workspace.update')
       return {
         ok: true,
@@ -147,6 +167,10 @@ class FakeWebCore implements CoreCoworkInvoker {
           kind: 'cowork',
           repositorySources: [],
           settings: {},
+          revision: this.projectRevision,
+          ...(this.updateWarnings === undefined
+            ? {}
+            : { warnings: this.updateWarnings }),
         },
       };
     if (method === 'core.workspace.delete')
@@ -207,6 +231,41 @@ class FakeWebCore implements CoreCoworkInvoker {
           .map((task) => ({ ...task, revision: 4, locked: true })),
       );
       this.tasks = this.tasks.filter((task) => task.worktreeId !== tabId);
+      return {
+        ok: true,
+        value: {
+          commandId: params.commandId,
+          revision: 0,
+          outcome: known ? 'applied' : 'already_applied',
+          entityId: tabId,
+        },
+      };
+    }
+    if (method === 'core.chat.delete') {
+      const refused = this.deleteRefusals.shift();
+      if (refused) return { ok: false, error: refused };
+      // As the web core does (chat.ts): a task's own chat in discard mode
+      // moves the task to the Trash; one already there answers
+      // already_applied whatever its command id.
+      const tabId = String(Reflect.get(Object(params.action), 'tabId'));
+      const known = this.tasks.some((task) => task.worktreeId === tabId);
+      this.archived.push(
+        ...this.tasks
+          .filter((task) => task.worktreeId === tabId)
+          .map((task) => ({ ...task, revision: 4, locked: false })),
+      );
+      this.tasks = this.tasks.filter((task) => task.worktreeId !== tabId);
+      if (known && this.lostDeleteReplies > 0) {
+        this.lostDeleteReplies -= 1;
+        return {
+          ok: false,
+          error: {
+            kind: 'unavailable',
+            message: 'The reply was lost.',
+            retry: { kind: 'same_idempotency_key' },
+          },
+        };
+      }
       return {
         ok: true,
         value: {
@@ -1034,6 +1093,81 @@ describe('core cowork store', () => {
     );
   });
 
+  it('deleting a task moves its own chat to the Trash through core.chat.delete, keyed, and drops its row (CAN-7052)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    const { task, created } = store.getState().beginTask(PROJECT);
+    await created;
+
+    await store.getState().deleteTask(PROJECT, task.worktreeId);
+
+    // The web's own Delete takes the same path: discard mode on the task's
+    // own chat, never an archive and never a batch.
+    const deletes = core.calls.filter(
+      (call) => call.method === 'core.chat.delete',
+    );
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0]?.params).toMatchObject({
+      projectId: PROJECT,
+      worktreeId: task.worktreeId,
+      action: {
+        type: 'chat.close_tab',
+        tabId: task.worktreeId,
+        mode: 'discard',
+      },
+    });
+    expect(idempotencyKeyOf(deletes[0]?.params)).toBe(
+      deletes[0]?.params.commandId,
+    );
+    expect(core.count('core.chat.archive')).toBe(0);
+    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain(
+      task.worktreeId,
+    );
+    // It lists as deleted, restorable, not archived.
+    await expect(
+      store.getState().listArchivedTasks(PROJECT),
+    ).resolves.toMatchObject([
+      { worktreeId: task.worktreeId, state: 'deleted' },
+    ]);
+  });
+
+  it('a refused delete rejects and leaves the task where it was (CAN-7052)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    core.deleteRefusals.push({
+      kind: 'failed_precondition',
+      message: 'A tab goes to the Trash with its task.',
+      code: 'core.chat.invalidState',
+      retry: { kind: 'never' },
+    });
+
+    await expect(
+      store.getState().deleteTask(PROJECT, 'task-1'),
+    ).rejects.toThrow();
+    expect(tasksOf(store).map((row) => row.worktreeId)).toContain('task-1');
+    expect(core.archived).toHaveLength(0);
+  });
+
+  it('a delete whose reply was lost, tried again, deletes the task once (CAN-7052)', async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    core.lostDeleteReplies = 1;
+
+    // The first delete applied, but its answer never arrived: the row stays
+    // until the user tries again, and nothing retries on its own.
+    await expect(
+      store.getState().deleteTask(PROJECT, 'task-1'),
+    ).rejects.toThrow();
+    expect(core.count('core.chat.delete')).toBe(1);
+    expect(tasksOf(store).map((row) => row.worktreeId)).toContain('task-1');
+
+    // The retry answers already_applied: one task in the Trash, not two.
+    await store.getState().deleteTask(PROJECT, 'task-1');
+    expect(core.count('core.chat.delete')).toBe(2);
+    expect(core.archived).toHaveLength(1);
+    expect(tasksOf(store).map((row) => row.worktreeId)).not.toContain('task-1');
+  });
+
   it("lists a project's archived and deleted tasks from its work-entry containers, newest first, and nothing else (CAN-6511)", async () => {
     const core = new FakeWebCore();
     core.archived = [
@@ -1198,6 +1332,80 @@ describe('core cowork store', () => {
     });
     expect(typeof idempotencyKeyOf(updates[0]?.params)).toBe('string');
     expect(core.count('core.workspace.list')).toBe(2);
+  });
+
+  it("a project's egress hosts, host mode and ports go in the same keyed patch at its listed revision, and the save's warnings come back (CAN-7053)", async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+
+    await expect(
+      store.getState().updateProject(PROJECT, {
+        egressAllowedHosts: ['api.example.com'],
+        hostModeEnabled: true,
+        hostPorts: [3000, 8080],
+      }),
+    ).resolves.toEqual({ warnings: [], revision: 3 });
+    core.updateWarnings = ["The ports didn't reach the running sandbox."];
+    await expect(
+      store.getState().updateProject(PROJECT, { hostModeEnabled: false }),
+    ).resolves.toEqual({
+      warnings: ["The ports didn't reach the running sandbox."],
+      revision: 3,
+    });
+
+    const updates = core.calls.filter(
+      (call) => call.method === 'core.workspace.update',
+    );
+    expect(updates.map((call) => call.params.patch)).toEqual([
+      {
+        egressAllowedHosts: ['api.example.com'],
+        hostModeEnabled: true,
+        hostPorts: [3000, 8080],
+      },
+      { hostModeEnabled: false },
+    ]);
+    expect(updates[0]?.params).toMatchObject({
+      workspaceId: PROJECT,
+      expectedRevision: 3,
+    });
+    expect(typeof idempotencyKeyOf(updates[0]?.params)).toBe('string');
+  });
+
+  it("a settings dialog's own read revision guards its save, not the listing's (CAN-7053)", async () => {
+    const core = new FakeWebCore();
+    const store = await connected(core);
+    // The listing says 3; the dialog read the project at 2.
+    await store
+      .getState()
+      .updateProject(
+        PROJECT,
+        { egressAllowedHosts: ['api.example.com'] },
+        { expectedRevision: 2 },
+      );
+    const [update] = core.calls.filter(
+      (call) => call.method === 'core.workspace.update',
+    );
+    expect(update?.params.expectedRevision).toBe(2);
+  });
+
+  it('a rename at the listed revision after a sandbox edit elsewhere is refused once, re-lists, then lands (CAN-7053)', async () => {
+    const core = new FakeWebCore();
+    core.enforceRevision = true;
+    const store = await connected(core);
+    // Another client saved the project's egress hosts: the web core moved
+    // the revision to 4, as it now does for sandbox settings.
+    core.projectRevision = 4;
+
+    await expect(
+      store.getState().updateProject(PROJECT, { name: 'Renamed' }),
+    ).rejects.toThrow();
+    await expect(
+      store.getState().updateProject(PROJECT, { name: 'Renamed' }),
+    ).resolves.toEqual({ warnings: [], revision: 5 });
+    const updates = core.calls.filter(
+      (call) => call.method === 'core.workspace.update',
+    );
+    expect(updates.map((call) => call.params.expectedRevision)).toEqual([3, 4]);
   });
 
   it('a refused update re-reads the project, so the next names the current revision (CAN-6099)', async () => {

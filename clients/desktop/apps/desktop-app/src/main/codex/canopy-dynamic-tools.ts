@@ -1,6 +1,10 @@
 import {
   REQUEST_SECRETS_DESCRIPTION,
   REQUEST_SECRETS_JSON_SCHEMA,
+  RUN_WITH_SECRETS_DESCRIPTION,
+  RUN_WITH_SECRETS_JSON_SCHEMA,
+  WRITE_SECRETS_FILE_DESCRIPTION,
+  WRITE_SECRETS_FILE_JSON_SCHEMA,
 } from '@canopy/agent-actions';
 import {
   SHOW_CAPABILITIES_DESCRIPTION,
@@ -17,6 +21,7 @@ import {
   getCanonicalCanopyToolKey,
   isInvocationKeyedInjectedToolKey,
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
+import { isRunWithSecretsSupported } from '../agent-secrets/feature-gate';
 import { VISUAL_PREVIEW_BUDGETS } from '../browser/visual-preview-types';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -183,8 +188,8 @@ export function buildCanopyDynamicToolSpecs(options: {
    */
   includeLedger?: boolean;
   /**
-   * Adds RequestSecrets in `'worktree'` and `'cowork'` modes, for an
-   * interactive root chat started with `canopy-shared-agent-secret-requests`
+   * Adds RequestSecrets, RunWithSecrets (not on Windows yet) and
+   * WriteSecretsFile in `'worktree'` and `'cowork'` modes, for an interactive root chat started with `canopy-shared-agent-secret-requests`
    * on. Every call re-checks the flag. Defaults to false.
    */
   includeSecretRequests?: boolean;
@@ -271,6 +276,22 @@ export function buildCanopyDynamicToolSpecs(options: {
         name: CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName,
         description: REQUEST_SECRETS_DESCRIPTION,
         inputSchema: REQUEST_SECRETS_JSON_SCHEMA,
+      }),
+      // RunWithSecrets is not offered on Windows yet.
+      ...(isRunWithSecretsSupported()
+        ? [
+            defineCodexFunctionToolSpec({
+              name: CANOPY_INJECTED_TOOL_REGISTRY.run_with_secrets
+                .codexToolName,
+              description: RUN_WITH_SECRETS_DESCRIPTION,
+              inputSchema: RUN_WITH_SECRETS_JSON_SCHEMA,
+            }),
+          ]
+        : []),
+      defineCodexFunctionToolSpec({
+        name: CANOPY_INJECTED_TOOL_REGISTRY.write_secrets_file.codexToolName,
+        description: WRITE_SECRETS_FILE_DESCRIPTION,
+        inputSchema: WRITE_SECRETS_FILE_JSON_SCHEMA,
       }),
     );
   const actionTools: DynamicToolSpec[] = [

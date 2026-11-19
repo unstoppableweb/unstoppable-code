@@ -1,11 +1,15 @@
 import { BRAND } from '@canopy/brand/current';
+import { isLocalOnlyBuild } from '../local-only/profile';
 
 let cachedCanopyCloudBaseUrl: string | null = null;
 const CLOUD_DISPLAY_NAME = `${BRAND.displayName} Cloud`;
 
 export type CanopyCloudConfigErrorCode =
   | 'base-url-not-configured'
-  | 'api-key-required';
+  | 'api-key-required'
+  // The local-only build profile (docs/local-only-build.md) turns the cloud
+  // off. Callers treat it like any other config error: the feature is off.
+  | 'local-only-build';
 
 export class CanopyCloudConfigError extends Error {
   constructor(
@@ -79,7 +83,26 @@ export function resetCanopyCloudBaseUrlCacheForTest(): void {
   cachedCanopyCloudBaseUrl = null;
 }
 
+/**
+ * Whether `error` is the cloud chokepoint's local-only refusal. Handlers that
+ * the renderer calls on a timer or on mount use it to return their "off"
+ * answer instead of reporting an unexpected error on every call.
+ */
+export function isCloudOffInLocalOnlyBuild(error: unknown): boolean {
+  return (
+    error instanceof CanopyCloudConfigError && error.code === 'local-only-build'
+  );
+}
+
 export function getCanopyCloudBaseUrl(): string {
+  // Local-only chokepoint, checked before the cache and the E2E override so
+  // the in-repo golden's mock server is never used as a cloud.
+  if (isLocalOnlyBuild()) {
+    throw new CanopyCloudConfigError(
+      'local-only-build',
+      `${CLOUD_DISPLAY_NAME} is off in a local-only build.`,
+    );
+  }
   if (cachedCanopyCloudBaseUrl !== null) {
     return cachedCanopyCloudBaseUrl;
   }

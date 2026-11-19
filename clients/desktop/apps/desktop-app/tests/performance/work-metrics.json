@@ -68,6 +68,24 @@
       "determinism": [],
       "correlation": []
     },
+    "retained-worktrees-idle.work.retained.chat.perEvent.snapshotBuilds": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.chat.perEvent.stale.broadcast": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.chat.perEvent.stale.requests": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
     "retained-worktrees-idle.work.retained.focus.perEvent.configReads": {
       "status": "advisory",
       "tolerancePercent": 0,
@@ -75,6 +93,30 @@
       "correlation": []
     },
     "retained-worktrees-idle.work.retained.focus.perEvent.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.recoveryListReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.snapshotBuilds": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.stale.broadcast": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.focus.perEvent.stale.requests": {
       "status": "advisory",
       "tolerancePercent": 0,
       "determinism": [],
@@ -93,6 +135,24 @@
       "correlation": []
     },
     "retained-worktrees-idle.work.retained.idle.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.snapshotBuilds": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.stale.broadcast": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.idle.stale.requests": {
       "status": "advisory",
       "tolerancePercent": 0,
       "determinism": [],
@@ -123,6 +183,24 @@
       "correlation": []
     },
     "retained-worktrees-idle.work.retained.stale.perEvent.metadataReads": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.snapshotBuilds": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.stale.broadcast": {
+      "status": "advisory",
+      "tolerancePercent": 0,
+      "determinism": [],
+      "correlation": []
+    },
+    "retained-worktrees-idle.work.retained.stale.perEvent.stale.requests": {
       "status": "advisory",
       "tolerancePercent": 0,
       "determinism": [],

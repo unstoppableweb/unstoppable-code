@@ -1182,9 +1182,6 @@ function defaultBroadcast(event: ChatQueueUpdatedEvent): void {
   for (const window of BrowserWindow.getAllWindows()) {
     sendToWindow(window, IPC_CHANNELS.chatQueueUpdated, event);
   }
-  void import('./chat-service').then(({ projectChatQueueSummary }) =>
-    projectChatQueueSummary(event),
-  );
 }
 
 async function defaultPersistRuntime(

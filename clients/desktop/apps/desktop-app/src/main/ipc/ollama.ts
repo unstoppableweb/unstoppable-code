@@ -179,10 +179,10 @@ export function registerModelRegistryHandlers(
         request?.probe === true,
       );
       if (request?.probe === true) {
-        const { notifyPortalModelCatalogChanged } =
-          await import('../portal/portal-event-bus');
+        const { notifyModelCatalogChanged } =
+          await import('../remote-projection/agent-catalog-compatibility');
         broadcastSharedModelRegistryUpdated();
-        await notifyPortalModelCatalogChanged();
+        await notifyModelCatalogChanged();
       }
       return snapshot;
     },

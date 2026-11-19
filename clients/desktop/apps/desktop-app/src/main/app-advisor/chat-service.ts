@@ -20,6 +20,7 @@ import {
   isOwnedDelegationEvent,
   parkBehindWake,
 } from '../agents/session-event-router';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   beginChatTurnRun,
   deferredReloadEventNamespace,
@@ -41,10 +42,8 @@ import {
   type ChatModel,
   type ChatSendMessageRequest,
   type ChatSendMessageDisposition,
-  type DeferredToolsReloadEvent,
   type AgentTranscriptInjectedPrompt,
   type PersistedChatMessage,
-  type PortalChatMessage,
 } from '@canopy/desktop-shared/types';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import { assertTurnModelGatewayRoute } from '../lib/model-gateway-turn';
@@ -97,15 +96,7 @@ import {
   listWorkEntryIds,
   resolveWorkEntryForChat,
 } from '../lib/cowork-work-entries';
-import {
-  createPortalEvent,
-  enqueuePortalEvent,
-  isCanopyPortalActive,
-} from '../portal/portal-event-bus';
-import {
-  isTerminalRuntimeChatEvent,
-  runtimeChatEventToPortalMessage,
-} from '../services/chat-transcript-projector';
+import { isTerminalRuntimeChatEvent } from '../services/chat-transcript-projector';
 import { resolveAgentAttachmentsDir } from '../lib/agent-attachments';
 import { ensureAppAdvisorHomeScaffold } from '../lib/app-advisor-workspace';
 import { getChatStateService } from '../services/chat-state-service';
@@ -143,14 +134,6 @@ import {
   readPersistedChatDispatchMetadata,
   type PersistedChatDispatchMetadata,
 } from '../lib/chat-tabs-reader';
-
-/**
- * Last assistant frame the portal seam emitted per chat (CAN-2565), keyed by
- * chatId. Entries are cleared on every terminal runtime event; a surviving
- * entry therefore always describes the still-open turn a cancel needs to
- * close on the portal side.
- */
-const lastAssistantPortalMessages = new Map<string, PortalChatMessage>();
 
 /**
  * Visible turns started per chat (sends and starting pickups), so a delayed
@@ -202,21 +185,6 @@ function bumpPortalTurnEpoch(chatId: string): void {
   portalTurnEpochs.set(chatId, (portalTurnEpochs.get(chatId) ?? 0) + 1);
 }
 
-function clearPortalFrameForReloadOutcome(
-  event: DeferredToolsReloadEvent,
-): void {
-  if (
-    // Default Bot only: this reload coordinator owns the Orchestrator chat surface.
-    event.scope.projectId !== APP_ADVISOR_PROJECT_ID ||
-    event.lifecycle.kind !== 'outcome'
-  ) {
-    return;
-  }
-  lastAssistantPortalMessages.delete(event.scope.chatId);
-}
-
-deferredToolsReloadCoordinator.subscribe(clearPortalFrameForReloadOutcome);
-
 type AppAdvisorChatDispatchRequest = ChatSendMessageRequest & {
   /**
    * Host-owned namespace for the provider events emitted by a deferred-tools
@@ -225,26 +193,6 @@ type AppAdvisorChatDispatchRequest = ChatSendMessageRequest & {
    */
   deferredToolsReloadRequestId?: string;
 };
-
-/**
- * A projected assistant frame that would render as an empty transcript row: no
- * text and no parts. Some providers close a turn with a content-less assistant
- * record (own UUID, status `complete`); mirroring it left a stray dots bubble
- * at the end of the portal transcript. Guarded here in the App Advisor seam —
- * the narrowest placement — rather than in the shared
- * `runtimeChatEventToPortalMessage`, whose other consumer (the worktree portal
- * path) also persists projected frames and is out of scope for this fix.
- * Restricted to `complete` frames so a failed/cancelled status transition can
- * never be swallowed on text-less frames.
- */
-function isEmptyCompleteAssistantFrame(message: PortalChatMessage): boolean {
-  return (
-    message.role === 'assistant' &&
-    message.status === 'complete' &&
-    message.text.trim().length === 0 &&
-    (message.parts === undefined || message.parts.length === 0)
-  );
-}
 
 function sendAppAdvisorChatEvent(
   getMainWindow: () => BrowserWindow | null,
@@ -256,7 +204,6 @@ function sendAppAdvisorChatEvent(
   context?: {
     providerType?: AgentProviderType;
     model?: ChatModel;
-    fallbackMessageId?: string;
   },
 ): void {
   const payload = {
@@ -275,46 +222,6 @@ function sendAppAdvisorChatEvent(
     IPC_CHANNELS.chatEvent,
     payload,
   );
-  const isTerminalEvent = isTerminalRuntimeChatEvent(data);
-
-  // Mirror the turn onto a connected portal session (CAN-2565). The payload
-  // deliberately carries no scope/workspace routing — the server pins the
-  // `app_advisor` scope from the event type, so a desktop cannot mislabel it.
-  if (isCanopyPortalActive()) {
-    const emitPortalMessage = (message: PortalChatMessage): void => {
-      enqueuePortalEvent(
-        createPortalEvent('portal.app_advisor.event', { chatId, message }),
-      );
-    };
-    const message = runtimeChatEventToPortalMessage({
-      scope: 'app_advisor',
-      chatId,
-      data,
-      fallbackMessageId: context?.fallbackMessageId,
-    });
-    // Content-less complete assistant frames are dropped entirely: not
-    // mirrored (they render as an empty trailing bubble) and not remembered —
-    // a cancel must never re-key 'cancelled' onto an empty frame either.
-    if (message && !isEmptyCompleteAssistantFrame(message)) {
-      if (message.role === 'assistant') {
-        // Remember the last assistant frame per chat: a successful terminal
-        // `result` maps to NO portal message, so a later cancel must re-key
-        // its 'cancelled' status onto this frame or the portal transcript's
-        // last message stays 'streaming' forever.
-        lastAssistantPortalMessages.set(chatId, message);
-      }
-      emitPortalMessage(message);
-    }
-  }
-  if (isTerminalEvent) {
-    // The turn is over; a cancel arriving later must not resurrect this
-    // frame with a bogus 'cancelled' status. Cleared unconditionally — a
-    // portal that disconnects mid-turn and reconnects later must not see a
-    // prior turn's frame re-emitted, and cancelling while disconnected must
-    // not strand the entry.
-    lastAssistantPortalMessages.delete(chatId);
-  }
-
   if (!mainDelivery.delivered && !appAdvisorDelivery.delivered) {
     getExecutionObservabilityIngest().recordSessionDiagnostic({
       version: 1,
@@ -1166,10 +1073,6 @@ export async function dispatchAppAdvisorChatMessage(
                   {
                     providerType,
                     model,
-                    // Same synthetic-id convention as the worktree portal path
-                    // so provider events without their own message id still land
-                    // on a stable per-turn assistant row.
-                    fallbackMessageId: `${executionUserMessageId}:assistant`,
                   },
                 );
                 if (
@@ -1259,7 +1162,9 @@ export async function dispatchAppAdvisorChatMessage(
             return eventCommitTail;
           },
         ),
-        () => options.getAppAdvisorWindow() ?? options.getMainWindow(),
+        windowAgentInterfacePort(
+          () => options.getAppAdvisorWindow() ?? options.getMainWindow(),
+        ),
         {
           turnUserMessageId: executionUserMessageId,
           // An admitted dispatch is a pending destination, so a wake already
@@ -1487,35 +1392,6 @@ export async function dispatchAppAdvisorChatMessage(
         );
       await parkBehindWake(request, parked);
     }
-    // Single choke point for renderer- and portal-originated sends, so the
-    // user message reaches a connected portal exactly once regardless of
-    // origin (CAN-2565). Emitted only once every validation/session step has
-    // succeeded — the same optimistic point the worktree path uses — so a
-    // failed dispatch cannot leave a completed-looking user message with no
-    // failure transition. Deferred-tools reload continuations are excluded:
-    // their continuation text is an injected prompt the desktop transcript
-    // never renders as a user bubble, so the portal must not either.
-    if (isCanopyPortalActive() && !isDeferredToolsReloadContinuation) {
-      enqueuePortalEvent(
-        createPortalEvent('portal.app_advisor.event', {
-          chatId: request.chatId,
-          message: {
-            messageId: request.userMessageId,
-            chatId: request.chatId,
-            role: 'user',
-            status: 'complete',
-            text: request.text,
-            createdAtMs: Date.now(),
-            ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-          },
-        }),
-      );
-      // Canonical turn state publishes committed timer rows to the portal.
-    }
-    // A new visible turn supersedes any prior turn's remembered assistant
-    // frame — a cancel racing this dispatch must not re-key 'cancelled' onto
-    // the previous turn's content.
-    lastAssistantPortalMessages.delete(request.chatId);
     if (!isDeferredToolsReloadContinuation) {
       bumpPortalTurnEpoch(request.chatId);
       const occurredAt = new Date(Date.now()).toISOString();
@@ -1656,7 +1532,7 @@ export async function dispatchAppAdvisorChatMessage(
   }
 }
 
-/** Whether the turn a Stop captured still owns this chat's portal frame and timer. */
+/** Whether the turn a Stop captured is still this chat's latest visible turn. */
 export interface AppAdvisorSyntheticResultFence {
   readonly isCurrent: () => boolean;
 }
@@ -1670,18 +1546,15 @@ export interface AppAdvisorSyntheticResultOptions {
 }
 
 /**
- * Capture synchronously, before any await. A newer turn, or any newer frame,
- * counts as a replacement of the stopped turn.
+ * Capture synchronously, before any await. A newer turn counts as a
+ * replacement of the stopped turn.
  */
 export function captureAppAdvisorSyntheticResultFence(
   chatId: string,
 ): AppAdvisorSyntheticResultFence {
-  const frame = lastAssistantPortalMessages.get(chatId);
   const epoch = portalTurnEpochs.get(chatId);
   return {
-    isCurrent: (): boolean =>
-      portalTurnEpochs.get(chatId) === epoch &&
-      lastAssistantPortalMessages.get(chatId) === frame,
+    isCurrent: (): boolean => portalTurnEpochs.get(chatId) === epoch,
   };
 }
 
@@ -1692,20 +1565,6 @@ export function captureAppAdvisorSyntheticResultFence(
  * `result` record `emitHostQueueForcedCancellation` sends for worktree chats.
  * Routed through {@link sendAppAdvisorChatEvent} so both desktop windows
  * observe it on the same path as live provider events.
- *
- * The portal needs its own closing frame: a non-error terminal `result`
- * deliberately projects to NO portal message, so the seam alone would leave
- * the portal transcript's last assistant message 'streaming' forever. Re-emit
- * the last streamed assistant frame with status 'cancelled' — same messageId
- * and content, so the server's merge cannot clobber streamed text — then
- * re-project the entry's summaries so `turnActive` clears immediately. A chat
- * that never streamed an assistant frame just gets the summary re-projection.
- *
- * The live portal turn timer is terminalized on this same path: the synthetic
- * `result` is a terminal runtime event, so {@link sendAppAdvisorChatEvent}
- * emits the timer's completion frame and clears its map entry while fanning
- * the cancel out — the browser's turn lifecycle ends alongside the
- * 'cancelled' re-key below.
  */
 export async function emitAppAdvisorSyntheticResultEvent(
   chatId: string,
@@ -1726,9 +1585,6 @@ export async function emitAppAdvisorSyntheticResultEvent(
   if (!fence.isCurrent() || options?.isCurrent?.() === false) {
     return;
   }
-  // Captured BEFORE the fan-out: the synthetic result is a terminal event,
-  // so the seam clears this chat's frame while delivering it.
-  const lastAssistantFrame = lastAssistantPortalMessages.get(chatId);
   sendAppAdvisorChatEvent(
     surfaces.getMainWindow,
     surfaces.getAppAdvisorWindow,
@@ -1744,22 +1600,4 @@ export async function emitAppAdvisorSyntheticResultEvent(
         : {}),
     },
   );
-  if (!isCanopyPortalActive()) {
-    return;
-  }
-  if (lastAssistantFrame) {
-    enqueuePortalEvent(
-      createPortalEvent('portal.app_advisor.event', {
-        chatId,
-        message: {
-          ...lastAssistantFrame,
-          status: 'cancelled',
-          updatedAtMs: Date.now(),
-        },
-      }),
-    );
-  }
-  const { projectAppAdvisorChatSummaries } =
-    await import('../services/chat-service');
-  await projectAppAdvisorChatSummaries(entryId).catch(() => undefined);
 }

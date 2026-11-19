@@ -5,7 +5,9 @@ import {
   chatSurfaceUsesGlobalPluginDefaults,
   effectiveChatPluginSelections,
   normalizePluginSelectionTombstones,
+  organizationLayersFor,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import { useOrganizationLayer } from '@/stores/organizationLayerStore';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { parseSelectionsJson } from '@/lib/pluginSelections';
 import {
@@ -16,6 +18,10 @@ import {
 } from '@/stores/chatStore';
 import { useGlobalPluginDefaultsStore } from '@/stores/globalPluginDefaultsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
+import {
+  connectorScopeForOwner,
+  connectorScopeWorkspaceId,
+} from '@/stores/chat/tab-utils';
 
 function parseJsonKey(key: string | null): unknown {
   if (key === null) return undefined;
@@ -103,6 +109,22 @@ export function useResolvedChatPluginSelections(
     )?.disabledGlobalPluginSelections;
     return tombstones ? JSON.stringify(tombstones) : null;
   });
+  // In an organization's workspace a person's global connectors stay out
+  // (CAN-6230); the owner binding keeps its identity until that row changes.
+  const scopeWorkspaceId =
+    inherits && projectId !== null && worktreeId !== null
+      ? connectorScopeWorkspaceId(projectId, worktreeId)
+      : undefined;
+  const connectorScopeOwner = useProjectsStore((state) =>
+    scopeWorkspaceId === undefined
+      ? undefined
+      : state.projects.find((p) => p.id === scopeWorkspaceId)?.owner,
+  );
+  // The organization's shared set, as the turn resolves it (CAN-6237).
+  const organizationLayer = useOrganizationLayer(
+    inherits ? projectId : null,
+    worktreeId,
+  );
   const globalSelectionsKey = useGlobalPluginDefaultsStore(
     (state): string | null =>
       inherits && state.hydrated ? JSON.stringify(state.selections) : null,
@@ -135,6 +157,8 @@ export function useResolvedChatPluginSelections(
         chatTombstones: normalizePluginSelectionTombstones(
           parseJsonKey(tabTombstonesKey),
         ),
+        connectorScope: connectorScopeForOwner(connectorScopeOwner),
+        ...organizationLayersFor(organizationLayer, tabInheritsProjectDefaults),
       });
     }
     if (tabSelectionsKey) {
@@ -158,5 +182,7 @@ export function useResolvedChatPluginSelections(
     projectDefaultSelectionsKey,
     projectTombstonesKey,
     globalSelectionsKey,
+    connectorScopeOwner,
+    organizationLayer,
   ]);
 }

@@ -16,7 +16,11 @@ import {
   clearWorktreesSelfWriteTracking,
   isWorktreesSelfWriteContent,
   parseWorktreesFileReconciliationSnapshot,
+  recordObservedWorktreesContent,
+  seedWorktreesContentBaseline,
+  startWorktreesContentTracking,
   wasRecentWorktreesSelfWrite,
+  worktreesSelfWritesStarted,
 } from './workspace-persistence';
 import { sendToWindow } from './window-send';
 
@@ -25,15 +29,6 @@ interface WorktreesFileWatcherEntry {
   lastContent: string | null;
   readInFlight: Promise<string | null> | null;
   debounceTimer: ReturnType<typeof setTimeout> | null;
-  /**
-   * True when any event in the current debounce batch arrived with no recent
-   * desktop self-write — such an event is definitely external, so the batch
-   * must emit even if a later desktop read-modify-write leaves the file
-   * byte-identical to the last self-write (the CLI-append-then-poller-persist
-   * coalescing case: the external change is absorbed into the self-write and
-   * a pure content compare would wrongly classify the batch as an echo).
-   */
-  sawExternalEvent: boolean;
 }
 
 const WORKTREES_FILE_DEBOUNCE_MS = 500;
@@ -94,36 +89,29 @@ function scheduleChange(
       return;
     }
     void (async (): Promise<void> => {
-      // Suppress pure self-write echoes: if the file on disk is byte-identical
-      // to what this process last wrote, the event carries no new information
-      // (main-initiated writes already reach the renderer via their own IPC
-      // events), and refreshing anyway turns every desktop persist — e.g. the
-      // GitHub poller writing lastKnownPrStatus — into a projects reload that
-      // re-syncs pollers and churns the sidebar. Only genuinely external
-      // content (the CLI adding a worktree) emits the refresh event.
+      // Suppress pure self-write echoes by content, never by event timing: a
+      // loaded main process can deliver an echo after the self-write window.
+      // Refreshing anyway turns every desktop persist (e.g. the GitHub poller
+      // writing lastKnownPrStatus) into a projects reload that re-syncs
+      // pollers and churns the sidebar. A self-write that absorbed an
+      // unannounced external change never matches (see
+      // isWorktreesSelfWriteContent), so that batch still emits.
       // The read intentionally bypasses the persistence layer's write locks: a
       // torn/partial read simply fails the compare and emits (the fail-open
       // direction), and a true self-write settles to a matching read on the
-      // next debounce.
+      // next debounce. A read that overlapped one of our writes may predate
+      // it, so it is retried rather than classified.
+      const writesStarted = worktreesSelfWritesStarted(workspaceId);
       const content = await readContent(entry, workspaceId, true);
       if (worktreesFileWatchers.get(workspaceId) !== entry) return;
       if (content !== null) entry.lastContent = content;
-      const sawExternalEvent = entry.sawExternalEvent;
-      entry.sawExternalEvent = false;
-      if (
-        !sawExternalEvent &&
-        content !== null &&
-        isWorktreesSelfWriteContent(workspaceId, content)
-      ) {
+      if (worktreesSelfWritesStarted(workspaceId) !== writesStarted) {
+        scheduleChange(workspaceId, getWindow, onExternalSnapshot);
         return;
       }
-      if (sawExternalEvent || content !== null) {
-        // External content observed: the retained fingerprint now describes
-        // "the last thing the desktop ever wrote", not a write this echo could
-        // belong to. Forget it so a later byte-exact external revert (desktop
-        // A → CLI B → CLI A) is not misclassified as a self-write echo.
-        clearWorktreesSelfWriteTracking(workspaceId);
-      }
+      if (content !== null && isWorktreesSelfWriteContent(workspaceId, content))
+        return;
+      recordObservedWorktreesContent(workspaceId, content);
       if (content !== null) {
         const worktrees = parseWorktreesFileReconciliationSnapshot(content);
         if (worktrees !== null) {
@@ -143,13 +131,13 @@ function startWatcher(
     workspaceId: string,
     worktrees: readonly WorktreeData[],
   ) => void,
+  deliveredWorktrees?: readonly WorktreeData[],
 ): void {
   const filePath = w5RecordReadPaths.worktrees(workspaceId);
   const filenameToWatch = basename(filePath);
   const entry: WorktreesFileWatcherEntry = {
     watcher: null,
     debounceTimer: null,
-    sawExternalEvent: false,
     lastContent: null,
     readInFlight: null,
   };
@@ -160,8 +148,6 @@ function startWatcher(
       label: `worktrees:${workspaceId}`,
       onChange: (_event, filename) => {
         if (filename && filename.toString() !== filenameToWatch) return;
-        if (!wasRecentWorktreesSelfWrite(workspaceId))
-          entry.sawExternalEvent = true;
         scheduleChange(workspaceId, getWindow, onExternalSnapshot);
       },
       poll: async () => {
@@ -174,7 +160,6 @@ function startWatcher(
         if (content === entry.lastContent) return;
         entry.lastContent = content;
         if (isWorktreesSelfWriteContent(workspaceId, content)) return;
-        entry.sawExternalEvent = true;
         scheduleChange(workspaceId, getWindow, onExternalSnapshot);
       },
       onFatal: () => {
@@ -184,9 +169,14 @@ function startWatcher(
       },
     });
     // Seed a content baseline so unchanged polling cannot reload the sidebar.
+    // Content the renderer may not hold (e.g. a CLI write whose event fired
+    // before this watch existed) is announced like any outside change.
+    startWorktreesContentTracking(workspaceId, deliveredWorktrees);
     void readContent(entry, workspaceId).then((content) => {
-      if (worktreesFileWatchers.get(workspaceId) === entry)
-        entry.lastContent = content;
+      if (worktreesFileWatchers.get(workspaceId) !== entry) return;
+      entry.lastContent = content;
+      if (!seedWorktreesContentBaseline(workspaceId, content))
+        scheduleChange(workspaceId, getWindow, onExternalSnapshot);
     });
   } catch (error) {
     worktreesFileWatchers.delete(workspaceId);
@@ -202,10 +192,15 @@ export function syncWorktreesFileWatchers(
     workspaceId: string,
     worktrees: readonly WorktreeData[],
   ) => void,
+  /** True when `items` is the snapshot the renderer receives. */
+  itemsDelivered = false,
 ): void {
-  const workspaceIds = new Set(
-    items.filter((item) => item.type !== 'cowork').map((item) => item.id),
+  const watchedItems = new Map(
+    items
+      .filter((item) => item.type !== 'cowork')
+      .map((item) => [item.id, item]),
   );
+  const workspaceIds = new Set(watchedItems.keys());
 
   for (const [workspaceId, entry] of Array.from(
     worktreesFileWatchers.entries(),
@@ -225,7 +220,12 @@ export function syncWorktreesFileWatchers(
       continue;
     }
     try {
-      startWatcher(workspaceId, getWindow, onExternalSnapshot);
+      startWatcher(
+        workspaceId,
+        getWindow,
+        onExternalSnapshot,
+        itemsDelivered ? watchedItems.get(workspaceId)?.worktrees : undefined,
+      );
     } catch {
       // The workspace directory may disappear between the sidebar read and
       // watcher creation. A later projects sync will retry it.

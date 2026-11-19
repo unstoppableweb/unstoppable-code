@@ -13,8 +13,17 @@ import type {
 } from '../../platform/platform-services';
 import type { DaemonStartupClaimPort } from '../../platform/startup-claim';
 
+/** Fixed-text binding refusals requiring an explicit offline maintenance attempt. */
+export class CanopyEndpointRepairRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CanopyEndpointRepairRequiredError';
+  }
+}
+
 export interface CanopyDaemonEndpointOptions {
   readonly dataRoot: string;
+  readonly signal?: AbortSignal;
   readonly platform: PlatformServices;
   readonly claims: DaemonStartupClaimPort;
   /** Caller retains the claim until descriptor publication completes. */
@@ -49,12 +58,43 @@ async function publishedDescriptor(
       error.code === 'ENOENT'
     )
       return undefined;
-    throw new Error('Stale owner unproven; offline repair required.');
+    throw new CanopyEndpointRepairRequiredError(
+      'Stale owner unproven; offline repair required.',
+    );
   }
   try {
     return CanopyRuntimeDescriptorSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
+  }
+}
+
+async function remappedBeforeBoot(
+  previous: CanopyRuntimeDescriptor | undefined,
+  endpointPath: string,
+  identity: PlatformEndpointPathIdentity,
+  supervision: PlatformServices['supervision'],
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (
+    previous?.endpoint.kind !== 'socket' ||
+    previous.endpoint.path !== endpointPath ||
+    !previous.socketIdentity ||
+    previous.socketIdentity.inode !== String(identity.inode) ||
+    previous.socketIdentity.device === String(identity.device)
+  )
+    return false;
+  try {
+    return (
+      (await supervision.bootRelation?.({
+        startIdentity: previous.startIdentity,
+        signal,
+      })) === 'before_boot'
+    );
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof Error && error.name === 'AbortError') throw error;
+    return false;
   }
 }
 
@@ -82,7 +122,16 @@ export async function assertCanopyDaemonEndpointStale({
     previous.endpoint.path === address.path &&
     previous.socketIdentity?.device === String(identity.device) &&
     previous.socketIdentity.inode === String(identity.inode);
-  if (published) {
+  const remapped =
+    !published &&
+    (await remappedBeforeBoot(
+      previous,
+      address.path,
+      identity,
+      supervision,
+      signal,
+    ));
+  if (previous && (published || remapped)) {
     const owner = await supervision.inspectProcess({
       pid: previous.pid,
       ...(signal && { signal }),
@@ -92,9 +141,11 @@ export async function assertCanopyDaemonEndpointStale({
       (owner.state === 'running' &&
         owner.startIdentity === previous.startIdentity)
     )
-      throw new Error('Stale owner unproven; offline repair required.');
+      throw new CanopyEndpointRepairRequiredError(
+        'Stale owner unproven; offline repair required.',
+      );
   } else if (!recoveredEndpointBind) {
-    throw new Error(
+    throw new CanopyEndpointRepairRequiredError(
       previous
         ? 'Foreign endpoint; offline repair required.'
         : 'Stale owner unproven; offline repair required.',

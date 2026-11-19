@@ -300,6 +300,58 @@ afterAll(() => {
 });
 
 describe('execution processes', () => {
+  (windows ? it : it.skip)(
+    'shares one lazy native launcher without sharing shutdown custody between services',
+    async () => {
+      const launcher = createJobLauncher({ os, nativePath: nativePath ?? '' });
+      const load = jest.spyOn(process, 'dlopen');
+      const first = createExecutionProcessServices({
+        os,
+        windowsLauncher: launcher,
+      });
+      const second = createExecutionProcessServices({
+        os,
+        windowsLauncher: launcher,
+      });
+      const request: Runtime.PlatformExecutionRequest = {
+        executable: process.execPath,
+        args: [fixture, 'echo'],
+        cwd: dir,
+        environment: environment(),
+        stdin: 'pipe',
+      };
+      try {
+        const [a, b] = await Promise.all([
+          first.start(request),
+          second.start(request),
+        ]);
+        expect(a.pid).not.toBe(b.pid);
+        expect(load).toHaveBeenCalledTimes(1);
+        await first.shutdown();
+        await expect(a.outcome).resolves.toMatchObject({ kind: 'cancelled' });
+        const stdin = b.stdin;
+        if (!stdin) throw new Error('no stdin');
+        const [out, err] = await Promise.all([
+          collect(b.stdout),
+          collect(b.stderr),
+          stdin
+            .write(Buffer.from('still owned by second'))
+            .then(() => stdin.end()),
+        ]);
+        expect(out.toString()).toBe('still owned by second');
+        expect(err.toString()).toBe('diagnostic');
+        await expect(b.outcome).resolves.toMatchObject({
+          kind: 'exited',
+          code: 3,
+        });
+        await second.shutdown();
+      } finally {
+        await Promise.allSettled([first.shutdown(), second.shutdown()]);
+        load.mockRestore();
+      }
+    },
+  );
+
   it('round-trips stdin, keeps stderr separate and reports the exit once', async () => {
     const child = await start('echo', [], { stdin: 'pipe' });
     expect(child.pid).toBeGreaterThan(1);

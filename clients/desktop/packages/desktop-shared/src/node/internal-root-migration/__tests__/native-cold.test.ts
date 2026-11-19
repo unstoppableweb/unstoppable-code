@@ -1708,6 +1708,9 @@ if (process.platform === 'linux') {
         await rm(root, { recursive: true, force: true });
       }
     },
+    // Three copies of the Node executable and a child start outlast Jest's 5 s
+    // default on 2-vCPU runners; the child's own 5 s ready deadline is unchanged.
+    30_000,
   );
 }
 it('admits Linux root-principal residuals but still refuses managed process hints', async () => {

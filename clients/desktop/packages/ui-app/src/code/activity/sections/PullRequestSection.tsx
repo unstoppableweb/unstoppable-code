@@ -4,6 +4,7 @@ import type { JSX } from 'react';
 import type { PortalPrStatus } from '@canopy/protocol/portal';
 import { PullRequestSectionBody } from '../PullRequestSectionBody';
 import { portalPrStatusToSectionModel } from '../portal-pr-section-mapper';
+import { PullRequestReviewApprovalNotice } from '../ReviewApprovalLinkNotice';
 
 /**
  * Portal Pull Requests card: renders the extracted desktop presentational
@@ -14,10 +15,19 @@ import { portalPrStatusToSectionModel } from '../portal-pr-section-mapper';
  */
 export interface PullRequestSectionProps {
   readonly prStatus: PortalPrStatus | undefined;
+  /**
+   * The review approval "Link GitHub" notice under Reviews (CAN-7162): the
+   * worktree's run owner and the product name. Absent: no notice.
+   */
+  readonly reviewApproval?: {
+    readonly runOwner: string;
+    readonly brandName: string;
+  };
 }
 
 export function PullRequestSection({
   prStatus,
+  reviewApproval,
 }: PullRequestSectionProps): JSX.Element {
   const model = portalPrStatusToSectionModel(prStatus);
   const hasPr = model.repos?.some((repo) => repo.status !== null) ?? false;
@@ -50,6 +60,19 @@ export function PullRequestSection({
         repos={model.repos}
         isCreating={model.isCreating}
         creationProgress={model.creationProgress}
+        {...(reviewApproval === undefined
+          ? {}
+          : {
+              renderReviewNotice: (repo) =>
+                repo.status === null ? null : (
+                  <PullRequestReviewApprovalNotice
+                    runOwner={reviewApproval.runOwner}
+                    prUrl={repo.status.prUrl}
+                    prState={repo.status.state}
+                    brandName={reviewApproval.brandName}
+                  />
+                ),
+            })}
       />
     </div>
   );

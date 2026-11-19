@@ -1,0 +1,61 @@
+import type { BrowserWindow } from 'electron';
+import {
+  IPC_CHANNELS,
+  type ChatIngestionLagEventData,
+  type PlanExitRequestEvent,
+  type PromptSuggestionEventData,
+} from '@canopy/desktop-shared/types';
+import { sendToWindow } from '../lib/window-send';
+
+export interface AgentChatTarget {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+/**
+ * What an agent session asks of the interfaces that show its chat: the
+ * display-client capability (daemon plan document 10). Electron main backs
+ * it with its main window; a daemon host backs it with interface leases.
+ * Sessions reach no window except through it (CAN-6995).
+ */
+export interface AgentInterfacePort {
+  /**
+   * Transient `chat:event`s outside admission and commit, never written to
+   * the transcript. One typed member per event keeps the controller-visible
+   * `chat:event` shape what deployed clients read.
+   */
+  publishPromptSuggestion(
+    target: AgentChatTarget,
+    data: PromptSuggestionEventData,
+  ): void;
+  publishIngestionLag(
+    target: AgentChatTarget,
+    data: ChatIngestionLagEventData,
+  ): void;
+  /** Shows a plan-exit request the session has already committed. */
+  presentPlanExit(event: PlanExitRequestEvent): void;
+  /**
+   * The window, for the intents still to move onto this port: approvals,
+   * questions, delegation, file comments and worktree actions.
+   */
+  legacyWindow(): BrowserWindow | null;
+}
+
+/** The port over Electron main's window accessor. */
+export function windowAgentInterfacePort(
+  getWindow: () => BrowserWindow | null,
+): AgentInterfacePort {
+  return {
+    publishPromptSuggestion: (target, data): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
+    },
+    publishIngestionLag: (target, data): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, { ...target, data });
+    },
+    presentPlanExit: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.planExitRequest, event);
+    },
+    legacyWindow: getWindow,
+  };
+}

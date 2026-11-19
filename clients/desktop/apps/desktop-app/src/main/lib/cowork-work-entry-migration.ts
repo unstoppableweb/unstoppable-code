@@ -32,6 +32,7 @@ import {
   type CoworkWorkEntryData,
 } from '@canopy/desktop-shared/types';
 import { hasMigrationRun, markMigrationRun } from './migrations';
+import { reportStartupStepFailure } from './startup-step';
 import { readWorkspaceIndexEntries } from './sidebar-items';
 import { readChatTabsFileForIndex } from './chat-tabs-reader';
 import { appendWorkEntryRows } from './cowork-work-entries';
@@ -186,6 +187,8 @@ export async function migrateCoworkChatsToWorkEntries(): Promise<void> {
         `Failed to migrate cowork project ${workspaceId} to work entries:`,
         error,
       );
+      // The fixed source carries no workspace id.
+      reportStartupStepFailure('migration.cowork_work_entries', error);
     }
   }
 

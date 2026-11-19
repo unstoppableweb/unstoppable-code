@@ -1,6 +1,6 @@
 import { getFeatureFlagService } from '../feature-flags';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 import { getOrgProjectCatalogService } from './org-project-catalog-service';
 
 export interface OrgProjectSnapshotInvalidationDeps {
@@ -37,6 +37,7 @@ function defaultDeps(): OrgProjectSnapshotInvalidationDeps {
       getWorkspaceContextService().subscribe(() => listener()),
     subscribeFeatureFlags: (listener) =>
       getFeatureFlagService().onSnapshotChanged(() => listener()),
-    schedule: scheduleDesktopSessionSnapshotInvalidation,
+    schedule: (): void =>
+      requestDesktopSessionSnapshotInvalidation('org-project'),
   };
 }

@@ -39,7 +39,18 @@ export const GITHUB_CLOUD_TARGET_STATES = [
 export type GitHubCloudTargetState =
   (typeof GITHUB_CLOUD_TARGET_STATES)[number];
 
-export const GITHUB_CLOUD_CONNECT_INTENTS = ['connect', 'install'] as const;
+/**
+ * What a Connect asks for once GitHub sign-in is linked:
+ * - `connect`: finish, or offer the App install when none is usable.
+ * - `install`: always offer the App install (another account).
+ * - `identity`: finish as soon as the GitHub identity is linked, whatever the
+ *   install state (review approvals need only the linked account).
+ */
+export const GITHUB_CLOUD_CONNECT_INTENTS = [
+  'connect',
+  'install',
+  'identity',
+] as const;
 export type GitHubCloudConnectIntent =
   (typeof GITHUB_CLOUD_CONNECT_INTENTS)[number];
 

@@ -35,9 +35,11 @@ import { readRootVisibility, type FilesystemRootCatalog } from './root-catalog';
 import {
   readFilesystemScope,
   filesystemScopeError,
+  isFilesystemSnapshotUnavailable,
   type FilesystemReadOperation,
   type FilesystemScopeDependencies,
 } from './scope-reader';
+import { isUnreadablePathError } from './unreadable-path-error';
 
 async function snapshot(
   scope: CanopyWorkspaceScope,
@@ -63,8 +65,11 @@ async function snapshot(
       catalog,
       catalogRevision: await createCatalogRevision(catalog, dependencies, key),
     };
-  } catch {
-    throw filesystemScopeError(operation, 'invalidState');
+  } catch (error) {
+    // A root identity the system refused to read is not an invalid scope.
+    throw isUnreadablePathError(error)
+      ? filesystemScopeError(operation, 'snapshotUnavailable', error)
+      : filesystemScopeError(operation, 'invalidState');
   }
 }
 
@@ -100,7 +105,10 @@ export async function withVerifiedFilesystemCatalog<Result>(
   const current = async (): Promise<Awaited<ReturnType<typeof snapshot>>> => {
     try {
       return await snapshot(scope, dependencies, operation);
-    } catch {
+    } catch (error) {
+      // A catalog that can't be read is not a changed one: a refresh would
+      // fail the same way, so the caller must not retry on it.
+      if (isFilesystemSnapshotUnavailable(error)) throw error;
       throw filesystemScopeError(operation, 'revisionConflict');
     }
   };
@@ -177,15 +185,18 @@ export async function listFilesystemScopeDirectory(
     async (catalog) => {
       const root = catalog.byId.get(params.fileRootId);
       if (!root) throw filesystemScopeError('directory', 'notFound');
-      const entries = await readFilesystemDirectory(
-        root,
-        params.relativePath,
-        options,
-      ).catch(() => {
-        throw filesystemScopeError('directory', 'invalidState');
+      const ignore = { unknown: false };
+      const entries = await readFilesystemDirectory(root, params.relativePath, {
+        ...options,
+        onIgnoreStateUnknown: () => {
+          ignore.unknown = true;
+        },
+      }).catch((error: unknown) => {
+        throw filesystemScopeError('directory', 'invalidState', error);
       });
       return {
         catalogRevision: initial.catalogRevision,
+        ...(ignore.unknown && { ignoreStateUnknown: true }),
         entries: entries.map((entry) => ({
           name: entry.name,
           relativePath: entry.relativePath,
@@ -299,7 +310,7 @@ export async function searchFilesystemScope(
       } catch (error) {
         if (error instanceof CanopyOperationError) throw error;
         options.signal?.throwIfAborted();
-        throw filesystemScopeError('search', 'invalidState');
+        throw filesystemScopeError('search', 'invalidState', error);
       }
       return { ...page.result, catalogRevision: initial.catalogRevision };
     },

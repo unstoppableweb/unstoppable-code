@@ -33,10 +33,12 @@ const SENT = 'Book Studio B for Thursday at 3pm.';
 
 /**
  * Launches the app against the seeded world, runs `body` with the window and
- * the fake web core, and closes both.
+ * the fake web core, and closes both. `setup` changes the world before the
+ * app first reads it.
  */
-async function withSeededCoworkPage(body) {
+async function withSeededCoworkPage(body, setup = () => {}) {
   const cloud = await startCloudChatsWebCore();
+  setup(cloud);
   const userDataDir = mkdtempSync(
     path.join(os.tmpdir(), 'cloud-task-cowork-page-'),
   );
@@ -601,6 +603,124 @@ test("a cloud task archives from its own tab's menu or its sidebar row, and a re
   });
 });
 
+/** A manifest that lists `core.chat.delete` as served (CAN-7052). */
+const SERVES_TASK_DELETE = () => ({
+  result: {
+    runtime: {
+      runtimeId: 'web-core',
+      hostId: 'web',
+      authorityId: null,
+      profile: 'core',
+      daemonEpoch: 'e1',
+      protocolVersions: [1],
+      state: 'ready',
+    },
+    operations: [
+      {
+        name: 'core.chat.delete',
+        kind: 'instruction',
+        version: 1,
+        placement: 'core-only',
+        requiredGrants: ['core.chat.write'],
+        available: true,
+      },
+    ],
+    generatedAt: '2026-11-11T09:00:00.000Z',
+  },
+});
+
+test('a cloud task offers Delete only where the web core serves it, and deletes it to the Trash after the same confirmation as the web (CAN-7052)', async () => {
+  test.setTimeout(240_000);
+  // Without a manifest that lists the delete, the row archives only.
+  await withSeededCoworkPage(async (window, cloud) => {
+    const row = window.locator(
+      `[data-testid="worktree-row"][data-worktree-id="web-core:${SEEDED_CLOUD_CHATS.taskId}"]`,
+    );
+    await expect(row.first()).toBeVisible({ timeout: 30_000 });
+    await row.first().click({ button: 'right' });
+    await expect(
+      window.getByTestId('worktree-actions-menu-archive').first(),
+    ).toBeVisible();
+    await expect(
+      window.getByTestId('worktree-actions-menu-delete'),
+    ).toHaveCount(0);
+    await window.keyboard.press('Escape');
+    expect(cloud.world.state.taskDeletes).toEqual([]);
+  });
+
+  await withSeededCoworkPage(
+    async (window, cloud, handlerErrors) => {
+      const taskId = SEEDED_CLOUD_CHATS.taskId;
+      const row = window.locator(
+        `[data-testid="worktree-row"][data-worktree-id="web-core:${taskId}"]`,
+      );
+      await expect(row.first()).toBeVisible({ timeout: 30_000 });
+      await row.first().click({ button: 'right' });
+      await expect(
+        window.getByTestId('worktree-actions-menu-archive').first(),
+      ).toBeVisible();
+      await window.getByTestId('worktree-actions-menu-delete').first().click();
+
+      // The web's own confirmation: what it removes and for how long.
+      const confirm = window.getByTestId('portal-delete-worktree-confirm');
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toContainText(
+        'Deleted chats are kept for 7 days, then removed. You can restore it from Archived and deleted.',
+      );
+
+      // A refusal keeps the dialog open and says so; the task stays.
+      cloud.world.state.extraAnswers.set('core.chat.delete', () => ({
+        error: {
+          kind: 'unavailable',
+          message: 'The web core is restarting.',
+          retry: { kind: 'never' },
+        },
+      }));
+      await confirm.getByRole('button', { name: /^Delete/ }).click();
+      await expect(
+        confirm.getByText("Couldn't delete the task. Try again."),
+      ).toBeVisible();
+      await expect(row.first()).toBeVisible();
+
+      // Tried again once it's served, the task goes to the Trash, once.
+      cloud.world.state.extraAnswers.delete('core.chat.delete');
+      await confirm.getByRole('button', { name: /^Delete/ }).click();
+      await expect(confirm).toHaveCount(0);
+      await expect(row).toHaveCount(0, { timeout: 15_000 });
+      expect(cloud.world.state.trashed.has(taskId)).toBe(true);
+      expect(cloud.world.state.taskDeletes).toEqual([
+        expect.objectContaining({
+          projectId: SEEDED_CLOUD_CHATS.workspaceId,
+          worktreeId: taskId,
+          action: { type: 'chat.close_tab', tabId: taskId, mode: 'discard' },
+        }),
+      ]);
+
+      // It waits on the project's More page as deleted, and restores in place.
+      const project = `web-core:${SEEDED_CLOUD_CHATS.workspaceId}`;
+      await window
+        .getByTestId(`sidebar-project-${project}-archived-link`)
+        .click();
+      const restore = window.getByTestId(
+        `cloud-more-tasks-restore-work-entry:${taskId}`,
+      );
+      await expect(restore).toBeVisible({ timeout: 15_000 });
+      await restore.click();
+      await expect(row.first()).toBeVisible({ timeout: 15_000 });
+      expect(cloud.world.state.trashed.has(taskId)).toBe(false);
+      expect(handlerErrors.filter((error) => error.includes(taskId))).toEqual(
+        [],
+      );
+    },
+    (cloud) => {
+      cloud.world.state.extraAnswers.set(
+        'core.runtime.manifest.get',
+        SERVES_TASK_DELETE,
+      );
+    },
+  );
+});
+
 test("an archived cloud task waits on its project's More page, and Restore brings it back to the sidebar (CAN-6511)", async () => {
   test.setTimeout(180_000);
   await withSeededCoworkPage(async (window, cloud, handlerErrors) => {
@@ -658,7 +778,7 @@ test("an archived cloud task waits on its project's More page, and Restore bring
   });
 });
 
-test("a cloud task's Activity lists its project's workspace files, and no Summary (CAN-6568)", async () => {
+test("a cloud task's Activity lists its project's workspace files, adds and removes one, and shows no Summary (CAN-6568, CAN-7008)", async () => {
   test.setTimeout(180_000);
   await withSeededCoworkPage(async (window, cloud) => {
     cloud.world.addWorkspaceFile({ name: 'ericeira_weather_next_5_days.csv' });
@@ -686,6 +806,113 @@ test("a cloud task's Activity lists its project's workspace files, and no Summar
         .getByTestId('workspace-file-row')
         .getByText('ericeira_weather_next_5_days.csv'),
     ).toBeVisible({ timeout: 15_000 });
+
+    // Adding a file uploads its bytes through main in one keyed upload, and
+    // the list shows it once the web core stores it (CAN-7008).
+    await files.getByTestId('workspace-files-input').setInputFiles({
+      name: 'studio_brief.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Book Studio B for Thursday.'),
+    });
+    await expect(
+      files.getByTestId('workspace-file-row').getByText('studio_brief.txt'),
+    ).toBeVisible({ timeout: 15_000 });
+    const uploads = cloud.world.state.workspaceFileUploads;
+    expect(uploads.map((call) => call.method)).toEqual([
+      'worker.artifact.upload.open',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.commit',
+    ]);
+    expect(uploads[0].params).toMatchObject({
+      artifactId: 'workspace-file:',
+      name: 'studio_brief.txt',
+      sizeBytes: 27,
+    });
+
+    // Replacing it uploads a new version that names the version it replaces,
+    // read from the list at revision 2.
+    const brief = cloud.world.state.workspaceFiles.find(
+      (row) => row.name === 'studio_brief.txt',
+    );
+    const briefRow = files
+      .getByTestId('workspace-file-row')
+      .filter({ hasText: 'studio_brief.txt' });
+    await briefRow.hover();
+    await briefRow.getByTestId('workspace-file-replace').click();
+    await files.getByTestId('workspace-files-input').setInputFiles({
+      name: 'studio_brief.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Book Studio B for Friday instead.'),
+    });
+    await expect.poll(() => uploads.length, { timeout: 15_000 }).toBe(6);
+    expect(uploads[3].params).toMatchObject({
+      artifactId: `workspace-file:${brief.id}`,
+      expectedVersionId: brief.versionId,
+    });
+    expect(
+      cloud.world.state.workspaceFiles.find((row) => row.id === brief.id)
+        .versionId,
+    ).not.toBe(brief.versionId);
+
+    // Removing one asks first, then removes it over the relay.
+    const weather = files
+      .getByTestId('workspace-file-row')
+      .filter({ hasText: 'ericeira_weather_next_5_days.csv' });
+    await weather.hover();
+    await weather.getByTestId('workspace-file-remove').click();
+    await files.getByTestId('workspace-file-remove-confirm').click();
+    await expect(weather).toHaveCount(0, { timeout: 15_000 });
+    expect(cloud.world.state.workspaceFiles.map((row) => row.name)).toEqual([
+      'studio_brief.txt',
+    ]);
+  });
+});
+
+test('a cloud task with no workspace files adds its first one from Add, and again after removing it (CAN-7008)', async () => {
+  test.setTimeout(180_000);
+  await withSeededCoworkPage(async (window, cloud) => {
+    await openSeededTask(window);
+    await expectBothChats(window);
+    await expandDefaultActivityRail(window);
+    await window.locator('[data-testid^="panel-add-tab-"]').first().click();
+    await window
+      .getByTestId('panel-add-menu-item-activity-card-workspace-files')
+      .click();
+    const files = window.getByTestId('portal-workspace-files').first();
+    await expect(files.getByText('No shared files yet.')).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // Add opens the picker even with no files; the pick uploads through main.
+    const addFirst = async (name) => {
+      const chooser = window.waitForEvent('filechooser');
+      await window.getByTestId('workspace-files-header-add').first().click();
+      await (
+        await chooser
+      ).setFiles({
+        name,
+        mimeType: 'text/plain',
+        buffer: Buffer.from(`${name} body`),
+      });
+      await expect(
+        files.getByTestId('workspace-file-row').filter({ hasText: name }),
+      ).toBeVisible({ timeout: 15_000 });
+    };
+    await addFirst('first_brief.txt');
+
+    // Removing the last file keeps the card and its Add.
+    const row = files.getByTestId('workspace-file-row');
+    await row.hover();
+    await row.getByTestId('workspace-file-remove').click();
+    await files.getByTestId('workspace-file-remove-confirm').click();
+    await expect(files.getByText('No shared files yet.')).toBeVisible({
+      timeout: 15_000,
+    });
+    expect(cloud.world.state.workspaceFiles).toEqual([]);
+    await addFirst('second_brief.txt');
+    expect(cloud.world.state.workspaceFiles.map((file) => file.name)).toEqual([
+      'second_brief.txt',
+    ]);
   });
 });
 

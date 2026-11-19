@@ -8,6 +8,11 @@ import {
   type McpServerFile,
 } from '@canopy/execution-engine/types/mcp-servers';
 import { CURATED_PLUGIN_MARKETPLACE_ID } from '@canopy/execution-engine/types/plugins';
+import {
+  pluginAccountMcpConfigId,
+  type AccountMcpRefResolution,
+  type McpServerRef,
+} from '@canopy/protocol/mcp-servers';
 import { safeReadJson } from '../lib/fs-utils';
 import { getMcpServerFilePath, getMcpServersIndexFilePath } from '../lib/paths';
 import { pluginMcpCuratedKey } from './account-routing';
@@ -42,23 +47,51 @@ export type CuratedAccountMcpLookup =
   | { kind: 'connection'; connection: AccountMcpConnection }
   /** No account connection carries the key; a device file may bind instead. */
   | { kind: 'none' }
-  /** Several configs carry the key and none is the default; never guess. */
+  /**
+   * Several accounts carry the key and none is the default (an older cloud
+   * that sends no default flag), or an unattended run finds more than one;
+   * never guess.
+   */
   | { kind: 'ambiguous' };
+
+/** How a curated member's account is chosen besides its key. */
+export interface CuratedAccountMcpLookupOptions {
+  /** `attended` when omitted. */
+  resolution?: AccountMcpRefResolution;
+  /**
+   * The selection's direct MCP refs. A connector the selection picks one
+   * account of directly sends its plugins' servers to that account too.
+   */
+  directRefs?: readonly McpServerRef[];
+}
 
 /**
  * The account connection a curated member binds to, with the connection's
- * live status so a caller can fail closed on one that is not connected. The
- * default config wins, then a single remaining candidate; two configs without
- * a default never bind (`matchAccountMcpConnection`) and are reported as
- * ambiguous so the caller does not fall through to a device file.
+ * live status so a caller can fail closed on one that is not connected. A
+ * server a plugin brings reaches the account the same selection picks for
+ * that connector directly (CAN-6232, `pluginAccountMcpConfigId`), else the
+ * person's default account (CAN-6226): the one the cloud flags, else the
+ * `default` config, else the only one. Several without a default never bind
+ * (`matchAccountMcpConnection`) and are reported as ambiguous so the caller
+ * does not fall through to a device file; so is a picked added account that
+ * is gone. An unattended run (a pipeline prompt or an automation's turn)
+ * never picks the default: with no pick only the connector's sole account
+ * binds, and several are ambiguous.
  */
 export function findCuratedAccountMcpConnection(
   connections: readonly AccountMcpConnection[],
   curatedKey: string,
+  options: CuratedAccountMcpLookupOptions = {},
 ): CuratedAccountMcpLookup {
+  const configId = pluginAccountMcpConfigId(
+    options.directRefs ?? [],
+    curatedKey,
+    connections.filter((row): boolean => row.kind === 'CURATED'),
+  );
   const connection = matchAccountMcpConnection(connections, {
     curatedKey,
-    configId: CURATED_PLUGIN_DEFAULT_CONFIG_ID,
+    ...(configId === undefined ? {} : { configId }),
+    resolution: options.resolution ?? 'attended',
   });
   if (connection) return { kind: 'connection', connection };
   return connections.some(

@@ -16,7 +16,7 @@ import {
 } from '@canopy/app-state/core-cowork';
 import { formatAskUserAnswers } from '@canopy/desktop-shared/lib/ask-user-answers';
 import { createPersistedFileTab } from '@canopy/desktop-shared/persisted-chat-state';
-import { sendFailure } from './send-refusal';
+import { sendFailure, WebCoreSendRefusedError } from './send-refusal';
 import type {
   AgentProviderType,
   ArchivedChatSummary,
@@ -247,6 +247,8 @@ interface SendClaim {
   readonly reported: Set<string>;
   /** Called once, as the send settles; a Stop sets it. */
   onTurn: ((turn: ClaimedTurn) => void) | null;
+  /** Ends the send's wait for a rebuild early; set while it waits (REG-3119). */
+  wake: (() => void) | null;
   closed: boolean;
 }
 
@@ -555,6 +557,13 @@ const EDIT_HOLD_RENEW_MS = 20_000;
 const SUPERSEDE_ATTEMPTS = 3;
 const SUPERSEDE_BACKOFF_MS = 250;
 const SUPERSEDE_MAX_DELAY_MS = 2_000;
+
+/**
+ * How long a send refused by a running worktree rebuild is resent under its
+ * command: a rebuild waits no longer than this for the sends before it
+ * (REG-3119). Past it, the send fails as any refusal does.
+ */
+const REBUILD_SEND_WAIT_MS = 10 * 60_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -1378,6 +1387,7 @@ export function createWebCoreChatBackendCore(
       order,
       reported: new Set(),
       onTurn: null,
+      wake: null,
       closed: false,
     };
     const key = claimKey(scope, chatId);
@@ -3878,10 +3888,12 @@ export function createWebCoreChatBackendCore(
       };
       readonly chatId: string;
       readonly commandId: string;
+      readonly claim: SendClaim;
     },
     params: Record<string, unknown>,
     /** Whether the send may have landed though no receipt says so. */
     uncertain: { landed: boolean },
+    rebuildWaitUntil = Date.now() + REBUILD_SEND_WAIT_MS,
   ): Promise<unknown> {
     uncertain.landed = true;
     const reply = await invoker().request('core.chat.message.send', params);
@@ -3889,7 +3901,45 @@ export function createWebCoreChatBackendCore(
       uncertain.landed = false;
       return reply.value;
     }
-    const { retry } = reply.error;
+    const { retry, details } = reply.error;
+    // A running rebuild refused it at admission, before any Core post, so
+    // the same command is safe to resend; the web core moves it to the
+    // chat's new session after the cutover (REG-3119).
+    // shortcut: resends only on cloud-worktree-recovery-in-progress and gives up after 10 min, widen if other retryable send refusals need the same wait.
+    if (
+      retry.kind === 'same_idempotency_key' &&
+      isRecord(details) &&
+      details.cloudCode === 'cloud-worktree-recovery-in-progress'
+    ) {
+      uncertain.landed = false;
+      // Past the wait it fails unsent, so the composer takes it back.
+      if (Date.now() >= rebuildWaitUntil)
+        throw new WebCoreSendRefusedError(reply.error);
+      const { claim } = target;
+      // A Stop waiting on the claim (its onTurn) ends the wait: the send
+      // goes unsent, as nothing of it reached Core.
+      if (!claim.closed && claim.onTurn === null)
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(
+            resolve,
+            Math.max(
+              0,
+              Math.min(retry.delayMs ?? 2_000, rebuildWaitUntil - Date.now()),
+            ),
+          );
+          claim.wake = (): void => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      claim.wake = null;
+      // The connection ended meanwhile: its claim is gone, so the send fails
+      // unsent rather than post through the next connection.
+      if (claim.closed) throw webCoreUnavailable('The web core');
+      if (claim.onTurn !== null || Date.now() >= rebuildWaitUntil)
+        throw new WebCoreSendRefusedError(reply.error);
+      return sendOnce(target, params, uncertain, rebuildWaitUntil);
+    }
     if (
       retry.kind !== 'same_idempotency_key' &&
       retry.kind !== 'same_request'
@@ -4159,7 +4209,7 @@ export function createWebCoreChatBackendCore(
         if (press !== undefined) await whenCloudSendMayPost(press);
         const parsed = CoreChatCommandReceiptSchema.safeParse(
           await sendOnce(
-            { scope, chatId, commandId },
+            { scope, chatId, commandId, claim },
             {
               scope,
               commandId,
@@ -4412,6 +4462,8 @@ export function createWebCoreChatBackendCore(
           if (turn.kind === 'named') entry.turnId = turn.turnId;
           resolve(stopClaimedTurn(req, chatId, turn, entry));
         };
+        // A send waiting out a rebuild posts nothing more (REG-3119).
+        claim.wake?.();
       });
     // A send that may run with no turn named yet: the chat's snapshot may
     // name it; if not, nothing says it ended, so Stop stays to try again.
@@ -4525,6 +4577,7 @@ export function createWebCoreChatBackendCore(
       for (const claim of open) {
         claim.closed = true;
         claim.onTurn?.({ kind: 'unknown' });
+        claim.wake?.();
       }
     claims.clear();
     stops.clear();

@@ -39,7 +39,7 @@ export class BrowserHandoffStore {
         this.worktreeRevisions.get(
           `${origin.projectId}/${origin.worktreeId}`,
         ) ?? 0,
-      chatRevision: this.chatRevisions.get(origin.chatTabId) ?? 0,
+      chatRevision: this.chatRevisions.get(presentationChatKey(origin)) ?? 0,
     };
   }
 
@@ -99,20 +99,40 @@ export class BrowserHandoffStore {
   }
 
   release(handoffId: string): void {
+    this.releaseHandoffs([handoffId]);
+  }
+
+  private releaseHandoffs(handoffIds: readonly string[]): void {
+    const ids = new Set(handoffIds);
+    const released: PendingHandoff[] = [];
     for (const [key, entry] of Array.from(this.pending)) {
-      if (entry.handoff.handoffId !== handoffId) continue;
+      if (!ids.has(entry.handoff.handoffId)) continue;
       this.pending.delete(key);
-      entry.publish({
-        type: 'handoff-released',
-        browserId: entry.handoff.browserId,
-        handoffId,
-        projectId: entry.handoff.projectId,
-        worktreeId: entry.handoff.worktreeId,
-        revision: ++this.revision,
-        runtimeGeneration: entry.handoff.runtimeGeneration,
-      });
-      return;
+      released.push(entry);
     }
+    // Finish internal cleanup before invoking any window publisher. One failed
+    // notification must not leave another target pinned or skip its event.
+    const failures: unknown[] = [];
+    for (const entry of released) {
+      try {
+        entry.publish({
+          type: 'handoff-released',
+          browserId: entry.handoff.browserId,
+          handoffId: entry.handoff.handoffId,
+          projectId: entry.handoff.projectId,
+          worktreeId: entry.handoff.worktreeId,
+          revision: ++this.revision,
+          runtimeGeneration: entry.handoff.runtimeGeneration,
+        });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(
+        failures,
+        'Browser handoff release notification failed',
+      );
   }
 
   captureOrigin(origin: ShowFilesChatOrigin): string[] {
@@ -126,21 +146,11 @@ export class BrowserHandoffStore {
   }
 
   releaseOrigin(origin: ShowFilesChatOrigin): void {
-    this.chatRevisions.set(
-      origin.chatTabId,
-      (this.chatRevisions.get(origin.chatTabId) ?? 0) + 1,
-    );
-    for (const id of this.captureOrigin(origin)) this.release(id);
-  }
-
-  releaseChat(chatTabId: string): void {
-    this.chatRevisions.set(
-      chatTabId,
-      (this.chatRevisions.get(chatTabId) ?? 0) + 1,
-    );
-    for (const { handoff } of Array.from(this.pending.values()))
-      if (handoff.origin.chatTabId === chatTabId)
-        this.release(handoff.handoffId);
+    // Chat ids are unique within a scope, including compatibility imports.
+    // Removing one origin must not fence the same id in another scope.
+    const key = presentationChatKey(origin);
+    this.chatRevisions.set(key, (this.chatRevisions.get(key) ?? 0) + 1);
+    this.releaseHandoffs(this.captureOrigin(origin));
   }
 
   releaseBrowser(browserId: string): void {

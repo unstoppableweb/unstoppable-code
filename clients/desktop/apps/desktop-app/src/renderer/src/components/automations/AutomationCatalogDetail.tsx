@@ -6,7 +6,7 @@ import {
   SettingsRowsValue,
   Heading,
 } from '@canopy/ui-shared/components';
-import { type JSX, useEffect, useRef, useState } from 'react';
+import { type JSX, type ReactNode, useEffect, useRef, useState } from 'react';
 import { Notice, NoticeButton } from '@canopy/ui-shared';
 import {
   BusyLabel,
@@ -14,6 +14,30 @@ import {
   DetailPageActions,
 } from '@canopy/ui-shared/components';
 import { AutomationDefinitionSummary } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
+import {
+  AutomationReadDetail,
+  CenteredLoadingSpinner,
+  CustomizeEntryLogo,
+  CustomizePublisher,
+  CustomizeRowSplitButton,
+  DetailActionBar,
+  DetailFactError,
+  DetailVersionUpdateFact,
+  WorkflowLastRunText,
+} from '@canopy/ui-shared/components';
+import {
+  customizeRowAction,
+  customizeWorkflowAvailability,
+  customizeDiscoveryIdentity,
+  customizeWorkflowSource,
+  isPendingSharedAutomationEntry,
+  sharedAutomationEntry,
+  type CustomizeWorkflowActions,
+  type CustomizeWorkflowAvailability,
+} from '@canopy/ui-app/capability';
+import { WORKFLOW_MANAGE_UNAVAILABLE_REASON } from '@canopy/ui-app/workflows';
+import { toAppError } from '@canopy/protocol/app-errors';
+import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib/unified-plugin-entry';
 import { describeFiveFieldCron } from '@canopy/ui-shared/lib/cron-description';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
 import { getAutomationTriggerLabel } from '@canopy/desktop-shared/lib/automations';
@@ -238,6 +262,321 @@ export function AutomationCatalogDetail({
   );
 }
 
+/** New Customize: the tile's identity, for a page on the shared layout. */
+export interface AutomationDetailIdentity {
+  /** The tile's entry, with New Customize's identity applied. */
+  readonly entry: UnifiedPluginEntry;
+  readonly logo: ReactNode;
+  readonly publisher: ReactNode;
+}
+
+const NO_WORKFLOW_ACTIONS: CustomizeWorkflowAvailability = {
+  run: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+  toggle: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+  runNow: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+  edit: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+  viewRuns: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+  delete: { available: false, reason: WORKFLOW_MANAGE_UNAVAILABLE_REASON },
+};
+
+/** A source's own schedule, which whoever adds it may change. */
+function suggestedSchedule(
+  trigger: SharedAutomationDetail['automation']['trigger'],
+): string {
+  return trigger.kind === 'cron'
+    ? (describeFiveFieldCron(trigger.expression) ?? trigger.expression)
+    : `One time · ${new Date(trigger.runAt).toLocaleString()}`;
+}
+
+function formatNextRun(at: string | undefined): string | undefined {
+  if (!at) return undefined;
+  const date = new Date(at);
+  return Number.isNaN(date.getTime())
+    ? undefined
+    : date.toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+}
+
+/**
+ * An automation's On/Off, as its tile draws it: the tile's split control
+ * with the tile's availability, read from the live automation. A failed
+ * change goes to `onError`, which the page says beside the actions.
+ */
+function AutomationToggle({
+  activity,
+  tile,
+  workflowActions,
+  onError,
+}: {
+  activity: ScheduledActivity;
+  tile: UnifiedPluginEntry;
+  workflowActions: CustomizeWorkflowActions | undefined;
+  onError: (message: string | null) => void;
+}): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const entry: UnifiedPluginEntry = {
+    ...tile,
+    workflow: { ...tile.workflow, enabled: activity.enabled },
+  };
+  const availability = workflowActions
+    ? customizeWorkflowAvailability(entry, workflowActions)
+    : NO_WORKFLOW_ACTIONS;
+  const toggle = (): void => {
+    const onSetEnabled = workflowActions?.onSetEnabled;
+    if (!onSetEnabled || busy) return;
+    const next = !activity.enabled;
+    setBusy(true);
+    onError(null);
+    onSetEnabled(entry, next)
+      .catch((failure: unknown) => {
+        onError(
+          toAppError(failure)?.detail.message.trim() ||
+            `Couldn't turn ${next ? 'on' : 'off'} this automation`,
+        );
+      })
+      .finally(() => setBusy(false));
+  };
+  const split = customizeRowAction({
+    entry,
+    workflow: { availability, busy, onRun: () => undefined, onToggle: toggle },
+    installed: true,
+    statuses: [],
+    pendingKeys: new Set(),
+  });
+  return (
+    <CustomizeRowSplitButton
+      // The page's title names it; its labels keep the automation's own
+      // name out of session replay.
+      entryName="this automation"
+      idPrefix={`automation-detail-${activity.id}`}
+      action={{
+        ...split,
+        accessibleName: `This automation is ${activity.enabled ? 'on' : 'off'}`,
+      }}
+      items={[]}
+      testId="automation-detail-toggle-menu"
+    />
+  );
+}
+
+function toggleNotice(error: string | null): ReactNode {
+  return error ? (
+    <DetailFactError error={error} testId="automation-detail-toggle-error" />
+  ) : undefined;
+}
+
+/** The local copy's row, for a source page whose automation is installed. */
+function installedCopyEntry(
+  source: UnifiedPluginEntry,
+  activity: ScheduledActivity,
+): UnifiedPluginEntry {
+  return {
+    ...source,
+    id: `automation:local:${activity.id}`,
+    name: activity.name,
+    state: 'installed',
+    ref: { type: 'automation', activityId: activity.id },
+  };
+}
+
+/**
+ * New Customize's page for a local automation: the tile's On/Off as the
+ * primary, Open in Workflows beside it, Update in the Version row.
+ */
+export function LocalAutomationLayoutDetail({
+  activity,
+  identity,
+  updateAvailable,
+  onOpenInAutomations,
+  workflowActions,
+}: {
+  activity: ScheduledActivity;
+  identity: AutomationDetailIdentity;
+  updateAvailable: boolean;
+  onOpenInAutomations: () => void;
+  workflowActions?: CustomizeWorkflowActions;
+}): JSX.Element {
+  const update = useAutomationUpdateSource();
+  const source = automationUpdateSourceOf(activity);
+  const canUpdate = updateAvailable && source !== null;
+  const [toggleError, setToggleError] = useState<string | null>(null);
+  const entry = identity.entry;
+  const openUpdate = (): void => {
+    update.openUpdate(activity).catch((failure: unknown) => {
+      // The hook keeps the failure, which the Version row shows.
+      toAppError(failure);
+    });
+  };
+  const workflowSource = customizeWorkflowSource(entry);
+  return (
+    <>
+      <AutomationReadDetail
+        name={entry.name}
+        description={entry.description}
+        logo={identity.logo}
+        publisher={identity.publisher}
+        actions={
+          <DetailActionBar
+            secondary={
+              <Button
+                size="compact"
+                onClick={onOpenInAutomations}
+                data-testid="automation-catalog-open"
+              >
+                Open in Workflows
+              </Button>
+            }
+            primary={
+              <AutomationToggle
+                activity={activity}
+                tile={entry}
+                workflowActions={workflowActions}
+                onError={setToggleError}
+              />
+            }
+          />
+        }
+        actionsNotice={toggleNotice(toggleError)}
+        {...(workflowSource
+          ? {
+              source: workflowSource,
+              sourceIsPerson: entry.workflow?.sourceIsPerson === true,
+            }
+          : {})}
+        schedule={{
+          value: entry.workflow?.schedule?.tooltip ?? describeTrigger(activity),
+        }}
+        lastRun={
+          <WorkflowLastRunText
+            lastRun={entry.workflow?.lastRun}
+            dataTestId="automation-detail-last-run-status"
+          />
+        }
+        {...(activity.enabled && formatNextRun(activity.nextRunAt)
+          ? { nextRun: formatNextRun(activity.nextRunAt) }
+          : {})}
+        version={
+          canUpdate ? (
+            <DetailVersionUpdateFact
+              name={entry.name}
+              testId="automation-catalog-update"
+              update={{
+                busy: update.loading,
+                run: openUpdate,
+                ...(update.error !== null ? { error: update.error } : {}),
+              }}
+            />
+          ) : undefined
+        }
+        summary={entry.workflow?.summary ?? entry.description}
+      />
+      {update.pending && (
+        <AutomationUpdateModal update={update.pending} onClose={update.clear} />
+      )}
+    </>
+  );
+}
+
+/** "What it does" while a source automation loads, or when it can't. */
+function sourceContentsNotice(
+  error: string | null,
+  onRetry: () => void,
+): ReactNode {
+  return error !== null ? (
+    <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+      <DetailFactError error={error} testId="automation-source-error" />
+      <span aria-hidden>·</span>
+      <Button variant="link" onClick={onRetry}>
+        Try again
+      </Button>
+    </span>
+  ) : (
+    <DelayedLoadingPlaceholder slowNote="Still loading automation…">
+      <CenteredLoadingSpinner spacing="section" />
+    </DelayedLoadingPlaceholder>
+  );
+}
+
+/**
+ * New Customize's actions for a source automation, as its tile offers them:
+ * Add, or Open in Workflows for an installed copy, with Install another copy
+ * beside it. A changed source says Update on its Version row instead.
+ */
+function SourceLayoutActions({
+  step,
+  onInstall,
+  onInstallAnotherCopy,
+  onOpenInAutomations,
+  activities,
+  source,
+  workflowActions,
+  onToggleError,
+}: SourceActionProps & {
+  activities: readonly ScheduledActivity[];
+  /** The source's tile entry. */
+  source: UnifiedPluginEntry;
+  workflowActions: CustomizeWorkflowActions | undefined;
+  onToggleError: (message: string | null) => void;
+}): JSX.Element {
+  const openId =
+    step.kind === 'open'
+      ? step.activityId
+      : step.kind === 'update'
+        ? step.staleActivities[0]?.id
+        : undefined;
+  // The installed copy (the one Open in Workflows opens): its tile's On/Off
+  // is the primary.
+  const copy = activities.find((activity) => activity.id === openId);
+  if (openId === undefined || !copy) {
+    return (
+      <DetailActionBar
+        primary={
+          <Button
+            variant="primary"
+            size="compact"
+            onClick={onInstall}
+            data-testid="automation-source-install"
+          >
+            Add
+          </Button>
+        }
+      />
+    );
+  }
+  return (
+    <DetailActionBar
+      secondary={
+        <>
+          <Button
+            size="compact"
+            onClick={onInstallAnotherCopy}
+            data-testid="automation-catalog-install-another-copy"
+          >
+            Install another copy
+          </Button>
+          <Button
+            size="compact"
+            onClick={() => onOpenInAutomations(openId)}
+            data-testid="automation-source-open"
+          >
+            Open in Workflows
+          </Button>
+        </>
+      }
+      primary={
+        <AutomationToggle
+          activity={copy}
+          tile={installedCopyEntry(source, copy)}
+          workflowActions={workflowActions}
+          onError={onToggleError}
+        />
+      }
+    />
+  );
+}
+
 /**
  * What the detail offers next for a team-shared or curated automation:
  * add it, update the installed copies, or open the copy that already exists.
@@ -336,6 +675,10 @@ interface SharedAutomationMarketplaceDetailProps {
    * detail by id before its inventory listed the share.
    */
   onNameLoaded?: (name: string) => void;
+  /** New Customize: the shared layout, with the tile's identity. */
+  layout?: AutomationDetailIdentity;
+  /** The Workflows rows' actions: an installed copy's On/Off. */
+  workflowActions?: CustomizeWorkflowActions;
 }
 
 /** A team-shared automation: the share's preview plus Add, Update, or Open. */
@@ -344,8 +687,11 @@ export function SharedAutomationMarketplaceDetail({
   activities,
   onOpenInAutomations,
   onNameLoaded,
+  layout,
+  workflowActions,
 }: SharedAutomationMarketplaceDetailProps): JSX.Element {
   const workspaces = useInstallWorkspaces();
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [detail, setDetail] = useState<SharedAutomationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -418,6 +764,112 @@ export function SharedAutomationMarketplaceDetail({
     useNavigationStore.getState().openShareInstall(installLink, 'in-app');
   };
 
+  const modals = detail ? (
+    <>
+      {installOpen && step.kind !== 'open' && (
+        <InstallSharedAutomationModal
+          onCreateProject={requestAutomationProjectCreation}
+          detail={detail}
+          source="shared"
+          staleActivities={step.kind === 'update' ? step.staleActivities : []}
+          workspaces={workspaces}
+          onClose={(): void => setInstallOpen(false)}
+          onDone={(): void => {
+            // The automations store refreshes through the service broadcast;
+            // the next step recomputes from the updated activities.
+          }}
+        />
+      )}
+      {anotherCopyOpen && (
+        <InstallSharedAutomationModal
+          onCreateProject={requestAutomationProjectCreation}
+          detail={detail}
+          source="shared"
+          // An independent new copy: never an update of an existing one.
+          staleActivities={[]}
+          workspaces={workspaces}
+          onClose={(): void => setAnotherCopyOpen(false)}
+          onDone={(): void => {
+            // The automations store refreshes through the service broadcast.
+          }}
+        />
+      )}
+    </>
+  ) : null;
+
+  if (layout) {
+    // The page keeps its layout while the share loads or fails: the header
+    // from the tile, the state in What it does.
+    // A share opened by link before the inventory lists it takes its whole
+    // identity from the share once read, as the list would build it.
+    const loaded =
+      detail && isPendingSharedAutomationEntry(layout.entry)
+        ? customizeDiscoveryIdentity(sharedAutomationEntry(detail))
+        : undefined;
+    const shown = loaded ?? layout.entry;
+    return (
+      <>
+        <AutomationReadDetail
+          dataTestId="shared-automation-marketplace-detail"
+          name={shown.name}
+          description={shown.description}
+          logo={
+            loaded ? (
+              <CustomizeEntryLogo
+                entry={loaded}
+                McpServerLogoComponent={McpServerLogo}
+              />
+            ) : (
+              layout.logo
+            )
+          }
+          publisher={
+            loaded ? <CustomizePublisher entry={loaded} /> : layout.publisher
+          }
+          actions={
+            detail ? (
+              <SourceLayoutActions
+                step={step}
+                onInstall={handleInstall}
+                onInstallAnotherCopy={() => setAnotherCopyOpen(true)}
+                onOpenInAutomations={onOpenInAutomations}
+                activities={activities}
+                source={shown}
+                workflowActions={workflowActions}
+                onToggleError={setToggleError}
+              />
+            ) : undefined
+          }
+          actionsNotice={toggleNotice(toggleError)}
+          source={customizeWorkflowSource(shown)}
+          {...(detail
+            ? {
+                schedule: {
+                  value: suggestedSchedule(detail.automation.trigger),
+                  suggested: true,
+                },
+                definition: detail.automation,
+              }
+            : {
+                contentsNotice: sourceContentsNotice(error, () =>
+                  setReloadKey((value) => value + 1),
+                ),
+              })}
+          version={
+            step.kind === 'update' ? (
+              <DetailVersionUpdateFact
+                name={shown.name}
+                testId="automation-catalog-update"
+                update={{ run: handleInstall }}
+              />
+            ) : undefined
+          }
+        />
+        {modals}
+      </>
+    );
+  }
+
   if (error !== null) {
     return (
       <Notice
@@ -455,34 +907,7 @@ export function SharedAutomationMarketplaceDetail({
         onInstallAnotherCopy={() => setAnotherCopyOpen(true)}
         onOpenInAutomations={onOpenInAutomations}
       />
-      {installOpen && step.kind !== 'open' && (
-        <InstallSharedAutomationModal
-          onCreateProject={requestAutomationProjectCreation}
-          detail={detail}
-          source="shared"
-          staleActivities={step.kind === 'update' ? step.staleActivities : []}
-          workspaces={workspaces}
-          onClose={(): void => setInstallOpen(false)}
-          onDone={(): void => {
-            // The automations store refreshes through the service broadcast;
-            // the next step recomputes from the updated activities.
-          }}
-        />
-      )}
-      {anotherCopyOpen && (
-        <InstallSharedAutomationModal
-          onCreateProject={requestAutomationProjectCreation}
-          detail={detail}
-          source="shared"
-          // An independent new copy: never an update of an existing one.
-          staleActivities={[]}
-          workspaces={workspaces}
-          onClose={(): void => setAnotherCopyOpen(false)}
-          onDone={(): void => {
-            // The automations store refreshes through the service broadcast.
-          }}
-        />
-      )}
+      {modals}
     </div>
   );
 }
@@ -496,6 +921,10 @@ interface CuratedAutomationMarketplaceDetailProps {
   onRetry: () => void;
   activities: readonly ScheduledActivity[];
   onOpenInAutomations: (activityId: string) => void;
+  /** New Customize: the shared layout, with the tile's identity. */
+  layout?: AutomationDetailIdentity;
+  /** The Workflows rows' actions: an installed copy's On/Off. */
+  workflowActions?: CustomizeWorkflowActions;
 }
 
 /** A curated catalog automation: what it does, plus Add, Update, or Open. */
@@ -507,8 +936,11 @@ export function CuratedAutomationMarketplaceDetail({
   onRetry,
   activities,
   onOpenInAutomations,
+  layout,
+  workflowActions,
 }: CuratedAutomationMarketplaceDetailProps): JSX.Element {
   const workspaces = useInstallWorkspaces();
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [anotherCopyOpen, setAnotherCopyOpen] = useState(false);
 
@@ -523,6 +955,103 @@ export function CuratedAutomationMarketplaceDetail({
         null,
       )
     : { kind: 'add' };
+
+  const install = (): void => {
+    if (!detail) return;
+    if (step.kind === 'update') {
+      setUpdateOpen(true);
+      return;
+    }
+    useNavigationStore
+      .getState()
+      .openShareInstall(curatedAutomationInstallLink(detail), 'in-app');
+  };
+  const modals = detail ? (
+    <>
+      {updateOpen && step.kind === 'update' && (
+        <InstallSharedAutomationModal
+          onCreateProject={requestAutomationProjectCreation}
+          detail={toCuratedAutomationInstallSource(detail)}
+          source="curated"
+          staleActivities={step.staleActivities}
+          workspaces={workspaces}
+          onClose={(): void => setUpdateOpen(false)}
+          onDone={(): void => {
+            // The automations store refreshes through the service broadcast;
+            // the next step recomputes from the updated activities.
+          }}
+        />
+      )}
+      {anotherCopyOpen && (
+        <InstallSharedAutomationModal
+          onCreateProject={requestAutomationProjectCreation}
+          detail={toCuratedAutomationInstallSource(detail)}
+          source="curated"
+          // An independent new copy: never an update of an existing one.
+          staleActivities={[]}
+          workspaces={workspaces}
+          onClose={(): void => setAnotherCopyOpen(false)}
+          onDone={(): void => {
+            // The automations store refreshes through the service broadcast.
+          }}
+        />
+      )}
+    </>
+  ) : null;
+
+  if (layout) {
+    // The page keeps its layout while the entry loads or fails: the header
+    // from the tile, the state in What it does.
+    const ready = detail && !loading ? detail : null;
+    return (
+      <>
+        <AutomationReadDetail
+          dataTestId="curated-automation-marketplace-detail"
+          name={layout.entry.name}
+          description={layout.entry.description}
+          logo={layout.logo}
+          publisher={layout.publisher}
+          actions={
+            ready ? (
+              <SourceLayoutActions
+                step={step}
+                onInstall={install}
+                onInstallAnotherCopy={() => setAnotherCopyOpen(true)}
+                onOpenInAutomations={onOpenInAutomations}
+                activities={activities}
+                source={layout.entry}
+                workflowActions={workflowActions}
+                onToggleError={setToggleError}
+              />
+            ) : undefined
+          }
+          actionsNotice={toggleNotice(toggleError)}
+          source={customizeWorkflowSource(layout.entry)}
+          {...(ready
+            ? {
+                schedule: {
+                  value:
+                    describeFiveFieldCron(ready.cronExpression) ??
+                    ready.cronExpression,
+                  suggested: true,
+                },
+                definition: ready.automation,
+              }
+            : { contentsNotice: sourceContentsNotice(error, onRetry) })}
+          version={
+            ready && step.kind === 'update' ? (
+              <DetailVersionUpdateFact
+                name={layout.entry.name}
+                testId="automation-catalog-update"
+                update={{ run: install }}
+              />
+            ) : undefined
+          }
+        />
+        {modals}
+      </>
+    );
+  }
 
   if (error !== null) {
     return (
@@ -571,15 +1100,7 @@ export function CuratedAutomationMarketplaceDetail({
         </div>
         <SourceAction
           step={step}
-          onInstall={(): void => {
-            if (step.kind === 'update') {
-              setUpdateOpen(true);
-              return;
-            }
-            useNavigationStore
-              .getState()
-              .openShareInstall(curatedAutomationInstallLink(detail), 'in-app');
-          }}
+          onInstall={install}
           onInstallAnotherCopy={() => setAnotherCopyOpen(true)}
           onOpenInAutomations={onOpenInAutomations}
         />
@@ -617,34 +1138,7 @@ export function CuratedAutomationMarketplaceDetail({
 
       <AutomationDefinitionSummary automation={detail.automation} />
 
-      {updateOpen && step.kind === 'update' && (
-        <InstallSharedAutomationModal
-          onCreateProject={requestAutomationProjectCreation}
-          detail={toCuratedAutomationInstallSource(detail)}
-          source="curated"
-          staleActivities={step.staleActivities}
-          workspaces={workspaces}
-          onClose={(): void => setUpdateOpen(false)}
-          onDone={(): void => {
-            // The automations store refreshes through the service broadcast;
-            // the next step recomputes from the updated activities.
-          }}
-        />
-      )}
-      {anotherCopyOpen && (
-        <InstallSharedAutomationModal
-          onCreateProject={requestAutomationProjectCreation}
-          detail={toCuratedAutomationInstallSource(detail)}
-          source="curated"
-          // An independent new copy: never an update of an existing one.
-          staleActivities={[]}
-          workspaces={workspaces}
-          onClose={(): void => setAnotherCopyOpen(false)}
-          onDone={(): void => {
-            // The automations store refreshes through the service broadcast.
-          }}
-        />
-      )}
+      {modals}
     </div>
   );
 }

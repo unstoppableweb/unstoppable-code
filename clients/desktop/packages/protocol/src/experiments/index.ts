@@ -22,6 +22,8 @@ export const LABS_EXPERIMENT_HIDDEN = 'hidden';
 export const LABS_EXPERIMENT_OFFERED = 'offered';
 export const LABS_EXPERIMENT_ON = 'on';
 export const EARLY_ACCESS_EXPERIMENT_ID = 'early-access';
+export const ORCHESTRATOR_PAGE_EXPERIMENT_ID = 'orchestrator-page';
+export const BOTS_EXPERIMENT_ID = 'bots';
 export const LABS_EXPERIMENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 export const LABS_EXPERIMENT_CHOICE_LIMIT = 100;
 export const LABS_EXPERIMENTS_VERSION_HEADER = 'x-labs-experiments-version';
@@ -124,6 +126,7 @@ export function resolveLabsExperiment(input: {
   choice: boolean | null;
   earlyAccessEnabled: boolean;
   requiresEarlyAccess: boolean;
+  prerequisiteEnabled?: boolean;
 }): { listed: boolean; enabled: boolean } {
   if (
     input.availability === 'hidden' ||
@@ -133,9 +136,9 @@ export function resolveLabsExperiment(input: {
   return {
     listed: true,
     enabled:
-      input.availability === 'on'
+      (input.availability === 'on'
         ? input.choice !== false
-        : input.choice === true,
+        : input.choice === true) && input.prerequisiteEnabled !== false,
   };
 }
 

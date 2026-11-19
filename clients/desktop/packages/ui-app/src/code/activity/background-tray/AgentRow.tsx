@@ -14,6 +14,7 @@ import type { AgentDelegationSnapshot } from '@canopy/protocol/delegation';
 import {
   DELEGATED_AGENT_STOP_ACCESSIBLE_LABEL,
   DELEGATED_AGENT_STOP_WITH_DESCENDANTS_LABEL,
+  SUBAGENT_UNTITLED_LABEL,
   SubagentStatusGlyph,
   Button,
   Tooltip,
@@ -96,6 +97,41 @@ export function delegateAgentMeta(snapshot: AgentDelegationSnapshot): string {
     snapshot.requestedModelLabel ??
     snapshot.requestedModelId;
   return model ? `Delegate · ${model}` : 'Delegate';
+}
+
+/**
+ * A queued or running delegate as both hosts' drawers list it. Each host
+ * passes what its transcript holds (when the delegate started and its
+ * steps) and whether it stops delegates itself (`delegationStop`).
+ */
+export function delegateTrayAgent(
+  delegation: AgentDelegationSnapshot & {
+    readonly description: string;
+    readonly prompt: string;
+  },
+  options: {
+    readonly startedAt: number | null;
+    readonly steps: readonly BackgroundTrayAgentStep[];
+    readonly canStop: boolean;
+    readonly stopsDescendants?: boolean;
+  },
+): BackgroundTrayAgent {
+  const title = delegation.description || SUBAGENT_UNTITLED_LABEL;
+  return {
+    id: `managed:${delegation.delegationId}`,
+    kind: 'delegate',
+    title,
+    status: delegateAgentStatus(delegation),
+    activity: null,
+    startedAt: options.startedAt,
+    steps: options.steps,
+    prompt: delegation.prompt || null,
+    meta: delegateAgentMeta(delegation),
+    taskId: null,
+    canStop: options.canStop,
+    target: { kind: 'managed', id: delegation.delegationId, title },
+    ...(options.stopsDescendants === true ? { stopsDescendants: true } : {}),
+  };
 }
 
 /** The step label hosts and rows share, from the transcript's tool display. */

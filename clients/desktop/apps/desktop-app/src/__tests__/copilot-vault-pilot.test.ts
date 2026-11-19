@@ -119,6 +119,11 @@ import {
 } from '@canopy/copilot-recipient/runtime';
 import * as CopilotModuleLoader from '@canopy/copilot-recipient/node-module-loader';
 import * as CopilotProcessOwnership from '@canopy/copilot-recipient/process-ownership';
+import {
+  CopilotProcessReceipt,
+  reapCopilotProcessReceipts,
+} from '@canopy/copilot-recipient/process-receipts';
+import type { CopilotReceiptStorage } from '@canopy/copilot-recipient/receipt-storage';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createMemoryVaultRepository } from '@canopy/core-runtime/vault/testing/memory-repository';
@@ -154,6 +159,7 @@ import type {
   PreferencesData,
   ChatTabsFile,
 } from '@canopy/desktop-shared/types';
+import { windowAgentInterfacePort } from '../main/agents/agent-interface-port';
 
 const TEST_OWNER = { kind: 'turn', id: 'vault-test' } as const;
 
@@ -523,6 +529,7 @@ function fixture(
     completed: null,
   };
   const journal: CopilotAuthorityJournal = {
+    lifetime: { familyId: 'fixture-family', isExclusive: () => false },
     read: () => Promise.resolve(structuredClone(state)),
     compareExchange: (sequence, next) => {
       if (sequence !== state.sequence) return Promise.resolve(false);
@@ -635,6 +642,7 @@ function fixture(
     Parameters<CopilotGrantAuthorityOptions['refresh']>
   >(() => Promise.resolve(refreshResult));
   const pilotOptions: CopilotVaultPilotOptions = {
+    processLifetime: {},
     repository: () => Promise.resolve(memory.repository),
     writer: () => Promise.resolve({ ...raw, put, delete: remove }),
     journal,
@@ -849,6 +857,666 @@ afterEach(() => {
   resetDesktopChatWaitsForTest();
   setDesktopChatWaitPresence(null);
   jest.restoreAllMocks();
+});
+
+function siblingPilot(
+  h: Fixture,
+  overrides: Partial<CopilotVaultPilotOptions> = {},
+): CopilotVaultPilot {
+  return createCopilotVaultPilot({
+    ...h.pilotOptions,
+    journal: { ...h.pilotOptions.journal },
+    ...overrides,
+  });
+}
+
+it('P8 lifetime oracle: reconstructed pilots do not reap a current runtime receipt, but a new boot does', async () => {
+  const h = fixture();
+  const directory = await mkdtemp(join(tmpdir(), 'p8-receipt-boot-'));
+  const storage: CopilotReceiptStorage = {
+    write: (path, contents) => writeFile(path, contents, { mode: 0o600 }),
+    syncDirectory: () => Promise.resolve(),
+  };
+  const processIdentity = {
+    pid: 1234567,
+    parent: 1,
+    group: 1234567,
+    started: 'synthetic-current-boot',
+  };
+  let alive = true;
+  const terminate = jest
+    .spyOn(CopilotProcessOwnership, 'terminateCopilotDescendants')
+    .mockImplementation(() => {
+      alive = false;
+      return Promise.resolve();
+    });
+  jest
+    .spyOn(CopilotProcessOwnership, 'remainingCopilotProcesses')
+    .mockImplementation(() => Promise.resolve(alive ? [processIdentity] : []));
+  const recover = jest.fn(() => reapCopilotProcessReceipts(directory, storage));
+  h.pilotOptions.recoverRuntimeReceipts = recover;
+  h.pilotOptions.runtimeReceiptOwner = {};
+  let sibling: CopilotVaultPilot | undefined;
+  let nextBoot: CopilotVaultPilot | undefined;
+  try {
+    await h.pilot.recoverRuntimeReceipts();
+    ready(await h.pilot.setup(grant(), null));
+    const runtime = await h.backend.openManagedCopilotRuntime({
+      owner: TEST_OWNER,
+      signal: new AbortController().signal,
+    });
+    await new CopilotProcessReceipt(directory, storage).save([processIdentity]);
+    expect(await readdir(directory)).toHaveLength(1);
+    sibling = siblingPilot(h);
+    await sibling.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(terminate).not.toHaveBeenCalled();
+    expect(alive).toBe(true);
+    await expect(runtime.runTurn(turn())).resolves.toMatchObject({
+      text: 'Verified evidence',
+    });
+    await runtime.close();
+    nextBoot = siblingPilot(h, { processLifetime: {} });
+    await nextBoot.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(2);
+    expect(terminate).toHaveBeenCalledWith([processIdentity]);
+    expect(alive).toBe(false);
+    expect(await readdir(directory)).toEqual([]);
+  } finally {
+    sibling?.close();
+    nextBoot?.close();
+    h.pilot.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('P8 lifetime oracle: sibling quiescence revokes an active setup probe before result admission', async () => {
+  const h = fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const models = h.list.getMockImplementation();
+  if (!models) throw new Error('Missing provider fixture');
+  h.list.mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return models();
+  });
+  const sibling = siblingPilot(h);
+  const settingUp = h.pilot.setup(grant(), null);
+  try {
+    await entered.promise;
+    await sibling.quiesce();
+    expect(h.natives[0]?.runtime.close).toHaveBeenCalled();
+    release.resolve();
+    expect((await settingUp).kind).not.toBe('ready');
+    expect(h.put).not.toHaveBeenCalled();
+    expect(h.state().head).toBeNull();
+    sibling.reopen();
+    expect((await sibling.setup(grant(), null)).kind).toBe('blocked');
+  } finally {
+    release.resolve();
+    await settingUp;
+    sibling.close();
+    h.pilot.close();
+  }
+});
+
+it.each(['create', 'recovery'])(
+  'P8 lifetime oracle: sibling quiescence fences setup across %s await',
+  async (edge) => {
+    const h = fixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    if (edge === 'create') {
+      const compare = h.pilotOptions.journal.compareExchange.bind(
+        h.pilotOptions.journal,
+      );
+      jest
+        .spyOn(h.pilotOptions.journal, 'compareExchange')
+        .mockImplementation(async (sequence, next) => {
+          const committed = await compare(sequence, next);
+          if (
+            next.mutation?.kind === 'create' &&
+            !next.mutation.cancelling &&
+            !next.mutation.probeConfirmed
+          ) {
+            entered.resolve();
+            await release.promise;
+          }
+          return committed;
+        });
+    } else {
+      h.pilotOptions.recoverRuntimeReceipts = (): Promise<void> => {
+        entered.resolve();
+        return release.promise;
+      };
+    }
+    const sibling = siblingPilot(h);
+    const settingUp = h.pilot.setup(grant(), null);
+    try {
+      await entered.promise;
+      await sibling.quiesce();
+      release.resolve();
+      expect((await settingUp).kind).not.toBe('ready');
+      expect(h.natives).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await settingUp;
+      sibling.close();
+      h.pilot.close();
+    }
+  },
+);
+
+it.each([
+  'probe-confirmation',
+  'cancel-confirmation',
+  'persist-read',
+  'repository',
+  'writer',
+  'pre-put-read',
+  'persisted',
+  'resume-list',
+] as const)(
+  'P8 lifetime oracle: setup fence prevents publication after %s await',
+  async (edge) => {
+    const h = fixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const pause = async (): Promise<void> => {
+      entered.resolve();
+      await release.promise;
+    };
+    const journal = h.pilotOptions.journal;
+    if (
+      edge === 'probe-confirmation' ||
+      edge === 'cancel-confirmation' ||
+      edge === 'persisted'
+    ) {
+      const compare = journal.compareExchange.bind(journal);
+      jest
+        .spyOn(journal, 'compareExchange')
+        .mockImplementation(async (sequence, next) => {
+          const accepted = await compare(sequence, next);
+          if (
+            next.mutation?.kind === 'create' &&
+            next.mutation.probeConfirmed &&
+            !next.mutation.cancelling &&
+            Boolean(next.mutation.committed) === (edge === 'persisted')
+          )
+            await pause();
+          return accepted;
+        });
+    } else if (edge === 'persist-read' || edge === 'pre-put-read') {
+      const read = journal.read.bind(journal);
+      let reads = 0;
+      jest.spyOn(journal, 'read').mockImplementation(async () => {
+        const state = await read();
+        if (
+          state.mutation?.probeConfirmed &&
+          !state.mutation.committed &&
+          ++reads === (edge === 'persist-read' ? 1 : 2)
+        )
+          await pause();
+        return state;
+      });
+    } else if (edge === 'resume-list') {
+      const list = h.memory.repository.list.bind(h.memory.repository);
+      jest.spyOn(h.memory.repository, 'list').mockImplementation(async () => {
+        const rows = await list();
+        if (h.state().mutation?.committed) await pause();
+        return rows;
+      });
+    } else if (edge === 'repository') {
+      const repository = h.pilotOptions.repository.bind(h.pilotOptions);
+      jest.spyOn(h.pilotOptions, 'repository').mockImplementation(async () => {
+        const value = await repository();
+        if (h.state().mutation?.probeConfirmed) await pause();
+        return value;
+      });
+    } else {
+      const writer = h.pilotOptions.writer.bind(h.pilotOptions);
+      jest.spyOn(h.pilotOptions, 'writer').mockImplementation(async () => {
+        const value = await writer();
+        if (h.state().mutation?.probeConfirmed) await pause();
+        return value;
+      });
+    }
+    const confirm = jest.spyOn(h.selection, 'confirm');
+    const sibling = siblingPilot(h);
+    const settingUp = sibling.setup(grant(), null);
+    try {
+      await entered.promise;
+      if (edge === 'cancel-confirmation') {
+        const operationId = h.state().mutation?.operationId;
+        if (!operationId)
+          throw new Error('Missing setup cancellation identity');
+        expect(await h.pilot.authority.cancel(operationId)).toEqual({
+          kind: 'removed',
+        });
+      } else await h.pilot.quiesce();
+      release.resolve();
+      const result = await settingUp;
+      expect(result.kind).not.toBe('ready');
+      expect(h.put).toHaveBeenCalledTimes(
+        edge === 'persisted' || edge === 'resume-list' ? 1 : 0,
+      );
+      expect(confirm).not.toHaveBeenCalled();
+      expect(h.state().head).toBeNull();
+      expect(h.preferences().copilotVaultSelection?.state).not.toBe('selected');
+      expect(h.preferences().copilotEnabled).toBe(false);
+      if (edge !== 'cancel-confirmation')
+        expect(h.pilot.authority.recipientGeneration()).toBeUndefined();
+      expect(h.natives).toHaveLength(1);
+      expect(h.natives[0]?.runtime.close).toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await settingUp;
+      sibling.close();
+      h.pilot.close();
+    }
+  },
+);
+
+it.each([
+  'head-ack',
+  'caller-abort',
+  'caller-abort-committed',
+  'selection-submit',
+  'pre-head-read',
+] as const)(
+  'P8 lifetime oracle: setup continuation fences %s without rolling back submitted writes',
+  async (edge) => {
+    const h = fixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const controller = new AbortController();
+    const pause = async (): Promise<void> => {
+      entered.resolve();
+      await release.promise;
+    };
+    if (edge === 'selection-submit') {
+      const confirm = h.selection.confirm.bind(h.selection);
+      jest.spyOn(h.selection, 'confirm').mockImplementation(async (request) => {
+        await pause();
+        return confirm(request);
+      });
+    } else if (edge === 'pre-head-read') {
+      const read = h.pilotOptions.journal.read.bind(h.pilotOptions.journal);
+      jest
+        .spyOn(h.pilotOptions.journal, 'read')
+        .mockImplementation(async () => {
+          const result = await read();
+          if (h.preferences().copilotEnabled) await pause();
+          return result;
+        });
+    } else {
+      const journal = h.pilotOptions.journal;
+      const compare = journal.compareExchange.bind(journal);
+      jest
+        .spyOn(journal, 'compareExchange')
+        .mockImplementation(async (sequence, next) => {
+          const result = await compare(sequence, next);
+          if (
+            edge === 'head-ack'
+              ? !!next.head && !next.mutation
+              : !!next.mutation?.probeConfirmed &&
+                Boolean(next.mutation.committed) ===
+                  (edge === 'caller-abort-committed')
+          )
+            await pause();
+          return result;
+        });
+    }
+    const setup = h.pilot.setup(grant(), null, controller.signal);
+    try {
+      await entered.promise;
+      if (edge === 'caller-abort' || edge === 'caller-abort-committed')
+        controller.abort();
+      else await h.pilot.quiesce();
+      release.resolve();
+      const result = await setup;
+      expect(result.kind).not.toBe('ready');
+      expect(h.put).toHaveBeenCalledTimes(edge === 'caller-abort' ? 0 : 1);
+      expect(h.preferences().copilotEnabled).toBe(
+        edge === 'selection-submit' ||
+          edge === 'pre-head-read' ||
+          edge === 'head-ack',
+      );
+      if (edge === 'head-ack') expect(h.state().head).not.toBeNull();
+      else expect(h.state().head).toBeNull();
+      if (!edge.startsWith('caller-abort')) {
+        expect(h.pilot.authority.recipientGeneration()).toBeUndefined();
+        expect((await h.pilot.authority.demand()).kind).not.toBe('ready');
+      }
+      expect(h.natives).toHaveLength(1);
+      expect(h.natives[0]?.runtime.close).toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await setup;
+      h.pilot.close();
+    }
+  },
+);
+
+it('P8 lifetime oracle: Connect abort after head acknowledgement uses exact P4 cleanup', async () => {
+  const h = fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const controller = new AbortController();
+  const journal = h.pilotOptions.journal;
+  const compare = journal.compareExchange.bind(journal);
+  jest
+    .spyOn(journal, 'compareExchange')
+    .mockImplementation(async (sequence, next) => {
+      const result = await compare(sequence, next);
+      if (next.head && !next.mutation && !next.removal && !next.completed) {
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    });
+  const authorize = jest.fn(() => Promise.resolve(grant()));
+  const backend = createCopilotVaultConnection({
+    port: h.port,
+    installation: () => Promise.resolve(base),
+    preferences: () =>
+      Promise.resolve({ ...DEFAULT_PREFERENCES, ...h.preferences() }),
+    authorize,
+  });
+  const connecting = backend
+    .connectCopilot(controller.signal, () => undefined)
+    .then(
+      () => 'connected',
+      () => 'cancelled',
+    );
+  try {
+    await entered.promise;
+    const head = h.state().head;
+    if (!head) throw new Error('Missing already-submitted durable head');
+    expect(h.preferences().copilotEnabled).toBe(true);
+    controller.abort();
+    release.resolve();
+    const outcome = await connecting;
+    expect({
+      outcome,
+      head: h.state().head,
+      mutation: h.state().mutation,
+      enabled: h.preferences().copilotEnabled,
+      deleted: h.remove.mock.calls.length,
+    }).toEqual({
+      outcome: 'cancelled',
+      head: null,
+      mutation: null,
+      enabled: false,
+      deleted: 1,
+    });
+    expect(h.remove.mock.calls[0]?.[0].ref).toEqual(head.pin.ref);
+    expect(h.remove.mock.calls[0]?.[0].expectedRevision).toBe(
+      head.pin.revision,
+    );
+    expect(h.put).toHaveBeenCalledTimes(1);
+    expect(h.refresh).not.toHaveBeenCalled();
+    await expect(
+      backend.connectCopilot(new AbortController().signal, () => undefined),
+    ).resolves.toMatchObject({ phase: 'connected' });
+    expect(authorize).toHaveBeenCalledTimes(2);
+    expect(h.state().head?.operationId).not.toBe(head.operationId);
+  } finally {
+    release.resolve();
+    await connecting;
+    h.pilot.close();
+  }
+});
+
+it('P8 lifetime oracle: cancelled setup cleanup cannot remove a foreign published operation', async () => {
+  const h = fixture();
+  try {
+    const head = ready(await h.pilot.setup(grant(), null));
+    const controller = new AbortController();
+    const remove = jest.spyOn(h.port, 'remove');
+    let stale = true;
+    const backend = createCopilotVaultConnection({
+      port: {
+        ...h.port,
+        status: () => {
+          if (!stale) return h.port.status();
+          stale = false;
+          return Promise.resolve({ kind: 'blocked', reason: 'absent' });
+        },
+        setup: () => {
+          controller.abort();
+          return Promise.resolve({
+            kind: 'blocked',
+            reason: 'changed',
+            setupOperationId: 'superseded-setup',
+          });
+        },
+      },
+      installation: () => Promise.resolve(base),
+      preferences: () =>
+        Promise.resolve({ ...DEFAULT_PREFERENCES, ...h.preferences() }),
+      authorize: () => Promise.resolve(grant()),
+    });
+    await expect(
+      backend.connectCopilot(controller.signal, () => undefined),
+    ).rejects.toThrow();
+    expect(remove).not.toHaveBeenCalled();
+    expect(h.remove).not.toHaveBeenCalled();
+    expect(h.state().head).toEqual(head);
+    expect(h.preferences().copilotEnabled).toBe(true);
+  } finally {
+    h.pilot.close();
+  }
+});
+
+it.each(['resume', 'cancel'])(
+  'P8 lifetime oracle: sibling %s respects exact live setup ownership',
+  async (action) => {
+    const h = fixture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const prepare = h.selection.prepare.bind(h.selection);
+    jest.spyOn(h.selection, 'prepare').mockImplementation(async (...args) => {
+      const prepared = await prepare(...args);
+      entered.resolve();
+      await release.promise;
+      return prepared;
+    });
+    const sibling = siblingPilot(h);
+    const settingUp = h.pilot.setup(grant(), null);
+    try {
+      await entered.promise;
+      const mutation = h.state().mutation;
+      if (!mutation) throw new Error('Missing live setup');
+      if (action === 'resume') {
+        expect(
+          (await sibling.authority.resume(mutation.operationId)).kind,
+        ).not.toBe('removed');
+        expect(h.state().mutation?.operationId).toBe(mutation.operationId);
+        expect(h.state().mutation?.cancelling).toBe(false);
+      } else {
+        expect(await sibling.authority.cancel(mutation.operationId)).toEqual({
+          kind: 'removed',
+        });
+      }
+      release.resolve();
+      expect((await settingUp).kind).toBe(
+        action === 'resume' ? 'ready' : 'blocked',
+      );
+      expect(h.natives).toHaveLength(action === 'resume' ? 1 : 0);
+    } finally {
+      release.resolve();
+      await settingUp;
+      sibling.close();
+      h.pilot.close();
+    }
+  },
+);
+
+it('P8 lifetime oracle: sibling quiescence aborts a pending runtime start and closes its late result', async () => {
+  const h = fixture();
+  const start = h.pilotOptions.start.bind(h.pilotOptions);
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let openingSignal: AbortSignal | undefined;
+  h.pilotOptions.start = async (
+    ...args
+  ): ReturnType<CopilotVaultPilotOptions['start']> => {
+    openingSignal = args[1];
+    const runtime = await start(...args);
+    entered.resolve();
+    await release.promise;
+    return runtime;
+  };
+  const sibling = siblingPilot(h);
+  const settingUp = h.pilot.setup(grant(), null);
+  try {
+    await entered.promise;
+    await sibling.quiesce();
+    expect(openingSignal?.aborted).toBe(true);
+    release.resolve();
+    expect((await settingUp).kind).not.toBe('ready');
+    expect(h.natives[0]?.runtime.close).toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    await settingUp;
+    sibling.close();
+    h.pilot.close();
+  }
+});
+
+it('P8 lifetime oracle: sibling quiescence eagerly aborts existing ordinary hosts', async () => {
+  const h = fixture();
+  ready(await h.pilot.setup(grant(), null));
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const models = h.list.getMockImplementation();
+  if (!models) throw new Error('Missing models fixture');
+  h.list.mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return models();
+  });
+  const sibling = siblingPilot(h);
+  const result = h.backend.listCopilotModels(new AbortController().signal).then(
+    () => 'delivered',
+    () => 'refused',
+  );
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        entered.promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Models request did not enter provider')),
+            1000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+    await sibling.quiesce();
+    expect(h.natives[1]?.runtime.close).toHaveBeenCalled();
+    release.resolve();
+    expect(await result).toBe('refused');
+  } finally {
+    release.resolve();
+    await result;
+    sibling.close();
+    h.pilot.close();
+  }
+});
+
+it('P8 lifetime oracle: receipt recovery is single-flight across reconstructed journal wrappers', async () => {
+  const h = fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const recover = jest.fn(() => {
+    entered.resolve();
+    return release.promise;
+  });
+  h.pilotOptions.recoverRuntimeReceipts = recover;
+  const sibling = siblingPilot(h);
+  const first = h.pilot.recoverRuntimeReceipts();
+  const second = sibling.recoverRuntimeReceipts();
+  try {
+    await entered.promise;
+    release.resolve();
+    await Promise.all([first, second]);
+    expect(recover).toHaveBeenCalledTimes(1);
+    const reconstructed = siblingPilot(h);
+    try {
+      await reconstructed.recoverRuntimeReceipts();
+      expect(recover).toHaveBeenCalledTimes(1);
+    } finally {
+      reconstructed.close();
+    }
+  } finally {
+    release.resolve();
+    sibling.close();
+    h.pilot.close();
+  }
+});
+
+it('P8 lifetime oracle: absent recovery never poisons a real owner and failed recovery retries across pilots', async () => {
+  const h = fixture();
+  await h.pilot.recoverRuntimeReceipts();
+  const recover = jest.fn<Promise<void>, []>(() =>
+    Promise.reject(new Error('unresolved receipt')),
+  );
+  h.pilotOptions.recoverRuntimeReceipts = recover;
+  const sibling = siblingPilot(h);
+  try {
+    await expect(sibling.recoverRuntimeReceipts()).rejects.toThrow();
+    recover.mockResolvedValue(undefined);
+    await h.pilot.recoverRuntimeReceipts();
+    await sibling.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(2);
+  } finally {
+    sibling.close();
+    h.pilot.close();
+  }
+});
+
+it('P8 lifetime oracle: recovery namespace and trusted boot are independently isolated', async () => {
+  const h = fixture();
+  const owner = {};
+  const recover = jest.fn(() => Promise.resolve());
+  const first = siblingPilot(h, {
+    runtimeReceiptOwner: owner,
+    recoverRuntimeReceipts: recover,
+  });
+  const same = siblingPilot(h, {
+    runtimeReceiptOwner: owner,
+    recoverRuntimeReceipts: recover,
+  });
+  const other = siblingPilot(h, {
+    runtimeReceiptOwner: {},
+    recoverRuntimeReceipts: recover,
+  });
+  const nextBoot = siblingPilot(h, {
+    runtimeReceiptOwner: owner,
+    processLifetime: {},
+    recoverRuntimeReceipts: recover,
+  });
+  try {
+    await first.recoverRuntimeReceipts();
+    await same.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(1);
+    await other.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(2);
+    await nextBoot.recoverRuntimeReceipts();
+    expect(recover).toHaveBeenCalledTimes(3);
+  } finally {
+    first.close();
+    same.close();
+    other.close();
+    nextBoot.close();
+    h.pilot.close();
+  }
 });
 
 it('runs the real device flow and identity ingress, then a P3 entitlement RPC before the vault write and receipt', async () => {
@@ -1274,6 +1942,7 @@ it.each(
         pilot.close();
         pilot = createCopilotVaultPilot({
           ...h.pilotOptions,
+          processLifetime: {}, // Simulated process restart, not a sibling journal wrapper.
           journal: { ...h.pilotOptions.journal },
         });
         connection = backend();
@@ -1360,6 +2029,7 @@ it.each(
         pilot.close();
         pilot = createCopilotVaultPilot({
           ...h.pilotOptions,
+          processLifetime: {},
           journal: { ...h.pilotOptions.journal },
         });
       }
@@ -2105,6 +2775,67 @@ it.each([
   },
 );
 
+it.each([0, 1, 3])(
+  'P8 terminal vault fencing starts before %s proxy handles close and shutdown is idempotent',
+  async (count) => {
+    const h = fixture();
+    ready(await h.pilot.setup(grant(), null));
+    const release = deferred<void>();
+    const entered = deferred<void>();
+    const stopVault = jest.fn(h.backend.shutdownCopilotRuntimes);
+    const stopLegacy = jest.fn(() => Promise.resolve());
+    const selected: CopilotConnectionBackend = {
+      ...h.backend,
+      shutdownCopilotRuntimes: stopVault,
+      async openManagedCopilotRuntime(input) {
+        const runtime = await h.backend.openManagedCopilotRuntime(input);
+        return {
+          ...runtime,
+          async close() {
+            entered.resolve();
+            await release.promise;
+            await runtime.close();
+          },
+        };
+      },
+    };
+    const proxy = createCopilotConnectionProxy({
+      legacy: {
+        ...h.backend,
+        revokeCopilotRuntimes: () => Promise.resolve(),
+        shutdownCopilotRuntimes: stopLegacy,
+      },
+      selected: () => Promise.resolve(true),
+      vault: () => selected,
+      shutdownVault: stopVault,
+      assertEnabled: () => undefined,
+    });
+    for (let i = 0; i < count; i++)
+      await proxy.openManagedCopilotRuntime({
+        owner: { ...TEST_OWNER, id: String(i) },
+        signal: new AbortController().signal,
+      });
+    const first = proxy.shutdownCopilotRuntimes();
+    const repeat = proxy.shutdownCopilotRuntimes();
+    try {
+      if (count) await entered.promise;
+      expect(first).toBe(repeat);
+      expect(stopVault).toHaveBeenCalledTimes(1);
+      expect(stopLegacy).toHaveBeenCalledTimes(1);
+      expect(h.pilot.authority.recipientGeneration()).toBeUndefined();
+      h.pilot.authority.reopen();
+      expect(h.pilot.authority.recipientGeneration()).toBeUndefined();
+      expect((await h.pilot.authority.create(grant(), 'setup')).kind).toBe(
+        'blocked',
+      );
+    } finally {
+      release.resolve();
+      await first;
+      h.pilot.close();
+    }
+  },
+);
+
 it('releases proxy recipient tracking when a pipeline-owned one-shot turn settles without an explicit caller close', async () => {
   const h = fixture();
   ready(await h.pilot.setup(grant(), null));
@@ -2454,7 +3185,7 @@ function chatSession(
           rtkEnabled: false,
         },
         onEvent,
-        getWindow,
+        windowAgentInterfacePort(getWindow),
       ),
   );
 }
@@ -3353,7 +4084,7 @@ it.each([
     });
     setDesktopChatWaitPresence({
       getMainWindow: () => currentWindow,
-      portalAttached: () => false,
+      remoteControllerAttached: () => false,
     });
     try {
       prepareChatHost(root);
@@ -4520,15 +5251,8 @@ it.each(['refresh', 'replace'] as const)(
       await expect(backend.recoverCopilotAtStartup()).resolves.toBeUndefined();
       expect(resume).not.toHaveBeenCalled();
       for (const action of [
-        (): Promise<void> => backend.disconnectCopilot(),
         (): Promise<CopilotConnectionStatus> =>
           backend.connectCopilot(new AbortController().signal, () => undefined),
-        (): Promise<CopilotConnectionStatus> =>
-          backend.connectCopilot(
-            new AbortController().signal,
-            () => undefined,
-            true,
-          ),
         (): ReturnType<CopilotConnectionBackend['listCopilotModels']> =>
           backend.listCopilotModels(new AbortController().signal),
         (): ReturnType<CopilotConnectionBackend['readCopilotAccountUsage']> =>
@@ -4537,7 +5261,7 @@ it.each(['refresh', 'replace'] as const)(
         await expect(action()).rejects.toMatchObject({ code: 'unavailable' });
         expect(h.state()).toEqual(retained);
       }
-      expect(resume).toHaveBeenCalledTimes(3);
+      expect(resume).toHaveBeenCalledTimes(1);
       for (const [id] of resume.mock.calls)
         expect(id).toBe('orphaned-presentation');
       expect(cancel).not.toHaveBeenCalled();
@@ -4553,27 +5277,48 @@ it.each(['refresh', 'replace'] as const)(
 );
 
 it.each(['refresh', 'replace'] as const)(
-  'Disconnect removes only the exact ready epoch returned by pending %s reconciliation',
+  'Disconnect removes only the exact pending %s identity without provider recovery',
   async (kind) => {
     const h = fixture();
     try {
       const head = ready(await h.pilot.setup(grant(), null));
-      const pending = {
-        kind: 'pending' as const,
-        operationId: 'pending-successor',
-        operation: { kind, origin: head.origin },
-      };
-      jest.spyOn(h.port, 'status').mockResolvedValueOnce(pending);
-      const resume = jest
-        .spyOn(h.port, 'resume')
-        .mockResolvedValueOnce({ kind: 'ready', head });
+      const before = h.state();
+      const operationId = 'pending-successor';
+      expect(
+        await h.pilotOptions.journal.compareExchange(before.sequence, {
+          ...before,
+          sequence: before.sequence + 1,
+          mutation: {
+            operationId,
+            epoch: head.epoch,
+            origin: head.origin,
+            account: head.account,
+            kind,
+            from: head.pin,
+            committed: null,
+            probeConfirmed: true,
+            cancelling: false,
+          },
+        }),
+      ).toBe(true);
+      const retained = h.state();
+      expect(
+        await h.pilot.authority.removePending('foreign-operation'),
+      ).toEqual({ kind: 'blocked', reason: 'changed' });
+      expect(h.state()).toEqual(retained);
+      const resume = jest.spyOn(h.port, 'resume');
       const cancel = jest.spyOn(h.port, 'cancel');
-      const remove = jest.spyOn(h.port, 'remove');
       await expect(h.backend.disconnectCopilot()).resolves.toBeUndefined();
-      expect(resume).toHaveBeenCalledWith(pending.operationId);
+      expect(resume).not.toHaveBeenCalled();
       expect(cancel).not.toHaveBeenCalled();
-      expect(remove).toHaveBeenCalledTimes(1);
-      expect(remove).toHaveBeenCalledWith(head.epoch);
+      expect(h.refresh).not.toHaveBeenCalled();
+      expect(h.remove).toHaveBeenCalledTimes(1);
+      expect(h.remove.mock.calls[0]?.[0]).toMatchObject({
+        ref: head.pin.ref,
+        expectedRevision: head.pin.revision,
+      });
+      expect(h.state().head).toBeNull();
+      expect(h.state().mutation).toBeNull();
       expect(h.preferences().copilotVaultSelection?.state).toBe('disabled');
     } finally {
       h.pilot.close();
@@ -5848,6 +6593,10 @@ it.each(
         cancel = jest.spyOn(h.port, 'cancel');
       const remove = jest.spyOn(h.port, 'remove');
       const creates = h.put.mock.calls.length;
+      const removePending = jest.spyOn(h.port, 'removePending');
+      const explicitRemoval =
+        (kind === 'refresh' || kind === 'replace') &&
+        (entry === 'disconnect' || entry === 'change-account');
       const abort = new AbortController();
       if (entry === 'setup-cancel') {
         const pending = await h.port.status();
@@ -5873,8 +6622,7 @@ it.each(
       else if (
         entry === 'open' ||
         entry === 'setup-cancel' ||
-        kind === 'refresh' ||
-        kind === 'replace' ||
+        ((kind === 'refresh' || kind === 'replace') && !explicitRemoval) ||
         (entry === 'connect' && variant === 'unprobed' && origin === 'import')
       )
         await expect(invoke(backend, abort.signal)).rejects.toMatchObject({
@@ -5894,6 +6642,32 @@ it.each(
         expect(h.preferences()).toEqual(preferences);
         expect(resume).not.toHaveBeenCalled();
         expect(cancel).not.toHaveBeenCalled();
+      } else if (explicitRemoval) {
+        expect(removePending).toHaveBeenCalledTimes(1);
+        expect(removePending).toHaveBeenCalledWith(id);
+        expect(resume).not.toHaveBeenCalled();
+        expect(cancel).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+        expect(h.remove).toHaveBeenCalledTimes(1);
+        const deleted = h.remove.mock.calls[0]?.[0];
+        expect(deleted).toMatchObject({
+          ref: retained.head?.pin.ref,
+          expectedRevision: retained.head?.pin.revision,
+        });
+        expect(deleted?.idempotencyKey).toEqual(expect.any(String));
+        if (entry === 'disconnect') {
+          expect(h.state().head).toBeNull();
+          expect(h.state().mutation).toBeNull();
+          expect(h.state().removal).toBeNull();
+          await expect(backend.disconnectCopilot()).resolves.toBeUndefined();
+          expect(h.remove).toHaveBeenCalledTimes(1);
+          expect(h.remove.mock.calls[0]?.[0]).toEqual(deleted);
+        } else {
+          expect(h.state().head?.epoch).not.toBe(retained.head?.epoch);
+          expect(h.state().head?.operationId).not.toBe(id);
+          expect(h.preferences().copilotVaultSelection?.state).toBe('selected');
+          expect(authorize).toHaveBeenCalledTimes(1);
+        }
       } else {
         const cancelling =
           kind === 'create' &&
@@ -5915,8 +6689,7 @@ it.each(
         entry === 'status' ||
         entry === 'startup' ||
         entry === 'disconnect' ||
-        kind === 'refresh' ||
-        kind === 'replace' ||
+        ((kind === 'refresh' || kind === 'replace') && !explicitRemoval) ||
         (entry === 'connect' &&
           kind === 'create' &&
           (variant === 'pin' ||
@@ -5924,7 +6697,11 @@ it.each(
       )
         expect(authorize).not.toHaveBeenCalled();
       else expect(authorize).toHaveBeenCalledTimes(1);
-      if (kind === 'refresh' || kind === 'replace') {
+      if (explicitRemoval) {
+        expect(h.put).toHaveBeenCalledTimes(
+          creates + (entry === 'change-account' ? 1 : 0),
+        );
+      } else if (kind === 'refresh' || kind === 'replace') {
         expect(h.put).toHaveBeenCalledTimes(creates);
         expect(h.remove).not.toHaveBeenCalled();
         expect(remove).not.toHaveBeenCalled();
@@ -6422,6 +7199,7 @@ it('restart retains cancelled setup cleanup while receipt reconciliation is unav
     pilot.close();
     pilot = createCopilotVaultPilot({
       ...h.pilotOptions,
+      processLifetime: {},
       journal: { ...h.pilotOptions.journal },
     });
     const restarted = createCopilotVaultConnection({
@@ -7673,6 +8451,7 @@ it.each(P7_IMPORT_MATRIX)(
       disconnectCopilot: selectedFailure,
     };
     const handoff: CopilotQualificationHandoff = {
+      ordinarySetup: () => Promise.resolve(false),
       phase: () => Promise.resolve(phase),
       custody: () =>
         Promise.resolve(phase === 'published' ? 'selected' : 'pending'),
@@ -7724,6 +8503,172 @@ it.each(P7_IMPORT_MATRIX)(
       if (path === 'unavailable' || entry === 'startup')
         expect(selectedCalls).toEqual([]);
       if (phase !== 'published') expect(selectedCalls).toEqual([]);
+    } finally {
+      h.pilot.close();
+    }
+  },
+);
+
+it('P8 D27 supported caller demand uses its owned successor without predecessor fallback', async () => {
+  const h = fixture();
+  ready(
+    await h.pilot.setup(
+      {
+        ...grant(),
+        accessTokenExpiresAt: new Date(Date.now() + 1000).toISOString(),
+      },
+      null,
+    ),
+  );
+  h.refreshSuccess();
+  const storing = deferred<void>();
+  h.put.mockImplementation(() => {
+    storing.resolve();
+    return Promise.resolve({ kind: 'blocked', reason: 'locked' });
+  });
+  try {
+    await h.backend.listCopilotModels(new AbortController().signal);
+    await storing.promise;
+    expect(h.state().mutation?.kind).toBe('replace');
+    const count = h.refresh.mock.calls.length;
+    await expect(
+      h.backend.listCopilotModels(new AbortController().signal),
+    ).resolves.toHaveLength(1);
+    expect(h.refresh).toHaveBeenCalledTimes(count);
+    expect(h.remove).not.toHaveBeenCalled();
+  } finally {
+    h.pilot.close();
+  }
+});
+
+it('P8 receipt recovery failure blocks setup admission and retries without touching grants', async () => {
+  const h = fixture();
+  const recover = jest.fn<Promise<void>, []>(() =>
+    Promise.reject(new Error('unresolved receipt')),
+  );
+  h.pilotOptions.recoverRuntimeReceipts = recover;
+  try {
+    expect((await h.pilot.setup(grant(), null)).kind).not.toBe('ready');
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(h.natives).toHaveLength(0);
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.put).not.toHaveBeenCalled();
+    recover.mockResolvedValue(undefined);
+    ready(
+      await h.pilot.setup(
+        grant(),
+        h.preferences().copilotVaultSelection?.pinGeneration ?? null,
+      ),
+    );
+    expect(recover).toHaveBeenCalledTimes(2);
+    expect(h.natives).toHaveLength(1);
+    await h.backend.listCopilotModels(new AbortController().signal);
+    await h.backend.readCopilotAccountUsage(new AbortController().signal);
+    await h.backend.recoverCopilotAtStartup();
+    expect(recover).toHaveBeenCalledTimes(2); // Never reap this boot's newly created receipts.
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.remove).not.toHaveBeenCalled();
+  } finally {
+    h.pilot.close();
+  }
+});
+
+it('P8 boot receipt recovery is single-flight and a terminal fence prevents post-recovery spawn', async () => {
+  const h = fixture();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const recover = jest.fn(() => {
+    entered.resolve();
+    return release.promise;
+  });
+  h.pilotOptions.recoverRuntimeReceipts = recover;
+  const first = h.pilot.recoverRuntimeReceipts();
+  expect(h.pilot.recoverRuntimeReceipts()).toBe(first);
+  const setup = h.pilot.setup(grant(), null);
+  try {
+    await entered.promise;
+    await h.pilot.quiesce();
+    release.resolve();
+    await first;
+    expect((await setup).kind).not.toBe('ready');
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(h.natives).toHaveLength(0);
+    expect(h.refresh).not.toHaveBeenCalled();
+    expect(h.put).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    h.pilot.close();
+  }
+});
+
+it.each(['failed', 'unconfirmed'] as const)(
+  'P8 Change account waits for confirmed pending retirement after preference disable %s',
+  async (outcome) => {
+    const h = fixture();
+    const authorize = jest.fn(() => {
+      expect(h.state().head).toBeNull();
+      expect(h.state().mutation).toBeNull();
+      expect(h.preferences().copilotVaultSelection?.state).toBe('disabled');
+      expect(h.remove).toHaveBeenCalledTimes(1);
+      return Promise.resolve(grant());
+    });
+    const backend = createCopilotVaultConnection({
+      port: h.port,
+      authorize,
+      installation: () => Promise.resolve(base),
+      preferences: () =>
+        Promise.resolve({ ...DEFAULT_PREFERENCES, ...h.preferences() }),
+    });
+    try {
+      const head = ready(await h.pilot.setup(grant(), null));
+      const before = h.state();
+      const operationId = 'P8-change-pending';
+      expect(
+        await h.pilotOptions.journal.compareExchange(before.sequence, {
+          ...before,
+          sequence: before.sequence + 1,
+          mutation: {
+            kind: 'replace',
+            operationId,
+            epoch: head.epoch,
+            account: head.account,
+            origin: head.origin,
+            from: head.pin,
+            committed: null,
+            probeConfirmed: true,
+            cancelling: false,
+          },
+        }),
+      ).toBe(true);
+      const disable = jest.spyOn(h.selection, 'disable');
+      disable.mockResolvedValueOnce({ kind: outcome });
+      await expect(
+        backend.connectCopilot(
+          new AbortController().signal,
+          () => undefined,
+          true,
+        ),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      expect(authorize).not.toHaveBeenCalled();
+      expect(h.remove).not.toHaveBeenCalled();
+      expect(h.state().head).toEqual(head);
+      expect(h.state().mutation?.operationId).toBe(operationId);
+      const retained = h.state().removal;
+      expect(retained === null).toBe(outcome === 'failed');
+      await expect(
+        backend.connectCopilot(
+          new AbortController().signal,
+          () => undefined,
+          true,
+        ),
+      ).resolves.toMatchObject({ phase: 'connected' });
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(h.remove).toHaveBeenCalledTimes(1);
+      expect(h.refresh).not.toHaveBeenCalled();
+      if (retained)
+        expect(disable.mock.calls[1]?.[0].operationId).toBe(
+          retained.operationId,
+        );
     } finally {
       h.pilot.close();
     }

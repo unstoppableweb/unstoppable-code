@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useCustomizeDiscoveryEnabled } from '@canopy/ui-app/customize-discovery';
 import { RelatedItemsSection } from '@canopy/ui-shared';
 import { marketplaceTitleCase } from '@canopy/ui-shared/lib';
 import { PIPELINE_SOURCE_META } from '../pipeline/pipeline-source-meta';
@@ -91,6 +92,9 @@ export function CapabilityRelatedSections({
   presentation = 'cards',
 }: CapabilityRelatedSectionsProps): JSX.Element {
   const cwd = useActiveWorktreeCwd();
+  // New Customize lists related skills and plugins in the page's shared
+  // Related section; this keeps the workflows that use the item.
+  const discoveryEnabled = useCustomizeDiscoveryEnabled();
   const { entries, loading: refsLoading } = usePipelineCapabilityRefs(cwd);
   const { marketplaces, loading: marketplacesLoading } =
     useInstalledMarketplaces();
@@ -196,38 +200,40 @@ export function CapabilityRelatedSections({
           },
         }))}
       />
-      <RelatedItemsSection
-        title="Related skills and plugins"
-        {...(capabilitiesReason ? { description: capabilitiesReason } : {})}
-        presentation={presentation}
-        hideWhenEmpty={presentation === 'list'}
-        emptyLabel="No related skills or plugins yet."
-        loading={marketplacesLoading || skillsLoading}
-        testId="related-capabilities-section"
-        items={relatedCapabilities.map((item) => ({
-          key: item.key,
-          // The list's display name, so a related row reads like its row.
-          title: marketplaceTitleCase(item.title),
-          subtitle: item.subtitle,
-          badge: item.kind === 'skill' ? 'Skill' : 'Plugin',
-          kind: item.kind,
-          reason: item.reason,
-          onOpen: (): void => {
-            if (onOpenEntry) {
-              onOpenEntry(item.entryId);
-              return;
-            }
-            onBeforeNavigate?.();
-            // Hosts without a detail stack still get a Back path: the
-            // source entry seeds the Plugins-page stack.
-            openPluginsNavigation({
-              kind: 'entry-detail',
-              entryId: item.entryId,
-              from: { kind: 'entry', entryId: effectiveSubjectEntryId },
-            });
-          },
-        }))}
-      />
+      {!discoveryEnabled && (
+        <RelatedItemsSection
+          title="Related skills and plugins"
+          {...(capabilitiesReason ? { description: capabilitiesReason } : {})}
+          presentation={presentation}
+          hideWhenEmpty={presentation === 'list'}
+          emptyLabel="No related skills or plugins yet."
+          loading={marketplacesLoading || skillsLoading}
+          testId="related-capabilities-section"
+          items={relatedCapabilities.map((item) => ({
+            key: item.key,
+            // The list's display name, so a related row reads like its row.
+            title: marketplaceTitleCase(item.title),
+            subtitle: item.subtitle,
+            badge: item.kind === 'skill' ? 'Skill' : 'Plugin',
+            kind: item.kind,
+            reason: item.reason,
+            onOpen: (): void => {
+              if (onOpenEntry) {
+                onOpenEntry(item.entryId);
+                return;
+              }
+              onBeforeNavigate?.();
+              // Hosts without a detail stack still get a Back path: the
+              // source entry seeds the Plugins-page stack.
+              openPluginsNavigation({
+                kind: 'entry-detail',
+                entryId: item.entryId,
+                from: { kind: 'entry', entryId: effectiveSubjectEntryId },
+              });
+            },
+          }))}
+        />
+      )}
     </div>
   );
 }

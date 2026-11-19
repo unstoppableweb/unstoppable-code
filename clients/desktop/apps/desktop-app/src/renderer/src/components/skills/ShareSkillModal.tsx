@@ -1,6 +1,11 @@
 import { type JSX, useCallback, useMemo, useRef, useState } from 'react';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import {
+  skillShareCreateAudience,
+  skillShareCreateRefusal,
+  skillShareUpdateAudience,
+} from './skill-share-audience';
+import {
   ShareConflictError,
   deriveExistingShare,
   existingShareLoadFailure,
@@ -267,6 +272,24 @@ export function ShareSkillModal({
         ...(capabilityPackage ? { capabilityPackage } : {}),
         ...(committedPackageUploadId ? { committedPackageUploadId } : {}),
       };
+      // A new share; with "Only me" it may not reuse an identical skill the
+      // account already shares more widely (CAN-7037).
+      const createShared = async (): Promise<SharedSkillDetail> => {
+        try {
+          return unwrapShareOperationResult(
+            await window.skills.createShared({
+              sourceSkillId: skillPath,
+              rawSkill: outgoingRawSkill,
+              ...ownerFields,
+              ...packageFields,
+              ...skillShareCreateAudience(input.scope),
+            }),
+          );
+        } catch (error) {
+          const refusal = skillShareCreateRefusal(error);
+          throw refusal === null ? error : new Error(refusal);
+        }
+      };
       const revokePublicShare =
         input.scope !== 'public' &&
         !input.preservePublicLink &&
@@ -290,6 +313,8 @@ export function ShareSkillModal({
               ...(revokePublicShare ? { revokePublicShare } : {}),
               ...ownerFields,
               ...packageFields,
+              // "Only me" refuses a link published since the dialog loaded.
+              ...skillShareUpdateAudience(input.scope, remoteDetail),
             }),
           );
         } catch (error: unknown) {
@@ -301,25 +326,11 @@ export function ShareSkillModal({
           )
             throw error;
           input.assertAllowed?.();
-          detail = unwrapShareOperationResult(
-            await window.skills.createShared({
-              sourceSkillId: skillPath,
-              rawSkill: outgoingRawSkill,
-              ...ownerFields,
-              ...packageFields,
-            }),
-          );
+          detail = await createShared();
         }
       } else {
         input.assertAllowed?.();
-        detail = unwrapShareOperationResult(
-          await window.skills.createShared({
-            sourceSkillId: skillPath,
-            rawSkill: outgoingRawSkill,
-            ...ownerFields,
-            ...packageFields,
-          }),
-        );
+        detail = await createShared();
       }
 
       let publicLinkFailed = false;

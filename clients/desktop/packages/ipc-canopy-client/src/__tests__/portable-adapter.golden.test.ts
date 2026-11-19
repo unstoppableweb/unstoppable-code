@@ -886,6 +886,53 @@ const SHELL_QUERY_SCENARIOS: ShellQueryScenarios = {
       rejects: UnsupportedOperationError,
     },
   ],
+  'workEntries.archived': [
+    {
+      name: "reads a cowork project's archive overview as Portal's result",
+      args: {
+        payload: { projectLocalId: 'cowork-1', offset: 0 },
+        target: { workspaceLocalId: 'cowork-1' },
+      },
+      replies: {
+        [C.workEntriesListArchived]: () => ({
+          items: [
+            {
+              id: 'entry-1',
+              title: 'Old task',
+              state: 'archived',
+              archivedAt: '2026-11-01T00:00:00.000Z',
+            },
+          ],
+          nextOffset: null,
+        }),
+      },
+      calls: [
+        call(C.workEntriesListArchived, {
+          projectLocalId: 'cowork-1',
+          offset: 0,
+        }),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          items: [
+            {
+              id: 'entry-1',
+              title: 'Old task',
+              state: 'archived',
+              archivedAt: '2026-11-01T00:00:00.000Z',
+            },
+          ],
+          nextOffset: null,
+        }),
+    },
+    {
+      name: 'rejects a reply without items',
+      args: { payload: { projectLocalId: 'cowork-1' } },
+      replies: { [C.workEntriesListArchived]: () => ({ nextOffset: null }) },
+      channels: [C.workEntriesListArchived],
+      rejects: Error,
+    },
+  ],
 };
 
 const SHELL_COMMAND_SCENARIOS: ShellCommandScenarios = {

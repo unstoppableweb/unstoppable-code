@@ -23,7 +23,7 @@ import {
 } from '../agents/delegation/activity';
 import { validateId } from '../lib/validation';
 import { sendToAllWindows } from '../lib/window-send';
-import { scheduleDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
 import { registerIpcHandler } from './register';
 import { managedDelegationLifetimeStatus } from '../agents/delegation/lifetime-status';
 
@@ -164,7 +164,7 @@ export function registerManagedDelegationHandlers(): void {
     // session snapshot. The runtime-status service that also watches this
     // activity runs only while a Remote Control session is active, so re-pull
     // the snapshot here or a row stays working after its delegates finish.
-    scheduleDesktopSessionSnapshotInvalidation();
+    requestDesktopSessionSnapshotInvalidation('delegation.activity');
   });
 
   registerIpcHandler<[unknown], ManagedDelegationMessageResult>(

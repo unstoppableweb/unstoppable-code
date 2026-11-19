@@ -9,9 +9,11 @@ import {
   type ErrorClassification,
 } from './classification';
 import { isAppCancellation } from './cancellation';
+import { IPC_RESTORED_APP_ERROR, safeErrorProperty } from './ipc-rejection';
 import {
   AppErrorCopySchema,
   AppErrorDetailSchema,
+  AppErrorErrnoSchema,
   AppErrorIdentifierSchema,
   AppErrorTimestampSchema,
 } from './primitives';
@@ -71,6 +73,8 @@ function classify(
   if (isAppCancellation(value)) return undefined;
   if (options.signal?.aborted && options.signal.reason === value)
     return undefined;
+  const restored = restoredIpcAppError(value);
+  if (restored) return restored;
   const appErrorLike =
     typeof value === 'object' &&
     value !== null &&
@@ -116,6 +120,7 @@ function classify(
           }
         : {}),
       detail: {
+        ...errnoDetail(value),
         name:
           typeof value.name === 'string' ? value.name.slice(0, 128) : 'Error',
         message:
@@ -132,6 +137,29 @@ function classify(
     ...optionsForCreation(options),
     detail: { message: 'Unrecognized error value' },
   });
+}
+
+/** The shape main recorded for a restored IPC rejection, under its reference.
+ * An invalid or unreadable value falls back to ordinary classification. */
+function restoredIpcAppError(value: unknown): AppError | undefined {
+  const carried = safeErrorProperty(value, IPC_RESTORED_APP_ERROR);
+  if (carried === undefined) return undefined;
+  try {
+    const parsed = AppErrorSchema.safeParse(carried);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A system code only when it matches the allowlist; the getter may throw. */
+function errnoDetail(value: Error): { errno?: string } {
+  try {
+    const errno = AppErrorErrnoSchema.safeParse(Reflect.get(value, 'code'));
+    return errno.success ? { errno: errno.data } : {};
+  } catch {
+    return {};
+  }
 }
 
 function optionsForCreation(

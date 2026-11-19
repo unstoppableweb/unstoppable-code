@@ -68,6 +68,7 @@ const PIPELINE_HOST_ACTION_IDS = [
   'create-bot-entry',
   'send-agent-message',
   'wait-for-agent-reply',
+  'github-publish-review',
 ] as const;
 
 export type PipelineHostActionId = (typeof PIPELINE_HOST_ACTION_IDS)[number];

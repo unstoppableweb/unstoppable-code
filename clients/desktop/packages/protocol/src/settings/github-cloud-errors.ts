@@ -54,8 +54,7 @@ export const GITHUB_CLOUD_ERROR_STATUS: Readonly<
 export const GITHUB_CLOUD_ERROR_COPY: Readonly<
   Record<GitHubCloudErrorCode, string>
 > = {
-  'github-cloud-disconnected':
-    "GitHub isn't connected for cloud work. Connect GitHub to continue.",
+  'github-cloud-disconnected': "GitHub isn't linked. Link GitHub to continue.",
   'github-cloud-needs-reauth':
     'GitHub needs you to sign in again. Reconnect GitHub to continue.',
   'github-cloud-needs-install':

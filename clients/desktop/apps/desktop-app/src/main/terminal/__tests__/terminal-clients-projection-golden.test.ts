@@ -26,6 +26,7 @@ import type {
 import type { WindowAccessors } from '../../ipc';
 import type { RoutedWorkerTerminal as RoutedWorkerTerminalClass } from '../routed-worker-terminal';
 import { registerTerminalHandlers } from '../../ipc/terminal';
+import { terminalPersistenceStore } from '../persistence';
 import { createMainWindowPushSource } from '../../remote-control/host/main-window-pushes';
 
 type Channels = typeof IPC_CHANNELS;
@@ -119,6 +120,7 @@ jest.mock('../persistence', () => ({
     registerLiveSession: (): void => undefined,
     appendTerminalOutput: (): void => undefined,
     markTerminalExited: (): void => undefined,
+    saveWorktreeState: (): void => undefined,
   },
 }));
 jest.mock('../worker-terminal', () => {
@@ -621,5 +623,34 @@ describe('terminal clients project one worker terminal (CAN-4148)', () => {
       replay: Buffer.from('claude output'),
     });
     expect(replays[1]).toEqual(replays[0]);
+  });
+
+  it('terminal:save-worktree-state rejects malformed forgetTerminalIds before saving (CAN-6616)', async () => {
+    const save = jest.spyOn(terminalPersistenceStore, 'saveWorktreeState');
+    const layout = {
+      projectId: 'project',
+      worktreeId: 'task',
+      drawerCollapsed: false,
+      groups: [],
+      activeGroupId: null,
+      groupOrdinals: {},
+      nextGroupOrdinal: 1,
+      terminalCustomNames: {},
+      groupCustomNames: {},
+    };
+    for (const forgetTerminalIds of ['term-1', [''], ['../term-1'], [1], null])
+      await expect(
+        invoke(IPC_CHANNELS.terminalSaveWorktreeState, {
+          ...layout,
+          forgetTerminalIds,
+        }),
+      ).rejects.toThrow('Invalid forgetTerminalIds');
+    expect(save).not.toHaveBeenCalled();
+    await invoke(IPC_CHANNELS.terminalSaveWorktreeState, layout);
+    await invoke(IPC_CHANNELS.terminalSaveWorktreeState, {
+      ...layout,
+      forgetTerminalIds: ['term-1'],
+    });
+    expect(save).toHaveBeenCalledTimes(2);
   });
 });

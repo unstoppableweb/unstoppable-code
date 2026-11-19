@@ -53,7 +53,7 @@ import {
   hasMergedPr,
   shouldShowWorktreeMergedState,
 } from '@/lib/worktreeMergedState';
-import { toAppError } from '@canopy/protocol/app-errors';
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
 import {
   reportClientAppError,
   resolveClientAppError,
@@ -84,6 +84,8 @@ export type GitShippingSource = NonNullable<CreatePrRequest['source']>;
 /** A failed git or pull request action, scoped to its originating worktree. */
 export interface GitActionFailure extends InlineFailure {
   seq: number;
+  /** Main already recorded every failure behind this banner; it must not record it again. */
+  errorRecordingDisabled?: boolean;
   /**
    * Runs the failed action again with the same inputs, for actions where that
    * can fix the failure. The banner offers it as `Try again` or `Start over`,
@@ -91,6 +93,8 @@ export interface GitActionFailure extends InlineFailure {
    */
   retry?: () => void;
 }
+
+type RaisedGitActionFailure = Omit<GitActionFailure, 'seq' | 'retry'>;
 
 export interface PrMergeWarningState {
   projectId: string;
@@ -445,7 +449,7 @@ interface GitHubState {
   raiseGitActionFailure: (
     projectId: string,
     worktreeId: string,
-    failure: InlineFailure,
+    failure: RaisedGitActionFailure,
     attemptId?: string,
   ) => void;
   /** Dismisses one failure; a newer failure (another `seq`) stays. */
@@ -1002,14 +1006,33 @@ function buildFailedReposMessage<
   return `${actionLabel} failed for ${failedRepos.length} ${failedRepos.length === 1 ? 'repo' : 'repos'}: ${formatRepoEntries(failedRepos, (repo) => `${repo.repoName} (${repo.error})`)}`;
 }
 
+/**
+ * Main reports each failed repo itself and returns the recorded error, so the
+ * banner records nothing when every failure was recorded or is an expected
+ * sign-in failure main deliberately skips. At least one must be recorded.
+ */
+function recordedByMain(failedRepos: ReadonlyArray<{ appError?: AppError }>): {
+  errorRecordingDisabled?: true;
+} {
+  return failedRepos.some((repo) => repo.appError !== undefined) &&
+    failedRepos.every(
+      (repo) =>
+        repo.appError !== undefined ||
+        ('failureCode' in repo && repo.failureCode !== undefined),
+    )
+    ? { errorRecordingDisabled: true }
+    : {};
+}
+
 /** Preserve the complete partial-success reason without rendering command output. */
 function buildFailedReposFailure<
   T extends
     | RepoFailureResult
     | PullFailedRepo
     | GenerateCommitMessagesFailedRepo,
->(actionLabel: string, failedRepos: T[]): InlineFailure {
+>(actionLabel: string, failedRepos: T[]): RaisedGitActionFailure {
   return {
+    ...recordedByMain(failedRepos),
     error: `${actionLabel} failed for ${failedRepos.length} ${failedRepos.length === 1 ? 'repo' : 'repos'}.`,
     details: buildFailedReposMessage(actionLabel, failedRepos),
   };
@@ -3344,6 +3367,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
           projectId,
           worktreeId,
           {
+            ...recordedByMain(response.failedRepos),
             error: "Couldn't merge all repositories.",
             details: response.failedRepos
               .map(
@@ -3542,6 +3566,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
           projectId,
           worktreeId,
           {
+            ...recordedByMain(response.failedRepos),
             error: "Couldn't merge all repositories.",
             details: response.failedRepos
               .map(

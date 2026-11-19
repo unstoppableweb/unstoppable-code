@@ -1,6 +1,5 @@
 import type {
   ChatTabsFile,
-  PortalEntityEnvelope,
   PortalTarget,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
@@ -23,17 +22,12 @@ import {
 } from '../lib/script-runner';
 import { deriveWorktreeChatBadgesSummary } from '../lib/chat-badge-sync';
 import {
-  createPortalEvent,
-  enqueuePortalEvent,
-  isCanopyPortalActive,
-} from '../portal/portal-event-bus';
-import {
   getActivePipelineExecutionHandles,
   subscribeToActiveCountChange,
 } from '../pipelines/pipeline-execution-registry';
 import { workerTerminal } from '../terminal/worker-terminal';
 import { subscribePipelineRunUpdates } from './pipelines-service';
-import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 
 const SESSION_REFRESH_DELAY_MS = 35;
 
@@ -76,7 +70,6 @@ interface MirroredBadges {
 }
 
 let started = false;
-let generation = 0;
 let unsubscribeSessionActivity: (() => void) | null = null;
 let unsubscribeDelegationActivity: (() => void) | null = null;
 let unsubscribeBackgroundWork: (() => void) | null = null;
@@ -86,31 +79,16 @@ let unsubscribeTerminalActivity: (() => void) | null = null;
 let unsubscribeScriptActivity: (() => void) | null = null;
 let unsubscribeHookActivity: (() => void) | null = null;
 let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
-let sessionStatuses = new Map<string, SessionStatus>();
-let executionStatuses = new Map<string, WorktreeRuntimeStatus>();
 // These maps hold one entry per worktree observed this process session.
 // They are bounded by the user's worktree set (not by activity volume); stale
 // entries for deleted worktrees are inert. Persisted statuses follow every
-// chat write, so they outlive portal sessions; the rest clear on stop.
+// chat write, so they outlive a stop; the badge mirror clears on stop.
 const persistedStatuses = new Map<string, PersistedStatus>();
-// The worktrees.json badge mirror as of the latest snapshot, for deltas.
+// The worktrees.json badge mirror as of the latest snapshot.
 const mirroredBadges = new Map<string, MirroredBadges>();
-const fingerprints = new Map<string, string>();
-const emissionVersions = new Map<string, number>();
 
 function statusKey(workspaceId: string, worktreeId: string): string {
   return `${workspaceId}\0${worktreeId}`;
-}
-
-function splitStatusKey(key: string): {
-  workspaceId: string;
-  worktreeId: string;
-} {
-  const separator = key.indexOf('\0');
-  return {
-    workspaceId: key.slice(0, separator),
-    worktreeId: key.slice(separator + 1),
-  };
 }
 
 function bucketActivityAt(value: number | undefined): string | undefined {
@@ -184,8 +162,8 @@ function buildExecutionStatuses(): Map<string, WorktreeRuntimeStatus> {
 
 function combineStatus(
   key: string,
-  sessions = sessionStatuses,
-  executions = executionStatuses,
+  sessions: Map<string, SessionStatus>,
+  executions: Map<string, WorktreeRuntimeStatus>,
 ): WorktreeRuntimeStatus {
   const session = sessions.get(key);
   const persisted = persistedStatuses.get(key);
@@ -221,133 +199,18 @@ function combineStatus(
   };
 }
 
-function fingerprint(status: WorktreeRuntimeStatus): string {
-  return JSON.stringify([
-    status.isStreaming ?? false,
-    status.hasBackgroundWork ?? false,
-    status.backgroundTasks ?? 0,
-    status.hasUnread ?? false,
-    status.awaitingApproval ?? false,
-    status.lastActivityAt ?? null,
-    status.pipelineStatus ?? null,
-    status.terminalStatus ?? null,
-    status.scriptStatus ?? null,
-    status.hookStatus ?? null,
-    status.isRunningRun ?? false,
-  ]);
-}
-
-async function emitChangedWorktree(key: string): Promise<void> {
-  // Building the entity does real IO; skip entirely while no portal session
-  // is connected — the enqueue would be a no-op anyway.
-  if (!started || !isCanopyPortalActive()) return;
-  const status = combineStatus(key);
-  const nextFingerprint = fingerprint(status);
-  if (fingerprints.get(key) === nextFingerprint) return;
-
-  const emissionVersion = (emissionVersions.get(key) ?? 0) + 1;
-  emissionVersions.set(key, emissionVersion);
-  const currentGeneration = generation;
-  const { workspaceId, worktreeId } = splitStatusKey(key);
-  let entity: PortalEntityEnvelope | null = null;
-  try {
-    // Dynamic import intentionally breaks the module cycle with
-    // workspace-portal-service (it imports getWorktreeRuntimeStatuses from
-    // this file for snapshot builds, while live deltas need its canonical
-    // entity builder). A static import would resolve to undefined at runtime.
-    const { getWorkspacePortalWorktreeEntity } =
-      await import('./workspace-portal-service');
-    entity = await getWorkspacePortalWorktreeEntity(
-      workspaceId,
-      worktreeId,
-      status,
-    );
-  } catch {
-    // Callers void this promise; a deleted workspace, a target without a
-    // worktrees.json, or transient IO must not surface as an unhandled
-    // rejection. Skip the delta — the next snapshot re-baselines.
-    return;
-  }
-  if (
-    !started ||
-    generation !== currentGeneration ||
-    emissionVersions.get(key) !== emissionVersion ||
-    entity === null
-  ) {
-    return;
-  }
-
-  const currentStatus = combineStatus(key);
-  const currentFingerprint = fingerprint(currentStatus);
-  if (currentFingerprint !== nextFingerprint) {
-    void emitChangedWorktree(key);
-    return;
-  }
-  fingerprints.set(key, nextFingerprint);
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'worktree',
-      target: {
-        workspaceLocalId: workspaceId,
-        worktreeLocalId: worktreeId,
-      },
-      entities: [entity],
-      generatedAt: new Date().toISOString(),
-    }),
-  );
-}
-
-function refreshSessionsAndEmit(): void {
-  sessionRefreshTimer = null;
-  if (!started) return;
-  const previous = sessionStatuses;
-  sessionStatuses = buildSessionStatuses();
-  const previousExecutions = executionStatuses;
-  executionStatuses = buildExecutionStatuses();
-  const keys = new Set<string>();
-  previous.forEach((_status, key): void => {
-    keys.add(key);
-  });
-  sessionStatuses.forEach((_status, key): void => {
-    keys.add(key);
-  });
-  previousExecutions.forEach((_status, key): void => {
-    keys.add(key);
-  });
-  executionStatuses.forEach((_status, key): void => {
-    keys.add(key);
-  });
-  keys.forEach((key): void => {
-    const before = previous.get(key);
-    const after = sessionStatuses.get(key);
-    if (
-      before?.isStreaming !== after?.isStreaming ||
-      before?.hasBackgroundWork !== after?.hasBackgroundWork ||
-      before?.backgroundTasks !== after?.backgroundTasks ||
-      before?.lastActivityAt !== after?.lastActivityAt ||
-      fingerprint(previousExecutions.get(key) ?? {}) !==
-        fingerprint(executionStatuses.get(key) ?? {})
-    ) {
-      void emitChangedWorktree(key);
-    }
-  });
-}
-
 function scheduleSessionRefresh(): void {
   if (!started || sessionRefreshTimer !== null) return;
-  scheduleDesktopSessionSnapshotInvalidation();
-  sessionRefreshTimer = setTimeout(
-    refreshSessionsAndEmit,
-    SESSION_REFRESH_DELAY_MS,
-  );
+  requestDesktopSessionSnapshotInvalidation('runtime-status.session-refresh');
+  // Coalesce a burst of activity into one invalidation request per window.
+  sessionRefreshTimer = setTimeout((): void => {
+    sessionRefreshTimer = null;
+  }, SESSION_REFRESH_DELAY_MS);
 }
 
 export function startWorktreeRuntimeStatusService(): void {
   if (started) return;
   started = true;
-  generation += 1;
-  sessionStatuses = buildSessionStatuses();
-  executionStatuses = buildExecutionStatuses();
   unsubscribeSessionActivity = subscribeChatSessionActivity(
     scheduleSessionRefresh,
   );
@@ -380,7 +243,6 @@ export function startWorktreeRuntimeStatusService(): void {
 
 export function stopWorktreeRuntimeStatusService(): void {
   started = false;
-  generation += 1;
   unsubscribeSessionActivity?.();
   unsubscribeSessionActivity = null;
   unsubscribeDelegationActivity?.();
@@ -401,11 +263,7 @@ export function stopWorktreeRuntimeStatusService(): void {
     clearTimeout(sessionRefreshTimer);
     sessionRefreshTimer = null;
   }
-  sessionStatuses.clear();
-  executionStatuses.clear();
   mirroredBadges.clear();
-  fingerprints.clear();
-  emissionVersions.clear();
 }
 
 export function getWorktreeRuntimeStatuses(
@@ -413,8 +271,7 @@ export function getWorktreeRuntimeStatuses(
   target?: PortalTarget,
 ): Promise<Map<string, WorktreeRuntimeStatus>> {
   // A read answers its caller alone: the Portal snapshot, the desktop session
-  // snapshot or auto-archive. It must not move the delta emitter's baselines,
-  // or a change it sees first is never emitted to the Portal.
+  // snapshot or auto-archive.
   const sessions = buildSessionStatuses();
   const executions = buildExecutionStatuses();
   const selected = inputs.filter(
@@ -449,7 +306,6 @@ export function handleChatTabsWritten(
     awaitingApproval: summary.approvalChats.length > 0,
     lastActivityAt: Date.now(),
   });
-  void emitChangedWorktree(key);
 }
 
 export function resetWorktreeRuntimeStatusServiceForTests(): void {

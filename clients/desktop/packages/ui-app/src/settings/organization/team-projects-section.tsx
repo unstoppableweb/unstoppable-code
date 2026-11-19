@@ -4,6 +4,7 @@ import { TextLink } from '@canopy/ui-shared/components';
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type JSX,
@@ -69,8 +70,10 @@ import {
   SettingsConfirmDialog,
   useSettingsBrand,
   useSettingsClient,
+  useSettingsHost,
   useSettingsPrivacy,
 } from '../host';
+import { ProjectSetupPanel } from '../../capability/project-setup/ProjectSetupPanel';
 import {
   useSettingsErrorCopy,
   useSettingsLoadFailure,
@@ -345,6 +348,8 @@ interface ManagedProjectDialogsProps {
   managed: ManagedProject;
   detail: OrganizationDetail;
   growthDisabled: boolean;
+  /** Organization projects are on: the editor lists the project's Agents. */
+  agentsAndPipelinesEnabled: boolean;
   restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
@@ -353,6 +358,7 @@ function ManagedProjectDialogs({
   managed,
   detail,
   growthDisabled,
+  agentsAndPipelinesEnabled,
   restoreFocusRef,
 }: ManagedProjectDialogsProps): JSX.Element {
   const { selected, deleting } = managed;
@@ -365,6 +371,7 @@ function ManagedProjectDialogs({
           detail={detail}
           initialSection={managed.initialSection}
           growthDisabled={growthDisabled}
+          agentsAndPipelinesEnabled={agentsAndPipelinesEnabled}
           busy={managed.busy}
           stale={managed.stale}
           error={managed.error}
@@ -1347,6 +1354,7 @@ function ProjectList({
         managed={managed}
         detail={detail}
         growthDisabled={growthDisabled}
+        agentsAndPipelinesEnabled={projectsEnabled}
         restoreFocusRef={containerRef}
       />
     </div>
@@ -1611,6 +1619,7 @@ interface ProjectEditorProps {
   detail: OrganizationDetail;
   initialSection: 'definition' | 'grants';
   growthDisabled: boolean;
+  agentsAndPipelinesEnabled: boolean;
   busy: boolean;
   stale: boolean;
   error: SettingsFailure | null;
@@ -1623,6 +1632,7 @@ function ProjectEditor({
   detail,
   initialSection,
   growthDisabled,
+  agentsAndPipelinesEnabled,
   busy,
   stale,
   error,
@@ -1631,7 +1641,18 @@ function ProjectEditor({
   onClose,
 }: ProjectEditorProps): JSX.Element {
   const client = useSettingsClient();
-  const { blockClassName } = useSettingsPrivacy();
+  const host = useSettingsHost();
+  const projectSetupLogger = useMemo(
+    () => host.logger('settings.organization.project-setup'),
+    [host],
+  );
+  const { projectLocalSetup } = useOrganizationSettingsSlots();
+  const localSetup = useMemo(
+    () => projectLocalSetup?.(detail.id, project.id),
+    [projectLocalSetup, detail.id, project.id],
+  );
+  const privacy = useSettingsPrivacy();
+  const { blockClassName } = privacy;
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description ?? '');
   const [privateMemory, setPrivateMemory] = useState(
@@ -1854,6 +1875,29 @@ function ProjectEditor({
             >
               Save access
             </LoadingButton>
+          </section>
+          {/* The skills and plugins every member of the project gets
+              (CAN-6239), saved on their own: a change applies at once, apart
+              from the definition and access drafts above. */}
+          <section
+            className="flex flex-col gap-3 text-s"
+            data-testid="team-projects-shared-setup"
+          >
+            <Heading level={3} variant="title">
+              Shared setup
+            </Heading>
+            <p className="text-xs text-pretty fg-secondary">
+              Everything this project runs with, such as skills, plugins,
+              scripts and hooks, and where each comes from.
+            </p>
+            <ProjectSetupPanel
+              client={client}
+              projectId={project.id}
+              logger={projectSetupLogger}
+              localSetup={localSetup}
+              privacy={privacy}
+              agentsAndPipelinesEnabled={agentsAndPipelinesEnabled}
+            />
           </section>
         </div>
       </DialogModal>

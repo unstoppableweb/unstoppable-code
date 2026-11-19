@@ -99,7 +99,11 @@ export interface WorkspaceSettingsDialogProps {
   }[];
   readonly modelsLoading?: boolean;
   readonly modelsError?: string;
-  readonly workspaceName: string;
+  /**
+   * The subtitle naming the project. A node, so a host can keep a
+   * user-authored name out of session replay.
+   */
+  readonly workspaceName: ReactNode;
   readonly initialValues: WorkspaceSettingsValues;
   readonly tabs?: readonly WorkspaceSettingsTab[];
   readonly showDescription?: boolean;

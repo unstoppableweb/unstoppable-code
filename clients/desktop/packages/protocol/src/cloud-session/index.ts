@@ -91,6 +91,10 @@ export interface CloudSessionPathMutationResult {
   readonly kind: 'create' | 'mkdir' | 'delete' | 'rename';
   readonly fromPath?: string;
   readonly mtimeMs?: number;
+  /** Rename of a regular file only. */
+  readonly size?: number;
+  /** Mkdir only: workspace-relative parents it created, outermost first. */
+  readonly createdParentPaths?: readonly string[];
 }
 
 export interface CloudSessionCodedError {

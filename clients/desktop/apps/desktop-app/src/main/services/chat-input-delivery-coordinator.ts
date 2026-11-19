@@ -1,3 +1,4 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { assertCoworkChatRootPresent } from '../lib/cowork-folder-guard';
 import type {
   ChatWatcherHeldOutcome,
@@ -2875,7 +2876,10 @@ export class ChatInputDeliveryCoordinator {
     };
     const actionKey = `${this.key(target)}:${command.rowId}`;
     if (this.activeActions.has(actionKey) || this.isSuspended(target))
-      throw new Error('Another message action is in progress');
+      throw classifyError(
+        new Error('Another message action is in progress'),
+        'external.state_changed',
+      );
     this.activeActions.add(actionKey);
     try {
       const tab = await this.tab(target);
@@ -2891,12 +2895,18 @@ export class ChatInputDeliveryCoordinator {
         !row ||
         (row.revision !== command.rowRevision && !resumesInterruptedQueue)
       )
-        throw new Error(
-          'The message changed. Review its current status before trying again.',
+        throw classifyError(
+          new Error(
+            'The message changed. Review its current status before trying again.',
+          ),
+          'external.state_changed',
         );
       if (row.dismissedAt !== undefined)
-        throw new Error(
-          'This action is unavailable for the current message status',
+        throw classifyError(
+          new Error(
+            'This action is unavailable for the current message status',
+          ),
+          'external.state_changed',
         );
       const epoch = ledger.epoch;
       let actionRevision = row.revision;
@@ -2929,13 +2939,17 @@ export class ChatInputDeliveryCoordinator {
           target,
           (current, _tab, rootUserMessageId) => {
             if (current.epoch !== epoch || this.isSuspended(target))
-              throw new Error(
-                'Stop or Interrupt superseded this message action',
+              throw classifyError(
+                new Error('Stop or Interrupt superseded this message action'),
+                'external.state_changed',
               );
             const currentRow = current.rows.find((r) => r.id === command.rowId);
             if (!currentRow || currentRow.revision !== actionRevision)
-              throw new Error(
-                'The message changed before this action could complete',
+              throw classifyError(
+                new Error(
+                  'The message changed before this action could complete',
+                ),
+                'external.state_changed',
               );
             actionRevision++;
             return {
@@ -2991,13 +3005,19 @@ export class ChatInputDeliveryCoordinator {
           (a) => a.id === row?.currentAttemptId,
         );
         const caps = session?.getSteeringCapabilities?.();
+        // A pending row always has its attempt; only a session that ended,
+        // froze or restarted since the attempt is a state change.
+        if (!attempt)
+          throw new Error('This session cannot safely withdraw the message');
         if (
-          !attempt ||
           !session?.withdrawSteeringInput ||
           !caps?.withdraw ||
           caps.generation !== attempt.generation
         )
-          throw new Error('This session cannot safely withdraw the message');
+          throw classifyError(
+            new Error('This session cannot safely withdraw the message'),
+            'external.state_changed',
+          );
         if (row.state === 'pending') {
           const commitBeforeWithdrawal = command.action !== 'queue';
           await replace(
@@ -3087,7 +3107,10 @@ export class ChatInputDeliveryCoordinator {
         if (command.action === 'queue' && row?.state === 'queued')
           receiptCommitted = true;
         else if (!row || row.state !== 'cancelled')
-          throw new Error('Withdrawal was superseded by provider pickup');
+          throw classifyError(
+            new Error('Withdrawal was superseded by provider pickup'),
+            'external.state_changed',
+          );
         if (command.action === 'edit')
           await replace((r) => ({
             ...r,
@@ -3149,8 +3172,11 @@ export class ChatInputDeliveryCoordinator {
             (command.action === 'resend' && row.state === 'uncertain'))
         )
       ) {
-        throw new Error(
-          'This action is unavailable for the current message status',
+        throw classifyError(
+          new Error(
+            'This action is unavailable for the current message status',
+          ),
+          'external.state_changed',
         );
       }
       if (command.action === 'queue' && !receiptCommitted) {
@@ -3176,8 +3202,11 @@ export class ChatInputDeliveryCoordinator {
       ) {
         const latest = await this.tab(target);
         if (!inputSettingsKeyMatchesNonApproval(latest, row.settingsKey))
-          throw new Error(
-            'Chat settings changed. The message is retained; use Queue to send it with its saved settings.',
+          throw classifyError(
+            new Error(
+              'Chat settings changed. The message is retained; use Queue to send it with its saved settings.',
+            ),
+            'external.state_changed',
           );
         const resent = requestWithText(
           row.payload,
@@ -3230,8 +3259,11 @@ export class ChatInputDeliveryCoordinator {
               runtime.status,
             )
           )
-            throw new Error(
-              'The active session cannot accept this message. Use Queue.',
+            throw classifyError(
+              new Error(
+                'The active session cannot accept this message. Use Queue.',
+              ),
+              'external.state_changed',
             );
           // Queue ownership transfer and drain use the same atomic persistence
           // path as Move to queued, including when the chat is already idle.

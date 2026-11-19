@@ -2571,7 +2571,7 @@ export const createMessagingSlice: StateCreator<
               "Couldn't send your message. Try again.",
               'error',
               onClick,
-              meta,
+              { ...meta, caught: error },
             );
           options?.onDispatchRejected?.();
           if (options?.throwOnDispatchFailure === true) {

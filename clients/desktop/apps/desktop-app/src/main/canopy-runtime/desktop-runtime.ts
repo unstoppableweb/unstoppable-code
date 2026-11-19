@@ -1,4 +1,5 @@
 import { createCoreWorktreeRecoveryAdapter } from './core-worktree-recovery-adapter';
+import { createCoreWorktreeSetupAdapter } from './core-worktree-setup-adapter';
 import {
   createCoreMemoryChatsAdapter,
   type CoreMemoryChatsHost,
@@ -62,7 +63,9 @@ import {
   type CoreChatTranscriptSearchResult,
   type CoreChatToolOutputReadParams,
   type CoreChatToolOutputReadResult,
+  INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE,
   WORKER_FILESYSTEM_SEARCH_MAX_LIMIT,
+  WORKER_GIT_COMMAND_ONLY_GRANTS,
 } from '@canopy/protocol/canopy-core';
 import {
   createFilesystemSearchEngine,
@@ -72,6 +75,8 @@ import type { FileIndexingPreferences } from '@canopy/protocol/file-indexing';
 import {
   CANOPY_DEFAULT_SHUTDOWN_TIMEOUT_MS,
   CanopyOperationError,
+  canopyCancelledError,
+  canopyDeadlineExceededError,
   canopyUnavailableError,
   createCanopyDispatcher,
   createCanopyRuntime,
@@ -126,7 +131,10 @@ import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { installQuestionTurnWaits } from '../chat-questions/question-turn-waits';
 import { installApprovalTurnWaits } from '../approvals/approval-turn-waits';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
-import { createCoreChatEventsAdapter } from './core-chat-events-adapter';
+import {
+  createCoreChatEventsAdapter,
+  legacyChatStateEvent,
+} from './core-chat-events-adapter';
 import { createChatEventReplayLog } from './chat-event-replay-log';
 import {
   coalesceFileIndexBuild,
@@ -173,7 +181,10 @@ import {
 } from '../ledger/core-ledger-adapter';
 import type { LedgerService } from '../ledger/service';
 import { createCoreCostAdapter } from './core-cost-adapter';
+import { createCoreBotsAdapter, type CoreBotsHost } from './core-bots-adapter';
 import { createCoreUpdateAdapter } from './core-update-adapter';
+import { createCoreDictationAdapter } from './core-dictation-adapter';
+import type { CoreDictationHost } from '@canopy/core-runtime/dictation';
 import type { CoreUpdateHost } from '@canopy/core-runtime/update';
 import {
   createCoreSearchAdapter,
@@ -314,6 +325,10 @@ import {
   type CoreAnnotationAdapter,
 } from './core-annotation-adapter';
 import { publishFileAnnotationsUpdated } from './annotation-update-publisher';
+import {
+  createCorePlanAdapter,
+  type CorePlanAdapter,
+} from './core-plan-adapter';
 import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
@@ -476,6 +491,8 @@ export interface CreateDesktopRuntimeOptions {
   memoryMaintenanceHost?: CoreMemoryMaintenanceHost;
   /** Archived containers behind the `core.archive` reads and lock; tests may inject one. */
   archiveHost?: CoreArchiveHost;
+  /** Store and visibility behind `core.bots.*`; tests may inject them. */
+  botsHost?: CoreBotsHost;
   /** Watcher service behind `core.initiatedWork.watcher.*`; tests may inject one. */
   watcherHost?: CoreWatcherHost;
   /** Delegation broker behind `core.managedDelegation.*`; tests may inject one. */
@@ -491,6 +508,8 @@ export interface CreateDesktopRuntimeOptions {
   catalogMaterializationResolver?: CatalogMaterializationResolver;
   /** Installer behind `core.update.*`; defaults to this process's updater. */
   updateHost?: CoreUpdateHost;
+  /** Speech model store behind `core.dictation.*`; defaults to this process's. */
+  dictationHost?: CoreDictationHost;
   /** Read model for `core.observability.*`; tests may inject isolated stores. */
   observabilityReadModel?: ObservabilityReadModel;
   /** Host port for `core.workspace.instructions.*`; defaults to the desktop files. */
@@ -551,6 +570,8 @@ export interface CreateDesktopRuntimeOptions {
   pullRequestHost?: CorePullRequestHost;
   /** Handler logic for `core.annotation.*`; tests may inject an isolated adapter. */
   annotationAdapter?: CoreAnnotationAdapter;
+  /** Handler logic for `core.plan.*`; tests may inject an isolated adapter. */
+  planAdapter?: CorePlanAdapter;
   /**
    * The operation service behind `core.operation.*`; tests may inject one
    * over an isolated ledger. The runtime closes it at shutdown.
@@ -733,6 +754,8 @@ type FileTreeWatchHandle = CanopyStreamHandle<
 >;
 
 interface WorkspaceProjectionContext {
+  /** Trusted scoped legacy read: finish before projecting or pinning a page. */
+  completeWorktreeRead?: () => never;
   sidebar?: SidebarItemsFile;
   sidebarDetail?: CoreWorkspaceReadDetail;
   config?: WorkspaceConfigFile;
@@ -898,6 +921,14 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
     canonicalResult: CanopyQueryResult<'core.worktree.list'> | null;
     legacyResult: SidebarItemsFile | WorktreeData[];
     /** Authority of the read that produced `legacyResult`, when known. */
+    legacyAuthority?: CoreWorkspaceReadDetail;
+  }>;
+  /** Full trusted legacy read; never exposes a canonical page or continuation. */
+  readWorktreeListForLegacy(
+    workspaceId: string,
+    options: CanopyQueryOptions,
+  ): Promise<{
+    legacyResult: WorktreeData[];
     legacyAuthority?: CoreWorkspaceReadDetail;
   }>;
   queryWorktreeGetForLegacyIpc(
@@ -1108,6 +1139,7 @@ export function createDesktopRuntime(
         if (!context) return;
         context.worktrees = result;
         context.worktreesDetail = detail;
+        context.completeWorktreeRead?.();
       },
       captureWorktree: (result, detail): void => {
         const context = workspaceProjectionContext.getStore();
@@ -1149,7 +1181,9 @@ export function createDesktopRuntime(
     options.getChatStatePort ?? ((): ChatStateCommandPort | null => null),
     (event, context) => {
       if (context.caller.clientInstanceId !== 'electron-main-chat-push') return;
-      const entry: (typeof legacyEvents)[number] = { event };
+      const entry: (typeof legacyEvents)[number] = {
+        event: legacyChatStateEvent(event),
+      };
       legacyEvents.push(entry);
       return (cursor): void => {
         if (cursor) entry.cursor = cursor;
@@ -1394,6 +1428,7 @@ export function createDesktopRuntime(
         return serviceModule.getDesktopCostService();
       }),
   );
+  const botsAdapter = createCoreBotsAdapter(options.botsHost);
   const summaryAdapter = createCoreSummaryAdapter(
     options.summaryAdapterHost ?? DESKTOP_SUMMARY_ADAPTER_HOST,
     {
@@ -1419,6 +1454,12 @@ export function createDesktopRuntime(
   const updateAdapter = createCoreUpdateAdapter(
     injectedUpdateHost
       ? (): Promise<CoreUpdateHost> => Promise.resolve(injectedUpdateHost)
+      : undefined,
+  );
+  const injectedDictationHost = options.dictationHost;
+  const dictationAdapter = createCoreDictationAdapter(
+    injectedDictationHost
+      ? (): Promise<CoreDictationHost> => Promise.resolve(injectedDictationHost)
       : undefined,
   );
   const workspaceInstructionsAdapter = createCoreWorkspaceInstructionsAdapter(
@@ -1449,6 +1490,7 @@ export function createDesktopRuntime(
   );
   const archiveAdapter = createCoreArchiveAdapter(options.archiveHost);
   const worktreeRecoveryAdapter = createCoreWorktreeRecoveryAdapter();
+  const worktreeSetupAdapter = createCoreWorktreeSetupAdapter();
   const watcherAdapter = createCoreWatcherAdapter(options.watcherHost);
   const managedDelegationAdapter = createCoreManagedDelegationAdapter(
     options.managedDelegationHost,
@@ -1564,6 +1606,7 @@ export function createDesktopRuntime(
   const annotationAdapter =
     options.annotationAdapter ??
     createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
+  const planAdapter = options.planAdapter ?? createCorePlanAdapter();
   const operationAdapter =
     options.operationAdapter ?? createCoreOperationAdapter();
   let catalogDispatcher: DesktopCanopyDispatcher | null = null;
@@ -1665,10 +1708,12 @@ export function createDesktopRuntime(
     chatTransferAdapter,
     ledgerAdapter,
     costAdapter,
+    botsAdapter,
     {
       queries: updateAdapter.queries,
       instructions: updateAdapter.instructions,
     },
+    dictationAdapter,
     summaryAdapter,
     coreSearchAdapter,
     terminalSettingsAdapter,
@@ -1677,6 +1722,7 @@ export function createDesktopRuntime(
     memoryMaintenanceAdapter,
     archiveAdapter,
     worktreeRecoveryAdapter,
+    worktreeSetupAdapter,
     watcherAdapter,
     managedDelegationAdapter,
     deferredToolsAdapter,
@@ -1706,6 +1752,7 @@ export function createDesktopRuntime(
     workerCodeGraphAdapter,
     workerCodeGraphReadAdapter,
     annotationAdapter,
+    planAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
@@ -1852,12 +1899,14 @@ export function createDesktopRuntime(
       ownedAdapter('core.chat.transfer', chatTransferAdapter),
       ownedAdapter('core.ledger', ledgerAdapter),
       ownedAdapter('core.cost', costAdapter),
+      ownedAdapter('core.bots', botsAdapter),
       owned(
         'core.update',
         updateAdapter.queries,
         updateAdapter.instructions,
         updateAdapter.streams,
       ),
+      ownedAdapter('core.dictation', dictationAdapter),
       ownedAdapter('core.summary', summaryAdapter),
       ownedAdapter('core.search', coreSearchAdapter),
       ownedAdapter('core.terminal.settings', terminalSettingsAdapter),
@@ -1866,6 +1915,7 @@ export function createDesktopRuntime(
       ownedAdapter('core.memory.maintenance', memoryMaintenanceAdapter),
       ownedAdapter('core.archive', archiveAdapter),
       ownedAdapter('core.worktree.recovery', worktreeRecoveryAdapter),
+      ownedAdapter('core.worktree.setup', worktreeSetupAdapter),
       ownedAdapter('core.initiatedWork.watcher', watcherAdapter),
       ownedAdapter('core.managedDelegation', managedDelegationAdapter),
       ownedAdapter('core.agent.deferredTools', deferredToolsAdapter),
@@ -1919,6 +1969,7 @@ export function createDesktopRuntime(
         workerCodeGraphReadAdapter.instructions,
       ),
       ownedAdapter('core.annotation', annotationAdapter),
+      ownedAdapter('core.plan', planAdapter),
       owned(
         'core.operation',
         operationAdapter.queries,
@@ -1978,7 +2029,7 @@ export function createDesktopRuntime(
               ({ requiredGrants }) => requiredGrants,
             ),
           ),
-        ),
+        ).filter((grant) => !WORKER_GIT_COMMAND_ONLY_GRANTS.has(grant)),
       },
       receipts: workerReceipts,
     }),
@@ -2078,8 +2129,16 @@ export function createDesktopRuntime(
   const initiatedWork = new InitiatedWorkEngine({
     operations: operationAdapter.service,
     // Hook runs a restart interrupted resume through the hook source
-    // (CAN-4145); it registers once the poller starts.
-    recoverableOrigins: ['hook'],
+    // (CAN-4145); it registers once the poller starts. A pipeline's automatic
+    // transient retries resume through their scheduler (CAN-4175); other
+    // system sources keep ending as interrupted.
+    recoverableOrigins: [
+      'hook',
+      {
+        kind: 'system',
+        sourceId: INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE,
+      },
+    ],
     onError: (error, context): void => {
       logMainProcessWarn(`[initiated-work] ${context} failed`, error);
     },
@@ -2618,6 +2677,59 @@ export function createDesktopRuntime(
       ...(legacyAuthority ? { legacyAuthority } : {}),
     };
   };
+  const readWorktreeListForLegacy = async (
+    workspaceId: string,
+    queryOptions: CanopyQueryOptions,
+  ): Promise<{
+    legacyResult: WorktreeData[];
+    legacyAuthority?: CoreWorkspaceReadDetail;
+  }> => {
+    // The dispatcher still validates the request, grants and scope. Its
+    // handler publishes the full legacy read before canonical projection.
+    // End only this request there, rather than invent a truncated canonical
+    // result or allocate a continuation the caller cannot consume. The
+    // dispatcher preserves this private identity in runtimeCause; neither it
+    // nor the W5 read view logs/counts a handler rejection as a read failure.
+    const completed = new Error('Scoped legacy worktree read completed.');
+    const signal = queryOptions.signal;
+    const deadlineAt = queryOptions.metadata?.deadlineAt
+      ? Date.parse(queryOptions.metadata.deadlineAt)
+      : undefined;
+    const context: WorkspaceProjectionContext = {
+      completeWorktreeRead: (): never => {
+        throw completed;
+      },
+    };
+    try {
+      await workspaceProjectionContext.run(context, () =>
+        dispatcher.query(
+          'core.worktree.list',
+          { scope: { workspaceId } },
+          queryOptions,
+        ),
+      );
+    } catch (error) {
+      if (
+        !(error instanceof CanopyOperationError) ||
+        error.runtimeCause !== completed
+      )
+        throw error;
+      // Completion bypasses the dispatcher's post-handler deadline check.
+      // Recheck after the read view has closed, including deferred cleanup.
+      if (shuttingDown) throw canopyUnavailableError();
+      if (signal?.aborted) throw canopyCancelledError();
+      if (deadlineAt !== undefined && deadlineAt <= Date.now())
+        throw canopyDeadlineExceededError();
+    }
+    if (!context.worktrees)
+      throw new Error('Worktree list projection was not captured.');
+    return {
+      legacyResult: context.worktrees,
+      ...(context.worktreesDetail
+        ? { legacyAuthority: context.worktreesDetail }
+        : {}),
+    };
+  };
   const queryWorktreeGetForLegacyIpc = async (
     params: CanopyQueryParams<'core.worktree.get'>,
     queryOptions: CanopyQueryOptions,
@@ -2705,6 +2817,9 @@ export function createDesktopRuntime(
     querySummaryForLegacyIpc: refuseOnceShuttingDown(querySummaryForLegacyIpc),
     queryWorktreeListForLegacyIpc: refuseOnceShuttingDown(
       queryWorktreeListForLegacyIpc,
+    ),
+    readWorktreeListForLegacy: refuseOnceShuttingDown(
+      readWorktreeListForLegacy,
     ),
     queryWorktreeGetForLegacyIpc: refuseOnceShuttingDown(
       queryWorktreeGetForLegacyIpc,

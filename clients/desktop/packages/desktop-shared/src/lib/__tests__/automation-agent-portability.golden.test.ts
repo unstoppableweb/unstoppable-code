@@ -1,4 +1,8 @@
-import { validateSharedAutomationDocument } from '@canopy/protocol/automations';
+import {
+  sharedChatDocumentHasWorkflowForm,
+  validateSharedAutomationDocument,
+  type SharedAutomationDocument,
+} from '@canopy/protocol/automations';
 import type { SharedAgentDetail } from '@canopy/protocol/agents';
 import { parseAgentDelegationSpawnRequest } from '@canopy/protocol/delegation';
 import { ManagedDelegationModelsListResultSchema as DelegationModelDiscoverySchema } from '@canopy/protocol/canopy-core';
@@ -7,7 +11,10 @@ import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selec
 import type { ScheduledActivity } from '../../types';
 import { buildSharedAutomationDocument } from '../automation-sharing';
 import { buildInstallAutomationRequest } from '../automation-install';
-import { sharedAutomationActivity } from '../stored-automation-activity';
+import {
+  installedPackageWorkflowActivity,
+  sharedAutomationActivity,
+} from '../stored-automation-activity';
 import {
   assertAutomationAgentReference,
   findInstalledAutomationAgent,
@@ -17,6 +24,7 @@ import {
   chatAutomationToPipeline,
   ownedPipelineToChatAction,
 } from '../chat-automation-conversion';
+import { sharedWorkflowForm } from '../shared-chat-automation-conversion';
 import { discoverDelegationModels } from '../../node/delegation/discovery';
 import { validateAgentRoute } from '../../node/delegation/route';
 import { routeFixture } from '../../node/delegation/__tests__/fixtures';
@@ -278,6 +286,158 @@ describe('automations:shared:create and automations:shared:update portable wire 
   });
 });
 
+describe('the server chat-form guard rule (CAN-6455)', () => {
+  const chat = (
+    action: SharedAutomationDocument['action'],
+    extra: Partial<SharedAutomationDocument> = {},
+  ): SharedAutomationDocument => ({
+    version: 1,
+    name: 'Review',
+    description: '',
+    trigger: { kind: 'cron', expression: '0 9 * * *', timezone: 'local' },
+    action,
+    hasRunCondition: false,
+    ...extra,
+  });
+  const worktree = (
+    extra: Partial<
+      Extract<SharedAutomationDocument['action'], { type: 'worktree_prompt' }>
+    > = {},
+  ): SharedAutomationDocument['action'] => ({
+    type: 'worktree_prompt',
+    target: { kind: 'workspace' },
+    prompt: '@README.md review the changes',
+    plugins: [],
+    ...extra,
+  });
+  const documents: [
+    string,
+    boolean,
+    () => SharedAutomationDocument | Promise<SharedAutomationDocument>,
+  ][] = [
+    ['a worktree prompt', true, () => chat(worktree())],
+    [
+      'a Cowork prompt',
+      true,
+      () =>
+        chat({
+          type: 'standalone_prompt',
+          target: { kind: 'cowork' },
+          prompt: 'Review the changes',
+          plugins: [],
+        }),
+    ],
+    [
+      'an App Advisor prompt',
+      true,
+      () =>
+        chat({
+          type: 'app_advisor_prompt',
+          prompt: 'Review the changes',
+          plugins: [],
+        }),
+    ],
+    [
+      'a run restriction its action implies',
+      true,
+      () =>
+        chat(worktree(), {
+          version: 3,
+          targetRequirement: { contexts: ['worktree'] },
+        }),
+    ],
+    [
+      'a capability package',
+      false,
+      () =>
+        chat(worktree(), {
+          version: 5,
+          capabilityPackage: {
+            version: 1,
+            digest: `pp:v1:${'a'.repeat(43)}`,
+          },
+        }),
+    ],
+    [
+      'pipeline dependencies',
+      false,
+      () =>
+        chat(
+          worktree({
+            pipelineDependencies: [
+              {
+                key: 'triage',
+                pipeline: { source: 'bundled', pipelineId: 'triage' },
+                promptSpans: [],
+              },
+            ],
+          }),
+          { version: 5 },
+        ),
+    ],
+    [
+      'a file reference',
+      false,
+      () =>
+        chat(
+          worktree({
+            promptReferences: [
+              {
+                kind: 'file',
+                textStart: 0,
+                displayText: '@README.md',
+                root: { kind: 'workspace' },
+                relativePath: 'README.md',
+              },
+            ],
+          }),
+          { version: 2 },
+        ),
+    ],
+    [
+      'a branch suggestion',
+      false,
+      () => chat(worktree({ existingBranch: 'main' })),
+    ],
+    [
+      'a shared Agent',
+      false,
+      () =>
+        chat(
+          worktree({
+            modelConfig: {
+              model: 'agent_model_shared@sonnet',
+              agent: reference,
+            },
+          }),
+        ),
+    ],
+    [
+      'a workflow',
+      false,
+      async () => {
+        const workflow = await sharedWorkflowForm(chat(worktree()));
+        if (workflow === null) throw new Error('expected a workflow form');
+        return workflow;
+      },
+    ],
+  ];
+
+  it.each(documents)(
+    'rejects only a chat document a desktop shares as a workflow: %s',
+    async (_label, hasWorkflowForm, build) => {
+      const document = await build();
+      expect(validateSharedAutomationDocument(document)).toMatchObject({
+        ok: true,
+      });
+      expect(sharedChatDocumentHasWorkflowForm(document)).toBe(hasWorkflowForm);
+      expect((await sharedWorkflowForm(document)) !== null).toBe(
+        hasWorkflowForm,
+      );
+    },
+  );
+});
+
 describe('delegation discovery wire projection', () => {
   const inspect = (id: string): Promise<DelegationModelChoice> =>
     Promise.resolve({
@@ -421,6 +581,49 @@ it.each([model, 'agent_model_reviewer'])(
         request: { action: { model: 'agent_model_collision_2@sonnet' } },
       });
     }
+  },
+);
+
+it.each([
+  ['no Agent', ''],
+  ['an Agent route', model],
+])(
+  'shares a packaged install with %s as its workflow only without an Agent route (CAN-6455)',
+  (_label, selected) => {
+    const original = activity(selected);
+    const converted = chatAutomationToPipeline(original);
+    const storedAction = {
+      type: 'worktree_pipeline' as const,
+      target: { kind: 'global' as const },
+      pipelineId: 'owned',
+      pipelineSource: 'user' as const,
+      inputs: converted.inputs,
+    };
+    const installed = {
+      ...original,
+      installedFrom: {
+        remoteId: 'share',
+        contentHash: hash,
+        installedAt: timestamp,
+        capabilityPackage: {
+          version: 1 as const,
+          digest: `pp:v1:${'a'.repeat(43)}`,
+        },
+      },
+      ownedPipeline: { pipelineId: 'owned', chatEditable: true, storedAction },
+    };
+    // Without the flag the share keeps the chat form; behind it, a packaged
+    // install shares its workflow, but an Agent route always stays a chat.
+    expect(sharedAutomationActivity(installed).action).toEqual(original.action);
+    const workflow = installedPackageWorkflowActivity(installed);
+    if (selected === '') expect(workflow?.action).toEqual(storedAction);
+    else expect(workflow).toBeNull();
+    expect(
+      installedPackageWorkflowActivity({
+        ...installed,
+        ownedPipeline: { ...installed.ownedPipeline, chatEditable: false },
+      }),
+    ).toBeNull();
   },
 );
 

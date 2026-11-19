@@ -727,44 +727,67 @@ describe('CAN-5788 generation-fenced daemon GitHub custody', () => {
     },
   );
 
-  it.each([
-    'missing',
-    'unreadable',
-    'malformed',
-    'brand',
-    'build',
-    'revision',
-  ] as const)('deletes with a %s fence', async (fault) => {
-    await seed();
-    if (fault === 'missing') await unlink(fencePath);
-    else if (fault === 'unreadable')
-      authority = create({
-        ...fences,
-        read: () => Promise.reject(new Error('IO')),
+  it.each(['unreadable', 'malformed'] as const)(
+    'keeps the credential with a %s fence and recovers',
+    async (fault) => {
+      await seed();
+      const original = await readFile(fencePath, 'utf8');
+      const entries = await vault.list();
+      if (fault === 'unreadable')
+        authority = create({
+          ...fences,
+          read: () => Promise.reject(new Error('IO private path token')),
+        });
+      else await writeFile(fencePath, '{');
+      const retained = await readFile(fencePath, 'utf8');
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        expect(await authority.resolve('git-fetch')).toEqual({
+          kind: 'blocked',
+          reason: 'unavailable',
+          fenceReadFailure:
+            fault === 'unreadable' ? 'read_failed' : 'parse_failed',
+        });
+        expect(await vault.list()).toEqual(entries);
+        expect(await readFile(fencePath, 'utf8')).toBe(retained);
+      }
+      await writeFile(fencePath, original);
+      authority = create();
+      const recovered = await authority.resolve('git-fetch');
+      expect(recovered.kind).toBe('available');
+      if (recovered.kind === 'available') recovered.material.fill(0);
+    },
+  );
+
+  it.each(['missing', 'brand', 'build', 'revision'] as const)(
+    'deletes with a %s fence',
+    async (fault) => {
+      await seed();
+      if (fault === 'missing') await unlink(fencePath);
+      else {
+        const fence = await fences.read();
+        if (!fence) throw new Error('Missing fence');
+        await fences.write({
+          ...fence,
+          source: {
+            brandId: fault === 'brand' ? 'other' : identity.brandId,
+            build: fault === 'build' ? 'other' : identity.build,
+          },
+          pin: {
+            ...fence.pin,
+            revision:
+              fault === 'revision'
+                ? fence.pin.revision + 1
+                : fence.pin.revision,
+          },
+        });
+      }
+      expect(await authority.resolve('git-fetch')).toEqual({
+        kind: 'absent',
+        reason: 'stale',
       });
-    else if (fault === 'malformed') await writeFile(fencePath, '{');
-    else {
-      const fence = await fences.read();
-      if (!fence) throw new Error('Missing fence');
-      await fences.write({
-        ...fence,
-        source: {
-          brandId: fault === 'brand' ? 'other' : identity.brandId,
-          build: fault === 'build' ? 'other' : identity.build,
-        },
-        pin: {
-          ...fence.pin,
-          revision:
-            fault === 'revision' ? fence.pin.revision + 1 : fence.pin.revision,
-        },
-      });
-    }
-    expect(await authority.resolve('git-fetch')).toEqual({
-      kind: 'absent',
-      reason: 'stale',
-    });
-    expect(await vault.list()).toEqual([]);
-  });
+      expect(await vault.list()).toEqual([]);
+    },
+  );
 
   it.each([
     { ...identity, build: '' },

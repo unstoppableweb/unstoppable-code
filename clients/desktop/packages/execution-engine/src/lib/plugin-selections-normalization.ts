@@ -24,6 +24,11 @@ import {
   normalizeTryItCapabilities,
 } from '@canopy/protocol/try-it';
 import { BRAND } from '@canopy/brand/current';
+import {
+  readSelectionRefOwner,
+  selectionRefOwnerKey,
+  withSelectionRefOwner,
+} from '@canopy/protocol/plugins';
 import type { ChatTabPluginSelections } from '../execution-types';
 import type {
   McpHttpAuthHandler,
@@ -58,7 +63,8 @@ function isRefArray(
         typeof entry[firstKey] === 'string' &&
         entry[firstKey].trim().length > 0 &&
         typeof entry[secondKey] === 'string' &&
-        entry[secondKey].trim().length > 0,
+        entry[secondKey].trim().length > 0 &&
+        readSelectionRefOwner(entry).ok,
     )
   );
 }
@@ -105,7 +111,8 @@ function isSkillRefArray(value: unknown): boolean {
       return (
         normalizeSkillSourceId(sourceId) !== undefined &&
         skillName.length > 0 &&
-        isSafeReferenceSegment(skillName)
+        isSafeReferenceSegment(skillName) &&
+        readSelectionRefOwner(entry).ok
       );
     })
   );
@@ -147,17 +154,19 @@ function normalizeSkillRefs(
     const sourceId = normalizeSkillSourceId(rawSourceId);
     const skillName =
       typeof entry.skillName === 'string' ? entry.skillName.trim() : '';
+    const owner = readSelectionRefOwner(entry);
     if (
       sourceId === undefined ||
       !skillName ||
-      !isSafeReferenceSegment(skillName)
+      !isSafeReferenceSegment(skillName) ||
+      !owner.ok
     ) {
       continue;
     }
-    const key = `${sourceId}\0${skillName}`;
+    const key = `${sourceId}\0${skillName}\0${selectionRefOwnerKey(owner.owner)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push({ sourceId, skillName });
+    result.push(withSelectionRefOwner({ sourceId, skillName }, owner.owner));
   }
   return result;
 }
@@ -174,11 +183,14 @@ function normalizePluginRefs(
       typeof entry.marketplaceId === 'string' ? entry.marketplaceId.trim() : '';
     const pluginName =
       typeof entry.pluginName === 'string' ? entry.pluginName.trim() : '';
-    if (!marketplaceId || !pluginName) continue;
-    const key = `${marketplaceId}\0${pluginName}`;
+    const owner = readSelectionRefOwner(entry);
+    if (!marketplaceId || !pluginName || !owner.ok) continue;
+    const key = `${marketplaceId}\0${pluginName}\0${selectionRefOwnerKey(owner.owner)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push({ marketplaceId, pluginName });
+    result.push(
+      withSelectionRefOwner({ marketplaceId, pluginName }, owner.owner),
+    );
   }
   return result;
 }
@@ -195,11 +207,19 @@ function normalizeMcpServerRefs(
       typeof entry.serverId === 'string' ? entry.serverId.trim() : '';
     const configId =
       typeof entry.configId === 'string' ? entry.configId.trim() : '';
-    if (!serverId || !isSafeReferenceSegment(serverId) || !configId) continue;
-    const key = `${serverId}\0${configId}`;
+    const owner = readSelectionRefOwner(entry);
+    if (
+      !serverId ||
+      !isSafeReferenceSegment(serverId) ||
+      !configId ||
+      !owner.ok
+    ) {
+      continue;
+    }
+    const key = `${serverId}\0${configId}\0${selectionRefOwnerKey(owner.owner)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push({ serverId, configId });
+    result.push(withSelectionRefOwner({ serverId, configId }, owner.owner));
   }
   return result;
 }
@@ -214,7 +234,8 @@ function isMcpServerRefArray(value: unknown): boolean {
         entry.serverId.trim().length > 0 &&
         isSafeReferenceSegment(entry.serverId) &&
         typeof entry.configId === 'string' &&
-        entry.configId.trim().length > 0,
+        entry.configId.trim().length > 0 &&
+        readSelectionRefOwner(entry).ok,
     )
   );
 }

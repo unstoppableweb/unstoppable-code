@@ -5,14 +5,25 @@ import type {
   W5RecoveryStatus,
 } from '@canopy/protocol/portal';
 
+/** Eligibility is assessed from typed record evidence, never display entries. */
+export interface W5RecoverySnapshot {
+  readonly entries: readonly W5RecoveryEntry[];
+  readonly applicability:
+    | 'current-target'
+    | 'retained-target'
+    | 'none'
+    | 'unavailable';
+  /** Only for evidence still shown, never a replayed cause of a current failure. */
+  readonly reason?: W5RecoveryReason;
+}
+
 export interface W5RecoveryControllerPorts {
   enabled(): boolean;
   supported(): boolean;
-  live(): Promise<readonly W5RecoveryEntry[]>;
+  live(): Promise<W5RecoverySnapshot>;
   peers(): Promise<readonly string[]>;
   quiesce(): Promise<void>;
   request(): Promise<void>;
-  reason?(): W5RecoveryReason | undefined;
   onChanged?(status: W5RecoveryStatus): void;
 }
 export interface W5RecoveryController {
@@ -45,7 +56,8 @@ export function createW5RecoveryController(
     if (reading) return reading;
     const flight = (async (): Promise<W5RecoveryStatus> => {
       try {
-        const entries = [...(await ports.live())].slice(0, 200);
+        const snapshot = await ports.live();
+        const entries = [...snapshot.entries].slice(0, 200);
         if (fenced) return current;
         update(
           entries.length === 0
@@ -53,9 +65,11 @@ export function createW5RecoveryController(
             : ports.supported()
               ? {
                   state: 'blocked',
-                  canRecover: true,
+                  canRecover:
+                    snapshot.applicability === 'current-target' ||
+                    snapshot.applicability === 'retained-target',
+                  ...(snapshot.reason ? { reason: snapshot.reason } : {}),
                   entries,
-                  ...(ports.reason?.() ? { reason: ports.reason() } : {}),
                 }
               : {
                   state: 'refused',
@@ -65,7 +79,8 @@ export function createW5RecoveryController(
                 },
         );
       } catch {
-        // Reachability has its own BackgroundServiceNotice, not a recovery claim.
+        // Only an explicitly retained target can survive an unavailable read.
+        if (!fenced) update({ ...current, canRecover: false });
       }
       return current;
     })();
@@ -82,7 +97,7 @@ export function createW5RecoveryController(
     if (!ports.supported()) return status();
     const flight = (async (): Promise<W5RecoveryStatus> => {
       try {
-        if ((await status()).state === 'hidden') return current;
+        if (!(await status()).canRecover) return current;
         const peers = await ports.peers();
         if (peers.length) {
           update({
@@ -93,6 +108,8 @@ export function createW5RecoveryController(
           });
           return current;
         }
+        // A status read that settled during peer inspection may have cleared the target.
+        if (!current.canRecover) return current;
         // Set before awaiting: an in-flight status read cannot undo the latch.
         fenced = true;
         update({ ...current, state: 'restart-required', canRecover: false });

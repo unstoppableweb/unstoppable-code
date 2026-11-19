@@ -74,8 +74,11 @@ export interface ErrorBannerProps {
    */
   testId?: string;
   /**
-   * Block the error text in session replay, for errors that quote command
-   * output; the banner itself stays recorded.
+   * Block the error text in session replay and out of the exported error
+   * record. On by default for a string error, whose caught message can quote
+   * paths and command output; pass `false` only for fixed copy. A structured
+   * error shows catalog copy and stays recorded unless this is set. The
+   * banner itself stays recorded.
    */
   blockMessageFromReplay?: boolean;
   /**
@@ -152,7 +155,7 @@ function StringErrorBanner({
   className,
   error,
   errorSource,
-  blockMessageFromReplay = false,
+  blockMessageFromReplay = true,
   onRetry,
   retryLabel = TRY_AGAIN_LABEL,
   retrying = false,
@@ -504,7 +507,10 @@ export function ErrorState({
   secondaryAction,
   footer,
 }: {
-  /** One sentence: `Couldn't load workflows.` */
+  /**
+   * One sentence: `Couldn't load workflows.` A string is blocked from session
+   * replay; pass raw failure text as `details`.
+   */
   message: ReactNode;
   /**
    * The raw failure reason (a server's text). Never rendered: it adds a
@@ -559,7 +565,16 @@ export function ErrorState({
           <WarningIcon size={24} aria-hidden="true" className="fg-tertiary" />
         }
         title={
-          <span role="alert" className="text-pretty">
+          // A string message can be a caught message quoting paths and
+          // command output, so replay skips it (CAN-7102).
+          <span
+            role="alert"
+            className={
+              typeof message === 'string'
+                ? `text-pretty ${REPLAY_BLOCK_CLASS}`
+                : 'text-pretty'
+            }
+          >
             {onRetry &&
             retryLabel === TRY_AGAIN_LABEL &&
             typeof message === 'string'

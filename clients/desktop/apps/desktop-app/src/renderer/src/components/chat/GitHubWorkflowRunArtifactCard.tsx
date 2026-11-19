@@ -88,6 +88,7 @@ export const GitHubWorkflowRunArtifactCard = memo(
       void window.api.browser.openLink({ url }).catch((error: unknown) =>
         addToast(extractIpcErrorMessage(error), 'error', undefined, {
           category: 'GitHub',
+          caught: error,
         }),
       );
     };

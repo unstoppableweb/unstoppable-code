@@ -1,14 +1,18 @@
 import { describeReviewCommentContext } from '@canopy/desktop-shared/types/code-review';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import type {
   ChatSendMessageRequest,
   CodeReviewFile,
+  CodeReviewStateMutationFailure,
   ReviewComment,
   ReviewCommentAnchor,
   ReviewCommentThread,
 } from '@canopy/desktop-shared/types';
 import type { AddNodeCommentInput } from '@/components/plan-explore/usePlanComments';
 import type { CodeReviewTarget } from '@/stores/codeReviewStore';
+import { extractIpcErrorMessage } from '@/lib/errors';
 
 /**
  * Single source of truth for a code review's comment threads. Owns the
@@ -29,6 +33,9 @@ export const REVIEW_COMMENT_SUBMIT_HIDDEN_CONTEXT_TEXT =
 export interface UseReviewComments {
   threads: ReviewCommentThread[];
   stagedCount: number;
+  readOnly: boolean;
+  error: string | null;
+  hasUnsavedChanges: boolean;
   addCodeComment: (anchor: ReviewCommentAnchor, body: string) => void;
   addDiagramComment: (input: AddNodeCommentInput) => void;
   /** A general note not attached to any code line or diagram node. */
@@ -171,33 +178,165 @@ export function useReviewComments(
   target: CodeReviewTarget,
   review: CodeReviewFile | null,
   diagramOnly: boolean | ((thread: ReviewCommentThread) => boolean) = false,
+  mutationFailure?: CodeReviewStateMutationFailure,
 ): UseReviewComments {
   const [threads, setThreads] = useState<ReviewCommentThread[]>(
     review?.commentThreads ?? [],
   );
 
   const submitInFlight = useRef(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const session = useMemo<{
+    scope: CodeReviewTarget;
+    threads: ReviewCommentThread[];
+    pending: Set<Promise<void>>;
+    projection: ReviewCommentThread[] | null;
+    projectionRevision: number;
+    failure: string | null;
+    refused: boolean;
+    hasReadableProjection: boolean;
+    active: boolean;
+  }>(
+    () => ({
+      scope: { projectId: target.projectId, worktreeId: target.worktreeId },
+      threads: [],
+      pending: new Set<Promise<void>>(),
+      projection: null,
+      projectionRevision: 0,
+      failure: null,
+      refused: false,
+      hasReadableProjection: false,
+      active: true,
+    }),
+    [target.projectId, target.worktreeId],
+  );
+
+  useEffect(() => {
+    session.active = true;
+    setSaveError(null);
+    setRefreshError(null);
+    return (): void => {
+      session.active = false;
+    };
+  }, [session]);
 
   // Re-derive threads from the persisted review whenever its comment threads
   // change (live reload from the codeReviewUpdated event).
   useEffect(() => {
-    setThreads(review?.commentThreads ?? []);
-  }, [review?.commentThreads]);
+    session.projectionRevision += 1;
+    session.refused = mutationFailure !== undefined;
+    setRefreshError(null);
+    if (session.failure) return;
+    // A refused empty projection is not evidence of deletion, including
+    // lossy state with missing/malformed commentThreads.
+    if (
+      mutationFailure &&
+      (mutationFailure.reason !== 'lossy_state' ||
+        (review?.commentThreads.length ?? 0) === 0) &&
+      session.hasReadableProjection
+    ) {
+      return;
+    }
+    session.hasReadableProjection =
+      review?.commentThreads !== undefined &&
+      (!mutationFailure || mutationFailure.reason === 'lossy_state');
+    // Buffer live projections without replacing input that may still fail.
+    if (session.pending.size > 0) {
+      session.projection = review?.commentThreads ?? [];
+      return;
+    }
+    session.threads = review?.commentThreads ?? [];
+    setThreads(session.threads);
+  }, [review?.commentThreads, session, mutationFailure]);
 
-  const saveThreads = useCallback(
+  const updateThreads = useCallback(
     (
-      nextThreads: ReviewCommentThread[],
-      current: ReviewCommentThread[],
+      update: (current: ReviewCommentThread[]) => ReviewCommentThread[],
     ): void => {
-      void window.api.codeReview.saveComments({
-        projectId: target.projectId,
-        worktreeId: target.worktreeId,
-        commentThreads: nextThreads,
-        baseCommentThreadIds: current.map((thread) => thread.id),
-        baseCommentThreads: current,
+      if (!session.active || session.refused || session.failure) return;
+      const current = session.threads;
+      const nextThreads = update(current);
+      session.threads = nextThreads;
+      setThreads(nextThreads);
+      // Persist outside React's updater: replay must not issue another write.
+      const save = (async (): Promise<void> => {
+        try {
+          const saved = await window.api.codeReview.saveComments({
+            ...session.scope,
+            commentThreads: nextThreads,
+            baseCommentThreadIds: current.map((thread) => thread.id),
+            baseCommentThreads: current,
+          });
+          if (saved === null) throw new Error("Couldn't save comments.");
+          if (
+            session.active &&
+            !session.failure &&
+            session.threads === nextThreads
+          ) {
+            session.hasReadableProjection = true;
+            session.threads = saved.commentThreads;
+            setThreads(saved.commentThreads);
+          }
+        } catch (error) {
+          const classified = toAppError(error);
+          if (!session.active) return;
+          const message = extractIpcErrorMessage(
+            classified?.detail.message ?? error,
+          ).trim();
+          session.failure =
+            (message !== 'Unknown error' && message) ||
+            "Couldn't save comments.";
+          setSaveError(session.failure);
+        }
+      })();
+      session.pending.add(save);
+      void save.then(async () => {
+        session.pending.delete(save);
+        if (
+          !session.active ||
+          session.failure ||
+          session.pending.size > 0 ||
+          session.projection === null
+        ) {
+          return;
+        }
+        session.projection = null;
+        const acknowledged = session.threads;
+        const projectionRevision = session.projectionRevision;
+        // The save handler broadcasts its captured snapshot after fingerprint
+        // awaits, possibly after a newer agent event. Its broadcast precedes
+        // its IPC reply: read current state only after the batch settles.
+        try {
+          const latest = await window.api.codeReview.get(session.scope);
+          if (
+            session.active &&
+            !session.failure &&
+            session.pending.size === 0 &&
+            // Refused live updates retain thread identity but supersede reads.
+            session.projectionRevision === projectionRevision &&
+            session.threads === acknowledged
+          ) {
+            if (latest.mutationFailure) {
+              session.refused = true;
+              setRefreshError(latest.mutationFailure.message);
+              if (
+                latest.mutationFailure.reason !== 'lossy_state' ||
+                latest.review.commentThreads.length === 0
+              )
+                return;
+            }
+            session.threads = latest.review?.commentThreads ?? [];
+            setThreads(session.threads);
+          }
+        } catch (error) {
+          reportClientAppError(error);
+          // A refresh failure cannot undo an acknowledged save. Retain its
+          // threads until the next live update.
+        }
       });
     },
-    [target.projectId, target.worktreeId],
+    [session],
   );
 
   const addCodeComment = useCallback(
@@ -223,13 +362,12 @@ export function useReviewComments(
           },
         ],
       };
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = [...current, thread];
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   const addDiagramComment = useCallback(
@@ -269,13 +407,12 @@ export function useReviewComments(
           },
         ],
       };
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = [...current, thread];
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads, review?.diagrams],
+    [updateThreads, review?.diagrams],
   );
 
   const addGeneralComment = useCallback(
@@ -301,13 +438,12 @@ export function useReviewComments(
           },
         ],
       };
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = [...current, thread];
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   const addReply = useCallback(
@@ -323,17 +459,16 @@ export function useReviewComments(
         createdAt: new Date().toISOString(),
         staged: true,
       };
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = current.map((thread) =>
           thread.id === threadId
             ? { ...thread, comments: [...thread.comments, comment] }
             : thread,
         );
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   const editStagedComment = useCallback(
@@ -342,7 +477,7 @@ export function useReviewComments(
       if (trimmed.length === 0) {
         return;
       }
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = current.map((thread) =>
           thread.id === threadId
             ? {
@@ -355,11 +490,10 @@ export function useReviewComments(
               }
             : thread,
         );
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   // Fully remove a staged (not-yet-submitted) comment. When it was the
@@ -367,7 +501,7 @@ export function useReviewComments(
   // too.
   const deleteStagedComment = useCallback(
     (threadId: string, commentId: string): void => {
-      setThreads((current) => {
+      updateThreads((current) => {
         const next: ReviewCommentThread[] = [];
         for (const thread of current) {
           if (thread.id !== threadId) {
@@ -382,16 +516,15 @@ export function useReviewComments(
           }
           // else: drop the now-empty thread entirely.
         }
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   const toggleResolved = useCallback(
     (threadId: string): void => {
-      setThreads((current) => {
+      updateThreads((current) => {
         const next: ReviewCommentThread[] = current.map((thread) =>
           thread.id === threadId
             ? {
@@ -400,11 +533,10 @@ export function useReviewComments(
               }
             : thread,
         );
-        saveThreads(next, current);
         return next;
       });
     },
-    [saveThreads],
+    [updateThreads],
   );
 
   const submit = useCallback(
@@ -414,8 +546,18 @@ export function useReviewComments(
         hiddenContext: ReviewCommentSubmitHiddenContext,
       ) => Promise<boolean>,
     ): Promise<void> => {
-      if (submitInFlight.current) return;
-      const submitting = threads.filter((thread) =>
+      if (submitInFlight.current || session.refused || session.failure) return;
+      await Promise.all(session.pending);
+      if (
+        !session.active ||
+        submitInFlight.current ||
+        session.refused ||
+        session.failure ||
+        session.pending.size > 0
+      ) {
+        return;
+      }
+      const submitting = session.threads.filter((thread) =>
         typeof diagramOnly === 'function'
           ? diagramOnly(thread)
           : !diagramOnly || thread.anchor.source === 'diagram',
@@ -426,8 +568,7 @@ export function useReviewComments(
       }
       // Snapshot exactly which comments this submission carried so the
       // post-send flip only touches those. Comments added while `send` is in
-      // flight keep `staged: true` — the functional updater below never
-      // overwrites concurrent mutations with this callback's stale `threads`.
+      // flight keep `staged: true`; the update reads the latest session.
       const submittedCommentIds = new Map<string, string>();
       for (const thread of submitting) {
         if (thread.status !== 'open') {
@@ -449,7 +590,7 @@ export function useReviewComments(
       if (!sent) {
         return;
       }
-      setThreads((current) => {
+      updateThreads((current) => {
         const next = current.map((thread) => ({
           ...thread,
           comments: thread.comments.map((comment) =>
@@ -459,11 +600,10 @@ export function useReviewComments(
               : comment,
           ),
         }));
-        saveThreads(next, current);
         return next;
       });
     },
-    [threads, saveThreads, diagramOnly],
+    [updateThreads, diagramOnly, session],
   );
 
   const visibleThreads = useMemo(
@@ -483,6 +623,12 @@ export function useReviewComments(
   return {
     threads: visibleThreads,
     stagedCount,
+    readOnly:
+      mutationFailure !== undefined ||
+      saveError !== null ||
+      refreshError !== null,
+    error: saveError ?? refreshError ?? mutationFailure?.message ?? null,
+    hasUnsavedChanges: saveError !== null,
     addCodeComment,
     addDiagramComment,
     addGeneralComment,

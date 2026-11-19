@@ -158,22 +158,22 @@
   cursor: default;
 }
 
-/* The app window and sidebar share one material. The main content shell paints
- * its own base surface; the sidebar stays transparent so this global material
- * remains visible without stacking the tint twice. */
+/* The app window and sidebar share one opaque surface. The main content shell
+ * paints its own base surface; the sidebar stays transparent so this surface
+ * shows through without painting it twice. Nothing in the window uses a
+ * backdrop blur or a native material, so a live resize has nothing to
+ * re-blur. */
 .app-window-material {
   background-color: var(--bg-sidebar);
-  /*
-   * Capture the same design-system foreground tokens used by the persistent
-   * titlebar controls before the translucent sidebar overrides `--fg-*`.
-   */
+  /* The design-system foreground tokens used by the persistent titlebar
+   * controls. */
   --app-titlebar-control-fg: var(--fg-secondary);
   --app-titlebar-control-hover-fg: var(--fg-primary);
 }
 
 /*
  * Intentionally unlayered: this shared app-window token must outrank local
- * layered foreground utilities inherited from the translucent sidebar.
+ * layered foreground utilities inherited from the sidebar.
  */
 .titlebar-control-fg {
   color: var(--app-titlebar-control-fg, var(--fg-secondary));
@@ -278,16 +278,6 @@
     transition-duration: 0ms !important;
     transition-delay: 0ms !important;
   }
-}
-
-/* Translucent sidebars use neutral-alpha foregrounds so content remains
- * legible over the material. Opaque sidebars inherit the theme's solid fg
- * tokens without a local override. */
-html[data-sidebar-appearance='translucent'] .app-sidebar-material {
-  --fg-primary: var(--sidebar-fg-primary);
-  --fg-secondary: var(--sidebar-fg-secondary);
-  --fg-tertiary: var(--sidebar-fg-tertiary);
-  --fg-quaternary: var(--sidebar-fg-quaternary);
 }
 
 /* The resize handle is only a wider hit target. Hovering or dragging it
@@ -812,94 +802,10 @@ body[data-app-advisor-docked] {
   opacity: 0.5;
 }
 
-html[data-platform='darwin'] body[data-renderer-surface='main'] {
-  background-color: transparent;
-}
-
-html[data-platform='darwin'] .app-window-material {
-  /* Opaque is the startup-safe default before preferences hydrate. */
-  --app-window-material-tint-color: var(--bg-depth);
-  --app-window-material-tint-opacity: 100%;
-  background-color: color-mix(
-    in srgb,
-    var(--app-window-material-tint-color)
-      var(--app-window-material-tint-opacity),
-    transparent
-  );
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
-html[data-platform='darwin'][data-sidebar-appearance='translucent']
-  .app-window-material {
-  --app-window-material-tint-opacity: 56%;
-  -webkit-backdrop-filter: blur(8px) saturate(100%);
-  backdrop-filter: blur(8px) saturate(100%);
-}
-
-html[data-platform='darwin'][data-sidebar-appearance='translucent']
-  .app-sidebar-material:not(.app-sidebar-preview-surface) {
-  /* The band PAINTS, as the web portal's does. With the clip line now sitting
-   * ON the band's bottom edge, a transparent band lets rows render straight
-   * through the headers; with the clip below that edge instead, the strip
-   * between showed neither band nor row and stranded a branch name under the
-   * pinned header. Painting is what makes the aligned line work. */
-  --sidebar-selected-pin-surface: var(--bg-sidebar);
-}
-
-/* The window material is a 56% tint, so a solid `--bg-sidebar` fill on a
- * sticky header or pin band reads as a black block on it. Occlude with a
- * frosted backdrop instead: over the uniform material the blur is invisible,
- * and rows scrolling underneath are blurred out rather than painted through. */
-html[data-platform='darwin'][data-sidebar-appearance='translucent']
-  .app-sidebar-material:not(.app-sidebar-preview-surface)
-  :is(
-    .bg-sidebar.sticky,
-    .sidebar-sticky-workspace-slot,
-    .sidebar-selected-pin-top,
-    .sidebar-selected-pin-bottom,
-    .sidebar-chats-selected-pin-row
-  ) {
-  background: transparent;
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
-}
-
 /* Workspace headers should read as ordinary sidebar items at rest, inheriting
- * the sidebar material without adding a surface of their own. */
+ * the sidebar surface without adding one of their own. */
 html[data-platform='darwin'] .app-sidebar-material .bg-sidebar:not(.sticky) {
   background-color: transparent;
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  html[data-platform='darwin'] .app-window-material {
-    background-color: var(--bg-sidebar);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-
-  html[data-platform='darwin'] .app-sidebar-material .bg-sidebar:not(.sticky) {
-    background-color: transparent;
-  }
-
-  html[data-platform='darwin'][data-sidebar-appearance='translucent']
-    .app-sidebar-material:not(.app-sidebar-preview-surface) {
-    --sidebar-selected-pin-surface: var(--bg-sidebar);
-  }
-
-  html[data-platform='darwin'][data-sidebar-appearance='translucent']
-    .app-sidebar-material:not(.app-sidebar-preview-surface)
-    :is(
-      .bg-sidebar.sticky,
-      .sidebar-sticky-workspace-slot,
-      .sidebar-selected-pin-top,
-      .sidebar-selected-pin-bottom,
-      .sidebar-chats-selected-pin-row
-    ) {
-    background: var(--bg-sidebar);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
 }
 
 /* Content search highlighting */

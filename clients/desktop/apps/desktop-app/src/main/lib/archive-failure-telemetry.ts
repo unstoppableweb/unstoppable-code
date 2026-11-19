@@ -1,3 +1,11 @@
+import {
+  archiveErrorWithFrames,
+  restoredArchiveErrorFrames,
+} from './archive-error-frames';
+import {
+  archiveCleanupChecks,
+  ArchiveTurnDiffCleanupError,
+} from './archive-turn-diff-cleanup-error';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { getCanopyBuildIdentity } from '@canopy/execution-engine/canopy-paths';
@@ -11,9 +19,15 @@ import type { DesktopInstrumentationContext } from '@canopy/desktop-instrumentat
 import { captureDesktopInstrumentationError } from '@canopy/desktop-instrumentation/electron/main';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { W5RevisionConflictError } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+import {
+  appErrorNativeFrames,
+  rememberAppErrorNativeFrames,
+} from '@canopy/protocol/app-errors';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/portal';
 import {
   destructiveFailureCode,
+  destructiveErrorProperty,
+  sanitizedDestructiveCode,
   destructiveFailureRecord,
   destructiveJournalDiagnostic,
 } from './destructive-failure-context';
@@ -54,6 +68,7 @@ interface ArchiveFailureTarget {
 }
 
 const checks = new Set([
+  ...archiveCleanupChecks,
   'destructive-lifecycle-state',
   'journal-slot-identity',
   'stranded-journal-scan',
@@ -107,6 +122,7 @@ export function recordArchiveRefusal(
   const scope = context.getStore();
   if (!scope || scope.closed || scope.report.closed) return;
   const active = scope.report;
+  rememberAppErrorNativeFrames(error);
   active.failure = {
     error,
     phase: active.failureTargets.get(error)?.phase ?? scope.phase,
@@ -156,6 +172,7 @@ export async function withArchiveFailureTelemetry<T>(
       try {
         return await run();
       } catch (error) {
+        rememberAppErrorNativeFrames(error);
         // Keep each innermost failure even when sibling scopes overlap.
         if (
           !child.closed &&
@@ -190,6 +207,7 @@ export async function withArchiveFailureTelemetry<T>(
     try {
       return await run();
     } catch (error) {
+      rememberAppErrorNativeFrames(error);
       if (!active.failure || active.failure.error !== error) {
         delete active.discard;
         active.discardOffered = false;
@@ -269,9 +287,12 @@ export async function withArchiveFailureTelemetry<T>(
             record,
           );
           logMainProcessWarn('Worktree archive failed', diagnostic);
-          // Only fixed classifications and the journal UUID reach the existing sanitizer.
+          // Only native or validated worker frames reach the existing sanitizer.
           captureDesktopInstrumentationError(
-            new Error('Worktree archive failed'),
+            archiveErrorWithFrames(
+              'Worktree archive failed',
+              restoredArchiveErrorFrames(error) ?? appErrorNativeFrames(error),
+            ),
             { context: diagnostic },
           );
         } catch {
@@ -341,7 +362,25 @@ export function buildArchiveFailureDiagnostic(
     error instanceof W5RevisionConflictError ||
     error instanceof WorktreeArchiveRefusedError ||
     error instanceof WorkspaceDeletionRefusedError;
-  const details = error instanceof W5CommitRefusedError ? error.details : {};
+  const details =
+    error instanceof W5CommitRefusedError
+      ? destructiveErrorProperty(error, 'details')
+      : undefined;
+  const check =
+    error instanceof ArchiveTurnDiffCleanupError
+      ? error.check
+      : destructiveErrorProperty(details, 'check');
+  const phase = destructiveErrorProperty(details, 'phase');
+  const failure = destructiveErrorProperty(details, 'failure');
+  const journalRead =
+    error instanceof W5CommitRefusedError &&
+    ((phase === 'lifecycle-journal' &&
+      (check === 'unreadable-entry' ||
+        check === 'journal-directory-unreadable')) ||
+      check === 'launch-stranded-journal-scan' ||
+      (phase === 'destructive-lifecycle' &&
+        check === 'destructive-lifecycle-state' &&
+        failure !== undefined));
   return {
     ...destructiveJournalDiagnostic(record),
     archive_trigger: record
@@ -354,20 +393,28 @@ export function buildArchiveFailureDiagnostic(
     code: destructiveFailureCode(error),
     refusal_reason: refusal ? safeRefusalReason(error.reason) : 'none',
     refusal_phase:
-      details.phase === 'archive-journal' ||
-      details.phase === 'lifecycle-journal' ||
-      details.phase === 'destructive-lifecycle' ||
-      details.phase === 'unrecorded-checkout'
-        ? details.phase
+      phase === 'archive-journal' ||
+      phase === 'lifecycle-journal' ||
+      phase === 'destructive-lifecycle' ||
+      phase === 'unrecorded-checkout'
+        ? phase
         : refusal
           ? 'admission'
           : 'not-applicable',
     refusal_check:
-      typeof details.check === 'string' && checks.has(details.check)
-        ? details.check
+      typeof check === 'string' && checks.has(check)
+        ? check
         : refusal
           ? 'archive-admission'
           : 'not-applicable',
+    refusal_failure: journalRead
+      ? failure === 'read' || failure === 'json' || failure === 'schema'
+        ? failure
+        : 'unknown'
+      : 'not-applicable',
+    refusal_cause_code: sanitizedDestructiveCode(
+      destructiveErrorProperty(details, 'causeCode'),
+    ),
     discard_status:
       scope.discard?.status === 'discardable' ||
       scope.discard?.status === 'refused'

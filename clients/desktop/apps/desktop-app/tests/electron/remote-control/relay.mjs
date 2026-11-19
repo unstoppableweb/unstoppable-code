@@ -5,7 +5,7 @@
 import { spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import path from 'node:path';
-import { repoRoot } from '../portal/config.mjs';
+import { repoRoot } from './harness/config.mjs';
 
 const RELAY_ENTRY = path.join(repoRoot, 'apps/device-relay/src/index.ts');
 const CAPPED_RELAY_ENTRY = path.join(

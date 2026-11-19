@@ -67,6 +67,13 @@ interface RedactionPass {
   readonly replacement:
     | string
     | ((match: string, target: string | undefined) => string);
+  /**
+   * The capture group holding the secret itself, for {@link findSecretSpans}:
+   * 0 (the default) for the whole match. A `(target)|skip` pattern names its
+   * target, so a skipped run is never reported. The group must end the match
+   * (a value after its key), which is how its position is found.
+   */
+  readonly secretGroup?: number;
 }
 
 /**
@@ -89,6 +96,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
     pattern:
       /(-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----)|-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*/g,
     replacement: replaceTarget('<redacted-private-key>'),
+    secretGroup: 1,
   },
   // JSON Web Tokens (header.payload.signature, header starts with `eyJ`).
   // Every start in one run of token characters ends its header segment at
@@ -97,6 +105,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
     pattern:
       /(\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)|\beyJ[A-Za-z0-9_-]*/g,
     replacement: replaceTarget('<redacted-jwt>'),
+    secretGroup: 1,
   },
   // GitHub fine-grained personal access tokens.
   {
@@ -123,6 +132,11 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
     pattern: /\bsk-[A-Za-z0-9_-]{16,}/g,
     replacement: '<redacted-token>',
   },
+  // Stripe secret and restricted keys (`sk_live_`, `sk_test_`, `rk_live_`).
+  {
+    pattern: /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g,
+    replacement: '<redacted-token>',
+  },
   // Authorization / Cookie / common API-key headers (mask the whole value).
   {
     pattern: new RegExp(
@@ -130,11 +144,13 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
       'gi',
     ),
     replacement: `$1: ${REDACTED}`,
+    secretGroup: 2,
   },
   // Bearer tokens anywhere in the text.
   {
-    pattern: /\bBearer\s+[A-Za-z0-9._~+/-]+=*/g,
+    pattern: /\bBearer\s+([A-Za-z0-9._~+/-]+=*)/g,
     replacement: `Bearer ${REDACTED}`,
+    secretGroup: 1,
   },
   // key: value (quoted or unquoted) for secret-bearing keys.
   {
@@ -143,6 +159,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
       'gi',
     ),
     replacement: `$1${REDACTED}`,
+    secretGroup: 2,
   },
   // key=value for secret-bearing keys (query strings, env-style, CLI flags).
   {
@@ -151,6 +168,7 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
       'gi',
     ),
     replacement: `$1=${REDACTED}`,
+    secretGroup: 2,
   },
 ];
 
@@ -222,4 +240,54 @@ export function redactSecrets(text: string): string {
         : current.replace(pattern, replacement),
     text,
   );
+}
+
+/** Where {@link findSecretSpans} found a secret: `text.slice(start, end)`. */
+export interface SecretSpan {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * The secrets in `text`, by the same vocabulary {@link redactSecrets} masks
+ * (its secret passes, not PII): a token, key, header or `key=value` value
+ * where `redactSecrets` would write a placeholder. Sorted, with overlapping
+ * spans merged. For guards that must spot a secret before it is sent, such
+ * as the composer's paste guard; never returns anything but positions. A
+ * span marks where a secret was recognised, not necessarily all of it (an
+ * assignment's value stops at whitespace), so a guard keeps the whole text.
+ */
+export function findSecretSpans(text: string): SecretSpan[] {
+  if (text.length === 0) return [];
+  const spans: SecretSpan[] = [];
+  for (const { pattern, secretGroup = 0 } of SECRET_REDACTION_PASSES) {
+    // A fresh copy: the passes' own patterns keep their `lastIndex` state.
+    const scan = new RegExp(pattern.source, pattern.flags);
+    for (const match of text.matchAll(scan)) {
+      const secret = match[secretGroup];
+      if (secret === undefined || secret.length === 0) continue;
+      // Every pass's secret group ends its match (see `secretGroup`).
+      const end = (match.index ?? 0) + match[0].length;
+      spans.push({ start: end - secret.length, end });
+    }
+  }
+  spans.sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged: SecretSpan[] = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && span.start < last.end) {
+      merged[merged.length - 1] = {
+        start: last.start,
+        end: Math.max(last.end, span.end),
+      };
+      continue;
+    }
+    merged.push(span);
+  }
+  return merged;
+}
+
+/** Whether `text` holds anything {@link findSecretSpans} reports. */
+export function looksLikeSecret(text: string): boolean {
+  return findSecretSpans(text).length > 0;
 }

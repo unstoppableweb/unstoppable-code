@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { vaultError } from '@canopy/protocol/canopy-core';
 import type {
   VaultEntryMetadata,
+  VaultProtectionLoadFailure,
   VaultSecretRef,
   VaultStatusGetResult,
 } from '@canopy/protocol/canopy-core';
@@ -58,10 +59,12 @@ export interface DaemonVaultOptions {
   readonly secureDataRoot: string;
   readonly platform: Pick<PlatformServices, 'os' | 'secureFiles'>;
   readonly slots: PlatformSecretProtectionServices | null;
+  /** Why shipped protection did not load; only meaningful without slots. */
+  readonly loadFailure?: VaultProtectionLoadFailure | null;
 }
 
 export function createDaemonVault(options: DaemonVaultOptions): DaemonVault {
-  const { slots } = options;
+  const { slots, loadFailure } = options;
   const lifetime = new AbortController();
   let store: VaultStore | undefined;
   let vault: VaultReadRepository | undefined;
@@ -72,7 +75,14 @@ export function createDaemonVault(options: DaemonVaultOptions): DaemonVault {
   let last: VaultStatusGetResult = {
     protection: slots
       ? { state: 'unknown', backend: slots.backend }
-      : { state: 'unavailable', backend: null, reason: 'no_backend' },
+      : loadFailure
+        ? {
+            state: 'unavailable',
+            backend: null,
+            reason: 'backend_failed',
+            loadFailure,
+          }
+        : { state: 'unavailable', backend: null, reason: 'no_backend' },
     observedAt: null,
   };
 

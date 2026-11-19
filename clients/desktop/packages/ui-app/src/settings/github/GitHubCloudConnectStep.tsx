@@ -173,7 +173,7 @@ function describeStepStatus(
   ready: boolean,
 ): StatusLine | null {
   const { connection } = controller;
-  const shared = describeStatus(controller, brandName);
+  const shared = describeStatus(controller, brandName, 'cloud-project');
   // Loading, a running Connect or a live check: that process is the status.
   if (connection === null || shared === null || shared.progress) return shared;
   const installable =
@@ -277,7 +277,7 @@ function StepActions({
                     ? 'Connect GitHub'
                     : 'Reconnect GitHub'
                 }
-                install={false}
+                intent="connect"
                 primary={plan.primary === 'connect'}
               />
             );
@@ -289,7 +289,7 @@ function StepActions({
                 press={press}
                 testId="github-cloud-install"
                 label="Install GitHub app"
-                install
+                intent="install"
                 primary={plan.primary === 'install'}
               />
             );

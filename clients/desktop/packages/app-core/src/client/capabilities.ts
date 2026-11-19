@@ -39,6 +39,10 @@ export type WorktreeRemovalCapability = false | 'archive' | 'delete';
  * readonly: capabilities are fixed for the lifetime of a client instance.
  */
 export interface CanopyCapabilities {
+  /** Evidence-preserving device MCP repair. Missing or unavailable defaults to denied. */
+  readonly mcpRemoval?: boolean;
+  /** Destructive device repair in this session. Missing defaults to denied; reads stay available. */
+  readonly mcpRemovalForce?: boolean;
   /** Workspace Workflows feed. Unset/unavailable defaults to denied. */
   readonly workflowsPanel?: boolean;
   /** Locked Work Entry archive. Unconfigured or unavailable hosts default-deny. */
@@ -310,6 +314,15 @@ export interface CanopyCapabilities {
    * payment forms in the browser.
    */
   readonly accountOrganizationSettings?: boolean;
+  /**
+   * Host serves review approval readiness and the GitHub identity link
+   * through `CanopyClient.reviewApprovals` (the "Link GitHub" calls to
+   * action). Optional and default-deny: unset for unconfigured and
+   * configured-but-unavailable hosts. A host may set it while signed out
+   * (desktop decides once, from configuration); a signed-out read then fails
+   * and the notice renders nothing.
+   */
+  readonly reviewApprovalReadiness?: boolean;
   /** Can run pipelines, scripts, and other work locally on the host machine. */
   readonly localExecution: boolean;
   /** Can attach an interactive PTY (desktop or cloud; Remote Control only relays). */
@@ -371,6 +384,15 @@ export interface CanopyCapabilities {
    */
   readonly worktreeActivityRows?: boolean;
   /**
+   * The client serves a cowork project's archived and deleted Work Entries
+   * itself (`workEntries.archived` over its own transport). Optional and
+   * default-deny. A Portal session announces the archive overview through
+   * its session capability instead; a directly controlled computer reports
+   * it here (CAN-5986). A computer on an older release refuses the read,
+   * which the overview shows as its update-the-desktop state.
+   */
+  readonly archivedWorkEntries?: boolean;
+  /**
    * Host can create a standalone (Cowork) chat before its first send, so a
    * standalone chat can carry attachments and file references. Optional and
    * default-deny: without it, standalone sends stay text-only and the host
@@ -391,6 +413,12 @@ export interface CanopyCapabilities {
   readonly deferredPluginPolicy?: boolean;
   /** Host can list and download durable cowork deliverables. Default-deny. */
   readonly chatDeliverables?: boolean;
+  /**
+   * Host can add, replace and remove a cloud project's shared workspace files
+   * (CAN-7008). Default-deny: without it the workspace files card lists files
+   * with no picker, Replace or Remove.
+   */
+  readonly cloudWorkspaceFileWrite?: boolean;
   /** A host reader for chat visuals is wired. Optional and default-deny; this is not the feature flag. */
   readonly chatVisuals?: boolean;
   /** Paired host projects sanitized watched GitHub progress. Default-deny. */
@@ -762,4 +790,67 @@ export interface CanopyCapabilities {
    * suggestions list off web and Remote Control.
    */
   readonly skillSuggestions?: boolean;
+  /**
+   * Host may load remote images such as GitHub avatars and site favicons.
+   * Unlike every other field this one is DEFAULT-ALLOW: absent means
+   * allowed, and only a host that must not load them (the local-only desktop
+   * build, docs/local-only-build.md) sets it `false`. Readers test it through
+   * {@link allowsRemoteImages}; denied surfaces fall back to initials or the
+   * default icon.
+   */
+  readonly remoteImages?: boolean;
+  /**
+   * Agent visuals may load scripts and fonts from public CDNs. DEFAULT-ALLOW
+   * like {@link CanopyCapabilities.remoteImages}: absent means allowed, and
+   * only the local-only desktop build sets it `false`, which drops CDN
+   * scripts and falls back to bundled fonts. Readers test it through
+   * {@link allowsAgentVisualRemoteAssets}.
+   */
+  readonly agentVisualRemoteAssets?: boolean;
+  /**
+   * Host can sign in to, and out of, a hosted account. DEFAULT-ALLOW like
+   * {@link CanopyCapabilities.remoteImages}: absent means allowed, and only
+   * the local-only desktop build sets it `false`, where there is no account
+   * to sign in to, so account menus offer no Sign in or Sign out. Readers
+   * test it through {@link allowsCloudAccount}.
+   */
+  readonly cloudAccount?: boolean;
+  /**
+   * Host can share usage data (analytics, session recordings, error reports,
+   * feature-flag targeting, skill safety lookups) and sync agent activity
+   * with hosted services. DEFAULT-ALLOW like
+   * {@link CanopyCapabilities.remoteImages}: absent means allowed, and only
+   * the local-only desktop build sets it `false`, where none of that leaves
+   * the computer, so Privacy offers no sharing controls. Readers test it
+   * through {@link allowsTelemetrySharing}.
+   */
+  readonly telemetrySharing?: boolean;
+}
+
+/** Whether a host may load remote images. Absent means allowed. */
+export function allowsRemoteImages(
+  capabilities: Pick<CanopyCapabilities, 'remoteImages'>,
+): boolean {
+  return capabilities.remoteImages !== false;
+}
+
+/** Whether agent visuals may load CDN scripts and fonts. Absent means allowed. */
+export function allowsAgentVisualRemoteAssets(
+  capabilities: Pick<CanopyCapabilities, 'agentVisualRemoteAssets'>,
+): boolean {
+  return capabilities.agentVisualRemoteAssets !== false;
+}
+
+/** Whether a host can share usage data and activity. Absent means allowed. */
+export function allowsTelemetrySharing(
+  capabilities: Pick<CanopyCapabilities, 'telemetrySharing'>,
+): boolean {
+  return capabilities.telemetrySharing !== false;
+}
+
+/** Whether a host can sign in to a hosted account. Absent means allowed. */
+export function allowsCloudAccount(
+  capabilities: Pick<CanopyCapabilities, 'cloudAccount'>,
+): boolean {
+  return capabilities.cloudAccount !== false;
 }

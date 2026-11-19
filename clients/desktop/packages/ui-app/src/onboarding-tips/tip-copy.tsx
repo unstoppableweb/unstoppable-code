@@ -3,6 +3,7 @@ import type { OnboardingTipId } from '@canopy/protocol/onboarding-tips';
 import type { OnboardingTipPlacement } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
+  McpServerIcon,
   ScheduleIcon,
   WorkflowsIcon,
   WorktreeIcon,
@@ -71,5 +72,13 @@ export const ONBOARDING_TIP_COPY: Readonly<
     title: () => 'Schedules live on workflows',
     body: () => 'Open a workflow and add a trigger to run it on a timer.',
     actionLabel: 'Open Library',
+  },
+  // Shown by `OrgProjectConnectorsNotice`, which names each connector; this
+  // copy is the fallback for a slot that lists the id.
+  'org-project-connectors': {
+    placement: 'composer',
+    icon: <McpServerIcon size={20} />,
+    title: () => 'Your connectors stay out of organization projects',
+    body: () => 'Add one to a project to use it there.',
   },
 };

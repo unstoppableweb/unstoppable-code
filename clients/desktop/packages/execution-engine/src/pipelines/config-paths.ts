@@ -14,7 +14,9 @@ import { sanitizeEnvVars } from '../lib/mcp-security';
 import { stripAgentSecretValues } from '../lib/agent-secret-values-env';
 import { getCanopyDataDir, getCanopyRuntimeMode } from '../canopy-paths';
 import { findExecutableOnPath } from '../node/lib/path-lookup';
+import { applyLocalOnlyChildEnv } from '../node/local-only-build';
 import type { ResolveEnvironmentRequest } from '../types/user-environment';
+import type { SecureStorageFailureCode } from '../types/secure-storage';
 
 const LOGIN_SHELL_PATH_TTL_MS = 5 * 60_000; // 5 minutes
 const MACOS_DEFAULT_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
@@ -583,6 +585,151 @@ export function registerUserEnvironmentInjector(
   injector: UserEnvironmentInjector | null,
 ): void {
   userEnvironmentInjector = injector;
+  // A replaced injector has not thrown yet.
+  noteSpawnEnvironmentInjectorOutcome('user-environment', false);
+}
+
+/** A spawn environment part an injector failed to supply. */
+export type SpawnEnvironmentSource = 'github-pat' | 'user-environment';
+
+/**
+ * Allowlisted reason an injector could not supply its part. Never carries a
+ * value, message, path or native diagnostic.
+ */
+export type SpawnEnvironmentFailureCode =
+  | Extract<
+      SecureStorageFailureCode,
+      | 'SECURE_STORAGE_READ_UNAVAILABLE'
+      | 'SECURE_STORAGE_PROBE_FAILED'
+      | 'SECURE_STORAGE_DECRYPT_FAILED'
+    >
+  | 'read_failed'
+  | 'invalid_data'
+  | 'injector_threw';
+
+export interface SpawnEnvironmentFailure {
+  readonly source: SpawnEnvironmentSource;
+  readonly code: SpawnEnvironmentFailureCode;
+  /** True for the first report attempt of this failure episode. */
+  readonly firstAttempt: boolean;
+}
+
+/** Returns true only when the failure was recorded by the host's sink. */
+export type SpawnEnvironmentFailureReporter = (
+  failure: SpawnEnvironmentFailure,
+) => boolean;
+
+const SPAWN_ENVIRONMENT_REPORT_RETRY_MS = 60_000;
+const SPAWN_ENVIRONMENT_REPORTS_PER_SOURCE_MAX = 10;
+
+interface SpawnEnvironmentFailureState {
+  /** A report for the current episode was recorded. */
+  reported: boolean;
+  /** A report was attempted in the current episode. */
+  attempted: boolean;
+  /**
+   * When the last unrecorded report was attempted. Kept across episodes, so
+   * a source that alternates between failing and working cannot retry sooner.
+   */
+  lastUnrecordedAttemptAt: number | null;
+  recordedReports: number;
+  /**
+   * The registered injector's last call threw. A read it completed first is
+   * not a success, so it does not end the episode.
+   */
+  injectorThrowing: boolean;
+}
+
+function initialSpawnEnvironmentFailureState(): SpawnEnvironmentFailureState {
+  return {
+    reported: false,
+    attempted: false,
+    lastUnrecordedAttemptAt: null,
+    recordedReports: 0,
+    injectorThrowing: false,
+  };
+}
+
+let spawnEnvironmentFailureReporter: SpawnEnvironmentFailureReporter | null =
+  null;
+const spawnEnvironmentFailureStates: Record<
+  SpawnEnvironmentSource,
+  SpawnEnvironmentFailureState
+> = {
+  'github-pat': initialSpawnEnvironmentFailureState(),
+  'user-environment': initialSpawnEnvironmentFailureState(),
+};
+
+/**
+ * Register the host sink for spawn environment injector failures. Only the
+ * Electron main process registers one. Pass `null` to unregister.
+ */
+export function registerSpawnEnvironmentFailureReporter(
+  reporter: SpawnEnvironmentFailureReporter | null,
+): void {
+  spawnEnvironmentFailureReporter = reporter;
+}
+
+/**
+ * Note that `source` could not supply its part of a spawn environment. Reports
+ * once per failure episode: an unrecorded report is retried at most once per
+ * minute, and recorded reports are capped per source per process.
+ */
+export function noteSpawnEnvironmentFailure(
+  source: SpawnEnvironmentSource,
+  code: SpawnEnvironmentFailureCode,
+): void {
+  const reporter = spawnEnvironmentFailureReporter;
+  const state = spawnEnvironmentFailureStates[source];
+  if (
+    reporter === null ||
+    state.reported ||
+    state.recordedReports >= SPAWN_ENVIRONMENT_REPORTS_PER_SOURCE_MAX
+  )
+    return;
+  const now = Date.now();
+  if (state.lastUnrecordedAttemptAt !== null) {
+    const sinceUnrecorded = now - state.lastUnrecordedAttemptAt;
+    // A wall clock set backwards must not hold the retry off indefinitely.
+    if (
+      sinceUnrecorded >= 0 &&
+      sinceUnrecorded < SPAWN_ENVIRONMENT_REPORT_RETRY_MS
+    )
+      return;
+  }
+  const firstAttempt = !state.attempted;
+  state.attempted = true;
+  // Set before the call, so a reporter that spawns cannot re-enter.
+  state.lastUnrecordedAttemptAt = now;
+  let recorded = false;
+  try {
+    recorded = reporter({ source, code, firstAttempt });
+  } catch {
+    // Reporting is diagnostic; it never breaks the spawn being prepared.
+  }
+  if (!recorded) return;
+  state.lastUnrecordedAttemptAt = null;
+  state.reported = true;
+  state.recordedReports += 1;
+}
+
+/** Note that `source` supplied its part again, ending a failure episode. */
+export function noteSpawnEnvironmentSuccess(
+  source: SpawnEnvironmentSource,
+): void {
+  const state = spawnEnvironmentFailureStates[source];
+  if (state.injectorThrowing) return;
+  state.reported = false;
+  state.attempted = false;
+}
+
+/** Record whether `source`'s injector threw on the call that just ended. */
+function noteSpawnEnvironmentInjectorOutcome(
+  source: SpawnEnvironmentSource,
+  threw: boolean,
+): void {
+  spawnEnvironmentFailureStates[source].injectorThrowing = threw;
+  if (threw) noteSpawnEnvironmentFailure(source, 'injector_threw');
 }
 
 function getUserEnvironmentForSpawn(
@@ -591,11 +738,15 @@ function getUserEnvironmentForSpawn(
   if (!userEnvironmentInjector) {
     return {};
   }
+  let environment: Record<string, string>;
   try {
-    return userEnvironmentInjector(context);
+    environment = userEnvironmentInjector(context);
   } catch {
+    noteSpawnEnvironmentInjectorOutcome('user-environment', true);
     return {};
   }
+  noteSpawnEnvironmentInjectorOutcome('user-environment', false);
+  return environment;
 }
 
 /**
@@ -610,17 +761,23 @@ export function registerSecretsEnvInjector(
   injector: SecretsEnvInjector | null,
 ): void {
   secretsEnvInjector = injector;
+  // A replaced injector has not thrown yet.
+  noteSpawnEnvironmentInjectorOutcome('github-pat', false);
 }
 
 function getSecretsForSpawn(): Record<string, string> {
   if (!secretsEnvInjector) {
     return {};
   }
+  let secrets: Record<string, string>;
   try {
-    return secretsEnvInjector();
+    secrets = secretsEnvInjector();
   } catch {
+    noteSpawnEnvironmentInjectorOutcome('github-pat', true);
     return {};
   }
+  noteSpawnEnvironmentInjectorOutcome('github-pat', false);
+  return secrets;
 }
 
 function isDevRuntime(): boolean {
@@ -994,12 +1151,33 @@ const STARTUP_ENVIRONMENT_SLOT = Symbol.for('canopy.startupEnvironment');
  */
 const LIBRARY_INJECTED_ENV_NAMES = ['NoDefaultCurrentDirectoryInExePath'];
 
-function readStartupEnvironment(): Record<string, string> | undefined {
+let startupLibraryInjectedEnvironment:
+  | { recorded: object; environment: Readonly<Record<string, string>> }
+  | undefined;
+
+/**
+ * The library-injected variables of the recorded startup environment. The
+ * entry stub freezes its record, so they are read from it once.
+ */
+function readStartupLibraryInjectedEnvironment():
+  | Readonly<Record<string, string>>
+  | undefined {
   const recorded: unknown = Reflect.get(globalThis, STARTUP_ENVIRONMENT_SLOT);
   if (typeof recorded !== 'object' || recorded === null) return undefined;
+  if (startupLibraryInjectedEnvironment?.recorded === recorded) {
+    return startupLibraryInjectedEnvironment.environment;
+  }
+  const names = new Set(
+    LIBRARY_INJECTED_ENV_NAMES.map((name) => name.toLowerCase()),
+  );
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(recorded)) {
-    if (typeof value === 'string') environment[key] = value;
+    if (typeof value === 'string' && names.has(key.toLowerCase())) {
+      environment[key] = value;
+    }
+  }
+  if (Object.isFrozen(recorded)) {
+    startupLibraryInjectedEnvironment = { recorded, environment };
   }
   return environment;
 }
@@ -1024,7 +1202,7 @@ function restoreLibraryInjectedEnvironment(
   env: Record<string, string | undefined>,
   configured: Readonly<Record<string, string>> = {},
 ): Record<string, string | undefined> {
-  const startup = readStartupEnvironment();
+  const startup = readStartupLibraryInjectedEnvironment();
   if (!startup) return env;
   for (const name of LIBRARY_INJECTED_ENV_NAMES) {
     if (envKeysNamed(configured, name).length > 0) continue;
@@ -1041,6 +1219,52 @@ function restoreLibraryInjectedEnvironment(
  */
 export function restoreStartupEnvironmentForRelaunch(): void {
   restoreLibraryInjectedEnvironment(process.env);
+}
+
+/**
+ * Where the desktop main entry counts writes to the `process.env` it
+ * installs (`scripts/lib/desktop-main-entry.mjs`). Other processes, and a
+ * `process.env` replaced after startup, are untracked and copied per call.
+ */
+const ENVIRONMENT_WRITES_SLOT = Symbol.for('canopy.environmentWrites');
+
+let processEnvironmentCopy:
+  | {
+      tracker: object;
+      writes: number;
+      environment: Readonly<Record<string, string | undefined>>;
+    }
+  | undefined;
+
+/**
+ * `process.env`, or an identical copy taken after its last tracked write.
+ * Enumerating the native object dominates a spawn's environment cost.
+ */
+function currentProcessEnvironment(): Readonly<
+  Record<string, string | undefined>
+> {
+  const tracker: unknown = Reflect.get(globalThis, ENVIRONMENT_WRITES_SLOT);
+  if (
+    typeof tracker !== 'object' ||
+    tracker === null ||
+    !('environment' in tracker) ||
+    tracker.environment !== process.env ||
+    !('writes' in tracker) ||
+    typeof tracker.writes !== 'number'
+  ) {
+    return process.env;
+  }
+  if (
+    processEnvironmentCopy?.tracker !== tracker ||
+    processEnvironmentCopy.writes !== tracker.writes
+  ) {
+    processEnvironmentCopy = {
+      tracker,
+      writes: tracker.writes,
+      environment: { ...process.env },
+    };
+  }
+  return processEnvironmentCopy.environment;
 }
 
 export function getEnhancedEnv(
@@ -1062,14 +1286,19 @@ export function getEnhancedEnv(
   // environment variables into our `process.env`, so we just keep PATH fresh
   // and pass through. If this process registered injectors, it is an
   // environment source even when it inherited the marker from its own parent.
+  // A local-only build (docs/local-only-build.md) adds its child-process
+  // telemetry and update opt-outs on both return paths, after the user's
+  // values, so a user variable cannot turn them back on.
   if (process.env[CANOPY_ENV_ENHANCED_MARKER] === '1' && !hasLocalInjectors) {
-    return stripInheritedClaudePluginDirs(
-      stripHostCrashReporterPipe(
-        stripAgentSecretValues(
-          restoreLibraryInjectedEnvironment({
-            ...process.env,
-            PATH: pathValue,
-          }),
+    return applyLocalOnlyChildEnv(
+      stripInheritedClaudePluginDirs(
+        stripHostCrashReporterPipe(
+          stripAgentSecretValues(
+            restoreLibraryInjectedEnvironment({
+              ...currentProcessEnvironment(),
+              PATH: pathValue,
+            }),
+          ),
         ),
       ),
     );
@@ -1085,18 +1314,20 @@ export function getEnhancedEnv(
   // A builtin agent action's aggregate of configured values is for that
   // action only; nothing it spawns needs it. Stripped from the object this
   // function already builds, so a spawn still copies the environment once.
-  return stripInheritedClaudePluginDirs(
-    stripHostCrashReporterPipe(
-      stripAgentSecretValues(
-        restoreLibraryInjectedEnvironment(
-          {
-            ...process.env,
-            ...userEnvironment,
-            ...secrets,
-            [CANOPY_ENV_ENHANCED_MARKER]: '1',
-            PATH: pathValue,
-          },
-          userEnvironment,
+  return applyLocalOnlyChildEnv(
+    stripInheritedClaudePluginDirs(
+      stripHostCrashReporterPipe(
+        stripAgentSecretValues(
+          restoreLibraryInjectedEnvironment(
+            {
+              ...currentProcessEnvironment(),
+              ...userEnvironment,
+              ...secrets,
+              [CANOPY_ENV_ENHANCED_MARKER]: '1',
+              PATH: pathValue,
+            },
+            userEnvironment,
+          ),
         ),
       ),
     ),
@@ -1193,7 +1424,10 @@ export function getBundledDictateBinaryPath(): string {
     return override;
   }
 
-  if (hostOperatingSystem() !== 'darwin') {
+  // macOS ships the Speech framework helper and Linux the Moonshine helper
+  // (with libmoonshine.so and libonnxruntime.so.1 beside it in bin/).
+  const operatingSystem = hostOperatingSystem();
+  if (operatingSystem !== 'darwin' && operatingSystem !== 'linux') {
     return '';
   }
 

@@ -24,6 +24,8 @@ export {
   AppErrorSurfaceSchema,
   AppErrorCopySchema,
   AppErrorDetailSchema,
+  AppErrorErrnoSchema,
+  AppErrorClassSchema,
 } from './primitives';
 export type {
   AppErrorKind,
@@ -38,9 +40,11 @@ export { presentAppError, showsRawErrorDetail } from './display';
 export type { AppErrorDisplayPolicy, AppErrorPresentation } from './display';
 export {
   createAppErrorHandler,
+  appErrorNativeFrames,
   getAppErrorThrownType,
   rememberAppErrorNativeFrames,
 } from './handler';
+export { appErrorException } from './telemetry-exception';
 export { surfacedErrorSource, createSurfacedErrorRecorder } from './surfaced';
 export type {
   SurfacedErrorChokePoint,
@@ -67,3 +71,9 @@ export {
   isExpectedCanopyProxyAppError,
   AI_CREDITS_REFUSAL_ERROR_SOURCE,
 } from './from-canopy-proxy';
+
+export {
+  AppErrorOperationFailureSchema,
+  normalizeAppErrorOperationFailure,
+} from './operation-failure';
+export type { AppErrorOperationFailure } from './operation-failure';

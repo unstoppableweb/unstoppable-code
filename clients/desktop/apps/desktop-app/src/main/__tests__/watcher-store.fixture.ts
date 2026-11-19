@@ -131,9 +131,6 @@ jest.mock('../automations/service', () => ({
       Promise.resolve({ runs: [], nextCursor: null }),
   }),
 }));
-jest.mock('../portal/portal-event-bus', () => ({
-  isCanopyPortalActive: (): boolean => false,
-}));
 jest.mock('../services/chat-service', () => ({}));
 
 const actualFs = jest.requireActual<typeof FileSystem>('node:fs/promises');

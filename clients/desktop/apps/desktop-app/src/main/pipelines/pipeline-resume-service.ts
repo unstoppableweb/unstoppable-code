@@ -1,11 +1,15 @@
 import { resolveReplayLocation } from '@canopy/execution-engine/node/pipelines/executor/replay-location';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
-import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
+import {
+  executionSecretUnavailableError,
+  type RedeemedExecutionSecrets,
+} from '@canopy/core-runtime/node/execution-secrets';
 import { authorizePipelineReplay } from './pipeline-replay-authorization';
 import { pipelineSpeedError } from './codex-speed';
 import { randomUUID } from 'node:crypto';
 import { access, stat } from 'node:fs/promises';
 import type {
+  OperationOrigin,
   WorkerPipelineControlOutcome,
   WorkerPipelineExecutionResumeParams,
 } from '@canopy/protocol/canopy-core';
@@ -34,6 +38,7 @@ import {
 } from './pipeline-execution-registry';
 import { buildPipelineBaseBranchEnv } from './worktree-base-branch-env';
 import { cancelPendingTransientRetryTimer } from './transient-error-retry-scheduler';
+import { latchNativeQuotaFromResumedReasons } from './pipeline-quota-latch';
 import {
   controlPipelineThroughLocalWorker,
   followExecutionHandle,
@@ -55,6 +60,12 @@ export interface ResumePipelineExecutionFromMainRequest {
   allowStaleNoop?: boolean;
   transientRetryOwnToken?: number;
   initiationSource: 'user' | 'automation' | 'portal';
+  /**
+   * The resume's own origin, when its caller has one: an automatic transient
+   * retry resumes with its `pipeline.transient-retry` system origin (CAN-4175).
+   * Absent, the origin follows `initiationSource`.
+   */
+  origin?: OperationOrigin;
   /**
    * Opts a trusted caller into changing attribution for the remaining
    * execution. Internal recovery callers leave this unset so a user-started
@@ -126,7 +137,9 @@ async function runtimeEnvironment(workspaceId?: string): Promise<{
       env: resolved.publicApplied,
     };
   } catch {
-    return { env: {} };
+    // Refuse like the secret bindings do instead of running without the
+    // user's environment.
+    throw executionSecretUnavailableError();
   }
 }
 
@@ -193,6 +206,13 @@ export async function resumePipelineExecutionFromMain(
       : {}),
   };
   const state = await readStoredPipelineExecution(request.executionId);
+  // An app restart clears the in-memory quota latch, so replay the stored
+  // native usage-limit reasons this Resume answers before routing resolves
+  // for the resumed step (CAN-7256). An empty or absent id list means all.
+  latchNativeQuotaFromResumedReasons(
+    state?.status_reasons,
+    request.statusReasonIds,
+  );
   const secretBindings = await buildPipelineSecretBindings({
     workspaceId: state?.project_id,
   });
@@ -222,7 +242,8 @@ export async function resumePipelineExecutionFromMain(
       );
       return { outcome: RESUME_OUTCOMES[result.status], state: result.state };
     },
-    request.initiationSource === 'automation' ? 'automation' : 'client',
+    request.origin ??
+      (request.initiationSource === 'automation' ? 'automation' : 'client'),
     secretBindings,
   );
   return { status: resumeStatusOf(settled.outcome), state: settled.state };

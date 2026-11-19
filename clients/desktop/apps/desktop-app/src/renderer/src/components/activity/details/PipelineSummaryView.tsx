@@ -32,6 +32,8 @@ interface PipelineSummaryViewProps {
   reportSlot: JSX.Element;
   /** The owned panel's run-cost preview, when the run has observed cost. */
   costPreviewSlot?: JSX.Element | null;
+  /** Where the run's code review landed on GitHub, when it posted one. */
+  githubReviewSlot?: JSX.Element | null;
   advisorStartError?: string | null;
   /**
    * Hide the adaptive advisor block entirely (archived read-only executions
@@ -126,6 +128,7 @@ export function PipelineSummaryView({
   onSelectJob,
   reportSlot,
   costPreviewSlot,
+  githubReviewSlot,
   advisorStartError,
   hideAdvisor = false,
 }: PipelineSummaryViewProps): JSX.Element {
@@ -151,6 +154,7 @@ export function PipelineSummaryView({
   return (
     <Stack gap="group" data-testid="pipeline-summary-view">
       <PipelineSummaryBar state={state} completedSlot={completedSlot} />
+      {githubReviewSlot}
       {costPreviewSlot}
       {!hideAdvisor && (
         <AdaptiveAdvisor

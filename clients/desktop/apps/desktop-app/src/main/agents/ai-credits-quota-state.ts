@@ -3,12 +3,11 @@
 // Tracks, per native provider, whether the account has currently reached its
 // usage/rate limit. This state is account-wide (a provider quota is not tied to
 // one chat), so it lives here as process-global state rather than per-session or
-// per-surface. Detection is fed from the common provider event streams
-// (claude-session / codex-session `emitEvent`), and the routing decision reads
-// it from `resolveAiCreditsRoutingActivation`. Because both live in the shared
-// agents layer, every chat surface — worktree, standalone, App Advisor, the
-// pipeline editor, plan review, and any future surface — inherits on-quota
-// routing without per-surface wiring.
+// per-surface. Detection is fed from two places: the common provider event
+// streams for chats (claude-session / codex-session `emitEvent`), and workflow
+// status reasons for workflow model steps, through
+// `pipelines/pipeline-quota-latch.ts` (CAN-7256). The routing decision reads it
+// from `resolveAiCreditsRoutingActivation`.
 
 import type { CanopyProxyError } from '@canopy/protocol';
 import type { AgentProviderType } from '@canopy/desktop-shared/types';
@@ -113,16 +112,48 @@ const quotaByProvider = new Map<AgentProviderType, ProviderQuotaState>();
  * Record that a provider has reached its usage/rate limit. `resetsAt` (when
  * known) lets {@link isProviderQuotaReached} auto-expire the state so routing
  * reverts to native auth once the window recharges.
+ *
+ * `observedAt` is when the limit was observed, for a caller replaying a stored
+ * observation (a workflow status reason's `detected_at`). It is clamped to now,
+ * because a future `reachedAt` could never be reconciled by a usage read. An
+ * older observation never overwrites a newer one, and an identical one is a
+ * no-op, so a run rebroadcasting the same reason on every event costs nothing.
+ * Live callers omit it and record now.
  */
 export function markProviderQuotaReached(
   provider: AgentProviderType,
   resetsAt?: number,
+  observedAt?: number,
 ): void {
+  const now = Date.now();
+  const reachedAt =
+    typeof observedAt === 'number' &&
+    Number.isFinite(observedAt) &&
+    observedAt > 0
+      ? Math.min(observedAt, now)
+      : now;
+  const nextResetsAt =
+    typeof resetsAt === 'number' && Number.isFinite(resetsAt)
+      ? resetsAt
+      : undefined;
+  const existing = quotaByProvider.get(provider);
+  // An entry whose window has reset is expired even before a read evicts it,
+  // so it must not block a still-valid observation that predates it.
+  const existingLive =
+    existing !== undefined &&
+    !(typeof existing.resetsAt === 'number' && now >= existing.resetsAt);
+  if (existing && existingLive) {
+    if (existing.reachedAt > reachedAt) return;
+    if (
+      existing.reachedAt === reachedAt &&
+      existing.resetsAt === nextResetsAt
+    ) {
+      return;
+    }
+  }
   quotaByProvider.set(provider, {
-    reachedAt: Date.now(),
-    ...(typeof resetsAt === 'number' && Number.isFinite(resetsAt)
-      ? { resetsAt }
-      : {}),
+    reachedAt,
+    ...(nextResetsAt !== undefined ? { resetsAt: nextResetsAt } : {}),
   });
 }
 

@@ -30,7 +30,7 @@ export interface BackgroundExecutionDeniedMessageOptions {
   mismatch?: BackgroundContextMismatchDetails;
   /** The automation is still on, so it re-binds only when turned off and on again. */
   stillOn?: boolean;
-  /** Safe display identity for an unclassifiable plugin, skill, or MCP server. */
+  /** Safe display identity or selection reference for a missing or unclassifiable capability. */
   subject?: ResourceContextSubject;
 }
 
@@ -77,7 +77,10 @@ export function backgroundExecutionDeniedMessage(
     'unknown-provenance': subjectName
       ? `Couldn't confirm where ${subjectName} came from, so it didn't run.`
       : "Couldn't confirm where something this uses came from, so it didn't run.",
-    'missing-dependency': "Something this needs is missing, so it didn't run.",
+    // A stale selection must be repaired explicitly; retrying cannot restore it.
+    'missing-dependency': subjectName
+      ? `${subjectName} is missing or unavailable, so this didn't run. Check the selected capabilities and choose it again.`
+      : "Something this needs is missing, so it didn't run.",
     'unsupported-target': "Couldn't confirm where this runs, so it didn't run.",
     'plugin-catalog-newer':
       "The plugin catalog was written by a newer version of the app, so this didn't run. Update the app to run it.",

@@ -3,12 +3,8 @@ import {
   HarnessBoardRow,
   HarnessDragPreview,
 } from '@canopy/ui-shared/components';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
-import {
-  isCursorHarnessReleased,
-  getCursorSettingsSection,
-} from '@/lib/cursor-settings';
+import { getCursorSettingsSection } from '@/lib/cursor-settings';
 import {
   useCallback,
   useEffect,
@@ -40,7 +36,7 @@ import {
   getModelDisplayName,
   isModelHarness,
 } from '@canopy/desktop-shared/types';
-import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
+import { useCursorHarnessState } from '@/hooks/useCursorHarnessState';
 import { useCursorModels } from '@/hooks/useCursorModels';
 import {
   Button,
@@ -165,15 +161,8 @@ function buildGroups(
 }
 
 export function HarnessesTab(): JSX.Element {
-  const modelGatewayEnforced = useModelCatalogStore(
-    (state) => state.modelGatewayEnforced,
-  );
-  const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
-  const cursorRuntimeAvailable = useCursorChatAvailable(true);
-  const cursorAvailable = cursorRuntimeAvailable && !modelGatewayEnforced;
+  const { cursorAvailable, showCursor } = useCursorHarnessState(true);
   useCursorModels(cursorAvailable, true);
-  const showCursor =
-    cursorAvailable || (cursorReleased && !modelGatewayEnforced);
   const columns: readonly ModelHarness[] = showCursor
     ? ['claude', 'codex', 'cursor']
     : ['claude', 'codex'];

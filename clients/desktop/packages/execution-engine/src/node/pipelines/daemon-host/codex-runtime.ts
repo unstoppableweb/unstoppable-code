@@ -8,6 +8,7 @@ import {
   type CodexMcpLauncherCommand,
   type CodexRuntimeService,
 } from '../../codex-runtime';
+import { agentSecretSandboxDeniedReadPaths } from '../../codex-runtime/confined-sandbox';
 
 /** An app-server the runtime started or saw exit, for the host's supervisor (CAN-5095 D27). */
 export type DaemonPipelineCodexProcessEvent =
@@ -68,6 +69,10 @@ export function acquireDaemonPipelineCodexRuntime(options: {
       ids.delete(child);
       options.onProcess({ state: 'exited', id });
     },
+    // Pipeline steps in a read-only or workspace-write sandbox can't read
+    // any chat's Full-access agent secrets under this data root.
+    sandboxDeniedReadPaths: () =>
+      agentSecretSandboxDeniedReadPaths([options.dataRoot]),
   });
   const service = createCodexRuntimeService({
     capabilityStore: new CodexCapabilityStore(options.dataRoot),

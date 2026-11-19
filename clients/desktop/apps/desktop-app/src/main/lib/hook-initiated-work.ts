@@ -14,7 +14,7 @@ import {
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { assertNotSplitLocked } from '../services/split-lock-service';
 import { resolveProjectSavedOwner } from './project-owner';
-import { readWorkspaceWorktrees } from './workspace-persistence';
+import { readWorkspaceWorktreesDetailed } from './workspace-persistence';
 import { assertWorkspaceTargetRuntimeStartAllowed } from './workspace-target-exclusion';
 
 /*
@@ -32,15 +32,38 @@ export type HookIdentity = Pick<
   'hookKey' | 'triggerName' | 'target' | 'repoId'
 >;
 
-/** The hook keys paused in a worktree, as the worktree list records them. */
+function isStringList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  );
+}
+
+/**
+ * The hook keys paused in a worktree, as the worktree list records them.
+ * Throws when they can't be read, so the core hook source skips the firing
+ * instead of running a hook that may be paused (CAN-7094): the list is
+ * unreadable, it left the worktree's row out as unreadable, or the row's
+ * paused keys are not a list of strings.
+ */
 export async function readPausedHookKeys(
   projectId: string,
   worktreeId: string,
 ): Promise<ReadonlySet<string>> {
-  const worktree = (await readWorkspaceWorktrees(projectId)).find(
+  const list = await readWorkspaceWorktreesDetailed(projectId);
+  const worktree = list.worktrees.find(
     (candidate) => candidate.id === worktreeId,
   );
-  return new Set(worktree?.pausedHookKeys ?? []);
+  if (
+    list.authority === 'unreadable' ||
+    (list.authority === 'partial' && worktree === undefined)
+  )
+    throw list.unserved ?? new Error('The worktree list could not be read.');
+  // Rows are stored as they were read, so the field is checked here.
+  const paused: unknown = worktree?.pausedHookKeys;
+  if (paused === undefined || paused === null) return new Set();
+  if (!isStringList(paused))
+    throw new Error("The worktree's paused hooks could not be read.");
+  return new Set(paused);
 }
 
 /** The project's saved owner a hook run is authorized against. */

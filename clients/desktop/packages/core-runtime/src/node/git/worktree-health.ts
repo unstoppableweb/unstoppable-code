@@ -4,6 +4,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/protocol/ui-labels';
+import { isUnreadablePathError } from '../filesystem/unreadable-path-error';
 
 /** A broken repository of a multi-repository worktree, as the host reports it. */
 export interface WorktreeHealthRepoIssue {
@@ -49,7 +50,9 @@ export interface WorktreeHealthWorkspace {
 
 /**
  * Host ports for one worktree's check. A rejected `stat`, `lstat` or
- * `readText` reads as absent; a rejected Git confirmation is a Git error.
+ * `readText` reads as absent, except a system error that does not mean a
+ * missing path (`EACCES`, `EPERM`, `EIO`), which reads as unreadable; a
+ * rejected Git confirmation is a Git error.
  */
 export interface WorktreeHealthSources {
   readonly worktreePath: string;
@@ -83,6 +86,7 @@ const MESSAGES: Record<WorkerGitWorktreeHealthCode, string> = {
     'Git metadata for this worktree is incomplete or points to a missing location.',
   'missing-repository': 'One or more repositories in this project are missing.',
   'git-error': 'Git could not validate this worktree.',
+  unreadable: 'This worktree could not be read.',
 };
 
 function failure(
@@ -101,28 +105,48 @@ export function parseGitDirectoryFile(
   return value ? (isAbsolute(value) ? value : resolve(repoPath, value)) : null;
 }
 
+type Probe<T> =
+  | { kind: 'present'; value: T }
+  | { kind: 'absent' }
+  | { kind: 'unreadable' };
+
+/** Only a missing path (or an error without a system code) reads as absent. */
+async function probe<T>(read: Promise<T>): Promise<Probe<T>> {
+  try {
+    return { kind: 'present', value: await read };
+  } catch (error) {
+    return { kind: isUnreadablePathError(error) ? 'unreadable' : 'absent' };
+  }
+}
+
 async function inspectGitMetadata(
   sources: WorktreeHealthSources,
   repoPath: string,
 ): Promise<RepoHealthResult> {
-  const dirStat = await sources.stat(repoPath).catch(() => null);
-  if (!dirStat?.isDirectory()) return failure('missing-worktree-path');
+  const dirStat = await probe(sources.stat(repoPath));
+  if (dirStat.kind === 'unreadable') return failure('unreadable');
+  if (dirStat.kind === 'absent' || !dirStat.value.isDirectory())
+    return failure('missing-worktree-path');
 
   const dotGitPath = join(repoPath, '.git');
-  const dotGitStat = await sources.lstat(dotGitPath).catch(() => null);
-  if (!dotGitStat) return failure('missing-git-metadata');
-  if (!dotGitStat.isFile())
+  const dotGitStat = await probe(sources.lstat(dotGitPath));
+  if (dotGitStat.kind === 'unreadable') return failure('unreadable');
+  if (dotGitStat.kind === 'absent') return failure('missing-git-metadata');
+  if (!dotGitStat.value.isFile())
     return failure('invalid-git-worktree', { shouldConfirmWithGit: true });
 
-  const raw = await sources.readText(dotGitPath).catch(() => '');
+  const rawRead = await probe(sources.readText(dotGitPath));
+  if (rawRead.kind === 'unreadable') return failure('unreadable');
+  const raw = rawRead.kind === 'present' ? rawRead.value : '';
   const gitDir = parseGitDirectoryFile(raw, repoPath);
   if (!gitDir) return failure('invalid-git-worktree');
-  const gitDirStat = await sources.stat(gitDir).catch(() => null);
-  if (!gitDirStat)
+  const gitDirStat = await probe(sources.stat(gitDir));
+  if (gitDirStat.kind === 'unreadable') return failure('unreadable');
+  if (gitDirStat.kind === 'absent')
     return failure('invalid-git-worktree', {
       gitError: `Missing gitdir target: ${gitDir}`,
     });
-  if (!gitDirStat.isDirectory())
+  if (!gitDirStat.value.isDirectory())
     return failure('invalid-git-worktree', {
       gitError: `Invalid gitdir target: ${gitDir}`,
       shouldConfirmWithGit: true,
@@ -213,7 +237,15 @@ async function collectRepoIssues(
 ): Promise<WorktreeHealthRepoIssue[]> {
   const { worktreePath } = sources;
   const repoIssues: WorktreeHealthRepoIssue[] = [];
-  const entries = await sources.listRepositoryEntries();
+  // An unreadable `repos/` hides every checkout; it is not a missing one.
+  let entries: readonly WorktreeHealthRepoEntry[] = [];
+  let listingUnreadable = false;
+  try {
+    entries = await sources.listRepositoryEntries();
+  } catch (error) {
+    if (!isUnreadablePathError(error)) throw error;
+    listingUnreadable = true;
+  }
   const presentRepoIds = new Set(entries.map((entry) => entry.repoId));
   const includedRepoIds = await sources
     .readIncludedRepoIds()
@@ -229,8 +261,10 @@ async function collectRepoIssues(
         repoId: configured.id,
         repoName: configured.name || configured.id,
         repoPath: join(worktreePath, 'repos', configured.id),
-        code: 'missing-repository',
-        message: 'Repository directory is missing from this worktree.',
+        code: listingUnreadable ? 'unreadable' : 'missing-repository',
+        message: listingUnreadable
+          ? 'Repository directory could not be read.'
+          : 'Repository directory is missing from this worktree.',
       });
   }
 
@@ -279,8 +313,10 @@ export async function inspectWorktreeHealth(
     });
   }
 
-  const rootStat = await sources.stat(sources.worktreePath).catch(() => null);
-  if (!rootStat?.isDirectory())
+  const rootStat = await probe(sources.stat(sources.worktreePath));
+  if (rootStat.kind === 'unreadable')
+    return createIssue(sources, { code: 'unreadable' });
+  if (rootStat.kind === 'absent' || !rootStat.value.isDirectory())
     return createIssue(sources, { code: 'missing-worktree-path' });
 
   return aggregateRepoIssues(

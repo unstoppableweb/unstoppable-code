@@ -1,3 +1,4 @@
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -13,7 +14,10 @@ import {
 import { chatSurfaceUsesGlobalPluginDefaults } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { BRAND } from '@canopy/brand/current';
-import { brandEnvName } from '@canopy/execution-engine/brand/env';
+import {
+  brandEnvName,
+  brandEnvCandidates,
+} from '@canopy/execution-engine/brand/env';
 import {
   getBundledClaudeBinaryPath,
   getBundledRgBinaryPath,
@@ -27,7 +31,7 @@ import {
 import { resolvePlugins } from '../plugins/plugin-resolver';
 import { resolveEffectiveChatPluginContext } from '../plugins/global-plugin-overlay';
 import { getDesktopIntegrationServer } from './desktop-integration-server';
-import { getElectronAsNodeBinaryPath } from '../lib/paths';
+import { getDesktopNodeRuntime } from '../lib/node-runtime';
 import {
   isModelBlockedByStoredPolicy,
   isOrgModelPolicyActiveForStoredAccount,
@@ -36,8 +40,8 @@ import { nativeMemorySettingsOverride } from '@canopy/execution-engine/node/lib/
 import { readLocalMemoryEnabledPreference } from '../lib/preferences-store';
 import {
   buildClaudeTerminalHookCallbackScript,
-  buildPosixElectronNodeStub,
-  buildWindowsElectronNodeStub,
+  buildPosixNodeStub,
+  buildWindowsNodeStub,
 } from './claude-terminal-hooks';
 import { buildRtkHookWrapperScript } from './rtk-hook-wrapper';
 import { resolveSessionWorkOwner } from '../agents/work-owner';
@@ -154,6 +158,7 @@ async function writeHookScriptPair(input: {
   runtimeDir: string;
   baseName: string;
   jsSource: string;
+  nodePath: string;
 }): Promise<string> {
   const names = stubNames(input.baseName);
   const jsPath = path.join(input.runtimeDir, names.js);
@@ -161,9 +166,9 @@ async function writeHookScriptPair(input: {
   await writeFile(jsPath, input.jsSource, 'utf8');
   await writeFile(
     stubPath,
-    process.platform === 'win32'
-      ? buildWindowsElectronNodeStub(names.js)
-      : buildPosixElectronNodeStub(names.js),
+    hostOperatingSystem() === 'win32'
+      ? buildWindowsNodeStub(names.js, input.nodePath)
+      : buildPosixNodeStub(names.js, input.nodePath),
     'utf8',
   );
   if (process.platform !== 'win32') {
@@ -440,13 +445,14 @@ export async function buildClaudeTerminalLaunchConfig(
 
   await mkdir(input.runtimeDir, { recursive: true, mode: RUNTIME_DIR_MODE });
   await chmodIfSupported(input.runtimeDir, RUNTIME_DIR_MODE);
-  const electronNodePath = getElectronAsNodeBinaryPath();
+  const nodePath = (await getDesktopNodeRuntime()).nodeProcess.command;
   const server = getDesktopIntegrationServer();
   const appMcpUrl = server.getCanopyWorktreeMcpUrl(input.sessionKey);
   const hookUrl = server.getClaudeTerminalHookUrl(input.sessionKey);
   const baseUrl = new URL(appMcpUrl).origin;
 
   const callbackStub = await writeHookScriptPair({
+    nodePath,
     runtimeDir: input.runtimeDir,
     baseName: DESKTOP_INTEGRATION_HOOK_SCRIPT_FILENAME.replace(/\.js$/, ''),
     jsSource: buildClaudeTerminalHookCallbackScript({
@@ -454,6 +460,7 @@ export async function buildClaudeTerminalLaunchConfig(
     }),
   });
   const rtkStub = await writeHookScriptPair({
+    nodePath,
     runtimeDir: input.runtimeDir,
     baseName: 'rtk-hook-wrapper',
     jsSource: buildRtkHookWrapperScript(),
@@ -673,6 +680,14 @@ export async function buildClaudeTerminalLaunchConfig(
     args.push('--', input.initialPrompt);
   }
 
+  const environmentOverride = { ...input.claudeEnvOverride };
+  const runtimeAliases = brandEnvCandidates('ELECTRON_NODE_PATH').map((name) =>
+    name.toUpperCase(),
+  );
+  for (const name of Object.keys(environmentOverride))
+    if (runtimeAliases.includes(name.toUpperCase()))
+      delete environmentOverride[name];
+
   return {
     executable: getBundledClaudeBinaryPath(),
     args,
@@ -694,12 +709,12 @@ export async function buildClaudeTerminalLaunchConfig(
       [brandEnvName('DESKTOP_INTEGRATION_BASE_URL')]: baseUrl,
       [brandEnvName('DESKTOP_INTEGRATION_SESSION_KEY')]: input.sessionKey,
       [DESKTOP_INTEGRATION_TOKEN_ENV_VAR]: input.authToken,
-      [brandEnvName('ELECTRON_NODE_PATH')]: electronNodePath,
       [brandEnvName('RTK_BINARY_PATH')]: getBundledRtkBinaryPath(),
       [brandEnvName('PREF_RTK_ENABLED')]:
         input.rtkEnabled === false ? 'false' : 'true',
       ...getRtkManagedEnv(),
-      ...(input.claudeEnvOverride ?? {}),
+      ...environmentOverride,
+      [brandEnvName('ELECTRON_NODE_PATH')]: nodePath,
     }),
   };
 }

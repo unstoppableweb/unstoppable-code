@@ -12,6 +12,7 @@ import {
   W5ProcessFileLockTimeoutError,
 } from '@canopy/core-runtime/node/w5/commit-log/errors';
 import { deferUntilW5ReadViewCloses } from './w5-read-view';
+import { equalW5Contents } from './w5-revision-diff';
 import { W5DaemonHandoffError } from './w5-handoff-store';
 import { afterW5Apply, afterW5Commit, onW5Abort } from './w5-commit-scope';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
@@ -20,6 +21,7 @@ import {
   type SidebarGroupRegistryReconciliation,
 } from './sidebar-item-groups';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { markForeignPipelineResultsSeen } from '../services/foreign-activity-sources';
 import {
@@ -71,14 +73,13 @@ import {
   type WorkspaceManifestKey,
   type WorkspaceManifestRepositoryKey,
 } from '@canopy/core-runtime/node/w5/workspace-metadata/manifest-keys';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import {
   w5RecordReadPaths,
   getWorkspacesRootDir,
   getWorktreeDiscoveryFilePath,
 } from './paths';
 import { normalizeLegacyScriptFields } from './script-config';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { publishWorktreeListWrite } from './worktree-lifecycle-signals';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
 import {
@@ -272,11 +273,28 @@ const worktreeListRepository = withWorktreeDiscovery(
   getWorktreeDiscoveryFilePath,
 );
 
-// Failed membership writes still invalidate the registry that already committed.
-// Drain after releasing its owner lock, before another queued mutation starts.
-const failedWorktreeWriteInvalidations = new Set<string>();
 const recentWorktreesSelfWrites = new Map<string, number>();
-const lastWorktreesSelfWriteContent = new Map<string, string>();
+/**
+ * Per watched workspace: the last worktrees.json content the renderer is
+ * known to hold (`null`: absent or unreadable). Until a baseline exists, that
+ * is the rows the projects load delivered when it started the watcher
+ * (`delivered`); a watcher started without them is
+ * unaccounted. `self` is a write of ours built on known content, so its echo
+ * carries nothing new; `absorbed` is a write of ours built on content the
+ * renderer never received (e.g. a CLI append folded into a poller persist), so
+ * its echo must still emit; `observed` is content the renderer received
+ * (delivered or announced), which never suppresses an event. `writesStarted`
+ * lets the watcher discard a read that overlapped one of our writes.
+ */
+interface WorktreesContentTracking {
+  baseline?: {
+    content: string | null;
+    source: 'self' | 'absorbed' | 'observed';
+  };
+  delivered?: WorktreeData[];
+  writesStarted: number;
+}
+const worktreesContentTracking = new Map<string, WorktreesContentTracking>();
 const WORKTREES_SELF_WRITE_WINDOW_MS = 2_000;
 // The commit-log worker installs the file before main learns it applied, so
 // the watcher sees the echo while the write is still in flight.
@@ -376,6 +394,8 @@ export function isWorkspaceWorktreeRecentlyRemoved(
 /** @internal - exposed for testing only */
 /** Marks a list write in flight; the returned release is idempotent. */
 function beginWorktreesSelfWrite(workspaceId: string): () => void {
+  const tracking = worktreesContentTracking.get(workspaceId);
+  if (tracking) tracking.writesStarted += 1;
   inFlightWorktreesSelfWrites.set(
     workspaceId,
     (inFlightWorktreesSelfWrites.get(workspaceId) ?? 0) + 1,
@@ -393,9 +413,11 @@ function beginWorktreesSelfWrite(workspaceId: string): () => void {
 export const workspacePersistenceTestExports: {
   markWorktreeRecentlyRemoved: typeof markWorktreeRecentlyRemoved;
   beginWorktreesSelfWrite: typeof beginWorktreesSelfWrite;
+  recordWorktreesSelfWrite: typeof recordWorktreesSelfWrite;
 } = {
   markWorktreeRecentlyRemoved,
   beginWorktreesSelfWrite,
+  recordWorktreesSelfWrite,
 };
 
 function markWorktreeRecentlyRemovedAt(
@@ -431,17 +453,7 @@ async function withWorktreeFileLock<T>(
   filePath: string,
   fn: () => Promise<T>,
 ): Promise<T> {
-  return withW5RepositoryLock(
-    { kind: 'list', path: filePath },
-    async (): Promise<T> => {
-      try {
-        return await fn();
-      } finally {
-        if (failedWorktreeWriteInvalidations.delete(filePath))
-          await afterW5Commit(notifyPortalStructureChanged);
-      }
-    },
-  );
+  return withW5RepositoryLock({ kind: 'list', path: filePath }, fn);
 }
 
 /** Removes only the two W5 records; directory cleanup belongs to the caller. */
@@ -479,7 +491,11 @@ export function removeWorkspaceRecords(
             }
             await afterW5Apply(() => {
               recentWorktreesSelfWrites.set(workspaceId, Date.now());
-              lastWorktreesSelfWriteContent.delete(workspaceId);
+              recordWorktreesSelfWrite(
+                workspaceId,
+                list.state === 'present' ? list.raw : null,
+                null,
+              );
               release();
               if (!options?.deferPluginDefaultsRefresh)
                 projectPluginDefaultsWritten({
@@ -487,9 +503,6 @@ export function removeWorkspaceRecords(
                   workspaceId,
                   layerChanged: manifest.state === 'present',
                 });
-              failedWorktreeWriteInvalidations.delete(
-                w5RecordReadPaths.worktrees(workspaceId),
-              );
             });
           }),
         ),
@@ -543,7 +556,6 @@ async function writeAdmittedWorktreesFile(
   /** The read this write is built from, made under the same lock. */
   previousRead?: WorktreeListRead,
 ): Promise<WorktreeData[]> {
-  const filePath = w5RecordReadPaths.worktrees(workspaceId);
   if (options?.sidebarItemGroupId && !worktreeRegistryReconciler)
     throw new Error('Sidebar item group service is not initialized');
   // Every write is built from a read of the list under this lock; rewriting
@@ -622,17 +634,19 @@ async function writeAdmittedWorktreesFile(
   // must finish before that lock is released to a concurrent group change.
   // The list is already applied: record it as ours even if reconciliation fails.
   const reconcileAfterWrite = reconciliation?.afterWrite;
+  const previousRaw = previous.authority === 'ok' ? previous.raw : null;
   await afterW5Apply(async (): Promise<void> => {
     options?.afterApply?.();
     recentWorktreesSelfWrites.set(workspaceId, Date.now());
-    lastWorktreesSelfWriteContent.set(workspaceId, serialized);
+    recordWorktreesSelfWrite(workspaceId, previousRaw, serialized);
     releaseSelfWrite();
     if (!reconcileAfterWrite) return;
     try {
       await reconcileAfterWrite();
     } catch (error) {
-      failedWorktreeWriteInvalidations.add(filePath);
-      schedulePortalStructuralSync();
+      scheduleDesktopStructureChanged(
+        'structural.workspace-persistence.worktrees',
+      );
       throw error;
     }
   });
@@ -643,11 +657,10 @@ async function writeAdmittedWorktreesFile(
     try {
       await options?.afterWrite?.();
       publishSidebarItemGroupsChanged(workspaceId);
-    } catch (error) {
-      failedWorktreeWriteInvalidations.add(filePath);
-      throw error;
     } finally {
-      schedulePortalStructuralSync();
+      scheduleDesktopStructureChanged(
+        'structural.workspace-persistence.worktrees',
+      );
       publishWorktreeListWrite(
         previous.authority === 'ok' ? previous.worktrees : [],
         worktrees,
@@ -679,33 +692,173 @@ export function wasRecentWorktreesSelfWrite(workspaceId: string): boolean {
   return false;
 }
 
+/** Byte or JSON equality; unparseable content never matches other bytes. */
+function sameWorktreesContent(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  try {
+    return equalW5Contents(a, b);
+  } catch {
+    return false;
+  }
+}
+
+/** Rows without the `discovery` overlay, which the list never stores. */
+function storedWorktreeRows(rows: readonly WorktreeData[]): WorktreeData[] {
+  return rows.map(({ discovery: _discovery, ...row }) => {
+    void _discovery;
+    return row;
+  });
+}
+
 /**
- * Whether `content` is byte-identical to the last worktrees.json payload this
- * process wrote for the workspace. When true, a file-watcher event carries no
- * new information for the renderer (main-initiated writes already notify it
- * through their own IPC responses/events), so the watcher can drop it instead
- * of triggering a redundant silent projects reload. An external write (the
- * CLI appending a worktree) produces different content and is never matched.
+ * Rows the renderer is shown: rows this process removed stay on disk
+ * mid-session but are never delivered, including ones removed after a
+ * delivery. The JSON form makes a key holding `undefined` match its absence.
+ */
+function comparableWorktreeRows(
+  workspaceId: string,
+  rows: WorktreeData[],
+): unknown {
+  const shown = storedWorktreeRows(
+    filterRecentlyRemovedWorktrees(workspaceId, rows),
+  );
+  const comparable: unknown = JSON.parse(JSON.stringify(shown));
+  return comparable;
+}
+
+/**
+ * Whether list content holds the delivered rows. Absent or unreadable content
+ * delivers no rows; a partial list delivers its readable rows.
+ */
+function holdsDeliveredWorktrees(
+  workspaceId: string,
+  content: string | null,
+  delivered: WorktreeData[],
+): boolean {
+  const expected = comparableWorktreeRows(workspaceId, delivered);
+  if (content === null) return isDeepStrictEqual(expected, []);
+  const read = parseWorktreeList(content, workspaceId);
+  return (
+    read.authority === 'ok' &&
+    isDeepStrictEqual(
+      comparableWorktreeRows(workspaceId, read.worktrees),
+      expected,
+    )
+  );
+}
+
+function setWorktreesBaseline(
+  tracking: WorktreesContentTracking,
+  baseline: NonNullable<WorktreesContentTracking['baseline']>,
+): void {
+  tracking.baseline = baseline;
+  tracking.delivered = undefined;
+}
+
+/**
+ * Records a list write of ours while a watcher tracks the workspace. It is
+ * `absorbed` unless the file it replaced was known to the renderer, including
+ * carrying an earlier `absorbed` write forward until the watcher announces it.
+ * JSON equality covers a write the repository skipped as unchanged, which
+ * leaves the replaced bytes on disk.
+ */
+function recordWorktreesSelfWrite(
+  workspaceId: string,
+  previousRaw: string | null,
+  written: string | null,
+): void {
+  const tracking = worktreesContentTracking.get(workspaceId);
+  if (!tracking) return;
+  const { baseline, delivered } = tracking;
+  const builtOnKnown =
+    baseline === undefined
+      ? delivered !== undefined &&
+        holdsDeliveredWorktrees(workspaceId, previousRaw, delivered)
+      : baseline.source !== 'absorbed' &&
+        sameWorktreesContent(baseline.content, previousRaw);
+  setWorktreesBaseline(tracking, {
+    content: written,
+    source: builtOnKnown ? 'self' : 'absorbed',
+  });
+}
+
+/**
+ * Whether `content` is byte-identical to a write of ours that absorbed no
+ * unannounced change. When true, a file-watcher event carries no new
+ * information for the renderer (main-initiated writes already notify it
+ * through their own IPC responses/events), so the watcher can drop it however
+ * late it arrives. An external write (the CLI appending a worktree) produces
+ * different content and is never matched.
  */
 export function isWorktreesSelfWriteContent(
   workspaceId: string,
   content: string,
 ): boolean {
-  return lastWorktreesSelfWriteContent.get(workspaceId) === content;
+  const baseline = worktreesContentTracking.get(workspaceId)?.baseline;
+  return baseline?.source === 'self' && baseline.content === content;
 }
 
 /**
- * Forget the self-write fingerprint for a workspace. The watcher calls this
- * as soon as it observes genuinely external content: from that point the
- * retained payload describes "the last thing the desktop ever wrote", not the
- * write an echo could belong to, so keeping it would misclassify a later
- * byte-exact external revert (desktop A → CLI B → CLI A) as a self-write
- * echo. Also used when a workspace's watcher is torn down, so neither map
- * retains entries for removed workspaces.
+ * Starts (or restarts) content tracking for a newly started watcher, from the
+ * rows the renderer received when the projects load started it. Without them
+ * the watcher stays unaccounted: its first write's echo reloads once.
+ * Untracked writes are not recorded. Accepted cost: a write of ours between
+ * the projects read and this call goes unrecorded, so the seed mismatches and
+ * one reload is announced.
  */
+export function startWorktreesContentTracking(
+  workspaceId: string,
+  deliveredWorktrees?: readonly WorktreeData[],
+): void {
+  worktreesContentTracking.set(workspaceId, {
+    writesStarted: 0,
+    // Deep copy: the caller keeps and may change the delivered rows.
+    ...(deliveredWorktrees
+      ? { delivered: structuredClone(storedWorktreeRows(deliveredWorktrees)) }
+      : {}),
+  });
+}
+
+/**
+ * Sets the watcher's starting content as the baseline when it holds the
+ * delivered rows. Returns false when it does not, so the watcher announces it.
+ * A write of ours recorded first already set the baseline; its echo decides.
+ */
+export function seedWorktreesContentBaseline(
+  workspaceId: string,
+  content: string | null,
+): boolean {
+  const tracking = worktreesContentTracking.get(workspaceId);
+  if (!tracking || tracking.baseline || tracking.delivered === undefined)
+    return true;
+  if (!holdsDeliveredWorktrees(workspaceId, content, tracking.delivered))
+    return false;
+  setWorktreesBaseline(tracking, { content, source: 'observed' });
+  return true;
+}
+
+/** Changes whenever a list write of ours starts, while tracked. */
+export function worktreesSelfWritesStarted(workspaceId: string): number {
+  return worktreesContentTracking.get(workspaceId)?.writesStarted ?? 0;
+}
+
+/**
+ * Records content the watcher announced. Replacing the self-write record means
+ * a byte-exact external revert (desktop A → CLI B → CLI A) is never an echo.
+ */
+export function recordObservedWorktreesContent(
+  workspaceId: string,
+  content: string | null,
+): void {
+  const tracking = worktreesContentTracking.get(workspaceId);
+  if (tracking) setWorktreesBaseline(tracking, { content, source: 'observed' });
+}
+
+/** Drops all tracking when a workspace's watcher is torn down. */
 export function clearWorktreesSelfWriteTracking(workspaceId: string): void {
   recentWorktreesSelfWrites.delete(workspaceId);
-  lastWorktreesSelfWriteContent.delete(workspaceId);
+  worktreesContentTracking.delete(workspaceId);
 }
 
 export async function readWorkspaceConfig(
@@ -1175,7 +1328,6 @@ export async function updateWorkspaceOwnership(
     );
     outcome.value = 'written';
   });
-  if (outcome.value === 'written') notifyPortalStructureChanged();
   return outcome.value;
 }
 
@@ -1772,7 +1924,6 @@ export async function writeWorkspaceWorktrees(
       }
     });
   });
-  await afterW5Commit(notifyPortalStructureChanged);
 }
 
 /**
@@ -1968,7 +2119,6 @@ export async function updateWorkspaceWorktrees(
   options?: WorktreeRegistryWriteOptions,
 ): Promise<WorktreeData[]> {
   const filePath = w5RecordReadPaths.worktrees(workspaceId);
-  let changed = false;
   const worktrees = await withWorktreeFileLock(filePath, async () => {
     const detailed = await readWorkspaceWorktreesFileDetailed(workspaceId);
     // A partial read leaves out rows, so it cannot prove what a caller that
@@ -2031,10 +2181,8 @@ export async function updateWorkspaceWorktrees(
           worktreeRemovalKey(workspaceId, row.id, row.createdAt),
         );
     }
-    changed = true;
     return persisted;
   });
-  if (changed) await afterW5Commit(notifyPortalStructureChanged);
   return worktrees;
 }
 

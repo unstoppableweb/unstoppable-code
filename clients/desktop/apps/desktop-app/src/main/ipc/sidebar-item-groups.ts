@@ -8,7 +8,6 @@ import { sidebarItemGroupsService } from '../services/sidebar-item-groups-servic
 import { onSidebarItemGroupsChanged } from '../lib/sidebar-item-groups';
 import { sendToAllWindows } from '../lib/window-send';
 import { scheduleDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 
 let stopProjection: (() => void) | undefined;
 
@@ -23,7 +22,6 @@ export function registerSidebarItemGroupHandlers(): void {
         : { workspaceLocalId: workspaceId };
     sendToAllWindows(IPC_CHANNELS.sidebarItemGroupsChanged, scope);
     scheduleDesktopSessionSnapshotInvalidation();
-    notifyPortalStructureChanged();
   });
   registerIpcHandler<[SidebarItemGroupScope], SidebarItemGroup[]>(
     IPC_CHANNELS.sidebarItemGroupsList,

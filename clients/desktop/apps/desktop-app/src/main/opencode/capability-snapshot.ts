@@ -1,18 +1,18 @@
-import { getOpenCodeMcpBaseEnv } from './mcp-servers';
+import { getOpenCodeMcpBaseEnv, type OpenCodeMcpLaunch } from './mcp-servers';
 import type { getCodexRuntimeService } from '../codex/runtime-service';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import type { McpServer } from '@agentclientprotocol/sdk';
 import { readOpenCodeMcpSnapshot } from '@canopy/desktop-shared/node/opencode/mcp-snapshot';
 import type { OpenCodeCapabilitySnapshot } from '@canopy/desktop-shared/node/opencode/capability-snapshot';
 
 /** Discovery uses the existing process broker so cancellation owns descendants too. */
 export async function snapshotOpenCodeMcpTools(
-  servers: readonly McpServer[],
+  servers: readonly OpenCodeMcpLaunch[],
   identities: Readonly<Record<string, unknown>>,
   cwd: string,
   signal: AbortSignal,
   alreadyBrokered = false,
+  baseEnv: NodeJS.ProcessEnv = getOpenCodeMcpBaseEnv(),
 ): Promise<OpenCodeCapabilitySnapshot['mcp']> {
   const ownerId = `opencode-snapshot:${randomUUID()}`;
   let broker: ReturnType<typeof getCodexRuntimeService> | undefined;
@@ -35,10 +35,16 @@ export async function snapshotOpenCodeMcpTools(
           {
             ownerId,
             routeKey: server.name,
-            cwd,
+            cwd:
+              servers.find((launch) => launch.name === server.name)?.cwd ?? cwd,
             command: server.command,
             args: server.args,
-            baseEnv: getOpenCodeMcpBaseEnv(),
+            baseEnv: Object.fromEntries(
+              Object.entries(baseEnv).filter(
+                (entry): entry is [string, string] =>
+                  typeof entry[1] === 'string',
+              ),
+            ),
             env: Object.fromEntries(
               server.env.map((entry) => [entry.name, entry.value]),
             ),

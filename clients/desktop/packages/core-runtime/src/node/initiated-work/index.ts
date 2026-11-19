@@ -12,6 +12,7 @@ export {
   type InitiatedWorkResumer,
   type InitiatedWorkResumption,
   type InitiatedWorkRunControl,
+  type InitiatedWorkSkipCode,
   type InitiatedWorkSubmission,
   type LiveInitiatedWorkRun,
 } from './engine';
@@ -26,6 +27,8 @@ export {
 } from './hook-invocation-store';
 export {
   HOOK_PAUSED_MESSAGE,
+  HOOK_PAUSE_UNKNOWN_CODE,
+  HOOK_PAUSE_UNKNOWN_MESSAGE,
   HookFiring,
   hookTargetKey,
   recordedHookPause,

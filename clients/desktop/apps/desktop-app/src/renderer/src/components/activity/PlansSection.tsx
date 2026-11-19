@@ -424,6 +424,7 @@ export function PlansSection(): JSX.Element {
             category: 'Chat',
             projectId: plan.projectId,
             worktreeId: plan.worktreeId,
+            caught: error,
           },
         );
       }

@@ -1,3 +1,4 @@
+import type { PlatformOperatingSystem } from '../../platform/platform-services';
 import { W5CommitLogHost } from './commit-log-host';
 import { W5_LAUNCH_HEAL_OPERATIONS } from './commit-log/apply-evidence';
 import { w5CommitLogLocation } from './commit-log/data-root';
@@ -9,6 +10,7 @@ import {
 /** Every worker start remains protected through durable service-history publication. */
 export function createW5DaemonCommitLogHost(options: {
   readonly canonicalDataRoot: string;
+  readonly os: PlatformOperatingSystem;
   readonly workerEntry: string;
   readonly confinementAddon?: string;
   readonly admission: () => Promise<void>;
@@ -17,6 +19,7 @@ export function createW5DaemonCommitLogHost(options: {
 }): W5CommitLogHost {
   const {
     canonicalDataRoot,
+    os,
     admission,
     syncDirectory,
     serviceHistoryRelocation,
@@ -36,6 +39,7 @@ export function createW5DaemonCommitLogHost(options: {
       await ensureW5ServiceHistory(
         canonicalDataRoot,
         syncDirectory,
+        os,
         serviceHistoryRelocation,
       );
       await admission();

@@ -294,7 +294,12 @@ export async function runCodexPipelinePromptWith(
           ports.legacyMcpCapabilityAuthorityIds(mcpServers),
       }),
     });
-    const mockOverride = resolveCodexMockAppServerOverride();
+    const mockOverride = resolveCodexMockAppServerOverride(
+      request.harnessInvocation?.source === 'codex-managed' &&
+        request.harnessInvocation.aiCreditsRouted !== true &&
+        request.harnessInvocation.modelGatewayRouted !== true,
+      request.environment,
+    );
     const aiCredits = request.harnessInvocation
       ? request.harnessInvocation.aiCreditsRouted
         ? {

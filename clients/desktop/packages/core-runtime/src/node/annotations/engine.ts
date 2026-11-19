@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { normalize } from 'node:path';
 import {
   ANNOTATION_DOCUMENT_RESOURCE,
@@ -11,6 +11,7 @@ import {
   emptyFileAnnotationDocument,
   normalizeFileAnnotationDocument,
   parseFileAnnotationsState,
+  readFileAnnotationsState,
   serializeFileAnnotationsState,
   validAnnotationCommentThreads,
   validFileAnnotations,
@@ -18,6 +19,8 @@ import {
   type StoredFileAnnotationDocument,
 } from './document';
 import {
+  keepDamagedAnnotationStateCopy,
+  readAnnotationStateBytes,
   readAnnotationStateText,
   withAnnotationStateLock,
   writeAnnotationStateText,
@@ -123,6 +126,20 @@ function revisionConflictError(currentRevision: number): CanopyOperationError {
   });
 }
 
+function damagedStateError(cause: unknown): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'failed_precondition',
+      code: ANNOTATION_ERROR_CODES.DAMAGED_STATE,
+      message:
+        "This worktree's file comments could not be read, so they were left unchanged.",
+      details: { reason: 'DAMAGED_STATE' },
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
 function assertExpectedRevision(
   stored: StoredFileAnnotationDocument | undefined,
   expectedRevision: number | undefined,
@@ -223,6 +240,61 @@ export function createFileAnnotationEngine(
       await readAnnotationStateText(options.statePath(scope)),
     );
 
+  /** The digest of the bytes last copied aside, per state file. */
+  const copiedBytes = new Map<string, string>();
+
+  /**
+   * Keeps one copy of bytes a write can't carry forward. A refused write
+   * repeats until the file is repaired; one copy of the same bytes is enough.
+   */
+  const keepCopyOnce = async (
+    statePath: string,
+    bytes: Uint8Array,
+  ): Promise<boolean> => {
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    if (copiedBytes.get(statePath) === digest) return true;
+    if (!(await keepDamagedAnnotationStateCopy(statePath, bytes))) return false;
+    copiedBytes.set(statePath, digest);
+    return true;
+  };
+
+  /**
+   * The state a write builds on. A state file that can't be read, isn't JSON
+   * or was written by a newer version refuses the write, so the write never
+   * replaces what it could not read; its bytes are kept in a copy once.
+   *
+   * A v1 file may still hold entries this version can't read. The write
+   * goes ahead without them, as it always has, but only once a copy of the
+   * file holds them.
+   */
+  const readForWrite = async (
+    statePath: string,
+  ): Promise<FileAnnotationsStateV1> => {
+    let bytes: Buffer | null;
+    try {
+      bytes = await readAnnotationStateBytes(statePath);
+    } catch (cause) {
+      throw damagedStateError(cause);
+    }
+    if (bytes === null) {
+      copiedBytes.delete(statePath);
+      return { version: 1, files: [] };
+    }
+    const read = readFileAnnotationsState(bytes.toString('utf8'));
+    if (read.kind === 'ok' && read.unreadableEntries === 0) {
+      copiedBytes.delete(statePath);
+      return read.state;
+    }
+    const copied = await keepCopyOnce(statePath, bytes);
+    if (read.kind === 'damaged')
+      throw damagedStateError(new Error('Unsupported file annotations state.'));
+    if (!copied)
+      throw damagedStateError(
+        new Error('Unreadable file annotation entries could not be copied.'),
+      );
+    return read.state;
+  };
+
   /** Runs one read-modify-write under the state file's lock. */
   const mutate = <Result>(
     scope: AnnotationScope,
@@ -233,9 +305,7 @@ export function createFileAnnotationEngine(
   ): Promise<Result> => {
     const statePath = options.statePath(scope);
     return withAnnotationStateLock(statePath, async () => {
-      const state = parseFileAnnotationsState(
-        await readAnnotationStateText(statePath),
-      );
+      const state = await readForWrite(statePath);
       const { document, result } = change(state);
       await writeAnnotationStateText(
         statePath,

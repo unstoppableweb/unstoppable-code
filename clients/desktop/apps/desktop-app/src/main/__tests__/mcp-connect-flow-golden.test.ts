@@ -9,7 +9,49 @@ import {
 } from '../lib/paths';
 import type { McpServerFile } from '@canopy/execution-engine/types/mcp-servers';
 import { MCP_SERVER_CHANNELS } from '@canopy/desktop-shared/constants/mcp-server-channels';
+import type * as McpRefRewriteOutcome from '../mcp/server-ref-rewrite-outcome';
 import type * as ToolDiscovery from '../mcp/tool-discovery';
+import {
+  forceMcpRemovalThroughCore,
+  inspectMcpRemovalThroughCore,
+} from '../canopy-runtime/mcp-removal-dispatch';
+import { clearMcpOAuthToken } from '../mcp/oauth-token-store';
+import { spawnMcpConnectionProbe } from '../mcp/connection-process';
+
+it('preserves spawn output pipes and exit completion through the connection host adapter', async () => {
+  const child = spawnMcpConnectionProbe(
+    process.execPath,
+    [
+      '-e',
+      'process.stdout.write("probe-out");process.stderr.write("probe-error")',
+    ],
+    { env: {} },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  expect(code).toBe(0);
+  expect(stdout).toBe('probe-out');
+  expect(stderr).toBe('probe-error');
+});
+
+jest.mock('../canopy-runtime/mcp-removal-dispatch', () => ({
+  inspectMcpRemovalThroughCore: jest.fn(() =>
+    Promise.resolve({ target: 'malformed' }),
+  ),
+  forceMcpRemovalThroughCore: jest.fn(() =>
+    Promise.resolve({ status: 'unresolved' }),
+  ),
+}));
 
 // Keep native presentation and unrelated runtime hosts outside this backend
 // flow. MCP repository reads, inventory, declaration parsing and HTTP discovery
@@ -77,7 +119,19 @@ jest.mock('../installed-items/installed-item-events', () => ({
 }));
 jest.mock('../mcp/curated-catalog', () => ({}));
 jest.mock('../mcp/curated-plugin-binding', () => ({}));
-jest.mock('../mcp/remote-image-cache', () => ({}));
+// Logo resolution is out of scope; registering the handlers configures its
+// disk cache.
+const resolveRemoteImageDataUrl = jest.fn<
+  Promise<string | null>,
+  [url: unknown, enhanced?: boolean]
+>(() => Promise.resolve(null));
+jest.mock('../mcp/remote-image-cache', () => ({
+  configureRemoteImageDiskCache: jest.fn(),
+  resolveRemoteImageDataUrl: (
+    url: unknown,
+    enhanced?: boolean,
+  ): Promise<string | null> => resolveRemoteImageDataUrl(url, enhanced),
+}));
 // A connection test's tools reach the Tools table through this cache.
 jest.mock('../mcp/tool-discovery', () => ({
   mergeConfigIntoDefinition: jest.requireActual<typeof ToolDiscovery>(
@@ -97,14 +151,14 @@ jest.mock('../agents/session-manager', () => ({
   },
 }));
 jest.mock('../mcp/server-ref-rewrite-outcome', () => ({
+  ...jest.requireActual<typeof McpRefRewriteOutcome>(
+    '../mcp/server-ref-rewrite-outcome',
+  ),
   // Removal runs its steps through this phase marker; pass them through.
   inMcpRefRewritePhase: <T>(
     _phase: string,
     run: () => Promise<T>,
   ): Promise<T> => run(),
-}));
-jest.mock('../portal/adapters/mcp-adapter', () => ({
-  refreshProjectedPortalMcpServers: jest.fn().mockResolvedValue(undefined),
 }));
 // One Add for every harness (CAN-6815) confirms set-up harnesses itself;
 // no harness runtime is installed here, so main confirms none of them.
@@ -464,6 +518,69 @@ test('one Add installs a saved MCP server for every set-up harness and retries o
   ).rejects.toThrow();
 });
 
+test('ordinary IPC deletion refuses a damaged index before credentials or unlink, without escalation', async () => {
+  const deleteServer = jest
+    .mocked(registerIpcHandler)
+    .mock.calls.find(
+      ([channel]) => channel === MCP_SERVER_CHANNELS.DELETE_SERVER,
+    )?.[1];
+  if (!deleteServer) throw new Error('Missing delete handler');
+  const source = await readFile(getMcpServerFilePath(serverId), 'utf8');
+  await writeFile(getMcpServersIndexFilePath(), '{');
+  jest.mocked(clearMcpOAuthToken).mockClear();
+  await expect(
+    Reflect.apply(deleteServer, undefined, [null, serverId]),
+  ).rejects.toMatchObject({ phase: 'preflight', effects: 'none' });
+  expect(clearMcpOAuthToken).not.toHaveBeenCalled();
+  expect(forceMcpRemovalThroughCore).not.toHaveBeenCalled();
+  expect(await readFile(getMcpServerFilePath(serverId), 'utf8')).toBe(source);
+  expect(await readFile(getMcpServersIndexFilePath(), 'utf8')).toBe('{');
+});
+
+test('dedicated repair IPC forwards exact options, independent of the damaged inventory, and rejects extras', async () => {
+  const inspect = jest
+    .mocked(registerIpcHandler)
+    .mock.calls.find(
+      ([channel]) => channel === MCP_SERVER_CHANNELS.INSPECT_REMOVAL,
+    )?.[1];
+  const force = jest
+    .mocked(registerIpcHandler)
+    .mock.calls.find(
+      ([channel]) => channel === MCP_SERVER_CHANNELS.FORCE_REMOVAL,
+    )?.[1];
+  if (!inspect || !force) throw new Error('Missing dedicated repair handlers');
+  await Reflect.apply(inspect, undefined, [null, { serverId }]);
+  expect(inspectMcpRemovalThroughCore).toHaveBeenLastCalledWith({ serverId });
+  const request = {
+    serverId,
+    mode: 'preserve-evidence',
+    recoveryId: '11111111-1111-4111-8111-111111111111',
+  };
+  await Reflect.apply(force, undefined, [null, request]);
+  expect(forceMcpRemovalThroughCore).toHaveBeenLastCalledWith(request);
+  const calls = jest.mocked(forceMcpRemovalThroughCore).mock.calls.length;
+  await expect(
+    Reflect.apply(force, undefined, [
+      null,
+      { ...request, path: '/caller/path' },
+    ]),
+  ).rejects.toBeDefined();
+  await expect(
+    Reflect.apply(force, undefined, [
+      null,
+      { ...request, inspectedState: request.recoveryId },
+    ]),
+  ).rejects.toBeDefined();
+  await expect(
+    Reflect.apply(force, undefined, [
+      null,
+      { ...request, serverId: 'account:a1' },
+    ]),
+  ).rejects.toBeDefined();
+  expect(forceMcpRemovalThroughCore).toHaveBeenCalledTimes(calls);
+  jest.mocked(forceMcpRemovalThroughCore).mockClear();
+});
+
 test('the index serves the record, and removing the server removes it from every harness (CAN-6815)', async () => {
   const registrations = jest.mocked(registerIpcHandler).mock.calls;
   const loadIndex = registrations.find(
@@ -507,4 +624,33 @@ test('the index serves the record, and removing the server removes it from every
   );
   expect(records).toEqual({ version: 1, servers: {} });
   await rm(getMcpServersIndexFilePath(), { force: true });
+});
+
+// A logo resolves in the caller's mode: the renderer marks requests made
+// while it shows New Customize, and anything else stays the plain path that
+// older callers and the flag-off app use.
+test("the logo channel forwards the caller's New Customize mode and defaults to the plain path", async () => {
+  const resolve = jest
+    .mocked(registerIpcHandler)
+    .mock.calls.find(
+      ([channel]) => channel === MCP_SERVER_CHANNELS.RESOLVE_REMOTE_IMAGE,
+    )?.[1];
+  if (!resolve) throw new Error('Missing logo handler');
+  resolveRemoteImageDataUrl.mockClear();
+  await Reflect.apply(resolve, undefined, [null, 'https://a.test/logo.png']);
+  await Reflect.apply(resolve, undefined, [
+    null,
+    'https://a.test/logo.png',
+    { enhanced: true },
+  ]);
+  await Reflect.apply(resolve, undefined, [
+    null,
+    'https://a.test/logo.png',
+    { enhanced: 'yes' },
+  ]);
+  expect(resolveRemoteImageDataUrl.mock.calls).toEqual([
+    ['https://a.test/logo.png', false],
+    ['https://a.test/logo.png', true],
+    ['https://a.test/logo.png', false],
+  ]);
 });

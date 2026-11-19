@@ -621,6 +621,20 @@ export interface ChatTabsSlice {
     target?: { projectId: string; worktreeId: string },
   ) => string | null;
   /**
+   * Point a file tab at the path its file was renamed or moved to, in place:
+   * no activation, and the view mode stays (CAN-6540). Live scopes only; the
+   * path lands with main's commit. Answers whether main accepted it.
+   */
+  retargetFileTab: (
+    tabId: string,
+    params: {
+      absolutePath: string;
+      filename: string;
+      fileDiffContext?: FileDiffContext;
+    },
+    target: { projectId: string; worktreeId: string },
+  ) => Promise<boolean>;
+  /**
    * Persist the raw/preview/table mode selected inside an open file tab so
    * switching away and back restores the same view. A successfully applied
    * non-diff mode is also remembered for the file for the rest of the

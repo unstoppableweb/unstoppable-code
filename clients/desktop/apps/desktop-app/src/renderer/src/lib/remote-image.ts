@@ -1,4 +1,7 @@
 import { useEffect, useState } from 'react';
+import { allowsRemoteImages } from '@canopy/app-core';
+import { useOptionalCanopyClient } from '@canopy/app-state';
+import { useCustomizeDiscoveryEnabled } from '@canopy/ui-app/customize-discovery';
 
 const resolvedImages = new Map<string, Promise<string | null>>();
 
@@ -24,22 +27,41 @@ export function safeRemoteImageUrl(value: string | undefined): string | null {
     : null;
 }
 
+/**
+ * Whether this host may load remote images (avatars, favicons, catalog
+ * artwork). Off in a local-only build through the `remoteImages` capability;
+ * callers then keep their initials or default-icon fallback. Absent a client
+ * provider the capability's default (allowed) applies.
+ */
+export function useRemoteImagesAllowed(): boolean {
+  const client = useOptionalCanopyClient();
+  return client === null || allowsRemoteImages(client.capabilities);
+}
+
 /** Resolve an untrusted image without allowing the renderer to request it. */
 export function useSafeRemoteImageUrl(
   value: string | undefined,
 ): string | null {
   const [safeUrl, setSafeUrl] = useState<string | null>(null);
+  const remoteImages = useRemoteImagesAllowed();
+  // Main resolves differently while New Customize is on (a disk cache and
+  // site icons), so each mode keeps its own entries here too: switching the
+  // Labs experiment asks main again instead of reusing the other mode's
+  // result.
+  const discoveryEnabled = useCustomizeDiscoveryEnabled();
   useEffect(() => {
     let cancelled = false;
     setSafeUrl(null);
-    if (!value || !window.mcpServers?.resolveRemoteImage) return;
-    let pending = resolvedImages.get(value);
+    if (!remoteImages || !value || !window.mcpServers?.resolveRemoteImage)
+      return;
+    const key = `${discoveryEnabled ? 'e' : 'p'}:${value}`;
+    let pending = resolvedImages.get(key);
     if (pending) {
       // Re-insert to mark this key most recently used; a Map iterates in
       // insertion order, so without this the eviction below is FIFO and drops
       // entries for being old rather than for being unused.
-      resolvedImages.delete(value);
-      resolvedImages.set(value, pending);
+      resolvedImages.delete(key);
+      resolvedImages.set(key, pending);
     } else {
       if (resolvedImages.size >= MAX_RESOLVED_IMAGES) {
         const leastRecentlyUsed = resolvedImages.keys().next().value;
@@ -52,10 +74,25 @@ export function useSafeRemoteImageUrl(
       // hands back anything else would otherwise throw inside this effect and
       // take the surrounding tree down, which is a steep price for a decorative
       // image. `Promise.resolve` passes a real promise through untouched.
-      pending = Promise.resolve(window.mcpServers.resolveRemoteImage(value))
+      // The mode travels with the request, so main computes the result for
+      // the mode it is cached under.
+      pending = Promise.resolve(
+        window.mcpServers.resolveRemoteImage(value, {
+          enhanced: discoveryEnabled,
+        }),
+      )
         .then((resolved) => resolved ?? null)
         .catch(() => null);
-      resolvedImages.set(value, pending);
+      resolvedImages.set(key, pending);
+      // New Customize keeps no miss either, so a retry deadline main honours
+      // is not hidden behind this cache.
+      if (discoveryEnabled) {
+        const cached = pending;
+        void cached.then((resolved) => {
+          if (resolved === null && resolvedImages.get(key) === cached)
+            resolvedImages.delete(key);
+        });
+      }
     }
     void pending.then((resolved) => {
       if (!cancelled) setSafeUrl(safeRemoteImageUrl(resolved ?? undefined));
@@ -63,6 +100,6 @@ export function useSafeRemoteImageUrl(
     return (): void => {
       cancelled = true;
     };
-  }, [value]);
+  }, [remoteImages, value, discoveryEnabled]);
   return safeUrl;
 }

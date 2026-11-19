@@ -41,7 +41,10 @@ import {
   RawGitTreeSymlinkUnsupportedError,
   warmCommitRangeDiffObjects,
 } from '../../lib/git';
-import { resolveGitHubTokenWithSource } from '../../lib/github-auth';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialLease,
+} from '../../lib/github-broker/credential-port';
 import { getGitHubClient } from '../../lib/github-client';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { sanitizeRemoteUrl } from '../../lib/plan-share-repos';
@@ -128,25 +131,26 @@ interface SharedContainerGitOperationOptions {
 }
 
 export interface MaterializeCodeDependencies {
-  resolveGitHubToken(): Promise<string>;
+  /** A lease on the resolved GitHub credential; null when there is none. */
+  resolveGitHubCredential(): Promise<GitHubBrokerCredentialLease | null>;
   probeRepository(
     owner: string,
     repository: string,
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     signal?: AbortSignal,
   ): Promise<void>;
   probeCommit(
     owner: string,
     repository: string,
     sha: string,
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     signal?: AbortSignal,
   ): Promise<string>;
   inspectRepositoryTree(
     owner: string,
     repository: string,
     treeSha: string,
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     signal?: AbortSignal,
   ): Promise<{
     fileCount: number;
@@ -212,8 +216,9 @@ export interface MaterializeCodeDependencies {
 }
 
 const defaultDependencies: MaterializeCodeDependencies = {
-  resolveGitHubToken: async () => (await resolveGitHubTokenWithSource()).token,
-  probeRepository: async (owner, repository, token, signal) => {
+  resolveGitHubCredential: async () =>
+    (await getGitHubBrokerCredentialPort().lease('resolved'))?.lease ?? null,
+  probeRepository: async (owner, repository, credential, signal) => {
     await getGitHubClient().enqueue(
       (octokit) =>
         octokit.request('GET /repos/{owner}/{repo}', {
@@ -221,10 +226,10 @@ const defaultDependencies: MaterializeCodeDependencies = {
           repo: repository,
         }),
       'high',
-      { authenticationToken: token, ...(signal ? { signal } : {}) },
+      { credential, ...(signal ? { signal } : {}) },
     );
   },
-  probeCommit: async (owner, repository, sha, token, signal) => {
+  probeCommit: async (owner, repository, sha, credential, signal) => {
     const response = await getGitHubClient().enqueue(
       (octokit) =>
         octokit.request('GET /repos/{owner}/{repo}/commits/{ref}', {
@@ -233,11 +238,17 @@ const defaultDependencies: MaterializeCodeDependencies = {
           ref: sha,
         }),
       'high',
-      { authenticationToken: token, ...(signal ? { signal } : {}) },
+      { credential, ...(signal ? { signal } : {}) },
     );
     return response.data.commit.tree.sha;
   },
-  inspectRepositoryTree: async (owner, repository, treeSha, token, signal) => {
+  inspectRepositoryTree: async (
+    owner,
+    repository,
+    treeSha,
+    credential,
+    signal,
+  ) => {
     const response = await getGitHubClient().enqueue(
       (octokit) =>
         octokit.request('GET /repos/{owner}/{repo}/git/trees/{tree_sha}', {
@@ -247,7 +258,7 @@ const defaultDependencies: MaterializeCodeDependencies = {
           recursive: '1',
         }),
       'high',
-      { authenticationToken: token, ...(signal ? { signal } : {}) },
+      { credential, ...(signal ? { signal } : {}) },
     );
     if (response.data.truncated) {
       throw new Error(
@@ -755,8 +766,8 @@ export async function materializeCodeRevision(
           'only GitHub remotes are supported',
         );
       }
-      const token = await dependencies.resolveGitHubToken();
-      if (!token) {
+      const credential = await dependencies.resolveGitHubCredential();
+      if (!credential) {
         return blocked(
           'github-not-connected',
           label,
@@ -767,7 +778,7 @@ export async function materializeCodeRevision(
         await dependencies.probeRepository(
           coordinates.owner,
           coordinates.repository,
-          token,
+          credential,
           options.signal,
         );
       } catch (error) {
@@ -786,7 +797,7 @@ export async function materializeCodeRevision(
           coordinates.owner,
           coordinates.repository,
           repository.baseCommitSha,
-          token,
+          credential,
           options.signal,
         );
       } catch (error) {
@@ -803,7 +814,7 @@ export async function materializeCodeRevision(
         coordinates.owner,
         coordinates.repository,
         treeSha,
-        token,
+        credential,
         options.signal,
       );
       if (process.platform === 'win32' && baseTree.containsSymlinks) {

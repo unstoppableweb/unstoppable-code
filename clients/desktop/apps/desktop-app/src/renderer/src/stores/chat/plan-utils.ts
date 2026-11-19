@@ -72,6 +72,7 @@ export function getPendingPlanExitSource(
   if (src === 'opencode') return 'opencode';
   if (src === 'cursor') return 'cursor';
   if (src === 'ollama') return 'ollama';
+  if (src === 'antigravity') return 'antigravity';
   return 'claude';
 }
 
@@ -148,7 +149,7 @@ export function applyPlanExitToTab(
 
 export function applyProposalTrackedPlanToTab(
   tab: ChatTab,
-  source: 'codex' | 'cursor',
+  source: 'codex' | 'cursor' | 'antigravity',
   trackedPlanId: string,
   latestRevisionNumber: number,
   pendingSystemInstructions?: ChatSendMessageRequest['pendingSystemInstructions'],

@@ -15,6 +15,7 @@ import {
   mcpServerRowSurface,
   pluginSelectionKey,
   skillSelectionKey,
+  toggledAccountSelection,
   UnavailableRemoveAction,
   withUnavailableRows,
 } from '@canopy/ui-app/capability';
@@ -38,6 +39,7 @@ import {
 } from './pluginSelectorScope';
 import type { ProviderSupportScope } from './ProviderSupportIcons';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import type { OrganizationLayerItem } from '@canopy/desktop-shared/lib/organization-capabilities';
 
 export type { PluginSelectorProviderScope };
 
@@ -66,6 +68,8 @@ function cursorPreviewDetails(
 export interface PluginSelectorInheritedDefaults {
   project?: ChatTabPluginSelections;
   global?: ChatTabPluginSelections;
+  /** The organization's shared set for the project (CAN-6237). */
+  organization?: ChatTabPluginSelections;
 }
 
 const PROVIDER_SCOPE_LABELS: Record<PluginSelectorProviderScope, string> = {
@@ -125,6 +129,11 @@ interface PluginSelectorProps {
    * for full-bleed dialogs; pass `false` when the host panel already pads.
    */
   inset?: boolean;
+  /**
+   * The organization's shared items for the chat's workspace (CAN-6237);
+   * its skills get rows, since the skill inventory does not list them.
+   */
+  organizationItems?: readonly OrganizationLayerItem[];
 }
 
 const NO_UNAVAILABLE: readonly CapabilityUnavailable[] = [];
@@ -238,6 +247,7 @@ export function PluginSelector({
   unavailable = NO_UNAVAILABLE,
   inset = true,
   selectionCopy,
+  organizationItems,
 }: PluginSelectorProps): JSX.Element {
   const effectiveScope: PluginSelectorProviderScope = providerScope ?? 'mixed';
   const inheritedLayerByKey = useMemo(
@@ -249,6 +259,12 @@ export function PluginSelector({
             'global',
           ],
         ),
+        ...selectionRowKeys(inheritedDefaults?.organization).map(
+          (key): [string, keyof PluginSelectorInheritedDefaults] => [
+            key,
+            'organization',
+          ],
+        ),
         ...selectionRowKeys(inheritedDefaults?.project).map(
           (key): [string, keyof PluginSelectorInheritedDefaults] => [
             key,
@@ -256,7 +272,11 @@ export function PluginSelector({
           ],
         ),
       ]),
-    [inheritedDefaults?.global, inheritedDefaults?.project],
+    [
+      inheritedDefaults?.global,
+      inheritedDefaults?.organization,
+      inheritedDefaults?.project,
+    ],
   );
   const normalizedLocked = useMemo(
     () =>
@@ -453,7 +473,36 @@ export function PluginSelector({
     // from `rows` and would make this circular.
     collapseDuplicates: true,
     selectedKeys: selectedPluginKeys,
+    ...(organizationItems ? { organizationItems } : {}),
   });
+  // Each account row's key, to every account row key of its connector, for a
+  // connector the person holds several accounts of (CAN-6229).
+  const accountSiblingKeys = useMemo(() => {
+    const byConnector = new Map<string, string[]>();
+    for (const row of rows) {
+      if (row.kind !== 'mcp' || row.rowOrigin !== 'catalog') continue;
+      const connection =
+        'accountConnection' in row.original
+          ? row.original.accountConnection
+          : undefined;
+      if (connection === undefined) continue;
+      byConnector.set(connection.serverKey, [
+        ...(byConnector.get(connection.serverKey) ?? []),
+        row.key,
+      ]);
+    }
+    const siblings = new Map<string, readonly string[]>();
+    for (const [serverKey, keys] of byConnector) {
+      if (keys.length < 2) continue;
+      // A saved `default` ref with no account under that config reaches the
+      // default account, so it is one of the connector's accounts too, as in
+      // `withMcpServerAccount`.
+      const alias = `${serverKey}/default`;
+      const group = keys.includes(alias) ? keys : [...keys, alias];
+      for (const key of keys) siblings.set(key, group);
+    }
+    return siblings;
+  }, [rows]);
 
   // Annotate plugin rows with unsupported toggle state when the picker's
   // provider scope cannot resolve them. Rows that were already selected stay
@@ -781,9 +830,13 @@ export function PluginSelector({
         ),
       );
     } else if (row.kind === 'mcp') {
-      const next = new Set(selectedMcpKeys);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      // Picking an account of a connector unchecks its other accounts, so
+      // the chat acts as the one picked (CAN-6229).
+      const next = toggledAccountSelection(
+        selectedMcpKeys,
+        key,
+        accountSiblingKeys.get(key),
+      );
       setSelectedMcpKeys(next);
       onChange(
         buildSelectionsWithLocks(

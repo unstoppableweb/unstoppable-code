@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AppErrorErrnoSchema } from '../../app-errors/primitives';
 import {
   ExecutionSecretBindingsSchema,
   WORKER_EXECUTION_SECRET_ERROR_CODES,
@@ -199,6 +200,14 @@ export const WorkerScriptExecuteResultSchema = z.strictObject({
   outputTruncated: z.boolean(),
   /** False when the run log could not be written; the run still ran. */
   recorded: z.boolean(),
+  /**
+   * Present when output lines could not be added to the run log, so the log
+   * is missing some (CAN-7116): `errno` is the first failed append's system
+   * code, never its message or path. `recorded` is then false.
+   */
+  logTruncated: z
+    .strictObject({ errno: AppErrorErrnoSchema.optional() })
+    .optional(),
 });
 export type WorkerScriptExecuteResult = z.output<
   typeof WorkerScriptExecuteResultSchema

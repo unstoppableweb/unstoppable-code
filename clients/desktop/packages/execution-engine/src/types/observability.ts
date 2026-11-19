@@ -21,9 +21,21 @@ import type {
 // (CAN-4136); this module keeps the preload API and instrumentation types.
 export * from '@canopy/protocol/observability';
 
+/** A closed set: an error message can quote paths or received values. */
+export const DESKTOP_INSTRUMENTATION_INIT_FAILURE_REASONS = [
+  'missing_project_key',
+  'shutdown',
+  'anonymous_id_unavailable',
+  'session_bridge_unavailable',
+  'sdk_init_failed',
+] as const;
+
+export type DesktopInstrumentationInitFailureReason =
+  (typeof DESKTOP_INSTRUMENTATION_INIT_FAILURE_REASONS)[number];
+
 export interface DesktopInstrumentationInitFailureDiagnosticRequest {
   surface: 'main' | 'app-advisor';
-  reason: string;
+  reason: `posthog: ${DesktopInstrumentationInitFailureReason}`;
 }
 
 export interface PostHogSessionState {
@@ -297,7 +309,8 @@ export interface ObservabilityApi {
   ): Promise<void>;
   /** One-way: record this renderer's diagnostic summary on this device. */
   recordRendererSummary(summary: RendererDiagnosticsSummary): void;
-  getPostHogAnonymousId(): Promise<string>;
+  /** Null in a local-only build, which has no PostHog identity. */
+  getPostHogAnonymousId(): Promise<string | null>;
   /** Normalized domain only; null for signed-out, guest, or unavailable accounts. */
   getPostHogEmailDomain(): Promise<string | null>;
   onPostHogEmailDomainUpdate(cb: (domain: string | null) => void): () => void;

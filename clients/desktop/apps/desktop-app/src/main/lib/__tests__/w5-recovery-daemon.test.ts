@@ -1,4 +1,5 @@
 import { createW5RecordAuthority } from '@canopy/core-runtime/node/w5/record-port/authority';
+import { lifecycleJournalSlotName } from '@canopy/core-runtime/node/w5/destructive-journal';
 import type {
   CanopyCallerDescriptor,
   CoreWorkspaceRecordsReceipt,
@@ -382,6 +383,7 @@ async function maintenance(
 }
 async function expectDaemonWriteResumes(): Promise<void> {
   const daemon = createDaemonW5Host({
+    os: hostPlatformOperatingSystem(),
     canonicalDataRoot: data,
     workerEntry,
     admission: () => Promise.resolve(),
@@ -412,6 +414,80 @@ async function expectDaemonWriteResumes(): Promise<void> {
     await daemon.stop();
   }
 }
+
+generalPosixMaintenance.each(['completed', 'recovery-required'] as const)(
+  'runRequestedW5Recovery cold daemon maintenance preserves %s archive history and only blocks unfinished journals',
+  async (state) => {
+    await expectDaemonWriteResumes();
+    const journals = join(data, 'w5/destructive-lifecycles');
+    mkdirSync(journals, { recursive: true });
+    const completed = new Map<string, string>();
+    for (let index = 0; index < 596; index += 1) {
+      const operationId = `12345678-1234-4123-8123-${index.toString(16).padStart(12, '0')}`;
+      const workspaceId = `project-${index}`;
+      const worktreeId = index % 2 === 0 ? `tree-${index}` : undefined;
+      const bytes = JSON.stringify({
+        version: 1,
+        operationId,
+        operation: worktreeId ? 'worktree-archive' : 'workspace-delete',
+        workspaceId,
+        worktreeId,
+        directoryIdentity: null,
+        state: index === 0 ? state : 'completed',
+        steps: [],
+      });
+      // Both retained operation history and the current slot are canonical.
+      const name =
+        index % 3 === 0
+          ? `${operationId}.json`
+          : lifecycleJournalSlotName(workspaceId, worktreeId);
+      completed.set(name, bytes);
+      writeFileSync(join(journals, name), bytes);
+    }
+    const recorded = jest.fn(() => Promise.resolve());
+    const choose = jest.fn((diagnosis: W5Diagnosis) =>
+      Promise.resolve(recoveryActions(diagnosis, false)),
+    );
+    const outcome = await runW5RecoveryLaunch({
+      waitForRelease: () => Promise.resolve(),
+      // Startup uses core's cold runner; Electron's runner is migration-only.
+      maintenance: (request) =>
+        coreMaintenance(
+          createW5RecoveryMaintenanceContext(data, { workerEntry }),
+          request,
+        ),
+      choose,
+      record: recorded,
+      allowReservationRelease: false,
+    });
+    expect(recorded).toHaveBeenCalledWith(outcome, expect.any(Object));
+    if (state === 'completed') {
+      expect(outcome).toEqual({
+        state: 'complete',
+        canRecover: false,
+        entries: [],
+      });
+    } else {
+      expect(outcome).toMatchObject({
+        state: 'blocked',
+        reason: 'operation-excluded',
+      });
+      expect(outcome.entries).toEqual([
+        expect.objectContaining({ id: 'journals' }),
+      ]);
+    }
+    expect(choose).toHaveBeenCalledTimes(1);
+    expect(choose).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destructiveJournalArtifactCount: state === 'completed' ? 0 : 1,
+      }),
+    );
+    expect(await choose.mock.results[0]?.value).toEqual([]);
+    expect(readdirSync(journals).sort()).toEqual([...completed.keys()].sort());
+    for (const [name, bytes] of completed)
+      expect(readFileSync(join(journals, name), 'utf8')).toBe(bytes);
+  },
+);
 
 generalPosixMaintenance.each([
   'desktop-host:new_single_repo',
@@ -456,6 +532,7 @@ generalPosixMaintenance.each([
     let history: W5ServiceHistory | undefined;
     for (const instance of ['first-daemon', 'restarted-daemon']) {
       const daemon = createDaemonW5Host({
+        os: hostPlatformOperatingSystem(),
         canonicalDataRoot: data,
         workerEntry,
         admission: async () => {},
@@ -463,7 +540,10 @@ generalPosixMaintenance.each([
       const harness = await startW5DaemonRecordHarness({ host: daemon.port });
       try {
         await daemon.open();
-        const currentHistory = await readW5ServiceHistory(data);
+        const currentHistory = await readW5ServiceHistory(
+          data,
+          hostPlatformOperatingSystem(),
+        );
         expect(currentHistory).toMatchObject({
           version: 1,
           priorHistory: 'unknown',
@@ -713,6 +793,7 @@ generalPosixMaintenance.each([
       fingerprint: 'saved-parameters',
     };
     const daemon = createDaemonW5Host({
+      os: hostPlatformOperatingSystem(),
       canonicalDataRoot: data,
       workerEntry,
       admission: () => Promise.resolve(),
@@ -806,6 +887,7 @@ generalPosixMaintenance.each([
     await expectDaemonWriteResumes();
     {
       const resumed = createDaemonW5Host({
+        os: hostPlatformOperatingSystem(),
         canonicalDataRoot: data,
         workerEntry,
         admission: () => Promise.resolve(),
@@ -981,6 +1063,7 @@ generalPosixMaintenance(
   'a stuck unkeyed index commit can be abandoned without overwriting foreign bytes, then daemon writes resume (POSIX general maintenance; disabled on Windows)',
   async () => {
     const daemon = createDaemonW5Host({
+      os: hostPlatformOperatingSystem(),
       canonicalDataRoot: data,
       workerEntry,
       admission: () => Promise.resolve(),
@@ -1371,6 +1454,7 @@ generalPosixMaintenance.each(families)(
     db.close();
     for (const instance of [1, 2]) {
       const daemon = createDaemonW5Host({
+        os: hostPlatformOperatingSystem(),
         canonicalDataRoot: data,
         workerEntry,
         admission: async () => {},

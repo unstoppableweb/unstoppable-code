@@ -13,6 +13,7 @@ import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsPrivacy } from '../host';
 import type {
+  GitHubCloudConnectIntent,
   GitHubCloudConnectionDto,
   GitHubCloudTargetDto,
   GitHubCloudTargetState,
@@ -42,7 +43,17 @@ export interface StatusLine {
   readonly detail?: string;
   /** Show the progress glyph: the status is a running process. */
   readonly progress?: boolean;
+  /** A good state (Linked): the title takes the positive ink. */
+  readonly positive?: boolean;
 }
+
+/**
+ * What a view describes (CAN-7162), a product context, never a host: the
+ * account card (`account`) is about the linked GitHub account, which review
+ * approvals need, with the App install as the cloud projects step; the cloud
+ * project Connect step (`cloud-project`) keeps its connect-and-install copy.
+ */
+export type GitHubCloudViewPurpose = 'account' | 'cloud-project';
 
 /**
  * Wraps a pressed action so a view can settle focus once it finishes. Every
@@ -139,6 +150,7 @@ function inFlightStatus(
 export function describeStatus(
   controller: GitHubCloudConnectionController,
   brandName: string,
+  purpose: GitHubCloudViewPurpose = 'cloud-project',
 ): StatusLine | null {
   const { connection } = controller;
   // The first read has no status line: `ConnectionLoadingView` holds the
@@ -146,24 +158,41 @@ export function describeStatus(
   if (connection === null) return null;
   const running = inFlightStatus(controller);
   if (running !== null) return running;
+  const account = purpose === 'account';
   switch (connection.state) {
     case 'DISCONNECTED':
-      return {
-        title: 'Not connected',
-        detail: `You'll sign in with GitHub, then choose where to install the ${brandName} GitHub app.`,
-      };
+      return account
+        ? {
+            title: 'Not linked',
+            detail: `Your local GitHub sign-in isn't shared with ${brandName}.`,
+          }
+        : {
+            title: 'Not connected',
+            detail: `You'll sign in with GitHub, then choose where to install the ${brandName} GitHub app.`,
+          };
     case 'NEEDS_REAUTH':
       return {
         title: 'Sign in again',
-        detail:
-          'GitHub needs you to sign in again before cloud projects can use your repositories.',
+        detail: account
+          ? 'GitHub needs you to sign in again before review approvals and cloud projects work.'
+          : 'GitHub needs you to sign in again before cloud projects can use your repositories.',
       };
     case 'NEEDS_INSTALL':
-      return isBlockedOnGitHub(connection)
+      if (isBlockedOnGitHub(connection)) {
+        // A real problem for both purposes: Check again leads.
+        return {
+          title: 'GitHub app needs attention',
+          detail:
+            "The app is installed but can't be used yet. Follow the steps under each account on GitHub, then check again.",
+        };
+      }
+      return account
         ? {
-            title: 'GitHub app needs attention',
-            detail:
-              "The app is installed but can't be used yet. Follow the steps under each account on GitHub, then check again.",
+            // Linked is enough for review approvals; the install is the
+            // cloud projects step.
+            title: 'Linked',
+            positive: true,
+            detail: `To use your repositories in cloud projects, install the ${brandName} GitHub app.`,
           }
         : {
             title: 'GitHub app needed',
@@ -173,11 +202,14 @@ export function describeStatus(
       // A ready connection needs no explanation: the subtitle already says
       // what it is for and the account rows below say where it applies.
       return connection.readyForProjects
-        ? { title: 'Connected' }
+        ? account
+          ? { title: 'Linked', positive: true }
+          : { title: 'Connected' }
         : {
             title: 'Finishing setup',
-            detail:
-              'GitHub is connected. Cloud projects can use these repositories once setup finishes. Check again in a moment.',
+            detail: account
+              ? 'GitHub is linked. Cloud projects can use these repositories once setup finishes. Check again in a moment.'
+              : 'GitHub is connected. Cloud projects can use these repositories once setup finishes. Check again in a moment.',
           };
   }
 }
@@ -238,18 +270,21 @@ interface ControllerActionProps {
 interface ConnectActionProps extends ControllerActionProps {
   readonly testId: string;
   readonly label: string;
-  /** Install intent (Install GitHub app, Add account) instead of Connect. */
-  readonly install: boolean;
+  /**
+   * `connect` (Connect, Reconnect), `install` (Install GitHub app, Add
+   * account) or `identity` (Link GitHub, Link again: no install step).
+   */
+  readonly intent: GitHubCloudConnectIntent;
 }
 
-/** Connect, Reconnect, Install GitHub app or Add account: opens GitHub. */
+/** Connect, Link, Install GitHub app or Add account: opens GitHub. */
 export function ConnectAction({
   controller,
   press,
   primary,
   testId,
   label,
-  install,
+  intent,
 }: ConnectActionProps): JSX.Element {
   const connecting =
     controller.busy === 'connect' || controller.busy === 'install';
@@ -262,12 +297,7 @@ export function ConnectAction({
       primary={primary}
       busy={connecting}
       blocked={blocked}
-      onPress={press(
-        () =>
-          void (install
-            ? controller.connect({ intent: 'install' })
-            : controller.connect()),
-      )}
+      onPress={press(() => void controller.connect({ intent }))}
     />
   );
 }
@@ -350,12 +380,22 @@ export function TargetList({
   );
 }
 
-/** The signed-in GitHub identity. A login is third-party text: one line. */
-export function Identity({ login }: { login: string }): JSX.Element {
+/**
+ * The signed-in GitHub identity. A login is third-party text: one line.
+ * `labelled: false` drops the "GitHub account" label where the card's own
+ * title already says it.
+ */
+export function Identity({
+  login,
+  labelled = true,
+}: {
+  login: string;
+  labelled?: boolean;
+}): JSX.Element {
   const { blockClassName } = useSettingsPrivacy();
   return (
     <div data-testid="github-cloud-identity" className="min-w-0">
-      <p className="text-s fg-tertiary">GitHub account</p>
+      {labelled ? <p className="text-s fg-tertiary">GitHub account</p> : null}
       <p className="flex min-w-0 items-center gap-2 text-s font-medium fg-primary">
         <GitHubIcon size={16} className="shrink-0" />
         <span
@@ -410,7 +450,9 @@ export function ConnectionLoadingView({
 function StatusText({ status }: { status: StatusLine }): JSX.Element {
   return (
     <>
-      <span className="font-medium fg-primary">
+      <span
+        className={`font-medium ${status.positive === true ? 'fg-success' : 'fg-primary'}`}
+      >
         {status.detail ? `${status.title}.` : status.title}
       </span>
       {status.detail ? (

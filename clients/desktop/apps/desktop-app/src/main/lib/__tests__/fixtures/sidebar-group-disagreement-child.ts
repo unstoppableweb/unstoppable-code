@@ -30,9 +30,7 @@ import { reconcileGitPendingWorktrees } from '../../worktree-boot-recovery';
 import { registerWorkspaceTypes } from '../../workspace-registry';
 import { W5RevisionConflictError } from '../../w5-commit-log-file-store';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
-import { schedulePortalStructuralSync } from '../../../portal/portal-structural-sync';
-import { notifyPortalStructureChanged } from '../../../portal/portal-event-bus';
-import type * as PortalEvents from '../../../portal/portal-event-bus';
+import { scheduleDesktopStructureChanged } from '../../../services/desktop-structure-signal';
 import * as AtomicFile from '../../atomic-file';
 import {
   disagreementModeSchema,
@@ -48,14 +46,8 @@ jest.mock('../../../observability', () => ({
     recordUsageMetricEvent: (): void => undefined,
   }),
 }));
-jest.mock('../../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../../../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
-  createPortalEvent: jest.requireActual<typeof PortalEvents>(
-    '../../../portal/portal-event-bus',
-  ).createPortalEvent,
+jest.mock('../../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 
 const ownedTest = process.env.CAN4477_CHILD ? test : test.skip;
@@ -100,8 +92,7 @@ ownedTest(
         signals: { ...signals },
         attempts: [...attempts],
         installed: [...installed],
-        portalSync: jest.mocked(schedulePortalStructuralSync).mock.calls.length,
-        portalStructure: jest.mocked(notifyPortalStructureChanged).mock.calls
+        portalSync: jest.mocked(scheduleDesktopStructureChanged).mock.calls
           .length,
         ...extra,
       });

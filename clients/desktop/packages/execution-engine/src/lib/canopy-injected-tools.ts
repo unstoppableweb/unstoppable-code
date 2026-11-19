@@ -32,8 +32,8 @@
  *   - DetectChangedSymbols
  *   - CompareChangeImpact
  *   - GetReviewContext
- *   - RequestSecrets, RunWithSecrets, WriteSecretsFile (registered only; no
- *     surface offers them yet)
+ *   - RequestSecrets, RunWithSecrets, WriteSecretsFile (offered only to
+ *     root local chats with `canopy-shared-agent-secret-requests` on)
  *
  * Provider-accurate raw names:
  *   - Claude (MCP): all tool names are derived from `BRAND.tools.namespace`.
@@ -117,9 +117,9 @@ export type CanopyInjectedToolKey =
 
 /**
  * The agent secret request tools (RequestSecrets, RunWithSecrets,
- * WriteSecretsFile). Registered so every host names and recognizes them
- * alike, but on no surface allowlist yet: hosts offer them only behind the
- * `canopy-shared-agent-secret-requests` flag once their executors exist.
+ * WriteSecretsFile). Every host names and recognizes them alike; the Claude
+ * native surfaces list them, and a route offers them only for a session
+ * started with `canopy-shared-agent-secret-requests` on (`secretRequests`).
  */
 export const AGENT_SECRET_INJECTED_TOOL_KEYS: readonly CanopyInjectedToolKey[] =
   ['request_secrets', 'run_with_secrets', 'write_secrets_file'];
@@ -1666,6 +1666,10 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'add_ledger_entry',
     'search_ledger_entries',
     'update_ledger_entry',
+    // A route lists these only when its session offers secret requests
+    // (`secretRequests`): root local Claude chats with the flag on.
+    'run_with_secrets',
+    'write_secrets_file',
   ],
   'native-sdk-standalone': [
     'get_script_output',
@@ -1698,6 +1702,10 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'add_ledger_entry',
     'search_ledger_entries',
     'update_ledger_entry',
+    // A route lists these only when its session offers secret requests
+    // (`secretRequests`): root local Claude chats with the flag on.
+    'run_with_secrets',
+    'write_secrets_file',
   ],
   // RequestSecrets waits on the person like AskUserQuestion. A route lists it
   // only when its session offers secret requests (`secretRequests`), so other
@@ -1753,7 +1761,12 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'search_ledger_entries',
     'update_ledger_entry',
   ],
-  'cursor-acp': ACP_WORKTREE_INJECTED_TOOL_KEYS,
+  'cursor-acp': [
+    ...ACP_WORKTREE_INJECTED_TOOL_KEYS,
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
+  ],
   // The session gates Feed, graph and deferred advertisement per route.
   'antigravity-acp': [
     ...ACP_WORKTREE_INJECTED_TOOL_KEYS,
@@ -1773,6 +1786,9 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'start_branched_agent',
     'search_deferred_tools',
     'load_deferred_tools',
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
   ],
   'copilot-sdk': [
     'start_forked_agent',
@@ -1812,19 +1828,33 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'detect_changed_symbols',
     'compare_change_impact',
     'get_review_context',
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
   ],
-  'cursor-acp-standalone': ACP_STANDALONE_INJECTED_TOOL_KEYS,
+  'cursor-acp-standalone': [
+    ...ACP_STANDALONE_INJECTED_TOOL_KEYS,
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
+  ],
   'opencode-acp-standalone': [
     ...ACP_STANDALONE_INJECTED_TOOL_KEYS,
     'start_forked_agent',
     'search_deferred_tools',
     'load_deferred_tools',
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
   ],
   'copilot-sdk-standalone': [
     'start_forked_agent',
     ...DIRECTORY_SCOPED_ACCOUNT_TOOLS,
     'search_deferred_tools',
     'load_deferred_tools',
+    // A route lists it only when its session offers secret requests
+    // (`secretRequests`): root local chats with the flag on.
+    'run_with_secrets',
   ],
   'managed-delegate': [
     'get_script_output',

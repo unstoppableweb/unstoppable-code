@@ -1,3 +1,5 @@
+import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createHash } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { lstat } from 'node:fs/promises';
@@ -514,7 +516,13 @@ async function finishTargets(
   ] as const) {
     if (!present) continue;
     // Verified against the journal above; re-checked by the finish step.
-    if (identityString(present) !== identity)
+    if (
+      !matchesRecordedDirectoryIdentity(
+        identity,
+        identityString(present),
+        hostOperatingSystem(),
+      )
+    )
       throw new RetainedRefusal('unverifiable-target');
     targets.push({ kind, path });
     described.push({

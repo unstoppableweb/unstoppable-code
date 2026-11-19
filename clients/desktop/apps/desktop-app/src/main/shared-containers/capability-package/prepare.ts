@@ -21,6 +21,7 @@ import { readChatTabsFileForIndex } from '../../lib/chat-tabs-reader';
 import { listTrackedFiles } from '../../lib/git';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { ShareStageError } from '../../sharing/share-operation-result';
+import { isSharedAutomationsWorkflowFormEnabled } from '../../automations/shared-workflow-form-flag';
 import type { CodePublishInventory } from '../publish/code-inventory';
 import type { CoworkPublishInventory } from '../publish/inventory';
 import type { SharedContainerSnapshotPathIndex } from '../publish/capability-usage';
@@ -63,7 +64,10 @@ export interface SharedContainerCapabilityPackagePreparationDependencies {
     worktreeId: string;
     containerType: SharedContainerCapabilityPackageContainerType;
     fileScope: SharedContainerFileScope;
+    workflowForm?: boolean;
   }) => Promise<string | undefined>;
+  /** The workflow-form flag (CAN-6455), read once per preparation. */
+  workflowForm: () => boolean;
   commitUpload: CommitCapabilityPackageUpload;
   isStale: (
     analysis: ReadySharedContainerCapabilityPackageAnalysis,
@@ -91,6 +95,7 @@ export async function readSharedContainerCapabilityPackageScopeKey(input: {
   worktreeId: string;
   containerType: SharedContainerCapabilityPackageContainerType;
   fileScope: SharedContainerFileScope;
+  workflowForm?: boolean;
 }): Promise<string | undefined> {
   try {
     return sharedContainerCapabilityPackageScopeKey({
@@ -100,6 +105,7 @@ export async function readSharedContainerCapabilityPackageScopeKey(input: {
         input.worktreeId,
       ),
       fileScope: input.fileScope,
+      ...(input.workflowForm === true ? { workflowForm: true } : {}),
     });
   } catch {
     // Without a scope key the analysis still serves publication; the preview
@@ -114,6 +120,7 @@ const DEFAULT_DEPENDENCIES: SharedContainerCapabilityPackagePreparationDependenc
       analyzeSharedContainerCapabilityPackage(input, undefined, options),
     cache: getSharedContainerCapabilityPackageAnalysisCache(),
     readScopeKey: readSharedContainerCapabilityPackageScopeKey,
+    workflowForm: isSharedAutomationsWorkflowFormEnabled,
     commitUpload: async (manifest, readBlob, getWindow, beforeCommit) => {
       const { commitCapabilityPackageUpload } =
         await import('../../pipelines/pipeline-package-service');
@@ -239,16 +246,20 @@ export async function prepareSharedContainerCapabilityPackage(
     worktreeId: input.worktreeId,
     containerType: input.containerType,
   };
+  // CAN-6455: one reading of the flag decides the keys and the analysis.
+  const workflowForm = deps.workflowForm() ? { workflowForm: true } : {};
   // Read before analysis so the key can only be older than what is analyzed.
   const scopeKey = await deps.readScopeKey({
     ...target,
     fileScope: input.fileScope,
+    ...workflowForm,
   });
   const analysisInput = {
     ...target,
     includedChatIds: input.includedChatIds,
     ...(input.snapshotPaths ? { snapshotPaths: input.snapshotPaths } : {}),
     ...(input.repositories ? { repositories: input.repositories } : {}),
+    ...workflowForm,
   };
   const result = await deps.cache.analyzeShared({
     target,

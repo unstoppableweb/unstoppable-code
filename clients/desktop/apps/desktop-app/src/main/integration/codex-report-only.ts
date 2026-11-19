@@ -33,6 +33,11 @@ function codexReportOnlyPermissionConfig(
         network: { enabled: false },
       },
     },
+    // Native ChatGPT workspace routing rebuilds the configuration without
+    // the typed `permissions` selection. A config that defines a profile but
+    // names no default fails that rebuild on every request (Codex 0.169,
+    // CAN-7253); this keeps the rebuild on the report-only profile.
+    default_permissions: CODEX_REPORT_ONLY_PERMISSION_PROFILE,
     // Empty MCP replacement tables do not suppress named servers inherited
     // from canonical Codex config, so explicitly disable every effective
     // ambient server discovered through config/read.

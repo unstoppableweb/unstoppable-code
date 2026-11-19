@@ -65,6 +65,11 @@ import { canonicalFileContent } from '@canopy/desktop-shared/file-content-projec
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import {
+  secretSafeView,
+  secretViewFileHoldsSecrets,
+  SecretViewUnavailableError,
+} from '../agent-secrets/view-redaction';
+import {
   readSharedContainerViewerFile,
   resolveSharedContainerViewerFileForRead,
 } from '../shared-containers/read/viewer-root';
@@ -735,6 +740,75 @@ export async function readLocalFileContent(
   );
 }
 
+/**
+ * A file read for a Canopy view, with every recorded agent secret value
+ * redacted, whichever file holds it (agent secret requests). A cut preview
+ * is redacted from the whole file, then cut. An image or binary view holding
+ * a value can't be redacted, so it is refused, and a secrets file whose
+ * values were lost is withheld.
+ */
+/**
+ * The file a view read: `request.file` (a root and a path inside it) when a
+ * scoped read names one, since the dispatcher reads that and not
+ * `absolutePath`. Throws {@link SecretViewUnavailableError} when its root
+ * isn't one of the worktree's.
+ */
+async function viewedFilePath(request: {
+  absolutePath: string;
+  workspaceTarget?: { projectId: string; worktreeId: string };
+  file?: { fileRootId: string; relativePath: string };
+}): Promise<string> {
+  const target = request.workspaceTarget;
+  if (!request.file || !target) return request.absolutePath;
+  const { roots } = await getFileBrowserRoots(
+    target.projectId,
+    target.worktreeId,
+  );
+  const fileRoot = roots.find(
+    (root) => root.repoId === request.file?.fileRootId,
+  );
+  if (!fileRoot) throw new SecretViewUnavailableError();
+  return join(fileRoot.absolutePath, ...request.file.relativePath.split('/'));
+}
+
+function withSecretSafeView<
+  Request extends {
+    absolutePath: string;
+    workspaceTarget?: { projectId: string; worktreeId: string };
+    file?: { fileRootId: string; relativePath: string };
+  },
+  Response extends { kind: string; content: string; truncated?: boolean },
+>(
+  handler: (event: IpcMainInvokeEvent, request: Request) => Promise<Response>,
+): (event: IpcMainInvokeEvent, request: Request) => Promise<Response> {
+  return async (event, request) => {
+    const response = await handler(event, request);
+    if (!response.content) return response;
+    const viewed = await viewedFilePath(request);
+    const paths =
+      viewed === request.absolutePath
+        ? [viewed]
+        : [viewed, request.absolutePath];
+    if (
+      response.kind !== 'text' &&
+      response.kind !== 'markdown' &&
+      response.kind !== 'html'
+    ) {
+      await secretSafeView({ kind: 'bytes', bytes: response.content, paths });
+      return response;
+    }
+    const { text } = await secretSafeView({
+      kind: 'text',
+      text: response.content,
+      cut: response.truncated === true,
+      paths,
+    });
+    return text === response.content
+      ? response
+      : { ...response, content: text };
+  };
+}
+
 export function registerFilePreviewHandlers(
   dispatcher: FilePreviewDispatcher,
   resolveCaller: DesktopIpcCallerResolver,
@@ -772,60 +846,62 @@ export function registerFilePreviewHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.fileReadPreview,
-    async (
-      _event,
-      request: FilePreviewRequest,
-    ): Promise<FilePreviewResponse> => {
-      if (
-        !request ||
-        typeof request.absolutePath !== 'string' ||
-        !isAbsolute(request.absolutePath)
-      )
-        throw classifyError(
-          new Error('Invalid absolutePath: must be an absolute path'),
-          'input.not_accepted',
+    withSecretSafeView(
+      async (
+        _event,
+        request: FilePreviewRequest,
+      ): Promise<FilePreviewResponse> => {
+        if (
+          !request ||
+          typeof request.absolutePath !== 'string' ||
+          !isAbsolute(request.absolutePath)
+        )
+          throw classifyError(
+            new Error('Invalid absolutePath: must be an absolute path'),
+            'input.not_accepted',
+          );
+        const fileStat = await stat(request.absolutePath).catch(
+          classifyPreviewReadFailure,
         );
-      const fileStat = await stat(request.absolutePath).catch(
-        classifyPreviewReadFailure,
-      );
-      const sizeBytes = fileStat.size;
-      const modifiedAtMs = fileStat.mtimeMs;
-      const filename = basename(request.absolutePath);
-      if (
-        request.videoFrame === true &&
-        VIDEO_EXTENSIONS.has(extname(request.absolutePath).toLowerCase())
-      ) {
-        return readVideoFrame(
+        const sizeBytes = fileStat.size;
+        const modifiedAtMs = fileStat.mtimeMs;
+        const filename = basename(request.absolutePath);
+        if (
+          request.videoFrame === true &&
+          VIDEO_EXTENSIONS.has(extname(request.absolutePath).toLowerCase())
+        ) {
+          return readVideoFrame(
+            request.absolutePath,
+            filename,
+            sizeBytes,
+            modifiedAtMs,
+          );
+        }
+        const kind = classifyExtension(request.absolutePath);
+
+        if (kind === 'unsupported') {
+          return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
+        }
+
+        if (kind === 'image') {
+          return readImageContent(
+            request.absolutePath,
+            filename,
+            sizeBytes,
+            modifiedAtMs,
+          ).catch(classifyPreviewReadFailure);
+        }
+
+        return readTextContent(
           request.absolutePath,
           filename,
           sizeBytes,
           modifiedAtMs,
-        );
-      }
-      const kind = classifyExtension(request.absolutePath);
-
-      if (kind === 'unsupported') {
-        return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
-      }
-
-      if (kind === 'image') {
-        return readImageContent(
-          request.absolutePath,
-          filename,
-          sizeBytes,
-          modifiedAtMs,
+          kind,
+          MAX_PREVIEW_TEXT_BYTES,
         ).catch(classifyPreviewReadFailure);
-      }
-
-      return readTextContent(
-        request.absolutePath,
-        filename,
-        sizeBytes,
-        modifiedAtMs,
-        kind,
-        MAX_PREVIEW_TEXT_BYTES,
-      ).catch(classifyPreviewReadFailure);
-    },
+      },
+    ),
   );
 
   registerIpcHandler(
@@ -851,6 +927,13 @@ export function registerFilePreviewHandlers(
               sizeBytes: opened.sizeBytes,
             };
           }
+          // A shared folder's document holding an agent secret value is
+          // refused like a local one.
+          await secretSafeView({
+            kind: 'bytes',
+            bytes: opened.bytes,
+            paths: [request.absolutePath],
+          });
           return {
             status: 'ready',
             bytes: Uint8Array.from(opened.bytes),
@@ -912,6 +995,9 @@ export function registerFilePreviewHandlers(
           bytes.set(chunk, offset);
           offset += chunk.byteLength;
         }
+        // A document view holding an agent secret value can't be redacted,
+        // so it is refused.
+        await secretSafeView({ kind: 'bytes', bytes, paths: [absolutePath] });
         return {
           status: 'ready',
           bytes,
@@ -930,93 +1016,95 @@ export function registerFilePreviewHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.fileReadContent,
-    async (
-      event,
-      request: FileContentRequest,
-    ): Promise<FileContentResponse> => {
-      validateAbsolutePath(request.absolutePath, 'absolutePath');
-      if (
-        request.workspaceTarget?.projectId ===
-        SHARED_CONTAINER_VIEWER_PROJECT_ID
-      ) {
+    withSecretSafeView(
+      async (
+        event,
+        request: FileContentRequest,
+      ): Promise<FileContentResponse> => {
+        validateAbsolutePath(request.absolutePath, 'absolutePath');
+        if (
+          request.workspaceTarget?.projectId ===
+          SHARED_CONTAINER_VIEWER_PROJECT_ID
+        ) {
+          try {
+            return await readViewerFileContent(request);
+          } catch (error) {
+            if (getErrorCode(error) === 'ENOENT') {
+              return buildMissingResponse(basename(request.absolutePath));
+            }
+            throw error;
+          }
+        }
+        if (
+          request.allowedRoot !== 'codex-generated-images' &&
+          request.workspaceTarget
+        ) {
+          return readScopedFileContent(
+            dispatcher,
+            resolveCaller,
+            event,
+            request,
+            request.workspaceTarget,
+          );
+        }
+        let absolutePath = request.absolutePath;
+        let fileHandle: FileHandle | undefined;
+        let fileStat: Stats;
         try {
-          return await readViewerFileContent(request);
+          if (request.allowedRoot === 'codex-generated-images') {
+            const opened = await openCodexGeneratedImage(request.absolutePath);
+            absolutePath = opened.absolutePath;
+            fileHandle = opened.fileHandle;
+            fileStat = opened.fileStat;
+          } else {
+            fileStat = await stat(absolutePath);
+          }
         } catch (error) {
           if (getErrorCode(error) === 'ENOENT') {
-            return buildMissingResponse(basename(request.absolutePath));
+            return buildMissingResponse(basename(absolutePath));
           }
           throw error;
         }
-      }
-      if (
-        request.allowedRoot !== 'codex-generated-images' &&
-        request.workspaceTarget
-      ) {
-        return readScopedFileContent(
-          dispatcher,
-          resolveCaller,
-          event,
-          request,
-          request.workspaceTarget,
-        );
-      }
-      let absolutePath = request.absolutePath;
-      let fileHandle: FileHandle | undefined;
-      let fileStat: Stats;
-      try {
-        if (request.allowedRoot === 'codex-generated-images') {
-          const opened = await openCodexGeneratedImage(request.absolutePath);
-          absolutePath = opened.absolutePath;
-          fileHandle = opened.fileHandle;
-          fileStat = opened.fileStat;
-        } else {
-          fileStat = await stat(absolutePath);
-        }
-      } catch (error) {
-        if (getErrorCode(error) === 'ENOENT') {
-          return buildMissingResponse(basename(absolutePath));
-        }
-        throw error;
-      }
 
-      try {
-        const filename = basename(absolutePath);
-        const sizeBytes = fileStat.size;
-        const modifiedAtMs = fileStat.mtimeMs;
-        const kind = classifyExtension(absolutePath);
+        try {
+          const filename = basename(absolutePath);
+          const sizeBytes = fileStat.size;
+          const modifiedAtMs = fileStat.mtimeMs;
+          const kind = classifyExtension(absolutePath);
 
-        if (kind === 'unsupported') {
-          return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
-        }
+          if (kind === 'unsupported') {
+            return buildUnsupportedResponse(filename, sizeBytes, modifiedAtMs);
+          }
 
-        if (kind === 'image') {
-          return await readImageContent(
+          if (kind === 'image') {
+            return await readImageContent(
+              absolutePath,
+              filename,
+              sizeBytes,
+              modifiedAtMs,
+              fileHandle,
+            );
+          }
+
+          return await readTextContent(
             absolutePath,
             filename,
             sizeBytes,
             modifiedAtMs,
+            kind,
+            MAX_FULL_TEXT_BYTES,
             fileHandle,
           );
+        } catch (error) {
+          if (getErrorCode(error) === 'ENOENT') {
+            return buildMissingResponse(basename(absolutePath));
+          }
+          throw error;
+        } finally {
+          await fileHandle?.close();
         }
-
-        return await readTextContent(
-          absolutePath,
-          filename,
-          sizeBytes,
-          modifiedAtMs,
-          kind,
-          MAX_FULL_TEXT_BYTES,
-          fileHandle,
-        );
-      } catch (error) {
-        if (getErrorCode(error) === 'ENOENT') {
-          return buildMissingResponse(basename(absolutePath));
-        }
-        throw error;
-      } finally {
-        await fileHandle?.close();
-      }
-    },
+      },
+    ),
   );
 
   registerIpcHandler(
@@ -1086,6 +1174,22 @@ export function registerFilePreviewHandlers(
           );
 
           const currentStat = await stat(resolvedSavePath);
+          // A file holding an agent secret value is shown redacted, so
+          // saving that view would write placeholders over the values; so
+          // would saving a view redacted by values since removed, whose
+          // markers the file doesn't hold. Only checked once the caller and
+          // path are allowed.
+          if (
+            currentStat.isFile() &&
+            (await secretViewFileHoldsSecrets(
+              resolvedSavePath,
+              request.content,
+            ))
+          ) {
+            throw new Error(
+              'This file holds secrets an agent was given, so it can only be edited outside the app.',
+            );
+          }
           // `NaN` (a preview without `modifiedAt`) saves unconditionally.
           if (
             typeof request.expectedModifiedAtMs === 'number' &&

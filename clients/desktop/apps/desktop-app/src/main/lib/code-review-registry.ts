@@ -2,6 +2,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { parseCodeReviewScopeKey } from '@canopy/desktop-shared/types';
 import { getCodeReviewRegistryFilePath } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
 import { writeFileAtomically } from './atomic-file';
@@ -11,13 +12,11 @@ import {
 } from './code-review-storage-admission';
 
 /**
- * The real project/worktree a code-review chat scope runs against. The
- * code-review sentinel scope uses `projectId = CODE_REVIEW_CHAT_PROJECT_ID` and
- * `worktreeId = <scopeKey>` (the `projectId--worktreeId` composite, because
- * worktree ids are only unique within a workspace). This ref maps that
- * composite scope key back to the REAL `(projectId, worktreeId)` whose checkout
- * the code-review session runs in. The registry maps `scopeKey -> ref`; the ref
- * stores both real ids so no callsite ever has to parse the composite.
+ * The real project/worktree (logical target) a code-review chat scope runs
+ * against. The sentinel scope uses `projectId = CODE_REVIEW_CHAT_PROJECT_ID`
+ * and `worktreeId = <scopeKey>`, the chat-storage identity. The registry maps
+ * `scopeKey -> ref`, so lookups never parse the key and accept every key
+ * version (see `buildCodeReviewScopeKey`).
  */
 export interface CodeReviewTargetRef {
   projectId: string;
@@ -27,6 +26,12 @@ export interface CodeReviewTargetRef {
 export interface CodeReviewTargetEntry extends CodeReviewTargetRef {
   incarnation?: string;
   state?: 'active' | 'retiring';
+  /**
+   * Leaked, unattributable chats whose recorded owner was deleted (see
+   * `detachCodeReviewTarget`). Never resolves, retires or re-attaches.
+   * Builds before CAN-6848 PR 4 ignore it.
+   */
+  detached?: true;
 }
 
 export class CodeReviewTargetOwnershipError extends Error {
@@ -51,7 +56,8 @@ function isCodeReviewTargetRef(value: unknown): value is CodeReviewTargetRef {
         value.incarnation.length > 0)) &&
     (value.state === undefined ||
       value.state === 'active' ||
-      value.state === 'retiring')
+      value.state === 'retiring') &&
+    (value.detached === undefined || value.detached === true)
   );
 }
 
@@ -150,6 +156,21 @@ function mutateRegistry(
   return operation;
 }
 
+/**
+ * Holds registry mutations while namespace qualification captures and
+ * republishes the registry. `operation` must not mutate the registry itself.
+ */
+export function withCodeReviewRegistryMutationsHeld<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const held = mutationQueue.then(operation);
+  mutationQueue = held.then(
+    () => undefined,
+    () => undefined,
+  );
+  return held;
+}
+
 export async function registerCodeReviewTarget(
   scopeKey: string,
   ref: CodeReviewTargetRef,
@@ -157,8 +178,14 @@ export async function registerCodeReviewTarget(
   const filePath = getCodeReviewRegistryFilePath();
   // Copy before waiting: callers cannot change ownership behind the lease.
   const owner = { projectId: ref.projectId, worktreeId: ref.worktreeId };
+  const identity = parseCodeReviewScopeKey(scopeKey);
+  if (identity.version === 2 && !sameOwner(identity.target, owner))
+    throw new CodeReviewTargetOwnershipError('owner_changed');
   return withCodeReviewTargetLifecycle(filePath, scopeKey, async (waited) => {
-    const existing = ownTarget(await readRegistry(filePath), scopeKey);
+    // Bounded lifecycle admission can precede reconciliation's row publication.
+    const existing = await withCodeReviewRegistryMutationsHeld(async () =>
+      ownTarget(await readRegistry(filePath), scopeKey),
+    );
     if (existing && !sameOwner(existing, owner))
       throw new CodeReviewTargetOwnershipError('owner_changed');
     if (existing?.state === 'retiring') {
@@ -175,7 +202,8 @@ export async function registerCodeReviewTarget(
         if (target.state === 'retiring')
           throw new CodeReviewTargetOwnershipError('retiring');
         // Presence can follow an outcome-unknown flush. Reconfirm durability
-        // without changing the incarnation, extensions or original bytes.
+        // without changing the incarnation, extensions or original bytes. A
+        // detached row stays detached: this caller cannot attribute it either.
         return raw;
       }
       // Define an own key even when downlevel compilation would invoke __proto__.
@@ -192,6 +220,24 @@ export async function registerCodeReviewTarget(
 
 function sameOwner(a: CodeReviewTargetRef, b: CodeReviewTargetRef): boolean {
   return a.projectId === b.projectId && a.worktreeId === b.worktreeId;
+}
+
+/**
+ * A version 1 key that another target also builds. Registration replaced
+ * these rows before CAN-6848, so the recorded owner alone does not attribute
+ * the key's chats. A row whose owner is not one of the key's targets was not
+ * written by the version 1 builder, so that collision does not apply to it.
+ */
+export function isAmbiguousHistoricalCodeReviewKey(
+  scopeKey: string,
+  owner: CodeReviewTargetRef,
+): boolean {
+  const identity = parseCodeReviewScopeKey(scopeKey);
+  return (
+    identity.version === 1 &&
+    identity.candidates.length > 1 &&
+    identity.candidates.some((candidate) => sameOwner(candidate, owner))
+  );
 }
 
 function sameEntry(
@@ -222,6 +268,27 @@ export function markCodeReviewTargetRetiring(
   });
 }
 
+/**
+ * Keeps an ambiguous historical row and its chats when its recorded owner is
+ * deleted, without letting it resolve: worktree ids are reused, so a later
+ * worktree with the same ids would otherwise inherit them. Base removed the
+ * row here, so lookups already found nothing.
+ */
+export function detachCodeReviewTarget(
+  filePath: string,
+  scopeKey: string,
+  expected: CodeReviewTargetEntry,
+): Promise<void> {
+  return mutateRegistry(filePath, (current) => {
+    const target = ownTarget(current, scopeKey);
+    if (!target || !sameEntry(target, expected) || target.state === 'retiring')
+      throw new CodeReviewTargetOwnershipError('owner_changed');
+    // Rewritten on every retry to reconfirm an outcome-unknown flush.
+    target.detached = true;
+    return current;
+  });
+}
+
 function ownTarget(
   file: CodeReviewRegistryFile,
   scopeKey: string,
@@ -236,7 +303,7 @@ function activeTarget(
   scopeKey: string,
 ): CodeReviewTargetRef | null {
   const target = ownTarget(file, scopeKey);
-  return target && target.state !== 'retiring'
+  return target && target.state !== 'retiring' && target.detached !== true
     ? { projectId: target.projectId, worktreeId: target.worktreeId }
     : null;
 }

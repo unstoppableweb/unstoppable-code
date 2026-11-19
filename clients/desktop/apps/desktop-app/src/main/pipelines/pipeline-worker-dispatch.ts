@@ -6,16 +6,29 @@ import {
 } from './daemon-pipeline-execution';
 import { claimDaemonPipelineRoute } from './daemon-pipeline-route-context';
 import { randomUUID } from 'node:crypto';
-import type { PipelineControlRequest } from '@canopy/core-runtime/node/pipeline';
+import type { PipelineRecoveryFailure } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import {
+  CORE_PIPELINE_CONTROL_KIND,
+  type PipelineControlRequest,
+} from '@canopy/core-runtime/node/pipeline';
+import {
+  CORE_INITIATED_WORK_RUN_KIND,
+  INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE,
+  InitiatedWorkPipelineTransientRetryOriginContextSchema,
+  OPERATION_GRANTS,
+  type CanopyCallerDescriptor,
+  type OperationRecord,
   WORKER_PIPELINE_INITIATION_SOURCES,
   WORKER_PIPELINE_SWEEP_MAX,
   type ExecutionSecretBinding,
   type OperationOrigin,
-  type OperationOwner,
   type WorkerPipelineExecutionStartParams,
 } from '@canopy/protocol/canopy-core';
-import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import {
+  LOCAL_PIPELINE_PRINCIPAL,
+  pipelineExecutionOwnerOf,
+} from './pipeline-operation-owner';
 import type {
   ExecutionHandle,
   ExecutionOptions,
@@ -49,7 +62,7 @@ import {
  * state and the executor's own error come back from the in-process host.
  */
 
-const LOCAL_PRINCIPAL = 'local-desktop-user';
+const LOCAL_PRINCIPAL = LOCAL_PIPELINE_PRINCIPAL;
 function initiationSourceOf(
   options: ExecutionOptions,
 ): WorkerPipelineExecutionStartParams['initiationSource'] {
@@ -67,11 +80,75 @@ function originOf(options: ExecutionOptions): OperationOrigin {
     : { kind: 'client', sourceId: LOCAL_PRINCIPAL };
 }
 
-function ownerOf(owner: string | undefined): OperationOwner {
-  const context = owner === undefined ? null : parseWorkspaceContext(owner);
-  return context?.kind === 'organization'
-    ? { kind: 'organization', id: context.organizationId }
-    : { kind: 'principal', id: LOCAL_PRINCIPAL };
+const RETRY_RUN_READER = {
+  principalId: 'desktop-pipeline-transient-retry',
+  clientInstanceId: 'desktop-main',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: [OPERATION_GRANTS.read],
+} as const satisfies CanopyCallerDescriptor;
+
+/**
+ * An execution's initiated-work runs, newest first, read through
+ * `core.operation.list`: the transient-retry re-arm continues the attempt
+ * count its latest retry recorded (CAN-4175).
+ */
+export async function listPipelineExecutionInitiatedRuns(
+  executionId: string,
+): Promise<OperationRecord[]> {
+  const page = await getDesktopCanopyRuntime().query(
+    'core.operation.list',
+    {
+      scope: { executionId },
+      kinds: [CORE_INITIATED_WORK_RUN_KIND],
+      pageSize: 50,
+    },
+    { caller: RETRY_RUN_READER },
+  );
+  return page.items;
+}
+
+/**
+ * An execution's resume and recovery controls, read through
+ * `core.operation.list`: the transient-retry re-arm checks whether an
+ * interrupted retry's resume began (CAN-4175).
+ */
+export async function listPipelineExecutionControls(
+  executionId: string,
+): Promise<OperationRecord[]> {
+  const page = await getDesktopCanopyRuntime().query(
+    'core.operation.list',
+    {
+      scope: { executionId },
+      kinds: [CORE_PIPELINE_CONTROL_KIND],
+      pageSize: 50,
+    },
+    { caller: RETRY_RUN_READER },
+  );
+  return page.items;
+}
+
+/**
+ * The origin a recovery control had before transient retries carried their
+ * own (CAN-4175): a retry resumed as `{ kind: 'automation', sourceId:
+ * <executionId> }`. Readers that filter resumes on that shape read it through
+ * here; every other origin is returned unchanged.
+ */
+export function legacyPipelineResumeOrigin(
+  origin: OperationOrigin,
+): OperationOrigin {
+  if (
+    origin.kind !== 'system' ||
+    origin.sourceId !== INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE
+  )
+    return origin;
+  const context =
+    InitiatedWorkPipelineTransientRetryOriginContextSchema.safeParse(
+      origin.context,
+    );
+  return context.success
+    ? { kind: 'automation', sourceId: context.data.executionId }
+    : origin;
 }
 
 /**
@@ -137,7 +214,7 @@ export async function startPipelineThroughLocalWorker(
         initiationSource: initiationSourceOf(options),
       },
       origin: originOf(options),
-      owner: ownerOf(executionContext),
+      owner: pipelineExecutionOwnerOf(executionContext),
     });
   } finally {
     capture = staged.take();
@@ -224,7 +301,7 @@ export async function drainPipelineThroughLocalWorker(
 export async function controlPipelineThroughLocalWorker(
   control: PipelineControlRequest,
   launch: PipelineControlLaunch,
-  origin: 'client' | 'automation',
+  origin: 'client' | 'automation' | OperationOrigin,
   secretBindings: readonly ExecutionSecretBinding[],
 ): Promise<PipelineControlSettlement> {
   // A run the daemon executes takes no recovery control until it settles (D10).
@@ -271,10 +348,12 @@ export async function controlPipelineThroughLocalWorker(
     result = await getDesktopCanopyRuntime().pipelineRuns.control({
       control,
       origin:
-        origin === 'automation'
-          ? { kind: 'automation', sourceId: executionId }
-          : { kind: 'client', sourceId: LOCAL_PRINCIPAL },
-      owner: ownerOf(stored?.execution_context),
+        typeof origin === 'object'
+          ? origin
+          : origin === 'automation'
+            ? { kind: 'automation', sourceId: executionId }
+            : { kind: 'client', sourceId: LOCAL_PRINCIPAL },
+      owner: pipelineExecutionOwnerOf(stored?.execution_context),
     });
   } finally {
     capture = staged.take();
@@ -300,13 +379,13 @@ export async function controlPipelineThroughLocalWorker(
  * The startup orphan sweep through core and the local worker (CAN-4141):
  * pause the executions among `executionIds` that a process left running when
  * it exited, in batches the worker accepts. Resolves with the sweep's
- * messages for executions it could not recover, which a later startup
- * retries.
+ * failures (codes and names) for executions it could not recover, which a
+ * later startup retries.
  */
 export async function sweepOrphanedPipelinesThroughLocalWorker(
   executionIds: readonly string[],
-): Promise<string[]> {
-  const errors: string[] = [];
+): Promise<PipelineRecoveryFailure[]> {
+  const errors: PipelineRecoveryFailure[] = [];
   for (
     let start = 0;
     start < executionIds.length;
@@ -320,7 +399,9 @@ export async function sweepOrphanedPipelinesThroughLocalWorker(
   return errors;
 }
 
-async function sweepBatch(executionIds: readonly string[]): Promise<string[]> {
+async function sweepBatch(
+  executionIds: readonly string[],
+): Promise<PipelineRecoveryFailure[]> {
   const requestId = randomUUID();
   let result: Awaited<
     ReturnType<

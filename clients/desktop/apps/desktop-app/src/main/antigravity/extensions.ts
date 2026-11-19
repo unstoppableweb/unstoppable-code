@@ -300,6 +300,9 @@ export async function openAntigravityExtensions(input: {
               sessionId: ownerId,
               preferences: context.preferences,
               packageOverlay: options.packageOverlay,
+              ...(options.accountResolution
+                ? { accountResolution: options.accountResolution }
+                : {}),
               mcpHttpProxyService: {
                 ensureStarted: (port) => proxy.ensureStarted(port),
                 registerRoute: async (route) => {

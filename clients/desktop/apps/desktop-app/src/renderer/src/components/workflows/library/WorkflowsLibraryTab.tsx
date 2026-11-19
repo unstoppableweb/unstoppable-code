@@ -117,6 +117,7 @@ function raiseActionFailure(
       undefined,
       {
         title,
+        caught: error,
         action: {
           label: TRY_AGAIN_LABEL,
           busyLabel: TRYING_AGAIN_LABEL,

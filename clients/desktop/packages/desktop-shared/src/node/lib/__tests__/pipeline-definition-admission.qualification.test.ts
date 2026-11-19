@@ -43,13 +43,28 @@ it('classifies only the exact pipeline definition directory and file shapes', ()
     'pipelines/index.json',
     'pipelines/index.json.damaged-1793700000000',
     'pipelines/abc-123.yaml',
-    'pipelines/.project-share-links.json',
   ]) {
     const file = join(root, suffix);
     expect(admittedStorageRowForPath(file, root)).toBe('pipeline_definitions');
     expect(admittedStorageRowForPath(file, null)).toBe('pipeline_definitions');
     expect(isAdmittedStorageCandidate(file)).toBe(true);
   }
+  // The project share-link catalog sits in the folder but is its own row
+  // (CAN-7058).
+  const shareLinks = join(root, 'pipelines', '.project-share-links.json');
+  expect(admittedStorageRowForPath(shareLinks, root)).toBe(
+    'pipeline_project_share_links',
+  );
+  expect(admittedStorageRowForPath(shareLinks, null)).toBe(
+    'pipeline_project_share_links',
+  );
+  expect(isAdmittedStorageCandidate(shareLinks)).toBe(true);
+  expect(
+    admittedStorageRowForPath(
+      join(root, 'other', '.project-share-links.json'),
+      root,
+    ),
+  ).toBeUndefined();
   for (const suffix of [
     'pipelines/nested/x.yaml',
     'other/index.json',

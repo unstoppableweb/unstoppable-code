@@ -3,11 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import type { PipelineOwnerSettlement } from '@canopy/core-runtime/node/pipeline';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   WorkerPipelineOwnerResultSchema,
   canopyJsonValueSchemaWithin,
   isWorkerPipelineOwnerAction,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
+  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
+  LedgerErrorDetailsSchema,
   type CanopyJsonValue,
   type WorkerPipelineHostRequest,
   type WorkerPipelineHostResult,
@@ -52,6 +55,7 @@ import { daemonPipelineOwnerGeneration } from './daemon-pipeline-owner';
 import {
   createDesktopPipelineLedgerPort,
   openPipelineLedgerCodexTools,
+  operatePipelineLedgerAttempt,
   type PipelineLedgerCodexTools,
 } from './pipeline-ledger';
 import {
@@ -109,6 +113,9 @@ const toolJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
 const toolSpecJson = canopyJsonValueSchemaWithin(65_536);
+const ledgerJson = canopyJsonValueSchemaWithin(
+  WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
+);
 
 /** One module-level port, so Codex tool lookups find its attempts. */
 const desktopLedgerPort = createDesktopPipelineLedgerPort();
@@ -547,6 +554,43 @@ export class PipelineOwnerRunContext {
           open.attempt.close(action.outcome);
         }
         return settled({ kind: 'ledger.close' });
+      }
+      case 'owner.ledger.operation': {
+        if (!this.attempts.has(action.attemptKey))
+          return failed('This Ledger attempt is not open.');
+        if (
+          action.cwd === undefined ||
+          !(await insideRunFolder(action.cwd, state))
+        )
+          return failed('This step folder is outside the workflow run.');
+        try {
+          const result = ledgerJson.safeParse(
+            await operatePipelineLedgerAttempt(
+              action.attemptKey,
+              action.cwd,
+              action.operation,
+              action.params,
+              signal,
+            ),
+          ).data;
+          if (result === undefined) return failed(UNANSWERED);
+          return settled({
+            kind: 'ledger.operation',
+            outcome: { kind: 'result', result },
+          });
+        } catch (error) {
+          const details =
+            error instanceof CanopyOperationError
+              ? LedgerErrorDetailsSchema.safeParse(error.payload.details).data
+              : undefined;
+          return settled({
+            kind: 'ledger.operation',
+            outcome: {
+              kind: 'refused',
+              error: details ?? { reason: 'WRITER_UNAVAILABLE' },
+            },
+          });
+        }
       }
       case 'owner.ledger.codexTools': {
         if (!this.attempts.has(action.attemptKey))

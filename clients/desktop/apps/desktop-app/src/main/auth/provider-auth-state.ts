@@ -1,3 +1,8 @@
+import {
+  allowlistedErrorCode,
+  allowlistedErrorName,
+  type ProviderAuthFailureKind,
+} from '../observability/telemetry-error-details';
 import { getAntigravityModelEntries } from '@canopy/execution-engine/model-catalog';
 import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
 import { resolveClaudePlanType } from '@canopy/desktop-shared/lib/account-proxy-claude-plan';
@@ -66,6 +71,64 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const invalidOutputErrors = new WeakSet<Error>();
+
+function invalidOutputError(message: string): Error {
+  const error = new Error(message);
+  invalidOutputErrors.add(error);
+  return error;
+}
+
+function providerAuthFailureMetadata(error: unknown): {
+  errorName: string;
+  errorCode?: string;
+  failureKind: ProviderAuthFailureKind;
+  exitCode?: number;
+} {
+  try {
+    const object =
+      (typeof error === 'object' && error !== null) ||
+      typeof error === 'function'
+        ? error
+        : undefined;
+    const name: unknown = object ? Reflect.get(object, 'name') : undefined;
+    const code: unknown = object ? Reflect.get(object, 'code') : undefined;
+    const killed: unknown = object ? Reflect.get(object, 'killed') : undefined;
+    const signal: unknown = object ? Reflect.get(object, 'signal') : undefined;
+    const errorName = allowlistedErrorName(name);
+    const exitCode =
+      typeof code === 'number' &&
+      Number.isFinite(code) &&
+      Number.isInteger(code)
+        ? code
+        : undefined;
+    const failureKind: ProviderAuthFailureKind =
+      code === 'ENOENT'
+        ? 'missing_cli'
+        : code === 'ETIMEDOUT' ||
+            errorName === 'TimeoutError' ||
+            (killed === true &&
+              typeof signal === 'string' &&
+              signal.length > 0 &&
+              code == null)
+          ? 'timeout'
+          : exitCode !== undefined && exitCode !== 0
+            ? 'exit_nonzero'
+            : error instanceof SyntaxError ||
+                (error instanceof Error && invalidOutputErrors.has(error))
+              ? 'invalid_output'
+              : 'other';
+    return {
+      errorName,
+      errorCode: allowlistedErrorCode(code),
+      failureKind,
+      exitCode,
+    };
+  } catch {
+    return { errorName: 'Error', failureKind: 'other' };
+  }
+}
+
 /**
  * Emit a diagnostic + structured warn when an auth probe fails. Fire-and-forget:
  * never throws into the auth path. A failed probe is money-adjacent (it must not
@@ -76,7 +139,13 @@ function recordProviderAuthProbeFailure(
   error: unknown,
   retainedConfirmed: boolean,
 ): void {
-  const message = error instanceof Error ? error.message : String(error);
+  const metadata = providerAuthFailureMetadata(error);
+  let message = 'Provider auth probe failed.';
+  try {
+    message = error instanceof Error ? error.message : String(error);
+  } catch {
+    // Local message inspection must not suppress safe structured reporting.
+  }
   const reason = `${provider} auth probe failed (retainedConfirmed=${retainedConfirmed})`;
   try {
     logMainProcessWarn(`provider-auth: ${reason}`, message);
@@ -88,6 +157,7 @@ function recordProviderAuthProbeFailure(
       version: 1,
       timestamp: new Date().toISOString(),
       kind: 'provider_auth_probe_failed',
+      ...metadata,
       reason,
       error: message,
     });
@@ -764,7 +834,7 @@ export async function checkClaudeAuthStatus(): Promise<AgentProviderAuthStatus> 
 
   const payload: unknown = JSON.parse(stdout);
   if (!isRecord(payload)) {
-    throw new Error('Invalid Claude auth status response.');
+    throw invalidOutputError('Invalid Claude auth status response.');
   }
 
   return enrichClaudePlanTypeWithTier(
@@ -918,9 +988,10 @@ function codexAccountToAuthStatus(
 
   // No account. Only `requiresOpenaiAuth` distinguishes a CONFIRMED logout from
   // an INDETERMINATE state, and conflating the two is a money bug (ECW-9091):
-  // since a confirmed `authenticated: false` now force-routes onto the user's
-  // AI Credits in every mode, an indeterminate state read as "signed out"
-  // silently bills a user who has their own working provider. The canonical
+  // a confirmed `authenticated: false` routes onto the user's AI Credits in any
+  // mode except `off`, and refuses the turn in `off` mode (CAN-7062), so an
+  // indeterminate state read as "signed out" would silently bill, or block, a
+  // user who has their own working provider. The canonical
   // example is a custom `model_provider` with `requires_openai_auth = false`
   // (Azure / self-hosted / proxy): `account/read` returns
   // `{ account: null, requiresOpenaiAuth: false }`, which
@@ -973,7 +1044,9 @@ async function readCodexAccountAuthStatus(): Promise<AgentProviderAuthStatus> {
     );
     const parsed = parseGetAccountResponsePayload(payload);
     if (!parsed) {
-      throw new Error('Codex auth mock returned an invalid account payload');
+      throw invalidOutputError(
+        'Codex auth mock returned an invalid account payload',
+      );
     }
     return codexAccountToAuthStatus(parsed);
   }
@@ -983,7 +1056,9 @@ async function readCodexAccountAuthStatus(): Promise<AgentProviderAuthStatus> {
     .request('account/read', { refreshToken: false });
   const parsed = parseGetAccountResponsePayload(response);
   if (!parsed) {
-    throw new Error('Codex app-server returned an invalid account payload');
+    throw invalidOutputError(
+      'Codex app-server returned an invalid account payload',
+    );
   }
   return codexAccountToAuthStatus(parsed);
 }
@@ -1430,8 +1505,9 @@ export function warmProviderAccountIdentity(
 
 /**
  * Fire-and-forget warm of the native-auth cache at app startup (ECW-9091).
- * Since a missing native login now force-routes through AI Credits, every
- * Claude/Codex spawn awaits an auth probe; a cold probe costs up to
+ * Since a missing native login decides between AI Credits routing and a
+ * `no_billing_source` refusal (CAN-7062), every Claude/Codex spawn awaits an
+ * auth probe; a cold probe costs up to
  * `AUTH_PROBE_TIMEOUT_MS` plus backoff and one retry. Prewarming moves that cost
  * off the first message. Never throws and never blocks the caller.
  *

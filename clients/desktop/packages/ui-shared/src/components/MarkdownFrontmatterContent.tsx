@@ -17,6 +17,8 @@ export interface MarkdownFrontmatterContentProps {
   readonly loading: boolean;
   /** Error message string ('' = no error). */
   readonly error: string;
+  /** The raw failure text behind `error`, offered through `Copy details`. */
+  readonly errorDetails?: string;
   /** Loaded content. `null` while loading or after an error. */
   readonly content: {
     readonly frontmatter: Record<string, FrontmatterValue>;
@@ -36,6 +38,7 @@ export function MarkdownFrontmatterContent({
   markdownOptions,
   loading,
   error,
+  errorDetails,
   content,
   emptyText,
 }: MarkdownFrontmatterContentProps): JSX.Element {
@@ -50,7 +53,11 @@ export function MarkdownFrontmatterContent({
           <CenteredLoadingSpinner spacing="section" />
         </DelayedLoadingPlaceholder>
       )}
-      <ErrorBanner errorSource="markdown-frontmatter" error={error} />
+      <ErrorBanner
+        errorSource="markdown-frontmatter"
+        error={error}
+        {...(errorDetails ? { details: errorDetails } : {})}
+      />
       {content && !loading && (
         <div className="flex flex-col gap-4">
           {frontmatterEntries.length > 0 && (

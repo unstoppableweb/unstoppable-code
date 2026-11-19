@@ -11,7 +11,9 @@ import {
   type CopilotRecipientCommand,
   type CopilotRecipientOutcome,
   type CopilotRecipientPurpose,
+  type CopilotRecipientRefusal,
   type CopilotRecipientResult,
+  type CopilotSdkErrorType,
 } from '@canopy/protocol/copilot-recipient';
 import type { CopilotProcessOwner } from '@canopy/copilot-recipient/runtime';
 import type { CopilotTurnRequest } from '@canopy/copilot-recipient/turn-driver';
@@ -47,15 +49,23 @@ export interface CopilotConsumerPort {
     signal?: AbortSignal,
   ): Promise<CopilotConsumerChannel>;
 }
+type Refused = Extract<CopilotRecipientOutcome, { kind: 'refused' }>;
 class CopilotConsumerUnavailableError extends Error {
   readonly code = 'unavailable';
-  constructor() {
+  /** The recipient's closed refusal, when one was received; never its message. */
+  readonly reason?: CopilotRecipientRefusal;
+  readonly errorType?: CopilotSdkErrorType;
+  constructor(refusal?: Refused) {
     super('Copilot runtime is unavailable.');
     this.name = 'CopilotConsumerUnavailableError';
+    if (refusal) {
+      this.reason = refusal.reason;
+      if (refusal.errorType) this.errorType = refusal.errorType;
+    }
   }
 }
-const failed = (): CopilotConsumerUnavailableError =>
-  new CopilotConsumerUnavailableError();
+const failed = (refusal?: Refused): CopilotConsumerUnavailableError =>
+  new CopilotConsumerUnavailableError(refusal);
 
 export type CopilotVaultRenewalCase =
   | 'slow-open'
@@ -220,6 +230,7 @@ export function createCopilotConsumerHandle(options: {
     let renewalTimer: ReturnType<typeof setTimeout> | undefined;
     let sessionId = request?.sessionId;
     let recovered = false;
+    let refusal: Refused | undefined;
     let open = true;
     const acquisitionSignal = AbortSignal.any([
       signal,
@@ -543,7 +554,10 @@ export function createCopilotConsumerHandle(options: {
       channel = await Promise.race([acquired, cancelled]);
       channels.add(channel);
       check();
-      if (channel.opened.kind !== 'opened') throw failed();
+      if (channel.opened.kind !== 'opened') {
+        if (channel.opened.kind === 'refused') refusal = channel.opened;
+        throw failed();
+      }
       envelope = {
         version: 1,
         handle: channel.opened.handle,
@@ -569,6 +583,7 @@ export function createCopilotConsumerHandle(options: {
             }
           : {}),
       });
+      if (outcome.kind === 'refused') refusal = outcome;
       check();
       if (outcome.kind !== 'completed' || outcome.result.kind !== purpose)
         throw failed();
@@ -588,7 +603,7 @@ export function createCopilotConsumerHandle(options: {
         });
       signal.throwIfAborted();
       options.signal.throwIfAborted();
-      throw failed();
+      throw failed(refusal);
     } finally {
       open = false;
       clearTimeout(renewalTimer);

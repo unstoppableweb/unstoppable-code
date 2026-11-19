@@ -2,11 +2,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
+import { ensureStoredPipelineDirectory } from '@canopy/execution-engine/pipelines/store';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import {
-  getProjectPipelinesDirCandidates,
-  getUserPipelinesDir,
-} from './config-paths';
+import { getProjectPipelineShareLinksFilePath } from '../lib/paths';
+import { getProjectPipelinesDirCandidates } from './config-paths';
 import type {
   IPCResult,
   PipelineInfo,
@@ -28,11 +27,10 @@ export {
   saveStoredPipeline as savePipeline,
   writeStoredPipelineRemoteMetadata as writePipelineRemoteMetadata,
   updateStoredPipeline as updatePipeline,
+  withStoredPipelineIndexSnapshot,
 } from '@canopy/execution-engine/pipelines/store';
 
 export { listPipelineCapabilityData } from './pipeline-capability-data';
-
-const PROJECT_PIPELINE_SHARE_LINKS_FILE = '.project-share-links.json';
 
 interface ProjectPipelineShareLink {
   remote: ShareRemoteMetadata;
@@ -40,10 +38,6 @@ interface ProjectPipelineShareLink {
   rootIdentity: string;
   /** Filesystem identity used to follow a Pipeline when it is renamed. */
   fileIdentity: string;
-}
-
-function getProjectPipelineShareLinksPath(): string {
-  return path.join(getUserPipelinesDir(), PROJECT_PIPELINE_SHARE_LINKS_FILE);
 }
 
 function projectPipelineShareLinkKey(filePath: string): string {
@@ -115,7 +109,7 @@ function readProjectPipelineShareLinks(): Record<
 > {
   try {
     const parsed: unknown = JSON.parse(
-      fs.readFileSync(getProjectPipelineShareLinksPath(), 'utf8'),
+      fs.readFileSync(getProjectPipelineShareLinksFilePath(), 'utf8'),
     );
     if (
       typeof parsed !== 'object' ||
@@ -142,14 +136,15 @@ function readProjectPipelineShareLinks(): Record<
 function writeProjectPipelineShareLinks(
   links: Record<string, ProjectPipelineShareLink>,
 ): void {
-  const filePath = getProjectPipelineShareLinksPath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const filePath = getProjectPipelineShareLinksFilePath();
+  if (!ensureStoredPipelineDirectory())
+    throw new Error('Could not create the pipelines folder.');
   try {
     writeFileAtomicallySync(filePath, `${JSON.stringify(links, null, 2)}\n`, {
       encoding: 'utf8',
       durable: true,
       admittedWriter: {
-        namespace: 'pipeline_definitions',
+        namespace: 'pipeline_project_share_links',
         writer: 'electron_main',
         module: 'main/pipelines/pipeline-service',
       },

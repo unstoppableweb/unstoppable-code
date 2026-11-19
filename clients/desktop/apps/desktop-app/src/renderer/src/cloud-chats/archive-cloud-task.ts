@@ -1,4 +1,5 @@
 import { webCoreLocalId } from '@/lib/chat-authority';
+import { webCoreServesTaskDelete } from '@/lib/web-core-served-operations';
 import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
@@ -9,6 +10,9 @@ import { cloudCoworkStore } from './cloud-cowork-store';
 export const CLOUD_TASK_ARCHIVE_FAILED =
   "Couldn't archive the task. Try again.";
 
+/** What a confirmation says when the web core didn't delete the task. */
+export const CLOUD_TASK_DELETE_FAILED = "Couldn't delete the task. Try again.";
+
 /**
  * Archives a cloud task through the web core (CAN-6511): its own chat closes
  * in archive mode, which archives the task with its tabs and keeps it
@@ -17,15 +21,57 @@ export const CLOUD_TASK_ARCHIVE_FAILED =
  * doesn't archive it, leaving the task as it was, so the confirmation that
  * asked can say so.
  */
-export async function archiveCloudTask(
+export function archiveCloudTask(
   projectId: string,
   worktreeId: string,
+): Promise<void> {
+  return retireCloudTask(projectId, worktreeId, 'archive');
+}
+
+/**
+ * Deletes a cloud task through the web core (CAN-7052): its own chat closes
+ * in discard mode, which moves the task with its tabs to the Trash, where it
+ * stays restorable until its retention ends. Otherwise as `archiveCloudTask`.
+ */
+export function deleteCloudTask(
+  projectId: string,
+  worktreeId: string,
+): Promise<void> {
+  return retireCloudTask(projectId, worktreeId, 'delete');
+}
+
+/**
+ * How many days a cloud project keeps a deleted task, as the web core lists
+ * it, for the Delete confirmation; undefined when it doesn't say.
+ */
+export function cloudTaskDeletionRetentionDays(
+  projectId: string,
+): number | undefined {
+  const workspaceId = webCoreLocalId(projectId);
+  if (workspaceId === null) return undefined;
+  return cloudCoworkStore
+    .getState()
+    .projects.find((project) => project.workspaceId === workspaceId)
+    ?.deletionRetentionDays;
+}
+
+async function retireCloudTask(
+  projectId: string,
+  worktreeId: string,
+  removal: 'archive' | 'delete',
 ): Promise<void> {
   const workspaceId = webCoreLocalId(projectId);
   const taskId = webCoreLocalId(worktreeId);
   if (workspaceId === null || taskId === null)
     throw new Error('Not a cloud task.');
-  await cloudCoworkStore.getState().archiveTask(workspaceId, taskId);
+  // Checked here too, not only by the row that offers Delete: a menu or a
+  // selection opened before the manifest changed never sends one.
+  if (removal === 'delete' && !webCoreServesTaskDelete())
+    throw new Error('Deleting a cloud task is not available.');
+  const store = cloudCoworkStore.getState();
+  await (removal === 'delete'
+    ? store.deleteTask(workspaceId, taskId)
+    : store.archiveTask(workspaceId, taskId));
   leaveCloudTask(projectId, worktreeId);
   // The project's More row counts it now.
   void useCloudArchivedTasksStore.getState().load(projectId);

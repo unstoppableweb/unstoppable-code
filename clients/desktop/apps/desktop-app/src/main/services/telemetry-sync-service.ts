@@ -234,6 +234,7 @@ import {
   type PrReconciliationResult,
 } from './pr-telemetry-reconciler';
 import { getSentinelTelemetryWorkspace } from '../lib/sentinel-telemetry-workspaces';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 /**
  * Per-worktree debounce window. Coalesces late transcript writes and batches
@@ -815,7 +816,21 @@ export interface TelemetrySummariesSharing {
   readonly prohibited: boolean;
 }
 
+export interface TelemetrySyncServiceDeps {
+  /**
+   * Relay device id of this computer when its relay key is already loaded.
+   * Read at request build time so an id loaded after construction is sent.
+   */
+  getRelayDeviceId?: () => string | null;
+}
+
 export class TelemetrySyncService {
+  private readonly getRelayDeviceId: () => string | null;
+
+  constructor(deps: TelemetrySyncServiceDeps = {}) {
+    this.getRelayDeviceId = deps.getRelayDeviceId ?? ((): null => null);
+  }
+
   private started = false;
   /**
    * Resolves once `start()` has hydrated the durable queue. Ingress paths that
@@ -3676,6 +3691,7 @@ export class TelemetrySyncService {
     const userActiveAt = includeUserActivity
       ? this.userActivity.get(worktreeKey(entry.projectId, entry.worktreeId))
       : undefined;
+    const relayDeviceId = this.getRelayDeviceId();
     const request: TelemetryIngestRequest = {
       shareScope: scopeContext.shareScope,
       workspace: {
@@ -3705,6 +3721,9 @@ export class TelemetrySyncService {
           {
             clientLocalId: scopedWorktreeId,
             sourceClientLocalId: sourceWorktreeId,
+            // Lets a push tap open the chat on this computer. Absent until the
+            // relay has started; the server then keeps any stored id.
+            ...(relayDeviceId ? { sourceRelayDeviceId: relayDeviceId } : {}),
             ...(notificationSpace ? { notificationSpace } : {}),
             branchName: clampText(
               redactSecrets(entry.branchName),
@@ -4708,16 +4727,32 @@ export class TelemetrySyncService {
 }
 
 let service: TelemetrySyncService | null = null;
+let relayDeviceIdSource: () => string | null = (): null => null;
+
+/**
+ * Sets where the singleton reads this computer's relay device id. Wired by
+ * the main entry, so this module never imports the Electron remote-control
+ * graph; read at request build time, so wiring order does not matter.
+ */
+export function setTelemetryRelayDeviceIdSource(
+  source: () => string | null,
+): void {
+  relayDeviceIdSource = source;
+}
 
 export function getTelemetrySyncService(): TelemetrySyncService {
   if (!service) {
-    service = new TelemetrySyncService();
+    service = new TelemetrySyncService({
+      getRelayDeviceId: (): string | null => relayDeviceIdSource(),
+    });
   }
   return service;
 }
 
 export async function initializeTelemetrySyncService(): Promise<TelemetrySyncService> {
   const instance = getTelemetrySyncService();
+  // A local-only build never starts the hosted telemetry sync.
+  if (!allowsAutomaticCall('telemetry.sync')) return instance;
   await instance.start();
   return instance;
 }

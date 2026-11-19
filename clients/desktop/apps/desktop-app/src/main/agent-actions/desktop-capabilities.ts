@@ -8,6 +8,7 @@ import {
   CAPABILITY_PACKAGE_ACTION_TYPES,
   PIPELINE_EXECUTIONS_ACTION_TYPES,
   PIPELINES_ACTION_TYPES,
+  PULL_REQUEST_REVIEW_ACTION_TYPES,
   SEARCHABLE_WATCHER_TRIGGERS,
   SETTINGS_ACTION_TYPES,
   type AgentActionExecutionScope,
@@ -19,6 +20,7 @@ import {
   DESKTOP_WORKTREE_CHAT_PLACEMENTS,
 } from '../canopy-tools/definitions';
 import { DESKTOP_LEGACY_ACTION_TYPES } from '../canopy-tools/worktree-actions';
+import { isBotsExperimentEnabled } from '../bots/visibility';
 
 /**
  * Every action type a desktop chat surface can dispatch. Read lazily: the
@@ -38,6 +40,7 @@ export function desktopActionTypes(): readonly string[] {
     ...PIPELINES_ACTION_TYPES,
     ...PIPELINE_EXECUTIONS_ACTION_TYPES,
     ...BROWSER_ACTION_TYPES,
+    ...PULL_REQUEST_REVIEW_ACTION_TYPES,
     ...DESKTOP_LEGACY_ACTION_TYPES,
   ];
 }
@@ -68,6 +71,7 @@ export function desktopCapabilities(options: {
   return {
     executionScope,
     actionTypes,
+    botsRegistry: isBotsExperimentEnabled(),
     chatCreatePlacements: desktopChatCreatePlacements(executionScope),
     watcherTriggers: SEARCHABLE_WATCHER_TRIGGERS,
     watcherTargetScope: 'any',

@@ -1,3 +1,4 @@
+import { assertOrganizationPipelineAllowed } from '../organization-capabilities/pipeline-gate';
 import {
   authorizeProjectPipelineRequest,
   readStoredPipelineContext,
@@ -22,6 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { getDataDir } from '../lib/paths';
+import { getDesktopNodeRuntime } from '../lib/node-runtime';
 import { isPathInside } from '../lib/path-safety';
 import {
   getBundledActionsDir,
@@ -44,6 +46,7 @@ import {
   createDesktopLifecycleHooks,
   createDesktopStepPostProcess,
 } from './execution-runtime-hooks';
+import { reportPipelineEngineError } from './instrumentation';
 import { createTrackedPlan, updateTrackedPlan } from '../lib/plan-persistence';
 import { resolvePipelinePluginCollections } from './plugin-collection-resolver';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
@@ -77,6 +80,29 @@ import {
   runCodexPipelinePromptWith,
 } from '@canopy/execution-engine/node/pipelines/codex-pipeline-prompt';
 import { desktopCodexPipelinePromptPorts } from './codex-pipeline-prompt-ports';
+import { readGitHubPatForExecution } from '../lib/github-pat-env';
+
+/**
+ * Fixed and value-free; the read failure itself was already reported. Names
+ * both ways out, because a token that no longer decrypts stays unreadable
+ * after the keychain unlocks.
+ */
+const AGENT_STEP_GITHUB_PAT_UNAVAILABLE_MESSAGE =
+  "Couldn't start this agent step because your saved GitHub token couldn't be read. Unlock your system keychain, or save the token again in Settings.";
+
+/**
+ * The agent step's GH_TOKEN, or none when no PAT is configured. Throws a
+ * fixed error when a stored GitHub PAT cannot be read.
+ */
+function readGitHubPatEnvironmentForAgentStep(): Record<string, string> {
+  let pat: string | null;
+  try {
+    pat = readGitHubPatForExecution();
+  } catch {
+    throw new Error(AGENT_STEP_GITHUB_PAT_UNAVAILABLE_MESSAGE);
+  }
+  return pat ? { GH_TOKEN: pat } : {};
+}
 
 function parseTranscriptEvents(jsonl: string): unknown[] {
   return jsonl
@@ -104,6 +130,8 @@ export function createElectronExecutionRuntime(
     ...(getWindow ? { getWindow } : {}),
   });
   const runtime: ExecutionRuntime = {
+    // A method keeps copying/serializing recovery runtimes independent of Node.
+    resolveNodeRuntime: getDesktopNodeRuntime,
     resolvePipelineContextResource: async (parent, executionContext) => {
       if (!pipelineResourceContextEnabled()) return undefined;
       if (!parent.pipelineId)
@@ -111,6 +139,11 @@ export function createElectronExecutionRuntime(
       const parentShared = parseSharedPipelineLocalId(parent.pipelineId);
       let resource: ResourceContextInput['resource'];
       if (parentShared) {
+        // The run's own pipeline, in the run's workspace (CAN-6237).
+        await assertOrganizationPipelineAllowed(
+          parent.projectId,
+          parentShared.remoteId,
+        );
         resource = {
           owner: (
             await (executionContext !== undefined
@@ -211,6 +244,13 @@ export function createElectronExecutionRuntime(
       const shared = parseSharedPipelineLocalId(reference);
       if (!shared && !getStoredPipelinePathWithSource(reference).success)
         return undefined;
+      // A child pipeline aimed at a project is admitted there (CAN-6237); an
+      // untargeted child names no workspace at this hook.
+      if (shared)
+        await assertOrganizationPipelineAllowed(
+          target?.projectId,
+          shared.remoteId,
+        );
       const detail = shared
         ? await (executionContext !== undefined
             ? getSharedPipelineForExecutionContext(shared.remoteId)
@@ -248,6 +288,7 @@ export function createElectronExecutionRuntime(
     getProjectPipelinesDir,
     getProjectPipelinesDirCandidates,
     lifecycle: createDesktopLifecycleHooks(),
+    reportEngineError: reportPipelineEngineError,
     onStepPostProcess: createDesktopStepPostProcess(getWindow),
     planPersistence: {
       createTrackedPlan,
@@ -352,6 +393,10 @@ export function createElectronExecutionRuntime(
 
         let result;
         try {
+          // The spawn injector omits an unreadable PAT, so the step fails
+          // instead. Checked before queueing to fail fast, and again at
+          // launch, which passes the token it read (CAN-7096).
+          readGitHubPatEnvironmentForAgentStep();
           result = await workerService.runWorker({
             kind: 'pipeline_agent_prompt',
             label: request.stepLabel,
@@ -368,6 +413,7 @@ export function createElectronExecutionRuntime(
             maxTurns: request.maxTurns,
             mcpServers: request.mcpServers,
             claudeEnvOverride: request.claudeEnvOverride,
+            launchEnvironment: readGitHubPatEnvironmentForAgentStep,
             // A pipeline agent's Ledger tools; helper workers never get any.
             ledgerTools: getPipelineLedgerAttemptTools(
               request.ledgerAttemptKey,

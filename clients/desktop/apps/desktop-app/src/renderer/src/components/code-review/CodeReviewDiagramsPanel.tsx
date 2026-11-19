@@ -42,6 +42,7 @@ export interface DiagramNodeRevealRequest {
 
 export interface CodeReviewDiagramsPanelProps {
   review: CodeReviewFile | null;
+  readOnly?: boolean;
   /** Whether the review has been armed (annotation/diagram generation requested at least once). */
   armed: boolean;
   /** Arm the review, kicking off the first annotation/diagram generation run. */
@@ -51,7 +52,7 @@ export interface CodeReviewDiagramsPanelProps {
   /** Immediate request state before persisted generation status arrives. */
   refreshing?: boolean;
   /** Stage a comment anchored to a diagram node (routed through useReviewComments). */
-  onAddNodeComment: (input: AddNodeCommentInput) => void;
+  onAddNodeComment?: (input: AddNodeCommentInput) => void;
   /** Switch to the node's diagram and reveal it (bottom-tray diagram jump). */
   revealNodeRequest?: DiagramNodeRevealRequest | null;
   /** Re-run host-owned search when the active diagram or its artifact changes. */
@@ -93,6 +94,7 @@ export const CodeReviewDiagramsPanel = forwardRef<
 >(function CodeReviewDiagramsPanel(
   {
     review,
+    readOnly = false,
     armed,
     onArm,
     onRefresh,
@@ -210,7 +212,7 @@ export const CodeReviewDiagramsPanel = forwardRef<
       tone="neutral"
       aria-label="Refresh diagram"
       data-testid="change-diagram-refresh"
-      disabled={isGenerating}
+      disabled={readOnly || isGenerating}
       onClick={onRefresh}
     >
       <RefreshSpinner spinning={isGenerating} />
@@ -235,6 +237,7 @@ export const CodeReviewDiagramsPanel = forwardRef<
             className="self-center"
             variant="primary"
             onClick={onArm}
+            disabled={readOnly}
             data-testid="code-review-start"
           >
             Start review
@@ -287,9 +290,10 @@ export const CodeReviewDiagramsPanel = forwardRef<
           <PlanLogicDiffDiagram
             ref={logicDiffSearchRef}
             artifact={toPlanArtifact(logicDiff)}
-            onGenerate={onRefresh}
+            onGenerate={readOnly ? undefined : onRefresh}
             isGenerating={isGenerating}
             onAddNodeComment={onAddNodeComment}
+            commentsReadOnly={readOnly}
             viewLabels={{ current: 'Before', planned: 'After' }}
             toolbarActions={!dataModelPresent ? refreshAction : undefined}
           />
@@ -298,9 +302,10 @@ export const CodeReviewDiagramsPanel = forwardRef<
           <PlanDataModelDiffDiagram
             ref={dataModelSearchRef}
             artifact={toPlanArtifact(dataModelDiff)}
-            onGenerate={onRefresh}
+            onGenerate={readOnly ? undefined : onRefresh}
             isGenerating={isGenerating}
             onAddNodeComment={onAddNodeComment}
+            commentsReadOnly={readOnly}
           />
         )}
       </div>

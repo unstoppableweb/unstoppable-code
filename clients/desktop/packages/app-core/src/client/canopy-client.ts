@@ -1,3 +1,10 @@
+import type {
+  McpRemovalCandidatesResult,
+  InspectMcpRemovalRequest,
+  InspectMcpRemovalResult,
+  ForceMcpRemovalRequest,
+  ForceMcpRemovalResult,
+} from '@canopy/protocol/mcp-removal';
 import type { WorkflowsPanelClient } from './workflows-panel-client';
 import type { OrchestratorSettingsDraftClient } from './orchestrator-settings';
 import type {
@@ -195,6 +202,7 @@ import type {
 import type { SessionViewModel } from '../view-model';
 import type { CanopyCapabilities } from './capabilities';
 import type { BillingClient, CreditsHandoffClient } from './billing-client';
+import type { ReviewApprovalsClient } from './review-approvals-client';
 import type { TranscriptReadClient } from '../transcripts';
 import type { ExternalAgentsClient } from './external-agents-client';
 import type { MarketplaceSourcesClient } from './marketplace-sources-client';
@@ -218,6 +226,12 @@ export interface SessionSnapshotArgs {
    * return every standalone chat without them.
    */
   readonly standaloneChatLocalId?: string;
+  /**
+   * Only the computer's notices, with every row list empty: they still read
+   * while its workspace discovery fails (CAN-7061). Hosts that predate it
+   * return the full snapshot.
+   */
+  readonly noticesOnly?: boolean;
 }
 
 /** One composer attachment for `chat.attachments.upload`. */
@@ -934,6 +948,14 @@ export type CommandName = keyof CommandMap;
  * `as` casts so the public contract stays honest.
  */
 export interface CanopyClient {
+  /** Exact device-only evidence-preserving repair. Absent on unsupported peers. */
+  readonly mcpRemoval?: {
+    candidates(): Promise<McpRemovalCandidatesResult>;
+    inspect(
+      request: InspectMcpRemovalRequest,
+    ): Promise<InspectMcpRemovalResult>;
+    force(request: ForceMcpRemovalRequest): Promise<ForceMcpRemovalResult>;
+  };
   /** Workspace Workflows feed. Absent until the host implements it. */
   readonly workflowsPanel?: WorkflowsPanelClient;
   /** Independent reads and acknowledged writes for the local settings draft. */
@@ -971,6 +993,11 @@ export interface CanopyClient {
    * reports `capabilities.accountOrganizationSettings`.
    */
   readonly settings?: AccountOrganizationSettingsClient;
+  /**
+   * Review approval readiness and the GitHub identity link. Present only
+   * when the host reports `capabilities.reviewApprovalReadiness`.
+   */
+  readonly reviewApprovals?: ReviewApprovalsClient;
   /** Fixed capability set describing what this host can do. */
   readonly capabilities: CanopyCapabilities;
 

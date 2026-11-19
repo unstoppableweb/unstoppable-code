@@ -7,6 +7,7 @@
   "exports": {
     "./capability-snapshot": "./src/capability-snapshot.ts",
     "./events": "./src/events.ts",
+    "./failure": "./src/failure.ts",
     "./mcp-server-name": "./src/mcp-server-name.ts",
     "./node-module-loader": "./src/node-module-loader.ts",
     "./process-ownership": "./src/process-ownership.ts",

@@ -1,3 +1,4 @@
+import { turnAccountResolution } from '../agents/turn-account-resolution';
 import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
@@ -92,10 +93,8 @@ import {
 import { sidebarItemGroupsService } from './sidebar-item-groups-service';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
-import { buildProjectedModelCatalog } from '../portal/model-catalog-projection';
 import { peekPortalProviderAvailability } from '../auth/provider-auth-state';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
-import { isCanopyPortalActive } from '../portal/portal-event-bus';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
 import {
   GLOBAL_LANE_CREDENTIAL_SCOPE,
@@ -129,20 +128,14 @@ import {
 } from '../agents/work-owner';
 import {
   pinInheritingAgentToDestination,
-  resolveCatalogAgentDefaultModel,
   resolveSendModelPin,
 } from '../agents/agent-default-model';
 import { sendToWindow } from '../lib/window-send';
-import {
-  createPortalEvent,
-  enqueuePortalEvent,
-} from '../portal/portal-event-bus';
-import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 import {
   limitPortalChatTranscriptForSeedWithMetadata,
   type PortalChatTranscriptSeed,
   projectPersistedChatTranscript,
-  runtimeChatEventToPortalMessage,
 } from './chat-transcript-projector';
 import { buildAutomationInfoMessage } from './automation-info-message';
 import { notifyCanonicalChatStarted } from '../services/active-chat-input';
@@ -282,10 +275,6 @@ const standaloneChatSendInFlight = new Map<
 
 function getNullWindow(): BrowserWindow | null {
   return null;
-}
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function upsertMessage(
@@ -694,7 +683,6 @@ export async function createStandaloneChatTab(
           result.reason ?? 'The new chat could not be created.',
         );
       }
-      await emitStandaloneChatSummary(workspaceId, entryId, request.chatId);
       assertAuthorized();
       return {
         ok: true,
@@ -986,11 +974,8 @@ async function resolveStandaloneDeferredToolsAllowed(
 }
 
 /**
- * Build the portal summary for a single standalone/cowork chat tab. Shared by
- * the snapshot list and the live re-projection after a composer flip so the two
- * paths never drift. The projected model catalog (CAN-1219) is only derived when
- * a portal session is connected — the common desktop-only case pays nothing —
- * because deriving it walks the full model + custom-Agent registry.
+ * Build the summary for a single standalone/cowork chat tab. Shared by the
+ * snapshot list and the compact Work Entry listing so the two never drift.
  */
 function buildStandaloneChatSummary(
   projectId: string,
@@ -1006,8 +991,6 @@ function buildStandaloneChatSummary(
     lastMessageAt?: string;
     workEntry?: WorkEntryChatSummaryListItem;
     owner?: WorkOwner;
-    /** See `resolveCatalogAgentDefaultModel`. */
-    agentDefaultModel?: string;
     /** The Work Entry's file-backed questions; omit for streaming updates. */
     pendingQuestions?: readonly PersistedPendingQuestion[];
   },
@@ -1178,17 +1161,6 @@ function buildStandaloneChatSummary(
     // Projected composer state (CAN-1219) so the portal's standalone model
     // picker seeds from and reconciles against the desktop.
     model: tab.model,
-    availableModels: isCanopyPortalActive()
-      ? buildProjectedModelCatalog(undefined, {
-          cursor: true,
-          antigravity: true,
-          copilot: true,
-          opencode: true,
-          owner: options?.owner,
-          projectId,
-          agentDefaultModel: options?.agentDefaultModel,
-        })
-      : undefined,
     providerAvailability: peekPortalProviderAvailability(),
     pluginSelectionsDetail: normalizePluginSelections(tab.pluginSelections),
     deferredToolsAllowed:
@@ -1218,7 +1190,6 @@ function buildCompactStandaloneChatSummary(
   entry: WorkEntryChatSummaryListItem,
   chat: CoworkWorkEntryChatSummary,
   owner: WorkOwner | undefined,
-  agentDefaultModel: string | undefined,
   scheduledMessagesIndex:
     | ReadonlyMap<string, PortalChatScheduledMessages>
     | undefined,
@@ -1249,7 +1220,6 @@ function buildCompactStandaloneChatSummary(
       includeDelivery: false,
       scheduledMessagesIndex,
       owner,
-      agentDefaultModel,
     },
   );
   // Compact entries do not retain this policy. Omit the unknown value so a
@@ -1266,31 +1236,12 @@ function buildCompactStandaloneChatSummary(
     : { ...summary, lastMessageRole: chat.lastMessageRole };
 }
 
-/** The catalog Agent default for projected summaries; skipped with no Portal. */
-function catalogAgentDefaultModel(
-  projectId: string,
-): Promise<string | undefined> {
-  return isCanopyPortalActive()
-    ? resolveCatalogAgentDefaultModel(projectId)
-    : Promise.resolve(undefined);
-}
-
 function standaloneSummaryOwnerScope(
   projectId: string,
   entryId: string,
   chatId: string,
 ): AiCreditsScopeRequest {
   return { kind: 'work', projectId, worktreeId: entryId, chatId };
-}
-
-function resolveStandaloneSummaryOwner(
-  projectId: string,
-  entryId: string,
-  chatId: string,
-): Promise<WorkOwner | undefined> {
-  return resolveAiCreditsScopeOwner(
-    standaloneSummaryOwnerScope(projectId, entryId, chatId),
-  );
 }
 
 export async function listStandaloneChats(options?: {
@@ -1321,7 +1272,6 @@ export async function listStandaloneChats(options?: {
     const entries = options?.strict
       ? await listWorkEntryChatSummaries(project.id, { strict: true })
       : await listWorkEntryChatSummaries(project.id);
-    const agentDefaultModel = await catalogAgentDefaultModel(project.id);
     for (const entry of entries) {
       for (const chat of entry.chats) {
         const owner = await resolveOwner(
@@ -1335,7 +1285,6 @@ export async function listStandaloneChats(options?: {
               entry,
               chat,
               owner,
-              agentDefaultModel,
               scheduledMessagesIndex,
             ),
           ),
@@ -1461,264 +1410,28 @@ async function withLiveSessionQuestions(
 }
 
 /**
- * Emit a `standalone_chat` entity delta for one chat so a connected portal
- * reconciles a composer flip (e.g. model change) live, mirroring the worktree
- * `projectWorktreeChatSummaries` path. No-op — and never touches disk — when no
- * portal session is connected. Best-effort: a read failure is swallowed so it
- * can never break the originating tab write. The entity shape matches the
- * snapshot builder's `standalone_chat` payload.
+ * Stale the desktop session snapshot after a Work Entry's container title or
+ * primary chat changes, so its sibling chats are re-read.
  */
-export async function emitStandaloneChatSummary(
-  workspaceId: string,
-  entryId: string,
-  chatId: string,
-  resolvedOwner?: { value: WorkOwner | undefined },
-): Promise<void> {
-  if (!isCanopyPortalActive()) {
-    return;
-  }
-  try {
-    const projects = await readStandaloneProjects();
-    const project = projects.find((entry) => entry.id === workspaceId);
-    const tabsFile = await readChatTabsFile(workspaceId, entryId);
-    const tab = tabsFile.tabs.find((candidate) => candidate.id === chatId);
-    if (!tab) {
-      return;
-    }
-    const entry = (await listWorkEntryChatSummaries(workspaceId)).find(
-      (candidate) => candidate.entryId === entryId,
-    );
-    if (!entry) return;
-    const owner = resolvedOwner
-      ? resolvedOwner.value
-      : await resolveStandaloneSummaryOwner(workspaceId, entryId, chatId);
-    const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
-    const deferredToolsAllowed = await resolveStandaloneDeferredToolsAllowed(
-      tab.deferredToolsAllowed,
-    );
-    const scheduledMessagesIndex =
-      await getAutomationsService().getScheduledMessagesIndex();
-    const summary = buildStandaloneChatSummary(
-      workspaceId,
-      project?.name ?? tab.title,
-      tab,
-      {
-        hasActiveChat: getActiveChatIds(workspaceId, entryId).includes(chatId),
-        scheduledMessagesIndex,
-        deferredToolsAllowed,
-        workEntry: entry,
-        owner,
-        agentDefaultModel,
-        pendingQuestions: tabsFile.pendingQuestions ?? [],
-      },
-    );
-    await emitStandaloneChatSummaryEntity(summary);
-  } catch {
-    // Projection is a best-effort mirror; the persisted tab write is durable.
-  }
-}
-
-export async function emitStandaloneChatSummaryForTab(
-  workspaceId: string,
-  entryId: string,
-  tab: PersistedChatTab,
-  hasActiveChat: boolean,
-  resolvedOwner?: { value: WorkOwner | undefined },
-): Promise<void> {
-  scheduleDesktopSessionSnapshotInvalidation();
-  if (!isCanopyPortalActive()) return;
-  try {
-    const entry = (await listWorkEntryChatSummaries(workspaceId)).find(
-      (candidate) => candidate.entryId === entryId,
-    );
-    if (!entry) return;
-    const owner = resolvedOwner
-      ? resolvedOwner.value
-      : await resolveStandaloneSummaryOwner(workspaceId, entryId, tab.id);
-    const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
-    const deferredToolsAllowed = await resolveStandaloneDeferredToolsAllowed(
-      tab.deferredToolsAllowed,
-    );
-    const scheduledMessagesIndex =
-      await getAutomationsService().getScheduledMessagesIndex();
-    const active =
-      hasActiveChat || getActiveChatIds(workspaceId, entryId).includes(tab.id);
-    await emitStandaloneChatSummaryEntity(
-      buildStandaloneChatSummary(workspaceId, tab.title, tab, {
-        hasActiveChat: active,
-        scheduledMessagesIndex,
-        deferredToolsAllowed,
-        workEntry: entry,
-        owner,
-        agentDefaultModel,
-      }),
-    );
-  } catch {
-    // A remote mirror must never fail the local chat mutation.
-  }
-}
-
-/** Refresh all siblings together when the container title or primary chat changes. */
-export async function emitStandaloneWorkEntrySummary(
-  workspaceId: string,
-  entryId: string,
-  materialized?: {
-    tabs: readonly PersistedChatTab[];
-    pendingQuestions?: readonly PersistedPendingQuestion[];
-  },
-): Promise<void> {
-  try {
-    await emitStandaloneWorkEntrySummaryStrict(
-      workspaceId,
-      entryId,
-      materialized,
-    );
-  } catch {
-    // The registry remains authoritative if remote projection fails.
-  }
-}
-
-/**
- * {@link emitStandaloneWorkEntrySummary} that rejects on failure, for the
- * post-commit projection, which retries failed runs.
- */
-export async function emitStandaloneWorkEntrySummaryStrict(
-  workspaceId: string,
-  entryId: string,
-  materialized?: {
-    tabs: readonly PersistedChatTab[];
-    pendingQuestions?: readonly PersistedPendingQuestion[];
-  },
-): Promise<void> {
-  scheduleDesktopSessionSnapshotInvalidation();
-  if (!isCanopyPortalActive()) return;
-  const entry = (
-    await listWorkEntryChatSummaries(workspaceId, { strictRead: true })
-  ).find((candidate) => candidate.entryId === entryId);
-  // A deleted entry has nothing left to project.
-  if (!entry) return;
-  const resolveOwner = createAiCreditsScopeOwnerResolver();
-  const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
-  const scheduledMessagesIndex =
-    await getAutomationsService().getScheduledMessagesIndex();
-  for (const chat of entry.chats) {
-    const owner = await resolveOwner(
-      standaloneSummaryOwnerScope(workspaceId, entryId, chat.id),
-    );
-    const tab = materialized?.tabs.find(
-      (candidate) => candidate.id === chat.id,
-    );
-    const deferredToolsAllowed = tab
-      ? await resolveStandaloneDeferredToolsAllowed(tab.deferredToolsAllowed)
-      : undefined;
-    await emitStandaloneChatSummaryEntity(
-      tab
-        ? buildStandaloneChatSummary(workspaceId, entry.title, tab, {
-            hasActiveChat: getActiveChatIds(workspaceId, entryId).includes(
-              tab.id,
-            ),
-            deferredToolsAllowed,
-            scheduledMessagesIndex,
-            workEntry: entry,
-            owner,
-            agentDefaultModel,
-            pendingQuestions: materialized?.pendingQuestions ?? [],
-          })
-        : buildCompactStandaloneChatSummary(
-            workspaceId,
-            entry.title,
-            entry,
-            chat,
-            owner,
-            agentDefaultModel,
-            scheduledMessagesIndex,
-          ),
-    );
-  }
-}
-
-/**
- * Refresh every chat in a cowork workspace. A reorder rewrites every Work
- * Entry's registry index at once, so a single-entry refresh would leave the
- * siblings' `workEntryOrder` stale in the portal.
- */
-export async function emitStandaloneWorkspaceWorkEntrySummaries(
-  workspaceId: string,
-): Promise<void> {
-  scheduleDesktopSessionSnapshotInvalidation();
-  if (!isCanopyPortalActive()) return;
-  try {
-    const resolveOwner = createAiCreditsScopeOwnerResolver();
-    const agentDefaultModel = await catalogAgentDefaultModel(workspaceId);
-    const scheduledMessagesIndex =
-      await getAutomationsService().getScheduledMessagesIndex();
-    for (const entry of await listWorkEntryChatSummaries(workspaceId)) {
-      for (const chat of entry.chats) {
-        const owner = await resolveOwner(
-          standaloneSummaryOwnerScope(workspaceId, entry.entryId, chat.id),
-        );
-        await emitStandaloneChatSummaryEntity(
-          buildCompactStandaloneChatSummary(
-            workspaceId,
-            entry.title,
-            entry,
-            chat,
-            owner,
-            agentDefaultModel,
-            scheduledMessagesIndex,
-          ),
-        );
-      }
-    }
-  } catch {
-    // The registry remains authoritative if remote projection fails.
-  }
-}
-
-/** Explicit removals are necessary because remote delta projection is upsert-only. */
-export function emitStandaloneChatRemovals(
-  workspaceId: string,
-  chatIds: readonly string[],
-): void {
-  scheduleDesktopSessionSnapshotInvalidation();
-  if (!isCanopyPortalActive() || chatIds.length === 0) return;
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'standalone_chat',
-      removed: chatIds.map((localId) => ({
-        entityType: 'standalone_chat',
-        localId,
-        parentLocalId: workspaceId,
-      })),
-      generatedAt: new Date().toISOString(),
-    }),
+export function emitStandaloneWorkEntrySummary(): void {
+  requestDesktopSessionSnapshotInvalidation(
+    'standalone-chat.work-entry-summary',
   );
 }
 
-async function emitStandaloneChatSummaryEntity(
-  chat: PortalStandaloneChatSummary,
-): Promise<void> {
-  const summary = await withLiveSessionQuestions(chat);
-  scheduleDesktopSessionSnapshotInvalidation();
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'standalone_chat',
-      target: { standaloneChatLocalId: summary.chatId },
-      entities: [
-        {
-          entityType: 'standalone_chat',
-          localId: summary.chatId,
-          parentLocalId: summary.projectLocalId,
-          payload: {
-            ...projectStandaloneChatSnapshot(summary),
-            projectId: summary.projectId,
-            chatId: summary.chatId,
-          },
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    }),
+/**
+ * Stale the desktop session snapshot after a cowork workspace's Work Entry
+ * list changes. A reorder rewrites every Work Entry's registry index at once.
+ */
+export function emitStandaloneWorkspaceWorkEntrySummaries(): void {
+  requestDesktopSessionSnapshotInvalidation(
+    'standalone-chat.workspace-summaries',
   );
+}
+
+/** Stale the desktop session snapshot after cowork chats are removed. */
+export function emitStandaloneChatRemovals(): void {
+  requestDesktopSessionSnapshotInvalidation('standalone-chat.removals');
 }
 
 /**
@@ -1833,7 +1546,6 @@ export async function setStandaloneChatModel(
     IPC_CHANNELS.standaloneChatMetaUpdated,
     { projectId: workspaceId, chatId: payload.chatId },
   );
-  await emitStandaloneChatSummary(workspaceId, entryId, payload.chatId);
   return { ok: true };
 }
 
@@ -2768,31 +2480,6 @@ async function sendStandaloneChatMessageOnce(
             chatId: request.chatId,
           });
 
-          const emitMessage = (message: PortalChatMessage): void => {
-            enqueuePortalEvent(
-              createPortalEvent('portal.chat.event', {
-                scope: 'standalone',
-                projectLocalId: workspaceId,
-                projectId: workspaceId,
-                workEntryId: entryId,
-                chatId: request.chatId,
-                message,
-              }),
-            );
-          };
-          emitMessage({
-            messageId: userMessageId,
-            chatId: request.chatId,
-            role: 'user',
-            promptSource: 'human',
-            parts: [{ kind: 'prompt_source', data: { source: 'human' } }],
-            status: 'complete',
-            text: request.message,
-            createdAtMs: now,
-            ...(request.agentSent ? { agentSent: request.agentSent } : {}),
-          });
-          let executionUserMessageId: string = userMessageId;
-          // Canonical turn state publishes committed timer rows to the portal.
           // Native cowork keying: (workspaceId, workEntryId, chatId).
           sendToWindow(getWindow(), IPC_CHANNELS.chatEvent, {
             projectId: workspaceId,
@@ -2807,12 +2494,8 @@ async function sendStandaloneChatMessageOnce(
                 : [userMessage],
             },
           });
-          await emitStandaloneChatSummaryForTab(
-            workspaceId,
-            entryId,
-            sentTab,
-            true,
-            { value: workOwner },
+          requestDesktopSessionSnapshotInvalidation(
+            'standalone-chat.tab-summary',
           );
           if (startsNewTrackedChat) {
             await notifyCanonicalChatStarted(
@@ -2900,6 +2583,8 @@ async function sendStandaloneChatMessageOnce(
               ...(request.packageOverlay
                 ? { packageOverlay: request.packageOverlay }
                 : {}),
+              // An automation's turn resolves accounts unattended (CAN-6232).
+              ...turnAccountResolution(request),
               deferredToolsAllowed,
               planMode: request.planMode === true,
               approvalMode,
@@ -2990,39 +2675,6 @@ async function sendStandaloneChatMessageOnce(
                   });
                 acceptanceCleanupTasks.push(cleanupTask);
               },
-              onChatEvent: (event) => {
-                if (
-                  isRecordValue(event.data) &&
-                  event.data.type === 'canopy_input_delivery' &&
-                  event.data.phase === 'picked-up' &&
-                  event.data.startsTurn === true &&
-                  event.data.turnRootAccepted !== false &&
-                  typeof event.data.userMessageId === 'string'
-                ) {
-                  executionUserMessageId = event.data.userMessageId;
-                }
-                const message = runtimeChatEventToPortalMessage({
-                  scope: 'standalone',
-                  chatId: event.chatId,
-                  data: event.data,
-                  fallbackMessageId: `${executionUserMessageId}:assistant`,
-                });
-                if (message) {
-                  // Canonical provider-event ingestion owns durable transcript
-                  // state. This display projection can truncate tool output and
-                  // must not overwrite canonical Cowork history or completed
-                  // timers during retries and automated continuations.
-                  emitMessage(message);
-                }
-                if (event.isTerminalEvent) {
-                  void emitStandaloneChatSummary(
-                    workspaceId,
-                    entryId,
-                    request.chatId,
-                    { value: workOwner },
-                  );
-                }
-              },
             });
             dispatchStarted = true;
             accepted = true;
@@ -3044,14 +2696,6 @@ async function sendStandaloneChatMessageOnce(
             await Promise.all(acceptanceCleanupTasks);
           } catch (error: unknown) {
             await Promise.allSettled(acceptanceCleanupTasks);
-            await emitStandaloneChatSummary(
-              workspaceId,
-              entryId,
-              request.chatId,
-              {
-                value: workOwner,
-              },
-            );
             throw error;
           }
           return {
@@ -3194,8 +2838,8 @@ export async function cancelStandaloneChat(
   await cancelChatTurn(target, 'stop', stopContext);
   const userMessageId = stopContext.fence?.userMessageId;
   // A native idle session has no captured turn to release or persist. Do not
-  // manufacture an untagged terminal (or a Portal cancellation frame) that
-  // could be applied to a newer send which replaced this fence during Stop.
+  // manufacture an untagged terminal that could be applied to a newer send
+  // which replaced this fence during Stop.
   if (stopContext.fence !== undefined && userMessageId === undefined) {
     return { ok: true };
   }
@@ -3214,27 +2858,6 @@ export async function cancelStandaloneChat(
   });
   const { settleStoppedChatTurnRuns } = await import('../agent-runs/turn-runs');
   settleStoppedChatTurnRuns(target, userMessageId);
-  // A terminal/new turn may have replaced the Portal projection while native
-  // Stop awaited its root receipt. The canonical event is ID-fenced above;
-  // only close the Portal frame while the original presentation is still live.
-  if (!isChatTurnStopCurrent(stopContext)) return { ok: true };
-  enqueuePortalEvent(
-    createPortalEvent('portal.chat.event', {
-      scope: 'standalone',
-      projectLocalId: workspaceId,
-      projectId: workspaceId,
-      workEntryId: entryId ?? target.worktreeId,
-      chatId: request.chatId,
-      message: {
-        messageId: randomUUID(),
-        chatId: request.chatId,
-        role: 'assistant',
-        status: 'cancelled',
-        text: '',
-        createdAtMs: Date.now(),
-      },
-    }),
-  );
   return { ok: true };
 }
 
@@ -3262,12 +2885,7 @@ export async function getStandaloneChatTranscriptSeed(input?: {
   const tab = tabsFile.tabs.find((candidate) => candidate.id === input.chatId);
   if (!tab) return { messages: [], truncated: false };
   // Hydrate delivery only when this chat is opened; shell startup uses compact metadata.
-  await emitStandaloneChatSummaryForTab(
-    workspaceId,
-    entryId,
-    tab,
-    getActiveChatIds(workspaceId, entryId).includes(tab.id),
-  );
+  requestDesktopSessionSnapshotInvalidation('standalone-chat.tab-summary');
   return limitPortalChatTranscriptForSeedWithMetadata(
     // Transcript-level projection so each turn's persisted timer row is
     // re-keyed onto the live wire timer id (`${userMessageId}:turn-timer`);

@@ -40,6 +40,8 @@ export function mcpSelectionKey(serverId: string, configId: string): string {
 export const INHERITED_DEFAULT_BADGE_LABELS = {
   project: 'Project default',
   global: 'Global default',
+  // The organization's shared set for the project (CAN-6237).
+  organization: 'Organization default',
 } as const;
 
 export const CAPABILITY_NOT_SIGNED_IN_LABEL = 'Not signed in';

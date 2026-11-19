@@ -1,5 +1,5 @@
 // CAN-4070 rule: captured on the unchanged `workspace:*-claude-md` IPC handlers
-// and Portal `claude_md` commands before CAN-4106 routed them through
+// before CAN-4106 routed them through
 // `core.workspace.instructions.*`. Real data root and source repository; only
 // handler registration, telemetry and unrelated side channels are mocked.
 import { execFileSync } from 'node:child_process';
@@ -17,10 +17,6 @@ import { join } from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import type {
-  PortalCommandEnvelope,
-  PortalEventEnvelope,
-} from '@canopy/protocol/portal';
 
 // Jest runs tests in a separate realm, so built-in fs errors fail the
 // production `instanceof Error` checks. Rethrow them as same-realm errors with
@@ -92,28 +88,15 @@ jest.mock('../observability', () => ({
     recordUsageMetricEvent: jest.fn(),
   })),
 }));
-jest.mock('../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../lib/desktop-telemetry', () => ({
   recordWorkspaceCrudTelemetry: jest.fn(),
   recordWorktreeCrudTelemetry: jest.fn(),
 }));
-jest.mock('../portal/portal-session-manager', () => ({
-  getCanopyPortalState: (): { sessionId: string } => ({
-    sessionId: 'golden-session',
-  }),
-}));
 
 import { registerWorkspaceHandlers } from '../ipc/workspaces';
-import {
-  handlePortalWorkspaceClaudeMdGet,
-  handlePortalWorkspaceClaudeMdSave,
-} from '../portal/adapters/workspace-adapter';
-import type { PortalAdapterContext } from '../portal/adapters/types';
 import { recordWorkspaceCrudTelemetry } from '../lib/desktop-telemetry';
 import {
   createDesktopRuntime,
@@ -227,57 +210,6 @@ const load = (request: unknown): Promise<Record<string, unknown>> =>
   ipc(IPC_CHANNELS.workspaceLoadClaudeMd, request);
 const save = (request: unknown): Promise<Record<string, unknown>> =>
   ipc(IPC_CHANNELS.workspaceSaveClaudeMd, request);
-
-function portalContext(events: PortalEventEnvelope[]): PortalAdapterContext {
-  return {
-    sessionId: 'golden-session',
-    getWindow: () => null,
-    enqueueEvent: (event) => events.push(event),
-    complete: (command, result): void => {
-      events.push({
-        type: 'portal.command.completed',
-        commandId: command.id,
-        payload: { result },
-      } as PortalEventEnvelope);
-    },
-    fail: (command, code, message, retryable): void => {
-      events.push({
-        type: 'portal.command.failed',
-        commandId: command.id,
-        payload: { error: { code, message: scrub(message), retryable } },
-      } as PortalEventEnvelope);
-    },
-  };
-}
-
-async function portal(
-  type: 'portal.workspace.claude_md.get' | 'portal.workspace.claude_md.save',
-  payload: unknown,
-): Promise<PortalEventEnvelope[]> {
-  const events: PortalEventEnvelope[] = [];
-  const command = {
-    id: 'cmd-golden',
-    sequence: 1,
-    type,
-    payload,
-    createdAt: '2026-10-23T00:00:00.000Z',
-    expiresAt: null,
-  };
-  if (type === 'portal.workspace.claude_md.get')
-    await handlePortalWorkspaceClaudeMdGet(
-      command as PortalCommandEnvelope<{ workspaceId: string }>,
-      portalContext(events),
-    );
-  else
-    await handlePortalWorkspaceClaudeMdSave(
-      command as PortalCommandEnvelope<{
-        workspaceId: string;
-        content: string;
-      }>,
-      portalContext(events),
-    );
-  return events;
-}
 
 const INVALID_IDS: unknown[] = ['Bad_Id', '', 'has space', 42, null, undefined];
 const INVALID_ID_MESSAGE =
@@ -429,69 +361,6 @@ describe('CAN-4106 workspace instructions IPC golden', () => {
       },
     });
     expect(await load({ workspaceId: 'local-ws' })).toEqual({ result: '' });
-    expect(mockedTelemetry).not.toHaveBeenCalled();
-  });
-});
-
-describe('CAN-4106 workspace instructions Portal golden', () => {
-  it('gets and saves with portal telemetry', async () => {
-    const events = [
-      ...(await portal('portal.workspace.claude_md.get', {
-        workspaceId: 'local-ws',
-      })),
-      ...(await portal('portal.workspace.claude_md.save', {
-        workspaceId: 'local-ws',
-        content: '# From Portal',
-      })),
-      ...(await portal('portal.workspace.claude_md.get', {
-        workspaceId: 'local-ws',
-      })),
-    ];
-    expect(events).toEqual([
-      {
-        type: 'portal.command.completed',
-        commandId: 'cmd-golden',
-        payload: { result: { content: '' } },
-      },
-      {
-        type: 'portal.command.completed',
-        commandId: 'cmd-golden',
-        payload: { result: { success: true } },
-      },
-      {
-        type: 'portal.command.completed',
-        commandId: 'cmd-golden',
-        payload: { result: { content: '# From Portal' } },
-      },
-    ]);
-    expect(mockedTelemetry.mock.calls).toEqual([
-      [{ action: 'update', workspaceId: 'local-ws', source: 'portal' }],
-    ]);
-  });
-
-  it.each([
-    ['malformed id', { workspaceId: 'Bad Id!' }],
-    ['missing id', {}],
-    ['non-object', 'nope'],
-    ['source-backed escape', { workspaceId: 'source-ws' }],
-    ['unreadable copy', { workspaceId: 'broken-ws' }],
-  ])('pins a failed get for %s', async (_name, payload) => {
-    symlinkSync('../outside.md', join(repo, 'AGENTS.md'));
-    expect(
-      await portal('portal.workspace.claude_md.get', payload),
-    ).toMatchSnapshot();
-  });
-
-  it.each([
-    ['malformed id', { workspaceId: 'Bad Id!', content: 'x' }],
-    ['missing content', { workspaceId: 'local-ws' }],
-    ['source-backed escape', { workspaceId: 'source-ws', content: 'x' }],
-    ['unreadable copy', { workspaceId: 'broken-ws', content: 'x' }],
-  ])('pins a failed save for %s', async (_name, payload) => {
-    symlinkSync('../outside.md', join(repo, 'AGENTS.md'));
-    expect(
-      await portal('portal.workspace.claude_md.save', payload),
-    ).toMatchSnapshot();
     expect(mockedTelemetry).not.toHaveBeenCalled();
   });
 });

@@ -321,6 +321,7 @@ import {
 import { chatTurnOutcomeOf } from '../agent-runs/turn-runs';
 import { interruptClaudeSessionForStop } from '../agents/claude-session';
 import { isRootTerminalChatEventData } from '../lib/chat-turn-audit';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 const TURN: AgentWorkerContext = { kind: 'turn', runId: 'turn-1' };
 const CHAIN_UUID = '11111111-2222-4333-8444-555555555555';
@@ -367,6 +368,7 @@ async function flushUntil(done: () => boolean): Promise<void> {
 function getNoWindow(): null {
   return null;
 }
+const noWindowPort = windowAgentInterfacePort(getNoWindow);
 
 function createGate(): { promise: Promise<void>; release: () => void } {
   let release = (): void => undefined;
@@ -422,7 +424,7 @@ async function providerInTurn(
   providerType: ClaudeHarnessProviderType,
 ): Promise<AgentProvider> {
   return runInAgentWorker(TURN, () =>
-    getClaudeWorkerRuntime().providerFor(providerType, getNoWindow),
+    getClaudeWorkerRuntime().providerFor(providerType, noWindowPort),
   );
 }
 
@@ -446,7 +448,7 @@ async function openSession(
         ...extra,
       },
       onEvent,
-      getNoWindow,
+      noWindowPort,
     ),
   );
 }
@@ -746,7 +748,7 @@ describe.each(['claude', 'ollama'] as const)(
 
     it('a session outside a worker run is refused before any query starts', async () => {
       await expect(
-        getClaudeWorkerRuntime().providerFor(providerType, getNoWindow),
+        getClaudeWorkerRuntime().providerFor(providerType, noWindowPort),
       ).rejects.toBeInstanceOf(AgentOutsideWorkerError);
       const provider = await providerInTurn(providerType);
       expect(() =>
@@ -759,7 +761,7 @@ describe.each(['claude', 'ollama'] as const)(
             ...(providerType === 'ollama' ? { model: OLLAMA_MODEL } : {}),
           },
           jest.fn(),
-          getNoWindow,
+          noWindowPort,
         ),
       ).toThrow(AgentOutsideWorkerError);
       await flush();

@@ -4,8 +4,7 @@ import type {
   PortalMergePrStep,
 } from '@canopy/protocol/portal';
 import type { MergePrProgressEvent } from '@canopy/desktop-shared/types/github';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
-import { emitPrStatusDelta } from './portal-pr-delta';
+import { scheduleDesktopStructureChanged } from './desktop-structure-signal';
 
 type MergeProjection = Pick<
   PortalSessionShellState['worktrees'][number],
@@ -39,8 +38,7 @@ export function beginPrMergeProgress(
     steps: [],
     currentPhase: 'checking_mergeability',
   });
-  schedulePortalStructuralSync();
-  emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: feed.get(id) });
+  scheduleDesktopStructureChanged('structural.pr-merge-progress');
 }
 
 export function recordPrMergeProgress(event: MergePrProgressEvent): void {
@@ -52,7 +50,7 @@ export function recordPrMergeProgress(event: MergePrProgressEvent): void {
   const isTerminal = event.phase === 'done' || event.phase === 'error';
   if (event.phase !== 'done' && event.phase !== 'error') {
     progress.set(id, { mergingPr: true, mergePrPhase: event.phase });
-    schedulePortalStructuralSync();
+    scheduleDesktopStructureChanged('structural.pr-merge-progress');
   }
 
   const existing = feed.get(id);
@@ -90,9 +88,6 @@ export function recordPrMergeProgress(event: MergePrProgressEvent): void {
           : event.phase,
     };
     feed.set(id, next);
-    emitPrStatusDelta(event.projectId, event.worktreeId, {
-      mergeProgress: next,
-    });
   }
 }
 
@@ -122,18 +117,16 @@ export function finishPrMergeProgress(
       currentPhase: 'error',
     };
     feed.set(id, errored);
-    emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: errored });
   }
   // Keep terminal feeds so the card can render `Failed` or `Merged` after the
   // operation ends; the next `beginPrMergeProgress` resets either one. Active
-  // feeds still need a tombstone on cancellation or an early refusal.
+  // feeds are dropped on cancellation or an early refusal.
   const finalPhase = feed.get(id)?.currentPhase;
   if (finalPhase !== 'error' && finalPhase !== 'done') {
-    if (feed.delete(id)) {
-      emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: null });
-    }
+    feed.delete(id);
   }
-  if (hadProgress) schedulePortalStructuralSync();
+  if (hadProgress)
+    scheduleDesktopStructureChanged('structural.pr-merge-progress');
 }
 
 export function getPrMergeProgress(
@@ -161,9 +154,7 @@ export function clearPrMergeProgressFeed(
   workspaceId: string,
   worktreeId: string,
 ): void {
-  if (feed.delete(key(workspaceId, worktreeId))) {
-    emitPrStatusDelta(workspaceId, worktreeId, { mergeProgress: null });
-  }
+  feed.delete(key(workspaceId, worktreeId));
 }
 
 /** Drop every merge map entry for a worktree (deletion / cleanup paths). */

@@ -5,6 +5,7 @@ import { useCanopyClient, useCapabilities } from '@canopy/app-state';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { useRecoveryShellSnapshotStore } from '@/stores/recoveryShellSnapshotStore';
 import { isDesktopSharedSidebarEnabled } from '../sidebar/desktop-shared-sidebar-flag';
+import { useLocalBackgroundServiceNotice } from './useLocalBackgroundServiceNotice';
 
 export function WorkspaceRecoveryNotice(): JSX.Element | null {
   const local = useRemoteControlStore(
@@ -16,6 +17,7 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
   const snapshot = useRecoveryShellSnapshotStore((store) => store.snapshot);
   const [status, setStatus] = useState<W5RecoveryStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const service = useLocalBackgroundServiceNotice(local);
   const paused =
     status?.state === 'restart-required' ||
     status?.reason === 'request-unavailable';
@@ -77,6 +79,7 @@ export function WorkspaceRecoveryNotice(): JSX.Element | null {
       canRecover={capabilities.workspaceRecovery === true}
       coldBusy={busy}
       onRecover={recover}
+      service={service}
     />
   );
 }

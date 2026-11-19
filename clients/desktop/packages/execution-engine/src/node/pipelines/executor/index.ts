@@ -70,6 +70,7 @@ export {
   getGlobalExecutionWorkspaceDir,
   isTopLevelGlobalRun,
   MatrixExecutorInactiveError,
+  PipelineExecutionNotFoundError,
   groupJobsByTier,
   isKnownOrphanedExecution,
   rerunPipelineExecution,

@@ -31,6 +31,7 @@ import {
 } from '../lib/e2e-mock-control-plane';
 import { logMainProcessInfo } from '../lib/main-process-logging';
 import { isRecord } from '../lib/type-guards';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 /**
  * Models the signed-in Codex account can run natively, and the service tiers
@@ -495,6 +496,8 @@ function scheduleRefresh(): void {
     refreshDue(false);
     return;
   }
+  // A local-only build fetches when a surface opens, never on a timer.
+  if (!allowsAutomaticCall('models.codex-account-refresh')) return;
   refreshTimer = setTimeout(onRefreshTimer, delay);
 }
 

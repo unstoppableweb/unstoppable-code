@@ -3,13 +3,18 @@ import { VaultEntryDeleteParamsSchema } from '@canopy/protocol/canopy-core';
 import type {
   VaultDeleteOutcome,
   VaultDeleteRequest,
+  VaultMutationStep,
   VaultNotFound,
   VaultSecretRef,
 } from '../../../vault/contracts';
 import { isWellFormedText } from './canonical-encoding';
 import type { VaultReadView, VaultViewEntry } from './read-view';
 import { vaultDeleteReceipt, vaultDeleteReceiptMatches } from './receipts';
-import type { VaultStore } from './store';
+import {
+  vaultIoClass,
+  vaultStoreUnavailableOutcome,
+  type VaultStore,
+} from './store';
 import { refuseVaultWrite, type VaultWriteRefusal } from './write-refusal';
 
 /*
@@ -288,12 +293,12 @@ export function createVaultDeletePath(
     const tombstoneRevision = receipt.expectedRevision + 1;
     // The store erases the entry's row, ciphertext included, in this transaction.
     const written = store.commitTombstone(sequence, tombstoneRevision);
-    if (written.kind === 'uncertain') receipt.tombstoneUncertain = true;
+    if (written.kind === 'uncertain') {
+      receipt.tombstoneUncertain = true;
+      return { kind: 'outcome_unknown', ref };
+    }
     if (written.kind !== 'written')
-      return {
-        kind: written.kind === 'uncertain' ? 'outcome_unknown' : 'unavailable',
-        ref,
-      };
+      return vaultStoreUnavailableOutcome(ref, written);
     entries.delete(entryId);
     deleted.add(entryId);
     return { kind: 'committed', ref, tombstoneRevision };
@@ -305,12 +310,17 @@ export function createVaultDeletePath(
     sequence: number,
   ): Promise<VaultDeleteOutcome> {
     const ref = refOf(receipt.entryId);
+    let step: VaultMutationStep = 'hold';
+    store.setIntentRunning(sequence, true);
     try {
       await hold(sequence);
       if (receipt.superseded) return { kind: 'superseded', ref };
+      step = 'apply';
       return tombstone(receipt, sequence);
-    } catch {
-      return { kind: 'unavailable', ref };
+    } catch (error) {
+      return { kind: 'unavailable', ref, step, io: vaultIoClass(error) };
+    } finally {
+      store.setIntentRunning(sequence, false);
     }
   }
 

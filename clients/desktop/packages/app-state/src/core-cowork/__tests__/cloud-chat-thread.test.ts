@@ -136,6 +136,8 @@ function harness(
     readonly liveRefused?: boolean;
     readonly hostOwnsRuntime?: boolean;
     readonly readConversation?: () => boolean;
+    /** The events' revision carries agent_work.changed; true unless set. */
+    readonly agentWorkEvents?: boolean;
   } = {},
 ): Harness {
   const stream = controlledStream();
@@ -208,6 +210,7 @@ function harness(
     ...(options.readConversation === undefined
       ? {}
       : { readConversation: options.readConversation }),
+    agentWorkEvents: () => options.agentWorkEvents !== false,
   });
   return { thread, calls, state, stream, lives, deferLive, project };
 }
@@ -3891,6 +3894,217 @@ describe('committed reply steps (CAN-6116)', () => {
       ['a1', [document]],
       ['a1:step-1', undefined],
       ['a1:step-2', [deliverable]],
+    ]);
+  });
+});
+
+describe("a cloud chat thread's agent tasks and agent work (CAN-6746)", () => {
+  const taskRow = (status: string): Record<string, unknown> => ({
+    taskId: 'task-1',
+    stateVersion: '1',
+    kind: 'background_shell',
+    harness: 'CLAUDE_CODE',
+    status,
+    stopReason: null,
+    native: {},
+    parentTaskId: null,
+    spawnTurnId: null,
+    spawnToolCallId: null,
+    title: null,
+    description: null,
+    prompt: null,
+    subagentType: null,
+    thinkingEffort: null,
+    costUsd: null,
+    summary: null,
+    outputTail: null,
+    model: null,
+    usage: null,
+    error: null,
+    createdAtMs: null,
+    startedAtMs: null,
+    updatedAtMs: null,
+    completedAtMs: null,
+    approvalPending: false,
+    background: true,
+  });
+  const batch = (
+    revision: number,
+    changes: Record<string, unknown>[],
+  ): Record<string, unknown> => ({
+    kind: 'item',
+    cursor: { daemonEpoch: 'e1', sequence: revision },
+    item: {
+      schemaVersion: 1,
+      eventId: `ev-${revision}`,
+      occurredAt: '2026-11-18T12:00:00.000Z',
+      projectId: 'ws-1',
+      worktreeId: 'chat-1',
+      baseRevision: revision - 1,
+      revision,
+      changes,
+    },
+  });
+  const work = (wakeParked: unknown): Record<string, unknown> => ({
+    type: 'agent_work.changed',
+    chatId: 'chat-1',
+    wakeParked,
+    backgroundWork: null,
+  });
+
+  const parked = { reason: 'wake_limit', since: '2026-11-18T12:00:00.000Z' };
+  const listed = (status: string): Record<string, unknown> => ({
+    type: 'agent_tasks.replaced',
+    chatId: 'chat-1',
+    tasks: [taskRow(status)],
+  });
+  const reply = (id: string): Record<string, unknown> => ({
+    type: 'message.upserted',
+    chatId: 'chat-1',
+    message: message(id, id),
+  });
+  const update = (
+    tasksChanged: boolean,
+    wakeParked?: unknown,
+    reread = false,
+  ): Record<string, unknown> => ({
+    tasksChanged,
+    reread,
+    ...(wakeParked === undefined
+      ? {}
+      : { work: { wakeParked, backgroundWork: null } }),
+  });
+  const running = (): ReturnType<typeof harness> =>
+    harness({
+      'core.chat.snapshot.get': () =>
+        ok({ ...snapshot('idle'), tasks: [taskRow('running')] }),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hi'))),
+    });
+
+  it('reports once per batch: its tasks only when their content changes, and the agent work it carries', async () => {
+    const { thread, stream, state } = running();
+    await flush();
+    const reported = jest.fn();
+    thread.subscribeAgentWork(reported);
+    // The replayed head the thread holds, then the list sent again beside a
+    // message, then a park in the batch of the wake turn's last message.
+    stream.push(batch(4, [listed('running'), work(null)]));
+    stream.push(batch(5, [reply('m2'), listed('running'), work(null)]));
+    stream.push(batch(6, [reply('m3'), listed('running'), work(parked)]));
+    stream.push(batch(7, [reply('m4')]));
+    stream.push(batch(8, [listed('completed'), work(parked)]));
+    await flush();
+    expect(reported.mock.calls).toEqual([
+      [update(false, null)],
+      [update(false, null)],
+      [update(false, parked)],
+      [update(true, parked)],
+    ]);
+    expect(state.hydrate.mock.calls.at(-1)?.[1]).toHaveLength(4);
+    expect(thread.getAgentTasks()).toMatchObject([{ status: 'completed' }]);
+  });
+
+  // A cursorless open replays the head batch, and a push-leg reconnect a
+  // batch the thread applied: either is read from Core when served, so it
+  // may hold the only copy of a change.
+  it('takes agent tasks and work from a batch it already holds', async () => {
+    const { thread, stream, project } = running();
+    await flush();
+    const reported = jest.fn();
+    thread.subscribeAgentWork(reported);
+    stream.push(batch(4, [listed('completed'), work(parked)]));
+    await flush();
+    expect(reported.mock.calls).toEqual([[update(true, parked)]]);
+    expect(project).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tasks: [expect.objectContaining({ status: 'completed' })],
+      }),
+    );
+    stream.push(batch(5, [reply('m2'), listed('completed'), work(parked)]));
+    stream.push(batch(5, [reply('m2'), listed('completed'), work(null)]));
+    await flush();
+    expect(reported.mock.calls.at(-1)).toEqual([update(false, null)]);
+  });
+
+  // Below revision 5 no batch carries agent work: the list each Core batch
+  // sends again is its only sign that a wake parked or resumed. A chat with
+  // no tasks has no wake to park, and its empty list is never a change.
+  it.each([
+    [
+      3,
+      'one task',
+      false,
+      [
+        [true, undefined],
+        [true, undefined],
+      ],
+    ],
+    [3, 'no tasks', false, []],
+    [
+      5,
+      'one task',
+      true,
+      [
+        [false, null],
+        [false, null],
+      ],
+    ],
+  ] as const)(
+    'at events revision %s with %s, a task list sent again is a change: %s',
+    async (_revision, held, agentWorkEvents, expected) => {
+      const rows = held === 'one task' ? [taskRow('running')] : [];
+      const { thread, stream } = harness(
+        {
+          'core.chat.snapshot.get': () =>
+            ok({ ...snapshot('idle'), tasks: rows }),
+          'core.chat.transcript.page': () =>
+            ok(transcript(message('m1', 'Hi'))),
+        },
+        { agentWorkEvents },
+      );
+      await flush();
+      const reported = jest.fn();
+      thread.subscribeAgentWork(reported);
+      const sent = {
+        type: 'agent_tasks.replaced',
+        chatId: 'chat-1',
+        tasks: rows,
+      };
+      const carried = agentWorkEvents ? [work(null)] : [];
+      stream.push(batch(5, [reply('m2'), sent, ...carried]));
+      stream.push(batch(6, [reply('m3'), sent, ...carried]));
+      await flush();
+      expect(reported.mock.calls).toEqual(
+        expected.map(([tasks, parked]) => [update(tasks, parked)]),
+      );
+    },
+  );
+
+  // A park made while the stream was down may ride no batch the new stream
+  // sends, and a stream with nothing to replay yields nothing until the next
+  // commit: each snapshot read asks the host to read agent work again.
+  it('asks its host to read agent work again after each snapshot read, though its tasks did not change and no batch comes', async () => {
+    let reads = 0;
+    const { thread, stream } = harness({
+      'core.chat.snapshot.get': () =>
+        ok({
+          ...snapshot('idle', (reads += 1) === 1 ? 4 : 6),
+          tasks: [taskRow('running')],
+        }),
+      'core.chat.transcript.page': () => ok(transcript(message('m1', 'Hi'))),
+    });
+    await flush();
+    const reported = jest.fn();
+    thread.subscribeAgentWork(reported);
+    stream.push(batch(5, [listed('running'), work(null)]));
+    await flush();
+    // Disconnected: a wake parked meanwhile, with the same task rows.
+    stream.end();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(reads).toBe(2);
+    expect(reported.mock.calls).toEqual([
+      [update(false, null)],
+      [update(false, undefined, true)],
     ]);
   });
 });

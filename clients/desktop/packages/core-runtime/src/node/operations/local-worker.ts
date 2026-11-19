@@ -289,24 +289,21 @@ export class LocalWorkerExecution {
   }
 
   async getDelegation(delegationId: string): Promise<DelegationRecord | null> {
-    return (await this.ledger()).getDelegation(delegationId);
+    await this.placement();
+    return this.options.operations.getDelegation(delegationId);
   }
 
   /** A parent's dispatches, oldest first. */
   async listDelegations(
     parentOperationId: string,
   ): Promise<DelegationRecord[]> {
-    return (await this.ledger()).listDelegations(parentOperationId);
+    await this.placement();
+    return this.options.operations.listDelegations(parentOperationId);
   }
 
   /** This run's degenerate lease on the builtin target. */
   async lease(): Promise<DelegationLeaseRecord> {
     return this.placement();
-  }
-
-  private async ledger(): Promise<OperationLedger> {
-    await this.placement();
-    return this.options.operations.ready();
   }
 
   /**

@@ -4,14 +4,19 @@ jest.mock('electron', () => ({
   ipcMain: { on: jest.fn(), removeHandler: jest.fn(), handle: jest.fn() },
 }));
 
-const mockInstructions: Array<{
+interface MockInstruction {
   name: string;
-  params: unknown;
-  options: unknown;
-}> = [];
+  params: { commandId: string; _meta: { idempotencyKey: string } };
+  options: { metadata: { idempotencyKey: string } };
+}
+const mockInstructions: MockInstruction[] = [];
 jest.mock('../../canopy-runtime/desktop-runtime', () => ({
   getActiveDesktopRuntime: (): object => ({
-    instruction: (name: string, params: unknown, options: unknown): object => {
+    instruction: (
+      name: string,
+      params: MockInstruction['params'],
+      options: MockInstruction['options'],
+    ): object => {
       mockInstructions.push({ name, params, options });
       return Promise.resolve({
         commandId: 'k',
@@ -60,7 +65,28 @@ jest.mock('../../ipc/chat', () => ({
   },
 }));
 
+import { validateId } from '../../lib/validation';
 import { mainAdvisorChatSettingsHost } from '../advisor-chat-settings-host';
+
+const SETTINGS_KEY = 'app-advisor-action:advisor-chat:toolu_1:settings';
+const PLAN_ACTION = {
+  type: 'chat.patch_tab_settings',
+  tabId: 'chat-1',
+  patch: { planMode: true },
+};
+
+/** The command id of each core.chat.update sent, with its keys. */
+function sentCommandIds(): Array<{
+  commandId: string;
+  meta: string;
+  metadata: string;
+}> {
+  return mockInstructions.map(({ params, options }) => ({
+    commandId: params.commandId,
+    meta: params._meta.idempotencyKey,
+    metadata: options.metadata.idempotencyKey,
+  }));
+}
 
 function host(): ReturnType<typeof mainAdvisorChatSettingsHost> {
   return mainAdvisorChatSettingsHost({
@@ -86,31 +112,24 @@ describe('App Advisor chat settings host (CAN-5999 part 2)', () => {
     const result = await host().updateChat({
       projectId: 'proj',
       worktreeId: 'wt',
-      action: {
-        type: 'chat.patch_tab_settings',
-        tabId: 'chat-1',
-        patch: { planMode: true },
-      },
-      idempotencyKey: 'app-advisor-action:advisor-chat:toolu_1:settings',
+      action: PLAN_ACTION,
+      idempotencyKey: SETTINGS_KEY,
     });
 
     expect(result).toEqual({ outcome: 'applied' });
+    const commandId: unknown = expect.stringMatching(
+      /^app-advisor-action-[0-9a-f]{40}$/,
+    );
     expect(mockInstructions).toEqual([
       {
         name: 'core.chat.update',
         params: {
           projectId: 'proj',
           worktreeId: 'wt',
-          commandId: 'app-advisor-action:advisor-chat:toolu_1:settings',
+          commandId,
           origin: 'desktop',
-          action: {
-            type: 'chat.patch_tab_settings',
-            tabId: 'chat-1',
-            patch: { planMode: true },
-          },
-          _meta: {
-            idempotencyKey: 'app-advisor-action:advisor-chat:toolu_1:settings',
-          },
+          action: PLAN_ACTION,
+          _meta: { idempotencyKey: commandId },
         },
         options: {
           caller: {
@@ -120,12 +139,39 @@ describe('App Advisor chat settings host (CAN-5999 part 2)', () => {
             interfaceKind: 'mcp',
             grants: ['core.chat.write'],
           },
-          metadata: {
-            idempotencyKey: 'app-advisor-action:advisor-chat:toolu_1:settings',
-          },
+          metadata: { idempotencyKey: commandId },
         },
       },
     ]);
+    // The adapter requires the command id and both keys to match.
+    const [sent] = sentCommandIds();
+    expect(sent?.meta).toBe(sent?.commandId);
+    expect(sent?.metadata).toBe(sent?.commandId);
+  });
+
+  it("derives a command id core's chat command validation accepts, stable per key and distinct across keys (CAN-7221)", async () => {
+    const send = (
+      idempotencyKey: string,
+    ): ReturnType<ReturnType<typeof host>['updateChat']> =>
+      host().updateChat({
+        projectId: 'proj',
+        worktreeId: 'wt',
+        action: PLAN_ACTION,
+        idempotencyKey,
+      });
+    await send(SETTINGS_KEY);
+    await send(SETTINGS_KEY);
+    await send('app-advisor-action:advisor-chat:toolu_2:settings');
+    await send('app-advisor-action:advisor-chat-2:toolu_1:settings');
+
+    const ids = sentCommandIds().map(({ commandId }) => commandId);
+    // The raw key, with its colons and the provider's tool-use id, is not
+    // a safe id; the command id sent instead passes the same validator.
+    expect(() => validateId(SETTINGS_KEY, 'commandId')).toThrow();
+    for (const id of ids)
+      expect(() => validateId(id, 'commandId')).not.toThrow();
+    expect(ids[1]).toBe(ids[0]);
+    expect(new Set(ids).size).toBe(3);
   });
 
   it('restarts the Claude terminal after a change, and a failed restart never fails the change', async () => {

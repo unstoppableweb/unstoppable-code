@@ -1,3 +1,10 @@
+import {
+  isOrganizationSkillSourceId,
+  withOnlyAllowedOrganizationRefs,
+} from '@canopy/desktop-shared/lib/organization-capabilities';
+import type { ConnectorScope } from '@canopy/desktop-shared/lib/connector-scope';
+import type { OrganizationLayer } from '../organization-capabilities/service';
+import { connectorScopeForOwnership } from '@canopy/desktop-shared/lib/connector-scope';
 import { createHash } from 'node:crypto';
 import {
   CatalogHostRefusedError,
@@ -89,6 +96,8 @@ export interface DesktopCatalogHostDeps {
   readWorkspaceConfig(workspaceId: string): Promise<{
     config: WorkspaceConfigFile;
     authority: 'ok' | 'absent' | 'unreadable';
+    /** The owner binding failed validation and was dropped from `config`. */
+    ownerMalformed?: boolean;
   }>;
   readWorkspaceRevision(workspaceId: string): Promise<number>;
   readChatTabs(workspaceId: string, worktreeId: string): Promise<ChatTabsFile>;
@@ -102,6 +111,28 @@ export interface DesktopCatalogHostDeps {
     params: CoreWorkspacePluginsUpdateParams,
     caller: CanopyCallerDescriptor,
   ): Promise<CoreWorkspacePluginsUpdateResult>;
+  /**
+   * The organization layer of a workspace of `scope` (CAN-6237); absent
+   * reads it from the organization capabilities service.
+   */
+  readOrganizationLayer?(
+    workspaceId: string,
+    scope: ConnectorScope,
+  ): Promise<OrganizationLayer | undefined>;
+}
+
+function readOrganizationLayer(
+  deps: Pick<DesktopCatalogHostDeps, 'readOrganizationLayer'>,
+  workspaceId: string,
+  scope: ConnectorScope,
+): Promise<OrganizationLayer | undefined> {
+  return (
+    deps.readOrganizationLayer
+      ? deps.readOrganizationLayer(workspaceId, scope)
+      : import('../organization-capabilities/service').then((service) =>
+          service.organizationLayerForWorkspace(workspaceId, scope),
+        )
+  ).catch(() => undefined);
 }
 
 const defaultDeps: Omit<
@@ -320,6 +351,7 @@ export async function readDesktopChatSelectionLayers(
     | 'readChatTabs'
     | 'normalizeAccountSelections'
     | 'normalizeAccountTombstones'
+    | 'readOrganizationLayer'
   >,
   scope: { workspaceId: string; worktreeId: string; chatId: string },
 ): Promise<{
@@ -338,6 +370,7 @@ export async function readDesktopChatSelectionLayers(
   const uses = chatSurfaceUsesGlobalPluginDefaults(scope.workspaceId);
   let wsRevision = 0;
   let config: WorkspaceConfigFile | null = null;
+  let ownerMalformed = false;
   if (uses) {
     try {
       wsRevision = await deps.readWorkspaceRevision(layerId);
@@ -350,6 +383,7 @@ export async function readDesktopChatSelectionLayers(
     if (workspace.authority === 'absent')
       throw new CatalogSelectionNotFoundError();
     config = workspace.config;
+    ownerMalformed = workspace.ownerMalformed === true;
   }
   let tabs: ChatTabsFile;
   try {
@@ -364,6 +398,24 @@ export async function readDesktopChatSelectionLayers(
     tab.disabledGlobalPluginSelections,
   );
   const inherits = chatInheritsProjectDefaults(tab);
+  // In an organization's workspace a person's global connectors stay out
+  // (CAN-6230), and the organization's shared set is inherited and enforced
+  // (CAN-6237, CAN-6240), as the session resolves them. An owner that failed
+  // validation is the organization case it cannot rule out, as the session
+  // reads it.
+  const connectorScope = config
+    ? connectorScopeForOwnership(
+        ownerMalformed
+          ? { authority: 'unreadable' }
+          : {
+              authority: 'ok',
+              ...(config.owner ? { owner: config.owner } : {}),
+            },
+      )
+    : undefined;
+  const organization = connectorScope
+    ? await readOrganizationLayer(deps, layerId, connectorScope)
+    : undefined;
   const effective = config
     ? effectiveChatPluginSelections({
         local: await deps.normalizeAccountSelections(local),
@@ -379,8 +431,18 @@ export async function readDesktopChatSelectionLayers(
           config.disabledGlobalPluginSelections,
         ),
         chatTombstones: await deps.normalizeAccountTombstones(chatTombstones),
+        ...(connectorScope ? { connectorScope } : {}),
+        ...(organization && inherits
+          ? { organization: organization.layer }
+          : {}),
+        ...(organization
+          ? { allowedOrganizationItems: organization.allowed }
+          : {}),
       })
-    : await deps.normalizeAccountSelections(local);
+    : withOnlyAllowedOrganizationRefs(
+        await deps.normalizeAccountSelections(local),
+        undefined,
+      ).selections;
   const tombstones = catalogSelectionRefsOf(chatTombstones ?? {});
   const globalTag = globalRead(preferences).revision;
   return {
@@ -392,9 +454,23 @@ export async function readDesktopChatSelectionLayers(
         tombstones,
         inherits,
         uses,
+        organization: organization
+          ? catalogSelectionRefsOf(organization.layer)
+          : null,
       }),
       selections: catalogSelectionRefsOf(effective),
       tombstones,
+      // An organization's skill copies are not in the skill inventory the
+      // snapshot lists, but the turn loads those the workspace allows.
+      ...(organization
+        ? {
+            offered: catalogSelectionRefsOf({
+              skillRefs: organization.allowed.selections.skillRefs.filter(
+                (ref) => isOrganizationSkillSourceId(ref.sourceId),
+              ),
+            }),
+          }
+        : {}),
     },
     effective,
     preferences,

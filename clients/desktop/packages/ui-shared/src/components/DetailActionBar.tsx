@@ -70,7 +70,20 @@ export function DetailActionBar({
   slots,
   dataTestId = 'detail-action-bar',
 }: DetailActionBarProps): JSX.Element | null {
+  const intoShell = useContext(DetailActionBarIntoShellContext);
+  const shellSlots = useContext(DetailActionSlotsContext);
   if (!slots && !more && !secondary && !share && !primary) return null;
+  // On a title row that shows the shell's bar, the page's actions take the
+  // shell's slots, so the row keeps one `[⋯] [secondary] [Share] [primary]`.
+  if (!slots && intoShell && shellSlots)
+    return (
+      <DetailPageActions
+        more={more}
+        secondary={secondary}
+        share={share}
+        primary={primary}
+      />
+    );
   return (
     <div
       className="flex min-w-0 flex-wrap items-center justify-end gap-2"
@@ -133,6 +146,24 @@ export function useDetailActionSlots(): DetailActionSlots {
 }
 
 const DetailActionSlotsContext = createContext<DetailActionSlots | null>(null);
+
+/**
+ * Set by a layout whose title row shows the shell's bar: a page
+ * `DetailActionBar` inside it renders into the shell's slots.
+ */
+const DetailActionBarIntoShellContext = createContext(false);
+
+export function DetailActionBarIntoShell({
+  children,
+}: {
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <DetailActionBarIntoShellContext.Provider value={true}>
+      {children}
+    </DetailActionBarIntoShellContext.Provider>
+  );
+}
 
 export function DetailActionSlotsProvider({
   slots,
@@ -199,4 +230,62 @@ export function DetailPageActions({
       {primary && slots.primary && createPortal(primary, slots.primary)}
     </>
   );
+}
+
+/**
+ * A page shell's own actions (its Share, ⋯ rows and body-declared slots),
+ * which a body's `CapabilityDetailLayout` claims for its title row (New
+ * Customize). While claimed, the shell leaves its Back-row bar out.
+ */
+interface DetailHeaderActionsHost {
+  readonly actions: ReactNode;
+  readonly claimed: boolean;
+  readonly claim: () => () => void;
+}
+
+const DetailHeaderActionsContext =
+  createContext<DetailHeaderActionsHost | null>(null);
+
+/** Shell side: offers its bar to a layout and says whether one claimed it. */
+export function useDetailHeaderActionsHost(actions: ReactNode): {
+  readonly host: DetailHeaderActionsHost;
+  readonly claimed: boolean;
+} {
+  const [claims, setClaims] = useState(0);
+  const claim = useCallback((): (() => void) => {
+    setClaims((count) => count + 1);
+    return () => setClaims((count) => count - 1);
+  }, []);
+  const claimed = claims > 0;
+  const host = useMemo(
+    () => ({ actions, claimed, claim }),
+    [actions, claimed, claim],
+  );
+  return { host, claimed };
+}
+
+export function DetailHeaderActionsProvider({
+  host,
+  children,
+}: {
+  host: DetailHeaderActionsHost;
+  children: ReactNode;
+}): JSX.Element {
+  return (
+    <DetailHeaderActionsContext.Provider value={host}>
+      {children}
+    </DetailHeaderActionsContext.Provider>
+  );
+}
+
+/**
+ * Layout side: claims the enclosing shell's actions and returns them once the
+ * shell has let go of its own row, so the bar (and its portal slots) mounts
+ * in one place at a time.
+ */
+export function useDetailHeaderActionsClaim(): ReactNode {
+  const host = useContext(DetailHeaderActionsContext);
+  const claim = host?.claim;
+  useLayoutEffect(() => claim?.(), [claim]);
+  return host?.claimed ? host.actions : null;
 }

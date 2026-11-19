@@ -521,10 +521,6 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     chatEvent: 'tunnel',
     // B renderer executes it; forwarding would apply twice
     chatWindowCommand: 'blocked',
-    // B renderer executes it; forwarding would apply twice
-    chatPortalComposerCommand: 'blocked',
-    // answered by B renderer only
-    chatPortalComposerCommandResult: 'blocked',
     chatLoadTabs: 'tunnel',
     chatFlushScope: 'tunnel',
     chatForkOpenWorktreeTabs: 'tunnel',
@@ -576,6 +572,15 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // Values go only from the local window to this computer's store.
     secretRequestSubmit: 'blocked',
     secretRequestDecline: 'blocked',
+    // The Secrets chip reaches paired devices with U7; until then only the
+    // local window lists, revokes or restarts.
+    agentSecretsList: 'blocked',
+    agentSecretsRevoke: 'blocked',
+    agentSecretsRestart: 'blocked',
+    agentSecretsChanged: 'blocked',
+    // A pasted value goes only from the local window to this computer's
+    // store.
+    agentSecretsStorePasted: 'blocked',
     approvalRequest: 'tunnel',
     approvalCancelled: 'tunnel',
     approvalAutoResolved: 'tunnel',
@@ -651,6 +656,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     ledgerFeedGetEntry: 'tunnel',
     ledgerFeedWork: 'tunnel',
     workEntriesList: 'tunnel',
+    // A cowork project's archived and deleted Work Entries, read only: the
+    // overview Portal's archived list served (CAN-5986).
+    workEntriesListArchived: 'tunnel',
     workEntriesCreate: 'tunnel',
     workEntriesUpdate: 'tunnel',
     workEntriesReorder: 'tunnel',
@@ -864,6 +872,7 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     fileReadDocumentBytes: 'tunnel',
     fileSaveContent: 'tunnel',
     modelRegistryGet: 'tunnel',
+    providerUsageLimitsGet: 'tunnel',
     modelRegistryUpdated: 'tunnel',
     aiGatewayModelCatalogRetry: 'tunnel',
     harnessAssignmentsLoad: 'tunnel',
@@ -961,6 +970,14 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     voiceEvent: 'local',
     // voice dictation/microphone on this machine
     voiceOpenSettings: 'local',
+    // speech model download and removal on this machine
+    voiceSpeechModelStatus: 'local',
+    // speech model download and removal on this machine
+    voiceSpeechModelInstall: 'local',
+    // speech model download and removal on this machine
+    voiceSpeechModelCancel: 'local',
+    // speech model download and removal on this machine
+    voiceSpeechModelRemove: 'local',
     terminalSpawn: 'tunnel',
     terminalRestore: 'tunnel',
     terminalAttach: 'tunnel',
@@ -1120,18 +1137,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     browserAnswerAuthRequest: 'blocked',
     // in-app browser native view not available remotely
     browserEvent: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalGetState: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalStart: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalStop: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalRegeneratePairingCode: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalCancelPairingCode: 'blocked',
-    // Remote Control (Portal) pairing/state of B
-    canopyPortalStateChanged: 'blocked',
+    // The organization layer a remote-controlled renderer's pickers show (CAN-6237).
+    organizationCapabilitiesGetLayer: 'tunnel',
+    organizationCapabilitiesLayerChanged: 'tunnel',
     experimentsGetSnapshot: 'tunnel',
     experimentsSetChoice: 'tunnel',
     experimentsSnapshotChanged: 'tunnel',
@@ -1188,6 +1196,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     cloudChatsDownloadFile: 'blocked',
     // Wakes, and bills, a cloud chat this window has open (CAN-6724).
     cloudChatsWakeFiles: 'blocked',
+    // Adds to a cloud project's shared files from the local person's own
+    // file pick (CAN-7008).
+    cloudChatsUploadWorkspaceFile: 'blocked',
     cloudCopyAnalyze: 'blocked',
     orgProjectsMoveBackToPersonal: 'tunnel',
     orgProjectsOwnershipChanged: 'tunnel',
@@ -1349,6 +1360,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlOpenMachine: 'local',
     remoteControlSetAllowIncoming: 'local',
     remoteControlSetAllowRemoteUpdates: 'local',
+    // Data sharing is the host user's choice: a controller never changes it.
+    remoteControlSetInventorySyncEnabled: 'local',
     remoteControlStartPairing: 'local',
     remoteControlCancelPairing: 'local',
     remoteControlRespondToPairing: 'local',
@@ -1454,6 +1467,10 @@ export const MCP_SERVER_REMOTE_DISPOSITIONS: RemoteDispositions<
   LOAD_SERVER: 'tunnel',
   SAVE_SERVER: 'tunnel',
   DELETE_SERVER: 'tunnel',
+  // No desktop-to-desktop negotiation for stronger repair semantics.
+  REMOVAL_CANDIDATES: 'blocked',
+  INSPECT_REMOVAL: 'blocked',
+  FORCE_REMOVAL: 'blocked',
   CHECK_HEALTH: 'tunnel',
   TEST_CONNECTION: 'tunnel',
   LIST_DETECTED: 'tunnel',

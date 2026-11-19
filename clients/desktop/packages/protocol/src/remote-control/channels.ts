@@ -201,6 +201,10 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   dialog makes, and the `script-actions:changed` push the snapshot
  *   refreshes on. `script-actions:found` is not listed: notices poll the
  *   receipt as Portal does. No terminal channel is added.
+ * - Portal retirement (CAN-5986): `work-entries:list-archived`, a cowork
+ *   project's archived and deleted Work Entries and its legacy archived
+ *   chats, the overview Portal's archived list served. Read only; it
+ *   restores, deletes or reopens nothing.
  * - Terminals: none. Remote Control on the web is terminal-free.
  */
 export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
@@ -280,6 +284,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'tracked-plans:updated',
   'work-entries:create',
   'work-entries:list',
+  'work-entries:list-archived',
   'workspace:add-from-remote',
   'workspace:archive-worktree',
   'workspace:create-worktree',
@@ -337,6 +342,7 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'file-tree:roots',
   'file:read-content',
   'github:get-pr-state',
+  'provider-usage:limits-get',
   'pipelines:get-worktree-execution',
   'pipelines:list-for-worktree',
   'pipelines:list-worktree-executions',

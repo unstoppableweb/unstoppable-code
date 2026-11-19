@@ -38,10 +38,8 @@ import type { HostBridge } from '../host/bridge-window';
 import { RemoteHostSession } from '../host/host-session';
 import { RemoteUploadStore } from '../host/uploads';
 import { RemoteAccessStore } from '../remote-access-store';
-import {
-  RemoteControlService,
-  type PortalOptInRead,
-} from '../remote-control-service';
+import type { LegacyPortalOptInRead } from '../legacy-portal-opt-in';
+import { RemoteControlService } from '../remote-control-service';
 import {
   createRemoteCoreAccess,
   type RemoteCoreAccess,
@@ -344,7 +342,6 @@ describe('updates over a remote session, across protocol versions', () => {
         throw new Error('no relay in this test');
       },
       fetchToken: refuse,
-      isFeatureEnabled: (): boolean => false,
       signedInAccount: (): null => null,
       deviceName: (): string => 'Studio',
       platform: 'darwin',
@@ -363,7 +360,7 @@ describe('updates over a remote session, across protocol versions', () => {
       openLocalFile: (): Promise<void> => Promise.resolve(),
       windows,
       broadcastState: (): void => undefined,
-      readPortalOptIn: (): Promise<PortalOptInRead> =>
+      readLegacyPortalOptIn: (): Promise<LegacyPortalOptInRead> =>
         Promise.resolve({ reliable: false }),
       webOrigin: (): string => 'https://app.example.test',
     });

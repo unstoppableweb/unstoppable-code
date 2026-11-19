@@ -11,6 +11,7 @@ export interface W5RecoveryObservations {
   result(call: W5RecordPortCall<unknown>, result: unknown): void;
   failure(error: unknown): void;
   entries(): readonly W5RecoveryEntry[];
+  hasRecoverableCommit(commitIds: readonly number[]): boolean;
   withoutCompleted(
     entries: readonly W5RecoveryEntry[],
   ): readonly W5RecoveryEntry[];
@@ -155,6 +156,12 @@ export function createW5RecoveryObservations(): W5RecoveryObservations {
       note(details.commitId, target.success ? [target.data] : []);
     },
     entries: () => [...observed.values()].map(({ entry }) => ({ ...entry })),
+    // Every observation is a recovery-required or unapplied commit, which launch
+    // recovery applies or cold recovery retries.
+    hasRecoverableCommit: (commitIds): boolean =>
+      [...observed.keys(), ...commitIds].some(
+        (id) => validId(id) && !isCompleted(id),
+      ),
     withoutCompleted,
   };
 }

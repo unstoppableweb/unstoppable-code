@@ -119,6 +119,7 @@ export function classifyConnectionFailure(
       : undefined;
   if (name === 'TimeoutError' || code === 'ETIMEDOUT') return 'timeout';
   if (signal?.aborted || name === 'AbortError') return 'cancelled';
+  if (name === 'SignInWorkerUnavailableError') return 'runtime_unavailable';
   if (code === 'ENOENT') return 'runtime_unavailable';
   if (code === 'EACCES' || code === 'EPERM' || code === 'ENOSPC')
     return 'storage';

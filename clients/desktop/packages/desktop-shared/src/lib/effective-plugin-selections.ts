@@ -20,7 +20,26 @@
 // re-exports them).
 // ---------------------------------------------------------------------------
 
+import { isAccountMcpInstanceConfigId } from '@canopy/protocol/mcp-servers';
+import {
+  readSelectionRefOwner,
+  selectionRefOwnerKey,
+  withSelectionRefOwner,
+  type SelectionRefOwner,
+} from '@canopy/protocol/plugins';
+import type { ConnectorScope } from './connector-scope';
+import {
+  allowedOrganizationItemsOf,
+  withOnlyAllowedOrganizationRefs,
+  type AllowedOrganizationItems,
+  type OrganizationLayerView,
+} from './organization-capabilities';
 import { buildTryItCapabilityKey } from '@canopy/protocol/try-it';
+import {
+  accountMcpDefaultConnection,
+  resolveAccountMcpRef,
+  type AccountMcpRefResolution,
+} from '@canopy/protocol/mcp-servers';
 
 import type {
   ChatTabPluginSelections,
@@ -90,12 +109,23 @@ function subtractByKey<T>(
 }
 
 const collectionIdKey = (id: string): string => id;
+// A ref's owner is part of its identity (CAN-6235): a person's item and an
+// organization's item with the same two fields are separate entries, and a
+// tombstone of one leaves the other.
 const skillRefKey = (ref: SkillRef): string =>
-  JSON.stringify([ref.sourceId, ref.skillName]);
+  JSON.stringify([
+    ref.sourceId,
+    ref.skillName,
+    selectionRefOwnerKey(ref.owner),
+  ]);
 const pluginRefKey = (ref: PluginRef): string =>
-  JSON.stringify([ref.marketplaceId, ref.pluginName]);
+  JSON.stringify([
+    ref.marketplaceId,
+    ref.pluginName,
+    selectionRefOwnerKey(ref.owner),
+  ]);
 const mcpServerRefKey = (ref: McpServerRef): string =>
-  JSON.stringify([ref.serverId, ref.configId]);
+  JSON.stringify([ref.serverId, ref.configId, selectionRefOwnerKey(ref.owner)]);
 const mcpHttpAuthPreferenceKey = (preference: McpHttpAuthPreference): string =>
   mcpHttpAuthTargetKey(preference.target);
 
@@ -417,6 +447,148 @@ export interface InheritedPluginLayers {
   global?: ChatTabPluginSelections;
   /** The workspace's rejections of global defaults. */
   projectTombstones?: PluginSelectionTombstones;
+  /**
+   * Which workspace case the chat is in (CAN-6231). Read by the connector
+   * rules for organization work; absent reads as Personal.
+   */
+  connectorScope?: ConnectorScope;
+  /**
+   * The organization's shared skills and plugins for this workspace
+   * (CAN-6237): its project's additions and the organization defaults it
+   * keeps, every ref owned by the organization. Inherited like the project
+   * defaults, so a chat that opted out of those gets it only by its own pick.
+   */
+  organization?: ChatTabPluginSelections;
+  /**
+   * What organization-owned refs a chat here may use (CAN-6240), whether or
+   * not it inherits: the workspace's organization layer. An organization ref
+   * outside it (a removed item, or a pick from another project) is left out
+   * of the effective set. Absent: none is allowed.
+   */
+  allowedOrganizationItems?: AllowedOrganizationItems;
+}
+
+/**
+ * The organization fields of a chat's inherited layers from its workspace's
+ * organization layer (CAN-6237): inherited only when the chat inherits
+ * project defaults, and always what it may use. No view: none is allowed.
+ */
+export function organizationLayersFor(
+  view: OrganizationLayerView | null | undefined,
+  inheritsProjectDefaults: boolean,
+): Pick<InheritedPluginLayers, 'organization' | 'allowedOrganizationItems'> {
+  if (!view) return {};
+  return {
+    ...(inheritsProjectDefaults ? { organization: view.layer } : {}),
+    allowedOrganizationItems: allowedOrganizationItemsOf(view),
+  };
+}
+
+/**
+ * The global layer a chat in `scope` inherits (CAN-6230). In an
+ * organization's workspace a person's "load everywhere" connectors stay out,
+ * with their auth preferences: a personal account must not reach shared work
+ * unless the person adds it there. Their global collections, skills and
+ * plugins still load. Personal workspaces, and an absent scope, keep the
+ * whole layer.
+ */
+export function globalLayerForConnectorScope(
+  global: ChatTabPluginSelections | undefined,
+  scope: ConnectorScope | undefined,
+): ChatTabPluginSelections | undefined {
+  if (!global || scope === undefined || scope.kind === 'personal')
+    return global;
+  // A standalone server's auth preference goes with its connector; one for a
+  // server a kept plugin brings stays with that plugin.
+  const pluginAuthPreferences = (global.mcpHttpAuthPreferences ?? []).filter(
+    (preference) => preference.target.kind === 'plugin',
+  );
+  return {
+    ...(global.unresolvedCapabilities
+      ? { unresolvedCapabilities: global.unresolvedCapabilities }
+      : {}),
+    collectionIds: global.collectionIds,
+    skillRefs: global.skillRefs,
+    pluginRefs: global.pluginRefs,
+    mcpServerRefs: [],
+    ...(pluginAuthPreferences.length > 0
+      ? { mcpHttpAuthPreferences: pluginAuthPreferences }
+      : {}),
+  };
+}
+
+/**
+ * A lower layer without the accounts a higher layer picked another account of
+ * the same connector over: a project whose own defaults choose an account of
+ * a connector uses that one, not a global one beside it (CAN-6229), and a
+ * chat or automation that picks an account uses it, not the project's or the
+ * person's other account of that connector (CAN-6233), so it acts as the
+ * account it chose. Only accounts are compared (one side an added `acct-*`
+ * account), so two configurations of a device server keep loading together
+ * as before.
+ */
+export function withoutAccountsPickedOver(
+  layer: ChatTabPluginSelections | undefined,
+  picks: Pick<ChatTabPluginSelections, 'mcpServerRefs'> | undefined,
+): ChatTabPluginSelections | undefined {
+  const picked = picks?.mcpServerRefs ?? [];
+  if (!layer || picked.length === 0) return layer;
+  const global = layer;
+  const refs = global.mcpServerRefs ?? [];
+  const kept = refs.filter((ref) => !accountPickedOver(ref, picked));
+  return kept.length === refs.length
+    ? global
+    : { ...global, mcpServerRefs: kept };
+}
+
+/**
+ * Whether `picks` choose another account of `ref`'s connector, so `ref` gives
+ * way to it ({@link withoutAccountsPickedOver}): same server, another
+ * configuration, and one side an added (`acct-*`) account.
+ */
+export function accountPickedOver(
+  ref: McpServerRef,
+  picks: readonly McpServerRef[],
+): boolean {
+  return picks.some(
+    (choice) =>
+      choice.serverId === ref.serverId &&
+      choice.configId !== ref.configId &&
+      (isAccountMcpInstanceConfigId(choice.configId) ||
+        isAccountMcpInstanceConfigId(ref.configId)),
+  );
+}
+
+/**
+ * The person's global connectors this chat would have loaded and no longer
+ * does in a workspace of `scope` (CAN-6230): what the one-time notice lists.
+ * A connector the chat or the project still loads (its own selection or the
+ * project's defaults), or one the project or the chat had turned off anyway,
+ * is not listed. Empty in Personal workspaces.
+ */
+export function globalConnectorsLeftOut(input: {
+  global: ChatTabPluginSelections | undefined;
+  scope: ConnectorScope | undefined;
+  local?: ChatTabPluginSelections;
+  projectDefaults?: ChatTabPluginSelections;
+  projectTombstones?: PluginSelectionTombstones;
+  chatTombstones?: PluginSelectionTombstones;
+}): McpServerRef[] {
+  if (input.scope === undefined || input.scope.kind === 'personal') return [];
+  const kept = new Set(
+    [
+      ...(input.local?.mcpServerRefs ?? []),
+      ...(input.projectDefaults?.mcpServerRefs ?? []),
+      ...(input.projectTombstones?.mcpServerRefs ?? []),
+      ...(input.chatTombstones?.mcpServerRefs ?? []),
+    ].map(mcpServerRefKey),
+  );
+  // A global account the project's own choice of that connector shadows is
+  // not offered back either (CAN-6229).
+  const global = withoutAccountsPickedOver(input.global, input.projectDefaults);
+  return (global?.mcpServerRefs ?? []).filter(
+    (ref) => !kept.has(mcpServerRefKey(ref)),
+  );
 }
 
 /**
@@ -428,8 +600,12 @@ export interface InheritedPluginLayers {
 export function inheritedPluginSelections(
   layers: InheritedPluginLayers,
 ): ChatTabPluginSelections | undefined {
-  const { projectDefaults, global, projectTombstones } = layers;
-  if (!projectDefaults && !global) return undefined;
+  const { projectDefaults, projectTombstones, organization } = layers;
+  const global = withoutAccountsPickedOver(
+    globalLayerForConnectorScope(layers.global, layers.connectorScope),
+    projectDefaults,
+  );
+  if (!projectDefaults && !global && !organization) return undefined;
   const empty: ChatTabPluginSelections = {
     collectionIds: [],
     skillRefs: [],
@@ -437,16 +613,21 @@ export function inheritedPluginSelections(
     mcpServerRefs: [],
   };
   return unionPluginSelections(
-    global
-      ? effectiveGlobalPluginSelections(global, [projectTombstones])
-      : empty,
+    unionPluginSelections(
+      global
+        ? effectiveGlobalPluginSelections(global, [projectTombstones])
+        : empty,
+      organization ?? empty,
+    ),
     projectDefaults ?? empty,
   );
 }
 
 /**
  * A chat's effective selections:
- * `local ∪ ((projectDefaults ∪ (global − projectTombstones)) − chatTombstones)`.
+ * `(local ∪ ((projectDefaults ∪ organization ∪ (global − projectTombstones))
+ * − chatTombstones)) ∩ allowed`, where `allowed` keeps every personal ref and
+ * only the organization refs the workspace's organization layer holds.
  * Inherited entries order first; the chat's own `mcpHttpAuthPreferences` win
  * on collision.
  */
@@ -457,9 +638,18 @@ export function effectiveChatPluginSelections(
   },
 ): ChatTabPluginSelections {
   const local = normalizePluginSelections(input.local);
-  return effectivePluginSelections(local, inheritedPluginSelections(input), [
-    input.chatTombstones,
-  ]);
+  // The chat's own account pick of a connector stands in for an inherited
+  // account of it (CAN-6233), as the picker's uncheck does.
+  const effective = effectivePluginSelections(
+    local,
+    withoutAccountsPickedOver(inheritedPluginSelections(input), local),
+    [input.chatTombstones],
+  );
+  // An organization pick lasts only while this workspace allows it (CAN-6240).
+  return withOnlyAllowedOrganizationRefs(
+    effective,
+    input.allowedOrganizationItems,
+  ).selections;
 }
 
 /**
@@ -604,19 +794,25 @@ export function normalizePluginSelectionTombstones(
     source.skillRefs,
     'sourceId',
     'skillName',
-  ).map(([sourceId, skillName]) => ({ sourceId, skillName }));
+  ).map(([sourceId, skillName, owner]) =>
+    withSelectionRefOwner({ sourceId, skillName }, owner),
+  );
   if (skillRefs.length > 0) result.skillRefs = skillRefs;
   const pluginRefs = normalizeRefArray(
     source.pluginRefs,
     'marketplaceId',
     'pluginName',
-  ).map(([marketplaceId, pluginName]) => ({ marketplaceId, pluginName }));
+  ).map(([marketplaceId, pluginName, owner]) =>
+    withSelectionRefOwner({ marketplaceId, pluginName }, owner),
+  );
   if (pluginRefs.length > 0) result.pluginRefs = pluginRefs;
   const mcpServerRefs = normalizeRefArray(
     source.mcpServerRefs,
     'serverId',
     'configId',
-  ).map(([serverId, configId]) => ({ serverId, configId }));
+  ).map(([serverId, configId, owner]) =>
+    withSelectionRefOwner({ serverId, configId }, owner),
+  );
   if (mcpServerRefs.length > 0) result.mcpServerRefs = mcpServerRefs;
   return hasAnyTombstones(result) ? result : undefined;
 }
@@ -639,21 +835,22 @@ function normalizeRefArray(
   value: unknown,
   firstField: string,
   secondField: string,
-): [string, string][] {
+): [string, string, SelectionRefOwner | undefined][] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
-  const result: [string, string][] = [];
+  const result: [string, string, SelectionRefOwner | undefined][] = [];
   for (const entry of value) {
     if (!isRecord(entry)) continue;
     const firstRaw = entry[firstField];
     const secondRaw = entry[secondField];
     const first = typeof firstRaw === 'string' ? firstRaw.trim() : '';
     const second = typeof secondRaw === 'string' ? secondRaw.trim() : '';
-    if (!first || !second) continue;
-    const key = `${first}\0${second}`;
+    const owner = readSelectionRefOwner(entry);
+    if (!first || !second || !owner.ok) continue;
+    const key = `${first}\0${second}\0${selectionRefOwnerKey(owner.owner)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push([first, second]);
+    result.push([first, second, owner.owner]);
   }
   return result;
 }
@@ -671,7 +868,7 @@ const LEGACY_ACCOUNT_MCP_REF_PREFIX = 'account:';
 
 type AccountMcpRefConnection = Pick<
   AccountMcpConnection,
-  'id' | 'serverKey' | 'configId' | 'kind'
+  'id' | 'serverKey' | 'configId' | 'kind' | 'isDefault'
 >;
 
 /** The connection id of a legacy `account:<connectionId>` ref. */
@@ -688,9 +885,19 @@ export function isCustomAccountMcpServerKey(serverId: string): boolean {
   return serverId.startsWith('custom:');
 }
 
+/**
+ * The account connection a selection ref names. `exact` (the default) matches
+ * kind, server key and config id only, as stored refs, templates and pinned
+ * delegations need. A run resolving what a chat loads passes `attended` or
+ * `unattended` (CAN-6226): a curated ref with no exact match then reaches the
+ * person's default account, or in an unattended run their only account, and a
+ * ref to an added account (`acct-*`) reaches only that account
+ * ({@link resolveAccountMcpRef}). Custom and legacy refs always match exactly.
+ */
 export function accountMcpConnectionForRef<T extends AccountMcpRefConnection>(
   ref: McpServerRef,
   connections: readonly T[],
+  resolution: 'exact' | AccountMcpRefResolution = 'exact',
 ): T | undefined {
   const legacyId = legacyAccountMcpConnectionId(ref.serverId);
   if (legacyId !== undefined)
@@ -699,9 +906,11 @@ export function accountMcpConnectionForRef<T extends AccountMcpRefConnection>(
         connection.id === legacyId && connection.configId === ref.configId,
     );
   const kind = isCustomAccountMcpServerKey(ref.serverId) ? 'CUSTOM' : 'CURATED';
-  return connections.find(
+  const ofKind = connections.filter((connection) => connection.kind === kind);
+  if (resolution !== 'exact' && kind === 'CURATED')
+    return resolveAccountMcpRef(ofKind, ref, resolution);
+  return ofKind.find(
     (connection) =>
-      connection.kind === kind &&
       connection.serverKey === ref.serverId &&
       connection.configId === ref.configId,
   );
@@ -711,15 +920,24 @@ export function accountMcpConnectionForRef<T extends AccountMcpRefConnection>(
 export interface AccountMcpConnectionMatchTarget {
   curatedKey?: string;
   accountConnectionId?: string;
+  /**
+   * The config the caller asks for. Omitted, the target is the person's
+   * default account for the key (a server a curated plugin brings).
+   */
   configId?: string;
+  /** How a key with no exact config match resolves; `attended` when omitted. */
+  resolution?: AccountMcpRefResolution;
 }
 
 /**
- * The one connection a target names, or `undefined` when none or several do.
- * An explicit connection id is authoritative. A curated key matches only
- * curated connections with that server key: the exact config first, else a
- * single candidate; two candidates without an exact config fail closed.
- * Names and URLs never match, so an unrelated server can never be bound.
+ * The one connection a target names, or `undefined` when none does. An
+ * explicit connection id is authoritative. A curated key matches only curated
+ * connections with that server key, by {@link resolveAccountMcpRef}: the exact
+ * config first; a config naming an added account (`acct-*`) only that
+ * account; otherwise the person's default account (CAN-6226), or in an
+ * unattended run their only account. Several accounts with no default (an
+ * older cloud that sends no flag) fail closed. Names and URLs never match, so
+ * an unrelated server can never be bound.
  */
 export function matchAccountMcpConnection<T extends AccountMcpRefConnection>(
   rows: readonly T[],
@@ -728,14 +946,20 @@ export function matchAccountMcpConnection<T extends AccountMcpRefConnection>(
   if (target.accountConnectionId)
     return rows.find((row): boolean => row.id === target.accountConnectionId);
   if (!target.curatedKey) return undefined;
-  const matches = rows.filter(
-    (row): boolean =>
-      row.kind === 'CURATED' && row.serverKey === target.curatedKey,
+  const curated = rows.filter((row): boolean => row.kind === 'CURATED');
+  if (target.configId === undefined) {
+    if (target.resolution !== 'unattended')
+      return accountMcpDefaultConnection(curated, target.curatedKey);
+    const matches = curated.filter(
+      (row): boolean => row.serverKey === target.curatedKey,
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  return resolveAccountMcpRef(
+    curated,
+    { serverId: target.curatedKey, configId: target.configId },
+    target.resolution ?? 'attended',
   );
-  const exact = matches.find(
-    (row): boolean => row.configId === target.configId,
-  );
-  return exact ?? (matches.length === 1 ? matches[0] : undefined);
 }
 
 export function hasLegacyAccountMcpRefs(

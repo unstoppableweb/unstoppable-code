@@ -1,6 +1,6 @@
 pipeline:
   name: 'Code Review (Codex)'
-  version: '1.1'
+  version: '1.2'
   description: 'Run the Codex multi-track reviewer workflow and publish the multi-agent style report and PR comments'
   icon: '🔎'
   readonly: true
@@ -569,12 +569,12 @@ pipeline:
                           nodes {
                             databaseId
                             body
-                            author { login }
+                            author { __typename login }
                             path
                             line
                             pullRequestReview {
                               databaseId
-                              author { login }
+                              author { __typename login }
                               state
                               body
                               submittedAt
@@ -643,6 +643,7 @@ pipeline:
                   groupMap.set(groupKey, {
                     reviewId: review?.databaseId ?? null,
                     author: review?.author?.login ?? first.author?.login ?? 'unknown',
+                    authorType: review?.author?.__typename ?? first.author?.__typename ?? null,
                     state: review?.state ?? null,
                     body: review?.body || null,
                     submittedAt: review?.submittedAt ?? null,
@@ -655,11 +656,13 @@ pipeline:
                   resolved: Boolean(thread.isResolved),
                   body: first.body ?? '',
                   author: first.author?.login ?? 'unknown',
+                  authorType: first.author?.__typename ?? null,
                   path: first.path ?? null,
                   line: first.line ?? null,
                   replies: comments.slice(1).map((reply) => ({
                     body: reply.body ?? '',
                     author: reply.author?.login ?? 'unknown',
+                    authorType: reply.author?.__typename ?? null,
                   })),
                 });
               }
@@ -1658,7 +1661,7 @@ pipeline:
               Use only candidates where `validated` is `true` as final `findings`. Return a full structured review object with `reviewer`, `model`, `summary`, `positiveFindings`, `riskScore`, `riskLevel`, `verdict`, `findings`, and `threadActions`. Set `threadActions` to an empty array unless you are explicitly proposing a reply or resolution for an existing PR review thread.
               ${{ env.SCORING_RUBRIC }}
               ${{ env.RISK_LEVEL_DEFINITIONS }}
-              Set `reviewer` to `Methodical Reviewer` and `model` to `gpt-6.1-sol`.
+              Set `reviewer` to `Methodical Reviewer` and `model` to `gpt-6.2-sol`.
               Do not create new issues and do not broaden beyond changed code or directly related changed behavior.
               You may consult related repository files for context, but keep every comment anchored to the diff.
 
@@ -1868,7 +1871,7 @@ pipeline:
               Use only candidates where `validated` is `true` as final `findings`. Return a full structured review object with `reviewer`, `model`, `summary`, `positiveFindings`, `riskScore`, `riskLevel`, `verdict`, `findings`, and `threadActions`. Set `threadActions` to an empty array unless you are explicitly proposing a reply or resolution for an existing PR review thread.
               ${{ env.SCORING_RUBRIC }}
               ${{ env.RISK_LEVEL_DEFINITIONS }}
-              Set `reviewer` to `Codex Security Review` and `model` to `gpt-6.1-sol`.
+              Set `reviewer` to `Codex Security Review` and `model` to `gpt-6.2-sol`.
               Do not create new issues and do not broaden beyond changed code or directly related changed behavior.
               You may consult related repository files for context, but keep every comment anchored to the diff.
 
@@ -2383,13 +2386,18 @@ pipeline:
               );
             }
 
-            function isBotAuthor(author) {
+            // GraphQL returns a GitHub App's login without the `[bot]` suffix, so a
+            // review posted as the App matches none of the login checks. A Bot
+            // author counts as ours only on a thread of a review carrying the AI
+            // review marker; threads from other bots stay untouched.
+            function isBotAuthor(author, authorType, inAiReview) {
               const normalized = typeof author === 'string' ? author.toLowerCase() : '';
               return (
                 normalized.endsWith('[bot]') ||
                 normalized.includes('copilot') ||
                 normalized.includes('code-review') ||
-                normalized.includes('github-actions')
+                normalized.includes('github-actions') ||
+                (authorType === 'Bot' && inAiReview === true)
               );
             }
 
@@ -2419,7 +2427,10 @@ pipeline:
                 ) {
                   continue;
                 }
-                if (!fromAutomatedReview && !isBotAuthor(thread.author)) {
+                if (
+                  !fromAutomatedReview &&
+                  !isBotAuthor(thread.author, thread.authorType, isAiReviewBody(group.body))
+                ) {
                   continue;
                 }
                 candidates.push({
@@ -3105,11 +3116,19 @@ pipeline:
       outputs:
         pr_status: ${{ steps.lookup.outputs.status }}
         has_pr: ${{ steps.lookup.outputs.has_pr }}
-        review_comment_id: ${{ steps.post.outputs.review_comment_id }}
-        review_url: ${{ steps.post.outputs.review_url }}
-        inline_comment_count: ${{ steps.post.outputs.inline_comment_count }}
-        thread_reply_count: ${{ steps.post.outputs.thread_reply_count }}
-        thread_resolve_count: ${{ steps.post.outputs.thread_resolve_count }}
+        pr_number: ${{ steps.lookup.outputs.pr_number }}
+        review_comment_id: ${{ steps.result.outputs.review_comment_id }}
+        review_url: ${{ steps.result.outputs.review_url }}
+        inline_comment_count: ${{ steps.result.outputs.inline_comment_count }}
+        thread_reply_count: ${{ steps.result.outputs.thread_reply_count }}
+        thread_resolve_count: ${{ steps.result.outputs.thread_resolve_count }}
+        dismissed_approval_count: ${{ steps.result.outputs.dismissed_approval_count }}
+        github_review_publisher: ${{ steps.result.outputs.github_review_publisher }}
+        github_review_status: ${{ steps.result.outputs.github_review_status }}
+        github_review_approval_state: ${{ steps.result.outputs.github_review_approval_state }}
+        github_review_approval_reason: ${{ steps.result.outputs.github_review_approval_reason }}
+        github_review_approval_min_score: ${{ steps.result.outputs.github_review_approval_min_score }}
+        github_review_unavailable_reason: ${{ steps.result.outputs.github_review_unavailable_reason }}
       steps:
         - id: lookup
           uses: builtin/github-fetch-branch-pr
@@ -3439,19 +3458,38 @@ pipeline:
               return Array.isArray(groups)
                 ? groups.flatMap((group) =>
                     group && typeof group === 'object' && Array.isArray(group.threads)
-                      ? group.threads
+                      ? group.threads.map((thread) =>
+                          thread && typeof thread === 'object'
+                            ? { ...thread, inAiReview: isAiReviewBody(group.body) }
+                            : thread,
+                        )
                       : [],
                   )
                 : [];
             }
 
-            function isBotAuthor(author) {
+            function isAiReviewBody(body) {
+              return (
+                typeof body === 'string' &&
+                (body.includes('[//]: # (ud-ai-review)') ||
+                  body.includes('AI ud-code-reviewer') ||
+                  body.includes('Review by AI pipeline'))
+              );
+            }
+
+            // GraphQL returns a GitHub App's login without the `[bot]` suffix, so a
+            // review posted as the App matches none of the login checks. A Bot
+            // author counts as ours only on a thread of a review carrying the AI
+            // review marker; threads from other bots stay untouched. The server
+            // applies the same rule before resolving a thread as the App.
+            function isBotAuthor(author, authorType, inAiReview) {
               const normalized = textValue(author).toLowerCase();
               return (
                 normalized.endsWith('[bot]') ||
                 normalized.includes('copilot') ||
                 normalized.includes('code-review') ||
-                normalized.includes('github-actions')
+                normalized.includes('github-actions') ||
+                (authorType === 'Bot' && inAiReview === true)
               );
             }
 
@@ -3483,7 +3521,9 @@ pipeline:
               if (!threadId || !body || commentId <= 0) {
                 continue;
               }
-              const shouldResolve = actionName === 'resolve' && isBotAuthor(thread?.author);
+              const shouldResolve =
+                actionName === 'resolve' &&
+                isBotAuthor(thread?.author, thread?.authorType, thread?.inAiReview);
               replies.push({
                 thread_id: threadId,
                 comment_id: commentId,
@@ -3515,6 +3555,10 @@ pipeline:
             );
 
             const payloadPath = path.join(outputDir, 'github-review-comment.json');
+            // Anchor the review to the reviewed commit when it is known and the
+            // review had no uncommitted changes; otherwise to the looked-up PR head.
+            const payloadCommitId =
+              reviewedHead && !reviewedUncommitted ? reviewedHead : prHead;
             fs.writeFileSync(
               payloadPath,
               `${JSON.stringify(
@@ -3522,7 +3566,7 @@ pipeline:
                   body: `${bodyLines.join('\n')}\n`,
                   comments,
                   replies,
-                  ...(process.env.COMMIT_SHA ? { commit_id: process.env.COMMIT_SHA } : {}),
+                  ...(payloadCommitId ? { commit_id: payloadCommitId } : {}),
                 },
                 null,
                 2,
@@ -3530,9 +3574,22 @@ pipeline:
               'utf8',
             );
 
+            const singleLine = (value) => String(value).replace(/[\r\n]+/g, ' ').trim();
+            const reviewScore =
+              typeof parsed.riskScore === 'number' && Number.isFinite(parsed.riskScore)
+                ? String(parsed.riskScore)
+                : '';
             fs.appendFileSync(
               {{BRAND_OUTPUT_VARIABLE_NAME}},
-              `review_comment_json_file=${payloadPath}\n`,
+              [
+                `review_comment_json_file=${payloadPath}`,
+                `verdict=${singleLine(textValue(parsed.verdict))}`,
+                `score=${reviewScore}`,
+                `completeness_complete=${completeness.complete === true ? 'true' : 'false'}`,
+                `reviewed_head=${singleLine(reviewedHead)}`,
+                `reviewed_uncommitted=${reviewedUncommitted ? 'true' : 'false'}`,
+                '',
+              ].join('\n'),
               'utf8',
             );
           env:
@@ -3547,31 +3604,36 @@ pipeline:
             PR_URL: ${{ steps.lookup.outputs.pr_url }}
             PR_NUMBER: ${{ steps.lookup.outputs.pr_number }}
             COMMIT_SHA: ${{ steps.lookup.outputs.commit_sha }}
-        - id: post
+        # Posts as the GitHub App when an installation covers the repository
+        # (and approves under the owner's code review policy). `unavailable`
+        # means nothing was posted, so the `gh` step below posts instead;
+        # `failed` means something may have been posted, so it never falls back.
+        - id: publish
           if: steps.lookup.outputs.has_pr == 'true'
+          uses: builtin/github-publish-review
+          with:
+            pr_url: ${{ steps.lookup.outputs.pr_url }}
+            review_json_file: ${{ steps.prepare_payload.outputs.review_comment_json_file }}
+            diff_file: ${{ needs.review_workspace_details.outputs.review_diff_file }}
+            reviewed_head: ${{ steps.prepare_payload.outputs.reviewed_head }}
+            reviewed_uncommitted: ${{ steps.prepare_payload.outputs.reviewed_uncommitted }}
+            verdict: ${{ steps.prepare_payload.outputs.verdict }}
+            score: ${{ steps.prepare_payload.outputs.score }}
+            completeness_complete: ${{ steps.prepare_payload.outputs.completeness_complete }}
+        - id: post
+          if: steps.lookup.outputs.has_pr == 'true' && steps.publish.outputs.status == 'unavailable'
           uses: builtin/github-post-review-comment
           with:
             pr_identifier: ${{ steps.lookup.outputs.pr_url }}
             review_json_file: ${{ steps.prepare_payload.outputs.review_comment_json_file }}
             diff_file: ${{ needs.review_workspace_details.outputs.review_diff_file }}
             fail_on_existing_pending_review: ${{ inputs.fail_on_existing_pending_review }}
-
-    minimize_previous_ai_reviews:
-      name: Minimize Previous AI Reviews
-      if: inputs.post_pr_comment == true
-      needs:
-        - post_github_review_comment
-        - github_review_context
-      continue_on_error: true
-      outputs:
-        minimized_count: ${{ steps.minimize.outputs.minimized_count }}
-        failed_count: ${{ steps.minimize.outputs.failed_count }}
-      steps:
-        - id: minimize
-          if: needs.post_github_review_comment.outputs.review_comment_id != ''
+        # Pipeline expressions have no coalescing operator, so this step merges
+        # the App and `gh` results into the job outputs.
+        - id: result
+          if: steps.lookup.outputs.has_pr == 'true'
           shell: node
           run: |
-            import { execFileSync } from 'node:child_process';
             import fs from 'node:fs';
 
             const output = process.env.{{BRAND_ENV_PREFIX}}_OUTPUT ?? '';
@@ -3579,51 +3641,62 @@ pipeline:
               throw new Error('{{BRAND_ENV_PREFIX}}_OUTPUT is required');
             }
 
-            function readJsonFile(filePath, fallback) {
-              if (!filePath || !fs.existsSync(filePath)) {
-                return fallback;
-              }
-              try {
-                return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-              } catch {
-                return fallback;
-              }
-            }
-
-            const nodeIds = readJsonFile(
-              process.env.PREVIOUS_REVIEW_NODE_IDS_FILE ?? '',
-              [],
-            ).filter((nodeId) => typeof nodeId === 'string' && nodeId.trim().length > 0);
-
-            let dismissedCount = 0;
-            let failedCount = 0;
-            const query =
-              'mutation($pullRequestReviewId: ID!) { dismissPullRequestReview(input: {pullRequestReviewId: $pullRequestReviewId, message: "Superseded by a newer AI code review."}) { pullRequestReview { id state } } }';
-
-            for (const nodeId of nodeIds) {
-              try {
-                execFileSync(
-                  'gh',
-                  [
-                    'api',
-                    'graphql',
-                    '-f',
-                    `query=${query}`,
-                    '-f',
-                    `pullRequestReviewId=${nodeId}`,
-                  ],
-                  { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
-                );
-                dismissedCount += 1;
-              } catch {
-                failedCount += 1;
-              }
-            }
-
-            fs.appendFileSync(output, `minimized_count=${String(dismissedCount)}\n`, 'utf8');
-            fs.appendFileSync(output, `failed_count=${String(failedCount)}\n`, 'utf8');
+            const env = (name) => (process.env[name] ?? '').replace(/[\r\n]+/g, ' ').trim();
+            const publishStatus = env('PUBLISH_STATUS');
+            const appPublished = publishStatus === 'published';
+            const localPosted = !appPublished && env('POST_STATUS') === 'posted';
+            const pick = (appName, localName) =>
+              appPublished ? env(appName) : localPosted ? env(localName) : '';
+            const values = {
+              review_comment_id: pick('PUBLISH_REVIEW_ID', 'POST_REVIEW_COMMENT_ID'),
+              review_url: pick('PUBLISH_REVIEW_URL', 'POST_REVIEW_URL'),
+              inline_comment_count: pick('PUBLISH_INLINE_COMMENT_COUNT', 'POST_INLINE_COMMENT_COUNT'),
+              thread_reply_count: pick('PUBLISH_THREAD_REPLY_COUNT', 'POST_THREAD_REPLY_COUNT'),
+              thread_resolve_count: pick('PUBLISH_THREAD_RESOLVE_COUNT', 'POST_THREAD_RESOLVE_COUNT'),
+              dismissed_approval_count: appPublished ? env('PUBLISH_DISMISSED_APPROVAL_COUNT') : '',
+              github_review_publisher: appPublished ? 'app' : localPosted ? 'local' : '',
+              github_review_status: publishStatus,
+              github_review_approval_state: appPublished ? env('PUBLISH_APPROVAL_STATE') : '',
+              github_review_approval_reason: appPublished ? env('PUBLISH_APPROVAL_REASON') : '',
+              github_review_approval_min_score: appPublished ? env('PUBLISH_APPROVAL_MIN_SCORE') : '',
+              github_review_unavailable_reason:
+                publishStatus === 'unavailable' ? env('PUBLISH_UNAVAILABLE_REASON') : '',
+            };
+            fs.appendFileSync(
+              output,
+              Object.entries(values)
+                .map(([key, value]) => `${key}=${value}\n`)
+                .join(''),
+              'utf8',
+            );
           env:
-            PREVIOUS_REVIEW_NODE_IDS_FILE: ${{ needs.github_review_context.outputs.previous_review_node_ids_file }}
+            PUBLISH_STATUS: ${{ steps.publish.outputs.status }}
+            PUBLISH_REVIEW_ID: ${{ steps.publish.outputs.review_id }}
+            PUBLISH_REVIEW_URL: ${{ steps.publish.outputs.review_url }}
+            PUBLISH_INLINE_COMMENT_COUNT: ${{ steps.publish.outputs.inline_comment_count }}
+            PUBLISH_THREAD_REPLY_COUNT: ${{ steps.publish.outputs.thread_reply_count }}
+            PUBLISH_THREAD_RESOLVE_COUNT: ${{ steps.publish.outputs.thread_resolve_count }}
+            PUBLISH_DISMISSED_APPROVAL_COUNT: ${{ steps.publish.outputs.dismissed_approval_count }}
+            PUBLISH_APPROVAL_STATE: ${{ steps.publish.outputs.approval_state }}
+            PUBLISH_APPROVAL_REASON: ${{ steps.publish.outputs.approval_reason }}
+            PUBLISH_APPROVAL_MIN_SCORE: ${{ steps.publish.outputs.approval_min_score }}
+            PUBLISH_UNAVAILABLE_REASON: ${{ steps.publish.outputs.unavailable_reason }}
+            POST_STATUS: ${{ steps.post.outputs.status }}
+            POST_REVIEW_COMMENT_ID: ${{ steps.post.outputs.review_comment_id }}
+            POST_REVIEW_URL: ${{ steps.post.outputs.review_url }}
+            POST_INLINE_COMMENT_COUNT: ${{ steps.post.outputs.inline_comment_count }}
+            POST_THREAD_REPLY_COUNT: ${{ steps.post.outputs.thread_reply_count }}
+            POST_THREAD_RESOLVE_COUNT: ${{ steps.post.outputs.thread_resolve_count }}
+        # A failed App post fails the job, as a failed `gh` post does.
+        - id: publish_failed
+          if: steps.lookup.outputs.has_pr == 'true' && steps.publish.outputs.status == 'failed'
+          shell: node
+          run: |
+            const reason = (process.env.PUBLISH_FAILURE_REASON ?? '').trim() || 'unknown';
+            process.stderr.write(`Posting the review as the GitHub App failed (${reason}).\n`);
+            process.exit(1);
+          env:
+            PUBLISH_FAILURE_REASON: ${{ steps.publish.outputs.publish_failure_reason }}
 
     publish_review_report:
       name: Publish Review Report
@@ -3772,15 +3845,64 @@ pipeline:
               '## Findings',
             ];
 
+            // Outcome copy for a review posted as the GitHub App. Keep these strings
+            // in step by hand with the reason map in `GitHubReviewOutcome`
+            // (packages/ui-app/src/code/activity/pipeline/GitHubReviewOutcome.tsx).
+            // An unknown reason (a newer server) shows the `policy_off` string.
+            function githubReviewOutcome(reason, minScore) {
+              switch (reason) {
+                case 'approved':
+                  return 'Approved on GitHub';
+                case 'personal_repo_not_owned':
+                  return 'Not approved · organization repo';
+                case 'repo_not_selected':
+                  return 'Not approved · repository not selected';
+                case 'pr_not_open':
+                  return "Not approved · pull request isn't open";
+                case 'not_pass':
+                  return "Not approved · review didn't pass";
+                case 'below_min_score':
+                  return `Not approved · score below ${minScore}`;
+                case 'incomplete':
+                  return 'Not approved · review incomplete';
+                case 'uncommitted':
+                  return 'Not approved · included uncommitted changes';
+                case 'head_moved':
+                  return 'Not approved · new commits since the review';
+                case 'requester_not_writer':
+                  return 'Not approved · write access not confirmed';
+                case 'requester_not_connected':
+                  return 'Not approved · GitHub not linked';
+                case 'github_refused':
+                  return 'Not approved · GitHub refused the approval';
+                default:
+                  return 'Posted to GitHub';
+              }
+            }
+
             const reviewUrl = (process.env.GITHUB_REVIEW_URL ?? '').trim();
-            const reviewCommentId = (process.env.GITHUB_REVIEW_COMMENT_ID ?? '').trim();
-            if (reviewUrl) {
-              lines.splice(
-                2,
-                0,
-                `GitHub PR comment submitted: [${reviewCommentId ? `#${reviewCommentId}` : reviewUrl}](${reviewUrl})`,
-                '',
-              );
+            const reviewPublisher = (process.env.GITHUB_REVIEW_PUBLISHER ?? '').trim();
+            const reviewLink = reviewUrl ? `[View review](${reviewUrl})` : '';
+            let githubLine = '';
+            if (reviewPublisher === 'app') {
+              const prNumber = (process.env.GITHUB_PR_NUMBER ?? '').trim();
+              githubLine = [
+                `GitHub: Posted to ${prNumber ? `#${prNumber}` : 'the pull request'} as {{BRAND_DISPLAY_NAME}}`,
+                githubReviewOutcome(
+                  (process.env.GITHUB_REVIEW_APPROVAL_REASON ?? '').trim(),
+                  (process.env.GITHUB_REVIEW_APPROVAL_MIN_SCORE ?? '').trim(),
+                ),
+                reviewLink,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+            } else if (reviewPublisher === 'local' || reviewUrl) {
+              githubLine = ['GitHub: Posted with your GitHub account', reviewLink]
+                .filter(Boolean)
+                .join(' · ');
+            }
+            if (githubLine) {
+              lines.splice(2, 0, githubLine, '');
             }
 
             if (findings.length === 0) {
@@ -3873,7 +3995,10 @@ pipeline:
             CURRENT_BRANCH: ${{ needs.review_workspace_details.outputs.current_branch }}
             BASE_BRANCH: ${{ needs.review_workspace_details.outputs.base_branch }}
             GITHUB_REVIEW_URL: ${{ needs.post_github_review_comment.outputs.review_url }}
-            GITHUB_REVIEW_COMMENT_ID: ${{ needs.post_github_review_comment.outputs.review_comment_id }}
+            GITHUB_REVIEW_PUBLISHER: ${{ needs.post_github_review_comment.outputs.github_review_publisher }}
+            GITHUB_REVIEW_APPROVAL_REASON: ${{ needs.post_github_review_comment.outputs.github_review_approval_reason }}
+            GITHUB_REVIEW_APPROVAL_MIN_SCORE: ${{ needs.post_github_review_comment.outputs.github_review_approval_min_score }}
+            GITHUB_PR_NUMBER: ${{ needs.post_github_review_comment.outputs.pr_number }}
         - id: publish_report
           uses: builtin/{{BRAND_REPORT_ACTION_ID}}
           with:

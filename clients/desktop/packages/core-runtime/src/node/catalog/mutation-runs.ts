@@ -244,7 +244,7 @@ export class CatalogMutationRuns {
     params: KeyedParams;
   }): Promise<string | null> {
     try {
-      const lookup = (await this.operations.ready()).lookupReceipt(
+      const lookup = await this.operations.lookupReceipt(
         request.kind,
         receiptOf(request.context, request.params),
       );

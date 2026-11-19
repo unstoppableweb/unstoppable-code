@@ -49,6 +49,7 @@ import {
 } from './github-pr';
 import { getGitHubClient, type GitHubClient } from './github-client';
 import { getGitHubBroker } from './github-broker';
+import type { GitHubBrokerCredentialLease } from './github-broker/credential-port';
 import {
   getCloudAccountIdentityGeneration,
   readGitHubTrackingCredential,
@@ -92,8 +93,17 @@ import {
 } from './hook-initiated-work';
 import { startHookRecovery } from './hook-recovery';
 import { prHookOccurrenceKey } from './pr-hook-occurrence';
-import { logMainProcessWarn } from './main-process-logging';
+import { logMainProcessInfo, logMainProcessWarn } from './main-process-logging';
 import { getOperationLedgerPath } from './paths';
+import {
+  beginGitHubImmediateCheck,
+  beginGitHubSweep,
+  finishGitHubSweepLogLine,
+  workAggregatesNow,
+  type GitHubLedgerWriteRecorder,
+  type GitHubPrepareStepRecorder,
+  type GitHubSweepRun,
+} from '../observability/work-aggregates';
 import {
   buildHookWatcherVariables,
   fireHookTriggeredWatchers,
@@ -126,6 +136,7 @@ import {
   settleAll,
   trackDetachedWork,
 } from '@canopy/desktop-shared/node/lib/detached-work';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 const STALE_THRESHOLD = 30_000;
 const IMMEDIATE_TICK_DELAY = 1_000;
@@ -168,7 +179,7 @@ interface RepoRefreshTarget {
 }
 
 interface SnapshotReadIdentity {
-  authenticationToken: string | undefined;
+  credential: GitHubBrokerCredentialLease | undefined;
   authenticationScope: string | undefined;
   credentialScope: string | undefined;
   brokerGeneration: number;
@@ -177,7 +188,7 @@ interface SnapshotReadIdentity {
 
 function unavailableSnapshotReadIdentity(): SnapshotReadIdentity {
   return {
-    authenticationToken: undefined,
+    credential: undefined,
     authenticationScope: undefined,
     credentialScope: undefined,
     brokerGeneration: getGitHubBroker().getCredentialGeneration(),
@@ -188,7 +199,7 @@ function unavailableSnapshotReadIdentity(): SnapshotReadIdentity {
 async function snapshotReadIdentity(): Promise<SnapshotReadIdentity> {
   const credential = await readGitHubTrackingCredential().catch(() => null);
   return {
-    authenticationToken: credential?.token,
+    credential: credential?.credential,
     authenticationScope: credential?.authenticationScope,
     credentialScope: credential?.scope,
     brokerGeneration: getGitHubBroker().getCredentialGeneration(),
@@ -199,7 +210,7 @@ async function snapshotReadIdentity(): Promise<SnapshotReadIdentity> {
 async function verifySnapshotReadIdentity(
   identity: SnapshotReadIdentity,
 ): Promise<string | undefined> {
-  if (!identity.authenticationToken || !identity.authenticationScope) {
+  if (!identity.credential || !identity.authenticationScope) {
     throw new Error('GitHub credential unavailable.');
   }
   const current = await readGitHubTrackingCredential();
@@ -421,34 +432,42 @@ function sendToRenderer(channel: string, data: unknown): void {
 async function resolveRefreshTargets(
   projectId: string,
   worktreeId: string,
+  recordStep?: GitHubPrepareStepRecorder,
 ): Promise<RepoRefreshTarget[]> {
-  if (!(await isWorktreeReadAvailable(projectId, worktreeId))) return [];
-  const cwd = resolveWorktreeCwd(projectId, worktreeId);
-  if (!isMultiRepoWorkspace(projectId)) {
-    return [
-      {
-        target: 'project',
-        repoName: basename(cwd),
-        repoPath: cwd,
-        repoStorageKey: getProjectRepoStorageKey(),
-      },
-    ];
-  }
+  const startedAt = workAggregatesNow();
+  try {
+    const available = await isWorktreeReadAvailable(projectId, worktreeId);
+    recordStep?.('readAvailable', workAggregatesNow() - startedAt);
+    if (!available) return [];
+    const cwd = resolveWorktreeCwd(projectId, worktreeId);
+    if (!isMultiRepoWorkspace(projectId)) {
+      return [
+        {
+          target: 'project',
+          repoName: basename(cwd),
+          repoPath: cwd,
+          repoStorageKey: getProjectRepoStorageKey(),
+        },
+      ];
+    }
 
-  const repoEntries = await listWorkspaceWorktreeRepoEntries(projectId, cwd);
-  return repoEntries.map((entry) => ({
-    target:
-      entry.repoId === getWorkspaceRootRepoStorageKey()
-        ? 'workspace-root'
-        : 'workspace-repo',
-    repoId: entry.repoId,
-    repoName: entry.repoName,
-    repoPath: entry.repoPath,
-    repoStorageKey:
-      entry.repoId === getWorkspaceRootRepoStorageKey()
-        ? getWorkspaceRootRepoStorageKey()
-        : getWorkspaceRepoStorageKey(entry.repoId),
-  }));
+    const repoEntries = await listWorkspaceWorktreeRepoEntries(projectId, cwd);
+    return repoEntries.map((entry) => ({
+      target:
+        entry.repoId === getWorkspaceRootRepoStorageKey()
+          ? 'workspace-root'
+          : 'workspace-repo',
+      repoId: entry.repoId,
+      repoName: entry.repoName,
+      repoPath: entry.repoPath,
+      repoStorageKey:
+        entry.repoId === getWorkspaceRootRepoStorageKey()
+          ? getWorkspaceRootRepoStorageKey()
+          : getWorkspaceRepoStorageKey(entry.repoId),
+    }));
+  } finally {
+    recordStep?.('resolveTargets', workAggregatesNow() - startedAt);
+  }
 }
 
 async function resolveEffectiveHookActions(args: {
@@ -541,26 +560,12 @@ async function hasActiveCommentCollectionHookWatcher(args: {
   worktreeId: string;
   target: RepoRefreshTarget;
 }): Promise<boolean> {
-  const scope = hookScopeForTarget(args.target);
-  const watchers = await getAppAdvisorWatcherService().list();
-  return watchers.some((watcher) => {
-    if (
-      watcher.status !== 'active' ||
-      watcher.trigger !== 'worktree_hook_triggered' ||
-      watcher.target.kind !== 'worktree_hook' ||
-      watcher.target.projectId !== args.projectId ||
-      watcher.target.worktreeId !== args.worktreeId ||
-      !COMMENT_COLLECTION_HOOK_TRIGGERS.has(watcher.target.triggerName)
-    ) {
-      return false;
-    }
-    if (watcher.target.scope && watcher.target.scope !== scope) {
-      return false;
-    }
-    if (watcher.target.repoId && watcher.target.repoId !== args.target.repoId) {
-      return false;
-    }
-    return true;
+  return getAppAdvisorWatcherService().hasActiveHookWatcher({
+    projectId: args.projectId,
+    worktreeId: args.worktreeId,
+    triggerNames: COMMENT_COLLECTION_HOOK_TRIGGERS,
+    scope: hookScopeForTarget(args.target),
+    repoId: args.target.repoId,
   });
 }
 
@@ -777,14 +782,16 @@ function dispatchAutomaticHooks(args: {
     );
     const acceptance = args.acceptances.get(triggerName);
     if (acceptance && acceptance.status !== 'accepted') {
-      // Recorded with the advance: a paused skip, or an occurrence the
-      // ledger already holds, which its first firing or recovery runs.
+      // Recorded with the advance: a paused skip, a skip because the pause
+      // state could not be read, or an occurrence the ledger already holds,
+      // which its first firing or recovery runs.
       if (acceptance.status === 'stopped')
         announceHookSkippedPaused({
           projectId: args.projectId,
           worktreeId: args.worktreeId,
           hook,
           window: getWindowFn?.() ?? null,
+          skipCode: acceptance.code,
         });
       continue;
     }
@@ -894,17 +901,25 @@ async function prepareRepoRefreshes(
   projectId: string,
   worktreeId: string,
   targets: RepoRefreshTarget[],
+  recordStep?: GitHubPrepareStepRecorder,
 ): Promise<PreparedRepoRefresh[]> {
+  const admissionStartedAt = workAggregatesNow();
   return withWorktreeGitRead<PreparedRepoRefresh[]>(
     projectId,
     worktreeId,
     [],
     async () => {
+      recordStep?.(
+        'gitReadAdmission',
+        workAggregatesNow() - admissionStartedAt,
+      );
       const prepared: PreparedRepoRefresh[] = [];
       for (const target of targets) {
+        const branchStartedAt = workAggregatesNow();
         const branchName = await getCurrentBranch(target.repoPath).catch(
           () => '',
         );
+        recordStep?.('currentBranch', workAggregatesNow() - branchStartedAt);
         if (!branchName) {
           prepared.push({
             ...unavailableSnapshotReadIdentity(),
@@ -917,25 +932,38 @@ async function prepareRepoRefreshes(
           continue;
         }
 
+        const hookActionsStartedAt = workAggregatesNow();
         const hookActionsByTrigger = await resolveEffectiveHookActions({
           projectId,
           worktreeId,
           target,
         }).catch(() => null);
+        recordStep?.('hookActions', workAggregatesNow() - hookActionsStartedAt);
         const includeCommentCollectionsForHooks =
           hookActionsByTrigger !== null &&
           Array.from(COMMENT_COLLECTION_HOOK_TRIGGERS).some((triggerName) =>
             Array.isArray(hookActionsByTrigger[triggerName]),
           );
+        const hookWatcherStartedAt = workAggregatesNow();
         const includeCommentCollectionsForWatchers =
           await hasActiveCommentCollectionHookWatcher({
             projectId,
             worktreeId,
             target,
           }).catch(() => false);
+        recordStep?.('hookWatcher', workAggregatesNow() - hookWatcherStartedAt);
+        // Read before the remote lookup's await, as the object literal did.
+        const identity = unavailableSnapshotReadIdentity();
+        const remoteStartedAt = workAggregatesNow();
+        let remote: PreparedRepoRefresh['remote'];
+        try {
+          remote = await resolveGitHubRemoteForRepo(target.repoPath);
+        } finally {
+          recordStep?.('remote', workAggregatesNow() - remoteStartedAt);
+        }
         prepared.push({
-          ...unavailableSnapshotReadIdentity(),
-          remote: await resolveGitHubRemoteForRepo(target.repoPath),
+          ...identity,
+          remote,
           target,
           branchName,
           hookActionsByTrigger,
@@ -1249,7 +1277,7 @@ async function readInteractively(
       remote: null,
     };
   }
-  if (!read.authenticationToken) {
+  if (!read.credential) {
     throw new Error('GitHub credential unavailable.');
   }
   const trackingData = await fetchRepoPrTrackingData(
@@ -1260,7 +1288,7 @@ async function readInteractively(
       onCommentFetchSkipped: notifyCommentFetchSkipped,
       priority: 'high',
       caller: 'pr-poller',
-      authenticationToken: read.authenticationToken,
+      credential: read.credential,
     },
   );
   rememberRead(
@@ -1276,14 +1304,24 @@ async function readInteractively(
 async function refreshNowCore(
   projectId: string,
   worktreeId: string,
+  recordStep?: GitHubPrepareStepRecorder,
 ): Promise<WorktreePrStatus | null> {
   const scriptTimeoutMinutes = await readScriptTimeoutMinutes();
-  const targets = await resolveRefreshTargets(projectId, worktreeId);
+  const targets = await resolveRefreshTargets(
+    projectId,
+    worktreeId,
+    recordStep,
+  );
   if (targets.length === 0) {
     return applyEmptyRefresh(projectId, worktreeId);
   }
   const key = worktreeKey(projectId, worktreeId);
-  let prepared = await prepareRepoRefreshes(projectId, worktreeId, targets);
+  let prepared = await prepareRepoRefreshes(
+    projectId,
+    worktreeId,
+    targets,
+    recordStep,
+  );
   if (prepared.some((read) => read.remote !== null)) {
     const identity = await snapshotReadIdentity();
     prepared = prepared.map((read) => ({ ...read, ...identity }));
@@ -1312,6 +1350,7 @@ async function recordedRefresh(
   projectId: string,
   worktreeId: string,
   refresh: () => Promise<WorktreePrStatus | null>,
+  recordLedgerWrite?: GitHubLedgerWriteRecorder,
 ): Promise<WorktreePrStatus | null> {
   const entry = ensureTracked(projectId, worktreeId);
   if (!entry) return null;
@@ -1324,12 +1363,14 @@ async function recordedRefresh(
   }
   const previousStatus = entry.lastStatus;
   const attemptedAt = Date.now();
+  const attemptWriteStartedAt = workAggregatesNow();
   await recordGitHubRefreshAttempt({
     projectId,
     worktreeId,
     createdAt: entry.createdAt,
     attemptedAt,
   }).catch(() => undefined);
+  recordLedgerWrite?.(workAggregatesNow() - attemptWriteStartedAt);
 
   try {
     const status = await refresh();
@@ -1340,6 +1381,7 @@ async function recordedRefresh(
       return null;
     const succeededAt = Date.now();
     const nextDueAt = succeededAt + getSteadyRefreshInterval(status);
+    const successWriteStartedAt = workAggregatesNow();
     await recordGitHubRefreshSuccess({
       projectId,
       worktreeId,
@@ -1348,6 +1390,7 @@ async function recordedRefresh(
       dataChanged: !areEquivalentPrStatuses(previousStatus, status),
       nextDueAt,
     }).catch(() => undefined);
+    recordLedgerWrite?.(workAggregatesNow() - successWriteStartedAt);
     entry.steadyHydrationGeneration += 1;
     entry.steadyHydrationPending = false;
     entry.lastCheckedAt = succeededAt;
@@ -1360,12 +1403,14 @@ async function recordedRefresh(
     )
       return null;
     const failedAt = Date.now();
+    const failureWriteStartedAt = workAggregatesNow();
     const failureEntry = await recordGitHubRefreshFailure({
       projectId,
       worktreeId,
       createdAt: entry.createdAt,
       failedAt,
     }).catch(() => null);
+    recordLedgerWrite?.(workAggregatesNow() - failureWriteStartedAt);
     const retryAfterAt = Date.parse(failureEntry?.retryAfterAt ?? '');
     entry.steadyHydrationGeneration += 1;
     entry.steadyHydrationPending = false;
@@ -1390,10 +1435,19 @@ export async function refreshNow(
 }
 
 async function checkWorktree(entry: TrackedWorktree): Promise<void> {
+  const check = beginGitHubImmediateCheck();
   try {
-    await refreshNow(entry.projectId, entry.worktreeId);
+    // `refreshNow`, with this check's recorders.
+    await recordedRefresh(
+      entry.projectId,
+      entry.worktreeId,
+      () => refreshNowCore(entry.projectId, entry.worktreeId, check.recordStep),
+      check.recordLedgerWrite,
+    );
   } catch {
     // Silently ignore polling errors
+  } finally {
+    check.finish();
   }
 }
 
@@ -1440,7 +1494,7 @@ async function readSwept(
   if (!remote) {
     return { status: null, snapshot: null, branchName, remote: null };
   }
-  if (!read.authenticationToken) {
+  if (!read.credential) {
     throw new Error('GitHub credential unavailable.');
   }
   if (lookup.kind === 'none') {
@@ -1464,7 +1518,7 @@ async function readSwept(
     onCommentFetchSkipped: notifyCommentFetchSkipped,
     priority: 'normal' as const,
     caller: 'pr-poller',
-    authenticationToken: read.authenticationToken,
+    credential: read.credential,
   };
   if (lookup.kind === 'unresolved') {
     const trackingData = await fetchRepoPrTrackingData(
@@ -1560,17 +1614,20 @@ async function readSwept(
 
 async function prepareSweepWorktree(
   entry: TrackedWorktree,
+  recordStep: GitHubPrepareStepRecorder,
 ): Promise<SweepWorktree> {
   const key = worktreeKey(entry.projectId, entry.worktreeId);
   try {
     const targets = await resolveRefreshTargets(
       entry.projectId,
       entry.worktreeId,
+      recordStep,
     );
     const prepared = await prepareRepoRefreshes(
       entry.projectId,
       entry.worktreeId,
       targets,
+      recordStep,
     );
     return { entry, key, reads: prepared };
   } catch {
@@ -1622,22 +1679,44 @@ async function refreshSweptWorktree(
  * read in detail only the pull requests whose fingerprint moved.
  */
 async function sweep(entries: TrackedWorktree[]): Promise<void> {
+  const run = beginGitHubSweep(entries.length);
+  try {
+    await runSweep(entries, run);
+  } finally {
+    const line = finishGitHubSweepLogLine(run);
+    if (line !== null) logMainProcessInfo(line);
+  }
+}
+
+async function runSweep(
+  entries: TrackedWorktree[],
+  run: GitHubSweepRun,
+): Promise<void> {
   lastSweepAt = Date.now();
   const scriptTimeoutMinutes = await readScriptTimeoutMinutes();
+  run.beginPhase1();
   const worktrees: SweepWorktree[] = [];
   for (const entry of entries) {
-    worktrees.push(await prepareSweepWorktree(entry));
+    const prepareStartedAt = workAggregatesNow();
+    worktrees.push(await prepareSweepWorktree(entry, run.recordStep));
+    run.recordPrepareWorktree(workAggregatesNow() - prepareStartedAt);
   }
-  const identity = worktrees.some((worktree) =>
+  run.endPhase1();
+  const needsIdentity = worktrees.some((worktree) =>
     worktree.reads?.some((read) => read.remote !== null),
-  )
+  );
+  const identityStartedAt = workAggregatesNow();
+  const identity = needsIdentity
     ? await snapshotReadIdentity()
     : unavailableSnapshotReadIdentity();
+  if (needsIdentity)
+    run.recordIdentity(workAggregatesNow() - identityStartedAt);
   for (const worktree of worktrees) {
     worktree.reads =
       worktree.reads?.map((read) => ({ ...read, ...identity })) ?? null;
   }
 
+  run.beginPhase2();
   const branchesByRemote = new Map<
     string,
     { remote: { owner: string; repo: string }; branches: string[] }
@@ -1660,35 +1739,61 @@ async function sweep(entries: TrackedWorktree[]): Promise<void> {
     enqueue: (fn, priority, options) =>
       underlyingClient.enqueue(fn, priority, {
         ...options,
-        authenticationToken: identity.authenticationToken,
+        ...(identity.credential ? { credential: identity.credential } : {}),
       }),
   };
   for (const [groupKey, group] of Array.from(branchesByRemote.entries())) {
-    if (!identity.authenticationToken) continue;
+    if (!identity.credential) {
+      run.recordLookupSkippedNoToken();
+      continue;
+    }
+    const lookupStartedAt = workAggregatesNow();
     try {
       lookups.set(
         groupKey,
         await fetchPullRequestSweep(client, group.remote, group.branches),
       );
+      run.recordLookup(
+        workAggregatesNow() - lookupStartedAt,
+        group.branches.length,
+        'ok',
+      );
     } catch (error) {
+      run.recordLookup(
+        workAggregatesNow() - lookupStartedAt,
+        group.branches.length,
+        'failed',
+      );
       if (isGitHubRateLimitError(error)) {
         pauseSweep(error);
+        run.markStoppedForRateLimit();
         return;
       }
       lookups.set(groupKey, new Map());
     }
   }
 
+  run.beginPhase3();
   for (const worktree of worktrees) {
     const { entry } = worktree;
-    if (tracked.get(worktree.key) !== entry) continue;
+    if (tracked.get(worktree.key) !== entry) {
+      run.recordRefreshSkipped();
+      continue;
+    }
+    const refreshStartedAt = workAggregatesNow();
     try {
-      await recordedRefresh(entry.projectId, entry.worktreeId, () =>
-        refreshSweptWorktree(worktree, lookups, scriptTimeoutMinutes),
+      await recordedRefresh(
+        entry.projectId,
+        entry.worktreeId,
+        () => refreshSweptWorktree(worktree, lookups, scriptTimeoutMinutes),
+        run.recordLedgerWrite,
       );
+      run.recordRefresh(workAggregatesNow() - refreshStartedAt, 'ok');
     } catch (error) {
+      run.recordRefresh(workAggregatesNow() - refreshStartedAt, 'failed');
       if (isGitHubRateLimitError(error)) {
         pauseSweep(error);
+        run.markStoppedForRateLimit();
         return;
       }
     }
@@ -1728,6 +1833,9 @@ function getEntrySweepDueAt(
 }
 
 function getSweepDueAt(): number | null {
+  // A local-only build has no background sweep; immediate refreshes the user
+  // requests still run.
+  if (!allowsAutomaticCall('github.pr-poll')) return null;
   let earliest: number | null = null;
   for (const [key, entry] of Array.from(tracked.entries())) {
     const dueAt = getEntrySweepDueAt(key, entry);

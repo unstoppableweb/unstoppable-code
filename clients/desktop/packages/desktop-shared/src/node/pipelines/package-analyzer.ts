@@ -43,6 +43,7 @@ import {
   PIPELINE_PACKAGE_MAX_TOTAL_BYTES,
   validatePipelinePackageManifest,
 } from '@canopy/protocol/pipelines';
+import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
@@ -1383,16 +1384,14 @@ async function collectMemberFiles(
     let stat;
     try {
       stat = await fs.lstat(normalized);
-    } catch {
-      if (missingIsBlocker) {
-        const relativePath = relativeToSource.split(path.sep).join('/');
-        blockers.push({
-          code: 'MISSING_DEPENDENCY_SOURCE',
-          message: 'A referenced dependency file is missing.',
-          subject: relativePath,
-          relativePath,
-        });
-      }
+    } catch (error) {
+      const relativePath = relativeToSource.split(path.sep).join('/');
+      const blocker = sourceReadBlocker(
+        error,
+        'A referenced dependency file is missing.',
+        { subject: relativePath, relativePath },
+      );
+      if (missingIsBlocker) blockers.push(blocker);
       return;
     }
     visited.add(normalized);
@@ -1609,13 +1608,47 @@ async function collectMemberFiles(
       }
     }
     await includePath(memberRoot);
-  } catch {
-    blockers.push({
-      code: 'MISSING_DEPENDENCY_SOURCE',
-      message: 'A dependency source file is missing.',
-    });
+  } catch (error) {
+    blockers.push(
+      sourceReadBlocker(error, 'A dependency source file is missing.', {}),
+    );
   }
   return { entries, texts };
+}
+
+/**
+ * The blocker for a dependency source that failed to read. Only a path that
+ * isn't there is missing; one that is there but can't be read is its own
+ * blocker, carrying just the allowlisted errno, never the error's message.
+ * An error with no errno is a defect, so it is rethrown.
+ */
+function sourceReadBlocker(
+  error: unknown,
+  missingMessage: string,
+  location: { subject?: string; relativePath?: string },
+): PendingBlocker {
+  const errno = errnoOf(error);
+  if (errno === undefined) throw error;
+  if (errno === 'ENOENT' || errno === 'ENOTDIR')
+    return {
+      code: 'MISSING_DEPENDENCY_SOURCE',
+      message: missingMessage,
+      ...location,
+    };
+  return {
+    code: 'DEPENDENCY_SOURCE_UNREADABLE',
+    message: 'A dependency source file could not be read.',
+    ...location,
+    errno,
+  };
+}
+
+/** The system error code of `error`, only when it is an allowlisted errno. */
+function errnoOf(error: unknown): string | undefined {
+  // Not `instanceof Error`: system errors can come from another realm.
+  if (typeof error !== 'object' || error === null) return undefined;
+  const parsed = AppErrorErrnoSchema.safeParse(Reflect.get(error, 'code'));
+  return parsed.success ? parsed.data : undefined;
 }
 
 function isPathWithinOrEqual(parent: string, child: string): boolean {

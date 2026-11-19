@@ -1,5 +1,6 @@
 'use client';
 
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { Fragment, type JSX, type ReactNode } from 'react';
 import {
   DetailEntityType,
@@ -12,6 +13,7 @@ import {
 import type { PortalMcpServerDetail } from '@canopy/protocol/portal';
 import {
   Button,
+  ComponentSection,
   StatusLabel,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
@@ -63,7 +65,6 @@ export function McpServerReadDetail({
   statusSection,
   managementSection,
 }: McpServerReadDetailProps): JSX.Element {
-  const endpoint = server.type === 'http' ? server.url : server.command;
   return (
     <div
       className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-5 pb-5"
@@ -102,81 +103,10 @@ export function McpServerReadDetail({
         {statusSection}
         {managementSection}
       </div>
-      <FactList labelWidth="9rem" size="s" rowGap="2" labelTone="secondary">
-        <Fact label="Transport">
-          {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
-        </Fact>
-        {endpoint && (
-          <>
-            <Fact
-              label="Endpoint"
-              fit="break-all"
-              mono
-              dataTestId="mcp-server-read-endpoint"
-            >
-              {endpoint}
-            </Fact>
-          </>
-        )}
-        {server.argCount !== undefined && (
-          <>
-            <Fact label="Arguments">{server.argCount}</Fact>
-          </>
-        )}
-        {server.headerNames && server.headerNames.length > 0 && (
-          <>
-            <Fact label="Headers">{server.headerNames.join(', ')}</Fact>
-          </>
-        )}
-        {server.httpAuthHandler !== undefined && (
-          <>
-            <Fact label="Auth handling">
-              {server.httpAuthHandler === 'canopy'
-                ? appAuthHandlerLabel
-                : 'Provider'}
-            </Fact>
-          </>
-        )}
-        {server.oauth && (
-          <>
-            <Fact
-              label={<span className="font-medium fg-primary">OAuth</span>}
-              labelTestId="mcp-server-read-oauth"
-            />
-            <Fact label="Client ID">
-              {server.oauth.hasClientId ? 'configured' : 'not configured'}
-            </Fact>
-            <Fact label="Client secret">
-              {server.oauth.hasClientSecret ? 'configured' : 'not configured'}
-            </Fact>
-            {server.oauth.authorizationUrl !== undefined && (
-              <>
-                <Fact label="Authorization URL" fit="break-all" mono>
-                  {server.oauth.authorizationUrl}
-                </Fact>
-              </>
-            )}
-            {server.oauth.tokenUrl !== undefined && (
-              <>
-                <Fact label="Token URL" fit="break-all" mono>
-                  {server.oauth.tokenUrl}
-                </Fact>
-              </>
-            )}
-            {server.oauth.scopes !== undefined &&
-              server.oauth.scopes.length > 0 && (
-                <>
-                  <Fact label="Scopes">{server.oauth.scopes.join(', ')}</Fact>
-                </>
-              )}
-            {server.oauth.audience !== undefined && (
-              <>
-                <Fact label="Audience">{server.oauth.audience}</Fact>
-              </>
-            )}
-          </>
-        )}
-      </FactList>
+      <McpServerConfigurationFacts
+        server={server}
+        appAuthHandlerLabel={appAuthHandlerLabel}
+      />
 
       {server.curated !== undefined && (
         <Stack as="section" gap="inline" data-testid="mcp-server-read-curated">
@@ -226,91 +156,258 @@ export function McpServerReadDetail({
         </Stack>
       )}
 
-      <Stack
-        as="section"
-        gap="inline"
-        aria-labelledby="mcp-server-configs-heading"
-      >
-        <Heading level={4} variant="label" id="mcp-server-configs-heading">
-          Configurations
-        </Heading>
-        {server.configs.length === 0 ? (
-          <p className="text-xs fg-secondary">No configurations.</p>
-        ) : (
-          <Stack gap="inline">
-            {server.configs.map((config) => {
-              const feedback = configToggleFeedback?.[config.id];
-              return (
-                <Surface
-                  variant="group"
-                  padding="compact"
-                  key={config.id}
-                  data-testid="mcp-server-read-config"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex flex-col gap-1">
-                      <p className="text-s font-medium fg-primary">
-                        {config.name}
+      <McpServerConfigList
+        server={server}
+        statusShown={statusSection !== undefined && statusSection !== null}
+        onToggleConfig={onToggleConfig}
+        configToggleFeedback={configToggleFeedback}
+      />
+    </div>
+  );
+}
+
+/** The fields of a server's definition the page may show: names, never values. */
+export type McpServerConfigurationSummary = Pick<
+  PortalMcpServerDetail,
+  | 'type'
+  | 'command'
+  | 'argCount'
+  | 'url'
+  | 'headerNames'
+  | 'oauth'
+  | 'httpAuthHandler'
+>;
+
+/** Transport, Endpoint, Arguments, Headers, Auth handling and OAuth rows. */
+export function McpServerConfigurationFacts({
+  server,
+  appAuthHandlerLabel = 'App',
+  replayValues = false,
+}: {
+  server: McpServerConfigurationSummary;
+  appAuthHandlerLabel?: string;
+  /**
+   * Session replay keeps a placeholder for each user-configured value
+   * (endpoint, command, names, URLs); labels stay readable.
+   */
+  replayValues?: boolean;
+}): JSX.Element {
+  const endpoint = server.type === 'http' ? server.url : server.command;
+  const value = (node: ReactNode): ReactNode =>
+    replayValues ? <span className={REPLAY_BLOCK_CLASS}>{node}</span> : node;
+  return (
+    <FactList labelWidth="9rem" size="s" rowGap="2" labelTone="secondary">
+      <Fact label="Transport">
+        {server.type === 'http' ? 'HTTP' : 'Command (stdio)'}
+      </Fact>
+      {endpoint && (
+        <>
+          <Fact
+            label="Endpoint"
+            fit="break-all"
+            mono
+            dataTestId="mcp-server-read-endpoint"
+          >
+            {value(endpoint)}
+          </Fact>
+        </>
+      )}
+      {server.argCount !== undefined && (
+        <>
+          <Fact label="Arguments">{server.argCount}</Fact>
+        </>
+      )}
+      {server.headerNames && server.headerNames.length > 0 && (
+        <>
+          <Fact label="Headers">{value(server.headerNames.join(', '))}</Fact>
+        </>
+      )}
+      {server.httpAuthHandler !== undefined && (
+        <>
+          <Fact label="Auth handling">
+            {server.httpAuthHandler === 'canopy'
+              ? appAuthHandlerLabel
+              : 'Provider'}
+          </Fact>
+        </>
+      )}
+      {server.oauth && (
+        <>
+          <Fact
+            label={<span className="font-medium fg-primary">OAuth</span>}
+            labelTestId="mcp-server-read-oauth"
+          />
+          <Fact label="Client ID">
+            {server.oauth.hasClientId ? 'configured' : 'not configured'}
+          </Fact>
+          <Fact label="Client secret">
+            {server.oauth.hasClientSecret ? 'configured' : 'not configured'}
+          </Fact>
+          {server.oauth.authorizationUrl !== undefined && (
+            <>
+              <Fact label="Authorization URL" fit="break-all" mono>
+                {value(server.oauth.authorizationUrl)}
+              </Fact>
+            </>
+          )}
+          {server.oauth.tokenUrl !== undefined && (
+            <>
+              <Fact label="Token URL" fit="break-all" mono>
+                {value(server.oauth.tokenUrl)}
+              </Fact>
+            </>
+          )}
+          {server.oauth.scopes !== undefined &&
+            server.oauth.scopes.length > 0 && (
+              <>
+                <Fact label="Scopes">
+                  {value(server.oauth.scopes.join(', '))}
+                </Fact>
+              </>
+            )}
+          {server.oauth.audience !== undefined && (
+            <>
+              <Fact label="Audience">{value(server.oauth.audience)}</Fact>
+            </>
+          )}
+        </>
+      )}
+    </FactList>
+  );
+}
+
+/** The server's configurations, each with its toggle or enabled state. */
+export function McpServerConfigList({
+  server,
+  statusShown,
+  onToggleConfig,
+  configToggleFeedback,
+  replayValues = false,
+}: {
+  /** Session replay keeps a placeholder for each configuration's values. */
+  replayValues?: boolean;
+  server: PortalMcpServerDetail;
+  /** The page shows a Status row, which owns enabling; no toggles then. */
+  statusShown: boolean;
+  onToggleConfig?: McpServerReadDetailProps['onToggleConfig'];
+  configToggleFeedback?: McpServerReadDetailProps['configToggleFeedback'];
+}): JSX.Element {
+  const replayValue = (node: ReactNode): ReactNode =>
+    replayValues ? <span className={REPLAY_BLOCK_CLASS}>{node}</span> : node;
+  return (
+    <Stack
+      as="section"
+      gap="inline"
+      aria-labelledby="mcp-server-configs-heading"
+    >
+      <Heading level={4} variant="label" id="mcp-server-configs-heading">
+        Configurations
+      </Heading>
+      {server.configs.length === 0 ? (
+        <p className="text-xs fg-secondary">No configurations.</p>
+      ) : (
+        <Stack gap="inline">
+          {server.configs.map((config) => {
+            const feedback = configToggleFeedback?.[config.id];
+            return (
+              <Surface
+                variant="group"
+                padding="compact"
+                key={config.id}
+                data-testid="mcp-server-read-config"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex flex-col gap-1">
+                    <p className="text-s font-medium fg-primary">
+                      {replayValue(config.name)}
+                    </p>
+                    {config.description && (
+                      <p className="mt-0.5 text-xs fg-secondary">
+                        {replayValue(config.description)}
                       </p>
-                      {config.description && (
-                        <p className="mt-0.5 text-xs fg-secondary">
-                          {config.description}
-                        </p>
-                      )}
-                      <p className="text-2xs fg-secondary">
-                        Environment variables:{' '}
-                        {config.envVarNames.length > 0
-                          ? config.envVarNames.join(', ')
-                          : 'none'}{' '}
-                        · {config.extraArgCount} extra arguments
-                        {extraHeadersSummary(server, config)}
-                        {' · '}token{' '}
-                        {config.hasAuthToken ? 'configured' : 'not configured'}
-                      </p>
-                    </div>
-                    {statusSection ? null : onToggleConfig ? (
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        <ToggleSwitch
-                          checked={config.enabled}
-                          label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
-                          onChange={(next) => onToggleConfig(config.id, next)}
-                          disabled={feedback?.pending === true}
-                          busy={feedback?.pending === true}
-                          dataTestId="mcp-server-read-config-toggle"
-                        />
-                        {/* The switch only marks itself busy, so the pending
-                          change is named in text the user can see. */}
-                        {feedback?.pending === true && (
-                          <span className="text-3xs fg-secondary">Saving…</span>
-                        )}
-                        {feedback?.message && (
-                          <span
-                            role="status"
-                            data-testid="mcp-server-read-config-feedback"
-                            className={`max-w-52 text-right text-3xs ${
-                              feedback.tone === 'error' ? '' : 'fg-secondary'
-                            }`}
-                          >
-                            {feedback.tone === 'error' ? (
-                              <StatusLabel>{feedback.message}</StatusLabel>
-                            ) : (
-                              feedback.message
-                            )}
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="shrink-0 text-xs fg-secondary">
-                        {config.enabled ? 'Enabled' : 'Disabled'}
-                      </span>
                     )}
+                    <p className="text-2xs fg-secondary">
+                      Environment variables:{' '}
+                      {config.envVarNames.length > 0
+                        ? replayValue(config.envVarNames.join(', '))
+                        : 'none'}{' '}
+                      · {config.extraArgCount} extra arguments
+                      {replayValue(extraHeadersSummary(server, config))}
+                      {' · '}token{' '}
+                      {config.hasAuthToken ? 'configured' : 'not configured'}
+                    </p>
                   </div>
-                </Surface>
-              );
-            })}
-          </Stack>
-        )}
-      </Stack>
+                  {statusShown ? null : onToggleConfig ? (
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <ToggleSwitch
+                        checked={config.enabled}
+                        label={`${config.enabled ? 'Disable' : 'Enable'} ${config.name}`}
+                        onChange={(next) => onToggleConfig(config.id, next)}
+                        disabled={feedback?.pending === true}
+                        busy={feedback?.pending === true}
+                        dataTestId="mcp-server-read-config-toggle"
+                      />
+                      {/* The switch only marks itself busy, so the pending
+                        change is named in text the user can see. */}
+                      {feedback?.pending === true && (
+                        <span className="text-3xs fg-secondary">Saving…</span>
+                      )}
+                      {feedback?.message && (
+                        <span
+                          role="status"
+                          data-testid="mcp-server-read-config-feedback"
+                          className={`max-w-52 text-right text-3xs ${
+                            feedback.tone === 'error' ? '' : 'fg-secondary'
+                          }`}
+                        >
+                          {feedback.tone === 'error' ? (
+                            <StatusLabel>{feedback.message}</StatusLabel>
+                          ) : (
+                            feedback.message
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="shrink-0 text-xs fg-secondary">
+                      {config.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                  )}
+                </div>
+              </Surface>
+            );
+          })}
+        </Stack>
+      )}
+    </Stack>
+  );
+}
+
+/**
+ * New Customize's collapsed Configuration section: the definition's fields
+ * and, when known, each configuration.
+ */
+export function McpServerConfigurationSection({
+  summary,
+  appAuthHandlerLabel,
+  configList,
+}: {
+  summary: McpServerConfigurationSummary;
+  appAuthHandlerLabel?: string;
+  configList?: ReactNode;
+}): JSX.Element {
+  return (
+    <div data-testid="mcp-detail-configuration">
+      <ComponentSection title="Configuration" collapsible>
+        <div className="flex flex-col gap-4">
+          <McpServerConfigurationFacts
+            server={summary}
+            appAuthHandlerLabel={appAuthHandlerLabel}
+            replayValues
+          />
+          {configList}
+        </div>
+      </ComponentSection>
     </div>
   );
 }

@@ -41,7 +41,12 @@ export type BotChatAddress = {
 export type BotRow = {
   botId: string;
   name: string;
-  description?: string;
+  /** Present only while the user-defined Bots experiment is enabled. */
+  kind?: 'default' | 'custom';
+  description?: string | null;
+  scope?: 'default' | 'global' | 'pinned';
+  pins?: { projectId: string; name: string }[];
+  showInSidebar?: boolean;
   availability: 'available' | 'unavailable';
   unavailableReason?: string;
   taskCount: number | null;

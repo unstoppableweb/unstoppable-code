@@ -42,7 +42,7 @@ type PendingEntry =
   | 'status'
   | 'startup'
   | 'open';
-type PendingPath = 'resume' | 'cancel' | 'read' | 'unavailable';
+type PendingPath = 'resume' | 'remove' | 'cancel' | 'read' | 'unavailable';
 /** P7's authenticated import dimension composes with, never impersonates, P6 setup state. */
 export const COPILOT_VAULT_PENDING_IMPORT_PATHS = COPILOT_VAULT_IMPORT_PATHS;
 export const COPILOT_VAULT_IMPORT_CANCEL_PATHS = COPILOT_VAULT_IMPORT_PATHS;
@@ -58,8 +58,8 @@ export const COPILOT_VAULT_PENDING_PATHS = {
   },
   refresh: {
     connect: 'resume',
-    disconnect: 'resume',
-    'change-account': 'resume',
+    disconnect: 'remove',
+    'change-account': 'remove',
     'setup-cancel': 'unavailable',
     status: 'read',
     startup: 'read',
@@ -67,8 +67,8 @@ export const COPILOT_VAULT_PENDING_PATHS = {
   },
   replace: {
     connect: 'resume',
-    disconnect: 'resume',
-    'change-account': 'resume',
+    disconnect: 'remove',
+    'change-account': 'remove',
     'setup-cancel': 'unavailable',
     status: 'read',
     startup: 'read',
@@ -114,6 +114,9 @@ function pendingPath(
 /** P9 binds this results-only control port to the authenticated daemon channel. */
 export interface CopilotVaultConnectionPort extends CopilotConsumerPort {
   status(): Promise<CopilotGrantResult>;
+  demand(): Promise<CopilotGrantResult>;
+  recoverRuntimeReceipts(): Promise<void>;
+  removePending(operationId: string): Promise<CopilotGrantResult>;
   setup(
     grant: CopilotVaultGrant,
     expectedGeneration: string | null,
@@ -130,6 +133,7 @@ export interface CopilotVaultConnectionPort extends CopilotConsumerPort {
   revoke(): void;
   reopen(): void;
   close(): void;
+  quiesce(): Promise<void>;
 }
 type SetupOutcome = Awaited<ReturnType<CopilotVaultConnectionPort['setup']>>;
 type SetupCancelPath = 'remove' | 'pending' | 'cancel-owned' | 'settled';
@@ -151,20 +155,29 @@ export function createCopilotVaultConnection(options: {
   const { port } = options;
   let generation = 0;
   let closed = false;
+  let shutdown: Promise<void> | undefined;
   let settingUp = false;
   const handles = new Set<ReturnType<typeof createCopilotConsumerHandle>>();
   function admit(): void {
     assertCopilotHarnessEnabled();
     if (closed) throw new CopilotVaultUnavailableError();
   }
-  async function status(): Promise<CopilotConnectionStatus> {
+  async function status(onDemand = false): Promise<CopilotConnectionStatus> {
     const publish = beginCopilotAvailabilityProbe();
     const epoch = generation;
     try {
       admit();
       const base = await (options.installation ?? copilotInstallationStatus)();
-      const state = await port.status();
-      if (state.kind === 'pending') pendingPath(state.operation, 'status');
+      let state = await port.status();
+      if (state.kind === 'pending') {
+        pendingPath(state.operation, 'status');
+        if (
+          onDemand &&
+          (state.operation.kind === 'refresh' ||
+            state.operation.kind === 'replace')
+        )
+          state = await port.demand();
+      }
       if (
         state.kind === 'blocked' &&
         state.reason !== 'absent' &&
@@ -209,8 +222,16 @@ export function createCopilotVaultConnection(options: {
         'Copilot account setup is in progress. Try again when it finishes.',
       );
     const epoch = generation;
-    const state = await port.status();
-    if (state.kind === 'pending') pendingPath(state.operation, 'open');
+    let state = await port.status();
+    if (state.kind === 'pending') {
+      pendingPath(state.operation, 'open');
+      if (
+        state.operation.kind !== 'refresh' &&
+        state.operation.kind !== 'replace'
+      )
+        throw new CopilotVaultUnavailableError();
+      state = await port.demand();
+    }
     if (
       state.kind === 'blocked' &&
       (state.reason === 'absent' || state.reason === 'expired')
@@ -284,8 +305,16 @@ export function createCopilotVaultConnection(options: {
       if (pendingPath(state.operation, 'setup-cancel') !== 'cancel')
         throw new CopilotVaultUnavailableError();
       await port.cancel(state.operationId);
-    } else if (path === 'cancel-owned' && state.setupOperationId)
-      await port.cancel(state.setupOperationId);
+    } else if (path === 'cancel-owned' && state.setupOperationId) {
+      // A fenced result can follow an already-committed head with a delayed reply.
+      const current = await port.status();
+      if (
+        current.kind === 'ready' &&
+        current.head.operationId === state.setupOperationId
+      )
+        await port.remove(current.head.epoch);
+      else await port.cancel(state.setupOperationId);
+    }
   }
   async function disconnect(
     entry: 'disconnect' | 'change-account' = 'disconnect',
@@ -299,7 +328,9 @@ export function createCopilotVaultConnection(options: {
         : state.kind === 'pending'
           ? pendingPath(state.operation, entry) === 'cancel'
             ? await port.cancel(state.operationId)
-            : await port.resume(state.operationId)
+            : pendingPath(state.operation, entry) === 'remove'
+              ? await port.removePending(state.operationId)
+              : await port.resume(state.operationId)
           : state;
     if (result.kind === 'ready') result = await port.remove(result.head.epoch);
     if (
@@ -311,21 +342,37 @@ export function createCopilotVaultConnection(options: {
   return {
     copilotConnectionStatus: status,
     openManagedCopilotRuntime: open,
-    async connectCopilot(signal, progress, changeAccount = false) {
+    async connectCopilot(
+      signal,
+      progress,
+      changeAccount = false,
+      afterAccountRemoval,
+    ) {
       admit();
       signal.throwIfAborted();
       if (settingUp)
         throw new Error('Copilot account setup is already in progress.');
-      if (changeAccount) await disconnect('change-account');
       settingUp = true;
-      await revoke();
       let ownedSetup: SetupOutcome | undefined;
       try {
+        if (changeAccount) {
+          await disconnect('change-account');
+          signal.throwIfAborted();
+          await afterAccountRemoval?.();
+          signal.throwIfAborted();
+          admit();
+        }
+        await revoke();
         let state = await port.status();
         // Unknown local outcomes reconcile the same operation before any new device flow.
         if (state.kind === 'pending') {
           pendingPath(state.operation, 'connect');
+          const recoverable =
+            state.operation.kind === 'refresh' ||
+            state.operation.kind === 'replace';
           state = await port.resume(state.operationId);
+          if (state.kind === 'blocked' && recoverable)
+            state = await port.demand();
           if (state.kind === 'removed') state = await port.status();
         }
         if (state.kind !== 'ready') {
@@ -361,7 +408,7 @@ export function createCopilotVaultConnection(options: {
         settingUp = false;
         generation++;
         port.reopen();
-        const connected = await status();
+        const connected = await status(true);
         signal.throwIfAborted();
         progress(connected);
         return connected;
@@ -443,13 +490,19 @@ export function createCopilotVaultConnection(options: {
     revokeCopilotRuntimes: revoke,
     recoverCopilotAtStartup: async () => {
       admit();
+      await port.recoverRuntimeReceipts();
+      admit();
       const state = await port.status();
       if (state.kind === 'pending') pendingPath(state.operation, 'startup');
     },
-    shutdownCopilotRuntimes: async () => {
+    shutdownCopilotRuntimes: () => {
+      if (shutdown) return shutdown;
       closed = true;
-      await revoke();
+      // Start the authority cap before any potentially hanging runtime teardown.
+      const draining = port.quiesce();
       port.close();
+      shutdown = Promise.allSettled([draining, revoke()]).then(() => undefined);
+      return shutdown;
     },
   };
 }

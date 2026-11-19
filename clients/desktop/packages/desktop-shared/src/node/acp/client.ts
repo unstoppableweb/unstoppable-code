@@ -30,6 +30,7 @@ import {
   type SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk';
 import { redactSecrets } from '@canopy/execution-engine/lib/redaction';
+import { acpSupportsAdditionalDirectories } from './capabilities';
 import { AcpClientError } from './errors';
 import { AcpUpdatePressure, createAcpStream } from './stream';
 import type {
@@ -281,6 +282,10 @@ class AcpClientConnection implements AcpClient {
     if (!this.initialization)
       throw new AcpClientError('closed', 'ACP has not initialized');
     return structuredClone(this.initialization);
+  }
+
+  supportsAdditionalDirectories(): boolean {
+    return acpSupportsAdditionalDirectories(this.initialization);
   }
 
   async authenticate(
@@ -755,7 +760,7 @@ class AcpClientConnection implements AcpClient {
     const capabilities = this.initialization?.agentCapabilities;
     if (
       params.additionalDirectories?.length &&
-      capabilities?.sessionCapabilities?.additionalDirectories == null
+      !acpSupportsAdditionalDirectories(this.initialization)
     ) {
       throw new AcpClientError(
         'unsupported',

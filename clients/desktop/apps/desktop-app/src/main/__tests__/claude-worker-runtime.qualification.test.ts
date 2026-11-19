@@ -13,6 +13,7 @@ import {
 import { ClaudeCodeProvider } from '../agents/claude-session';
 import { OllamaProvider } from '../agents/ollama-provider';
 import { resolveClaudeCompatibleInvocation } from '../ollama/claude-compatible';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 // Claude and Ollama (Claude harness) providers are constructed only by the
 // worker-owned Claude runtime, inside an agent worker run (CAN-4116).
@@ -76,7 +77,11 @@ describe('the worker-owned Claude runtime', () => {
   it('a Claude session is constructed by the worker runtime inside a turn run', async () => {
     const provider = await runInAgentWorker(
       { kind: 'turn', runId: 'r1' },
-      async () => (await claudeRuntime()).providerFor('claude', () => null),
+      async () =>
+        (await claudeRuntime()).providerFor(
+          'claude',
+          windowAgentInterfacePort(() => null),
+        ),
     );
 
     expect(claudeProvider).toHaveBeenCalledTimes(1);
@@ -97,7 +102,11 @@ describe('the worker-owned Claude runtime', () => {
   it('an Ollama session is constructed by the worker runtime inside a turn run', async () => {
     const provider = await runInAgentWorker(
       { kind: 'turn', runId: 'r1' },
-      async () => (await claudeRuntime()).providerFor('ollama', () => null),
+      async () =>
+        (await claudeRuntime()).providerFor(
+          'ollama',
+          windowAgentInterfacePort(() => null),
+        ),
     );
 
     expect(ollamaProvider).toHaveBeenCalledTimes(1);
@@ -118,14 +127,20 @@ describe('the worker-owned Claude runtime', () => {
 
   it('a subagent run may construct the provider', async () => {
     await runInAgentWorker({ kind: 'subagent', runId: 's1' }, async () =>
-      (await claudeRuntime()).providerFor('claude', () => null),
+      (await claudeRuntime()).providerFor(
+        'claude',
+        windowAgentInterfacePort(() => null),
+      ),
     );
 
     expect(claudeProvider).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a Claude-harness provider outside an agent run', async () => {
-    const refused = (await claudeRuntime()).providerFor('claude', () => null);
+    const refused = (await claudeRuntime()).providerFor(
+      'claude',
+      windowAgentInterfacePort(() => null),
+    );
 
     await expect(refused).rejects.toBeInstanceOf(AgentOutsideWorkerError);
     await expect(refused).rejects.toThrow('ClaudeWorkerRuntime.providerFor');
@@ -154,7 +169,7 @@ describe('the worker-owned Claude runtime', () => {
       provider.createSession(
         options,
         () => undefined,
-        () => null,
+        windowAgentInterfacePort(() => null),
       );
     } catch (error) {
       thrown = error;

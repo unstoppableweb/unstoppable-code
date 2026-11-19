@@ -37,9 +37,11 @@ import {
 } from './skill-dependency-readiness';
 import {
   assertCanopyCloudCapability,
+  CanopyCloudClientError,
   resolveCanopyCloudCredentialContext,
   type CanopyCloudCredentialContext,
 } from '../canopy-cloud/client';
+import { cloudCopyAudience } from '../cloud-copy/audience';
 import { registerIpcHandler } from '../ipc/register';
 import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inventory-service';
 import * as service from './skill-service';
@@ -251,6 +253,22 @@ export function registerSkillHandlers(): void {
         const detail = credentials
           ? await createSharedSkill(request, credentials.credentialContext)
           : await createSharedSkill(request);
+        // A cloud that predates the create's audience precondition can answer
+        // a share that named its audience with an identical skill shared more
+        // widely; it is never linked, and fails as the cloud would (CAN-7037).
+        if (
+          request.expectedAudience !== undefined &&
+          cloudCopyAudience({
+            shareScope: detail.shareScope,
+            public: detail.publicShare !== null,
+          }) !== request.expectedAudience
+        )
+          throw new CanopyCloudClientError(
+            'http-error',
+            'This skill is already in your cloud account, shared with more people than this share would be.',
+            409,
+            'audience_changed',
+          );
         const { sourceSkillId } = request;
         if (sourceSkillId && credentials && detail.canUpdate) {
           // Skill creation is content-addressed and can return an older,

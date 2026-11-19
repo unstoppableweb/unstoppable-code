@@ -7,10 +7,14 @@ import {
 } from '@canopy/core-runtime/node/relocation';
 import { isFullyQualified } from './paths';
 
+/** Closed reason an `invalid_root` refusal came from the filesystem, not the root's shape. */
+export type LocalAuthorityRootCause = 'root_missing' | 'root_denied';
+
 export class LocalAuthorityIdentityError extends Error {
   override readonly name = 'LocalAuthorityIdentityError';
   constructor(
     readonly code: 'invalid_brand' | 'invalid_root' | 'principal_unavailable',
+    readonly rootCause?: LocalAuthorityRootCause,
   ) {
     super(`Local authority identity unavailable: ${code}.`);
   }
@@ -110,6 +114,15 @@ export async function deriveLocalAuthorityIdentity(
   );
 }
 
+function rootCause(error: unknown): LocalAuthorityRootCause | undefined {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? error.code
+      : undefined;
+  if (code === 'ENOENT' || code === 'ENOTDIR') return 'root_missing';
+  return code === 'EACCES' || code === 'EPERM' ? 'root_denied' : undefined;
+}
+
 async function deriveAuthorityForPrincipal(
   input: { readonly brandId: string; readonly dataRoot: string },
   principal: Principal,
@@ -130,8 +143,8 @@ async function deriveAuthorityForPrincipal(
       !(await stat(canonicalDataRoot)).isDirectory()
     )
       throw new LocalAuthorityIdentityError('invalid_root');
-  } catch {
-    throw new LocalAuthorityIdentityError('invalid_root');
+  } catch (error) {
+    throw new LocalAuthorityIdentityError('invalid_root', rootCause(error));
   }
   return authorityIdentity(input.brandId, canonicalDataRoot, principal);
 }

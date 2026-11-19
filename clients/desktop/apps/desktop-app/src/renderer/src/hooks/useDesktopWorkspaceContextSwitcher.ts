@@ -122,8 +122,10 @@ export function useDesktopWorkspaceContextSwitcher({
     select: (next: WorkspaceContext): void => {
       setSwitching(true);
       void setWorkspaceContext(next)
-        .catch(() => {
-          addToast("Couldn't switch context. Try again.", 'error');
+        .catch((error: unknown) => {
+          addToast("Couldn't switch context. Try again.", 'error', undefined, {
+            caught: error,
+          });
         })
         .finally(() => setSwitching(false));
     },

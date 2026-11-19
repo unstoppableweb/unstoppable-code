@@ -91,9 +91,9 @@ export function AddCloudProjectSetup({
     try {
       const catalog = await window.api.cloudProjects.setupCatalog();
       if (mounted.current) setList(listState(catalog));
-    } catch {
+    } catch (cause) {
       // The panel shows the failure in place; record it for diagnostics.
-      reportClientAppError(new Error('Cloud project setup catalog failed'), {
+      reportClientAppError(cause, {
         surface: 'inline',
       });
       if (mounted.current) setList({ kind: 'unavailable', reason: 'offline' });
@@ -122,8 +122,8 @@ export function AddCloudProjectSetup({
     setProgress(null);
     const options = await window.api.cloudProjects
       .setupOptions(projectId)
-      .catch((): null => {
-        reportClientAppError(new Error('Cloud project setup options failed'), {
+      .catch((cause: unknown): null => {
+        reportClientAppError(cause, {
           surface: 'inline',
         });
         return null;
@@ -193,8 +193,8 @@ export function AddCloudProjectSetup({
         repositoryIds: repositoryIds(choosing),
         destinationRoot: choosing.destinationRoot,
       })
-      .catch((): { ok: false; code: 'setup-failed' } => {
-        reportClientAppError(new Error('Cloud project setup start failed'), {
+      .catch((cause: unknown): { ok: false; code: 'setup-failed' } => {
+        reportClientAppError(cause, {
           surface: 'inline',
         });
         return { ok: false, code: 'setup-failed' };

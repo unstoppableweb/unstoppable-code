@@ -1,11 +1,11 @@
 /**
  * CAN-6900: a watcher's background authorization reads local inventories
  * (the plugin catalog, the skill inventory, the agent models file). One that
- * isn't ready, such as a catalog read while a restart rewrites it, is a
- * transient refusal that is retried within a bound; one that won't clear by
- * itself, a catalog a newer build wrote, refuses for good with copy naming
- * the cause. Neither is ever a grant, and neither reads as an unknown
- * provenance.
+ * isn't ready is a transient refusal that is retried within a bound; one
+ * that won't clear by itself refuses for good with copy naming the cause.
+ * Neither is ever a grant, and neither reads as an unknown provenance.
+ * CAN-4481: a damaged or newer plugin catalog is read as-is, so it never
+ * refuses by itself; a plugin it can't decode is missing.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,14 +73,41 @@ beforeEach(() => {
 });
 
 describe('a watcher authorization inventory that is not ready (CAN-6900)', () => {
-  it('a catalog read mid-write looks damaged and is retried, never a grant', async () => {
-    writeData('plugins-cache.json', '{"version":2,"marketpl');
+  const subjectNameMatcher: unknown = expect.any(String);
+
+  it('a damaged catalog is read as-is: a plugin it cannot decode is missing, never a grant', async () => {
+    writeData(
+      'plugins-cache.json',
+      JSON.stringify({
+        version: 2,
+        lastRefreshed: '2026-11-18T00:00:00Z',
+        marketplaces: [null, { id: 'market', plugins: 'wrong' }],
+      }),
+    );
     await expect(
       createBackgroundCapabilityResolver(grant)(pluginSelected),
     ).resolves.toEqual({
       allow: false,
-      reason: 'plugin-catalog-damaged',
-      transient: true,
+      reason: 'missing-dependency',
+      subject: { kind: 'plugin', name: subjectNameMatcher },
+    });
+  });
+
+  it('a catalog a newer build wrote is read as-is rather than refused', async () => {
+    writeData(
+      'plugins-cache.json',
+      JSON.stringify({
+        version: 3,
+        lastRefreshed: '2026-11-18T00:00:00Z',
+        marketplaces: [],
+      }),
+    );
+    await expect(
+      createBackgroundCapabilityResolver(grant)(pluginSelected),
+    ).resolves.toEqual({
+      allow: false,
+      reason: 'missing-dependency',
+      subject: { kind: 'plugin', name: subjectNameMatcher },
     });
   });
 
@@ -119,17 +146,10 @@ describe('a watcher authorization inventory that is not ready (CAN-6900)', () =>
 });
 
 describe('a watcher authorization inventory that will not clear by itself (CAN-6900)', () => {
-  it('a catalog a newer build wrote refuses for good, naming the cause', async () => {
-    writeData('plugins-cache.json', JSON.stringify({ version: 3 }));
-    const decision =
-      await createBackgroundCapabilityResolver(grant)(pluginSelected);
-    expect(decision).toEqual({ allow: false, reason: 'plugin-catalog-newer' });
+  it('a newer-build refusal is not retried', async () => {
     expect(backgroundExecutionDeniedMessage('plugin-catalog-newer')).toBe(
       "The plugin catalog was written by a newer version of the app, so this didn't run. Update the app to run it.",
     );
-  });
-
-  it('a newer-build refusal is not retried', async () => {
     const decide = jest.fn(
       (): Promise<ResourceContextDecision> =>
         Promise.resolve({ allow: false, reason: 'plugin-catalog-newer' }),

@@ -41,6 +41,8 @@ import {
   type ElectronDaemonClient,
 } from './electron-daemon-host';
 import { getElectronDaemonHealth } from './electron-daemon-health';
+import { reportDaemonSetupFailure } from './daemon-setup-failure-report';
+import type { BackgroundServiceHandoffFailure } from '@canopy/desktop-shared/lib/background-service-status';
 import { getDaemonCodeGraphQueue } from './daemon-code-graph-queue';
 import { getDaemonExecutionStatus } from './daemon-execution-status';
 import type { WorkspaceCommitEventBinding } from './workspace-commit-events';
@@ -73,10 +75,12 @@ function observeWorkspaceCommits(
   const pending = (workspaceCommitEvents ??= Promise.all([
     import('./workspace-commit-events'),
     import('./workspace-commit-event-handlers'),
-  ]).then(([events, handlers]) =>
+    import('./w5-read-cache'),
+  ]).then(([events, handlers, readCache]) =>
     events.createWorkspaceCommitEventBinding({
       handlers: handlers.createDesktopWorkspaceCommitEventHandlers(),
       isOwnOrigin: (id) => ownClientInstances.has(id),
+      readCache: (plan) => readCache.applyDesktopW5ReadCachePlan(plan),
     }),
   ));
   void pending
@@ -195,7 +199,7 @@ function getHost(): Promise<ElectronDaemonHost> {
     (resolved) => {
       if (host === pending) resolvedHost = resolved;
     },
-    () => {
+    (error: unknown) => {
       if (host === pending) host = undefined;
       // Without a prepared data root no daemon can start. Reads resolve the host
       // before they ask the connection service, so it never sees this failure.
@@ -203,6 +207,7 @@ function getHost(): Promise<ElectronDaemonHost> {
         kind: 'unreachable',
         reason: 'host_unavailable',
       });
+      reportDaemonSetupFailure(error, 'host_unavailable');
     },
   );
   return pending;
@@ -288,12 +293,17 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
     onReachability: (event) => {
       getElectronDaemonHealth().observe(event);
     },
+    onSetupFailure: reportDaemonSetupFailure,
     // The handoff waits a refused daemon out and settles any attach it
     // refuses; after it, a refusal is a failed start that warns and latches.
     isRestartRefusal: (error) => {
       if (w5HandoffPhase !== 'pending') return false;
       const refusal = canopyDaemonRefusal(error);
-      return refusal !== null && refusal !== 'exited_before_ready';
+      return (
+        refusal !== null &&
+        refusal !== 'exited_before_ready' &&
+        refusal !== 'endpoint_repair_required'
+      );
     },
   });
   return connections;
@@ -304,13 +314,15 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
  * reachability sees it. Pending is a restart window (q-13): attach refusals
  * show nothing and Files reads stay in-process. A degraded handoff warns at
  * once and latches, so reads stop contacting a daemon that cannot serve this
- * app; `cancelled` is quit.
+ * app, with its typed failure code; `cancelled` is quit.
  */
 export function noteElectronW5Handoff(
-  phase: 'pending' | 'ready' | 'degraded' | 'cancelled',
+  ...[phase, failure]:
+    | [phase: 'pending' | 'ready' | 'cancelled']
+    | [phase: 'degraded', failure: BackgroundServiceHandoffFailure]
 ): void {
   w5HandoffPhase = phase;
-  if (phase === 'degraded') getElectronDaemonHealth().requireRestart();
+  if (failure !== undefined) getElectronDaemonHealth().requireRestart(failure);
 }
 
 /** Health remembers an early flip failure until a consumer depends on it. */

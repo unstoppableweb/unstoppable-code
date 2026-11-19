@@ -49,6 +49,8 @@ export function createRemoteControlApi(
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowIncoming, allow),
     setAllowRemoteUpdates: (allow) =>
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowRemoteUpdates, allow),
+    setInventorySyncEnabled: (enabled) =>
+      ipc.invoke(IPC_CHANNELS.remoteControlSetInventorySyncEnabled, enabled),
     openPairingWindow: () =>
       ipc.invoke(IPC_CHANNELS.remoteControlOpenPairingWindow),
     closePairingWindow: () =>

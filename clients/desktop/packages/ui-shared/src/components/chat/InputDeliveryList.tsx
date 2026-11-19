@@ -17,6 +17,7 @@ import type {
 import { TrashIcon } from '../../icons';
 import { Button } from '../Button';
 import { Tooltip } from '../Tooltip';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   AgentSentTitle,
   type AgentSentReceivingContext,
@@ -329,7 +330,11 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                 className="text-s fg-secondary"
                 role={error ? 'alert' : undefined}
               >
-                {error || row.reason}
+                {error ? (
+                  <span className={REPLAY_BLOCK_CLASS}>{error}</span>
+                ) : (
+                  row.reason
+                )}
               </p>
             )}
           </MessageEditCard>

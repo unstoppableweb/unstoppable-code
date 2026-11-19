@@ -1,4 +1,4 @@
-import { invalidateAgentCatalogCompatibility } from '../portal/agent-catalog-compatibility';
+import { invalidateAgentCatalogCompatibility } from '../remote-projection/agent-catalog-compatibility';
 import { BrowserWindow } from 'electron';
 import {
   toShareOperationResult,
@@ -72,6 +72,7 @@ import {
   uninstallPublicAgent,
   listAgentModels,
   saveAgentModel,
+  updateOrganizationAgentCopy,
   writeAgentRemoteMetadata,
 } from '../agents/agent-model-store';
 import { mapPluginSelectionsToPortable } from '../plugins/workspace-template-authoring';
@@ -91,6 +92,7 @@ import {
   getMcpServerStatusByName,
 } from '../mcp/connection-status';
 import { sendToWebContents } from '../lib/web-contents-send';
+import { getMainWindow } from '../lib/main-window-focus';
 
 const AGENTS_CAPABILITY = 'agents-crud-v1';
 
@@ -190,6 +192,51 @@ async function resolveAgentShareableRefs(
   return { selections, matchedRefs, unmatchedRefs };
 }
 
+/**
+ * Imports an organization's shared Agent for the organization capabilities
+ * layer (CAN-6237, phase 10a): the shared Agent import a person's own
+ * import uses, with no missing installs. It only saves the copy: the layer
+ * records the copy first and then publishes it (`publishOrganizationAgentChanges`),
+ * so a publication that fails never hides a copy it made.
+ */
+export function importSharedAgentForOrganization(
+  detail: SharedAgentDetail,
+): Promise<Awaited<ReturnType<typeof importSharedAgent>>> {
+  return importSharedAgentDetail(() => null, detail, false, false);
+}
+
+/**
+ * Updates the Agent copy the organization capabilities layer made for
+ * `detail` in place when the share changed (CAN-6237, phase 10a), with the
+ * share's skills and plugins resolved as an import resolves them. True when
+ * the copy was updated; false when it can't be (gone, changed by the person,
+ * or the share unchanged), and the layer imports as usual. Like the import,
+ * it only saves: the layer publishes the change.
+ */
+export async function updateOrganizationAgentFromShare(
+  agentId: string,
+  detail: SharedAgentDetail,
+): Promise<boolean> {
+  const { selections } = await resolveAgentShareableRefs(
+    detail.agent.plugins,
+    detail,
+    false,
+  );
+  return (
+    (await updateOrganizationAgentCopy(agentId, detail, selections)) !== null
+  );
+}
+
+/**
+ * Publishes Agent copies the organization capabilities layer added or
+ * removed (CAN-6237, phase 10a), as every Agent change is: the registry is
+ * read again, the main window is told, and the model registry update is
+ * broadcast, so the pickers offer exactly the copies on this computer.
+ */
+export function publishOrganizationAgentChanges(): Promise<void> {
+  return refreshAfterAgentMutation(getMainWindow);
+}
+
 async function resolveAgentPackageMcpRefs(
   packageSummary: SharedAgentDetail['package'],
 ): Promise<Array<{ serverId: string; configId: string }>> {
@@ -284,6 +331,8 @@ async function importSharedAgentDetail(
   getWindow: () => BrowserWindow | null,
   detail: SharedAgentDetail,
   installMissing = false,
+  // False only for the organization layer, which publishes after recording.
+  publish = true,
 ): Promise<Awaited<ReturnType<typeof importSharedAgent>>> {
   const snapshot = agentResourceContextEnabled()
     ? await agentContextSnapshot()
@@ -375,7 +424,7 @@ async function importSharedAgentDetail(
       },
     });
   }
-  await refreshAfterAgentMutation(getWindow);
+  if (publish) await refreshAfterAgentMutation(getWindow);
   return response;
 }
 

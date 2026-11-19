@@ -137,8 +137,7 @@ export const refreshedRegistries: string[] = [];
 export function createCommitEventHandlersMock(): object {
   return {
     createDesktopWorkspaceCommitEventHandlers: (): object => ({
-      schedulePortalStructuralSync: (): void => undefined,
-      notifyPortalStructureChanged: (): void => undefined,
+      scheduleDesktopStructureChanged: (): void => undefined,
       refreshWorkspaceRegistries: (): Promise<void> => {
         refreshedRegistries.push('broad');
         return Promise.resolve();

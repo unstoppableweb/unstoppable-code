@@ -47,7 +47,12 @@ function classifyScriptLifecycle(
   if (scriptName.startsWith('after-')) return 'after';
   return null;
 }
-import { readAllSidebarItems } from '../lib/sidebar-items';
+import {
+  readMultiRepoWorkspace,
+  readSingleRepoWorkspace,
+  readWorkspaceIndexStoredDetailed,
+} from '../lib/sidebar-items';
+import { isW5ProjectionOnlyView } from '../lib/w5-fallback-read';
 import {
   getResolvedScriptDefinition,
   resolveProjectScripts,
@@ -99,7 +104,6 @@ import {
   type ScriptInvocation,
 } from '../lib/script-events';
 import { readWorkspaceRepoOrThrow } from '../lib/workspace-script-config';
-import { emitPortalFeatureUpsert } from './portal-feature-event-service';
 import {
   acquireSharedContainerRunLifecycle,
   isSharedContainerAccepted,
@@ -183,21 +187,8 @@ export interface StopScriptOptions {
   onRendererComplete?: (event: ScriptCompleteEvent) => void;
 }
 
-function emitScriptRun(run: PortalScriptRun, commandId?: string): void {
+function emitScriptRun(run: PortalScriptRun): void {
   publishForeignScriptActivity(run);
-  emitPortalFeatureUpsert({
-    type: 'portal.script.event',
-    commandId,
-    entity: {
-      entityType: 'script_run',
-      localId: run.localId,
-      parentLocalId: worktreeScopedParentLocalId(
-        run.workspaceLocalId,
-        run.worktreeLocalId,
-      ),
-      payload: run,
-    },
-  });
 }
 
 function notifyScriptRunUpdate(
@@ -205,7 +196,7 @@ function notifyScriptRunUpdate(
   options: RunScriptOptions,
 ): void {
   options.onRunUpdate?.(run);
-  emitScriptRun(run, options.portalCommandId);
+  emitScriptRun(run);
 }
 
 async function resolveScriptExecution(
@@ -725,7 +716,7 @@ export async function cancelWorktreeSetup(
       if (!run.tracking) return;
       const stop = { ...request, scriptKey: run.tracking.scriptKey };
       reportStoppedScript(stop, run, options);
-      await emitCancelledScriptRun(stop, options, run.tracking.runId);
+      await emitCancelledScriptRun(stop, run.tracking.runId);
     }),
   );
 }
@@ -774,7 +765,7 @@ export async function stopScript(
     },
     options,
   );
-  await emitCancelledScriptRun(request, options);
+  await emitCancelledScriptRun(request);
   return response;
 }
 
@@ -800,13 +791,12 @@ function reportStoppedScript(
 }
 
 /**
- * Tell the portal the script's latest run was cancelled. With `runId`, only
+ * Publish that the script's latest run was cancelled. With `runId`, only
  * when that run is still the latest one: a newer run of the same script was
  * not the one stopped.
  */
 async function emitCancelledScriptRun(
   request: ScriptStopRequest,
-  options: StopScriptOptions,
   runId?: string,
 ): Promise<void> {
   const tail = await readScriptRunTail({
@@ -815,7 +805,7 @@ async function emitCancelledScriptRun(
     scriptKey: request.scriptKey,
   }).catch(() => null);
   if (!tail?.run || (runId !== undefined && tail.run.runId !== runId)) return;
-  emitScriptRun({ ...tail.run, status: 'cancelled' }, options.portalCommandId);
+  emitScriptRun({ ...tail.run, status: 'cancelled' });
 }
 
 function resolveScriptRunLogStatus(args: {
@@ -903,18 +893,15 @@ export async function readScriptRunTail(request: {
   };
 }
 
-export async function readAndEmitScriptRunTail(
-  request: {
-    projectId: string;
-    worktreeId: string;
-    scriptKey: string;
-    maxLines?: number;
-  },
-  options: { portalCommandId?: string } = {},
-): Promise<{ lines: string[]; run?: PortalScriptRun }> {
+export async function readAndEmitScriptRunTail(request: {
+  projectId: string;
+  worktreeId: string;
+  scriptKey: string;
+  maxLines?: number;
+}): Promise<{ lines: string[]; run?: PortalScriptRun }> {
   const result = await readScriptRunTail(request);
   if (result.run) {
-    emitScriptRun(result.run, options.portalCommandId);
+    emitScriptRun(result.run);
   }
   return result;
 }
@@ -1025,6 +1012,46 @@ export async function getScriptSourceInfo(
   );
 }
 
+type ScriptWorkspaceItem =
+  | NonNullable<Awaited<ReturnType<typeof readSingleRepoWorkspace>>>
+  | Awaited<ReturnType<typeof readMultiRepoWorkspace>>;
+
+/**
+ * The Code project's sidebar item, read from its own index entry, config and
+ * worktree list instead of projecting every indexed workspace (CAN-6944).
+ * Cowork projects have no scripts. Like the full projection, a project whose
+ * read fails or cannot be projected is absent, and among entries repeating an
+ * id the lowest `order` that projects wins. Other workspaces are not read, so
+ * their inline repairs wait for their own next read.
+ */
+export async function readScriptWorkspaceItem(
+  workspaceId: string,
+): Promise<ScriptWorkspaceItem | null> {
+  const { entries } = await readWorkspaceIndexStoredDetailed();
+  const collector = {
+    readOptions: isW5ProjectionOnlyView()
+      ? { persistRemovalCleanup: false as const }
+      : undefined,
+    record: (): void => undefined,
+  };
+  const candidates = entries
+    .filter((entry) => entry.id === workspaceId)
+    .sort((left, right) => left.order - right.order);
+  for (const entry of candidates) {
+    if (entry.type === 'cowork') return null;
+    try {
+      const item =
+        entry.type === 'single-repo'
+          ? await readSingleRepoWorkspace(entry, collector)
+          : await readMultiRepoWorkspace(entry, collector);
+      if (item) return item;
+    } catch {
+      // The full projection drops a workspace whose read throws.
+    }
+  }
+  return null;
+}
+
 export async function listScripts(input?: {
   workspaceLocalId?: string;
   worktreeLocalId?: string;
@@ -1036,10 +1063,8 @@ export async function listScripts(input?: {
     input?.workspaceLocalId ?? input?.workspaceId ?? input?.projectId;
   const worktreeLocalId = input?.worktreeLocalId ?? input?.worktreeId;
   if (!workspaceLocalId || !worktreeLocalId) return [];
-  const { items } = await readAllSidebarItems();
-  const item = items.find((candidate) => candidate.id === workspaceLocalId);
+  const item = await readScriptWorkspaceItem(workspaceLocalId);
   if (!item) return [];
-  if (item.type === 'cowork') return [];
   if (item.type === 'single-repo') {
     const cwd = getWorktreeDir(workspaceLocalId, worktreeLocalId);
     const scripts = await resolveProjectScripts(item, cwd).catch(() => ({}));
@@ -1181,9 +1206,8 @@ export async function listWorktreeScriptEntries(target: {
   worktreeId: string;
 }): Promise<WorktreeScriptEntry[]> {
   const { projectId, worktreeId } = target;
-  const { items } = await readAllSidebarItems();
-  const item = items.find((candidate) => candidate.id === projectId);
-  if (!item || item.type === 'cowork') return [];
+  const item = await readScriptWorkspaceItem(projectId);
+  if (!item) return [];
   if (item.type === 'single-repo') {
     const scripts = await resolveProjectScripts(
       item,

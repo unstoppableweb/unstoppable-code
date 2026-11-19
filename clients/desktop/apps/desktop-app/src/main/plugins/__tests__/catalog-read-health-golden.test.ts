@@ -56,7 +56,6 @@ import {
   refreshMarketplaces,
   resetBuiltInMarketplaceScanCacheForTests,
   scanManagedMarketplacesFresh,
-  refreshInstalledPluginCatalog,
   recordBuiltInPluginInstallError,
   syncCuratedPluginsForRefresh,
   removeInstalledPluginCache,
@@ -371,9 +370,13 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         marketplaces: [{ ...marketplace, plugins: [{ ...plugin, ...patch }] }],
       });
       const before = fs.readFileSync(catalogPath);
-      expect(readPluginCatalogHealth().state).toBe('damaged');
-      expect(readPluginCatalog(catalogPath).state).toBe('damaged');
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
+      const desktop = readPluginCatalogHealth();
+      expect(desktop).toMatchObject({ state: 'valid', recovered: 'damaged' });
+      expect(readPluginCatalog(catalogPath)).toEqual(desktop);
+      if (desktop.state !== 'valid') throw new Error('expected valid catalog');
+      // CAN-4481: read as-is, but the malformed plugin is skipped, never trusted.
+      expect(desktop.data.marketplaces[0].plugins).toEqual([]);
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       expect(resolve().sdkPlugins).toEqual([]);
       expect(fs.readFileSync(catalogPath)).toEqual(before);
     }
@@ -394,36 +397,39 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     await expect(installedItemService.listStatus()).rejects.toThrow();
   });
 
-  test('installed-item full snapshots refuse damage rather than claiming plugins absent (deferred contract gap)', async () => {
+  test('installed-item management keeps working on a damaged catalog (CAN-4481)', async () => {
     write({ version: 2, marketplaces: [null] });
-    const before = fs.readFileSync(catalogPath);
     const { installedItemService } =
       await import('../../installed-items/installed-item-service');
-    await expect(installedItemService.listStatus()).rejects.toThrow('damaged');
+    await expect(installedItemService.listStatus()).resolves.toEqual({
+      items: [],
+    });
+    const outcomes: string[] = [];
     for (const target of [
       { kind: 'skill', sourceId: 'custom:app', skillName: 's' },
       { kind: 'plugin', marketplaceId: 'm', pluginName: 'p' },
       { kind: 'mcp-config', serverId: 'm', configId: 'c' },
       { kind: 'collection', collectionId: 'c' },
     ] as const) {
-      await expect(
-        installedItemService.setStatus({ target, status: 'active' }),
-      ).rejects.toThrow('damaged');
+      outcomes.push(
+        await installedItemService.setStatus({ target, status: 'active' }).then(
+          () => 'ok',
+          (error: unknown) => String(error),
+        ),
+      );
     }
-    await expect(
-      installedItemService.uninstall({
-        target: { kind: 'plugin', marketplaceId: 'm', pluginName: 'p' },
-      }),
-    ).rejects.toThrow('damaged');
-    await expect(
-      installedItemService.uninstall({
-        target: { kind: 'skill', sourceId: 'custom:app', skillName: 's' },
-      }),
-    ).rejects.toThrow('damaged');
-    expect(updatePreferencesFile).not.toHaveBeenCalled();
-    expect(runClaudeCliProcessOffMain).not.toHaveBeenCalled();
-    expect(removeCodexMarketplace).not.toHaveBeenCalled();
-    expect(fs.readFileSync(catalogPath)).toEqual(before);
+    for (const target of [
+      { kind: 'plugin', marketplaceId: 'm', pluginName: 'p' },
+      { kind: 'skill', sourceId: 'custom:app', skillName: 's' },
+    ] as const) {
+      outcomes.push(
+        await installedItemService.uninstall({ target }).then(
+          () => 'ok',
+          (error: unknown) => String(error),
+        ),
+      );
+    }
+    expect(outcomes).toEqual(['ok', 'ok', 'ok', 'ok', 'ok', 'ok']);
   });
 
   test('legacy URL-less sources and malformed descriptive strings remain read-only legacy', async () => {
@@ -739,7 +745,7 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
   );
 
   test.each(['catalog', 'index'])(
-    'compatibility preference completion cannot return authority after %s damage',
+    'compatibility preference completion survives %s damage during the operation',
     async (target) => {
       write(healthy());
       write({ version: 1, entries: {} }, indexPath);
@@ -749,14 +755,15 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         return Promise.resolve(DEFAULT_PREFERENCES);
       });
       expect((await setCodexCompatDisabled('m', 'p', false)).success).toBe(
-        false,
+        true,
       );
       expect(updatePreferencesFile).toHaveBeenCalledTimes(1);
+      // Reads never rewrite; this operation publishes neither document.
       expect(fs.readFileSync(file, 'utf8')).toBe('{"version":99}');
     },
   );
 
-  test('Codex policy observation rechecks catalog health after its provider await', async () => {
+  test('Codex policy observation rereads a catalog a newer build wrote during its provider await', async () => {
     const value = healthy();
     const plugin = value.marketplaces[0].plugins[0];
     plugin.facets.codex = {
@@ -778,19 +785,21 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     });
     const policy = await readInstalledItemPolicy(DEFAULT_PREFERENCES);
     expect(listCodexPlugins).toHaveBeenCalledTimes(1);
+    // CAN-4481: the newer file is read as-is, so it doesn't disable plugins.
+    expect(policy.hasDisabledKind('plugin')).toBe(false);
     expect(
       policy.isDisabled({
         kind: 'plugin',
         marketplaceId: 'm',
         pluginName: 'p',
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       policy.isDisabled({ kind: 'skill', sourceId: 's', skillName: 's' }),
     ).toBe(false);
   });
 
-  test('unhealthy plugin persistence leaves standalone skills and MCP selectable and executable', async () => {
+  test('a catalog a newer build wrote leaves standalone skills and MCP selectable and executable', async () => {
     write({ version: 99 });
     const selections = {
       collectionIds: [],
@@ -804,7 +813,7 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
       undefined,
       DEFAULT_PREFERENCES,
     );
-    expect(effective.pluginRefs).toEqual([]);
+    expect(effective.pluginRefs).toEqual(selections.pluginRefs);
     expect(effective.skillRefs).toEqual(selections.skillRefs);
     expect(effective.mcpServerRefs).toEqual(selections.mcpServerRefs);
     const skillDir = path.join(root, 'skills', 's', 's');
@@ -915,13 +924,11 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
   });
 
   test.each(['catalog', 'index'])(
-    'provider completion cannot publish after %s damage',
+    'provider completion still publishes after %s damage during the operation',
     async (target) => {
       write(healthy());
       write({ version: 1, entries: {} }, indexPath);
       const file = target === 'catalog' ? catalogPath : indexPath;
-      const other = target === 'catalog' ? indexPath : catalogPath;
-      const before = fs.readFileSync(other);
       jest
         .mocked(runClaudeCliProcessOffMain)
         .mockResolvedValue({ stdout: '', stderr: '' });
@@ -931,10 +938,15 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
       });
       expect(
         (await removeMarketplace('m', { providers: ['codex'] })).success,
-      ).toBe(false);
+      ).toBe(true);
       expect(removeCodexMarketplace).toHaveBeenCalledTimes(1);
-      expect(fs.readFileSync(file, 'utf8')).toBe('{"version":99}');
-      expect(fs.readFileSync(other)).toEqual(before);
+      // The catalog publication replaces a damaged catalog; an index the
+      // operation doesn't publish is left for the next index write.
+      const catalog = readPluginCatalogHealth();
+      expect(catalog.state).toBe('valid');
+      expect(catalog).not.toHaveProperty('recovered');
+      if (target === 'index')
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe('{"version":99}');
     },
   );
 
@@ -1007,8 +1019,8 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     expect(resolve().sdkPlugins).toEqual([{ type: 'local', path: pluginPath }]);
     expect(catalogRead).toHaveBeenCalledWith(catalogPath);
     expect(catalogRead).toHaveReturnedWith({ state: 'valid', data: fixture });
-    expect(indexRead).toHaveBeenCalledWith(indexPath);
-    expect(indexRead).toHaveReturnedWith({ state: 'valid', data: index });
+    // CAN-4481: the index no longer gates execution.
+    expect(indexRead).not.toHaveBeenCalled();
     // A writer that changes only install history must retain the decoded extensions.
     const expected = healthy();
     const status =
@@ -1196,6 +1208,89 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
   });
 
   test.each([
+    ['legacy', legacy],
+    // A damaged legacy catalog keeps the rows that decode and stays legacy.
+    ['legacy', (): unknown => ({ ...legacy(), marketplaces: [null] })],
+    [
+      'legacy',
+      (): unknown => {
+        const value = legacy();
+        return {
+          ...value,
+          marketplaces: [
+            {
+              ...value.marketplaces[0],
+              plugins: [
+                {
+                  ...value.marketplaces[0].plugins[0],
+                  externalSource: {
+                    url: 'https://github.com/o/p',
+                    sha: 'commit',
+                  },
+                  cachePath: null,
+                },
+              ],
+            },
+          ],
+        };
+      },
+    ],
+  ])(
+    '%s data never authorizes effects, materialization or execution',
+    async (state, fixture) => {
+      write(fixture());
+      const before = fs.readFileSync(catalogPath);
+      expect(readPluginCatalogHealth().state).toBe(state);
+      expect(readPluginCatalog(catalogPath)).toEqual(readPluginCatalogHealth());
+      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
+      expect((await loadMarketplaces()).success).toBe(false);
+      const policy = await readInstalledItemPolicy(DEFAULT_PREFERENCES);
+      expect(
+        policy.isDisabled({
+          kind: 'plugin',
+          marketplaceId: 'm',
+          pluginName: 'p',
+        }),
+      ).toBe(true);
+      expect(policy.hasDisabledKind('plugin')).toBe(true);
+      expect(
+        policy.isDisabled({ kind: 'skill', sourceId: 's', skillName: 's' }),
+      ).toBe(false);
+      expect(
+        policy.isDisabled({ kind: 'mcp-config', serverId: 'm', configId: 'c' }),
+      ).toBe(false);
+      expect((await addMarketplace('owner/m')).success).toBe(false);
+      expect((await removeMarketplace('m')).success).toBe(false);
+      expect(
+        (await installPlugin('m', 'p', 'https://github.com/owner/p')).success,
+      ).toBe(false);
+      expect((await prepareCodexCompatibilityPlugin('m', 'p')).success).toBe(
+        false,
+      );
+      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow();
+      await expect(
+        setClaudeInstalledItemEnabled('p@m', true),
+      ).rejects.toThrow();
+      await expect(uninstallClaudeInstalledItem('p@m')).rejects.toThrow();
+      expect(resolve().sdkPlugins).toEqual([]);
+      expect(
+        (await loadMarketplacesForPresentation(undefined, true)).success,
+      ).toBe(true);
+      expect(fs.readFileSync(catalogPath)).toEqual(before);
+      expect(fs.existsSync(indexPath)).toBe(false);
+      for (const effect of [
+        cloneRepo,
+        runClaudeCliProcessOffMain,
+        addCodexMarketplace,
+        removeCodexMarketplace,
+        resolveCodexPluginInstallRoots,
+        materializeCodexPluginsOffMain,
+      ])
+        expect(effect).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([
     ['unsupported', (): unknown => ({ version: 99, marketplaces: [] })],
     ['damaged', (): unknown => ({ ...healthy(), marketplaces: [null] })],
     [
@@ -1264,78 +1359,26 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         };
       },
     ],
-    ['legacy', legacy],
-    [
-      'legacy',
-      (): unknown => {
-        const value = legacy();
-        return {
-          ...value,
-          marketplaces: [
-            {
-              ...value.marketplaces[0],
-              plugins: [
-                {
-                  ...value.marketplaces[0].plugins[0],
-                  externalSource: {
-                    url: 'https://github.com/o/p',
-                    sha: 'commit',
-                  },
-                  cachePath: null,
-                },
-              ],
-            },
-          ],
-        };
-      },
-    ],
-    ['damaged', (): unknown => ({ ...legacy(), marketplaces: [null] })],
     ['damaged', (): unknown => ({ version: '2', marketplaces: [] })],
   ])(
-    '%s data never authorizes effects, materialization or execution',
-    async (state, fixture) => {
+    '%s catalog is read as-is: undecodable rows never execute and nothing is refused',
+    async (problem, fixture) => {
       write(fixture());
       const before = fs.readFileSync(catalogPath);
-      expect(readPluginCatalogHealth().state).toBe(state);
-      expect(readPluginCatalog(catalogPath)).toEqual(readPluginCatalogHealth());
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
-      expect((await loadMarketplaces()).success).toBe(false);
+      const desktop = readPluginCatalogHealth();
+      expect(desktop).toMatchObject({ state: 'valid', recovered: problem });
+      expect(readPluginCatalog(catalogPath)).toEqual(desktop);
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       const policy = await readInstalledItemPolicy(DEFAULT_PREFERENCES);
-      expect(
-        policy.isDisabled({
-          kind: 'plugin',
-          marketplaceId: 'm',
-          pluginName: 'p',
-        }),
-      ).toBe(true);
-      expect(policy.hasDisabledKind('plugin')).toBe(true);
+      expect(policy.hasDisabledKind('plugin')).toBe(false);
       expect(
         policy.isDisabled({ kind: 'skill', sourceId: 's', skillName: 's' }),
       ).toBe(false);
-      expect(
-        policy.isDisabled({ kind: 'mcp-config', serverId: 'm', configId: 'c' }),
-      ).toBe(false);
-      expect((await addMarketplace('owner/m')).success).toBe(false);
-      expect((await removeMarketplace('m')).success).toBe(false);
-      expect(
-        (await installPlugin('m', 'p', 'https://github.com/owner/p')).success,
-      ).toBe(false);
-      expect((await prepareCodexCompatibilityPlugin('m', 'p')).success).toBe(
-        false,
-      );
-      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow();
-      await expect(
-        setClaudeInstalledItemEnabled('p@m', true),
-      ).rejects.toThrow();
-      await expect(uninstallClaudeInstalledItem('p@m')).rejects.toThrow();
-      if (state !== 'legacy')
-        expect((await refreshMarketplaces()).success).toBe(false);
       expect(resolve().sdkPlugins).toEqual([]);
       expect(
         (await loadMarketplacesForPresentation(undefined, true)).success,
       ).toBe(true);
       expect(fs.readFileSync(catalogPath)).toEqual(before);
-      expect(fs.existsSync(indexPath)).toBe(false);
       for (const effect of [
         cloneRepo,
         runClaudeCliProcessOffMain,
@@ -1349,6 +1392,55 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
   );
 
   test.each([
+    ['damaged', 2],
+    ['unsupported', 99],
+  ])(
+    'a %s catalog keeps executing the rows that decode',
+    async (problem, version) => {
+      const value = healthy();
+      const row = value.marketplaces[0];
+      write({
+        ...value,
+        version,
+        marketplaces: [
+          row,
+          null,
+          { ...row, id: 'broken', providerStatus: null },
+          { ...row, id: 'partial', plugins: [null, row.plugins[0]] },
+        ],
+      });
+      const warn = jest
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+      const desktop = readPluginCatalogHealth();
+      expect(desktop).toMatchObject({ state: 'valid', recovered: problem });
+      if (desktop.state !== 'valid') throw new Error('expected valid catalog');
+      expect(desktop.data.version).toBe(2);
+      expect(desktop.data.lastProviderRefreshAt).toBe('stamp');
+      expect(
+        desktop.data.marketplaces.map((marketplace) => [
+          marketplace.id,
+          marketplace.plugins.map((plugin) => plugin.name),
+        ]),
+      ).toEqual([
+        ['m', ['p']],
+        ['partial', ['p']],
+      ]);
+      expect(resolve().sdkPlugins).toEqual([
+        { type: 'local', path: pluginPath },
+      ]);
+      readPluginCatalogHealth();
+      // Warned once per file and problem, not on every reread.
+      expect(
+        warn.mock.calls.filter(([message]) =>
+          String(message).includes(catalogPath),
+        ),
+      ).toHaveLength(1);
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
+    },
+  );
+
+  test.each([
     ['catalog', '{'],
     ['catalog', ''],
     ['catalog', '\uFFFD'],
@@ -1356,21 +1448,29 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     ['index', ''],
     ['index', '\uFFFD'],
   ])(
-    'invalid JSON/encoding is damaged and preserved: %s %p',
+    'invalid JSON/encoding reads as empty without blocking: %s %p',
     async (target, text) => {
       write(healthy());
       const file = target === 'catalog' ? catalogPath : indexPath;
       fs.writeFileSync(file, text === '\uFFFD' ? Buffer.from([0xff]) : text);
       const before = fs.readFileSync(file);
       expect(
-        (target === 'catalog'
+        target === 'catalog'
           ? readPluginCatalogHealth()
-          : readPluginIndexHealth()
-        ).state,
-      ).toBe('damaged');
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
-      expect((await refreshMarketplaces()).success).toBe(false);
-      expect(resolve().sdkPlugins).toEqual([]);
+          : readPluginIndexHealth(),
+      ).toEqual({
+        state: 'valid',
+        recovered: 'damaged',
+        data:
+          target === 'catalog'
+            ? { version: 2, lastRefreshed: '', marketplaces: [] }
+            : { version: 1, entries: {} },
+      });
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
+      // Only the catalog grants execution; nothing readable grants nothing.
+      expect(resolve().sdkPlugins).toEqual(
+        target === 'catalog' ? [] : [{ type: 'local', path: pluginPath }],
+      );
       expect(
         (await loadMarketplacesForPresentation(undefined, true)).success,
       ).toBe(true);
@@ -1389,26 +1489,28 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
       },
     },
   ])(
-    'index failure cannot authorize deletion or execution: %p',
+    'a damaged or newer index never gates execution or authorizes deletion: %p',
     async (fixture) => {
       write(healthy());
       write(fixture, indexPath);
-      const before = fs.readFileSync(indexPath);
-      expect(readPluginCacheIndex(indexPath)).toEqual(readPluginIndexHealth());
-      expect(['unsupported', 'damaged']).toContain(
-        readPluginIndexHealth().state,
-      );
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
-      expect((await addMarketplace('owner/m')).success).toBe(false);
-      expect((await refreshMarketplaces()).success).toBe(false);
-      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow();
-      expect(resolve().sdkPlugins).toEqual([]);
+      const index = readPluginIndexHealth();
+      expect(readPluginCacheIndex(indexPath)).toEqual(index);
+      expect(index).toMatchObject({
+        state: 'valid',
+        recovered: fixture.version === 1 ? 'damaged' : 'unsupported',
+        data: { version: 1, entries: {} },
+      });
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
+      expect(resolve().sdkPlugins).toEqual([
+        { type: 'local', path: pluginPath },
+      ]);
       expect(
         (await loadMarketplacesForPresentation(undefined, true)).data
           ?.marketplaces,
       ).toHaveLength(1);
+      // The dropped entry's path is never deleted.
+      await removeInstalledPluginCache('m', 'p');
       expect(fs.existsSync(pluginPath)).toBe(true);
-      expect(fs.readFileSync(indexPath)).toEqual(before);
     },
   );
 
@@ -1418,7 +1520,7 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     ['index', 'EACCES'],
     ['index', 'EIO'],
   ])(
-    'injected I/O failure is unreadable, not absent: %s %s',
+    'injected I/O failure reads as empty and never blocks: %s %s',
     async (target, code) => {
       write(healthy());
       write({ version: 1, entries: {} }, indexPath);
@@ -1428,14 +1530,18 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
       const ioError = Object.assign(new Error('injected I/O failure'), {
         code,
       });
+      const empty =
+        target === 'catalog'
+          ? { version: 2, lastRefreshed: '', marketplaces: [] }
+          : { version: 1, entries: {} };
       expect(
         (target === 'catalog' ? readPluginCatalog : readPluginCacheIndex)(
           file,
           (): never => {
             throw ioError;
           },
-        ).state,
-      ).toBe('unreadable');
+        ),
+      ).toEqual({ state: 'valid', recovered: 'unreadable', data: empty });
       jest
         .spyOn(fs, 'readFileSync')
         .mockImplementation((...args: Parameters<typeof fs.readFileSync>) => {
@@ -1443,61 +1549,25 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
           return original(...args);
         });
       expect(
-        (target === 'catalog'
+        target === 'catalog'
           ? readPluginCatalogHealth()
-          : readPluginIndexHealth()
-        ).state,
-      ).toBe('unreadable');
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
-      expect((await loadMarketplaces()).success).toBe(false);
-      expect((await refreshMarketplaces()).success).toBe(false);
-      await expect(
-        syncCuratedPluginsForRefresh({ providerNudge: 'background' }),
-      ).resolves.toBeNull();
-      await expect(refreshInstalledPluginCatalog('m')).rejects.toThrow();
-      await expect(
-        recordBuiltInPluginInstallError(
-          { marketplaceId: 'm', pluginName: 'p' },
-          'claude',
-          'failure',
-        ),
-      ).rejects.toThrow();
-      expect((await addMarketplace('owner/m')).success).toBe(false);
-      expect((await removeMarketplace('m')).success).toBe(false);
-      expect(
-        (await installPlugin('m', 'p', 'https://github.com/owner/p')).success,
-      ).toBe(false);
-      expect((await prepareCodexCompatibilityPlugin('m', 'p')).success).toBe(
-        false,
-      );
-      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow();
+          : readPluginIndexHealth(),
+      ).toEqual({ state: 'valid', recovered: 'unreadable', data: empty });
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       const policy = await readInstalledItemPolicy(DEFAULT_PREFERENCES);
-      expect(
-        policy.isDisabled({
-          kind: 'plugin',
-          marketplaceId: 'm',
-          pluginName: 'p',
-        }),
-      ).toBe(true);
+      expect(policy.hasDisabledKind('plugin')).toBe(false);
       expect(
         policy.isDisabled({ kind: 'skill', sourceId: 's', skillName: 's' }),
       ).toBe(false);
-      expect(resolve().sdkPlugins).toEqual([]);
+      expect(resolve().sdkPlugins).toEqual(
+        target === 'catalog' ? [] : [{ type: 'local', path: pluginPath }],
+      );
       expect(original(file)).toEqual(before);
-      for (const effect of [
-        cloneRepo,
-        runClaudeCliProcessOffMain,
-        addCodexMarketplace,
-        removeCodexMarketplace,
-        resolveCodexPluginInstallRoots,
-        materializeCodexPluginsOffMain,
-      ])
-        expect(effect).not.toHaveBeenCalled();
     },
   );
 
   test.each(['catalog', 'index'])(
-    'health is rechecked before publishing after an await: %s',
+    'a file a newer build writes during a cache-only load is read as-is, never rewritten: %s',
     async (target) => {
       write(healthy());
       write({ version: 1, entries: {} }, indexPath);
@@ -1506,8 +1576,117 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         write({ version: 99 }, file);
         return Promise.resolve({ ...DEFAULT_PREFERENCES });
       });
-      expect((await loadMarketplacesCacheOnly()).success).toBe(false);
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       expect(fs.readFileSync(file, 'utf8')).toBe('{"version":99}');
+    },
+  );
+
+  test.each([
+    ['damaged', 'p', false],
+    ['damaged', 'manifest-p', false],
+    ['unsupported', 'manifest-p', true],
+    ['unreadable', 'manifest-p', true],
+    ['partial', 'manifest-p', true],
+    ['healthy', 'manifest-p', false],
+  ])(
+    'index %s rebinds installed %s from the catalog (republish: %s)',
+    async (problem, manifestName, republish) => {
+      write(healthy());
+      jest.mocked(cloneRepo).mockImplementation((_source, destination) => {
+        const manifestDir = path.join(destination, '.claude-plugin');
+        fs.mkdirSync(manifestDir, { recursive: true });
+        write({ name: manifestName }, path.join(manifestDir, 'plugin.json'));
+        return Promise.resolve();
+      });
+      const installed = await installPlugin(
+        'm',
+        'p',
+        'https://github.com/owner/p',
+        { skipRefresh: true },
+      );
+      const cachePath = installed.data?.cachePath;
+      if (!cachePath) throw new Error('expected installed cache path');
+      if (problem === 'unsupported') write({ version: 99 }, indexPath);
+      else if (problem === 'partial')
+        write({ version: 1, entries: { broken: null } }, indexPath);
+      else if (problem !== 'healthy') fs.writeFileSync(indexPath, '{');
+      const realRead = fs.readFileSync;
+      const read = jest
+        .spyOn(fs, 'readFileSync')
+        .mockImplementation((file, options) => {
+          if (problem === 'unreadable' && String(file) === indexPath)
+            throw Object.assign(new Error('read failed'), { code: 'EIO' });
+          return realRead(file, options);
+        });
+      jest.mocked(listCodexPlugins).mockResolvedValue({
+        marketplaces: [],
+        marketplaceLoadErrors: [],
+        featuredPluginIds: [],
+      });
+      jest
+        .mocked(addCodexMarketplace)
+        .mockResolvedValue({ accepted: false, error: 'not supported' });
+      jest
+        .mocked(runClaudeCliProcessOffMain)
+        .mockResolvedValue({ stdout: '', stderr: '' });
+      fs.mkdirSync(path.join(root, 'plugins'));
+      write(
+        {
+          m: {
+            source: { source: 'github', repo: 'owner/m' },
+            installLocation: root,
+            lastUpdated: '',
+          },
+        },
+        path.join(root, 'plugins', 'known_marketplaces.json'),
+      );
+      fs.mkdirSync(path.join(root, '.claude-plugin'));
+      write(
+        {
+          name: 'm',
+          plugins: [
+            {
+              name: 'p',
+              source: { source: 'url', url: 'https://github.com/owner/p' },
+            },
+          ],
+        },
+        path.join(root, '.claude-plugin', 'marketplace.json'),
+      );
+      if (republish) {
+        // An unrelated install must persist the reconstructed marketplace-entry key.
+        expect(
+          (
+            await installPlugin('other', 'q', 'https://github.com/owner/q', {
+              skipRefresh: true,
+            })
+          ).success,
+        ).toBe(true);
+        read.mockRestore();
+        const index = readPluginIndexHealth();
+        if (index.state !== 'valid') throw new Error('expected valid index');
+        expect(index.data.entries['m/p']?.cachePath).toBe(cachePath);
+      }
+      expect((await refreshMarketplaces()).success).toBe(true);
+      const catalog = readPluginCatalogHealth();
+      if (catalog.state !== 'valid') throw new Error('expected valid catalog');
+      expect(
+        catalog.data.marketplaces.find((row) => row.id === 'm')?.plugins[0]
+          .facets.claude?.cachePath,
+      ).toBe(cachePath);
+      expect(
+        resolvePlugins(
+          {
+            collectionIds: [],
+            skillRefs: [],
+            pluginRefs: [{ marketplaceId: 'm', pluginName: manifestName }],
+          },
+          'project',
+          'worktree',
+          'chat',
+        ).sdkPlugins,
+      ).toEqual([{ type: 'local', path: cachePath }]);
+      expect(cloneRepo).toHaveBeenCalledTimes(republish ? 2 : 1);
     },
   );
 
@@ -1549,18 +1728,29 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     expect(readPluginCatalogHealth().state).toBe('valid');
   });
 
-  test('clone completing after catalog damage cannot publish an index or overwrite catalog', async () => {
+  test('a clone completing after catalog damage still installs and rewrites both files', async () => {
     write(healthy());
     jest.mocked(cloneRepo).mockImplementation(() => {
       write({ version: 99 });
       return Promise.resolve();
     });
-    expect(
-      (await installPlugin('m', 'p', 'https://github.com/owner/p')).success,
-    ).toBe(false);
+    const installed = await installPlugin(
+      'm',
+      'p',
+      'https://github.com/owner/p',
+      { skipRefresh: true },
+    );
+    expect(installed.success).toBe(true);
     expect(cloneRepo).toHaveBeenCalledTimes(1);
-    expect(fs.readFileSync(catalogPath, 'utf8')).toBe('{"version":99}');
-    expect(fs.existsSync(indexPath)).toBe(false);
+    const catalog = readPluginCatalogHealth();
+    expect(catalog.state).toBe('valid');
+    expect(catalog).not.toHaveProperty('recovered');
+    const index = readPluginIndexHealth();
+    expect(index).not.toHaveProperty('recovered');
+    expect(index).toMatchObject({
+      state: 'valid',
+      data: { entries: { 'm/p': { cachePath: installed.data?.cachePath } } },
+    });
   });
 
   test.each([
@@ -1569,14 +1759,12 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     ['index', 'EACCES'],
     ['index', 'EIO'],
   ])(
-    'I/O failure after an await blocks load and clone publication: %s %s',
+    'I/O failure after an await reads as empty and blocks neither load nor install: %s %s',
     async (target, code) => {
       write(healthy());
       write({ version: 1, entries: {} }, indexPath);
       const file = target === 'catalog' ? catalogPath : indexPath;
       const original = fs.readFileSync;
-      const catalogBefore = original(catalogPath);
-      const indexBefore = original(indexPath);
       let failReads = false;
       const ioError = Object.assign(new Error('injected post-await failure'), {
         code,
@@ -1592,14 +1780,13 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         failReads = true;
         return Promise.resolve({ ...DEFAULT_PREFERENCES });
       });
-      const loaded = await loadMarketplacesCacheOnly();
-      expect(loaded.success).toBe(false);
-      expect(loaded.error).toContain('unreadable');
-      // Presentation remains usable without lending its fallback to execution.
+      expect((await loadMarketplacesCacheOnly()).success).toBe(true);
       await expect(
         loadMarketplacesForPresentation(undefined, true),
       ).resolves.toMatchObject({ success: true });
-      expect(resolve().sdkPlugins).toEqual([]);
+      expect(resolve().sdkPlugins).toEqual(
+        target === 'catalog' ? [] : [{ type: 'local', path: pluginPath }],
+      );
 
       failReads = false;
       jest
@@ -1615,11 +1802,13 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
         'https://github.com/owner/p',
         { skipRefresh: true },
       );
-      expect(installed.success).toBe(false);
-      expect(installed.error).toContain('unreadable');
+      expect(installed.success).toBe(true);
       expect(cloneRepo).toHaveBeenCalledTimes(1);
-      expect(original(catalogPath)).toEqual(catalogBefore);
-      expect(original(indexPath)).toEqual(indexBefore);
+      failReads = false;
+      expect(readPluginIndexHealth()).toMatchObject({
+        state: 'valid',
+        data: { entries: { 'm/p': { cachePath: installed.data?.cachePath } } },
+      });
       expect(fs.existsSync(pluginPath)).toBe(true);
       expect(runClaudeCliProcessOffMain).not.toHaveBeenCalled();
       expect(addCodexMarketplace).not.toHaveBeenCalled();
@@ -1651,10 +1840,12 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     };
     write(damaged);
     const before = fs.readFileSync(catalogPath);
-    expect(readPluginCatalog(catalogPath).state).toBe('damaged');
-    expect(readPluginCatalogHealth().state).toBe('damaged');
-    expect(readPluginCatalog(catalogPath)).toEqual(readPluginCatalogHealth());
-    expect((await loadMarketplacesCacheOnly()).success).toBe(false);
+    const desktop = readPluginCatalogHealth();
+    expect(desktop).toMatchObject({ state: 'valid', recovered: 'damaged' });
+    expect(readPluginCatalog(catalogPath)).toEqual(desktop);
+    if (desktop.state !== 'valid') throw new Error('expected valid catalog');
+    expect(desktop.data.marketplaces[0].plugins).toEqual([]);
+    expect((await loadMarketplacesCacheOnly()).success).toBe(true);
     expect(resolve().sdkPlugins).toEqual([]);
     expect(fs.readFileSync(catalogPath)).toEqual(before);
   });

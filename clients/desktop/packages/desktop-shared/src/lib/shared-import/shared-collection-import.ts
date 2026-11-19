@@ -15,6 +15,11 @@ export interface SharedCollectionMemberFailure {
   label: string;
   required: boolean;
   message: string;
+  /**
+   * What the member threw, for the caller to record. A failure main already
+   * recorded carries that record as its `appError`.
+   */
+  error?: unknown;
 }
 
 export interface SharedCollectionImportResolution {
@@ -57,9 +62,12 @@ export async function resolveSharedCollectionImport(
             [item.skill_name],
           );
           if (!installResult.success) {
-            throw new Error(
-              installResult.error ??
-                `Failed to install skill "${item.skill_name}".`,
+            throw Object.assign(
+              new Error(
+                installResult.error ??
+                  `Failed to install skill "${item.skill_name}".`,
+              ),
+              { appError: installResult.appError },
             );
           }
           skills.push({
@@ -116,6 +124,7 @@ export async function resolveSharedCollectionImport(
         label,
         required: item.required === true,
         message: error instanceof Error ? error.message : String(error),
+        error,
       });
     }
   }

@@ -16,7 +16,7 @@ import {
 import { registerIpcHandler } from './register';
 import { validateId } from '../lib/validation';
 import {
-  readCodeReviewState,
+  readCodeReviewStateProjection,
   saveCodeReviewComments,
   skippedCommentThreadsField,
 } from '../lib/code-review-persistence';
@@ -42,15 +42,14 @@ export function registerCodeReviewHandlers(
     async (_event, request) => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
-      const [review, repos] = await Promise.all([
-        readCodeReviewState(request.projectId, request.worktreeId),
+      const [projection, repos] = await Promise.all([
+        readCodeReviewStateProjection(request.projectId, request.worktreeId),
         listReviewRepos(request.projectId, request.worktreeId),
       ]);
       const fingerprint = await computeReviewFingerprint(repos);
       return {
-        review,
+        ...projection,
         fingerprint,
-        ...skippedCommentThreadsField(request.projectId, request.worktreeId),
       };
     },
   );
@@ -103,8 +102,9 @@ export function registerCodeReviewHandlers(
     async (_event, request) => {
       validateId(request.worktreeId, 'worktreeId');
       validateId(request.projectId, 'projectId');
-      // The IPC request carries the REAL ids; compute the composite scope key
+      // The IPC request carries the REAL ids; compute the versioned scope key
       // and store the full ref so downstream resolution never parses it back.
+      // Historical `p--w` rows keep their keys and are never reassigned here.
       await registerCodeReviewTarget(
         buildCodeReviewScopeKey(request.projectId, request.worktreeId),
         { projectId: request.projectId, worktreeId: request.worktreeId },

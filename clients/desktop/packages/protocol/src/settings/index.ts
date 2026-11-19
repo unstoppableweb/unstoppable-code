@@ -7,6 +7,7 @@ export * from './events';
 export * from './account';
 export * from './account-digests';
 export * from './account-github';
+export * from './github-review-approvals';
 export * from './account-publishing';
 export * from './billing';
 export * from './organization';

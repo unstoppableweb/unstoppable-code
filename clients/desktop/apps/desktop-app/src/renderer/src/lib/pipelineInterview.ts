@@ -23,10 +23,12 @@ export async function startPipelineInterviewChat(): Promise<boolean> {
     await useStandaloneChatStore.getState().createStandaloneChatWithMessage({
       message: PIPELINE_INTERVIEW_PROMPT,
     });
-  } catch {
+  } catch (error) {
     useGitHubStore
       .getState()
-      .addToast("Couldn't start the chat. Try again.", 'error');
+      .addToast("Couldn't start the chat. Try again.", 'error', undefined, {
+        caught: error,
+      });
     return false;
   }
   useNavigationStore.getState().navigate('chat');

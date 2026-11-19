@@ -4,6 +4,7 @@ import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSid
 import { forkWebCoreChat } from './index';
 import type { CloudForkOutcome } from './web-core-chat-backend';
 import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
+import { cloudProjectIsCowork } from '@/cloud-chats/cloud-project-kind';
 import type { CoreCoworkProject } from '@canopy/app-state/core-cowork';
 
 /** The cloud chat a fork starts from. */
@@ -53,9 +54,7 @@ export function cloudForkOpensItsTask(
   projectId: string,
   projects: readonly CoreCoworkProject[] = cloudCoworkStore.getState().projects,
 ): boolean {
-  return (
-    projects.find((project) => project.key === projectId)?.kind === 'cowork'
-  );
+  return cloudProjectIsCowork(projectId, projects);
 }
 
 /**

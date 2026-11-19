@@ -1,3 +1,4 @@
+import { logMainProcessError } from './main-process-logging';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -280,14 +281,28 @@ export async function resetChatToPoint(
           : {}),
       });
     } catch (cause) {
+      try {
+        logMainProcessError(
+          '[chat-reset-to-point] repository restore failed',
+          cause,
+        );
+      } catch {
+        // Diagnostics must preserve the existing restore rejection.
+      }
       const detail = cause instanceof Error ? cause.message : String(cause);
       const partial =
         index > 0
           ? ` ${index} repo(s) already restored — project state is inconsistent and may need manual recovery.`
           : '';
-      throw new Error(
+      const error = new Error(
         `Failed to restore ${target.repoPath} (repo ${index + 1} of ${repoTargets.length}).${partial} Cause: ${detail}`,
       );
+      // `cause` would change readIpcOperationFailure and renderer behavior.
+      Object.defineProperty(error, 'restoreError', {
+        value: cause,
+        enumerable: false,
+      });
+      throw error;
     }
   }
 

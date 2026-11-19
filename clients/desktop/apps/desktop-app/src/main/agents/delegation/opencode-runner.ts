@@ -41,6 +41,7 @@ import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/c
 import { assertOpenCodeConnectionGeneration } from '../../opencode/connection';
 import {
   buildOpenCodeMcpServers,
+  openCodeMcpServersForAcp,
   resolveOpenCodeMcpCall,
 } from '../../opencode/mcp-servers';
 import { getMcpHttpProxyService } from '../../mcp/http-proxy-service';
@@ -76,6 +77,7 @@ export interface OpenCodeDelegationPreparation {
   readonly retainedReadRoots?: readonly string[];
   readonly appTools?: DelegateCanopyTools;
   readonly plugins: readonly { path: string }[];
+  /** Prepared host-owned transports already enforce the delegated MCP policy. */
   readonly mcpServers: Readonly<Record<string, McpServerConfig>>;
 }
 
@@ -353,10 +355,14 @@ export function createOpenCodeDelegationRunner(options: {
           },
         },
       });
-      const servers = buildOpenCodeMcpServers({
-        definitions: { ...prepared.mcpServers },
-        cwd: prepared.tools.cwd,
-      });
+      // prepareMcp owns the routes and execution gates. Reuse its rendezvous
+      // for discovery and ACP; re-brokering would ask twice for one tool call.
+      const servers = openCodeMcpServersForAcp(
+        buildOpenCodeMcpServers({
+          definitions: { ...prepared.mcpServers },
+          cwd: prepared.tools.cwd,
+        }),
+      );
       servers.push({
         type: 'http',
         name: namespace,
@@ -382,6 +388,7 @@ export function createOpenCodeDelegationRunner(options: {
         prepared.tools.cwd,
         signal,
         true,
+        runtime.env,
       );
       const appendChildChanges = context.appendChildChanges;
       const childNormalizer = appendChildChanges

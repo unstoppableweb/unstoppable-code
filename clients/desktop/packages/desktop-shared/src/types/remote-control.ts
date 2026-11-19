@@ -157,6 +157,9 @@ export interface RemoteControlInstallIdResult {
   installId: string;
 }
 
+/** Progress of the delete that turning inventory sync off starts. */
+export type RemoteControlInventoryDeleteStatus = 'idle' | 'pending' | 'failed';
+
 export interface RemoteControlState {
   /** The feature flag is on. */
   available: boolean;
@@ -168,6 +171,17 @@ export interface RemoteControlState {
   allowIncoming: boolean;
   /** Paired computers that control this one may install its updates. */
   allowRemoteUpdates: boolean;
+  /**
+   * This computer syncs its plugin, MCP and pipeline lists to the web while
+   * Allow incoming is on (CAN-5986). Optional on the wire: hosts that
+   * predate the field do not send it, and readers treat it as on.
+   */
+  inventorySyncEnabled?: boolean;
+  /**
+   * The server-side delete that turning inventory sync off started:
+   * `pending` until it succeeds, `failed` while it retries. Local only.
+   */
+  inventoryDeleteStatus?: RemoteControlInventoryDeleteStatus;
   hosts: RemoteControlHost[];
   controllers: RemoteControlController[];
   /** Online devices on this account that accept pairing and are not paired. */
@@ -259,6 +273,13 @@ export interface RemoteControlApi {
    */
   setAllowIncoming(allow: boolean): Promise<RemoteControlState>;
   setAllowRemoteUpdates(allow: boolean): Promise<RemoteControlState>;
+  /**
+   * This computer's inventory sync switch. Turning it off (after the user
+   * confirms) deletes this computer's synced lists from the web for the
+   * signed-in account; turning it on re-syncs them. Local only: a controller
+   * never changes another computer's data sharing.
+   */
+  setInventorySyncEnabled(enabled: boolean): Promise<RemoteControlState>;
   /** Opens, or replaces, the pairing link window. Needs Remote Control on. */
   openPairingWindow(): Promise<RemoteControlOpenPairingWindowResult>;
   closePairingWindow(): Promise<RemoteControlState>;

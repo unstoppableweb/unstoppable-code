@@ -2,6 +2,7 @@ import {
   inspectMemoryLinks,
   mergeUnresolvedMemoryLinks,
 } from '@canopy/memory-consolidation/link-health';
+import { reportBackgroundFailure } from '../../observability/background-failure-reporter';
 import type { MemoryConsolidationMeasurement } from '@canopy/protocol/local-memory/metrics';
 import { measureMemoryConsolidation } from '@canopy/memory-consolidation/metrics';
 import { readConsolidationState } from './consolidation-state';
@@ -479,6 +480,17 @@ async function readTopicFiles(
     maxFiles: Number.POSITIVE_INFINITY,
     onOverBudget: 'skip',
   });
+}
+
+/**
+ * Only the closed code and its purpose leave: the warning message carries the
+ * raw error text, which can hold memory content.
+ */
+function reportConsolidationWarning(_message: string, code: string): void {
+  reportBackgroundFailure(
+    `memory-consolidation.${code.includes('COMPACTION') ? 'compaction' : 'consolidation'}`,
+    code,
+  );
 }
 
 function warnAboutUnusableImports(pending: PendingSources): void {
@@ -1498,9 +1510,7 @@ async function runConsolidation(
         : unusedAcrossDevices(synced.usage, local, options.now ?? new Date());
     },
     apply,
-    warn: (message, code) => {
-      process.emitWarning(message, { code });
-    },
+    warn: reportConsolidationWarning,
     now: () => options.now ?? new Date(),
   });
   if (result.metrics !== undefined) return result;
@@ -1553,9 +1563,7 @@ export async function previewMemoryMerge(
       captured.plan = next;
       return Promise.resolve(true);
     },
-    warn: (message, code) => {
-      process.emitWarning(message, { code });
-    },
+    warn: reportConsolidationWarning,
     now: () => options.now ?? new Date(),
   });
   const applied = captured.plan;

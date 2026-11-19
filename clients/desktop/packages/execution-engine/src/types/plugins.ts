@@ -33,7 +33,7 @@ import type {
   SharedPluginPublicShareInfo,
   SharedPluginUpdateRequest,
 } from '@canopy/protocol/plugins';
-import type { IPCResult } from './pipeline';
+import type { IPCResult, IPCResultWithAppError } from './pipeline';
 import type { ShareablePluginRef } from '@canopy/protocol/plugins';
 import type { ChatTabPluginSelections } from '../execution-types';
 import type { InvocableInventoryEnableRef } from './invocable-inventory';
@@ -142,6 +142,7 @@ export type KnownMarketplacesFile = Record<string, KnownMarketplaceEntry>;
 export interface MarketplaceManifest {
   name?: string;
   description?: string;
+  owner?: { name?: string };
   plugins: MarketplacePluginEntry[];
 }
 
@@ -393,12 +394,14 @@ export interface PluginsAPI {
   ): Promise<IPCResult<PluginsCache>>;
   addMarketplace(
     repo: string,
-  ): Promise<IPCResult<MarketplaceRegistrationResult>>;
-  updateMarketplace(id: string): Promise<IPCResult<MarketplaceInfo>>;
+  ): Promise<IPCResultWithAppError<MarketplaceRegistrationResult>>;
+  updateMarketplace(
+    id: string,
+  ): Promise<IPCResultWithAppError<MarketplaceInfo>>;
   removeMarketplace(
     id: string,
     options?: RemoveMarketplaceOptions,
-  ): Promise<IPCResult<MarketplaceRemovalResult>>;
+  ): Promise<IPCResultWithAppError<MarketplaceRemovalResult>>;
   readComponentContent(
     installLocation: string,
     pluginSourcePath: string,
@@ -408,7 +411,7 @@ export interface PluginsAPI {
     marketplaceId: string,
     pluginName: string,
     sourceUrl: string,
-  ): Promise<IPCResult<PluginInfo>>;
+  ): Promise<IPCResultWithAppError<PluginInfo>>;
   prepareCodexCompatibilityPlugin(
     marketplaceId: string,
     pluginName: string,
@@ -420,7 +423,7 @@ export interface PluginsAPI {
   ): Promise<IPCResult<PluginInfo>>;
   installBuiltInPlugin(
     request: InstallBuiltInPluginRequest,
-  ): Promise<IPCResult<InstallBuiltInPluginResult>>;
+  ): Promise<IPCResultWithAppError<InstallBuiltInPluginResult>>;
   /**
    * One Add for every harness (CAN-6816): check an installed plugin or skill
    * against the set-up harnesses and record what each loads. Resolves `null`

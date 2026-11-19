@@ -1,4 +1,5 @@
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { RpcPublicError } from '../transport/rpc-peer';
 import {
   resolveKnownModel,
   type ChatCommandExecutionOptions,
@@ -22,7 +23,7 @@ import {
   remoteCreateTabNoModelMessage,
   resolveRemoteCreateTabSeed,
   sendReceiptFields,
-} from '../../portal/adapters/chat-adapter';
+} from './remote-chat-create';
 import {
   createHostedChatDispatcher,
   type HostedChatAttribution,
@@ -37,7 +38,9 @@ import {
 function chatPort(): ChatStateCommandPort {
   const port = getChatStateCommandPort();
   if (!port)
-    throw new Error('The chat state service is temporarily unavailable.');
+    throw new RpcPublicError(
+      'The chat state service is temporarily unavailable.',
+    );
   return port;
 }
 

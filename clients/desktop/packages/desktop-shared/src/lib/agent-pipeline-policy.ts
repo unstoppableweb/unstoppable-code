@@ -13,6 +13,16 @@ export const AGENT_PIPELINE_RUN_STEP_POLICY_ERROR =
 export const AGENT_PIPELINE_SESSION_AUTHORITY_POLICY_ERROR =
   "Agent-authored pipelines cannot change an existing chat's model, plan mode, approval mode, or plugins.";
 
+/**
+ * D11 at save time for a step that starts a new chat: an agent-originated
+ * run refuses plugins on it, so an agent's save is refused when they are
+ * written literally. An expression is left to the run-time check. The new
+ * chat's approval mode comes from the agent's start admission, which is only
+ * known when the step runs, so it stays a run-time check.
+ */
+export const AGENT_PIPELINE_NEW_CHAT_PLUGINS_POLICY_ERROR =
+  "Agents can't give a workflow's new chats plugins. Ask the person to add them.";
+
 const AGENT_PIPELINE_INLINE_CHILD_POLICY_ERROR =
   'Agent-authored inline child pipeline definitions must contain valid pipeline YAML.';
 const AGENT_PIPELINE_MAX_INLINE_DEPTH = 8;
@@ -80,11 +90,59 @@ function changesChatAuthority(
   );
 }
 
+/** A set input that holds an expression anywhere, as text or in a YAML list or map. */
+function isExpression(value: unknown): boolean {
+  return (typeof value === 'string' ? value : JSON.stringify(value)).includes(
+    '${{',
+  );
+}
+
+/** A literal JSON input as written: a YAML list or map, else parsed text. */
+function literalJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Plugins a new chat would take from literal inputs, as the run resolves
+ * them: a `plugins` list with an entry, any `plugin_selections` or
+ * `plugin_collection_id`, or a plugin in `text_references`. Expressions and
+ * unparseable JSON are left to run time.
+ */
+function givesNewChatPlugins(
+  inputs: Record<string, unknown> | undefined,
+): boolean {
+  if (!inputs || isSetInput(inputs.chat_id)) return false;
+  const literal = (name: string): boolean =>
+    isSetInput(inputs[name]) && !isExpression(inputs[name]);
+  if (literal('plugin_selections') || literal('plugin_collection_id'))
+    return true;
+  const plugins = literal('plugins') ? literalJson(inputs.plugins) : undefined;
+  if (Array.isArray(plugins) && plugins.length > 0) return true;
+  const references = literal('text_references')
+    ? literalJson(inputs.text_references)
+    : undefined;
+  return Array.isArray(references) && hasPluginReference(references);
+}
+
+export interface AgentPipelinePolicyOptions {
+  /**
+   * The definition is shared, not saved as the agent's own: its runs aren't
+   * agent-originated, so new-chat plugins are left to them. Defaults to false.
+   */
+  shared?: boolean;
+}
+
 function validatePipeline(
   content: Pipeline,
   depth: number,
   visitedPipelines: WeakSet<object>,
   visitedInlineYaml: Set<string>,
+  options: AgentPipelinePolicyOptions,
 ): string | null {
   if (visitedPipelines.has(content)) return null;
   visitedPipelines.add(content);
@@ -101,6 +159,13 @@ function validatePipeline(
         changesChatAuthority(step.with)
       ) {
         return AGENT_PIPELINE_SESSION_AUTHORITY_POLICY_ERROR;
+      }
+      if (
+        actionPath === 'send-agent-message' &&
+        !options.shared &&
+        givesNewChatPlugins(step.with)
+      ) {
+        return AGENT_PIPELINE_NEW_CHAT_PLUGINS_POLICY_ERROR;
       }
       // Normalized too, so an inline child can't hide the step above.
       if (actionPath !== 'run-pipeline') continue;
@@ -129,6 +194,7 @@ function validatePipeline(
         depth + 1,
         visitedPipelines,
         visitedInlineYaml,
+        options,
       );
       if (childError) return childError;
     }
@@ -143,6 +209,7 @@ function validatePipeline(
  */
 export function validateAgentPipelineMutationPolicy(
   content: Pipeline,
+  options: AgentPipelinePolicyOptions = {},
 ): string | null {
-  return validatePipeline(content, 0, new WeakSet(), new Set());
+  return validatePipeline(content, 0, new WeakSet(), new Set(), options);
 }

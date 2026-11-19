@@ -14,8 +14,7 @@ import type {
 import { SUBAGENT_UNTITLED_LABEL } from '@canopy/ui-shared/components';
 import {
   AGENT_STEP_LIMIT,
-  delegateAgentMeta,
-  delegateAgentStatus,
+  delegateTrayAgent,
   type BackgroundTrayAgent,
   type BackgroundTrayAgentStep,
 } from './background-tray/AgentRow';
@@ -144,22 +143,11 @@ function delegateRow(
   ) {
     return null;
   }
-  const title = delegation.description || SUBAGENT_UNTITLED_LABEL;
-  return {
-    id: `managed:${delegation.delegationId}`,
-    kind: 'delegate',
-    title,
-    status: delegateAgentStatus(delegation),
-    activity: null,
+  return delegateTrayAgent(delegation, {
     startedAt: null,
     steps: agentSteps(data),
-    prompt: delegation.prompt || null,
-    meta: delegateAgentMeta(delegation),
-    taskId: null,
-    // Only a host that stops delegates itself (`delegationStop`) offers Stop.
     canStop,
-    target: { kind: 'managed', id: delegation.delegationId, title },
-  };
+  });
 }
 
 function nativeRow(

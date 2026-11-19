@@ -17,6 +17,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { SharedContainerCapabilityPackageCounts } from '@canopy/protocol/shared-containers';
 import { logMainProcessWarn } from '../../lib/main-process-logging';
+import { isSharedAutomationsWorkflowFormEnabled } from '../../automations/shared-workflow-form-flag';
 import type { SharedContainerLocalRepository } from '../local-repositories';
 import type {
   AnalyzeSharedContainerCapabilityPackageInput,
@@ -54,6 +55,8 @@ export interface SharedContainerCapabilityPackagePreviewDependencies {
   ) => Promise<SharedContainerCapabilityPackageAnalysis>;
   now: () => number;
   timeoutMs: number;
+  /** The workflow-form flag (CAN-6455). */
+  workflowForm: () => boolean;
 }
 
 const DEFAULT_DEPENDENCIES: SharedContainerCapabilityPackagePreviewDependencies =
@@ -80,6 +83,7 @@ const DEFAULT_DEPENDENCIES: SharedContainerCapabilityPackagePreviewDependencies 
     },
     now: () => Date.now(),
     timeoutMs: PREVIEW_ANALYSIS_TIMEOUT_MS,
+    workflowForm: isSharedAutomationsWorkflowFormEnabled,
   };
 
 function targetKey(target: SharedContainerCapabilityPackageTarget): string {
@@ -132,10 +136,13 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
     } catch {
       return undefined;
     }
+    // CAN-6455: one reading of the flag decides the key and the analysis.
+    const workflowForm = this.deps.workflowForm();
     const scopeKey = sharedContainerCapabilityPackageScopeKey({
       containerType: target.containerType,
       chatTabs,
       fileScope,
+      ...(workflowForm ? { workflowForm } : {}),
     });
     const entry = this.deps.cache.get(target);
     const matches = entry?.scopeKey === scopeKey;
@@ -144,7 +151,7 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
       !matches ||
       this.deps.now() - entry.completedAt >= PREVIEW_REVALIDATE_AFTER_MS
     ) {
-      this.refresh(target, chatTabs, scopeKey);
+      this.refresh(target, chatTabs, scopeKey, workflowForm);
     }
     return matches && entry.analysis.state === 'ready'
       ? entry.analysis.summary.counts
@@ -169,6 +176,7 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
     target: SharedContainerCapabilityPackageTarget,
     chatTabs: ChatTabsFile,
     scopeKey: string,
+    workflowForm: boolean,
   ): void {
     const key = targetKey(target);
     const existing = this.inFlight.get(key);
@@ -180,7 +188,7 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
       controller.signal,
       AbortSignal.timeout(this.deps.timeoutMs),
     ]);
-    const done = this.run(target, chatTabs, scopeKey, signal)
+    const done = this.run(target, chatTabs, scopeKey, workflowForm, signal)
       .catch((error: unknown) => {
         if (signal.aborted) return;
         logMainProcessWarn(
@@ -199,6 +207,7 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
     target: SharedContainerCapabilityPackageTarget,
     chatTabs: ChatTabsFile,
     scopeKey: string,
+    workflowForm: boolean,
     signal: AbortSignal,
   ): Promise<void> {
     const includedChatIds = chatTabs.tabs
@@ -243,7 +252,12 @@ export class SharedContainerCapabilityPackagePreviewRefresher {
       };
     }
     signal.throwIfAborted();
-    const analysisInput = { ...target, includedChatIds, ...code };
+    const analysisInput = {
+      ...target,
+      includedChatIds,
+      ...code,
+      ...(workflowForm ? { workflowForm } : {}),
+    };
     // Joins a publication analysis of the same scope and inputs. The shared
     // analysis caches a completed result; a failed one is not an empty
     // package, so the line stays absent.

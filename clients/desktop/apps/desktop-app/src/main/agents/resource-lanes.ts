@@ -29,6 +29,27 @@ export function agentResourceContextEnabled(): boolean {
   );
 }
 
+/**
+ * Whether organization projects are known to be off: a settled verdict
+ * (flags ready, or not configured), not the default served while flags load
+ * or after a failed start. Organization Agent copies are removed then
+ * (CAN-6237, phase 10a), since Agents are no longer kept to their context.
+ */
+export function agentResourceContextSettledOff(): boolean {
+  const snapshot = getFeatureFlagService().getSnapshot();
+  return (
+    (snapshot.status === 'ready' || snapshot.status === 'not_configured') &&
+    snapshot.values[CLIENT_FEATURE_FLAGS.canopyOrgProjectsEnabled.key] !== true
+  );
+}
+
+/** Calls `listener` whenever the feature flags change. */
+export function onAgentResourceContextFlagChanged(
+  listener: () => void,
+): () => void {
+  return getFeatureFlagService().onSnapshotChanged(listener);
+}
+
 export async function agentContextSnapshot(): Promise<string> {
   const service = getWorkspaceContextService();
   await service.initialize();

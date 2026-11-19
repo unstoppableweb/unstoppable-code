@@ -80,6 +80,7 @@ export function portErrorResponse(
       retryable: error.retryable,
     });
   }
+  call.reportUnexpectedError?.(error);
   return agentActionError(call, 'execution_failed', `${type} failed.`);
 }
 

@@ -59,6 +59,11 @@ jest.mock('../../lib/paths', () => ({
   getWorkspaceWorktreeRootRepoDir: jest.fn(),
   getWorktreeAttachmentsDir: jest.fn(),
   getWorkspaceWorktreeAttachmentsDir: jest.fn(),
+  // No agent secret is recorded: the save's secret check reads an empty store.
+  getAgentChatSecretsFilePath: jest.fn(
+    () =>
+      `${process.env.TMPDIR ?? '/tmp'}/canopy-file-save-golden-no-secrets/chat-secrets.json`,
+  ),
 }));
 jest.mock('../../lib/resolve-worktree', () => ({
   resolveWorktreeCwd: jest.fn(),

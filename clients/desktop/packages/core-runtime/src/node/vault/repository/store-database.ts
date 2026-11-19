@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
 import type { PlatformOperatingSystem } from '../../../platform/platform-services';
+import type { VaultIoClass } from '../../../vault/contracts';
 import { VAULT_RECORD_FORMAT } from './record-format';
 import {
   blob,
@@ -54,12 +55,19 @@ export type VaultStoreOpenStep =
 export interface VaultStoreUnavailable {
   readonly kind: 'store_unavailable';
   readonly step: VaultStoreOpenStep;
+  /** Set when a filesystem call threw; diagnostic only, never a branch. */
+  readonly io?: VaultIoClass;
 }
 
 export function vaultStoreUnavailable(
   step: VaultStoreOpenStep,
+  io?: VaultIoClass,
 ): VaultStoreUnavailable {
-  return Object.freeze({ kind: 'store_unavailable', step });
+  return Object.freeze(
+    io
+      ? { kind: 'store_unavailable', step, io }
+      : { kind: 'store_unavailable', step },
+  );
 }
 
 export interface VaultStoreDatabase {

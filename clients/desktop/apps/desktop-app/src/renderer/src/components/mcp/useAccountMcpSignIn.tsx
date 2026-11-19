@@ -72,6 +72,13 @@ export interface AccountMcpSignInFlow {
   /** Identity of the initiating device row or account/configuration. */
   readonly pendingKey?: string;
   readonly browser?: 'embedded';
+  /**
+   * The name of an account the person adds beside another (CAN-6226), sent
+   * with every start this sign-in makes, through its setup and retries.
+   */
+  readonly label?: string;
+  /** See `AccountMcpConnectOptions.discardOnAbandon`. */
+  readonly discardOnAbandon?: boolean;
   readonly onAuthorizing?: (embeddedUrl: string | undefined) => void;
   readonly onSettled?: (outcome: AccountMcpSignInOutcome) => void;
 }
@@ -99,6 +106,8 @@ function attemptOptions(
   return {
     ...(attempt.key ? { pendingKey: attempt.key } : {}),
     ...(attempt.flow.browser ? { browser: attempt.flow.browser } : {}),
+    ...(attempt.flow.label ? { label: attempt.flow.label } : {}),
+    ...(attempt.flow.discardOnAbandon ? { discardOnAbandon: true } : {}),
     ...(attempt.flow.onAuthorizing
       ? { onAuthorizing: attempt.flow.onAuthorizing }
       : {}),

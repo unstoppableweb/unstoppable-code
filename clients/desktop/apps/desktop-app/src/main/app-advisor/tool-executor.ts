@@ -61,7 +61,6 @@ import type { AppAdvisorToolRuntime } from './runtime';
 import { routeAppAdvisorAction } from './action-router';
 import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import { projectSetupWatchersResultForProvider } from '@canopy/desktop-shared/lib/app-advisor-watchers';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { getFeatureFlagService } from '../feature-flags';
 import { readWatcherOutputPreview } from './local-watcher-output';
 
@@ -661,15 +660,7 @@ async function runAppAdvisorTool(
           ...(context?.signal ? { signal: context.signal } : {}),
         })
         .catch(() => undefined);
-      const featureFlags = {
-        ...getFeatureFlagService().getSnapshot().values,
-        ...(state?.snapshot.canopyPortal
-          ? {
-              [CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key]:
-                state?.snapshot.canopyPortal.featureEnabled,
-            }
-          : {}),
-      };
+      const featureFlags = getFeatureFlagService().getSnapshot().values;
       // D10: without the main window's lease, list only actions that work
       // without a window; search wide first so filtering cannot starve a page.
       // CAN-6008: credential and remote-access actions only for this

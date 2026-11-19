@@ -542,7 +542,7 @@ pipeline:
 
               You are the sole writer for this plan. You may edit the plan directly, but no other refine step may do so.
 
-              If `${{ steps.load_refine_state.outputs.previous_critic_file }}` is non-empty, read that prior GPT-5.6 Sol critic report first and address the remaining concrete gaps before making any other changes.
+              If `${{ steps.load_refine_state.outputs.previous_critic_file }}` is non-empty, read that prior GPT-6.2 Sol critic report first and address the remaining concrete gaps before making any other changes.
 
               Guidance:
               - make only material clarity, accuracy, and completeness improvements
@@ -569,7 +569,7 @@ pipeline:
 
               You are the primary writer for this plan. You may edit the plan directly, but no other refine step may do so.
 
-              If `${{ steps.load_refine_state.outputs.previous_critic_file }}` is non-empty, read that prior GPT-5.6 Sol critic report first and address the remaining concrete gaps before making any other changes.
+              If `${{ steps.load_refine_state.outputs.previous_critic_file }}` is non-empty, read that prior GPT-6.2 Sol critic report first and address the remaining concrete gaps before making any other changes.
 
               Guidance:
               - make only material clarity, accuracy, and completeness improvements
@@ -582,7 +582,7 @@ pipeline:
             structured_output_schema: >-
               {"type":"object","additionalProperties":false,"properties":{"madeUpdates":{"type":"boolean"},"summary":{"type":"string"}},"required":["madeUpdates","summary"]}
         - id: review_with_gpt_resume
-          name: Resume GPT-5.6 Sol Plan Critic
+          name: Resume GPT-6.2 Sol Plan Critic
           if: steps.load_refine_state.outputs.critic_session_id != ''
           continue_on_error: true
           uses: builtin/agent-resume
@@ -610,7 +610,7 @@ pipeline:
             structured_output_schema: >-
               {"type":"object","additionalProperties":false,"properties":{"decision":{"type":"string","enum":["accept","revise"]},"summary":{"type":"string"},"remainingGaps":{"type":"array","items":{"type":"string"}}},"required":["decision","summary","remainingGaps"]}
         - id: review_with_gpt_start
-          name: Start GPT-5.6 Sol Plan Critic
+          name: Start GPT-6.2 Sol Plan Critic
           if: steps.load_refine_state.outputs.critic_session_id == '' || steps.review_with_gpt_resume.conclusion != 'success'
           uses: builtin/agent-prompt
           with:
@@ -2063,7 +2063,7 @@ pipeline:
         implementation_summary_file: ${{ steps.implement_task.outputs.text_response_file }}
       steps:
         - id: implement_task
-          name: Implement Backend With GPT-5.6 Sol
+          name: Implement Backend With GPT-6.2 Sol
           uses: builtin/agent-prompt
           with:
             model: $default-codex
@@ -7368,7 +7368,7 @@ pipeline:
 
             const paragraphOne =
               `Autopilot attention review finished with result \`${finalGateResult}\`, passed=${finalGatePassed ? 'true' : 'false'}, ${finalGateBlockingCount} unresolved blocking failure(s), and ${finalGateSkippedBlockingCount} unresolved issue(s) that may need attention. Attention report: ${finalGateBlockingReportFile || '(none)'}. ` +
-              `Plan complexity was ${complexityLevel} (${complexityRemarks}) with planning/QA/completion limits ${planningMaxIterations}/${qaMaxIterations}/${(process.env.COMPLETION_MAX_ITERATIONS ?? '').trim() || '0'}. ${refineOpusUpdated}, and GPT-5.6 Sol ${refineDecision === 'accept' ? 'accepted the refined plan' : 'requested another writer pass'}${refineGptSummary ? `: ${refineGptSummary}` : '.'} ` +
+              `Plan complexity was ${complexityLevel} (${complexityRemarks}) with planning/QA/completion limits ${planningMaxIterations}/${qaMaxIterations}/${(process.env.COMPLETION_MAX_ITERATIONS ?? '').trim() || '0'}. ${refineOpusUpdated}, and GPT-6.2 Sol ${refineDecision === 'accept' ? 'accepted the refined plan' : 'requested another writer pass'}${refineGptSummary ? `: ${refineGptSummary}` : '.'} ` +
               `Plan partition produced ${partitionSummary} partition${partitionKinds.length === 1 ? '' : 's'}; ${transportSummary} Backend implementation finished with result \`${(process.env.IMPLEMENT_RESULT ?? '').trim() || 'unknown'}\`, and frontend implementation finished with result \`${(process.env.IMPLEMENT_FRONTEND_RESULT ?? '').trim() || 'unknown'}\`.`;
 
             const paragraphTwo =

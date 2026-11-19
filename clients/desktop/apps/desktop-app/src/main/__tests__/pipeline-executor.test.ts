@@ -4146,7 +4146,7 @@ describe('pipeline-executor', () => {
       const result = await loadExecutionState(parentId, runtime.executionsDir);
       if (status === 'live') {
         expect(errors).toEqual([
-          expect.stringContaining('live or unknown owner'),
+          { executionId: parentId, code: null, name: 'Error' },
         ]);
         expect(result?.status).toBe('running');
       } else if (status === 'cancelled' || status === 'failure') {

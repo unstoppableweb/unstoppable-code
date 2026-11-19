@@ -72,8 +72,10 @@ subscription id fails the session closed.
   that is forgotten.
 
 - Consume by push (`onFrame`) or pull (`frames`), not both. Listener errors
-  are contained. Leaving the iterator early keeps the stream live, buffering,
-  and charged, as in process; a later iterator resumes in order.
+  are contained; the `onListenerError` option observes them, and those of
+  `onLeaseEvicted` listeners. Leaving the iterator early keeps the stream
+  live, buffering, and charged, as in process; a later iterator resumes in
+  order.
 - Undelivered frames are bounded at 1,024 items and 16 MiB per stream, and
   64 MiB per connection. A frame is charged once, on arrival, the UTF-8 length
   of its JSON-encoded notification. That is an accounting measure: it ignores
@@ -291,6 +293,10 @@ turns it on yet.
   `failed_precondition`, so a launcher `attach` never retries it, except
   `exited_before_ready`, which keeps the launcher's existing `unavailable`
   failure and now carries the tag.
+- Launch and connect failures may also carry closed facts in `details`:
+  `errno`, `exitCode`, `signal` and `nativeStage`, and `claim: 'ambiguous'`
+  with a `cause` for an unprovable startup claim (not a refusal). Read them
+  with `canopyLaunchDetails`; it keeps only allowlisted values.
 
 ## Client lease (`createCanopyClientLease`)
 

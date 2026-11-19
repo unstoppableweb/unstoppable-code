@@ -158,6 +158,19 @@ const TOOL_WIDE_RULE_LABELS: ReadonlyMap<string, string> = new Map([
   ['Grep', 'Grep (all folders)'],
 ]);
 
+/**
+ * The server an MCP approval names: the connector and the account it acts as
+ * when the person holds several accounts of it (CAN-6228), else its server.
+ */
+function mcpServerLabel(details: {
+  server: string;
+  connector?: string;
+  account?: string;
+}): string {
+  if (details.account === undefined) return details.server;
+  return `${details.connector ?? details.server} (${details.account})`;
+}
+
 function describeApprovalTarget(target: ApprovalRuleTarget): string {
   switch (target.kind) {
     case 'command':
@@ -184,6 +197,8 @@ interface ApprovalContentPreviewProps {
   content: string;
   copy: ApprovalContentCopy;
   onViewFull: (view: FullContentView) => void;
+  /** `block` keeps the content itself out of session replay. */
+  replay?: 'block' | 'inherit';
 }
 
 /**
@@ -197,6 +212,7 @@ function ApprovalContentPreview({
   content,
   copy,
   onViewFull,
+  replay = 'inherit',
 }: ApprovalContentPreviewProps): JSX.Element {
   const preview = previewApprovalContent(content);
   return (
@@ -207,7 +223,7 @@ function ApprovalContentPreview({
         size="2xs"
         wrap="all"
         tone="soft"
-        replay="inherit"
+        replay={replay}
         overflow="horizontal"
       >
         <code>
@@ -380,7 +396,7 @@ function ApprovalDetails({
         >
           <div>
             <code className="rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs">
-              {details.server}: {details.tool}
+              {mcpServerLabel(details)}: {details.tool}
             </code>
           </div>
           {details.paramsDisplay && (
@@ -495,6 +511,50 @@ function ApprovalDetails({
           </div>
         </div>
       );
+    case 'agent-secret-use':
+      return (
+        <div
+          data-testid="tool-approval-secret-use-details"
+          className="flex min-w-0 flex-col gap-1.5 text-xs fg-primary/80"
+        >
+          {/* Only the command or path is kept out of session replay, not
+              the "View full" button beside it. */}
+          <div>
+            {details.command !== undefined ? (
+              <ApprovalContentPreview
+                content={details.command}
+                copy={APPROVAL_CONTENT_COPY.command}
+                onViewFull={onViewFull}
+                replay="block"
+              />
+            ) : (
+              <code
+                className={`${REPLAY_BLOCK_CLASS} rounded bg-fg-primary/[0.06] px-1 py-0.5 font-mono text-2xs`}
+              >
+                {details.path ?? details.tool}
+              </code>
+            )}
+          </div>
+          {details.cwd && details.cwd !== '.' && (
+            <div className={`${REPLAY_BLOCK_CLASS} text-2xs fg-secondary`}>
+              in {details.cwd}
+            </div>
+          )}
+          <ul
+            className="flex flex-wrap items-center gap-1"
+            aria-label="Secrets it receives"
+          >
+            {details.secretNames.map((name) => (
+              <li key={name}>
+                <Badge>
+                  <span className="font-mono">{name}</span>
+                </Badge>
+              </li>
+            ))}
+          </ul>
+          <div className="text-2xs fg-secondary">Ask before each use</div>
+        </div>
+      );
     default:
       return <></>;
   }
@@ -551,12 +611,15 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
   pending,
   onRespond: respondWith,
   focusHandleRef,
-  ruleScopes = true,
+  ruleScopes: hostRuleScopes = true,
   denyReason = true,
   denyAndStop: denyAndStopAvailable = true,
   reasonMaxLength,
   readOnlyHint,
 }: ToolApprovalCardProps): JSX.Element {
+  // A use of agent secrets is asked every time: no rule can remember it.
+  const ruleScopes =
+    hostRuleScopes && pending.details.kind !== 'agent-secret-use';
   /**
    * One response at a time. A repeated click or chord while the first is in
    * flight is ignored; a failed response leaves the card for a retry. The

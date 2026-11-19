@@ -1,4 +1,5 @@
 import { brandText } from '@/lib/brand';
+import { localPlatform } from '@/lib/local-platform';
 import type { VoiceMicrophoneFailureReason } from './voice-types';
 
 export type VoiceErrorKind =
@@ -20,6 +21,7 @@ export interface VoiceErrorGuidance {
   /**
    * macOS `x-apple.systempreferences:` URL that deep-links the user to the
    * relevant pane in System Settings. Opened via `window.api.openExternal`.
+   * Linux guidance never sets one: there is no such pane to open.
    */
   settingsUrl?: string;
   settingsLabel?: string;
@@ -61,7 +63,11 @@ function microphoneDeniedGuidance(): VoiceErrorGuidance {
  */
 export function guidanceForMicrophoneFailure(
   reason: VoiceMicrophoneFailureReason,
+  platform: NodeJS.Platform = localPlatform(),
 ): VoiceErrorGuidance {
+  if (platform === 'linux') {
+    return linuxMicrophoneFailureGuidance(reason);
+  }
   switch (reason) {
     case 'denied':
       return microphoneDeniedGuidance();
@@ -128,7 +134,19 @@ export function guidanceForMicrophoneFailure(
  */
 export function unknownMicrophoneFailureGuidance(
   message: string | null,
+  platform: NodeJS.Platform = localPlatform(),
 ): VoiceErrorGuidance {
+  if (platform === 'linux') {
+    return {
+      kind: 'generic',
+      title: "Couldn't start the microphone",
+      steps: [
+        `${brandText.appName} couldn't start the microphone. The reported cause was:`,
+        message?.trim() || 'Unknown error.',
+        "Try again. If it keeps failing, check the input device in your system's sound settings.",
+      ],
+    };
+  }
   return {
     kind: 'generic',
     title: "Couldn't start the microphone",
@@ -152,7 +170,13 @@ export function unknownMicrophoneFailureGuidance(
  * handler, or a thrown VoicePermissionError) into a structured guidance
  * payload the UI can render.
  */
-export function classifyVoiceError(message: string | null): VoiceErrorGuidance {
+export function classifyVoiceError(
+  message: string | null,
+  platform: NodeJS.Platform = localPlatform(),
+): VoiceErrorGuidance {
+  if (platform === 'linux') {
+    return classifyLinuxVoiceError(message);
+  }
   const raw = (message ?? '').toLowerCase();
 
   if (
@@ -255,5 +279,91 @@ export function classifyVoiceError(message: string | null): VoiceErrorGuidance {
     ],
     settingsUrl: DICTATION_SETTINGS_URL,
     settingsLabel: 'Open Keyboard Settings',
+  };
+}
+
+/*
+ * Linux: dictation runs in the bundled helper with a downloaded speech model,
+ * and there is no system permission or Settings pane to send anyone to. The
+ * failures are a missing model, a processor without AVX, a missing or busy
+ * microphone, or the helper itself.
+ */
+
+function linuxMicrophoneFailureGuidance(
+  reason: VoiceMicrophoneFailureReason,
+): VoiceErrorGuidance {
+  switch (reason) {
+    case 'no-input-device':
+      return {
+        kind: 'no-input-device',
+        title: 'Connect a microphone',
+        steps: [
+          `Your system didn't offer ${brandText.appName} an audio input device to record from.`,
+          "Connect a microphone, or choose one as the input in your system's sound settings, then click the microphone again.",
+        ],
+      };
+    case 'device-unavailable':
+      return {
+        kind: 'device-unavailable',
+        title: 'Free up the microphone',
+        steps: [
+          `${brandText.appName} couldn't start recording. Another app may be using the microphone.`,
+          'Quit any app that might be using the microphone, then click the microphone again.',
+        ],
+      };
+    case 'denied':
+    case 'restricted':
+    case 'not-determined':
+    case 'unavailable':
+      return {
+        kind: 'microphone-permission-denied',
+        title: `${brandText.appName} couldn't use the microphone`,
+        steps: [
+          'Something on this computer blocked microphone access, such as a privacy switch or a sandbox.',
+          'Allow microphone access for the app, then click the microphone again.',
+        ],
+      };
+  }
+}
+
+function classifyLinuxVoiceError(message: string | null): VoiceErrorGuidance {
+  const raw = (message ?? '').toLowerCase();
+  // Match the exact reasons VoiceService sends for the Linux probe codes, so
+  // a helper error that merely mentions the model or a missing file isn't
+  // mistaken for one.
+  if (raw.includes('download the speech model')) {
+    return {
+      kind: 'unsupported',
+      title: 'Download the speech model',
+      steps: [
+        'Dictation recognizes speech on this computer with a speech model you download once.',
+        'Open Settings → Dictation and choose Download, then click the microphone again.',
+      ],
+    };
+  }
+  if (raw.includes('it needs avx')) {
+    return {
+      kind: 'unsupported',
+      title: 'Dictation is unavailable on this computer',
+      steps: [
+        "This computer's processor doesn't support the instructions (AVX) dictation needs.",
+      ],
+    };
+  }
+  if (raw.includes("isn't included in this build")) {
+    return {
+      kind: 'unsupported',
+      title: 'Dictation is unavailable in this build',
+      steps: [`This build of ${brandText.appName} doesn't include dictation.`],
+    };
+  }
+  return {
+    kind: 'generic',
+    title: "Couldn't start voice dictation",
+    steps: [
+      'Dictation reported the following error while starting:',
+      message?.trim() || 'Unknown error.',
+      `Try again. If it keeps failing, restart ${brandText.appName}.`,
+    ],
   };
 }

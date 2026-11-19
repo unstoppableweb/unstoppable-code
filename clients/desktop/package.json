@@ -23,6 +23,7 @@
   "main": "./out/main/index.js",
   "workspaces": [
     "apps/desktop-app",
+    "apps/core-daemon",
     "packages/protocol",
     "packages/artifact-crypto",
     "packages/plugin-interop",
@@ -99,14 +100,18 @@
     "@tailwindcss/postcss": "^4.0.0",
     "@tailwindcss/typography": "^0.5.0",
     "@types/js-yaml": "^4.0.9",
+    "app-builder-lib": "26.16.1",
+    "builder-util": "26.16.0",
     "builder-util-runtime": "9.5.1",
     "colorjs.io": "^0.6.1",
-    "electron": "^45.3.0",
+    "electron": "^45.3.3",
     "electron-vite": "^5.0.0",
     "esbuild": "^0.25.12",
+    "extract-zip": "^2.0.1",
     "micromark": "^4.0.2",
     "micromark-extension-gfm": "^3.0.0",
     "postcss": "^8.5.32",
+    "postject": "^1.0.0-alpha.6",
     "prettier": "^3.8.1",
     "sharp": "^0.34.5",
     "tailwindcss": "^4.0.0",
@@ -138,7 +143,11 @@
     "start:public": "node scripts/public-build/desktop.mjs start",
     "build:public": "node scripts/public-build/desktop.mjs build",
     "typecheck:public": "node scripts/public-build/desktop.mjs typecheck",
-    "test:public": "node scripts/public-build/desktop.mjs test"
+    "test:public": "node scripts/public-build/desktop.mjs test",
+    "setup:local": "node scripts/public-build/desktop.mjs setup --local-only",
+    "build:local": "node scripts/public-build/desktop.mjs build --local-only",
+    "start:local": "node scripts/public-build/desktop.mjs start --local-only",
+    "smoke:local": "node scripts/public-build/desktop.mjs smoke"
   },
   "claude-code": {
     "version": "2.1.325",
@@ -426,12 +435,12 @@
     }
   },
   "codex": {
-    "version": "0.167.0",
+    "version": "0.169.0",
     "appServerTypesDir": "packages/execution-engine/src/node/codex-runtime/generated",
     "models": [
       {
-        "id": "gpt-6-astra",
-        "label": "GPT 6 Astra",
+        "id": "gpt-6.2-astra",
+        "label": "GPT 6.2 Astra",
         "family": "codex",
         "familyLabel": "Codex",
         "vendor": "openai",
@@ -439,6 +448,46 @@
         "description": "Frontier Codex model for complex coding work",
         "contextWindow": 272000,
         "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "gpt-6.2-astra"
+      },
+      {
+        "id": "gpt-6.2-sol",
+        "label": "GPT 6.2 Sol",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 41,
+        "description": "Reliable Codex model for everyday coding work",
+        "contextWindow": 500000,
+        "showMoreOnly": false,
+        "supportedThinkingLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "cursorModelId": "gpt-6.2-sol"
+      },
+      {
+        "id": "gpt-6-astra",
+        "label": "GPT 6 Astra",
+        "family": "codex",
+        "familyLabel": "Codex",
+        "vendor": "openai",
+        "sortOrder": 44,
+        "description": "Frontier Codex model for complex coding work",
+        "contextWindow": 272000,
+        "showMoreOnly": true,
         "supportedThinkingLevels": [
           "low",
           "medium",
@@ -455,10 +504,10 @@
         "family": "codex",
         "familyLabel": "Codex",
         "vendor": "openai",
-        "sortOrder": 41,
+        "sortOrder": 45,
         "description": "Reliable Codex model for everyday coding work",
         "contextWindow": 272000,
-        "showMoreOnly": false,
+        "showMoreOnly": true,
         "supportedThinkingLevels": [
           "low",
           "medium",
@@ -496,7 +545,7 @@
         "family": "codex",
         "familyLabel": "Codex",
         "vendor": "openai",
-        "sortOrder": 44,
+        "sortOrder": 46,
         "description": "Reliable Codex model for everyday coding work",
         "contextWindow": 272000,
         "showMoreOnly": true,
@@ -643,6 +692,26 @@
   },
   "delegation-file-broker": {
     "version": "1.0.0"
+  },
+  "cli-node": {
+    "version": "24.22.1",
+    "artifacts": {
+      "darwin-arm64": {
+        "sha256": "89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7"
+      },
+      "darwin-x64": {
+        "sha256": "d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035"
+      },
+      "win32-x64": {
+        "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5"
+      },
+      "linux-x64": {
+        "sha256": "eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c"
+      },
+      "linux-arm64": {
+        "sha256": "33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3"
+      }
+    }
   },
   "copilot-cli": {
     "version": "1.0.89",

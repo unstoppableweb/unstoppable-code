@@ -794,21 +794,75 @@ export type OAuthAttemptOutcome =
 /**
  * One upstream request that gave nothing usable, for diagnostics. It never
  * carries a query, credential, token or code: a URL built from the MCP
- * server's address shows only a redacted path shape, `error` is a known OAuth
- * code or `other`, and `errorDescription` is kept only for registration, which
- * sends no secret a provider could echo.
+ * server's address shows only a redacted path shape, a provider's URL shows
+ * only its origin, and `error` is a known OAuth code or `other`. A provider's
+ * free-text description is never kept: it can echo an email, tenant or token.
  */
 export interface OAuthAttempt {
   readonly stage: OAuthStage;
-  /** Origin and path, never the query (see {@link resourceDiagnosticUrl}). */
+  /**
+   * The origin, or for a URL built from the MCP server's address its redacted
+   * path shape (see {@link resourceDiagnosticUrl}); never a query.
+   */
   readonly url: string;
   readonly outcome: OAuthAttemptOutcome;
   readonly status?: number;
   /** The provider's OAuth `error` code when it is a known one, else `other`. */
   readonly error?: string;
-  readonly errorDescription?: string;
   /** Our own reason a response was unusable. */
   readonly reason?: string;
+  /** Closed class of a request that threw before any response. */
+  readonly cause?: OAuthNetworkCause;
+}
+
+export type OAuthNetworkCause = 'timeout' | 'dns' | 'tls' | 'refused' | 'other';
+
+const TIMEOUT_CODES = new Set([
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+const DNS_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN']);
+const TLS_CODES = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+]);
+
+function networkCauseOfCode(code: unknown): OAuthNetworkCause | undefined {
+  if (typeof code !== 'string') return undefined;
+  if (TIMEOUT_CODES.has(code)) return 'timeout';
+  if (DNS_CODES.has(code)) return 'dns';
+  if (code === 'ECONNREFUSED') return 'refused';
+  if (
+    TLS_CODES.has(code) ||
+    /^(?:CERT_|ERR_TLS_|ERR_SSL_|UNABLE_TO_)/.test(code)
+  )
+    return 'tls';
+  return undefined;
+}
+
+/**
+ * Classifies a thrown fetch by its error codes along the `cause` chain (and
+ * an AggregateError's first error); a message is never read or kept.
+ */
+function oauthNetworkCause(error: unknown): OAuthNetworkCause {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth++) {
+    if (typeof current !== 'object' || current === null) break;
+    if (Reflect.get(current, 'name') === 'TimeoutError') return 'timeout';
+    const cause = networkCauseOfCode(Reflect.get(current, 'code'));
+    if (cause) return cause;
+    const errors: unknown = Reflect.get(current, 'errors');
+    const first: unknown = Array.isArray(errors) ? errors[0] : undefined;
+    const nested =
+      typeof first === 'object' && first !== null
+        ? networkCauseOfCode(Reflect.get(first, 'code'))
+        : undefined;
+    if (nested) return nested;
+    current = Reflect.get(current, 'cause');
+  }
+  return 'other';
 }
 
 export type OAuthAttemptObserver = (attempt: OAuthAttempt) => void;
@@ -834,11 +888,14 @@ export class OAuthError extends Error {
   }
 }
 
-/** A URL as diagnostics may show it: origin and path, never the query. */
+/**
+ * A URL as diagnostics may show it: the origin only. An authorization
+ * server's paths can carry a tenant or account id, so the endpoint kind is
+ * the attempt's `stage`, not its path.
+ */
 export function diagnosticUrl(value: string | URL): string {
   try {
-    const url = new URL(value);
-    return `${url.origin}${url.pathname}`;
+    return new URL(value).origin;
   } catch {
     return 'invalid-url';
   }
@@ -908,8 +965,6 @@ export function oauthStatusOutcome(status: number): OAuthAttemptOutcome {
   return 'rejected';
 }
 
-const MAX_DIAGNOSTIC_TEXT_LENGTH = 300;
-
 /**
  * OAuth `error` codes a log may name (RFC 6749 §4.1.2.1 and §5.2, RFC 6750
  * §3.1, RFC 7591 §3.2.2, RFC 8707 §2, RFC 9449 §12.2). A provider can put
@@ -944,52 +999,8 @@ function diagnosticErrorCode(value: unknown): string | undefined {
   return LOGGABLE_OAUTH_ERROR_CODES.has(value) ? value : 'other';
 }
 
-/**
- * How much provider text {@link diagnosticText} looks at. It is sliced before
- * any other work, so a huge description costs no more than this.
- */
-const MAX_DIAGNOSTIC_INPUT_LENGTH = 512;
-
 /** How many bytes of an error response are read; a longer one is ignored. */
 const MAX_ERROR_BODY_BYTES = 16 * 1024;
-
-function isWhitespace(character: string): boolean {
-  return /\s/.test(character);
-}
-
-/**
- * The text with every `http://` or `https://` URL cut at its first `?` or
- * `#`, dropping the query and fragment. One forward pass: linear in the
- * text's length whatever it holds.
- */
-function withoutUrlQueries(text: string): string {
-  const lower = text.toLowerCase();
-  let result = '';
-  let index = 0;
-  while (index < text.length) {
-    const start = lower.indexOf('http', index);
-    if (start === -1) return result + text.slice(index);
-    const schemeLength = lower.startsWith('https://', start)
-      ? 8
-      : lower.startsWith('http://', start)
-        ? 7
-        : 0;
-    if (schemeLength === 0) {
-      result += text.slice(index, start + 4);
-      index = start + 4;
-      continue;
-    }
-    let end = start + schemeLength;
-    let cut = -1;
-    while (end < text.length && !isWhitespace(text[end])) {
-      if (cut === -1 && (text[end] === '?' || text[end] === '#')) cut = end;
-      end += 1;
-    }
-    result += text.slice(index, cut === -1 ? end : cut);
-    index = end;
-  }
-  return result;
-}
 
 /**
  * A non-success response's JSON body, or null when it is unreadable, not
@@ -1022,28 +1033,6 @@ async function readErrorPayload(response: Response): Promise<unknown> {
   } catch {
     return null;
   }
-}
-
-function isControlCharacter(character: string): boolean {
-  const code = character.charCodeAt(0);
-  return code < 0x20 || code === 0x7f;
-}
-
-/**
- * Provider text fit for one log field: bounded first, then without control
- * characters or URL queries, all in linear time.
- */
-function diagnosticText(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const bounded = value.slice(0, MAX_DIAGNOSTIC_INPUT_LENGTH);
-  const text = withoutUrlQueries(
-    Array.from(bounded, (character): string =>
-      isControlCharacter(character) ? ' ' : character,
-    ).join(''),
-  )
-    .trim()
-    .slice(0, MAX_DIAGNOSTIC_TEXT_LENGTH);
-  return text || undefined;
 }
 
 export function buildOAuthDiscoveryHeaders(
@@ -1212,8 +1201,11 @@ async function requestJson(
       redirect: 'error',
       signal: init.signal ?? AbortSignal.timeout(30_000),
     });
-  } catch {
-    throw failure('transient', { outcome: 'unavailable' });
+  } catch (error) {
+    throw failure('transient', {
+      outcome: 'unavailable',
+      cause: oauthNetworkCause(error),
+    });
   }
   if (response.ok) {
     const payload: unknown = await response.json().catch(() => null);
@@ -1233,15 +1225,10 @@ async function requestJson(
         ? payload.error_description
         : undefined;
   const errorCode = diagnosticErrorCode(error);
-  // A token endpoint's description can echo the code or token it refused; a
-  // registration request carries no secret to echo.
-  const errorDescription =
-    stage === 'registration' ? diagnosticText(description) : undefined;
   const attempt = {
     outcome: oauthStatusOutcome(response.status),
     status: response.status,
     ...(errorCode ? { error: errorCode } : {}),
-    ...(errorDescription ? { errorDescription } : {}),
   };
   // A 429 is a rate limit whatever its body says, so it stays transient.
   const refused =
@@ -1336,12 +1323,14 @@ async function metadataJson(
     outcome: OAuthAttemptOutcome,
     url: URL,
     status?: number,
+    cause?: OAuthNetworkCause,
   ): null => {
     observe?.({
       stage,
       url: stageDiagnosticUrl(stage, url),
       outcome,
       ...(status === undefined ? {} : { status }),
+      ...(cause === undefined ? {} : { cause }),
     });
     return null;
   };
@@ -1360,8 +1349,8 @@ async function metadataJson(
         redirect: 'manual',
         signal: AbortSignal.timeout(30_000),
       });
-    } catch {
-      return skip('unavailable', url);
+    } catch (error) {
+      return skip('unavailable', url, undefined, oauthNetworkCause(error));
     }
     if (METADATA_REDIRECT_STATUSES.has(response.status)) {
       const location = response.headers.get('location');
@@ -1757,6 +1746,8 @@ export function providerAuthorizationParameters(
     : {};
 }
 
+const ACCOUNT_CHOOSER_PROMPT = 'select_account';
+
 export async function buildAuthorizationUrl(input: {
   authorizationEndpoint: string;
   clientId: string;
@@ -1765,13 +1756,27 @@ export async function buildAuthorizationUrl(input: {
   state: string;
   codeVerifier: string;
   scopes?: string[];
+  /**
+   * Ask the provider to let the person choose which account signs in
+   * (`prompt=select_account`), for another account of a connector they
+   * already hold (CAN-6226). Plain OAuth servers ignore the value; an OpenID
+   * Connect server that answers the request with an error instead is asked
+   * again without it (`withoutAccountChooser`, CAN-7198).
+   */
+  selectAccount?: boolean;
 }): Promise<string> {
   const url = parseDiscoveredPublicHttpsUrl(
     input.authorizationEndpoint,
     'Authorization endpoint',
   );
+  const providerParameters = providerAuthorizationParameters(url);
+  const prompt = [
+    ...(input.selectAccount ? [ACCOUNT_CHOOSER_PROMPT] : []),
+    ...(providerParameters.prompt ? [providerParameters.prompt] : []),
+  ].join(' ');
   for (const [key, value] of Object.entries({
-    ...providerAuthorizationParameters(url),
+    ...providerParameters,
+    ...(prompt ? { prompt } : {}),
     response_type: 'code',
     client_id: input.clientId,
     redirect_uri: input.redirectUri,
@@ -1783,6 +1788,28 @@ export async function buildAuthorizationUrl(input: {
     url.searchParams.set(key, value);
   if (input.scopes?.length)
     url.searchParams.set('scope', input.scopes.join(' '));
+  return url.toString();
+}
+
+/**
+ * The same authorization request without `prompt=select_account`, under a
+ * new `state`, or null when the request never asked for the account chooser
+ * (CAN-7198). Every other parameter, including another prompt value such as
+ * Google's `consent`, is kept, so only the chooser is dropped.
+ */
+export function withoutAccountChooser(
+  authorizationUrl: string,
+  state: string,
+): string | null {
+  const url = new URL(authorizationUrl);
+  const prompts = (url.searchParams.get('prompt') ?? '')
+    .split(' ')
+    .filter(Boolean);
+  if (!prompts.includes(ACCOUNT_CHOOSER_PROMPT)) return null;
+  const kept = prompts.filter((value) => value !== ACCOUNT_CHOOSER_PROMPT);
+  if (kept.length) url.searchParams.set('prompt', kept.join(' '));
+  else url.searchParams.delete('prompt');
+  url.searchParams.set('state', state);
   return url.toString();
 }
 

@@ -14,6 +14,7 @@ import {
   GitBranchWriteInterrupted,
   GitBranchWriteRefusal,
 } from './branch-writes';
+import { gitWriteDetailsOf, gitWriteOperationError } from './repository-writes';
 import {
   fetchGitOrigin,
   pullGitBranch,
@@ -87,8 +88,8 @@ const REFRESH = {
 } as const;
 
 // The host's own error stays the runtime cause, so in-process projections can
-// rethrow it with its exact message. Unclassified Git failures stay untyped
-// and the dispatcher reports them as `internal`.
+// rethrow it with its exact message. Unclassified Git failures are `internal`,
+// with the write host's value-free details when it has them (CAN-7113).
 function typedError<Code extends WorkerGitSyncErrorCode>(
   error: unknown,
   codes: FamilyCodes<Code>,
@@ -117,6 +118,7 @@ function typedError<Code extends WorkerGitSyncErrorCode>(
           {
             kind: 'unavailable',
             message: error.message.slice(0, 4_096),
+            ...gitWriteDetailsOf(error.hostCause),
             retry: REFRESH,
           },
           error.hostCause ?? error,
@@ -135,7 +137,7 @@ function typedError<Code extends WorkerGitSyncErrorCode>(
       },
       error,
     );
-  return error;
+  return gitWriteOperationError(error);
 }
 
 /**

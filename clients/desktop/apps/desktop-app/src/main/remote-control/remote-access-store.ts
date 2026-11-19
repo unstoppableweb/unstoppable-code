@@ -49,6 +49,37 @@ const RemoteControlFileSchema = z.object({
    * until first set; the service supplies the platform's default.
    */
   allowRemoteUpdates: z.boolean().optional(),
+  /**
+   * Whether this device syncs its plugin, MCP and pipeline inventory to the
+   * web (CAN-5986). Absent reads as on. A data-sharing opt-out, not an
+   * access grant, so `withoutNewGrants` passes it through.
+   */
+  inventorySyncEnabled: z.boolean().optional(),
+  /**
+   * The accounts (Remote Control's `signedInAccount` keys) whose synced
+   * documents for this device still need deleting after an opt-out. Each
+   * delete runs while its account is signed in. Stays in this file and in
+   * main: `RemoteControlState` never carries it.
+   */
+  inventoryDeletePendingForUserIds: z.array(z.string().min(1)).optional(),
+  /**
+   * Every key form (`signedInAccountKeys`: a server ID and a credential
+   * digest) of each account seen signed in on this install, newest first,
+   * so the first entry is the last account signed in. Turning inventory sync
+   * off while signed out queues that account's delete, and a pending delete
+   * matches an account under any form it was ever seen with, even after
+   * another account signed in. Bounded; signing out keeps it. Main only,
+   * like `inventoryDeletePendingForUserIds`.
+   */
+  inventoryAccountKeyForms: z
+    .array(z.array(z.string().min(1)).min(1))
+    .optional(),
+  /**
+   * The single key an earlier build of this change wrote for the last
+   * signed-in account; read as a one-account `inventoryAccountKeyForms` and
+   * dropped on the next write.
+   */
+  inventoryLastSignedInAccount: z.string().min(1).optional(),
   /** Computers this device may control. */
   pairedHosts: z.array(PairedDeviceSchema),
   /** Devices allowed to control this computer. */

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type * as path from 'node:path';
+import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import type { CanopyWorkspaceScope } from '@canopy/protocol/canopy-core';
 import {
   COWORK_WORKSPACE_FILE_ROOT_ID,
@@ -11,6 +12,7 @@ import {
   normalizeUuid,
 } from '@canopy/protocol/workspace-owner';
 import { CanopyOperationError } from '../../runtime/errors';
+import { isErrnoException } from '../w5/maintenance-guards';
 import {
   readWorkspaceIndex,
   readWorkspaceManifest,
@@ -28,6 +30,7 @@ import {
   type FilesystemRootCatalog,
   type NamedRootPath,
 } from './root-catalog';
+import { isUnreadablePathError } from './unreadable-path-error';
 
 export interface FilesystemScopeDependencies {
   dataRoot: string;
@@ -60,33 +63,80 @@ export interface FilesystemScopeCatalog extends FilesystemRootCatalog {
 
 export function filesystemScopeError(
   operation: FilesystemReadOperation,
-  reason: 'invalidState' | 'notFound' | 'revisionConflict',
+  reason:
+    | 'invalidState'
+    | 'notFound'
+    | 'revisionConflict'
+    | 'snapshotUnavailable',
+  cause?: unknown,
 ): CanopyOperationError {
-  return new CanopyOperationError({
-    kind:
-      reason === 'notFound'
-        ? 'not_found'
-        : reason === 'revisionConflict'
-          ? 'conflict'
-          : 'failed_precondition',
-    code: `worker.filesystem.${operation}.${reason}`,
-    message:
-      reason === 'revisionConflict'
-        ? 'Filesystem roots changed. Refresh the roots and retry.'
-        : reason === 'notFound'
-          ? 'The selected filesystem scope no longer exists.'
-          : 'The selected filesystem scope cannot be resolved from trusted workspace records.',
-    retry:
-      reason === 'revisionConflict'
-        ? { kind: 'after_refresh', resource: 'filesystem-roots' }
-        : { kind: 'never' },
-  });
+  // Only an allowlisted system code crosses, never its message or path.
+  const errno =
+    isErrnoException(cause) && AppErrorErrnoSchema.safeParse(cause.code).success
+      ? cause.code
+      : undefined;
+  return new CanopyOperationError(
+    {
+      kind:
+        reason === 'notFound'
+          ? 'not_found'
+          : reason === 'revisionConflict'
+            ? 'conflict'
+            : 'failed_precondition',
+      code: `worker.filesystem.${operation}.${reason}`,
+      message:
+        reason === 'revisionConflict'
+          ? 'Filesystem roots changed. Refresh the roots and retry.'
+          : reason === 'notFound'
+            ? 'The selected filesystem scope no longer exists.'
+            : reason === 'snapshotUnavailable'
+              ? 'The workspace records or roots for this filesystem scope could not be read.'
+              : 'The selected filesystem scope cannot be resolved from trusted workspace records.',
+      ...(errno !== undefined && { details: { errno } }),
+      retry:
+        reason === 'revisionConflict'
+          ? { kind: 'after_refresh', resource: 'filesystem-roots' }
+          : { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/**
+ * Whether a scope failure is a catalog the system refused to read (`EACCES`,
+ * `EIO`), not a missing or invalid one.
+ */
+export function isFilesystemSnapshotUnavailable(
+  error: unknown,
+): error is CanopyOperationError {
+  return (
+    error instanceof CanopyOperationError &&
+    error.payload.code?.startsWith('worker.filesystem.') === true &&
+    error.payload.code.endsWith('.snapshotUnavailable')
+  );
+}
+
+/**
+ * A `snapshotUnavailable` failure for an operation outside the filesystem
+ * namespace, which can't declare its code: the same failure and errno
+ * without the code.
+ */
+export function filesystemSnapshotFailure(
+  error: CanopyOperationError,
+): CanopyOperationError {
+  const { kind, message, details, retry } = error.payload;
+  return new CanopyOperationError(
+    { kind, message, ...(details !== undefined && { details }), retry },
+    error.runtimeCause,
+  );
 }
 
 async function readScopeFile(absolutePath: string): Promise<WorkspaceFileRead> {
   try {
     return { state: 'present', raw: await readFile(absolutePath, 'utf8') };
   } catch (error) {
+    // A record the system refused to read is neither absent nor malformed.
+    if (isUnreadablePathError(error)) throw error;
     return {
       state:
         typeof error === 'object' &&
@@ -96,6 +146,23 @@ async function readScopeFile(absolutePath: string): Promise<WorkspaceFileRead> {
           : 'unreadable',
     };
   }
+}
+
+/** The scope's record reader; a read the system refused is `snapshotUnavailable`. */
+function scopeFileReader(
+  dependencies: Pick<FilesystemScopeDependencies, 'readFile'>,
+  operation: FilesystemReadOperation,
+): (absolutePath: string) => Promise<WorkspaceFileRead> {
+  const read = dependencies.readFile ?? readScopeFile;
+  return async (absolutePath) => {
+    try {
+      return await read(absolutePath);
+    } catch (error) {
+      if (isUnreadablePathError(error))
+        throw filesystemScopeError(operation, 'snapshotUnavailable', error);
+      throw error;
+    }
+  };
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -182,7 +249,7 @@ async function readSelectedManifest(
     fail();
   const workspaceId = scope.workspaceId;
   if (!workspaceId) return fail();
-  const read = dependencies.readFile ?? readScopeFile;
+  const read = scopeFileReader(dependencies, operation);
   const selected = readFilesystemWorkspaceIndexEntry(
     workspaceId,
     await read(paths.join(dataRoot, 'workspaces', 'index.json')),
@@ -261,7 +328,7 @@ export async function readFilesystemScope(
   );
   if (persistedOrganizationId(config, fail) !== dependencies.organizationId)
     fail();
-  const read = dependencies.readFile ?? readScopeFile;
+  const read = scopeFileReader(dependencies, operation);
   const attachments = async (
     absolutePath: string,
   ): Promise<{ absolutePath: string; visible: boolean }> => ({

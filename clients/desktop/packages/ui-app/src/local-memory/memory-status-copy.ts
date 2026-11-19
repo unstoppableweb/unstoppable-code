@@ -2,7 +2,14 @@ import type {
   LocalMemoryRebuildOutcome,
   LocalMemoryStatus,
 } from '@canopy/app-core/local-memory';
-import { LOCAL_MEMORY_FULL_SENTENCE_REASONS } from '@canopy/protocol/local-memory';
+import {
+  LOCAL_MEMORY_FULL_SENTENCE_REASONS,
+  LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE,
+  LOCAL_MEMORY_MODEL_UNAVAILABLE_MESSAGE,
+  LOCAL_MEMORY_SYNCED_REBUILD_MESSAGE,
+  LOCAL_MEMORY_SYNCED_REFUSED_MESSAGE,
+  LOCAL_MEMORY_SYNCED_SECRET_MESSAGE,
+} from '@canopy/protocol/local-memory';
 
 const CONSOLIDATION_FAILURE_PREFIX = "Couldn't consolidate memories";
 const REBUILD_FAILURE_PREFIX = "Couldn't finish rebuilding memories";
@@ -18,6 +25,15 @@ const CONSOLIDATION_REASONS: Record<string, string> = {
   undrainable: 'a saved note is too large to consolidate',
   'too-many-runs': 'too many runs were needed',
 };
+
+/** Codes for the reasons that are full sentences, which are not telemetry. */
+const FULL_SENTENCE_CODES: ReadonlyMap<string, string> = new Map([
+  [LOCAL_MEMORY_MODEL_BLOCKED_MESSAGE, 'model-blocked'],
+  [LOCAL_MEMORY_MODEL_UNAVAILABLE_MESSAGE, 'model-unavailable'],
+  [LOCAL_MEMORY_SYNCED_REBUILD_MESSAGE, 'synced-rebuild'],
+  [LOCAL_MEMORY_SYNCED_REFUSED_MESSAGE, 'synced-refused'],
+  [LOCAL_MEMORY_SYNCED_SECRET_MESSAGE, 'synced-secret'],
+]);
 
 function reasonFragment(reason: string | null | undefined): string {
   if (reason === null || reason === undefined)
@@ -56,4 +72,18 @@ export function rebuildProblem(
   )
     return result.reason;
   return `${REBUILD_FAILURE_PREFIX}: ${reasonFragment(result.reason)}`;
+}
+
+/**
+ * A closed code for why a run failed, safe to send to telemetry. A reason can
+ * be a caught error's message, so only a known reason is named; any other
+ * becomes `other`, and a missing one `failed` as it reads in the banner.
+ */
+export function problemReasonCode(reason: string | null | undefined): string {
+  if (reason === null || reason === undefined) return 'failed';
+  const sentence = FULL_SENTENCE_CODES.get(reason);
+  if (sentence !== undefined) return sentence;
+  return Object.prototype.hasOwnProperty.call(CONSOLIDATION_REASONS, reason)
+    ? reason
+    : 'other';
 }

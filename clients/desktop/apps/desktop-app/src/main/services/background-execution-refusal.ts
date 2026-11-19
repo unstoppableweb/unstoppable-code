@@ -8,8 +8,9 @@ type RefusalReason = Extract<
 /**
  * An expected background-execution policy refusal, such as arming a watcher
  * whose delivery would be denied. Its message is fixed product copy from
- * `automation-context-copy` with at most a normalized subject name, never a
- * path or id, so it is safe to return to the model as a tool error.
+ * `automation-context-copy`. Missing selections use a generic capability label;
+ * resolved resources may use their normalized display name. Messages never
+ * include stored reference IDs, paths or configuration contents.
  */
 export class BackgroundExecutionRefusedError extends Error {
   constructor(

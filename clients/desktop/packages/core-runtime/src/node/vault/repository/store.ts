@@ -6,6 +6,11 @@ import type {
   PlatformSecureFileServices,
   PlatformServices,
 } from '../../../platform/platform-services';
+import type {
+  VaultIoClass,
+  VaultMutationFailure,
+  VaultSecretRef,
+} from '../../../vault/contracts';
 import { readSealedBox } from './aes-gcm';
 import { isLiveMigrationIntent } from './migration-intent';
 import { VAULT_RECORD_FORMAT } from './record-format';
@@ -66,6 +71,8 @@ export type VaultStoreWriteStep =
 export interface VaultStoreWriteFailure {
   readonly kind: 'not_written' | 'uncertain';
   readonly step: VaultStoreWriteStep;
+  /** Set when SQLite threw at `write`; diagnostic only. */
+  readonly io?: VaultIoClass;
 }
 
 export type VaultStoreWrite<T> =
@@ -75,8 +82,9 @@ export type VaultStoreWrite<T> =
 function writeFailure(
   kind: VaultStoreWriteFailure['kind'],
   step: VaultStoreWriteStep,
+  io?: VaultIoClass,
 ): VaultStoreWriteFailure {
-  return Object.freeze({ kind, step });
+  return Object.freeze(io ? { kind, step, io } : { kind, step });
 }
 
 /** Test seam only; production passes none. A hook throws to inject its fault. */
@@ -177,6 +185,50 @@ function errorCode(error: unknown): unknown {
     : undefined;
 }
 
+const ERRNO_IO_CLASSES: ReadonlyMap<string, VaultIoClass> = new Map([
+  ['ENOSPC', 'no_space'],
+  ['EDQUOT', 'no_space'],
+  ['EFBIG', 'no_space'],
+  ['EACCES', 'access_denied'],
+  ['EPERM', 'not_permitted'],
+  ['EROFS', 'read_only'],
+  ['EIO', 'io'],
+  ['EBUSY', 'busy'],
+]);
+// SQLite primary result codes (the low byte of an extended code).
+const SQLITE_IO_CLASSES: ReadonlyMap<number, VaultIoClass> = new Map([
+  [3, 'not_permitted'], // SQLITE_PERM
+  [5, 'busy'], // SQLITE_BUSY
+  [6, 'busy'], // SQLITE_LOCKED
+  [8, 'read_only'], // SQLITE_READONLY
+  [10, 'io'], // SQLITE_IOERR
+  [13, 'no_space'], // SQLITE_FULL
+  [23, 'access_denied'], // SQLITE_AUTH
+]);
+
+/** Closed class of a thrown filesystem or SQLite error; drops its message. */
+export function vaultIoClass(error: unknown): VaultIoClass {
+  if (typeof error !== 'object' || error === null) return 'other';
+  const code: unknown = Reflect.get(error, 'code');
+  const errno =
+    typeof code === 'string' ? ERRNO_IO_CLASSES.get(code) : undefined;
+  if (errno) return errno;
+  const errcode: unknown = Reflect.get(error, 'errcode');
+  if (typeof errcode === 'number' && Number.isInteger(errcode))
+    return SQLITE_IO_CLASSES.get(errcode & 0xff) ?? 'other';
+  return 'other';
+}
+
+/** A failed write as an `unavailable` outcome; only a thrown call has a class. */
+export function vaultStoreUnavailableOutcome(
+  ref: VaultSecretRef,
+  written: VaultStoreWriteFailure,
+): Extract<VaultMutationFailure, { readonly kind: 'unavailable' }> {
+  return written.io && written.step === 'write'
+    ? { kind: 'unavailable', ref, step: written.step, io: written.io }
+    : { kind: 'unavailable', ref };
+}
+
 async function createExclusive(create: () => Promise<unknown>): Promise<void> {
   try {
     await create();
@@ -232,16 +284,16 @@ async function prepareFolder(
 ): Promise<VaultStoreUnavailable | null> {
   try {
     await createExclusive(() => mkdir(folder, { mode: 0o700 }));
-  } catch {
-    return vaultStoreUnavailable('folder');
+  } catch (error) {
+    return vaultStoreUnavailable('folder', vaultIoClass(error));
   }
   if (!(await isPrivate(secureFiles, folder, 'directory')))
     return vaultStoreUnavailable('permissions');
   let orphaned: boolean;
   try {
     orphaned = await isOrphanedJournal(databasePath);
-  } catch {
-    return vaultStoreUnavailable('folder');
+  } catch (error) {
+    return vaultStoreUnavailable('folder', vaultIoClass(error));
   }
   if (orphaned) return vaultStoreUnavailable('init_state');
   try {
@@ -249,8 +301,8 @@ async function prepareFolder(
       const handle = await open(databasePath, 'wx', 0o600);
       await handle.close();
     });
-  } catch {
-    return vaultStoreUnavailable('folder');
+  } catch (error) {
+    return vaultStoreUnavailable('folder', vaultIoClass(error));
   }
   if (!(await isPrivate(secureFiles, databasePath, 'file')))
     return vaultStoreUnavailable('permissions');
@@ -260,8 +312,8 @@ async function prepareFolder(
     // never sync a folder. Windows flushes with CAN-5151 D1's label.
     await secureFiles.syncDirectory(dirname(folder));
     await secureFiles.syncDirectory(folder);
-  } catch {
-    return vaultStoreUnavailable('folder');
+  } catch (error) {
+    return vaultStoreUnavailable('folder', vaultIoClass(error));
   }
   return null;
 }
@@ -338,14 +390,17 @@ function createVaultStore(
     return clock().toISOString();
   }
 
-  function rollback(step: VaultStoreWriteStep): VaultStoreWriteFailure {
+  function rollback(
+    step: VaultStoreWriteStep,
+    io?: VaultIoClass,
+  ): VaultStoreWriteFailure {
     try {
       if (db.isTransaction) db.exec('ROLLBACK');
     } catch {
       // Nothing committed, but the connection's state is now unknown.
       state = 'faulted';
     }
-    return writeFailure('not_written', step);
+    return writeFailure('not_written', step, io);
   }
 
   function write<T>(run: () => T | typeof REFUSED): VaultStoreWrite<T> {
@@ -358,8 +413,8 @@ function createVaultStore(
       faults.beforeWrite?.();
       value = run();
       faults.beforeSync?.();
-    } catch {
-      return rollback('write');
+    } catch (error) {
+      return rollback('write', vaultIoClass(error));
     }
     if (value === REFUSED) return rollback('precondition');
     try {

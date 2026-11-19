@@ -34,7 +34,7 @@ export function RemoteControlGuestCta({
     <Surface
       variant="group"
       padding="compact"
-      data-testid="canopy-portal-guest-cta"
+      data-testid="remote-control-guest-cta"
     >
       <div
         className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between ${className}`}
@@ -47,7 +47,7 @@ export function RemoteControlGuestCta({
           variant="primary"
           size="compact"
           onClick={onCreateAccount}
-          data-testid="canopy-portal-guest-cta-button"
+          data-testid="remote-control-guest-cta-button"
         >
           Sign in
         </Button>

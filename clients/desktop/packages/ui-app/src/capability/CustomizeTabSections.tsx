@@ -27,7 +27,9 @@ import {
   Button,
   InstalledItemStatusUnavailable,
   McpRowHealth,
+  McpRowCheckFeedback,
   McpSignInPendingActions,
+  McpSignInPendingLine,
   McpSignInPendingStatus,
   Notice,
   NoticeButton,
@@ -40,6 +42,9 @@ import {
   UninstallConfirmDialog,
   type CustomizeRowMenuItem,
   type CustomizeRowSplitAction,
+  type CustomizeRowFailure,
+  type CustomizeRowSignIn,
+  type CustomizeRowUpdate,
   type PluginsEntryStatusBinding,
   type McpServerLogoProps,
   EmptyStateRow,
@@ -78,6 +83,7 @@ import {
   type UnifiedPluginEntry,
   type InstalledEntryStatusState,
   customizeDiscoveryFilterCount,
+  customizeDiscoveryFiltersForTab,
   customizeDiscoverySourceOptions,
   type CustomizeDefaultHarness,
   DEFAULT_CUSTOMIZE_DISCOVERY_FILTERS,
@@ -133,7 +139,13 @@ export interface CustomizeInstalledUnavailableCopy {
  * goes through its details instead of picking one here.
  */
 export interface CustomizeMcpRowActions {
-  readonly test: (entry: UnifiedPluginEntry) => HostAction<() => Promise<void>>;
+  /**
+   * Resolves `'opened'` when it only opened the row's details (several
+   * targets to pick from) instead of testing a connection.
+   */
+  readonly test: (
+    entry: UnifiedPluginEntry,
+  ) => HostAction<() => Promise<void | 'opened'>>;
   readonly connect: (
     entry: UnifiedPluginEntry,
   ) => HostAction<() => void | Promise<void>>;
@@ -166,6 +178,9 @@ interface McpRowPresentation {
   readonly connectRun?: () => void;
   readonly cancelSignIn?: () => void;
 }
+
+/** How long a passed Test connection reads "Connected" on the row. */
+const MCP_TEST_CONNECTED_MS = 3000;
 
 const MCP_ROW_ACTION_FAILED = "Couldn't finish that. Try again.";
 
@@ -414,7 +429,7 @@ export function CustomizeTabSections(
     onShareEntry,
     McpServerLogoComponent,
     onExpandBrowseGroup,
-    browseActions,
+    browseActions: hostBrowseActions,
     installedActions,
     onCreateCollection,
     onEditCollection,
@@ -463,10 +478,13 @@ export function CustomizeTabSections(
     controlledInstalledExpanded === true ||
     (expansion.scope === expansionScope && expansion.expanded);
 
-  // New Customize (CAN-6809): its filter menu narrows the list, and its
-  // Status filter replaces the Installed status filter, which then applies
-  // nowhere. Off, both read as before.
+  // New Customize's funnel and pills narrow the list; its item-status pill
+  // uses the host's Installed status filter. Off, both read as before.
   const discoveryEnabled = useCustomizeDiscoveryEnabled();
+  // New Customize keeps the Workflows filters in the one filter menu and
+  // drops the separate refresh, so the old filter row never shows (Sergii's
+  // QA). Flag off keeps it.
+  const browseActions = discoveryEnabled ? undefined : hostBrowseActions;
   const { filters: currentDiscoveryFilters, setFilters: setDiscoveryFilters } =
     useCustomizeDiscoveryFilters();
   const discoveryFilters = discoveryEnabled
@@ -501,13 +519,17 @@ export function CustomizeTabSections(
     ),
     contextKey,
   );
-  const statusFilter = discoveryEnabled
-    ? undefined
-    : effectiveInstalledStatusFilter(
-        tab,
-        installedStatusFilter,
-        supportedUpdateKinds,
-      );
+  const effectiveStatusFilter = effectiveInstalledStatusFilter(
+    tab,
+    installedStatusFilter,
+    supportedUpdateKinds,
+  );
+  // New Customize's Status pill sets Active, Available or Disabled through
+  // this same filter; Update available has no pill, so a stored one is ignored.
+  const statusFilter =
+    discoveryEnabled && effectiveStatusFilter === 'update-available'
+      ? undefined
+      : effectiveStatusFilter;
   // Applying a status filter expands Installed: a filter that only changed a
   // hidden count would not be discoverable (CAN-4838).
   const [appliedFilter, setAppliedFilter] = useState(statusFilter);
@@ -677,11 +699,73 @@ export function CustomizeTabSections(
     [trackPick, onConnectEntry],
   );
 
+  // New Customize (Sergii's QA): a failed status change shows on its own
+  // tile, never in a page banner. Keyed by row id; a success clears it.
+  // Failures belong to the host scope they happened in (the Portal's desktop
+  // and project): a scope change drops them, and a late outcome or a Retry
+  // from an older scope does nothing.
+  const [statusFailures, setStatusFailures] = useState<
+    ReadonlyMap<string, CustomizeRowFailure>
+  >(() => new Map());
+  const statusScope =
+    entryStatus?.statusScope ?? entryStatus?.removalScope ?? '';
+  const statusScopeRef = useRef(statusScope);
+  statusScopeRef.current = statusScope;
+  useEffect(() => {
+    setStatusFailures((current) => (current.size === 0 ? current : new Map()));
+  }, [statusScope]);
+  const recordStatusOutcome = useCallback(
+    (
+      entryId: string,
+      scope: string,
+      outcome: Parameters<
+        NonNullable<Parameters<typeof customizeRowAction>[0]['onStatusOutcome']>
+      >[0],
+    ): void => {
+      if (scope !== statusScopeRef.current) return;
+      setStatusFailures((current) => {
+        if (outcome.ok && !current.has(entryId)) return current;
+        const next = new Map(current);
+        if (outcome.ok) next.delete(entryId);
+        else
+          next.set(entryId, {
+            label:
+              outcome.next === 'disabled'
+                ? 'Couldn’t turn off'
+                : 'Couldn’t turn on',
+            reason: outcome.message,
+            tone: 'attention',
+            retry: (): void => {
+              if (scope !== statusScopeRef.current) return;
+              setStatusFailures((latest) => {
+                const without = new Map(latest);
+                without.delete(entryId);
+                return without;
+              });
+              outcome.retry();
+            },
+          });
+        return next;
+      });
+    },
+    [],
+  );
+
   // Refs guard against double submission before React re-renders.
   const inFlight = useRef(new Set<string>());
   const batchRunningRef = useRef(false);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [batchRunning, setBatchRunning] = useState(false);
+  // Sections the person folded, by id; the host keeps it for the visit.
+  const [foldedSections, setFoldedSections] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const toggleFoldedSection = (id: string): void =>
+    setFoldedSections((current) => {
+      const next = new Set(current);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   const [removal, setRemoval] = useState<PendingRemoval | null>(null);
   // A pending confirmation belongs to the host scope it was opened in. When
   // the host withdraws removal (web consent turned off) or moves to another
@@ -733,32 +817,41 @@ export function CustomizeTabSections(
   );
 
   const batchSnapshot = model.batchableUpdates;
-  const updateAll = useCallback(async (): Promise<void> => {
-    if (batchRunningRef.current || inFlight.current.size > 0 || !onUpdateEntry)
-      return;
-    batchRunningRef.current = true;
-    setBatchRunning(true);
-    const failures: CustomizeUpdateFailure[] = [];
-    try {
-      // Sequential, continuing past individual failures.
-      for (const entry of batchSnapshot) {
-        if (inFlight.current.has(entry.id)) continue;
-        const failure = await runUpdate(entry);
-        if (failure) failures.push(failure);
+  const batchableIds = useMemo(
+    () => new Set(model.batchableUpdates.map((entry) => entry.id)),
+    [model.batchableUpdates],
+  );
+  const runBatch = useCallback(
+    async (batch: readonly UnifiedPluginEntry[]): Promise<void> => {
+      if (
+        batchRunningRef.current ||
+        inFlight.current.size > 0 ||
+        !onUpdateEntry
+      )
+        return;
+      batchRunningRef.current = true;
+      setBatchRunning(true);
+      const failures: CustomizeUpdateFailure[] = [];
+      try {
+        // Sequential, continuing past individual failures.
+        for (const entry of batch) {
+          if (inFlight.current.has(entry.id)) continue;
+          const failure = await runUpdate(entry);
+          if (failure) failures.push(failure);
+        }
+      } finally {
+        batchRunningRef.current = false;
+        setBatchRunning(false);
       }
-    } finally {
-      batchRunningRef.current = false;
-      setBatchRunning(false);
-    }
-    if (failures.length > 0) onUpdateFailures?.(failures);
-    onUpdatesSettled?.();
-  }, [
-    batchSnapshot,
-    onUpdateEntry,
-    onUpdateFailures,
-    onUpdatesSettled,
-    runUpdate,
-  ]);
+      if (failures.length > 0) onUpdateFailures?.(failures);
+      onUpdatesSettled?.();
+    },
+    [onUpdateEntry, onUpdateFailures, onUpdatesSettled, runUpdate],
+  );
+  const updateAll = useCallback(
+    (): Promise<void> => runBatch(batchSnapshot),
+    [batchSnapshot, runBatch],
+  );
 
   // One busy set per workflow row covers its switch, Run, Run now and
   // Delete…, so a second activation while one is in flight is a no-op.
@@ -892,28 +985,71 @@ export function CustomizeTabSections(
   const [mcpRowBusyIds, setMcpRowBusyIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
+  /** Runs a row action; true only when it finished without an error. */
   const runMcpRowAction = useCallback(
     async (
       entry: UnifiedPluginEntry,
-      action: () => void | Promise<void>,
-    ): Promise<void> => {
-      if (mcpRowInFlight.current.has(entry.id)) return;
+      action: () => unknown,
+    ): Promise<boolean> => {
+      if (mcpRowInFlight.current.has(entry.id)) return false;
       mcpRowInFlight.current.add(entry.id);
       setMcpRowBusyIds(new Set(mcpRowInFlight.current));
       try {
         await action();
+        return true;
       } catch (error) {
         mcpRowActions?.onError?.(
           error instanceof Error && error.message !== ''
             ? error.message
             : MCP_ROW_ACTION_FAILED,
         );
+        return false;
       } finally {
         mcpRowInFlight.current.delete(entry.id);
         setMcpRowBusyIds(new Set(mcpRowInFlight.current));
       }
     },
     [mcpRowActions],
+  );
+
+  // New Customize (Sergii's QA): a Test connection the person starts shows
+  // "Checking…" on the row, then "Connected" for a few seconds on success.
+  // Background checks never touch the row.
+  const [mcpUserTests, setMcpUserTests] = useState<
+    ReadonlyMap<string, 'checking' | 'done'>
+  >(new Map());
+  const runUserMcpTest = useCallback(
+    async (
+      entry: UnifiedPluginEntry,
+      run: () => Promise<void | 'opened'>,
+    ): Promise<void> => {
+      setMcpUserTests((current) => new Map(current).set(entry.id, 'checking'));
+      let opened = false;
+      const ok = await runMcpRowAction(entry, async () => {
+        opened = (await run()) === 'opened';
+      });
+      // "Connected" only follows a test that ran and finished; a failure
+      // shows the row's error state, and opening details tests nothing.
+      if (!ok || opened) {
+        setMcpUserTests((current) => {
+          if (!current.has(entry.id)) return current;
+          const next = new Map(current);
+          next.delete(entry.id);
+          return next;
+        });
+        return;
+      }
+      setMcpUserTests((current) => new Map(current).set(entry.id, 'done'));
+      window.setTimeout(() => {
+        setMcpUserTests((current) => {
+          if (current.get(entry.id) !== 'done') return current;
+          const next = new Map(current);
+          next.delete(entry.id);
+          return next;
+        });
+      }, MCP_TEST_CONNECTED_MS);
+    },
+    [runMcpRowAction],
   );
 
   /** The plugin entry an MCP row came with, when the catalog still lists it. */
@@ -1009,7 +1145,9 @@ export function CustomizeTabSections(
             disabled: !test.available || busy,
             disabledReason: test.available ? undefined : test.reason,
             onSelect: () => {
-              if (test.available) void runMcpRowAction(entry, test.run);
+              if (!test.available) return;
+              if (discoveryEnabled) void runUserMcpTest(entry, test.run);
+              else void runMcpRowAction(entry, test.run);
             },
           },
           {
@@ -1220,6 +1358,8 @@ export function CustomizeTabSections(
       mcpRowActions,
       mcpRowBusyIds,
       runMcpRowAction,
+      runUserMcpTest,
+      mcpUserTests,
       workflowActions,
       onEditCollection,
       updateIds,
@@ -1404,13 +1544,28 @@ export function CustomizeTabSections(
               const test = mcpRowActions.test(entry);
               const connectAction = mcpRowActions.connect(entry);
               const pending = mcpRowActions.pending?.(entry);
+              const disabled =
+                entry.aggregateConnection === undefined &&
+                dimmingState?.kind === 'ready' &&
+                dimmingState.item.status === 'disabled';
               const model = mcpRowHealthModel(mcpConnection, {
-                disabled:
-                  entry.aggregateConnection === undefined &&
-                  dimmingState?.kind === 'ready' &&
-                  dimmingState.item.status === 'disabled',
+                disabled,
                 canTest: test.available,
               });
+              // New Customize: a disabled item shows no health line; its
+              // Disabled state says enough (Sergii's QA, item 1).
+              // New Customize's line 2 names a connection only when the person
+              // must act or something is wrong (Sergii's QA): sign-in and
+              // Couldn't connect. Not checked yet, Checking and Connected show
+              // the publisher; the detail page keeps the full health.
+              const userTest = discoveryEnabled
+                ? mcpUserTests.get(entry.id)
+                : undefined;
+              const hideHealth =
+                discoveryEnabled &&
+                (disabled ||
+                  mcpConnection.disabled === true ||
+                  (model.tone !== 'attention' && model.tone !== 'destructive'));
               const busy = mcpRowBusyIds.has(entry.id) || pending !== undefined;
               const severalConnections = mcpHasMultipleTargets(entry);
               const signsIn =
@@ -1464,32 +1619,58 @@ export function CustomizeTabSections(
                   signsIn && !severalConnections && !connectAction.available
                     ? connectAction.reason
                     : undefined,
-                node: pending?.authorizationUrl ? (
-                  <McpSignInPendingStatus
-                    variant="row"
-                    serviceName={entry.name}
-                    dataTestId={`customize-row-health-${entry.id}`}
-                  />
-                ) : (
-                  <McpRowHealth
-                    name={entry.name}
-                    model={
-                      busy
-                        ? { ...model, text: 'Checking…', tone: 'neutral' }
-                        : model
-                    }
-                    testId={`customize-row-health-${entry.id}`}
-                    checkedLabel={checkedLabel}
-                  />
-                ),
+                node:
+                  userTest === 'checking' ? (
+                    <McpRowCheckFeedback
+                      kind="checking"
+                      testId={`customize-row-health-${entry.id}`}
+                    />
+                  ) : userTest === 'done' && model.tone === 'positive' ? (
+                    <McpRowCheckFeedback
+                      kind="connected"
+                      testId={`customize-row-health-${entry.id}`}
+                    />
+                  ) : hideHealth &&
+                    !(
+                      discoveryEnabled && pending?.authorizationUrl
+                    ) ? null : pending?.authorizationUrl ? (
+                    discoveryEnabled ? (
+                      // One line: spinner, "Signing in…" link and cancel.
+                      <McpSignInPendingLine
+                        serviceName={entry.name}
+                        authorizationUrl={pending.authorizationUrl}
+                        onCancel={pending.onCancel}
+                        dataTestId={`customize-row-sign-in-${entry.id}`}
+                      />
+                    ) : (
+                      <McpSignInPendingStatus
+                        variant="row"
+                        serviceName={entry.name}
+                        dataTestId={`customize-row-health-${entry.id}`}
+                      />
+                    )
+                  ) : (
+                    <McpRowHealth
+                      name={entry.name}
+                      model={
+                        busy && !discoveryEnabled
+                          ? { ...model, text: 'Checking…', tone: 'neutral' }
+                          : model
+                      }
+                      testId={`customize-row-health-${entry.id}`}
+                      checkedLabel={checkedLabel}
+                    />
+                  ),
                 inlineAction: pending?.authorizationUrl ? (
-                  <McpSignInPendingActions
-                    variant="compact"
-                    serviceName={entry.name}
-                    authorizationUrl={pending.authorizationUrl}
-                    onCancel={pending.onCancel}
-                    dataTestId={`customize-row-sign-in-${entry.id}`}
-                  />
+                  discoveryEnabled ? null : (
+                    <McpSignInPendingActions
+                      variant="compact"
+                      serviceName={entry.name}
+                      authorizationUrl={pending.authorizationUrl}
+                      onCancel={pending.onCancel}
+                      dataTestId={`customize-row-sign-in-${entry.id}`}
+                    />
+                  )
                 ) : (
                   // New Customize's split control runs it (CAN-6813).
                   !discoveryEnabled &&
@@ -1579,20 +1760,49 @@ export function CustomizeTabSections(
       const mcpMenu = mcpConnection ? (mcpHealth ?? {}) : undefined;
       // New Customize (CAN-6813): one split control for the row's state, its
       // caret holding the row's existing actions.
+      // New Customize (Sergii's QA, items 4 and 5): sign-in and updates are
+      // said on the row's own lines, never in its split control.
+      const updateTarget =
+        section.id === 'browse'
+          ? installed &&
+            (updateEntry ??
+              (entry.kind === 'collection' && entry.updateAvailable
+                ? entry
+                : undefined))
+          : section.id === 'installed' && updateIds.has(entry.id)
+            ? entry
+            : undefined;
+      const rowUpdate: CustomizeRowUpdate | undefined = !discoveryEnabled
+        ? undefined
+        : updateTarget
+          ? {
+              busy: batchRunning || busyIds.has(updateTarget.id),
+              ...(onUpdateEntry &&
+              updateDisabledReason?.(updateTarget) === undefined
+                ? { run: (): void => void updateOne(updateTarget) }
+                : {}),
+            }
+          : section.id === 'installed' &&
+              entryHasUpdate(entry, supportedUpdateKinds)
+            ? {}
+            : undefined;
+      const mcpSignIn = mcpHealth?.signIn;
+      const rowSignIn: CustomizeRowSignIn | undefined = !discoveryEnabled
+        ? undefined
+        : mcpSignIn
+          ? {
+              accessibleName: `Sign in to ${entry.name}`,
+              busy: mcpSignIn.busy,
+              run: mcpSignIn.run,
+            }
+          : !mcpHealth && connect
+            ? {
+                accessibleName: `Sign in to ${signIn?.name ?? entry.name}`,
+                run: connect,
+              }
+            : undefined;
       const splitAction = ((): CustomizeRowSplitAction | undefined => {
         if (!discoveryEnabled) return undefined;
-        const updateTarget =
-          section.id === 'browse'
-            ? installed &&
-              (updateEntry ??
-                (entry.kind === 'collection' && entry.updateAvailable
-                  ? entry
-                  : undefined))
-            : section.id === 'installed' && updateIds.has(entry.id)
-              ? entry
-              : undefined;
-        const mcpSignIn = mcpHealth?.signIn;
-        const signInName = signIn?.name ?? entry.name;
         return customizeRowAction({
           entry,
           workflow: workflowControls(entry),
@@ -1618,28 +1828,6 @@ export function CustomizeTabSections(
               : undefined,
           add: onAddEntry ? (addTrackedEntry ?? onAddEntry) : undefined,
           installed: installed || section.id !== 'browse',
-          signIn: mcpSignIn
-            ? {
-                accessibleName: `Sign in to ${entry.name}`,
-                busy: mcpSignIn.busy,
-                run: mcpSignIn.run,
-              }
-            : !mcpHealth && connect
-              ? {
-                  accessibleName: `Sign in to ${signInName}`,
-                  busy: false,
-                  run: connect,
-                }
-              : undefined,
-          update:
-            updateTarget &&
-            onUpdateEntry &&
-            updateDisabledReason?.(updateTarget) === undefined
-              ? {
-                  busy: batchRunning || busyIds.has(updateTarget.id),
-                  run: (): void => void updateOne(updateTarget),
-                }
-              : undefined,
           statuses: entryStatus
             ? statusListings.flatMap((listing) => {
                 const state =
@@ -1660,6 +1848,12 @@ export function CustomizeTabSections(
           pendingKeys: entryStatus?.pendingKeys ?? new Set(),
           onSetStatus: entryStatus?.onSetStatus,
           onError: entryStatus?.onError,
+          ...(discoveryEnabled
+            ? {
+                onStatusOutcome: (outcome): void =>
+                  recordStatusOutcome(entry.id, statusScope, outcome),
+              }
+            : {}),
         });
       })();
       const row = (unshareItem?: CustomizeRowMenuItem): ReactNode => (
@@ -1773,12 +1967,9 @@ export function CustomizeTabSections(
           discovery={discoveryEnabled}
           onRetryHarnessInstall={onRetryHarnessInstall}
           splitAction={splitAction}
-          // New Customize has no Updates section (CAN-6810).
-          updateBadge={
-            discoveryEnabled &&
-            section.id === 'installed' &&
-            entryHasUpdate(entry, supportedUpdateKinds)
-          }
+          signIn={rowSignIn}
+          update={rowUpdate}
+          failure={discoveryEnabled ? statusFailures.get(entry.id) : undefined}
           actions={
             section.id === 'browse' &&
             installed &&
@@ -1816,6 +2007,8 @@ export function CustomizeTabSections(
       mcpRowActions,
       mcpRowBusyIds,
       runMcpRowAction,
+      runUserMcpTest,
+      mcpUserTests,
       hrefForEntry,
       menuItems,
       onAddEntry,
@@ -1830,6 +2023,9 @@ export function CustomizeTabSections(
       renderUpdateAction,
       renderSharedActions,
       discoveryEnabled,
+      statusFailures,
+      recordStatusOutcome,
+      statusScope,
       supportedUpdateKinds,
       model.skillMatches,
     ],
@@ -2004,7 +2200,9 @@ export function CustomizeTabSections(
   if (model.sections.length === 0) {
     const discoveryFiltered =
       discoveryFilters !== undefined &&
-      customizeDiscoveryFilterCount(discoveryFilters) > 0;
+      customizeDiscoveryFilterCount(
+        customizeDiscoveryFiltersForTab(discoveryFilters, tab),
+      ) > 0;
     if (sharedWithMeOnly && !searchActive && !discoveryFiltered)
       return (
         <div data-testid="customize-sections" data-result-count={0}>
@@ -2087,6 +2285,18 @@ export function CustomizeTabSections(
         <CustomizeSection
           key={section.id}
           domId={section.domId}
+          // New Customize lists can run long, so Installed and Browse fold.
+          // A search shows everything, so nothing hides a result.
+          collapsible={
+            discoveryEnabled &&
+            !searchActive &&
+            (section.id === 'installed' || section.id === 'browse')
+              ? {
+                  collapsed: foldedSections.has(section.id),
+                  onToggle: (): void => toggleFoldedSection(section.id),
+                }
+              : undefined
+          }
           title={section.title}
           count={
             // An unread inventory is unknown, not zero.
@@ -2096,12 +2306,6 @@ export function CustomizeTabSections(
               : section.count
           }
           footnote={tab === 'collection' ? section.footnote : undefined}
-          // New Customize's section hints (CAN-6810, Sergii's design).
-          description={
-            discoveryEnabled && section.id === 'installed'
-              ? 'Needs attention first, then recently used.'
-              : undefined
-          }
           actions={
             section.id === 'updates' && model.showUpdateAll && onUpdateEntry ? (
               <Button
@@ -2116,6 +2320,22 @@ export function CustomizeTabSections(
               </Button>
             ) : section.id === 'installed' ? (
               <div className="flex items-center gap-2">
+                {discoveryEnabled && (
+                  <CustomizeUpdateAllLink
+                    // Only updates that finish when they apply (skills) run
+                    // in a batch; an automation's opens its wizard instead.
+                    entries={section.entries.filter((entry) =>
+                      batchableIds.has(entry.id),
+                    )}
+                    updateIds={updateIds}
+                    canUpdate={(entry) =>
+                      onUpdateEntry !== undefined &&
+                      updateDisabledReason?.(entry) === undefined
+                    }
+                    busy={batchRunning || busyIds.size > 0}
+                    onUpdateAll={(entries) => void runBatch(entries)}
+                  />
+                )}
                 {installedActions}
                 {tab === 'collection' && onCreateCollection && (
                   <Button
@@ -2128,16 +2348,6 @@ export function CustomizeTabSections(
                     Add collection
                   </Button>
                 )}
-              </div>
-            ) : section.id === 'browse' && discoveryEnabled ? (
-              <div className="flex items-center gap-2">
-                {tab === 'workflow' && browseActions}
-                <span
-                  data-testid="customize-browse-order"
-                  className="text-xs fg-tertiary"
-                >
-                  Sorted by relevance
-                </span>
               </div>
             ) : section.id === 'browse' && tab === 'workflow' ? (
               browseActions
@@ -2188,5 +2398,42 @@ export function CustomizeTabSections(
       )}
       {renderRemovalDialog()}
     </Stack>
+  );
+}
+
+/**
+ * New Customize's bulk update (Sergii's QA, item 5): a text link on the
+ * Installed heading, "Update all (N)", shown only while N rows can update
+ * now. It reuses each row's existing update.
+ */
+function CustomizeUpdateAllLink({
+  entries,
+  updateIds,
+  canUpdate,
+  busy,
+  onUpdateAll,
+}: {
+  readonly entries: readonly UnifiedPluginEntry[];
+  readonly updateIds: ReadonlySet<string>;
+  readonly canUpdate: (entry: UnifiedPluginEntry) => boolean;
+  readonly busy: boolean;
+  readonly onUpdateAll: (entries: readonly UnifiedPluginEntry[]) => void;
+}): JSX.Element | null {
+  const updatable = entries.filter(
+    (entry) => updateIds.has(entry.id) && canUpdate(entry),
+  );
+  if (updatable.length === 0) return null;
+  return (
+    <span className="text-xs">
+      <Button
+        variant="link"
+        data-testid="customize-update-all"
+        disabled={busy}
+        aria-busy={busy || undefined}
+        onClick={() => onUpdateAll(updatable)}
+      >
+        {busy ? 'Updating…' : `Update all (${updatable.length})`}
+      </Button>
+    </span>
   );
 }

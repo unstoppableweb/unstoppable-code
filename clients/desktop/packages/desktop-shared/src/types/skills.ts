@@ -17,6 +17,7 @@ import type { PublisherSkillSummary } from '@canopy/protocol';
 
 import type {
   IPCResult,
+  IPCResultWithAppError,
   PipelinePackageAnalysisSummary,
   PipelinePackageInvocationDismissal,
   PipelinePackageReadiness,
@@ -111,6 +112,12 @@ export interface CreateSharedSkillRequest {
    * it, so a file edited after the check never uploads (CAN-6176).
    */
   expectedSourceSha256?: string;
+  /**
+   * Who the person agreed would see the copy (CAN-7037). The cloud refuses
+   * (409 `audience_changed`) to return or relink an identical skill the
+   * account already has that reaches anyone else.
+   */
+  expectedAudience?: 'private' | 'public_link' | 'team' | 'organization';
 }
 
 /**
@@ -332,9 +339,15 @@ export interface SkillsAPI {
   fetchAvailable(
     source: string,
   ): Promise<IPCResult<FetchAvailableSkillsResponse>>;
-  installSkills(source: string, skillNames: string[]): Promise<IPCResult<void>>;
+  installSkills(
+    source: string,
+    skillNames: string[],
+  ): Promise<IPCResultWithAppError<void>>;
   removeSkill(sourceId: string, skillName: string): Promise<IPCResult<void>>;
-  updateSkill(sourceId: string, skillName: string): Promise<IPCResult<void>>;
+  updateSkill(
+    sourceId: string,
+    skillName: string,
+  ): Promise<IPCResultWithAppError<void>>;
   checkUpdates(): Promise<IPCResult<Record<string, boolean>>>;
   onUpdateProgress(
     callback: (progress: SkillUpdateProgress) => void,
@@ -356,7 +369,7 @@ export interface SkillsAPI {
   ): Promise<IPCResult<SkillFileContentResponse>>;
   saveCustomSkill(
     payload: SaveCustomSkillRequest,
-  ): Promise<IPCResult<{ name: string }>>;
+  ): Promise<IPCResultWithAppError<{ name: string }>>;
 
   // -------------------------------------------------------------------------
   // Raw SKILL.md helpers used by the share/import flow.

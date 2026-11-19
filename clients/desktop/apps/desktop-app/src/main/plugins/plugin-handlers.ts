@@ -3,6 +3,8 @@ import {
   withShareStage,
 } from '../sharing/share-operation-result';
 import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
+import { pluginCompanionsFromCatalog } from './plugin-companions';
+import { isCustomizeDiscoveryEnabledInMain } from '../lib/customize-discovery-enabled';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   isCuratedPluginMarketplaceId,
@@ -43,10 +45,13 @@ import {
   harnessInstallItemKey,
   isItemInstallHarness,
   parseHarnessInstallItemRef,
+  parseItemHarnessCompanions,
   parsePluginStandInCandidate,
+  pluginNeedsInstall,
   type HarnessCompatibilityHarness,
   type HarnessInstallItemRef,
   type InstallItemForHarnessesRequest,
+  type ItemHarnessCompanion,
   type ItemHarnessInstalls,
   type MarketplaceInfo,
   type PluginInfo,
@@ -54,6 +59,7 @@ import {
 } from '@canopy/protocol/plugins';
 import {
   installItemForHarnesses,
+  itemUninstallGeneration,
   retryItemHarnessInstall,
   withPluginHarnessInstalls,
 } from './harness-installs';
@@ -61,7 +67,16 @@ import {
   itemHarnessInstallDeps,
   itemHarnessInstallStore,
   resyncHarnessInstallsAfterUpdate,
+  beginCompanionInstall,
+  companionInstallInFlight,
+  companionRemovalPending,
+  directPluginAddGeneration,
+  endCompanionInstall,
+  noteCompanionClaim,
+  releasePluginCompanionLinks,
+  snapshotCompanionOwnership,
   servedPluginHarnessInstalls,
+  uninstallItemCompanions,
 } from './harness-install-runtime';
 import * as service from './plugin-service';
 import { installPluginForPrincipal } from './remote-install-source-gate';
@@ -187,6 +202,12 @@ export async function installBuiltInPluginForCaller(
     'plugins:install-built-in-plugin',
     () => service.installBuiltInPlugin(request, progress),
   );
+  if (result.success)
+    await releasePluginCompanionLinks({
+      kind: 'plugin',
+      marketplaceId: request.marketplaceId,
+      pluginName: request.pluginName,
+    });
   if (result.success) {
     reportCuratedPluginInstallBestEffort(
       request.marketplaceId,
@@ -196,15 +217,27 @@ export async function installBuiltInPluginForCaller(
   return result;
 }
 
-export async function installPluginForCaller(request: {
-  marketplaceId: string;
-  pluginName: string;
-  sourceUrl: string;
-  remote: boolean;
-}): Promise<Awaited<ReturnType<typeof service.installPlugin>>> {
+export async function installPluginForCaller(
+  request: {
+    marketplaceId: string;
+    pluginName: string;
+    sourceUrl: string;
+    remote: boolean;
+  },
+  /** A native copy another item's Add brings along, not the user's own. */
+  options: { readonly asCompanion?: boolean } = {},
+): Promise<Awaited<ReturnType<typeof service.installPlugin>>> {
   const result = await refreshAfterSuccess('plugins:install-plugin', () =>
     installPluginForPrincipal(request, service.installPlugin),
   );
+  // Installed on its own, the plugin is the user's: no item that brought it
+  // along as a copy removes it any more.
+  if (result.success && options.asCompanion !== true)
+    await releasePluginCompanionLinks({
+      kind: 'plugin',
+      marketplaceId: request.marketplaceId,
+      pluginName: request.pluginName,
+    });
   // Installing an installed plugin again is its update (CAN-6817).
   if (result.success)
     await resyncHarnessInstallsAfterUpdate({
@@ -345,13 +378,318 @@ function parseInstallForHarnessesRequest(
     throw new Error('Invalid stand-in MCP server.');
   if (standIn !== undefined && item.kind !== 'plugin')
     throw new Error('Only a plugin has a stand-in MCP server.');
+  // Native copies of the same integration for harnesses this item can't
+  // serve (Sergii's QA). Only a plugin brings them, never itself.
+  const companions =
+    item.kind === 'plugin'
+      ? parseItemHarnessCompanions(request.companions).filter(
+          (companion) =>
+            harnessInstallItemKey(companion.item) !==
+            harnessInstallItemKey(item),
+        )
+      : [];
   return {
     item,
     harnesses: parseHarnessList(request.harnesses),
     ...(pendingHarnesses.length > 0 ? { pendingHarnesses } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
     ...(standIn !== undefined ? { standIn } : {}),
+    ...(companions.length > 0 ? { companions } : {}),
   };
+}
+
+/**
+ * The plugins this Add must leave alone (every plugin already installed
+ * that no item brought along as a copy), this item's linked copies, and
+ * every item's copies (shared, so this item links them too). A copy the user
+ * installed themselves is never linked, so removing the item never removes
+ * it. Undefined when the installed list can't be read; then no copy is
+ * added.
+ */
+async function companionInstallState(
+  item: HarnessInstallItemRef,
+): Promise<
+  | { independent: Set<string>; linked: Set<string>; managed: Set<string> }
+  | undefined
+> {
+  try {
+    const { installedItemService } =
+      await import('../installed-items/installed-item-service');
+    const [snapshot, records] = await Promise.all([
+      installedItemService.listStatus(),
+      itemHarnessInstallStore.read(),
+    ]);
+    const linked = new Set(
+      (records[harnessInstallItemKey(item)]?.companions ?? []).map((entry) =>
+        harnessInstallItemKey(entry.item),
+      ),
+    );
+    // Copies any item brought along: another item's copy is shared, not the
+    // user's own, so this item links it too.
+    const managed = new Set(
+      Object.values(records).flatMap((record) =>
+        (record.companions ?? []).map((entry) =>
+          harnessInstallItemKey(entry.item),
+        ),
+      ),
+    );
+    const installed = [
+      ...snapshot.items.flatMap((entry) =>
+        entry.target.kind === 'plugin'
+          ? [
+              harnessInstallItemKey({
+                kind: 'plugin',
+                marketplaceId: entry.target.marketplaceId,
+                pluginName: entry.target.pluginName,
+              }),
+            ]
+          : [],
+      ),
+      ...Object.keys(records),
+    ];
+    // A copy whose removal is still queued is claimed again, not taken for
+    // the user's own.
+    return {
+      independent: new Set(
+        installed.filter(
+          (key) =>
+            !managed.has(key) &&
+            !companionInstallInFlight(key) &&
+            !companionRemovalPending(key),
+        ),
+      ),
+      linked,
+      managed,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Installs each companion copy for its harnesses, the way one Add installs
+ * any plugin, and links the ones that landed on the item's record so they
+ * show on its Works with rows and go when it is uninstalled. A copy already
+ * installed on its own is left as it is, and a companion that fails leaves
+ * the item's own install as it is.
+ */
+async function installCompanions(
+  item: HarnessInstallItemRef,
+  request: InstallItemForHarnessesRequest,
+  remote: boolean,
+): Promise<ItemHarnessInstalls | undefined> {
+  const inFlight: string[] = [];
+  try {
+    return await installAndLinkCompanions(item, request, remote, inFlight);
+  } finally {
+    for (const key of inFlight) endCompanionInstall(key);
+  }
+}
+
+async function installAndLinkCompanions(
+  item: HarnessInstallItemRef,
+  request: InstallItemForHarnessesRequest,
+  remote: boolean,
+  /** The copies this Add marked in flight; the caller ends them. */
+  inFlight: string[],
+): Promise<ItemHarnessInstalls | undefined> {
+  // A copy this Add removes again stops being in flight first: a queued
+  // removal leaves in-flight copies to the Add adopting them.
+  const releaseInFlight = (copies: readonly ItemHarnessCompanion[]): void => {
+    for (const copy of copies) {
+      const index = inFlight.indexOf(harnessInstallItemKey(copy.item));
+      if (index === -1) continue;
+      endCompanionInstall(inFlight[index] ?? '');
+      inFlight.splice(index, 1);
+    }
+  };
+  const companions = request.companions ?? [];
+  if (companions.length === 0) return undefined;
+  const itemKey = harnessInstallItemKey(item);
+  // An uninstall of the item while its copies install removes the copies
+  // this Add brought instead of leaving them behind unlinked.
+  const generation = itemUninstallGeneration(itemKey);
+  const directAdds = new Map(
+    companions.map((companion) => {
+      const key = harnessInstallItemKey(companion.item);
+      return [key, directPluginAddGeneration(key)];
+    }),
+  );
+  const addedOnItsOwn = (companion: ItemHarnessCompanion): boolean => {
+    const key = harnessInstallItemKey(companion.item);
+    return directPluginAddGeneration(key) !== directAdds.get(key);
+  };
+  const state = await companionInstallState(item);
+  if (state === undefined) return undefined;
+  const linked: ItemHarnessCompanion[] = [];
+  for (const companion of companions) {
+    if (itemUninstallGeneration(itemKey) !== generation) break;
+    if (state.independent.has(harnessInstallItemKey(companion.item))) continue;
+    // A removal queued before now leaves the copy this Add relies on, and
+    // until the link lands another Add counts it as an item's copy.
+    noteCompanionClaim(harnessInstallItemKey(companion.item));
+    beginCompanionInstall(harnessInstallItemKey(companion.item));
+    inFlight.push(harnessInstallItemKey(companion.item));
+    // Whether this Add fetched the copy or wrote its record: a copy it
+    // brought that serves none of its harnesses goes again, so it never
+    // stays behind unowned and a later Add can retry it.
+    let touched = false;
+    let served = false;
+    try {
+      // Installed the way Add installs any plugin, through the same source
+      // gate, then recorded for its harnesses.
+      const cache = await service.loadMarketplacesCacheOnly();
+      const listed = cache.success
+        ? cache.data?.marketplaces
+            .find((entry) => entry.id === companion.item.marketplaceId)
+            ?.plugins.find(
+              (entry) =>
+                entry.name.toLowerCase() ===
+                companion.item.pluginName.toLowerCase(),
+            )
+        : undefined;
+      if (listed === undefined) continue;
+      // A marketplace plugin's content is already local; only an external
+      // listing that hasn't been fetched yet is cloned first, the way its
+      // plugin page installs it.
+      if (pluginNeedsInstall(listed)) {
+        const added = await installPluginForCaller(
+          {
+            remote,
+            marketplaceId: companion.item.marketplaceId,
+            pluginName: listed.name,
+            sourceUrl:
+              typeof listed.externalSource === 'string'
+                ? listed.externalSource
+                : (listed.externalSource?.url ?? ''),
+          },
+          { asCompanion: true },
+        );
+        if (!added.success) continue;
+        touched = true;
+      }
+      // Only the harnesses this copy serves for the item: the item itself
+      // (or another copy) already covers the rest.
+      const record = await installItemForHarnesses(
+        { ...itemHarnessInstallDeps, confirmedSetUpHarnesses: undefined },
+        {
+          item: companion.item,
+          harnesses: companion.harnesses,
+          ...(request.mode !== undefined ? { mode: request.mode } : {}),
+        },
+      );
+      touched ||= record !== null;
+      const installed = companion.harnesses.filter(
+        (harness) => record?.harnesses[harness]?.status === 'installed',
+      );
+      if (installed.length > 0) {
+        served = true;
+        linked.push({ item: companion.item, harnesses: installed });
+      }
+    } catch {
+      // The item itself is installed; the companion row says nothing more.
+    }
+    if (
+      touched &&
+      !served &&
+      !state.managed.has(harnessInstallItemKey(companion.item)) &&
+      !addedOnItsOwn(companion)
+    ) {
+      releaseInFlight([companion]);
+      uninstallItemCompanions([companion], snapshotCompanionOwnership());
+    }
+  }
+  // A copy the user added on its own meanwhile is theirs, never linked.
+  const owned = linked.filter((companion) => !addedOnItsOwn(companion));
+  if (owned.length === 0) return undefined;
+  const added = owned.filter(
+    (companion) => !state.linked.has(harnessInstallItemKey(companion.item)),
+  );
+  // Joined to the copies an earlier Add linked, so adding one harness's copy
+  // later never drops another's.
+  // A link the disk refuses leaves the copies this Add brought unowned, so
+  // they go again like an uninstall race's, and a retry starts clean.
+  const record = await itemHarnessInstallStore
+    .update(itemKey, (existing) => {
+      if (existing === undefined) return existing;
+      const merged = [...(existing.companions ?? [])];
+      for (const companion of owned) {
+        if (addedOnItsOwn(companion)) continue;
+        const key = harnessInstallItemKey(companion.item);
+        const index = merged.findIndex(
+          (entry) => harnessInstallItemKey(entry.item) === key,
+        );
+        const current = index === -1 ? undefined : merged[index];
+        if (current === undefined) merged.push(companion);
+        else
+          merged[index] = {
+            item: companion.item,
+            harnesses: [
+              ...new Set([...current.harnesses, ...companion.harnesses]),
+            ],
+          };
+      }
+      return { ...existing, companions: merged };
+    })
+    .catch((): undefined => undefined);
+  if (record === undefined || itemUninstallGeneration(itemKey) !== generation) {
+    const orphaned = added.filter((companion) => !addedOnItsOwn(companion));
+    if (orphaned.length > 0) {
+      releaseInFlight(orphaned);
+      uninstallItemCompanions(orphaned, snapshotCompanionOwnership());
+    }
+    return undefined;
+  }
+  return record;
+}
+
+/**
+ * New Customize's one Add for every harness (CAN-6816), the single entry
+ * every Add goes through: a plugin page, a Browse row and the Portal. It
+ * records what each set-up harness loads from the item, then installs the
+ * native copies (resolved here from the catalog) for the harnesses it can't
+ * serve, and tells every window and the Portal that installed items changed.
+ */
+export async function addItemForHarnesses(
+  request: InstallItemForHarnessesRequest,
+  remote: boolean,
+): Promise<ItemHarnessInstalls | null> {
+  const own = await installItemForHarnesses(itemHarnessInstallDeps, request);
+  if (own !== null && request.mode !== 'catch-up')
+    await releasePluginCompanionLinks(request.item);
+  let record = own;
+  // Native copies are New Customize only, checked here in main: a window
+  // still showing it after the experiment is turned off adds no copies.
+  if (
+    own !== null &&
+    request.item.kind === 'plugin' &&
+    (await isCustomizeDiscoveryEnabledInMain())
+  ) {
+    const cache = await service.loadMarketplacesCacheOnly();
+    const harnesses = ITEM_INSTALL_HARNESSES.filter(
+      (harness) =>
+        own.harnesses[harness] !== undefined &&
+        own.harnesses[harness]?.status !== 'installed',
+    );
+    const companions =
+      cache.success && cache.data
+        ? pluginCompanionsFromCatalog(
+            cache.data.marketplaces,
+            request.item,
+            harnesses,
+          )
+        : [];
+    record =
+      (await installCompanions(
+        request.item,
+        { ...request, companions },
+        remote,
+      )) ?? own;
+  }
+  const { notifyInstalledItemsChanged } =
+    await import('../installed-items/installed-item-events');
+  notifyInstalledItemsChanged();
+  return record === null ? null : servedItemRecord(request.item, record);
 }
 
 /**
@@ -551,20 +889,26 @@ export function registerPluginHandlers(): void {
       await service.loadMarketplacesForPresentation(undefined, true),
     ),
   );
+  // An install changes what the installed-items snapshot lists, so every
+  // window rereads statuses; without it a fresh Add read "Unavailable" (not
+  // in the installed list) until something else refreshed the snapshot.
+  const installedItemsChanged = (): void => {
+    void import('../installed-items/installed-item-events')
+      .then(({ notifyInstalledItemsChanged }) => notifyInstalledItemsChanged())
+      .catch(() => undefined);
+  };
   // One Add for every harness, for plugins and skills (CAN-6816). The
   // renderer calls these only while the `customize-discovery` Labs
-  // experiment is on. Only the record file changes; the window that asked
-  // reloads the rows it shows.
+  // experiment is on. The record file and the installed items change; the
+  // window that asked reloads the rows it shows, and every window rereads
+  // installed-item status.
   registerIpcHandler(
     PLUGINS_CHANNELS.INSTALL_FOR_HARNESSES,
-    async (_event, request: unknown) => {
-      const parsed = parseInstallForHarnessesRequest(request);
-      const record = await installItemForHarnesses(
-        itemHarnessInstallDeps,
-        parsed,
-      );
-      return record === null ? null : servedItemRecord(parsed.item, record);
-    },
+    async (event, request: unknown) =>
+      addItemForHarnesses(
+        parseInstallForHarnessesRequest(request),
+        resolveRemoteBridgeSender(event.sender) !== null,
+      ),
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.RETRY_HARNESS_INSTALL,
@@ -576,6 +920,7 @@ export function registerPluginHandlers(): void {
         // A remote caller can check again but never fetch a plugin's source.
         { restore: resolveRemoteBridgeSender(event.sender) === null },
       );
+      installedItemsChanged();
       return servedItemRecord(parsed.item, record);
     },
   );

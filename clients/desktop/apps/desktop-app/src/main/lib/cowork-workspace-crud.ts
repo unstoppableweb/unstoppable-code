@@ -21,8 +21,7 @@ import {
   W5RevisionConflictError,
 } from './w5-commit-log-file-store';
 import { reconcileManifestPluginDefaults } from './workspace-plugin-defaults';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { logMainProcessWarn } from './main-process-logging';
 import {
   admitCoworkSettingsChange,
@@ -687,8 +686,7 @@ async function reconcileCoworkSettings(
       error,
     });
   }
-  schedulePortalStructuralSync();
-  notifyPortalStructureChanged();
+  scheduleDesktopStructureChanged('structural.cowork-workspace');
 }
 
 /**

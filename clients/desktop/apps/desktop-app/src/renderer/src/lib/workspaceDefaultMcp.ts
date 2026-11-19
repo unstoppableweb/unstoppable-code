@@ -1,11 +1,14 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useMemo } from 'react';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
 import {
   hasMcpServerRef,
+  withMcpServerAccount,
   withMcpServerRef,
   withoutMcpServerRef,
   type McpServerSelectionRef,
 } from '@canopy/ui-app/capability';
+import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
 import type { McpWorkspaceDefaultsChoice } from '@canopy/ui-app';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -126,6 +129,46 @@ export function addMcpServerToWorkspaceDefaults(
 ): Promise<void> {
   return updateWorkspaceMcpDefaults(workspaceId, (current) =>
     withMcpServerRef(current, ref),
+  );
+}
+
+/**
+ * The configurations of the person's other accounts of `ref`'s connector,
+ * from the MCP index; none when they hold one account of it, or the index
+ * can't be read.
+ */
+async function otherAccountConfigIds(
+  ref: McpServerSelectionRef,
+): Promise<string[]> {
+  try {
+    const index = await window.mcpServers.loadIndex();
+    return flattenMcpServerRows(index.servers).flatMap((row) =>
+      row.scope === 'account' &&
+      row.accountConnection?.serverKey === ref.serverId &&
+      row.accountConnection.configId !== ref.configId
+        ? [row.accountConnection.configId]
+        : [],
+    );
+  } catch (error) {
+    // Without the index the account is added beside the others, as before.
+    reportClientAppError(error);
+    return [];
+  }
+}
+
+/**
+ * Adds one account of a connector to a workspace's default plugins and drops
+ * the connector's other accounts there (CAN-6229): new chats in the project
+ * start with the account chosen for it. A connector held once is added as by
+ * {@link addMcpServerToWorkspaceDefaults}.
+ */
+export async function addMcpAccountToWorkspaceDefaults(
+  workspaceId: string,
+  ref: McpServerSelectionRef,
+): Promise<void> {
+  const others = await otherAccountConfigIds(ref);
+  return updateWorkspaceMcpDefaults(workspaceId, (current) =>
+    withMcpServerAccount(current, ref, others),
   );
 }
 

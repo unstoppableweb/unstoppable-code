@@ -443,6 +443,17 @@ merge requests.
 
 ## Deterministic LLM lifecycle controls (C1 v2)
 
+Native Responses WebSocket requests may send only new input with
+`previous_response_id`. The transport reconstructs history per socket before
+scenario selection and observations, including previous assistant tool calls.
+It retains at most 32 response snapshots and 16 MiB, clears them on disconnect,
+and fails explicitly with `mock_context_missing` or `mock_context_limit` rather
+than answering a different scenario. A `generate: false` connection prewarm
+returns an empty response without consuming a scripted step or attempt.
+Code-mode calls use `type: 'custom'`, `name: 'exec'`, optional
+`namespace: 'functions'`, and string `input`; the stream includes the input
+delta/done events and completed output item with the same `call_id`.
+
 Existing scripts keep their history-derived cursor behavior. These optional
 fields apply after the helper, request-tag, resume, or history cursor selects a
 step, uniformly on Messages, Responses, Chat Completions, and Responses WS:
@@ -512,6 +523,15 @@ Additional JSON control-plane routes:
   result identifiers, never prompt, arguments, or content text. `tag` is the
   latest `[Canopy-Mock-Request:<tag>]` marker. Error metadata is updated when a
   pending request fails; close directives use `mock_disconnect` / `mock_midstream`.
+  Isolated synthetic scenarios may opt in to `llm.captureRequestBodies: true`
+  to include a cloned `body` for failure diagnostics. Headers are never captured;
+  do not enable this for live-provider or real-profile fixtures.
+
+Instruction guards follow the harness's actual wire placement:
+`llm.requiredSystemText` checks system/developer text, whereas
+`llm.requiredUserText` checks user text (for Codex pipeline Agent instructions,
+which `buildCodexPrompt` prepends to the task). Neither guard substitutes for
+the lifecycle fixture's independent pre/post-quit resource observations.
 
 Replacing a scenario with `POST /__mock/state`, deleting it, or resetting all
 scenarios rejects its pending barrier waiters with `mock_scenario_reset` and

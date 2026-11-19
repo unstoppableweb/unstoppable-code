@@ -36,12 +36,47 @@ function isTerminalExecutionStatus(
   return status === 'success' || status === 'failure' || status === 'cancelled';
 }
 
+/**
+ * One execution whose recovery failed. Codes and names only: a native error's
+ * message can quote paths, so it goes to `onFailure` (the local log) alone.
+ */
+export interface PipelineRecoveryFailure {
+  readonly executionId: string;
+  /** The errno-style code (`ENOENT`), when the error carried one. */
+  readonly code: string | null;
+  /** The error's class name (`Error`, `SyntaxError`). */
+  readonly name: string;
+}
+
+/** An identifier-shaped code or class name; anything else could be text. */
+const FAILURE_IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+
+/** The code and class name of a caught value, never its message. */
+function describeFailure(error: unknown): {
+  code: string | null;
+  name: string;
+} {
+  if (typeof error !== 'object' || error === null)
+    return { code: null, name: 'Error' };
+  const code: unknown = Reflect.get(error, 'code');
+  const name: unknown = Reflect.get(error, 'name');
+  return {
+    code:
+      typeof code === 'string' && FAILURE_IDENTIFIER.test(code) ? code : null,
+    name:
+      typeof name === 'string' && FAILURE_IDENTIFIER.test(name)
+        ? name
+        : 'Error',
+  };
+}
+
 /** Recover only executions whose recorded process owner has exited. */
 export async function recoverOrphanedPipelineExecutions(
   executionIds: readonly string[],
   executionsDir: string,
-): Promise<string[]> {
-  const errors: string[] = [];
+  onFailure?: (executionId: string, error: unknown) => void,
+): Promise<PipelineRecoveryFailure[]> {
+  const errors: PipelineRecoveryFailure[] = [];
   const recovered = new Map<string, ExecutionState | null>();
   const visiting = new Set<string>();
   const recover = async (
@@ -297,7 +332,12 @@ export async function recoverOrphanedPipelineExecutions(
     try {
       await recover(id);
     } catch (error) {
-      errors.push(`Pipeline ${id}: ${String(error)}`);
+      errors.push({ executionId: id, ...describeFailure(error) });
+      try {
+        onFailure?.(id, error);
+      } catch {
+        // A failing log must not stop the sweep of the remaining executions.
+      }
     }
   }
   return errors;

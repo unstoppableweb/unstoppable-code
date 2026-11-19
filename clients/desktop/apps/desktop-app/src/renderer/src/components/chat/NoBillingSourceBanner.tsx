@@ -27,6 +27,7 @@ import {
   CREDITS_ONLY_DEAD_END_COPY,
   FAILED_TURN_COPY,
   notSignedInCopy,
+  signedOutCopy,
   type CreditsRecoveryCopy,
 } from '@canopy/ui-shared/components';
 import {
@@ -98,6 +99,14 @@ const ARRIVAL_ORIGINS: readonly AiCreditsArrivalOrigin[] = [
   'no-billing-source',
   'model-picker',
 ];
+
+/**
+ * Arrival records already applied through `onCreditsArrived` (CAN-7062).
+ * Module-scoped and keyed on the record, not on this mount, so a remount, a
+ * chat switch and back, or a StrictMode double effect never reports one
+ * purchase twice. A record is added only once the callback applied it.
+ */
+const reportedSignedOutArrivals = new Set<string>();
 
 /** An organization member whose pool, or policy, needs its admin. */
 const CONTACT_ADMIN_OWNER: CreditsNoticeOwner = {
@@ -204,6 +213,25 @@ export interface NoBillingSourceBannerProps {
    * for a frame before the card takes over. Defaults to `false`.
    */
   aiCreditsCardExpected?: boolean;
+  /**
+   * The chat's provider is confirmed signed out, routing mode is `off`, and
+   * the chat has no explicit credits choice (CAN-7062): the billing resolver's
+   * `'no-billing-source'` lock. Nothing bills this chat even with spendable
+   * credits, so the banner shows with the signed-out copy, does not stand down
+   * on coverage, and offers credits as one choice in its provider list.
+   * Defaults to `false`.
+   */
+  signedOutNoSource?: boolean;
+  /**
+   * Called once per arrival record of credits bought from this chat (this
+   * banner's CTA or the model picker). The composer passes it only while a
+   * funded chat would resolve to the signed-out lock above, so the purchase
+   * counts as choosing credits for this chat; signing in first means no
+   * callback. Must be idempotent (CAN-7062). Returns whether the purchase
+   * is handled; `false` (for example, the credits model is not routable yet)
+   * leaves the record unreported, so a later callback retries it.
+   */
+  onCreditsArrived?: () => boolean;
 }
 
 /**
@@ -214,6 +242,12 @@ export interface NoBillingSourceBannerProps {
  * `Not logged in · Please run /login` — a message that names one remedy and
  * hides the other. This banner surfaces the dead end up front and offers both
  * ways out.
+ *
+ * A fourth trigger (CAN-7062) covers the signed-out chat that credits could pay
+ * for but nothing has consented to: the provider is confirmed signed out,
+ * routing mode is `off`, and the chat never chose credits. Missing native auth
+ * is not consent, so main refuses the send and this banner offers the choice
+ * (`signedOutNoSource`), with credits as one row among the providers.
  *
  * Rendered once in the universal `ChatInput`, so it reaches every chat surface.
  * It needs no IPC or store plumbing of its own beyond the native availability
@@ -239,6 +273,8 @@ export function NoBillingSourceBanner({
   turnActive = false,
   aiCreditsCardVisible = false,
   aiCreditsCardExpected = false,
+  signedOutNoSource = false,
+  onCreditsArrived,
   providerChoice: providerChoiceContext,
 }: NoBillingSourceBannerProps): JSX.Element | null {
   const [nativeAvailability, setNativeAvailability] =
@@ -365,7 +401,8 @@ export function NoBillingSourceBanner({
       (noDispatchableModel?.missing === 'both' &&
         noDispatchableModel.hasPolicyAllowedLane === false));
   const visible =
-    billable && (derived || runtimeSignalActive || dispatchDeadEnd);
+    billable &&
+    (derived || runtimeSignalActive || dispatchDeadEnd || signedOutNoSource);
 
   // Re-arm the coverage gate for EVERY read, DURING RENDER (CAN-2413 review
   // round 4). This is React's documented adjust-state-during-render pattern,
@@ -531,10 +568,15 @@ export function NoBillingSourceBanner({
   // next dispatched message clears the runtime signal, so a later refusal
   // starts a fresh read. A dispatch dead end, org policy or not, still shows:
   // the lane resolver found no model this chat can run, which spendable
-  // credits alone do not change, and the banner is its only recovery.
+  // credits alone do not change, and the banner is its only recovery. The
+  // signed-out trigger still shows too: spendable credits are exactly what it
+  // offers as a choice, not a sign the chat can already pay (CAN-7062).
   const coverageRecovered = coverageSettled && coverage.canSpendCredits;
   const standDown =
-    coverageRecovered && !dispatchDeadEnd && pendingHandoff === null;
+    coverageRecovered &&
+    !dispatchDeadEnd &&
+    !signedOutNoSource &&
+    pendingHandoff === null;
   const pendingCredits = !coverageSettled && !showSignIn;
   // A retained hand-off keeps the CTA, and with it Check again, whatever the
   // pre-flight read last said: a fresh purchase never replaces it.
@@ -571,6 +613,14 @@ export function NoBillingSourceBanner({
     selectAiCreditsArrivalEvidence(s, arrival?.handoffId),
   );
   const arrivalHandoffId = arrival?.handoffId ?? null;
+  // A purchase from this signed-out chat is its explicit credits choice
+  // (CAN-7062). Reported once per record; the composer decides whether it
+  // applies by passing the callback at all.
+  useEffect(() => {
+    if (arrivalHandoffId === null || onCreditsArrived === undefined) return;
+    if (reportedSignedOutArrivals.has(arrivalHandoffId)) return;
+    if (onCreditsArrived()) reportedSignedOutArrivals.add(arrivalHandoffId);
+  }, [arrivalHandoffId, onCreditsArrived]);
   // The "Using AI Credits" card confirms the purchase itself, so the record
   // moves there rather than stacking a second notice beside it. Once routed
   // the card owns its lifecycle; the notice below is only for a chat that
@@ -707,10 +757,14 @@ export function NoBillingSourceBanner({
     !policyOnlyDeadEnd &&
     !creditsOnlyDeadEnd &&
     !policyBillingDeadEnd;
+  // The signed-out trigger is about choosing a billing source, so it wins over
+  // a stale failed-turn signal but not over a held message or a dispatch dead
+  // end (CAN-7062).
+  const failedTurnActive = runtimeSignalActive && !signedOutNoSource;
   const choiceCondition: CreditsPromptCondition =
     queuedCreditHeld && !policyOnlyDeadEnd
       ? 'queued_held'
-      : runtimeSignalActive || dispatchDeadEnd
+      : failedTurnActive || dispatchDeadEnd
         ? 'out_of_credits'
         : 'no_billing_source';
   // The notice says nothing can pay for this chat, so the list names no
@@ -961,9 +1015,13 @@ export function NoBillingSourceBanner({
           // payment, and the CTAs below name the remedy.
           dispatchDeadEnd
           ? DISPATCH_DEAD_END_COPY
-          : runtimeSignalActive
-            ? FAILED_TURN_COPY
-            : notSignedInCopy({ providerLabel });
+          : // Signed out with credits nobody chose (CAN-7062). Not
+            // `notSignedInCopy`: its "no credits either" may be false here.
+            signedOutNoSource
+            ? signedOutCopy({ providerLabel })
+            : runtimeSignalActive
+              ? FAILED_TURN_COPY
+              : notSignedInCopy({ providerLabel });
 
   const approvedRefusal =
     providerChoice === null &&
@@ -978,7 +1036,7 @@ export function NoBillingSourceBanner({
   // pure org-policy dead end is not a credits state, so it records no view.
   const recoveryTrigger: CreditsRecoveryTrigger = dispatchDeadEnd
     ? 'no_dispatchable_model'
-    : runtimeSignalActive
+    : failedTurnActive
       ? 'failed_turn'
       : 'preflight';
 

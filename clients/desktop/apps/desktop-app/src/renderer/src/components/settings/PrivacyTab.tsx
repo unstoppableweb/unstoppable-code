@@ -18,10 +18,19 @@ import {
   useWorkspaceContext,
   useWorkspaceContextStore,
 } from '@/stores/workspaceContextStore';
+import {
+  useCloudAccountAvailable,
+  useTelemetrySharingAvailable,
+} from '@/lib/cloud-account';
 import { CanopyCloudAccountSection } from './CanopyCloudAccountSection';
 import { CloudSyncStatus } from './CloudSyncStatus';
 import { TelemetrySharingControls } from './TelemetrySharingControls';
-import { SettingsGroup, SettingsPage, SettingsSection } from './SettingsLayout';
+import {
+  SettingsGroup,
+  SettingsPage,
+  SettingsPageMessage,
+  SettingsSection,
+} from './SettingsLayout';
 import {
   DEFAULT_TELEMETRY_SHARING,
   resolveAvailableTelemetryScopes,
@@ -82,6 +91,8 @@ export function PrivacyTab(): JSX.Element {
   // sign-in/sign-out re-read can't disturb the enforced-scope locks.
   const cloudCredentialUsable = useCanopyCloudCredentialUsable();
   const hostedSettingsAvailable = useHostedSettingsAvailable();
+  const cloudAccountAvailable = useCloudAccountAvailable();
+  const telemetrySharingAvailable = useTelemetrySharingAvailable();
 
   useEffect(() => {
     sharingRef.current = sharing;
@@ -209,9 +220,26 @@ export function PrivacyTab(): JSX.Element {
     [],
   );
 
+  // A local-only build sends no usage data and syncs no activity, so there is
+  // nothing to choose here. The line names what a person would otherwise look
+  // for, in the words of the Settings Version row.
+  if (!telemetrySharingAvailable) {
+    return (
+      <SettingsPage title="Privacy" dataTestId="settings-tab-privacy">
+        <SettingsPageMessage>
+          <span data-testid="settings-privacy-local-only">
+            Usage data, error reports, and activity sharing are off in this
+            build.
+          </span>
+        </SettingsPageMessage>
+      </SettingsPage>
+    );
+  }
+
   return (
     <SettingsPage title="Privacy" dataTestId="settings-tab-privacy">
-      {!hostedSettingsAvailable && (
+      {/* No hosted account to sync with in a local-only build. */}
+      {!hostedSettingsAvailable && cloudAccountAvailable && (
         <SettingsSection title="Cloud sync">
           <SettingsGroup>
             <CanopyCloudAccountSection />

@@ -1,3 +1,4 @@
+import { canopyDaemonRefusal } from '@canopy/core-client/node';
 import {
   CanopyClientError,
   createCanopyAuthorityRegistry,
@@ -61,6 +62,14 @@ export interface ElectronDaemonConnectionOptions<C extends Connection> {
   ) => void;
   /** Observes reachability across every caller's session. Never throws into a read. */
   readonly onReachability?: (event: ElectronDaemonReachability) => void;
+  /**
+   * Observes the failure behind each unreachable setup, once per attempt;
+   * restart refusals and cancellations stay silent. Never throws into a read.
+   */
+  readonly onSetupFailure?: (
+    error: unknown,
+    reason: BackgroundServiceUnreachableReason,
+  ) => void;
   /**
    * An attach rejection inside a restart the app runs itself: left untagged,
    * so it shows nothing (q-13). Not consulted once the lifetime aborted.
@@ -133,8 +142,11 @@ export function markUnreachable(
 function attachFailureReason(
   error: unknown,
 ): BackgroundServiceUnreachableReason | null {
+  if (error instanceof CanopyClientError && error.payload.kind === 'cancelled')
+    return null;
+  if (canopyDaemonRefusal(error) === 'endpoint_repair_required')
+    return 'endpoint_repair_required';
   if (!(error instanceof CanopyClientError)) return 'start_failed';
-  if (error.payload.kind === 'cancelled') return null;
   return error.payload.kind === 'deadline_exceeded'
     ? 'connect_timeout'
     : 'start_failed';
@@ -404,7 +416,13 @@ export function createElectronDaemonConnectionService<C extends Connection>(
             daemonUnreachableReason(error) !== null ||
             ownedLease.client.signal.aborted
           )
-            observe({ kind: 'unreachable', reason: 'reconnect_failed' });
+            observe({
+              kind: 'unreachable',
+              reason:
+                daemonUnreachableReason(error) === 'endpoint_repair_required'
+                  ? 'endpoint_repair_required'
+                  : 'reconnect_failed',
+            });
         },
       }));
       try {
@@ -475,7 +493,14 @@ export function createElectronDaemonConnectionService<C extends Connection>(
     void pending.catch(async (error: unknown) => {
       entry.failedAt = performance.now();
       const reason = daemonUnreachableReason(error);
-      if (reason) observe({ kind: 'unreachable', reason });
+      if (reason) {
+        observe({ kind: 'unreachable', reason });
+        try {
+          options.onSetupFailure?.(error, reason);
+        } catch {
+          // An observer never fails the session's consumer.
+        }
+      }
       // Release before allowing a later attempt; no background retry of failed setup.
       await close().catch(() => undefined);
     });

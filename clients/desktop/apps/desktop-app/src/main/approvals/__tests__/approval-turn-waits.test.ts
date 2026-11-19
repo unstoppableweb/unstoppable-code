@@ -107,7 +107,7 @@ beforeEach(() => {
   resetDesktopChatWaitsForTest();
   setDesktopChatWaitPresence({
     getMainWindow: () => window,
-    portalAttached: () => false,
+    remoteControllerAttached: () => false,
   });
   root = mkdtempSync(join(tmpdir(), 'approval-turn-waits-'));
   operations = createCoreOperationAdapter({

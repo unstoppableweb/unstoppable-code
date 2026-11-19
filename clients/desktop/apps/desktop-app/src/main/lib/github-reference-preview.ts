@@ -15,7 +15,10 @@ import {
   type GitHubReferenceOrigin,
   type GitHubRepositoryPreview,
 } from '@canopy/protocol/reference-previews';
-import { resolveGitHubTokenWithSource } from './github-auth';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialLease,
+} from './github-broker/credential-port';
 import {
   getGitHubBroker,
   isGitHubBrokerError,
@@ -36,7 +39,6 @@ import { isCoworkWorkspace } from './workspace-registry';
 import {
   getCloudAccountIdentityGeneration,
   readGitHubPreviewAccountIdentity,
-  githubPreviewCredentialScope,
 } from './github-preview-credential';
 
 const READ_TIMEOUT_MS = 15_000;
@@ -64,14 +66,23 @@ export interface GitHubPullState {
 }
 
 export interface GitHubReferencePreviewDeps {
-  resolveToken: () => Promise<string>;
+  /** A lease on the resolved GitHub credential; null when there is none. */
+  resolveCredential: () => Promise<GitHubBrokerCredentialLease | null>;
+  /** The lease's preview scope for this account; never contains the credential. */
+  credentialScope: (
+    credential: GitHubBrokerCredentialLease,
+    accountId: string,
+  ) => Promise<string>;
   resolveAccountId: () => Promise<string>;
   /** `GET /repos/{owner}/{repo}/issues/{number}`: issues and pull requests. */
-  requestItem: (token: string, item: GitHubItemRequest) => Promise<unknown>;
+  requestItem: (
+    credential: GitHubBrokerCredentialLease,
+    item: GitHubItemRequest,
+  ) => Promise<unknown>;
   /** The shared pull request read model, only when the issue omits PR state. */
   readPullState: (item: GitHubItemRequest) => Promise<GitHubPullState | null>;
   requestRepository: (
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     repository: GitHubRepositoryRequest,
   ) => Promise<unknown>;
   /** The worktree's single GitHub `owner/repo`; `null` or a throw means none. */
@@ -89,7 +100,7 @@ export interface GitHubReferencePreviewDeps {
    * rejection or `null` leaves them off.
    */
   readPullFacts?: (
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     item: GitHubItemRequest,
     options?: { signal?: AbortSignal },
   ) => Promise<unknown>;
@@ -107,11 +118,11 @@ export interface TrackedPullFacts {
   readonly updatedAt: string;
 }
 
-// The pinned token goes to the broker so the read uses the credential that
+// The pinned lease goes to the broker so the read uses the credential that
 // produced the result's scope, while the broker keeps its scheduling,
 // rate-limit pauses, and safe-read retries.
 async function brokerRead(
-  token: string,
+  credential: GitHubBrokerCredentialLease,
   request: (octokit: Octokit) => Promise<GitHubRawResponse<unknown>>,
   signal?: AbortSignal,
 ): Promise<unknown> {
@@ -120,7 +131,7 @@ async function brokerRead(
     operation: 'read',
     idempotency: 'safe',
     timeoutMs: READ_TIMEOUT_MS,
-    authenticationToken: token,
+    credential,
     caller: 'reference-preview',
     ...(signal ? { signal } : {}),
   });
@@ -141,10 +152,16 @@ const CHECKS_STATE = {
 >;
 
 const defaultDeps: GitHubReferencePreviewDeps = {
-  resolveToken: async () => (await resolveGitHubTokenWithSource()).token,
+  resolveCredential: async () =>
+    (await getGitHubBrokerCredentialPort().lease('resolved'))?.lease ?? null,
+  credentialScope: (credential, accountId) =>
+    getGitHubBrokerCredentialPort().derivedScope(credential, {
+      kind: 'reference-preview',
+      accountIdentity: accountId,
+    }),
   resolveAccountId: readGitHubPreviewAccountIdentity,
-  requestItem: (token, item) =>
-    brokerRead(token, (octokit) =>
+  requestItem: (credential, item) =>
+    brokerRead(credential, (octokit) =>
       octokit.rest.issues.get({
         owner: item.owner,
         repo: item.repository,
@@ -158,11 +175,11 @@ const defaultDeps: GitHubReferencePreviewDeps = {
     );
     return { merged: view.state === 'merged', draft: view.isDraft };
   },
-  readPullFacts: async (token, item, options) => {
+  readPullFacts: async (credential, item, options) => {
     const signal = options?.signal;
     const [pull, status] = await Promise.all([
       brokerRead(
-        token,
+        credential,
         (octokit) =>
           octokit.rest.pulls.get({
             owner: item.owner,
@@ -196,8 +213,8 @@ const defaultDeps: GitHubReferencePreviewDeps = {
       inMergeQueue: status.mergeQueue.inQueue,
     };
   },
-  requestRepository: (token, repository) =>
-    brokerRead(token, (octokit) =>
+  requestRepository: (credential, repository) =>
+    brokerRead(credential, (octokit) =>
       octokit.rest.repos.get({
         owner: repository.owner,
         repo: repository.repository,
@@ -499,33 +516,37 @@ export function createGitHubReferencePreviewReader(
   read: (target: GitHubPreviewTarget) => Promise<GitHubPreviewResult>;
 } {
   // A credential GitHub rejected reads as disconnected for five minutes, so no
-  // window keeps calling GitHub with it until the token changes or time passes.
+  // window keeps calling GitHub with it until the credential changes or time
+  // passes.
   const revokedUntil = new Map<string, number>();
 
   // The credential's identity, and how long it stays rejected (0 when usable).
-  const credential = async (): Promise<{
-    token: string;
+  const currentCredential = async (): Promise<{
+    credential: GitHubBrokerCredentialLease;
     scope: string;
     revokedForMs: number;
   } | null> => {
-    const token = (await deps.resolveToken().catch(() => '')).trim();
-    if (!token) return null;
+    const credential = await deps.resolveCredential().catch(() => null);
+    if (!credential) return null;
     const accountId = await deps.resolveAccountId();
-    const scope = githubPreviewCredentialScope(accountId, token);
+    const scope = await deps
+      .credentialScope(credential, accountId)
+      .catch(() => null);
+    if (scope === null) return null;
     const until = revokedUntil.get(scope);
     if (until !== undefined && deps.now() >= until) revokedUntil.delete(scope);
     const revokedForMs =
       until !== undefined && deps.now() < until ? until - deps.now() : 0;
-    return { token, scope, revokedForMs };
+    return { credential, scope, revokedForMs };
   };
 
   const resolveScope = async (): Promise<{
-    token: string;
+    credential: GitHubBrokerCredentialLease;
     scope: string;
   } | null> => {
-    const current = await credential();
+    const current = await currentCredential();
     return current && current.revokedForMs === 0
-      ? { token: current.token, scope: current.scope }
+      ? { credential: current.credential, scope: current.scope }
       : null;
   };
 
@@ -534,7 +555,7 @@ export function createGitHubReferencePreviewReader(
   // and cancelled once settled, so a held read (a rate-limit pause) never
   // keeps the preview loading or runs on after it.
   const withPullFacts = async (
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     preview: GitHubItemPreview,
   ): Promise<GitHubItemPreview> => {
     const readPullFacts = deps.readPullFacts;
@@ -548,7 +569,7 @@ export function createGitHubReferencePreviewReader(
       }, PULL_FACTS_TIMEOUT_MS);
     });
     const read = readPullFacts(
-      token,
+      credential,
       {
         owner: preview.owner,
         repository: preview.repository,
@@ -570,12 +591,12 @@ export function createGitHubReferencePreviewReader(
   };
 
   const fetchPreview = async (
-    token: string,
+    credential: GitHubBrokerCredentialLease,
     target: GitHubPreviewTarget,
   ): Promise<GitHubItemPreview | GitHubRepositoryPreview | null> => {
     if (target.kind === 'repository') {
       return toRepositoryPreview(
-        await deps.requestRepository(token, {
+        await deps.requestRepository(credential, {
           owner: target.owner,
           repository: target.repository,
         }),
@@ -587,7 +608,7 @@ export function createGitHubReferencePreviewReader(
       repository: target.repository,
       number: target.number,
     };
-    const data = await deps.requestItem(token, item);
+    const data = await deps.requestItem(credential, item);
     if (!isRecord(data)) return null;
     // GitHub numbers issues and pull requests together; a PR carries `pull_request`.
     if (!isRecord(data.pull_request)) return toItemPreview(data, item, null);
@@ -606,7 +627,7 @@ export function createGitHubReferencePreviewReader(
     // Local only. A rejected credential reports when the host will try it
     // again, so every window can check back then.
     readScope: async (): Promise<GitHubPreviewScope> => {
-      const current = await credential();
+      const current = await currentCredential();
       if (!current) return { scope: null };
       return current.revokedForMs > 0
         ? { scope: null, retryAfterMs: current.revokedForMs }
@@ -665,16 +686,16 @@ export function createGitHubReferencePreviewReader(
                 return {
                   status: 'ok',
                   scope: identity.scope,
-                  preview: await withPullFacts(identity.token, preview),
+                  preview: await withPullFacts(identity.credential, preview),
                   fetchedAt: capturedAt,
                 };
               }
             }
           }
-          const fetched = await fetchPreview(identity.token, target);
+          const fetched = await fetchPreview(identity.credential, target);
           const preview =
             fetched?.kind === 'item'
-              ? await withPullFacts(identity.token, fetched)
+              ? await withPullFacts(identity.credential, fetched)
               : fetched;
           return preview
             ? { status: 'ok', scope: identity.scope, preview }

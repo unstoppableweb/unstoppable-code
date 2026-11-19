@@ -10,6 +10,7 @@ import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
 import { reviewForFingerprint } from './change-diagram-review';
 import { useReviewComments } from './useReviewComments';
+import { ReviewCommentsNotice } from './ReviewCommentsNotice';
 import { FileCommentsDrawer } from '../chat/FileCommentsDrawer';
 import { submitWorkspaceComments } from '../chat/submitWorkspaceComments';
 
@@ -41,7 +42,12 @@ export function ChangeDiagramPanel({
   const root = useRef<HTMLDivElement>(null);
   const noticeTimer = useRef<number | null>(null);
   const scope = { projectId, worktreeId };
-  const comments = useReviewComments(scope, review, true);
+  const comments = useReviewComments(
+    scope,
+    review,
+    true,
+    artifacts.mutationFailure,
+  );
   useCurrentUiStateReporter('codeReview.modal', {
     open: active,
     projectId,
@@ -79,7 +85,7 @@ export function ChangeDiagramPanel({
     }, 2_000);
   };
   const generate = async (arm: boolean): Promise<void> => {
-    if (busy) return;
+    if (busy || comments.readOnly) return;
     setBusy(true);
     setError(null);
     setNotice('');
@@ -111,6 +117,10 @@ export function ChangeDiagramPanel({
       data-testid="change-diagram-panel"
       {...find.surfaceProps}
     >
+      <ReviewCommentsNotice
+        error={comments.error}
+        hasUnsavedChanges={comments.hasUnsavedChanges}
+      />
       {(error || artifacts.error || notice) && (
         <div
           className={`flex shrink-0 flex-col gap-4 px-2 pt-2 ${notice ? '' : 'pb-2'}`}
@@ -127,6 +137,7 @@ export function ChangeDiagramPanel({
         <CodeReviewDiagramsPanel
           ref={diagramSearch}
           review={review}
+          readOnly={comments.readOnly}
           armed={review?.armed ?? false}
           refreshing={busy}
           onArm={() => {
@@ -154,6 +165,7 @@ export function ChangeDiagramPanel({
           view: 'diff',
           otherViewCount: 0,
           stagedCount: comments.stagedCount,
+          isThreadReadOnly: () => comments.readOnly,
           addComment: (_anchor, body) =>
             comments.addDiagramComment({
               diagramKind: 'logicDiff',
@@ -169,11 +181,15 @@ export function ChangeDiagramPanel({
           toggleResolved: comments.toggleResolved,
           submit: comments.submit,
         }}
-        onSubmitStaged={() => {
-          void comments.submit((message, context) =>
-            submitWorkspaceComments(scope, message, context),
-          );
-        }}
+        onSubmitStaged={
+          comments.readOnly
+            ? undefined
+            : () => {
+                void comments.submit((message, context) =>
+                  submitWorkspaceComments(scope, message, context),
+                );
+              }
+        }
         onRevealAnchor={(anchor) => {
           if (anchor.diagramKind && anchor.nodeId)
             setReveal({

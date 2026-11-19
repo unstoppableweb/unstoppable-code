@@ -25,9 +25,8 @@ function strings(value: unknown): { name: string; value: string }[] {
   );
 }
 
-// ACP has no stdio cwd. This host-authored launcher preserves the selected
-// server's directory without passing its command or arguments through a shell.
-const CWD_LAUNCHER = `const {spawn}=require('node:child_process');const config=JSON.parse(process.argv[1]);const child=spawn(config.command,config.args,{cwd:config.cwd,env:process.env,stdio:'inherit',windowsHide:true});child.on('error',()=>{process.exitCode=1});child.on('exit',(code)=>{process.exitCode=code??1});`;
+/** Host launch descriptions retain CWD until the broker replaces stdio entries. */
+export type OpenCodeMcpLaunch = McpServer & { cwd?: string };
 
 /** Host-only base for OpenCode-owned MCP children; selected overrides stay with the broker. */
 export function getOpenCodeMcpBaseEnv(): Record<string, string> {
@@ -47,14 +46,14 @@ export function buildOpenCodeMcpServers(input: {
   authToken?: string;
   definitions: Record<string, unknown>;
   cwd: string;
-}): McpServer[] {
+}): OpenCodeMcpLaunch[] {
   const names = cursorCanopyMcpServerNames(input.mode ?? 'default');
   const reserved = new Set([
     names.main,
     names.ui,
     cursorCanopyMcpServerNames('app-advisor').main,
   ]);
-  const servers: McpServer[] = [];
+  const servers: OpenCodeMcpLaunch[] = [];
   for (const [name, raw] of Object.entries(input.definitions)) {
     if (reserved.has(name) || !/^[a-zA-Z0-9_-]+$/.test(name))
       throw new Error(`OpenCode cannot use MCP server name ${name}.`);
@@ -122,21 +121,18 @@ export function buildOpenCodeMcpServers(input: {
       const command = bundled
         ? resolveBundledBinary(bundled).path
         : raw.command;
-      if (typeof raw.cwd === 'string' && raw.cwd !== input.cwd) {
-        servers.push({
-          name,
-          command: process.execPath,
-          args: [
-            '-e',
-            CWD_LAUNCHER,
-            JSON.stringify({ command, args, cwd: raw.cwd }),
-          ],
-          env: [
-            ...env.filter((entry) => entry.name !== 'ELECTRON_RUN_AS_NODE'),
-            { name: 'ELECTRON_RUN_AS_NODE', value: '1' },
-          ],
-        });
-      } else servers.push({ name, command, args, env });
+      if (
+        raw.cwd !== undefined &&
+        (typeof raw.cwd !== 'string' || !raw.cwd || raw.cwd.includes('\0'))
+      )
+        throw new Error(`Invalid MCP directory for ${name}.`);
+      servers.push({
+        name,
+        command,
+        args,
+        env,
+        cwd: typeof raw.cwd === 'string' ? raw.cwd : input.cwd,
+      });
     } else throw new Error(`OpenCode cannot load MCP server ${name}.`);
   }
   if (input.mainUrl && input.uiUrl && input.authToken) {
@@ -154,6 +150,17 @@ export function buildOpenCodeMcpServers(input: {
     );
   }
   return servers;
+}
+
+/** Remove host-only launch metadata before serializing an ACP session. */
+export function openCodeMcpServersForAcp(
+  servers: readonly OpenCodeMcpLaunch[],
+): McpServer[] {
+  return servers.map((launch) => {
+    const server = { ...launch };
+    delete server.cwd;
+    return server;
+  });
 }
 
 /** The pinned runtime keeps letters, digits, underscores and hyphens in MCP names. */

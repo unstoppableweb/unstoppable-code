@@ -466,9 +466,21 @@ export interface CodeReviewScopeRequest {
 
 export type CodeReviewGetRequest = CodeReviewScopeRequest;
 
+export interface CodeReviewStateMutationFailure {
+  code: 'code_review_state_unavailable';
+  reason:
+    | 'read_failed'
+    | 'invalid_json'
+    | 'unsupported_version'
+    | 'lossy_state';
+  message: string;
+}
+
 export interface CodeReviewGetResponse {
   review: CodeReviewFile;
   fingerprint: string;
+  /** Display may be degraded; mutations recheck admission under the file lock. */
+  mutationFailure?: CodeReviewStateMutationFailure;
   /**
    * Stored comment threads the reader couldn't use, so they aren't in
    * `review` (CAN-6667). Writes keep them on disk as they were. Absent when
@@ -502,10 +514,10 @@ export interface CodeReviewUpdatedEvent {
 }
 
 /**
- * Register the real project a code-review chat scope runs against. The
- * code-review scope uses `projectId = CODE_REVIEW_CHAT_PROJECT_ID` and
- * `worktreeId = <real worktreeId>`; this maps that worktreeId back to the real
- * `projectId` whose checkout the sidecar session runs in.
+ * Register the real project and worktree a code-review chat scope runs
+ * against. The code-review scope uses `projectId = CODE_REVIEW_CHAT_PROJECT_ID`
+ * and `worktreeId = buildCodeReviewScopeKey(projectId, worktreeId)`; main
+ * builds that key and maps it back to the real ids.
  */
 export interface RegisterCodeReviewRequest {
   worktreeId: string;

@@ -1,3 +1,9 @@
+import { WorkspaceConfigUnreadableError } from '../file-store';
+import {
+  w5UnderlyingDiagnostics,
+  w5ErrorDiagnostics,
+  isW5FilesystemCode,
+} from '../error-diagnostics';
 import { w5DaemonReceiptCaller } from '../workspace-metadata/receipt-caller';
 import { isW5CommitOutcome } from '../commit-log/worker-contract';
 import { W5ProcessFileLockTimeoutError } from '../commit-log/errors';
@@ -126,6 +132,8 @@ export interface W5RecordAuthority {
 }
 
 const MESSAGES: Readonly<Record<CoreWorkspaceRecordsErrorCode, string>> = {
+  'core.workspaceRecords.configUnreadable': new WorkspaceConfigUnreadableError()
+    .message,
   'core.workspaceRecords.identityConflict':
     'This workspace identity is already reserved or occupied.',
   'core.workspaceRecords.fingerprintConflict':
@@ -351,6 +359,15 @@ export function toW5RecordWireError(
       error,
     );
   }
+  if (error instanceof WorkspaceConfigUnreadableError) {
+    const { errorCode } = w5ErrorDiagnostics(error);
+    return wireError(
+      'core.workspaceRecords.configUnreadable',
+      isW5FilesystemCode(errorCode) ? { errorCode } : {},
+      NEVER,
+      error,
+    );
+  }
   if (error instanceof W5CommitRefusedError)
     return refusalWireError(error, root);
   if (error instanceof StorageWriteRefusedError)
@@ -363,7 +380,7 @@ export function toW5RecordWireError(
   if (error instanceof W5CommitLogError)
     return wireError(
       'core.workspaceRecords.logUnavailable',
-      { code: error.code },
+      { code: error.code, ...w5UnderlyingDiagnostics(error.underlying) },
       NEVER,
       error,
     );

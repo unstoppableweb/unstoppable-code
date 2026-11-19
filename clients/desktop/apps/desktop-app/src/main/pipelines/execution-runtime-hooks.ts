@@ -8,6 +8,7 @@ import type {
 import { getExecutionAccounting } from '../execution-accounting';
 import {
   finishPipelineExecutionTelemetry,
+  reportPipelinePersistFailure,
   startPipelineExecutionTelemetry,
 } from './instrumentation';
 import { showOsNotification } from '../ipc/os-notifications';
@@ -33,6 +34,7 @@ export function createDesktopLifecycleHooks(): ExecutionLifecycleHooks {
       }
       settled.add(state.id);
       finishPipelineExecutionTelemetry(state);
+      reportPipelinePersistFailure(state);
       awake.get(state.id)?.();
       awake.delete(state.id);
     },

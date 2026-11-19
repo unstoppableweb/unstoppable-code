@@ -193,7 +193,7 @@ export const SelectionActionPill = forwardRef<
       role={role}
       aria-label={ariaLabel}
       data-testid={dataTestId}
-      className="flex gap-0.5 whitespace-nowrap rounded-full bg-card/95 p-0.5 fg-primary shadow-xl backdrop-blur"
+      className="flex gap-0.5 whitespace-nowrap rounded-full bg-card p-0.5 fg-primary shadow-xl"
       onMouseDown={(event): void => event.stopPropagation()}
     >
       {actions.map((action) =>

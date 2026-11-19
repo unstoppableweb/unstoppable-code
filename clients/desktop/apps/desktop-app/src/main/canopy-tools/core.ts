@@ -1,3 +1,4 @@
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import { searchChatsSchema, readChatExcerptSchema } from './definitions';
 import { executeShowCapabilities } from './show-capabilities';
 import { setAutoArchiveThroughCore } from './auto-archive-core-client';
@@ -98,11 +99,21 @@ import { recordPendingInjectedToolAuthFailure } from '../mcp/pending-auth-failur
 import {
   invalidAgentActionArguments as invalidArguments,
   requestSecretsInputSchema,
+  runWithSecretsInputSchema,
+  writeSecretsFileInputSchema,
   type RequestSecretsInput,
   type RequestSecretsResult,
+  type RunWithSecretsInput,
+  type RunWithSecretsResult,
+  type WriteSecretsFileInput,
+  type WriteSecretsFileResult,
 } from '@canopy/agent-actions';
+import { AgentSecretToolError } from '../agent-secrets/secret-tool-host';
+import { SecretRequestUnavailableError } from '../agent-secrets/request-secrets';
+import { SecretToolUnavailableError } from '../agent-secrets/run-with-secrets';
 import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { worktreeWatcherDestination } from '../agent-actions/desktop-watcher-port';
+import type { ForceMcpRemovalRequest } from '@canopy/protocol/mcp-removal';
 import { isChatVisualsEnabled } from '../lib/chat-visuals-feature-flag';
 import { executeShowVisual, type ShowVisualHost } from './show-visual-runtime';
 import { withBackgroundRefusalAsToolError } from '../services/background-execution-refusal';
@@ -145,6 +156,10 @@ export type ReadPipelineYamlInput = Omit<
 >;
 
 export interface CanopyInjectedToolRuntime {
+  authorizeForcedMcpRemoval?: (
+    request: ForceMcpRemovalRequest,
+    context?: CanopyInjectedToolContext,
+  ) => Promise<boolean>;
   authorizeInstalledItemUninstall?: (
     request: UninstallInstalledItemRequest,
     context?: CanopyInjectedToolContext,
@@ -167,6 +182,19 @@ export interface CanopyInjectedToolRuntime {
     input: RequestSecretsInput,
     options: { toolUseId?: string; signal?: AbortSignal },
   ) => Promise<RequestSecretsResult>;
+  /**
+   * RunWithSecrets and WriteSecretsFile: present only for the same root
+   * local chats as `requestSecrets`. They raise their own approval through
+   * the chat's approval policy, so the host skips its generic tool approval.
+   */
+  runWithSecrets?: (
+    input: RunWithSecretsInput,
+    options: { toolUseId?: string; signal?: AbortSignal },
+  ) => Promise<RunWithSecretsResult>;
+  writeSecretsFile?: (
+    input: WriteSecretsFileInput,
+    options: { toolUseId?: string; signal?: AbortSignal },
+  ) => Promise<WriteSecretsFileResult>;
   loadScriptOutput(
     request: GetScriptOutputInput,
   ): Promise<ScriptOutputSnapshot>;
@@ -353,20 +381,21 @@ async function runCanopyInjectedTool(
     case 'request_secrets':
       return executeRequestSecrets(rawArgs, runtime, context);
     case 'run_with_secrets':
+      return executeSecretUseTool(
+        'RunWithSecrets',
+        runWithSecretsInputSchema,
+        rawArgs,
+        runtime.runWithSecrets,
+        context,
+      );
     case 'write_secrets_file':
-      // Registered contracts only: no surface offers these tools and no
-      // executor exists yet, so a call fails closed.
-      return {
-        isError: true,
-        text: JSON.stringify({
-          ok: false,
-          error: {
-            code: 'capability_unavailable',
-            message: 'Secret requests are unavailable in this session.',
-            retryable: false,
-          },
-        }),
-      };
+      return executeSecretUseTool(
+        'WriteSecretsFile',
+        writeSecretsFileInputSchema,
+        rawArgs,
+        runtime.writeSecretsFile,
+        context,
+      );
     case 'ask_user_question':
       return executeAskUserQuestion(rawArgs, runtime, context);
     case 'get_script_output':
@@ -631,6 +660,66 @@ async function executeRequestSecrets(
   } catch (error) {
     if (error instanceof Error && error.message === 'Window not available')
       return { text: 'Window not available', isError: true };
+    // The live secret-requests gate off, or a mid-call flip, is an expected
+    // "unavailable" outcome, not a defect to report.
+    if (error instanceof SecretRequestUnavailableError)
+      return SECRET_REQUESTS_UNAVAILABLE;
+    reportMainAppError(error, { source: 'host_tool' });
+    return SECRET_REQUESTS_UNAVAILABLE;
+  }
+}
+
+/**
+ * RunWithSecrets and WriteSecretsFile: parse, run, and return the contract
+ * result. Errors carry only names and messages; the arguments never hold a
+ * value to echo, and the executors redact output before returning it.
+ */
+async function executeSecretUseTool<Input, Result>(
+  displayName: 'RunWithSecrets' | 'WriteSecretsFile',
+  schema: {
+    safeParse(value: unknown):
+      | { success: true; data: Input }
+      | {
+          success: false;
+          error: { issues: Array<{ path: PropertyKey[]; message: string }> };
+        };
+  },
+  rawArgs: unknown,
+  run:
+    | ((
+        input: Input,
+        options: { toolUseId?: string; signal?: AbortSignal },
+      ) => Promise<Result>)
+    | undefined,
+  context?: CanopyInjectedToolContext,
+): Promise<CanopyInjectedToolTextResult> {
+  if (!run) return SECRET_REQUESTS_UNAVAILABLE;
+  const parsed = schema.safeParse(rawArgs);
+  if (!parsed.success) {
+    return {
+      isError: true,
+      text: `Invalid ${displayName} arguments: ${parsed.error.issues
+        .map(
+          (issue) =>
+            `${issue.path.map(String).join('.') || 'input'}: ${issue.message}`,
+        )
+        .join('; ')}`,
+    };
+  }
+  try {
+    const result = await run(parsed.data, {
+      ...(context?.toolUseId ? { toolUseId: context.toolUseId } : {}),
+      ...(context?.signal ? { signal: context.signal } : {}),
+    });
+    return { text: JSON.stringify(result) };
+  } catch (error) {
+    if (error instanceof AgentSecretToolError)
+      return { isError: true, text: error.message };
+    // The live secret-requests gate off, a mid-call flip, or a platform that
+    // does not support the tool is an expected "unavailable" outcome.
+    if (error instanceof SecretToolUnavailableError)
+      return SECRET_REQUESTS_UNAVAILABLE;
+    reportMainAppError(error, { source: 'host_tool' });
     return SECRET_REQUESTS_UNAVAILABLE;
   }
 }

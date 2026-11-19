@@ -145,6 +145,14 @@ export const WORKER_PIPELINE_PORTABLE_LAUNCH_HOST_MEMBERS = Object.freeze({
   globalWorkspaceDir:
     "A host path: the runner names the pipeline's kept workspace under its data root.",
   secretEnv: 'Secret values: they cross only by reference in `secrets`.',
+  nativeRouteEvidence:
+    'A local desktop resolver observation; remote owners require their own routing authority and delegation fence.',
+  nativeRouteBlockers:
+    'Local resolver diagnostics; a remote runner assesses its own effective routing dependencies.',
+  nativeSetupFailure:
+    'Local start-time resource admission diagnostics; the runner checks its own setup.',
+  nativeStartSetup:
+    'Host-local setup snapshots and fact projections; a remote runner must establish its own resource admission.',
   target: 'Carries the worktree path; the runner derives it from runScope.',
   pipelinePreferenceLocator:
     'A file locator is a host path; the pin identifies the definition.',

@@ -212,7 +212,7 @@ export function serveLocalWorkerBinding({
     } catch (error) {
       active -= 1;
       served.delete(id);
-      return sendReply(errorResponse(id, error));
+      return sendReply(errorResponse(id, error, operation.definition));
     }
     const opened = await dispatcher
       .openStream(
@@ -229,7 +229,7 @@ export function serveLocalWorkerBinding({
     active -= 1;
     if (!('handle' in opened)) {
       served.delete(id);
-      return sendReply(errorResponse(id, opened.error));
+      return sendReply(errorResponse(id, opened.error, operation.definition));
     }
     const { handle } = opened;
     const reply: CanopyJsonRpcMessage = {
@@ -309,7 +309,7 @@ export function serveLocalWorkerBinding({
         : await dispatcher.query(method, input, options);
       response = { jsonrpc: '2.0', id, result };
     } catch (error) {
-      response = errorResponse(id, error);
+      response = errorResponse(id, error, operation?.definition);
     } finally {
       active -= 1;
       served.delete(id);

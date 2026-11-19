@@ -26,6 +26,16 @@ export const phase3Suites = [
     ],
   },
   {
+    file: 'packages/core-platform/src/__tests__/git-read-windows-repository.test.ts',
+    layer: 'direct-platform-contract',
+    minimumCases: 31,
+  },
+  {
+    file: 'apps/core-daemon/src/__tests__/windows-git-reads.test.ts',
+    layer: 'daemon-composition',
+    minimumCases: 3,
+  },
+  {
     file: 'apps/core-daemon/src/__tests__/watch-native-windows.test.ts',
     layer: 'daemon-composition',
     requiredTitles: [

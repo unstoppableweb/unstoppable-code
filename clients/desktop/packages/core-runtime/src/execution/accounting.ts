@@ -47,6 +47,13 @@ export interface ExecutionAccountingOptions<
     snapshot: ExecutionAccountingSnapshot<TMetadata>,
   ) => number;
   readonly productName: string;
+  /**
+   * Called with the error of each sample that failed, wherever the sample was
+   * asked for. A sample read keeps the last snapshot and the host's timers
+   * drop the error, so without this a failing process table goes unseen while
+   * the memory guard decides on a stale sample (CAN-7116).
+   */
+  readonly onSampleFailure?: (error: unknown) => void;
   /** Holds the computer awake for families whose policy asks for it. */
   readonly wakeLock?: ExecutionWakeLock;
   readonly now?: () => number;
@@ -331,7 +338,8 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
       await this.sample();
       if (this.sampledVersion < wanted) await this.sample();
     } catch {
-      // The host's process table failed; the next sample tries again.
+      // The host's process table failed, and `onSampleFailure` has it; the
+      // next sample tries again.
     }
     return this.snapshot;
   }
@@ -339,9 +347,18 @@ export class ExecutionAccounting<TMetadata extends { type: string }> {
   /** Samples once; a sample already running is joined, not repeated. */
   sample(): Promise<ExecutionAccountingSnapshot<TMetadata>> {
     if (this.sampling) return this.sampling;
-    const run = this.sampleOnce().finally(() => {
-      this.sampling = null;
-    });
+    const run = this.sampleOnce()
+      .catch((error: unknown) => {
+        try {
+          this.options.onSampleFailure?.(error);
+        } catch {
+          // Reporting must not replace the failure the caller sees.
+        }
+        throw error;
+      })
+      .finally(() => {
+        this.sampling = null;
+      });
     this.sampling = run;
     return run;
   }

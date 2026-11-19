@@ -1,5 +1,5 @@
-// CAN-5061 golden: pipeline execution behavior through desktop IPC, Portal
-// commands and agent actions, captured on unchanged code before CAN-4140,
+// CAN-5061 golden: pipeline execution behavior through desktop IPC and agent
+// actions, captured on unchanged code before CAN-4140,
 // CAN-4141 and CAN-4142 move execution behind core. Covers start, cancel,
 // resume, retry, start-over, matrix retry and variant cancel, chaining,
 // typed and global-run owner refusals, the shutdown checkpoint pause and the
@@ -11,10 +11,24 @@
 // and review the snapshot diff as a behavior change.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import {
+  IPC_CHANNELS,
+  type ArchivedContainerManifest,
+} from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
-import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
+import {
+  loadExecutionState,
+  saveExecutionState,
+} from '@canopy/execution-engine/node/pipelines/executor';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { OperationRecord } from '@canopy/protocol/canopy-core';
 import type { ExecutionState } from '@canopy/execution-engine/types/pipeline';
@@ -25,13 +39,13 @@ import {
   type DesktopCanopyDispatcher,
 } from '../../canopy-runtime/desktop-runtime';
 import { setDesktopCanopyRuntime } from '../../canopy-runtime/desktop-runtime-access';
+import { relocateExecutionStateArtifactPaths } from '../../pipelines/execution-state-relocation';
 import {
   dispatchAgentAction,
   forkGoldenUtilityProcess,
   goldenWorktreeActionRuntime,
   invokeIpc,
   registerGoldenIpcHandler,
-  runPortalCommand,
   type GoldenIpcHandler,
 } from './harness';
 import {
@@ -147,36 +161,6 @@ function projectStates(value: unknown): unknown {
 const HOST_FACT_KEY = /(^pid$|Pid$|_pid$|[dD]uration|_ms$|Ms$|elapsed)/;
 
 /** Normalize, then blank host facts such as pids and durations. */
-/**
- * A retried or rerun execution starts asynchronously, so its command response
- * projects the run at any point of its progress: pending, running or already
- * finished. Keep what identifies the started run; the settled projections pin
- * how it ended.
- */
-function startedRun(response: unknown): unknown {
-  const started = (entry: unknown): unknown => {
-    if (Array.isArray(entry)) return entry.map(started);
-    if (typeof entry !== 'object' || entry === null) return entry;
-    return Object.fromEntries(
-      Object.entries(entry).flatMap(([key, inner]): [string, unknown][] => {
-        if (key === 'finishedAt' || key === 'outputTail') return [];
-        if (key !== 'status') return [[key, started(inner)]];
-        expect(['pending', 'running', 'success']).toContain(inner);
-        return [[key, '<started>']];
-      }),
-    );
-  };
-  if (typeof response !== 'object' || response === null) return response;
-  if (!('payload' in response)) return response;
-  const { payload } = response;
-  if (typeof payload !== 'object' || payload === null) return response;
-  if (!('result' in payload)) return response;
-  return {
-    ...response,
-    payload: { ...payload, result: started(payload.result) },
-  };
-}
-
 function golden(value: unknown): unknown {
   const scrub = (entry: unknown): unknown => {
     if (Array.isArray(entry)) return entry.map(scrub);
@@ -613,147 +597,6 @@ describe('desktop IPC', () => {
     await expect(
       invokeIpc(PIPELINE_CHANNELS.READ_STEP_LOG, join(escape, 'secret.log')),
     ).resolves.toEqual({ success: false, error: 'Invalid log file path' });
-  });
-});
-
-describe('Portal', () => {
-  const run = (
-    pipelineId: string,
-    payload: Record<string, unknown> = {},
-  ): Promise<{ event: string; payload: unknown; updates: unknown[] }> =>
-    runPortalCommand('portal.pipeline.run', {
-      pipelineId,
-      projectId: GOLDEN_WORKSPACE_ID,
-      worktreeId: GOLDEN_WORKTREE_ID,
-      ...payload,
-    });
-  const scoped = (
-    executionId: string | undefined,
-  ): Record<string, unknown> => ({
-    executionId,
-    projectId: GOLDEN_WORKSPACE_ID,
-    worktreeId: GOLDEN_WORKTREE_ID,
-  });
-
-  it('runs, gets, lists, resumes, retries, starts over and cancels', async () => {
-    const success = await start('portal-success', () =>
-      run(pipelineIds.success, { inputs: { greeting: 'portal' } }),
-    );
-    const successSettled = await settled(success.executionId);
-    const flaky = await start('portal-flaky', () =>
-      run(pipelineIds.flaky, { inputs: { marker: marker('portal-flaky') } }),
-    );
-    await settled(flaky.executionId);
-    const retry = await runPortalCommand(
-      'portal.pipeline.retry',
-      scoped(flaky.executionId),
-    );
-    const retried = await settled(flaky.executionId);
-    const rerun = await start('portal-rerun', () =>
-      runPortalCommand('portal.pipeline.rerun', scoped(success.executionId)),
-    );
-    const rerunSettled = await settled(rerun.executionId);
-
-    const paused = await start('portal-pause', () => run(pipelineIds.pause));
-    const pausedState = await waitForExecution(
-      executionsDir,
-      paused.executionId ?? '',
-      ['paused'],
-    );
-    const pause = pausedState.pending_pauses[0];
-    const resumeMissingAnswer = await runPortalCommand(
-      'portal.pipeline.resume',
-      {
-        ...scoped(paused.executionId),
-        pauseResponses: [
-          {
-            checkpointId: pause?.id,
-            jobId: pause?.job_id,
-            stepId: pause?.step_id,
-          },
-        ],
-      },
-    );
-    const resume = await runPortalCommand('portal.pipeline.resume', {
-      ...scoped(paused.executionId),
-      pauseResponses: [
-        {
-          checkpointId: pause?.id,
-          jobId: pause?.job_id,
-          stepId: pause?.step_id,
-          answers: { approved: true },
-        },
-      ],
-    });
-    const resumed = await settled(paused.executionId);
-
-    const toCancel = await start('portal-cancel', () => run(pipelineIds.pause));
-    await waitForExecution(executionsDir, toCancel.executionId ?? '', [
-      'paused',
-    ]);
-    const cancel = await runPortalCommand(
-      'portal.pipeline.cancel',
-      scoped(toCancel.executionId),
-    );
-
-    expect(
-      golden({
-        success,
-        successSettled,
-        get: await runPortalCommand(
-          'portal.pipeline.execution.get',
-          scoped(success.executionId),
-        ),
-        list: await runPortalCommand('portal.pipeline.execution_list', {
-          projectId: GOLDEN_WORKSPACE_ID,
-          worktreeId: GOLDEN_WORKTREE_ID,
-        }),
-        retry: startedRun(retry),
-        retried,
-        rerun: startedRun(rerun.result),
-        rerunSettled,
-        resumeMissingAnswer,
-        resume,
-        resumed,
-        cancel,
-      }),
-    ).toMatchSnapshot();
-  });
-
-  it('refuses invalid runs and foreign executions', async () => {
-    expect(
-      golden({
-        missingPipeline: await run('missing-pipeline'),
-        invalidLocator: await run('../escape'),
-        missingTarget: await runPortalCommand('portal.pipeline.run', {
-          pipelineId: pipelineIds.success,
-        }),
-        unknownWorktree: await run(pipelineIds.success, {
-          worktreeId: 'missing-wt',
-        }),
-        undeclaredInput: await run(pipelineIds.success, {
-          inputs: { unknown: 'x' },
-        }),
-        unsupportedEvent: await run(pipelineIds.success, {
-          eventName: 'task_ready',
-        }),
-        ultraFast: await run(pipelineIds.success, {
-          modelConfig: { speed: 'ultra' },
-        }),
-        getMissing: await runPortalCommand(
-          'portal.pipeline.execution.get',
-          scoped('missing-execution'),
-        ),
-        cancelOtherWorktree: await runPortalCommand('portal.pipeline.cancel', {
-          ...scoped('missing-execution'),
-          worktreeId: 'other-wt',
-        }),
-        retryMissing: await runPortalCommand(
-          'portal.pipeline.retry',
-          scoped('missing-execution'),
-        ),
-      }),
-    ).toMatchSnapshot();
   });
 });
 
@@ -1472,11 +1315,6 @@ describe('workflow trigger (CAN-5782)', () => {
       golden({
         run: run.result,
         settled: await settled(run.executionId),
-        portalWithoutEvent: await runPortalCommand('portal.pipeline.run', {
-          pipelineId: pipelineIds.workflow,
-          projectId: GOLDEN_WORKSPACE_ID,
-          worktreeId: GOLDEN_WORKTREE_ID,
-        }),
         agentRun: await dispatchAgentAction(
           { type: 'pipeline.run', pipelineId: pipelineIds.workflow },
           goldenWorktreeActionRuntime(world.worktreePath),
@@ -1484,4 +1322,142 @@ describe('workflow trigger (CAN-5782)', () => {
       }),
     ).toMatchSnapshot();
   });
+});
+
+it('keeps recovery, archived logs and shell workflows working without Node, but refuses Node/TSX steps', async () => {
+  const nodeRuntime = await import('../../lib/node-runtime');
+  const missing = jest
+    .spyOn(nodeRuntime, 'getDesktopNodeRuntime')
+    .mockRejectedValue(new Error('Bundled Node/TSX runtime is unavailable'));
+  try {
+    const { createElectronExecutionRuntime } =
+      await import('../../pipelines/execution-runtime');
+    const executionRuntime = createElectronExecutionRuntime();
+    expect(executionRuntime.executionsDir).toBe(executionsDir);
+    // Recovery callers copy and inspect runtimes without executing a step.
+    expect(() => {
+      Object.assign({}, executionRuntime);
+      Object.keys(executionRuntime);
+      JSON.stringify(executionRuntime);
+    }).not.toThrow();
+    const shell = await executeIpc('success', SUCCESS_YAML);
+    const shellId = executionIdOf(shell);
+    expect(shellId).toBeDefined();
+    if (!shellId) throw new Error('Missing shell execution');
+    const shellState = await waitForExecution(executionsDir, shellId);
+    expect(shellState.status).toBe('success');
+    const {
+      getArchivedContainerManifestPath,
+      getArchivedContainerExecutionsDir,
+    } = await import('../../lib/paths');
+    const containerId = 'missing-runtime-archive';
+    const archivedDir = getArchivedContainerExecutionsDir(
+      GOLDEN_WORKSPACE_ID,
+      containerId,
+    );
+    const manifest: ArchivedContainerManifest = {
+      version: 1,
+      kind: 'worktree',
+      id: containerId,
+      projectId: GOLDEN_WORKSPACE_ID,
+      name: 'Archived shell workflow',
+      createdAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+      retentionDays: 7,
+      expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+      chatCount: 0,
+      archivedChatCount: 0,
+      executionCount: 1,
+      workspaceType: 'single-repo',
+    };
+    const manifestPath = getArchivedContainerManifestPath(
+      GOLDEN_WORKSPACE_ID,
+      containerId,
+    );
+    mkdirSync(dirname(manifestPath), { recursive: true });
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    mkdirSync(archivedDir, { recursive: true });
+    cpSync(join(executionsDir, shellId), join(archivedDir, shellId), {
+      recursive: true,
+    });
+    // Match cleanupWorktreePipelines: copied artifacts need rebased state paths.
+    await saveExecutionState(
+      relocateExecutionStateArtifactPaths(
+        shellState,
+        executionsDir,
+        archivedDir,
+        shellId,
+      ),
+      archivedDir,
+    );
+    const { registerArchivedContainerHandlers } =
+      await import('../../ipc/archived-containers');
+    registerArchivedContainerHandlers({
+      dispatcher: runtime,
+      resolveCaller: () => {
+        throw new Error('Archived log reads do not dispatch instructions.');
+      },
+    });
+    const logRequest = {
+      projectId: GOLDEN_WORKSPACE_ID,
+      containerId,
+      executionId: shellId,
+      jobId: 'build',
+      stepId: 'greet',
+    };
+    const expectedLines: unknown = expect.arrayContaining(['hello']);
+    await expect(
+      invokeIpc(
+        IPC_CHANNELS.archivedContainersReadExecutionStepLog,
+        logRequest,
+      ),
+    ).resolves.toEqual({ lines: expectedLines });
+    await expect(
+      invokeIpc(IPC_CHANNELS.archivedContainersReadExecutionStepLog, {
+        ...logRequest,
+        stepId: 'absent-step',
+      }),
+    ).resolves.toEqual({ lines: [] });
+    expect(missing).not.toHaveBeenCalled();
+    for (const interpreter of ['node', 'tsx']) {
+      const yaml = `pipeline:
+  name: Missing ${interpreter}
+  on: dispatch
+  jobs:
+    run:
+      steps:
+        - shell: ${interpreter}
+          run: require('node:fs').writeFileSync(process.env.RUNTIME_MARKER, 'ran')
+`;
+      const pipelineId = await world.saveUserPipeline(
+        yaml,
+        `pipeline:missing-${interpreter}`,
+      );
+      const result = await invokeIpc(
+        PIPELINE_CHANNELS.EXECUTE,
+        parsePipelineText(yaml),
+        {
+          pipelineId,
+          ...worktreeTarget(),
+          env: { RUNTIME_MARKER: marker(`missing-${interpreter}`) },
+        },
+      );
+      const id = executionIdOf(result);
+      if (id) {
+        const state = await waitForExecution(executionsDir, id);
+        expect(state.status).toBe('failure');
+        expect(JSON.stringify(state)).toContain(
+          'Bundled Node/TSX runtime is unavailable',
+        );
+      } else {
+        expect(result).toMatchObject({ success: false });
+        expect(JSON.stringify(result)).toContain(
+          'Bundled Node/TSX runtime is unavailable',
+        );
+      }
+      expect(existsSync(marker(`missing-${interpreter}`))).toBe(false);
+    }
+  } finally {
+    missing.mockRestore();
+  }
 });

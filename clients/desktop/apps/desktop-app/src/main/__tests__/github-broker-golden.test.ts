@@ -1,19 +1,33 @@
-// CAN-4176 golden: the GitHub broker as desktop main runs it today, captured
-// before it moves into core behind a credential port. It drives the real
-// broker, scheduler, quota ledger and conditional cache with fake timers;
-// only the token resolver and the Octokit constructor are replaced, and the
-// requests are in-test functions returning raw GitHub responses. A change
+// CAN-4176 golden: the GitHub broker as desktop main runs it, before it moves
+// into core. It drives the real broker, credential port, scheduler, quota
+// ledger and conditional cache with fake timers; only the token sources and
+// the Octokit constructor are replaced, and the requests are in-test functions
+// returning raw GitHub responses. A change
 // here is a behaviour change: re-record deliberately with
 // `pnpm test <this file> -u` and review the snapshot diff.
 import type * as BrokerModule from '../lib/github-broker';
+import type * as CredentialPortModule from '../lib/github-broker/credential-port';
 
 const tokenReads: string[] = [];
 let currentToken = 'ghp_token_one';
+// The pinned sources a caller can lease: the stored PAT, the GitHub CLI token
+// and the resolved credential.
+const pinnedTokens = {
+  pat: 'ghp_caller_a',
+  ghCli: 'ghp_caller_b',
+  resolved: 'ghp_caller_selected',
+};
 jest.mock('../lib/github-auth', () => ({
   resolveGitHubToken: (): Promise<string> => {
     tokenReads.push(currentToken === '' ? 'none' : 'read');
     return Promise.resolve(currentToken);
   },
+  loadStoredPat: (): Promise<string> => Promise.resolve(pinnedTokens.pat),
+  loadGhCliToken: (): Promise<string> => Promise.resolve(pinnedTokens.ghCli),
+  resolveGitHubTokenWithSource: (): Promise<{
+    token: string;
+    source: string;
+  }> => Promise.resolve({ token: pinnedTokens.resolved, source: 'pat' }),
   invalidateTokenCache: (): void => {
     tokenReads.push('invalidate');
   },
@@ -35,6 +49,15 @@ jest.mock('../lib/github-octokit-loader', () => ({
 
 let broker: BrokerModule.GitHubBroker;
 let brokerModule: typeof BrokerModule;
+let credentialPort: CredentialPortModule.GitHubBrokerCredentialPort;
+
+async function lease(
+  source: CredentialPortModule.GitHubBrokerCredentialSource,
+): Promise<CredentialPortModule.GitHubBrokerCredentialLease> {
+  const grant = await credentialPort.lease(source);
+  if (!grant) throw new Error(`No ${source} credential to lease.`);
+  return grant.lease;
+}
 const log: string[] = [];
 
 beforeEach(async () => {
@@ -46,6 +69,9 @@ beforeEach(async () => {
   currentToken = 'ghp_token_one';
   brokerModule = await import('../lib/github-broker');
   broker = brokerModule.getGitHubBroker();
+  credentialPort = (
+    await import('../lib/github-broker/credential-port')
+  ).getGitHubBrokerCredentialPort();
 });
 
 afterEach(() => {
@@ -338,8 +364,11 @@ describe('retries', () => {
 describe('per-credential separation', () => {
   it('keeps conditional cache entries and quota apart per caller-selected credential', async () => {
     const seen: string[] = [];
+    const callerA = await lease('pat');
+    const callerB = await lease('gh-cli');
+    const unknownCaller = await lease('resolved');
     const options = (
-      token?: string,
+      credential?: CredentialPortModule.GitHubBrokerCredentialLease,
     ): BrokerModule.GitHubBrokerRequestOptions<{ title: string }> => ({
       priority: 'watcher' as const,
       operation: 'read' as const,
@@ -349,7 +378,7 @@ describe('per-credential separation', () => {
       isCachedData: (value: unknown): value is { title: string } =>
         typeof value === 'object' && value !== null && 'title' in value,
       timeoutMs: 30_000,
-      ...(token ? { authenticationToken: token } : {}),
+      ...(credential ? { credential } : {}),
     });
     const read =
       (label: string, remaining: string) =>
@@ -366,18 +395,18 @@ describe('per-credential separation', () => {
         )();
       };
     await broker.execute(read('default-1', '4000'), options());
-    await broker.execute(read('caller-a-1', '3000'), options('ghp_caller_a'));
-    await broker.execute(read('caller-b-1', '2000'), options('ghp_caller_b'));
+    await broker.execute(read('caller-a-1', '3000'), options(callerA));
+    await broker.execute(read('caller-b-1', '2000'), options(callerB));
     await broker.execute(read('default-2', '3999'), options());
-    await broker.execute(read('caller-a-2', '2999'), options('ghp_caller_a'));
+    await broker.execute(read('caller-a-2', '2999'), options(callerA));
     expect({
       seen,
       quota: {
         default: broker.currentQuota('core')?.remaining ?? null,
-        callerA: broker.currentQuota('core', 'ghp_caller_a')?.remaining ?? null,
-        callerB: broker.currentQuota('core', 'ghp_caller_b')?.remaining ?? null,
+        callerA: broker.currentQuota('core', callerA)?.remaining ?? null,
+        callerB: broker.currentQuota('core', callerB)?.remaining ?? null,
         unknownCaller:
-          broker.currentQuota('core', 'ghp_unknown')?.remaining ?? null,
+          broker.currentQuota('core', unknownCaller)?.remaining ?? null,
       },
       tokenReads,
       octokitBuilds,
@@ -386,7 +415,7 @@ describe('per-credential separation', () => {
 });
 
 describe('credentials and lifecycle', () => {
-  it('builds one client per credential generation and refuses without a token', async () => {
+  it('builds one credential-free client, checks the credential every attempt and refuses without a token', async () => {
     const options = {
       priority: 'interactive' as const,
       operation: 'read' as const,
@@ -403,7 +432,7 @@ describe('credentials and lifecycle', () => {
     await broker.execute(ok({ n: 4 }), options);
     await broker.execute(ok({ n: 5 }), {
       ...options,
-      authenticationToken: 'ghp_caller_selected',
+      credential: await lease('resolved'),
     });
     expect({
       tokenReads,

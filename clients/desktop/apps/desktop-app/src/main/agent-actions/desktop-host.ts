@@ -10,6 +10,7 @@ import { desktopSettingsPort } from './desktop-settings-port';
 import { desktopPipelineExecutionsPort } from './desktop-pipeline-executions-port';
 import { desktopPipelinesPort } from './desktop-pipelines-port';
 import { desktopCapabilityPackagePort } from './desktop-capability-package-port';
+import { desktopPullRequestReviewPort } from './desktop-pull-request-review-port';
 import {
   createBotActionFamily,
   createBrowserActionFamily,
@@ -23,11 +24,13 @@ import {
   createCapabilityPackageActionFamily,
   createPipelineExecutionsActionFamily,
   createPipelinesActionFamily,
+  createPullRequestReviewActionFamily,
   type AgentBrowserPort,
   type AgentCapabilityPackagePort,
   type AgentExperimentsPort,
   type AgentPipelineExecutionsPort,
   type AgentPipelinesPort,
+  type AgentPullRequestReviewPort,
   type AgentSettingsPort,
   defineAgentActionHost,
   type AgentActionFamily,
@@ -81,6 +84,8 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     'pipelines',
     'pipeline-executions',
     'browser',
+    // Code reviews posted as the GitHub App (CAN-6989).
+    'pull-request-review',
     'desktop-legacy',
     'editor-setup',
     // History actions mount on the Orchestrator; scoped chats use the injected tools.
@@ -168,6 +173,8 @@ export interface DesktopAgentActionPorts {
   pipelines?: AgentPipelinesPort<CanopyInjectedToolRuntime>;
   /** Lists, reads and controls runs on the worktree action path. */
   pipelineExecutions?: AgentPipelineExecutionsPort<CanopyInjectedToolRuntime>;
+  /** Posts code reviews as the GitHub App over the web core. */
+  pullRequestReview?: AgentPullRequestReviewPort<CanopyInjectedToolRuntime>;
   environment: AgentEnvironmentPort<CanopyInjectedToolRuntime>;
   transcriptRead: AgentTranscriptReadPort<CanopyInjectedToolRuntime>;
   /** Explicit-target project and bot reads through project discovery. */
@@ -202,6 +209,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
       pipelines: desktopPipelinesPort,
       pipelineExecutions: desktopPipelineExecutionsPort,
       browser: desktopBrowserPort,
+      pullRequestReview: desktopPullRequestReviewPort,
     };
   }
   return defaultPorts;
@@ -253,6 +261,9 @@ export function desktopAgentActionFamilies(
     }),
     createBrowserActionFamily({
       port: ports.browser ?? desktopBrowserPort,
+    }),
+    createPullRequestReviewActionFamily({
+      port: ports.pullRequestReview ?? desktopPullRequestReviewPort,
     }),
     desktopLegacyActionFamily,
   ];

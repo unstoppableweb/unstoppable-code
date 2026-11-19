@@ -22,6 +22,7 @@ import type { CursorRuntimeTarget } from '@canopy/desktop-shared/lib/cursor-runt
 import type { CursorLaunch } from '@canopy/desktop-shared/node/cursor/runtime-launch';
 import { extractCursorZip } from '@canopy/desktop-shared/node/cursor/zip-archive';
 import type { CursorRuntimeArtifact } from '@canopy/desktop-shared/node/cursor/runtime-metadata';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 export type { CursorRuntimeArtifact };
 export type CursorInstallPhase = 'downloading' | 'verifying' | 'installing';
@@ -270,6 +271,13 @@ export class CursorRuntimeInstaller {
       } catch {
         signal.throwIfAborted();
       }
+    }
+    // A local-only build never downloads the Cursor runtime, so reconnecting
+    // can't repair it; say so instead of pointing at reconnect.
+    if (!allowsAutomaticCall('runtime.cursor-download')) {
+      throw new Error(
+        "Cursor runtime isn't installed, and this build doesn't download it.",
+      );
     }
     await mkdir(this.options.root, { recursive: true, mode: 0o700 });
     if ((await lstat(this.options.root)).isSymbolicLink())

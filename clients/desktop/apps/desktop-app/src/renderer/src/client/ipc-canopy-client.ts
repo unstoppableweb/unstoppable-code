@@ -1,3 +1,10 @@
+import {
+  McpRemovalCandidatesResultSchema,
+  InspectMcpRemovalResultSchema,
+  ForceMcpRemovalResultSchema,
+  type InspectMcpRemovalRequest,
+  type ForceMcpRemovalRequest,
+} from '@canopy/protocol/mcp-removal';
 import type { WorkflowsPanelClient } from '@canopy/app-core';
 import { createOrchestratorSettingsDraftClient } from './orchestrator-settings-client';
 import { isVoiceDictationPlatform } from '@canopy/desktop-shared/platform-capabilities';
@@ -7,7 +14,12 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import { getPortalChatToolFamily } from '@canopy/desktop-shared/lib/portal-tool-family';
-import type { CanopyCapabilities, CanopyClient } from '@canopy/app-core';
+import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import type {
+  CanopyCapabilities,
+  CanopyClient,
+  ReviewApprovalsClient,
+} from '@canopy/app-core';
 import type {
   CreditsHandoffClient,
   MarketplaceSourcesClient,
@@ -18,13 +30,19 @@ import type {
   SettingsPaymentHandoffResult,
 } from '@canopy/protocol/settings/payment-handoff';
 import { createIpcCanopyClient } from '@canopy/ipc-canopy-client';
+import { attachRestoredIpcAppError } from '@canopy/protocol/app-errors/ipc-rejection';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { createAppError } from '@canopy/protocol/app-errors';
+import { canopyErrorDiagnostic } from '@canopy/protocol/canopy-core';
 import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { isWebCoreScope } from '@/lib/chat-authority';
+import { cloudProjectIsCowork } from '@/cloud-chats/cloud-project-kind';
 import { isCoworkChatTarget } from '@/lib/cowork';
+import { isLocalOnlyBuild } from '@/lib/local-only-build';
+import { resolveIpcAppError } from '@/lib/ipc-app-error';
 import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
 import {
   cloudTerminalsEnabled,
@@ -32,7 +50,9 @@ import {
 } from '@/lib/web-core-scope-capabilities';
 import {
   loadWebCoreServedOperations,
+  webCoreServesChatFork,
   webCoreServesCost,
+  webCoreServesDelegationPages,
   webCoreServesSessionBreakdown,
 } from '@/lib/web-core-served-operations';
 import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
@@ -81,11 +101,71 @@ export function createDesktopCapabilities(
     | 'personalProjectConversion'
   > = {},
   hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'> = {},
+  localOnlyBuild = isLocalOnlyBuild(),
+): CanopyCapabilities {
+  const capabilities = createNormalDesktopCapabilities(
+    platform,
+    organizationOperations,
+    hostedSettings,
+  );
+  return localOnlyBuild
+    ? { ...capabilities, ...LOCAL_ONLY_DESKTOP_CAPABILITY_OVERRIDES }
+    : capabilities;
+}
+
+/**
+ * What a local-only build (docs/local-only-build.md) turns off: every
+ * capability whose feature needs our cloud, plus remote images and agent
+ * visual CDN assets. Local features, the person's own provider plans
+ * (`subscriptionProviders`), on-demand `providerQuotas`, `githubConnection`
+ * and `localExecution` stay on. Marketplace sources stay on: listing,
+ * adding and installing from a source are started by the person against
+ * GitHub or a host they configured; the automatic default refresh is off in
+ * main's automatic-call policy instead.
+ */
+const LOCAL_ONLY_DESKTOP_CAPABILITY_OVERRIDES = {
+  turnFeedback: false,
+  cloudCapabilityLinks: false,
+  cloudReachBack: false,
+  accountOrganizationSettings: false,
+  personalOrganizationUpgrade: false,
+  organizationInvites: false,
+  personalProjectConversion: false,
+  installUpdateEmails: false,
+  marketplaceOwnedAutomationShares: false,
+  marketplaceOwnedShares: false,
+  marketplaceSharedCollectionEdit: false,
+  // Feed sync is hosted; this device's own Ledger stays on (ledgerLocal).
+  ledgerFeed: false,
+  remoteImages: false,
+  agentVisualRemoteAssets: false,
+  // No hosted account to sign in to; the account menu drops Sign in.
+  cloudAccount: false,
+  // No usage data or activity leaves the computer; Privacy has no controls.
+  telemetrySharing: false,
+} as const satisfies Partial<CanopyCapabilities>;
+
+function createNormalDesktopCapabilities(
+  platform: NodeJS.Platform,
+  organizationOperations: Pick<
+    CanopyCapabilities,
+    | 'personalOrganizationUpgrade'
+    | 'organizationInvites'
+    | 'personalProjectConversion'
+  >,
+  hostedSettings: Pick<CanopyCapabilities, 'accountOrganizationSettings'>,
 ): CanopyCapabilities {
   return {
     // Reporting eligibility is supplied by the account-aware recovery host.
     // Keep the general client closed while the account is unresolved/guest.
     feedbackReports: false,
+    // A local preload cannot prove that an older remote desktop implements repair.
+    mcpRemoval:
+      typeof window !== 'undefined' &&
+      window.api?.remoteControl?.getContext().mode !== 'remote',
+    mcpRemovalForce:
+      typeof window !== 'undefined' &&
+      window.api?.remoteControl?.getContext().mode !== 'remote',
     feedbackDiagnostics: true,
     workspaceRecovery: true,
     sharedMultiRepo: true,
@@ -287,7 +367,16 @@ function preloadTransport(): RemoteIpcTransport {
  * still crosses the context bridge once however many consumers it has.
  */
 const desktopTransport: RemoteIpcTransport = {
-  invoke: (channel, ...args) => preloadTransport().invoke(channel, ...args),
+  invoke: (channel, ...args) =>
+    preloadTransport()
+      .invoke(channel, ...args)
+      .catch((error: unknown) => {
+        // The preload already restored the rejection and keeps main's shape in
+        // a message-keyed lookup; carry it on the error the portable client
+        // and `toAppError` see. The same error is always rethrown.
+        attachRestoredIpcAppError(error, () => resolveIpcAppError(error));
+        throw error;
+      }),
   send: (channel, ...args) => {
     preloadTransport().send(channel, ...args);
   },
@@ -320,6 +409,58 @@ function createHostedSettings(
   return createDesktopSettingsClient(settingsBridge, accountIds.get, {
     onUnauthenticated: accountIds.invalidate,
   });
+}
+
+/**
+ * Review approval readiness and the "Link GitHub" handoff (CAN-7162).
+ * Readiness reads through the hosted settings client. Desktop can't run the
+ * GitHub sign-in in place, so `startLink` opens Settings > Integrations in
+ * the browser (the card's "Link GitHub" links there) and resolves `handoff`;
+ * no callback ever lands here, so `resumeLink` resolves `none`.
+ */
+function createDesktopReviewApprovals(
+  settings: AccountOrganizationSettingsClient,
+): ReviewApprovalsClient {
+  return {
+    readiness: (input) =>
+      settings.read('account.github.reviewApprovals.readiness', input),
+    startLink: async () => {
+      const [base, cloudAccount, hosted, routes] = await Promise.all([
+        window.api.getCanopyCloudBaseUrl(),
+        window.api.loadCanopyCloudAccount(),
+        import('@/components/settings/hosted/desktop-settings-host-context'),
+        import('@canopy/protocol/settings/route-paths'),
+      ]);
+      const webOrigin = base ? base.replace(/\/+$/, '') : '';
+      if (webOrigin === '') throw new Error('No configured web origin');
+      const path = routes.settingsRouteToPath({
+        scope: 'account',
+        page: 'integrations',
+      });
+      const opened = await hosted.openHostedSettingsExternalUrl(
+        `${webOrigin}${path}`,
+        {
+          account: hosted.hostedSettingsAccountFrom(cloudAccount),
+          webOrigin,
+          location: null,
+        },
+      );
+      if (!opened) throw new Error('Could not open the browser');
+      return 'handoff';
+    },
+    resumeLink: () => Promise.resolve('none'),
+    // One client for the app's life: a sign-in or sign-out changes whose
+    // readiness the cached answers are.
+    subscribeAccountChange: (listener) => {
+      window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, listener);
+      return (): void => {
+        window.removeEventListener(
+          CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT,
+          listener,
+        );
+      };
+    },
+  };
 }
 
 /**
@@ -376,6 +517,24 @@ function createDesktopCreditsHandoff(): CreditsHandoffClient {
   };
 }
 
+const CONTRACT_MISMATCH_SOURCE = 'ipc_client.contract_mismatch';
+
+/**
+ * A host reply that broke its channel's contract, recorded apart from a
+ * transport failure (CAN-7116). Only the fixed source, the class and V8 `at`
+ * frames leave, never the message.
+ */
+function reportContractMismatch(error: Error): void {
+  const { name, frames } = canopyErrorDiagnostic(error);
+  reportClientAppError(
+    createAppError('app.unexpected', {
+      source: CONTRACT_MISMATCH_SOURCE,
+      detail: { name, message: CONTRACT_MISMATCH_SOURCE },
+    }),
+    { frames },
+  );
+}
+
 /**
  * The desktop's `CanopyClient`: the portable adapter
  * (`@canopy/ipc-canopy-client`) over the preload's channel-limited transport,
@@ -420,8 +579,13 @@ export function createDesktopCanopyClient(
 ): CanopyClient {
   const marketplaceSources = createDesktopMarketplaceSources(capabilities);
   const settings = createHostedSettings(capabilities);
+  const reviewApprovals =
+    settings === undefined ? undefined : createDesktopReviewApprovals(settings);
   const client = createIpcCanopyClient(desktopTransport, {
-    capabilities,
+    capabilities:
+      reviewApprovals === undefined
+        ? capabilities
+        : { ...capabilities, reviewApprovalReadiness: true },
     openExternalUrl: (url) => {
       void window.api.browser.openExternal({ url });
     },
@@ -444,6 +608,7 @@ export function createDesktopCanopyClient(
     logError: (message, details) => {
       reportRendererConsoleError(message, details);
     },
+    onContractMismatch: reportContractMismatch,
     toolFamilyFor: getPortalChatToolFamily,
     // The preload decodes `chat:event` outputs once for the page and owns
     // the host-local output reset.
@@ -460,6 +625,25 @@ export function createDesktopCanopyClient(
     ...(settings ? { settings } : {}),
   });
   return Object.assign(client, {
+    ...(reviewApprovals ? { reviewApprovals } : {}),
+    ...(capabilities.mcpRemoval === true
+      ? {
+          mcpRemoval: {
+            candidates: async () =>
+              McpRemovalCandidatesResultSchema.parse(
+                await window.mcpServers.removalCandidates(),
+              ),
+            inspect: async (request: InspectMcpRemovalRequest) =>
+              InspectMcpRemovalResultSchema.parse(
+                await window.mcpServers.inspectRemoval(request),
+              ),
+            force: async (request: ForceMcpRemovalRequest) =>
+              ForceMcpRemovalResultSchema.parse(
+                await window.mcpServers.forceRemoval(request),
+              ),
+          },
+        }
+      : {}),
     workflowsPanel: createLazyWorkflowsPanelClient(),
     orchestratorSettingsDraft: createOrchestratorSettingsDraftClient(),
     // Payment forms stay in the browser: purchases hand off to it.
@@ -493,7 +677,7 @@ export function createDesktopCanopyClient(
     // flags are read at call time; `useScopeCapabilities` re-renders on them.
     capabilitiesFor: (localId: string): CanopyCapabilities =>
       isWebCoreScope(localId)
-        ? cloudScopeCapabilities(client.capabilities)
+        ? cloudScopeCapabilities(client.capabilities, localId)
         : client.capabilities,
     // Older hosts have no bridge; blocked remote lists mean no arms.
     listWorkEntryAutoDelete: () =>
@@ -519,10 +703,14 @@ export function createDesktopCanopyClient(
 }
 
 /**
- * A cloud scope's set (CAN-6175 D4). The flags and the web core's manifest
- * are read at call time; `useScopeCapabilities` re-renders on both.
+ * A cloud scope's set (CAN-6175 D4). The flags, the web core's manifest and
+ * the project's kind are read at call time; `useScopeCapabilities`
+ * re-renders on each.
  */
-function cloudScopeCapabilities(host: CanopyCapabilities): CanopyCapabilities {
+function cloudScopeCapabilities(
+  host: CanopyCapabilities,
+  projectId: string,
+): CanopyCapabilities {
   loadWebCoreServedOperations();
   return webCoreScopeCapabilities(host, {
     durableTerminals: cloudTerminalsEnabled(
@@ -530,6 +718,8 @@ function cloudScopeCapabilities(host: CanopyCapabilities): CanopyCapabilities {
     ),
     costInsights: webCoreServesCost(),
     sessionBreakdown: webCoreServesSessionBreakdown(),
+    taskFork: webCoreServesChatFork() && cloudProjectIsCowork(projectId),
+    delegationTranscriptReads: webCoreServesDelegationPages(),
   });
 }
 

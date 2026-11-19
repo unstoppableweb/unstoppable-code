@@ -59,13 +59,16 @@ export interface W5RecoveryApi {
   prepare(): Promise<W5RecoveryStatus>;
 }
 
-/** Reservation diagnostics are same-host opaque text, never Portal content. */
+/**
+ * Reservation diagnostics are same-host opaque text, never Portal content.
+ * `canRecover` stays as guidance about the target's startup recovery; Portal
+ * offers no action, and preparation is local-principal only.
+ */
 export function projectRemoteW5Recovery(
   status: W5RecoveryStatus,
 ): W5RecoveryStatus {
   return {
     ...status,
-    canRecover: false,
     entries: status.entries.map(({ id, operation }) => ({
       id,
       operation,

@@ -62,6 +62,7 @@ export const CoreW5DiagnosisSchema = z.strictObject({
       ]),
     }),
   ),
+  /** Journal files needing attention, excluding consistent completed history; null if inspection is unavailable. */
   destructiveJournalArtifactCount: z.number().int().nonnegative().nullable(),
   logIssue: z.enum(['unavailable', 'incompatible-schema']).nullable(),
   commits: z.array(

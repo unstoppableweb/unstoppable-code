@@ -1,4 +1,5 @@
 import { type Descendant } from 'slate';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { appendSelectionToList } from '@/lib/editorSelectionContext';
 import {
   getWorktreeChatContext,
@@ -79,8 +80,9 @@ export const createComposerSlice: StateCreator<
     let stagedTryIt = true;
     try {
       stagedTryIt = saveTryItDraft(tabId, content);
-    } catch {
-      /* Keep edits in memory if browser storage becomes unavailable. */
+    } catch (error) {
+      // Keep edits in memory if browser storage becomes unavailable.
+      reportClientAppError(error, { source: 'chat_composer.try_it_draft' });
     }
     if (stagedTryIt) {
       removeChatDraft(tabId);

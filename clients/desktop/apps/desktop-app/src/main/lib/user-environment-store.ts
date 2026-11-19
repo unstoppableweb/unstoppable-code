@@ -51,6 +51,14 @@ interface LegacyEnvironmentRead {
 
 let writeQueue: Promise<void> = Promise.resolve();
 
+/** The submitted config breaks a rule the user can fix; not a defect. */
+export class EnvironmentConfigValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EnvironmentConfigValidationError';
+  }
+}
+
 class EnvironmentStorageUnavailableError extends Error {
   readonly secureStorageFailure: SecureStorageFailure | undefined;
 
@@ -455,7 +463,7 @@ export async function writeEnvironmentConfig(
         resolved,
       );
       if (!updateValidation.ok) {
-        throw new Error(updateValidation.message);
+        throw new EnvironmentConfigValidationError(updateValidation.message);
       }
 
       const normalized = normalizeEnvironmentConfig(

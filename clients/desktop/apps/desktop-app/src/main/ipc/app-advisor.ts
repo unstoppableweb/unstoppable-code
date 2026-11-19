@@ -4,14 +4,12 @@ import type { BrowserWindow, WebContents } from 'electron';
 import { randomUUID, createHash } from 'node:crypto';
 import { BRAND } from '@canopy/brand/current';
 import {
-  APP_ADVISOR_PROJECT_ID,
   APP_ADVISOR_WORKTREE_ID,
   IPC_CHANNELS,
   type AgentArtifactNavigationRequest,
   type AgentArtifactNavigationResponse,
   type AppAdvisorAction,
   type AppAdvisorAskUserAnswer,
-  type AppAdvisorAskUserQuestion,
   type AppAdvisorBrowserAction,
   type AppAdvisorClaudeMdLoadResponse,
   type AppAdvisorClaudeMdSaveRequest,
@@ -489,28 +487,6 @@ async function openAgentArtifactInMainWindow(
   };
 }
 
-/**
- * Recently answered ask-user questions, retained for the portal summary
- * projection (CAN-2608). App Advisor questions have no file-backed
- * `PersistedPendingQuestion` record (unlike worktree chats), so once the
- * pending entry settles this map is the only evidence the portal can use to
- * render the answered card (read-only answer bubbles) instead of a perpetual
- * pending spinner. Insertion-ordered and capped like the completed-response
- * cache; dismissals are not retained (the folded tool_result resolves the
- * card on its own).
- */
-// Keyed by chat plus request ID, like the pending and completed maps.
-const answeredQuestions = new Map<
-  string,
-  {
-    requestId: string;
-    chatId: string;
-    question: AppAdvisorAskUserQuestion;
-    answer: AppAdvisorAskUserAnswer;
-  }
->();
-const ANSWERED_QUESTION_CACHE_LIMIT = 50;
-
 // Ready paired views observe the existing registry independently of which
 // computer started a turn. Their bridge sender owns the subscription lifetime.
 const questionViews = new Map<number, RemoteAppAdvisorWindowHost>();
@@ -543,54 +519,6 @@ function publishQuestionToControllers(
           request,
         );
       }
-    }
-  }
-}
-
-function rememberAnsweredQuestion(
-  request: AppAdvisorRendererToolRequest,
-  response: AppAdvisorRendererToolResponse,
-): void {
-  if (
-    request.kind !== 'ask_user_question' ||
-    !request.chatId ||
-    !response.ok ||
-    !response.answer
-  ) {
-    return;
-  }
-  // Secret answers never enter this map in plaintext: the projection puts the
-  // retained answer on the portal wire verbatim, and the UI only MASKS secret
-  // freeform text at render time. Mirror the Codex display redaction
-  // (`app-server-client.ts` formatAskUserAnswers).
-  const answer =
-    request.question.secret === true && response.answer.freeformText
-      ? { ...response.answer, freeformText: '[hidden]' }
-      : response.answer;
-  // One retained entry per chat+question text, latest wins. The transcript's
-  // tool_use parts carry no requestId/toolUseId for App Advisor questions, so
-  // the browser matches retained answers by question text alone — several
-  // same-text entries would all resolve to the first. Known limitation: a
-  // repeated identical question shows the LATEST answer on every occurrence
-  // (still strictly better than the pre-CAN-2608 perpetual spinner).
-  for (const [key, entry] of Array.from(answeredQuestions.entries())) {
-    if (
-      entry.chatId === request.chatId &&
-      entry.question.question === request.question.question
-    ) {
-      answeredQuestions.delete(key);
-    }
-  }
-  answeredQuestions.set(requestKey(request), {
-    requestId: request.requestId,
-    chatId: request.chatId,
-    question: request.question,
-    answer,
-  });
-  if (answeredQuestions.size > ANSWERED_QUESTION_CACHE_LIMIT) {
-    const firstKey = answeredQuestions.keys().next().value;
-    if (firstKey !== undefined) {
-      answeredQuestions.delete(firstKey);
     }
   }
 }
@@ -1115,7 +1043,6 @@ function settlePendingRequest(
     clearTimeout(request.timer);
   }
   pending.delete(key);
-  rememberAnsweredQuestion(request.request, response);
   rememberCompletedResponse(key, response);
   request.resolve(response);
   if (request.request.kind === 'ask_user_question') {
@@ -1123,86 +1050,6 @@ function settlePendingRequest(
     notifyRendererToolCancellation(request.request, request.surfaces);
     publishQuestionToControllers(request.request, true, request.routeKey);
   }
-  projectAppAdvisorPendingQuestionState(request.request);
-}
-
-/**
- * Re-project the owning chat's `app_advisor_chat` portal summary after an
- * ask-user question is created or settled, so connected portal clients see
- * pending-question cards appear and disappear live (CAN-2565). Best-effort and
- * dynamic-imported: the pending-request registry must stay loadable without
- * the portal/service graph, and a projection failure must never affect the
- * renderer round-trip being settled.
- */
-function projectAppAdvisorPendingQuestionState(
-  request: AppAdvisorRendererToolRequest,
-): void {
-  if (request.kind !== 'ask_user_question' || !request.chatId) {
-    return;
-  }
-  const chatId = request.chatId;
-  void (async (): Promise<void> => {
-    const { isCanopyPortalActive } = await import('../portal/portal-event-bus');
-    if (!isCanopyPortalActive()) {
-      return;
-    }
-    const { resolveWorkEntryForChat } =
-      await import('../lib/cowork-work-entries');
-    const { entryId } = await resolveWorkEntryForChat(
-      APP_ADVISOR_PROJECT_ID,
-      chatId,
-    );
-    if (!entryId) {
-      return;
-    }
-    const { projectAppAdvisorChatSummaries } =
-      await import('../services/chat-service');
-    await projectAppAdvisorChatSummaries(entryId);
-  })().catch(() => undefined);
-}
-
-/**
- * Currently awaiting App Advisor ask-user questions, for the portal summary
- * projection (CAN-2565). `chatId` is absent for requests created before the
- * chat attribution existed (or by non-chat callers); those cannot be surfaced
- * on a chat card and are filtered out by the projection.
- */
-export function listPendingAppAdvisorAskUserQuestions(): Array<{
-  requestId: string;
-  chatId?: string;
-  question: AppAdvisorAskUserQuestion;
-}> {
-  const questions: Array<{
-    requestId: string;
-    chatId?: string;
-    question: AppAdvisorAskUserQuestion;
-  }> = [];
-  for (const entry of Array.from(pending.values())) {
-    if (entry.request.kind !== 'ask_user_question') {
-      continue;
-    }
-    questions.push({
-      requestId: entry.request.requestId,
-      ...(entry.request.chatId ? { chatId: entry.request.chatId } : {}),
-      question: entry.request.question,
-    });
-  }
-  return questions;
-}
-
-/**
- * Recently answered App Advisor ask-user questions (capped, insertion-ordered)
- * for the portal summary projection (CAN-2608). Complements
- * {@link listPendingAppAdvisorAskUserQuestions}: pending entries render the
- * interactive card, these render the read-only answered card.
- */
-export function listAnsweredAppAdvisorAskUserQuestions(): Array<{
-  requestId: string;
-  chatId: string;
-  question: AppAdvisorAskUserQuestion;
-  answer: AppAdvisorAskUserAnswer;
-}> {
-  return Array.from(answeredQuestions.values()).map((entry) => ({ ...entry }));
 }
 
 const askUserAnswerProvenance = new Map<string, 'person' | 'agent'>();
@@ -1367,7 +1214,6 @@ export async function requestAppAdvisorRendererTool(
       routeKey: routed?.routeKey ?? null,
     });
     publishQuestionToControllers(request, false, routed?.routeKey ?? null);
-    projectAppAdvisorPendingQuestionState(request);
     options?.signal?.addEventListener('abort', abortPendingRequest, {
       once: true,
     });

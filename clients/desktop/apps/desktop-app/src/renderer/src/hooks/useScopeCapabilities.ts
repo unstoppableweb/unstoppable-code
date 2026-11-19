@@ -1,7 +1,13 @@
 import type { CanopyCapabilities } from '@canopy/app-core';
 import { useWorkspaceCapabilities } from '@canopy/app-state/CanopyClientProvider';
+import { useStore } from 'zustand';
+import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
+import { cloudProjectIsCowork } from '@/cloud-chats/cloud-project-kind';
 import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
-import { useWebCoreServesCost } from '@/lib/web-core-served-operations';
+import {
+  useWebCoreServesChatFork,
+  useWebCoreServesCost,
+} from '@/lib/web-core-served-operations';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
 /**
@@ -16,5 +22,10 @@ export function useScopeCapabilities(scope: {
   useFeatureFlagsStore((s) => cloudTerminalsEnabled(s.isEnabled));
   // ...and its Cost on the web core's manifest, which loads after first render.
   useWebCoreServesCost();
+  // ...and its Fork on the manifest and the project's kind (CAN-7007).
+  useWebCoreServesChatFork();
+  useStore(cloudCoworkStore, (state) =>
+    cloudProjectIsCowork(scope.projectId, state.projects),
+  );
   return useWorkspaceCapabilities(scope.projectId);
 }

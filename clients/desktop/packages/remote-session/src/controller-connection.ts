@@ -177,6 +177,17 @@ export interface ControllerConnectionOptions {
   onHostRequest?: (method: string, params: unknown) => Promise<unknown>;
   /** Reconnect after an unexpected drop (default true). */
   autoReconnect?: boolean;
+  /**
+   * Observes an `on` listener that threw; delivery to the other listeners
+   * goes on either way. Receives the thrown value as is. Default: dropped.
+   */
+  onListenerError?: (error: unknown) => void;
+  /**
+   * Observes a failed background reconnect (backoff timer or `retryNow`),
+   * which no caller awaits. The status still changes to `error` as before.
+   * Receives the thrown value as is. Default: dropped.
+   */
+  onReconnectError?: (error: unknown) => void;
   minRetryDelayMs?: number;
   maxRetryDelayMs?: number;
 }
@@ -334,7 +345,7 @@ export class RemoteControllerConnection {
     if (this.retryTimer !== null) this.scheduler.clearTimeout(this.retryTimer);
     this.retryTimer = null;
     this.attempt = 0;
-    void this.ensure().catch(() => undefined);
+    this.reconnect();
   }
 
   /** Ends the session and stops reconnecting. Listeners stay registered. */
@@ -453,8 +464,9 @@ export class RemoteControllerConnection {
       for (const listener of Array.from(set)) {
         try {
           listener(...args);
-        } catch {
+        } catch (error) {
           // One listener's failure must not starve the others.
+          this.observe(this.options.onListenerError, error);
         }
       }
     }
@@ -557,6 +569,30 @@ export class RemoteControllerConnection {
     this.scheduleRetry();
   }
 
+  /**
+   * A reconnect nobody awaits; its failure already sets the status. One a
+   * `close()` superseded is not a failure.
+   */
+  private reconnect(): void {
+    const generation = this.generation;
+    void this.ensure().catch((error: unknown) => {
+      if (generation === this.generation)
+        this.observe(this.options.onReconnectError, error);
+    });
+  }
+
+  /** Hands a failure to a host hook; a failing hook is contained. */
+  private observe(
+    hook: ((error: unknown) => void) | undefined,
+    error: unknown,
+  ): void {
+    try {
+      hook?.(error);
+    } catch {
+      // Observing a failure must not change how the connection behaves.
+    }
+  }
+
   private scheduleRetry(): void {
     if (
       !this.wanted ||
@@ -574,7 +610,8 @@ export class RemoteControllerConnection {
     this.attempt += 1;
     this.retryTimer = this.scheduler.setTimeout(() => {
       this.retryTimer = null;
-      if (this.wanted) void this.ensure().catch(() => undefined);
+      // A refusal since scheduling was already reported where it happened.
+      if (this.wanted && this.terminalError === null) this.reconnect();
     }, delay);
   }
 

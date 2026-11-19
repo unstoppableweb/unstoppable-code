@@ -19,6 +19,10 @@ import {
   probeElectronDaemonW5,
 } from './electron-daemon-access';
 import { leaseElectronW5RecordPort } from './electron-w5-record-port';
+import {
+  getDesktopW5ReadCache,
+  isDesktopW5ReadCacheSelected,
+} from './w5-read-cache';
 import { settleRefusedW5Daemon } from './w5-refused-daemon';
 
 /*
@@ -131,7 +135,13 @@ export async function runW5FlipHandoff(
     // Fences in-process use where the launch attached instead of spawning.
     await stopInProcessW5Host();
     input.signal.throwIfAborted();
-    return createW5DaemonRecordStore({ transport: lease.transport });
+    return createW5DaemonRecordStore({
+      transport: lease.transport,
+      // Fed from the first decision; activated once the handoff is ready.
+      ...(isDesktopW5ReadCacheSelected() && {
+        projection: getDesktopW5ReadCache(),
+      }),
+    });
   } catch (error) {
     lease.close();
     await stopInProcessW5Host().catch(() => undefined);

@@ -5,6 +5,7 @@ import type {
 } from './types';
 
 declare const __CANOPY_E2E__: boolean;
+declare const __CANOPY_LOCAL_ONLY__: boolean;
 declare const __CANOPY_BRAND_ID__: string;
 
 export interface PostHogInstrumentationConfig {
@@ -32,7 +33,7 @@ export type EnabledPostHogInstrumentationConfig =
 
 export type PostHogInstrumentationReadiness =
   | { enabled: true; config: EnabledPostHogInstrumentationConfig }
-  | { enabled: false; reason: string };
+  | { enabled: false; reason: 'disabled' | 'missing_project_key' };
 
 /** Stable minified-path key for renderer assets in error stacks and uploaded
  * source maps, independent of where the packaged app is installed. */
@@ -93,11 +94,33 @@ function readLoopbackPostHogStubUrl(
   }
 }
 
+/**
+ * The local-only build profile (docs/local-only-build.md) for PostHog, the
+ * same rule as `isLocalOnlyBuild()` in @canopy/execution-engine, evaluated
+ * here because this package also runs in the renderer. The E2E seam is read
+ * only where `process` exists (main); the renderer of an E2E build already
+ * keeps PostHog off unless a loopback stub and an E2E key are both bundled.
+ * Production bundles fold the seam away.
+ */
+function isLocalOnlyInstrumentationBuild(): boolean {
+  if (typeof __CANOPY_LOCAL_ONLY__ === 'boolean' && __CANOPY_LOCAL_ONLY__) {
+    return true;
+  }
+  return (
+    typeof __CANOPY_E2E__ === 'boolean' &&
+    __CANOPY_E2E__ &&
+    typeof process !== 'undefined' &&
+    process.env.CANOPY_E2E_LOCAL_ONLY === '1'
+  );
+}
+
 export function getDesktopInstrumentationConfig(): DesktopInstrumentationConfig {
+  // Local-only chokepoint: PostHog stays uninitialized in main and renderer.
   const posthogRequestedEnabled =
-    typeof __CANOPY_POSTHOG_ENABLED__ !== 'undefined'
+    !isLocalOnlyInstrumentationBuild() &&
+    (typeof __CANOPY_POSTHOG_ENABLED__ !== 'undefined'
       ? readBuildBoolean(__CANOPY_POSTHOG_ENABLED__, false)
-      : false;
+      : false);
   const posthogProjectKey =
     typeof __CANOPY_POSTHOG_PROJECT_KEY__ !== 'undefined'
       ? readBuildString(__CANOPY_POSTHOG_PROJECT_KEY__)

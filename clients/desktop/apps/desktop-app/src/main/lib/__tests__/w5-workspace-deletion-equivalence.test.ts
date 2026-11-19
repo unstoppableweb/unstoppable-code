@@ -12,6 +12,7 @@ import type {
 } from '@canopy/desktop-shared/node/archive-recovery-store';
 import type { ArchiveRecoverySettlementPorts } from '../archive-recovery-settlement';
 import type { WorktreeRecoveryResolveParams } from '@canopy/protocol/canopy-core';
+import type { WorktreeRecoveryDescription } from '@canopy/protocol/portal/worktree-recovery';
 import {
   journalSchema,
   type DestructiveRecoveryRecord,
@@ -86,11 +87,8 @@ jest.mock('../../observability', () => ({
     interruptMatchingEntries: jest.fn(),
   })),
 }));
-jest.mock('../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../desktop-telemetry', () => ({
   recordWorkspaceCrudTelemetry: jest.fn(),
@@ -1120,7 +1118,7 @@ describe('GB14 code and Cowork record removal', () => {
       expect(interrupted?.steps.at(-1)).toEqual({
         phase: 'canonical-index-removal',
         state: 'pending',
-        code: 'W5CommitLogHostError',
+        code: 'outcome-unknown',
       });
       const log = W5CommitLog.open(dbPath);
       let commitId: number;
@@ -4592,5 +4590,304 @@ describe('CAN-6478 lifecycle retention', () => {
     expect((await store.read('a', operationId))?.retention).toBe('deleted');
     expect(existsSync(store.payloadPath(receipt))).toBe(false);
     expect(git('for-each-ref', '--format=%(refname)', ref)).toBe('');
+  });
+
+  describe('CAN-7013 unverifiable migrated archive', () => {
+    const A1_STEPS = [
+      { phase: 'teardown-script', state: 'done' },
+      { phase: 'live-state-teardown', state: 'done' },
+      { phase: 'retained-payload-capture', state: 'failed' },
+    ];
+    async function strandUnverifiable(
+      steps: unknown[] = A1_STEPS,
+      replaced?: 'project' | 'data-dir' | 'verified-project',
+    ): Promise<Awaited<ReturnType<typeof completedRecoveryHold>>> {
+      const hold = await completedRecoveryHold();
+      const { renameSync } = await import('node:fs');
+      const { readDirectoryStatIdentity, lifecycleJournalSlotName } =
+        await import('../w5-destructive-recovery');
+      const { getWorkspaceWorktreeDir, getWorktreeDataDir } =
+        await import('../paths');
+      const identity = await readDirectoryStatIdentity(getWorkspaceDir('a'));
+      // As migrated: project, gone checkout and present data dir are all unverifiable.
+      const metadata = getWorktreeDataDir('a', 'held');
+      mkdirSync(metadata, { recursive: true });
+      const source = {
+        ...hold.receipt.sourceRecord,
+        // A verified identity that no longer matches is a replaced path, not a migrated one.
+        directoryIdentity:
+          replaced === 'project'
+            ? '1:2:3'
+            : replaced === 'verified-project'
+              ? identity
+              : `unverifiable:${identity}`,
+        steps,
+        ownedPaths: [
+          {
+            path: getWorkspaceWorktreeDir('a', 'held'),
+            identity: 'unverifiable:1:2:3',
+          },
+          {
+            path: metadata,
+            identity:
+              replaced === 'data-dir'
+                ? '1:2:3'
+                : `unverifiable:${await readDirectoryStatIdentity(metadata)}`,
+          },
+        ],
+      };
+      renameSync(
+        hold.store.payloadPath(hold.receipt),
+        hold.store.stagingPath(hold.receipt),
+      );
+      for (const copy of hold.receipt.copies)
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), copy.name),
+          JSON.stringify(source),
+        );
+      writeFileSync(
+        join(
+          getW5DestructiveLifecycleDir(),
+          lifecycleJournalSlotName('a', 'held'),
+        ),
+        JSON.stringify(source),
+      );
+      rmSync(hold.store.directory(hold.receipt), { recursive: true });
+      return hold;
+    }
+    async function diagnose(
+      operationId: string,
+    ): Promise<NonNullable<WorktreeRecoveryDescription['diagnosis']>> {
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const diagnosis = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      if (!diagnosis) throw new Error('No diagnosis');
+      return diagnosis;
+    }
+
+    async function publishCapture(
+      shape: 'manifest' | 'git-staging',
+      receipt: ArchiveRecoveryReceipt,
+    ): Promise<void> {
+      const {
+        getArchivedContainerManifestPath,
+        getArchivedContainerGitStateStagedPath,
+      } = await import('../paths');
+      if (shape === 'manifest')
+        writeFileSync(
+          getArchivedContainerManifestPath('a', 'held'),
+          JSON.stringify({
+            version: 3,
+            kind: 'worktree',
+            id: 'held',
+            projectId: 'a',
+            name: 'Archive',
+            createdAt: receipt.createdAt,
+            archivedAt: receipt.createdAt,
+            retentionDays: 30,
+            expiresAt: '2026-12-01T00:00:00.000Z',
+            chatCount: 0,
+            archivedChatCount: 0,
+            executionCount: 0,
+            workspaceType: 'single-repo',
+            originalWorktree: {
+              id: 'held',
+              branchName: 'feature/x',
+              createdAt: receipt.createdAt,
+            },
+            recovery: {
+              kind: 'files-only',
+              source: 'absent',
+              digest: '0'.repeat(64),
+              payloadId: receipt.operationId,
+            },
+          }),
+        );
+      else
+        writeFileSync(
+          getArchivedContainerGitStateStagedPath('a', 'held'),
+          JSON.stringify({ version: 1, status: 'capturing', repositories: [] }),
+        );
+    }
+
+    it.each([
+      ['A1 failed payload capture', A1_STEPS],
+      ['no steps', []],
+    ])(
+      'releases an unlisted pre-Git-capture archive (%s); delete-hold re-qualifies on its own',
+      async (_name, steps) => {
+        const { receipt, store, git, ref, oid } =
+          await strandUnverifiable(steps);
+        const diagnosis = await diagnose(receipt.operationId);
+        expect(diagnosis).toMatchObject({
+          verdict: 'release',
+          check: 'pre-quarantine-row-and-checkout-absent',
+        });
+        const { resolveWorktreeArchive } =
+          await import('../worktree-archive-resolution');
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId: receipt.operationId,
+            revision: diagnosis.revision,
+            action: 'release',
+          }),
+        ).toMatchObject({ status: 'attempt-withdrawn' });
+        expect(git('rev-parse', ref)).toBe(oid);
+        const held = await store.read('a', receipt.operationId);
+        if (!held) throw new Error('No hold');
+        expect(
+          readFileSync(join(store.payloadPath(held), 'unique'), 'utf8'),
+        ).toBe('retained');
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId: receipt.operationId,
+            revision: held.revision,
+            action: 'delete-hold',
+          }),
+        ).toMatchObject({ status: 'hold-deleted' });
+        expect(git('for-each-ref', '--format=%(refname)', ref)).toBe('');
+        expect(existsSync(store.payloadPath(held))).toBe(false);
+      },
+    );
+
+    it.each([
+      'git-capture-step',
+      'checkout',
+      'quarantine',
+      'manifest',
+      'git-staging',
+      'replaced-verified-project',
+      'replaced-verified-data-dir',
+      // The data-dir exemption is only for an unverifiable project.
+      'verified-project-unverifiable-data-dir',
+    ] as const)('keeps refusing Release when %s', async (shape) => {
+      const { receipt, git, ref, oid, store } = await strandUnverifiable(
+        shape === 'git-capture-step'
+          ? [...A1_STEPS, { phase: 'git-capture', state: 'pending' }]
+          : A1_STEPS,
+        shape === 'replaced-verified-project'
+          ? 'project'
+          : shape === 'replaced-verified-data-dir'
+            ? 'data-dir'
+            : shape === 'verified-project-unverifiable-data-dir'
+              ? 'verified-project'
+              : undefined,
+      );
+      const { getWorkspaceWorktreeDir } = await import('../paths');
+      const checkout = getWorkspaceWorktreeDir('a', 'held');
+      if (shape === 'checkout') mkdirSync(checkout, { recursive: true });
+      if (shape === 'quarantine')
+        mkdirSync(join(dirname(checkout), '.held.archive-quarantine'), {
+          recursive: true,
+        });
+      if (shape === 'manifest' || shape === 'git-staging')
+        await publishCapture(shape, receipt);
+      const diagnosis = await diagnose(receipt.operationId);
+      expect(diagnosis).toMatchObject({
+        verdict: 'refused',
+        check: 'identity-unverified',
+      });
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+          revision: diagnosis.revision,
+          action: 'release',
+        }),
+      ).toMatchObject({ status: 'refused' });
+      expect(await store.read('a', receipt.operationId)).toBeNull();
+      expect(git('rev-parse', ref)).toBe(oid);
+    });
+
+    it.each(['manifest', 'git-staging'] as const)(
+      'a resumed Release re-admits capture absence before its retention intent (%s)',
+      async (shape) => {
+        const { receipt, store, git, ref, oid } = await strandUnverifiable();
+        const diagnosis = await diagnose(receipt.operationId);
+        expect(diagnosis.verdict).toBe('release');
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { inspectArchiveRecoveryRepositories } =
+          await import('../archived-container-git');
+        const operation = (
+          await readArchiveJournalOperations('a')
+        ).operations.find(
+          (entry) => entry.record.operationId === receipt.operationId,
+        );
+        if (!operation) throw new Error('No source journal');
+        // An interrupted Release leaves this receipt; resumption skips the diagnosis.
+        await store.prepare({
+          workspaceId: 'a',
+          worktreeId: 'held',
+          operationId: receipt.operationId,
+          action: 'release',
+          revision: diagnosis.revision,
+          createdAt: receipt.createdAt,
+          copies: operation.sources,
+          sourceRecord: operation.record,
+          repositories: await inspectArchiveRecoveryRepositories({
+            workspaceId: 'a',
+            containerId: 'held',
+            workspaceType: 'single-repo',
+          }),
+          capture: 'unpublished',
+        });
+        await publishCapture(shape, receipt);
+        const { resolveWorktreeArchive } =
+          await import('../worktree-archive-resolution');
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId: receipt.operationId,
+            revision: diagnosis.revision,
+            action: 'release',
+          }),
+        ).toMatchObject({ status: 'refused' });
+        expect((await store.read('a', receipt.operationId))?.stage).toBe(
+          'prepared',
+        );
+        expect(
+          readFileSync(join(store.stagingPath(receipt), 'unique'), 'utf8'),
+        ).toBe('retained');
+        expect(git('rev-parse', ref)).toBe(oid);
+      },
+    );
+
+    it('delete-hold refuses a retained ref outside its archive namespace', async () => {
+      const { store, receipt, git, oid } = await completedRecoveryHold();
+      const foreign = 'refs/app/archived-containers/a/other/__single_repo__';
+      git('update-ref', foreign, oid);
+      const tampered = {
+        ...receipt,
+        repositories: receipt.repositories.map((repository) => ({
+          ...repository,
+          refs: [{ name: foreign, objectId: oid }],
+        })),
+      };
+      writeFileSync(
+        join(store.directory(receipt), 'receipt.json'),
+        JSON.stringify(tampered),
+      );
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId: receipt.operationId,
+          revision: receipt.revision,
+          action: 'delete-hold',
+        }),
+      ).toMatchObject({ status: 'refused' });
+      expect(git('rev-parse', foreign)).toBe(oid);
+      expect((await store.read('a', receipt.operationId))?.retention).toBe(
+        undefined,
+      );
+    });
   });
 });

@@ -64,10 +64,12 @@ const ACTIONS: DesktopPendingProjectActions = {
     navigation.openAddWorkspaceModal({ initialRepoUrl: job.remoteUrl });
   },
   onDismiss: (job): void => {
-    void window.api.dismissCloneJob(job.id).catch((): void => {
+    void window.api.dismissCloneJob(job.id).catch((error: unknown): void => {
       useGitHubStore
         .getState()
-        .addToast(`Couldn't dismiss ${job.repoName}`, 'error');
+        .addToast(`Couldn't dismiss ${job.repoName}`, 'error', undefined, {
+          caught: error,
+        });
     });
   },
 };

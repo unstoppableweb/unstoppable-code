@@ -66,6 +66,7 @@ export interface PlanLogicDiffDiagramProps {
   isGenerating?: boolean;
   /** Stage a comment anchored to the selected node. */
   onAddNodeComment?: (input: AddNodeCommentInput) => void;
+  commentsReadOnly?: boolean;
   /** Override the current/planned view labels (defaults preserve plan-mode copy). */
   viewLabels?: { current: string; planned: string };
   /** Host-owned actions aligned at the end of the view picker row. */
@@ -141,10 +142,12 @@ function SelectedNodeDetail({
   node,
   onClose,
   onAddNodeComment,
+  commentsReadOnly,
 }: {
   node: SelectedNode;
   onClose: () => void;
   onAddNodeComment?: (input: AddNodeCommentInput) => void;
+  commentsReadOnly: boolean;
 }): JSX.Element {
   const { data } = node;
   const style = data.changeType ? CHANGE_STYLES[data.changeType] : undefined;
@@ -153,7 +156,7 @@ function SelectedNodeDetail({
 
   const handleSave = (): void => {
     const trimmed = body.trim();
-    if (trimmed.length === 0 || !onAddNodeComment) {
+    if (commentsReadOnly || trimmed.length === 0 || !onAddNodeComment) {
       return;
     }
     onAddNodeComment({
@@ -244,7 +247,7 @@ function SelectedNodeDetail({
             )}
           </div>
         </Stack>
-        {onAddNodeComment && (
+        {onAddNodeComment && (!commentsReadOnly || composing) && (
           <div className="">
             <Divider />
             <div className="pt-2">
@@ -253,6 +256,7 @@ function SelectedNodeDetail({
                   <TextArea
                     aria-label="Comment"
                     value={body}
+                    readOnly={commentsReadOnly}
                     onChange={(e): void => setBody(e.target.value)}
                     placeholder="Comment on this node…"
                     rows={3}
@@ -273,7 +277,7 @@ function SelectedNodeDetail({
                       variant="primary"
                       size="compact"
                       onClick={handleSave}
-                      disabled={body.trim().length === 0}
+                      disabled={commentsReadOnly || body.trim().length === 0}
                       data-testid="plan-node-comment-save"
                     >
                       Save comment
@@ -372,6 +376,7 @@ export const PlanLogicDiffDiagram = forwardRef<
     onGenerate,
     isGenerating = false,
     onAddNodeComment,
+    commentsReadOnly = false,
     viewLabels,
     toolbarActions,
   },
@@ -809,6 +814,7 @@ export const PlanLogicDiffDiagram = forwardRef<
             node={selected}
             onClose={(): void => setSelected(null)}
             onAddNodeComment={onAddNodeComment}
+            commentsReadOnly={commentsReadOnly}
           />
         )}
       </div>

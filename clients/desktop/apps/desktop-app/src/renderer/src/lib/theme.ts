@@ -2,10 +2,10 @@ import type {
   ColorMode,
   PreferencesData,
   ScrollbarBehavior,
-  SidebarAppearance,
   ThemeName,
 } from '@canopy/desktop-shared/types';
 import { buildBrandDefaultThemeCss } from '@canopy/protocol/brand';
+import { resolveTokenHex } from '@canopy/ui-shared/lib/token-color';
 import { brand } from '@/lib/brand';
 import { readUiZoomFactor } from '@/lib/ui-zoom-factor';
 
@@ -19,17 +19,27 @@ let activeSystemColorScheme:
     }
   | undefined;
 
-function publishSidebarAppearance(): void {
-  const html = document.documentElement;
-  const followed: SidebarAppearance = html.classList.contains('dark')
-    ? 'opaque'
-    : 'translucent';
-  html.setAttribute('data-sidebar-appearance', followed);
+/**
+ * Publish the window surface color as the page's theme color. The main process
+ * follows it (`did-change-theme-color`) to paint each app window's native
+ * background, so a live resize grows into the same color this renderer paints,
+ * whatever theme and mode this window shows, a paired computer's included.
+ */
+function publishWindowSurfaceColor(): void {
+  const color = resolveTokenHex(document.documentElement, '--bg-sidebar');
+  if (color === null) return;
+  const existing = document.querySelector('meta[name="theme-color"]');
+  const meta =
+    existing instanceof HTMLMetaElement
+      ? existing
+      : document.head.appendChild(document.createElement('meta'));
+  meta.name = 'theme-color';
+  if (meta.content !== color) meta.content = color;
 }
 
 function applyResolvedColorMode(isDark: boolean): void {
   document.documentElement.classList.toggle('dark', isDark);
-  publishSidebarAppearance();
+  publishWindowSurfaceColor();
 }
 
 function stopFollowingSystemColorScheme(): void {
@@ -207,7 +217,7 @@ export function applyChatWidth(width: PreferencesData['chatWidth']): void {
 }
 
 /**
- * Apply every display preference (named theme, color mode and its sidebar material,
+ * Apply every display preference (named theme, color mode,
  * scrollbar behavior, UI scale, chat width) to the current renderer's `<html>` in one
  * call. Shared by startup hydration and the cross-window preference-sync
  * broadcast so secondary renderers (e.g. the App Advisor window) update in

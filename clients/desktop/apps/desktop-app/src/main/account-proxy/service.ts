@@ -592,6 +592,112 @@ function currentUsageSnapshot(): Snapshot | null {
   return current;
 }
 
+/** Narrow, synchronous account metadata for passive usage projection. */
+export interface AccountProxyUsageProjectionAccount {
+  /** Internal lookup keys; the desktop projection never serializes either. */
+  readonly connectionId: string;
+  readonly authIndex: string;
+  readonly provider: string;
+  readonly label?: string;
+  readonly planLabel?: string;
+  readonly status: AccountProxyAccount['status'];
+  readonly availableAt: number | null;
+  readonly legacyLimits: AccountProxyAccount['limits'];
+}
+
+/** Current cached proxy inventory and its last successful observation time. */
+export interface AccountProxyUsageProjectionInventory {
+  readonly state:
+    | 'observed'
+    | 'unavailable'
+    | 'not_observed'
+    | 'not_configured';
+  readonly observedAt: string | null;
+  readonly errorCode?: AccountProxyErrorCode;
+  readonly accounts: readonly AccountProxyUsageProjectionAccount[];
+}
+
+/**
+ * Read only the last same-generation proxy inventory. This intentionally does
+ * not apply provider routing flags or account status filters: disabled and
+ * cooling accounts are still useful usage records. It never reads preferences,
+ * credentials, or the proxy management API.
+ */
+export function getAccountProxyUsageProjectionInventory(): AccountProxyUsageProjectionInventory {
+  const settings = lastSettings;
+  if (settings === null) {
+    return { state: 'not_observed', observedAt: null, accounts: [] };
+  }
+  const connection = settings.connection;
+  if (connection === null) {
+    return { state: 'not_configured', observedAt: null, accounts: [] };
+  }
+  if (!settings.optedIn || settings.flagServedOff) {
+    return { state: 'not_configured', observedAt: null, accounts: [] };
+  }
+  if (!settings.available) {
+    return { state: 'unavailable', observedAt: null, accounts: [] };
+  }
+
+  const current = snapshot;
+  if (current === null || current.connectionId !== connection.id) {
+    return { state: 'not_observed', observedAt: null, accounts: [] };
+  }
+
+  const rejectionCode = current.error?.code;
+  if (rejectionCode === 'unauthorized' || rejectionCode === 'blocked') {
+    return {
+      state: 'unavailable',
+      observedAt: null,
+      errorCode: rejectionCode,
+      accounts: [],
+    };
+  }
+  if (!isLocalConnectionRunning(connection)) {
+    return {
+      state: 'unavailable',
+      observedAt: null,
+      accounts: [],
+    };
+  }
+  if (usageInventoryGeneration !== generation) {
+    return {
+      state: 'not_observed',
+      observedAt: null,
+      accounts: [],
+    };
+  }
+
+  const refreshedAt =
+    current.refreshedAt === null ? undefined : new Date(current.refreshedAt);
+  const observedAt =
+    refreshedAt === undefined || !Number.isFinite(refreshedAt.getTime())
+      ? null
+      : refreshedAt.toISOString();
+  const accounts = current.accounts.map((account) => ({
+    connectionId: connection.id,
+    authIndex: account.authIndex,
+    provider: account.provider,
+    ...(account.label !== account.fileName &&
+    account.label !== account.fileName?.split(/[\\/]/).pop() &&
+    account.label !== account.authIndex &&
+    account.label.trim().length > 0
+      ? { label: account.label }
+      : {}),
+    ...(account.planType ? { planLabel: account.planType } : {}),
+    status: account.status,
+    availableAt: account.availableAt,
+    legacyLimits: account.limits,
+  }));
+
+  return {
+    state: current.error ? 'unavailable' : 'observed',
+    observedAt,
+    ...(current.error ? { errorCode: current.error.code } : {}),
+    accounts,
+  };
+}
+
 /** Synchronous credential metadata for the canonical quota usage service. */
 export function getAccountProxyUsageInventory(): readonly AccountProxyUsageInventoryEntry[] {
   return currentUsageSnapshot()?.usageInventory ?? [];

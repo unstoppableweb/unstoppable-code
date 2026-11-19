@@ -136,6 +136,11 @@ export function MarketplaceSourceAddDialog({
         {visibleError && (
           <ErrorBanner
             errorSource="cloud-marketplace-add-error"
+            errorRecordingDisabled={
+              snapshot.phase === 'input' &&
+              snapshot.recorded === true &&
+              visibleError === snapshot.error
+            }
             className=""
             error={visibleError}
             blockMessageFromReplay

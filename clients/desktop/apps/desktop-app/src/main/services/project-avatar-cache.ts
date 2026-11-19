@@ -15,7 +15,8 @@
  */
 import { getGitHubOwnerAvatarUrl } from '@canopy/desktop-shared/lib/github-owner-avatar';
 import { getRemoteUrlStrict } from '../lib/git';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from './desktop-structure-signal';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 /** How long a definite answer is served before it is re-checked in the background. */
 export const PROJECT_AVATAR_REFRESH_MS = 10 * 60_000;
@@ -68,7 +69,7 @@ function recordLookup(repoPath: string, lookup: ProjectAvatarLookup): void {
     refreshAt: Date.now() + PROJECT_AVATAR_REFRESH_MS,
   });
   if (previousAvatarUrl !== lookup.avatarUrl) {
-    schedulePortalStructuralSync();
+    scheduleDesktopStructureChanged('structural.project-avatar');
   }
 }
 
@@ -92,6 +93,8 @@ function scheduleLookup(repoPath: string): void {
  * when it is not GitHub-backed or has not been resolved yet. Never blocks.
  */
 export function readProjectAvatarUrl(repoPath: string): string | undefined {
+  // A local-only build projects no remote avatar URL, so nothing loads one.
+  if (!allowsAutomaticCall('avatars.project-cache')) return undefined;
   const entry = entries.get(repoPath);
   if (!entry || Date.now() >= entry.refreshAt) {
     scheduleLookup(repoPath);

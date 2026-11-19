@@ -13,6 +13,7 @@ import {
 } from './lib/cursor-models';
 import { getRawOpenCodeModelId, isOpenCodeModel } from './lib/opencode-models';
 import {
+  DEFAULT_OLLAMA_HARNESS,
   getEffectiveModelHarness as resolveEffectiveModelHarness,
   getHydratedModelHarnessAssignment as resolveHydratedModelHarnessAssignment,
   getModelHarnessSource as resolveHarnessSource,
@@ -1667,7 +1668,7 @@ export function stripOllamaModelPrefix(model: string): string {
 }
 
 export const DEFAULT_CLAUDE_MODEL: ClaudeModel = 'opus[1m]';
-export const DEFAULT_CODEX_MODEL: string = 'gpt-6.1-sol';
+export const DEFAULT_CODEX_MODEL: string = 'gpt-6.2-sol';
 
 export function getProviderForModel(
   model: ChatModel,
@@ -1761,7 +1762,11 @@ export function getExecutionHarnessForModel(
   const harness =
     resolveHydratedModelHarnessAssignment(model, _modelAliases, agentBaseModels)
       ?.harness ??
-    resolveEffectiveModelHarness(model, getCurrentModelHarnessCatalog());
+    resolveEffectiveModelHarness(model, getCurrentModelHarnessCatalog()) ??
+    // The prefix identifies an Ollama model before this process's catalog
+    // lists it. Main and renderer hydrate that catalog separately, and a
+    // per-process fallback let them pin different harnesses (CAN-4196).
+    (isOllamaModel(resolved) ? DEFAULT_OLLAMA_HARNESS : undefined);
   // As with native models, a Cursor default materializes as an opaque Cursor
   // ID for a fresh chat. A canonical gateway ID remains a gateway invocation.
   return harness === 'cursor' && _aiGatewayModels[resolved]

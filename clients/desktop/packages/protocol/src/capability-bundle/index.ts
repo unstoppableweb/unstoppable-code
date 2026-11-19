@@ -34,6 +34,7 @@ import {
   isPortableCapabilityPathSegment,
   isSafeCapabilityRelativePath,
 } from '../capability-files';
+import type { SelectionRefOwner } from '../plugins/selection-ref-owner';
 
 /**
  * Wire version of the capability bundle contract. Bump only on breaking shape
@@ -299,6 +300,12 @@ export interface CapabilityBundleMemory {
 export interface CapabilityBundleSkillRef {
   sourceId: string;
   skillName: string;
+  /**
+   * The organization whose item the selection named (CAN-6235, CAN-6237).
+   * Absent is the person's own, which is every ref before owners existed,
+   * so a bundle without organization refs keeps its bytes and digest.
+   */
+  owner?: SelectionRefOwner;
 }
 
 /**
@@ -308,6 +315,8 @@ export interface CapabilityBundleSkillRef {
 export interface CapabilityBundlePluginRef {
   marketplaceId: string;
   pluginName: string;
+  /** Whose item the selection named, as {@link CapabilityBundleSkillRef.owner}. */
+  owner?: SelectionRefOwner;
 }
 
 /**
@@ -416,18 +425,25 @@ export type CapabilityUnavailableVia =
   | { kind: 'direct' }
   | { kind: 'plugin'; marketplaceId: string; pluginName: string };
 
-/** The selection ref an unavailability record is about. */
+/**
+ * The selection ref an unavailability record is about. A skill or plugin ref
+ * keeps the selection ref's `owner` (CAN-6237), so pruning an organization's
+ * unavailable item leaves the person's own ref of the same item; absent is
+ * the person's own.
+ */
 export type CapabilityUnavailableRef =
   | {
       kind: 'skill';
       sourceId: string;
       skillName: string;
+      owner?: SelectionRefOwner;
       via: CapabilityUnavailableVia;
     }
   | {
       kind: 'plugin';
       marketplaceId: string;
       pluginName: string;
+      owner?: SelectionRefOwner;
       via: CapabilityUnavailableVia;
     }
   | {
@@ -664,13 +680,24 @@ export function isCapabilityBundleFileTree(
   );
 }
 
+/** An absent owner, or an organization owner (CAN-6235). */
+function isOptionalSelectionRefOwner(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (isRecord(value) &&
+      value.type === 'organization' &&
+      isNonEmptyString(value.organizationId))
+  );
+}
+
 function isCapabilityBundleSkillRef(
   value: unknown,
 ): value is CapabilityBundleSkillRef {
   return (
     isRecord(value) &&
     isNonEmptyString(value.sourceId) &&
-    isNonEmptyString(value.skillName)
+    isNonEmptyString(value.skillName) &&
+    isOptionalSelectionRefOwner(value.owner)
   );
 }
 
@@ -680,7 +707,8 @@ function isCapabilityBundlePluginRef(
   return (
     isRecord(value) &&
     isNonEmptyString(value.marketplaceId) &&
-    isNonEmptyString(value.pluginName)
+    isNonEmptyString(value.pluginName) &&
+    isOptionalSelectionRefOwner(value.owner)
   );
 }
 
@@ -748,12 +776,15 @@ export function isCapabilityUnavailableRef(
   switch (value.kind) {
     case 'skill':
       return (
-        isNonEmptyString(value.sourceId) && isNonEmptyString(value.skillName)
+        isNonEmptyString(value.sourceId) &&
+        isNonEmptyString(value.skillName) &&
+        isOptionalSelectionRefOwner(value.owner)
       );
     case 'plugin':
       return (
         isNonEmptyString(value.marketplaceId) &&
-        isNonEmptyString(value.pluginName)
+        isNonEmptyString(value.pluginName) &&
+        isOptionalSelectionRefOwner(value.owner)
       );
     case 'mcpServer':
       return (
@@ -1380,6 +1411,13 @@ function describeCapabilityUnavailableRef(
   }
 }
 
+function sameOwner(
+  a: SelectionRefOwner | undefined,
+  b: SelectionRefOwner | undefined,
+): boolean {
+  return a?.organizationId === b?.organizationId;
+}
+
 function selectsCapabilityUnavailableRef(
   provenance: CapabilityBundleProvenance,
   ref: CapabilityUnavailableRef,
@@ -1388,13 +1426,16 @@ function selectsCapabilityUnavailableRef(
     case 'skill':
       return provenance.skillRefs.some(
         (entry) =>
-          entry.sourceId === ref.sourceId && entry.skillName === ref.skillName,
+          entry.sourceId === ref.sourceId &&
+          entry.skillName === ref.skillName &&
+          sameOwner(entry.owner, ref.owner),
       );
     case 'plugin':
       return provenance.pluginRefs.some(
         (entry) =>
           entry.marketplaceId === ref.marketplaceId &&
-          entry.pluginName === ref.pluginName,
+          entry.pluginName === ref.pluginName &&
+          sameOwner(entry.owner, ref.owner),
       );
     case 'mcpServer':
       return provenance.mcpServerRefs.some(
@@ -1569,13 +1610,17 @@ export function serializeCanonicalCapabilityBundle(
             ),
           }
         : {}),
+      // An owner is serialized only when present, so a bundle without
+      // organization refs keeps the bytes and digest it had (CAN-6237).
       skillRefs: bundle.provenance.skillRefs.map((ref) => ({
         sourceId: ref.sourceId,
         skillName: ref.skillName,
+        ...canonicalOwner(ref.owner),
       })),
       pluginRefs: bundle.provenance.pluginRefs.map((ref) => ({
         marketplaceId: ref.marketplaceId,
         pluginName: ref.pluginName,
+        ...canonicalOwner(ref.owner),
       })),
       mcpServerRefs: bundle.provenance.mcpServerRefs.map((ref) => ({
         serverId: ref.serverId,
@@ -1640,6 +1685,17 @@ export function serializeCanonicalCapabilityBundle(
   return JSON.stringify(canonical);
 }
 
+/** A ref's owner in canonical field order; nothing for the person's own. */
+function canonicalOwner(owner: SelectionRefOwner | undefined): {
+  owner?: SelectionRefOwner;
+} {
+  return owner === undefined
+    ? {}
+    : {
+        owner: { type: owner.type, organizationId: owner.organizationId },
+      };
+}
+
 function serializeCanonicalCapabilityUnavailableVia(
   via: CapabilityUnavailableVia,
 ): CapabilityUnavailableVia {
@@ -1662,6 +1718,7 @@ function serializeCanonicalCapabilityUnavailableRef(
         kind: ref.kind,
         sourceId: ref.sourceId,
         skillName: ref.skillName,
+        ...canonicalOwner(ref.owner),
         via,
       };
     case 'plugin':
@@ -1669,6 +1726,7 @@ function serializeCanonicalCapabilityUnavailableRef(
         kind: ref.kind,
         marketplaceId: ref.marketplaceId,
         pluginName: ref.pluginName,
+        ...canonicalOwner(ref.owner),
         via,
       };
     case 'mcpServer':

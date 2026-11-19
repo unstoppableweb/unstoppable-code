@@ -156,16 +156,20 @@ describe('core.chat.events desktop stream', () => {
     },
   );
 
-  it('refuses revision 2 before subscribing (CAN-6509)', async () => {
+  it('refuses revisions 2, 3 and 5 before subscribing (CAN-6509, CAN-4174, CAN-6746)', async () => {
     const { runtime, subscribe } = makeHarness();
     try {
-      for (const scope of [
-        'all' as const,
-        { projectId: 'project-1', worktreeId: 'worktree-1' },
-      ]) {
+      for (const [scope, revision] of [
+        ['all' as const, 2 as const],
+        ['all' as const, 3 as const],
+        ['all' as const, 5 as const],
+        [{ projectId: 'project-1', worktreeId: 'worktree-1' }, 2 as const],
+        [{ projectId: 'project-1', worktreeId: 'worktree-1' }, 3 as const],
+        [{ projectId: 'project-1', worktreeId: 'worktree-1' }, 5 as const],
+      ] as const) {
         const stream = await runtime.openStream(
           'core.chat.events',
-          { scope, revision: 2 },
+          { scope, revision },
           { caller },
         );
         try {
@@ -185,6 +189,147 @@ describe('core.chat.events desktop stream', () => {
       }
       expect(subscribe).not.toHaveBeenCalled();
     } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it('gives subscriptions before revision 4 an empty patch in place of chat.initiated (CAN-4174)', async () => {
+    const { runtime, listeners } = makeHarness();
+    const legacy = await runtime.openChatEventsForLegacyIpc(
+      { scope: 'all' },
+      { caller },
+    );
+    const scoped = await runtime.openStream(
+      'core.chat.events',
+      { scope: { projectId: 'project-1', worktreeId: 'worktree-1' } },
+      { caller },
+    );
+    try {
+      const message: PersistedChatMessage = {
+        id: 'initiated-input',
+        role: 'user',
+        timestamp: 1,
+        blocks: [{ type: 'text', text: 'Summarize my day' }],
+      };
+      const event: ChatStateChangedEvent = {
+        schemaVersion: 1,
+        eventId: 'initiated-event',
+        occurredAt: '2026-11-16T12:00:00.000Z',
+        projectId: 'project-1',
+        worktreeId: 'worktree-1',
+        baseRevision: 0,
+        revision: 1,
+        changes: [
+          { type: 'message.upserted', chatId: 'chat-1', message },
+          {
+            type: 'chat.initiated',
+            chatId: 'chat-1',
+            userMessageId: 'initiated-input',
+            origin: { kind: 'automation', sourceId: 'automation-1' },
+            presentation: 'focus',
+            acceptedAt: '2026-11-16T12:00:00.000Z',
+          },
+        ],
+      };
+      listeners.forEach((listener) => listener(event));
+      const expected = {
+        revision: 1,
+        changes: [
+          { type: 'message.upserted', chatId: 'chat-1' },
+          { type: 'tab.metadata_patched', tabId: 'chat-1', patch: {} },
+        ],
+      };
+      const legacyFrame = await nextFrame(
+        legacy.handle.frames[Symbol.asyncIterator](),
+      );
+      if (legacyFrame.kind !== 'item')
+        throw new Error('Expected a chat event item.');
+      expect(legacyFrame.item).toMatchObject(expected);
+      expect(JSON.stringify(legacyFrame.item)).not.toContain('chat.initiated');
+      // The chat:state-changed push, which remote controllers also receive,
+      // carries the same stand-in, and the rest of the event unchanged.
+      const pushed = legacy.takeLegacyEvent(legacyFrame.cursor);
+      expect(pushed).toEqual({
+        ...event,
+        changes: [
+          event.changes[0],
+          { type: 'tab.metadata_patched', tabId: 'chat-1', patch: {} },
+        ],
+      });
+      expect(JSON.stringify(pushed)).not.toContain('chat.initiated');
+      const scopedFrame = await nextFrame(
+        scoped.frames[Symbol.asyncIterator](),
+      );
+      if (scopedFrame.kind !== 'item')
+        throw new Error('Expected a chat event item.');
+      expect(scopedFrame.item).toMatchObject(expected);
+      expect(JSON.stringify(scopedFrame.item)).not.toContain('chat.initiated');
+    } finally {
+      legacy.handle.close();
+      scoped.close();
+      await runtime.shutdown();
+    }
+  });
+
+  it('serves chat.initiated to revision 4 subscriptions in the batch others get with the stand-in (CAN-4174)', async () => {
+    const { runtime, listeners } = makeHarness();
+    const scope = { projectId: 'project-1', worktreeId: 'worktree-1' };
+    const all = await runtime.openStream(
+      'core.chat.events',
+      { scope: 'all', revision: 4 },
+      { caller },
+    );
+    const scoped = await runtime.openStream(
+      'core.chat.events',
+      { scope, revision: 4 },
+      { caller },
+    );
+    const plain = await runtime.openStream(
+      'core.chat.events',
+      { scope: 'all' },
+      { caller },
+    );
+    try {
+      for (const presentation of ['focus', 'open', 'none'] as const) {
+        const initiated = {
+          type: 'chat.initiated' as const,
+          chatId: 'chat-1',
+          userMessageId: `input-${presentation}`,
+          origin: { kind: 'automation' as const, sourceId: 'automation-1' },
+          presentation,
+          acceptedAt: '2026-11-17T12:00:00.000Z',
+        };
+        const revision = ['focus', 'open', 'none'].indexOf(presentation) + 1;
+        const event: ChatStateChangedEvent = {
+          schemaVersion: 1,
+          eventId: `initiated-${presentation}`,
+          occurredAt: '2026-11-17T12:00:00.000Z',
+          ...scope,
+          baseRevision: revision - 1,
+          revision,
+          changes: [initiated],
+        };
+        listeners.forEach((listener) => listener(event));
+        for (const stream of [all, scoped]) {
+          const frame = await nextFrame(stream.frames[Symbol.asyncIterator]());
+          if (frame.kind !== 'item')
+            throw new Error('Expected a chat event item.');
+          expect(frame.item.revision).toBe(revision);
+          // The portable shape, exactly: ids, the origin and the hint.
+          expect(frame.item.changes).toStrictEqual([initiated]);
+        }
+        const frame = await nextFrame(plain.frames[Symbol.asyncIterator]());
+        if (frame.kind !== 'item')
+          throw new Error('Expected a chat event item.');
+        expect(frame.item.revision).toBe(revision);
+        expect(frame.item.changes).toStrictEqual([
+          { type: 'tab.metadata_patched', tabId: 'chat-1', patch: {} },
+        ]);
+      }
+    } finally {
+      all.close();
+      scoped.close();
+      plain.close();
       await runtime.shutdown();
     }
   });

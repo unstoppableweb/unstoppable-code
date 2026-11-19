@@ -1,7 +1,8 @@
 'use client';
 import { DetailEntityType } from '@canopy/ui-shared/components';
 
-import type { JSX, ReactNode } from 'react';
+import { useState, type JSX, type ReactNode } from 'react';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   curatedMcpProviderOnly,
   type CuratedMcpConnectorProvider,
@@ -9,7 +10,12 @@ import {
 } from '@canopy/protocol/mcp-catalog';
 import {
   Badge,
+  CapabilityDetailLayout,
   ComponentSection,
+  DetailFact,
+  DetailFactError,
+  DetailWebsiteFact,
+  useItemStateMarks,
   DataTable,
   ErrorBanner,
   Button,
@@ -22,6 +28,7 @@ import {
   Heading,
   Skeleton,
 } from '@canopy/ui-shared/components';
+import { McpPlacementSlotProvider } from './McpServerManagement';
 import {
   MCP_PROVIDER_CONNECTOR_LABELS,
   mcpProviderOnlyGuidance,
@@ -100,6 +107,20 @@ export interface CuratedMcpDetailProps<
   actions?: ReactNode;
   connectionContent?: ReactNode;
   /**
+   * The person's accounts of this connector (CAN-6226), under the name,
+   * description and categories, so the header reads before them. It is given
+   * the facts that describe one account (Health and Placement from
+   * `renderManagement`, then `connectionContent`) to draw inside the account
+   * the detail shows; the page then leaves them out. Pass it only when the
+   * person holds an account, so the facts never go missing.
+   */
+  renderAccounts?: (accountDetails: ReactNode) => ReactNode;
+  /**
+   * Where the server is installed (the Works with list). It describes the
+   * server, not an account, so it stays on the page after the facts.
+   */
+  availability?: ReactNode;
+  /**
    * Set when the service can also be reached another way. This entry's
    * connection and tools then read as one titled route, followed by the
    * others, so nothing on the page reads as belonging to both.
@@ -111,6 +132,18 @@ export interface CuratedMcpDetailProps<
   renderManagement?: () => ReactNode;
   /** On a page that sets its own width, so it lines up with the page actions. */
   flush?: boolean;
+  /** New Customize: the tile's 40px logo. */
+  logo?: ReactNode;
+  /** New Customize: the tile's publisher line. */
+  publisher?: ReactNode;
+  /** New Customize: when the installed server last changed, formatted. */
+  updated?: string;
+  /** New Customize: the collapsed Configuration section. */
+  configuration?: ReactNode;
+  /** New Customize: the Works with table, as the tile's chips read it. */
+  worksWith?: ReactNode;
+  /** New Customize: the Related section. */
+  related?: ReactNode;
 }
 
 export function CuratedMcpDetail<T extends McpDetailEntry>({
@@ -124,11 +157,21 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   renderLogo,
   actions,
   connectionContent,
+  renderAccounts,
+  availability,
   routes,
   statusContent,
   renderManagement,
   flush = false,
+  logo,
+  publisher,
+  updated,
+  configuration,
+  worksWith,
+  related,
 }: CuratedMcpDetailProps<T>): JSX.Element {
+  // New Customize draws the page through the shared detail layout.
+  const layout = useItemStateMarks();
   const providerOnly = curatedMcpProviderOnly(entry);
   // With no provider route on screen (the MCP tab's Browse dialog), say how
   // this service connects rather than ending on its description.
@@ -143,6 +186,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
 
   const toolsBody = (
     <McpToolsBody
+      inlineError={layout}
       installed={installedServerId !== null}
       toolNames={toolNames}
       toolsLoading={toolsLoading}
@@ -155,7 +199,49 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
     </div>
   );
   const management = renderManagement?.();
+  // With an accounts list, the facts about one account move into its row.
+  const accounts =
+    renderAccounts?.(
+      providerOnly ? null : (
+        <div className="flex min-w-0 flex-col gap-1">
+          {management}
+          {connectionContent}
+        </div>
+      ),
+    ) ?? null;
+  const accountFactsMoved = renderAccounts !== undefined;
+  const pageManagement = accountFactsMoved ? null : management;
+  const pageConnectionContent = accountFactsMoved ? null : connectionContent;
 
+  if (layout) {
+    return (
+      <McpLayoutDetail
+        entry={entry}
+        renderLogo={renderLogo}
+        logo={logo}
+        publisher={publisher}
+        actions={actions}
+        onAdd={onAdd}
+        onConfigure={onConfigure}
+        installedServerId={installedServerId}
+        providerOnly={providerOnly}
+        showProviderGuidance={showProviderGuidance}
+        links={links}
+        statusContent={statusContent}
+        management={pageManagement}
+        connectionContent={pageConnectionContent}
+        accounts={accounts}
+        availability={availability}
+        routes={routes}
+        tools={tools}
+        updated={updated}
+        worksWith={worksWith}
+        configuration={configuration}
+        related={related}
+        flush={flush}
+      />
+    );
+  }
   return (
     <div
       className={`flex flex-1 min-h-0 flex-col gap-6 pb-5 overflow-y-auto${flush ? '' : ' px-5'}`}
@@ -227,6 +313,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
           ))}
         </div>
       )}
+      {accounts}
 
       {showProviderGuidance && <McpProviderOnlyGuidance entry={entry} />}
       {routes ? (
@@ -238,9 +325,10 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
               description={routes.own.description}
               dataTestId="mcp-browse-detail-app-route"
             >
-              <div className="flex flex-col gap-1">
-                {management}
-                {connectionContent}
+              <div className="flex flex-col gap-1 empty:hidden">
+                {pageManagement}
+                {pageConnectionContent}
+                {availability}
               </div>
               {tools}
             </PluginConnectionRouteSection>
@@ -252,13 +340,176 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
           {/* Facts stay one list: Status, Health, Placement, Connection. */}
           <div className="flex flex-col gap-1 empty:hidden">
             {statusContent}
-            {!providerOnly && management}
-            {!providerOnly && connectionContent}
+            {!providerOnly && pageManagement}
+            {!providerOnly && pageConnectionContent}
+            {!providerOnly && availability}
           </div>
           {!providerOnly && tools}
         </>
       )}
     </div>
+  );
+}
+
+/** New Customize's MCP page on the shared layout (`CuratedMcpDetail`). */
+function McpLayoutDetail<T extends McpDetailEntry>({
+  entry,
+  renderLogo,
+  logo,
+  publisher,
+  actions,
+  onAdd,
+  onConfigure,
+  installedServerId,
+  providerOnly,
+  showProviderGuidance,
+  links,
+  statusContent,
+  management,
+  connectionContent,
+  accounts,
+  availability,
+  routes,
+  tools,
+  updated,
+  worksWith,
+  configuration,
+  related,
+  flush,
+}: Pick<
+  CuratedMcpDetailProps<T>,
+  | 'entry'
+  | 'renderLogo'
+  | 'logo'
+  | 'publisher'
+  | 'actions'
+  | 'onAdd'
+  | 'onConfigure'
+  | 'installedServerId'
+  | 'statusContent'
+  | 'connectionContent'
+  | 'availability'
+  | 'routes'
+  | 'updated'
+  | 'worksWith'
+  | 'configuration'
+  | 'related'
+  | 'flush'
+> & {
+  providerOnly: boolean;
+  showProviderGuidance: boolean;
+  links: readonly { href: string; label: string }[];
+  management: ReactNode;
+  /** The accounts list, holding the facts about the account it shows. */
+  accounts: ReactNode;
+  tools: ReactNode;
+}): JSX.Element {
+  // The management card's Placement row lands here, after Connection.
+  const [placementSlot, setPlacementSlot] = useState<HTMLElement | null>(null);
+  const defaultAction = providerOnly ? null : installedServerId !== null &&
+    onConfigure ? (
+    <PluginConfigurationButton onConfigure={onConfigure} />
+  ) : onAdd ? (
+    <Button
+      type="button"
+      variant="primary"
+      size="compact"
+      onClick={() => onAdd(entry)}
+      data-testid="mcp-browse-detail-add"
+    >
+      Add
+    </Button>
+  ) : null;
+  const website = entry.authorUrl ?? entry.docsUrl;
+  const otherLinks = links.filter((link) => link.href !== website);
+  return (
+    <McpPlacementSlotProvider value={placementSlot}>
+      <div
+        className={`flex flex-1 min-h-0 flex-col gap-6 pb-5 overflow-y-auto${flush ? '' : ' px-5'}`}
+        data-testid="mcp-browse-detail"
+      >
+        <CapabilityDetailLayout
+          dataTestId="mcp-detail"
+          logo={
+            logo ??
+            renderLogo?.(entry) ?? (
+              <McpServerLogo
+                curatedKey={entry.key}
+                logoUrl={entry.logoUrl}
+                name={entry.name}
+                size={40}
+                fallback="monogram"
+                shape="tile"
+                plate
+                imgTestId="mcp-curated-logo"
+                fallbackTestId="mcp-curated-logo-fallback"
+              />
+            )
+          }
+          title={entry.name}
+          titleId="plugin-detail-title"
+          publisher={publisher ?? entry.authorName}
+          actions={actions ?? defaultAction}
+          description={entry.longDescription ?? entry.shortDescription}
+          facts={{
+            status: statusContent,
+            // Health, then Placement, from the shared management card.
+            health: !providerOnly ? management : undefined,
+            website: website ? (
+              <DetailWebsiteFact href={website} testId="mcp-detail-website" />
+            ) : undefined,
+            updated: updated ? (
+              <DetailFact label="Updated" testId="mcp-detail-updated">
+                {updated}
+              </DetailFact>
+            ) : undefined,
+            entity:
+              otherLinks.length > 0 ? (
+                <DetailFact label="Links" testId="mcp-detail-links">
+                  <span className="inline-flex flex-wrap items-center gap-x-3">
+                    {otherLinks.map((link) => (
+                      <ExternalTextLink key={link.label} {...link} />
+                    ))}
+                  </span>
+                </DetailFact>
+              ) : undefined,
+          }}
+          factsFooter={
+            accounts !== null ? (
+              <>
+                {accounts}
+                {!providerOnly && availability}
+              </>
+            ) : !providerOnly ? (
+              <>
+                {connectionContent}
+                {availability}
+                <div
+                  ref={setPlacementSlot}
+                  className="flex flex-col empty:hidden"
+                />
+              </>
+            ) : undefined
+          }
+          contents={
+            showProviderGuidance || routes || !providerOnly ? (
+              <>
+                {showProviderGuidance && (
+                  <McpProviderOnlyGuidance entry={entry} />
+                )}
+                {/* This server's tools, then any other way to reach the
+                    service (a provider connector), each its own section. */}
+                {!providerOnly && tools}
+                {routes?.others}
+              </>
+            ) : undefined
+          }
+          worksWith={worksWith}
+          settings={configuration}
+          related={related}
+        />
+      </div>
+    </McpPlacementSlotProvider>
   );
 }
 
@@ -293,7 +544,10 @@ function McpToolsBody({
   toolNames,
   toolsLoading,
   toolsError,
+  inlineError = false,
 }: {
+  /** New Customize: a failure as a line, not a banner; names replay-blocked. */
+  inlineError?: boolean;
   installed: boolean;
   toolNames: string[] | null;
   toolsLoading: boolean;
@@ -316,6 +570,10 @@ function McpToolsBody({
           <ToolChips toolNames={SAMPLE_TOOL_NAMES} />
         </Skeleton>
       </DelayedLoadingPlaceholder>
+    );
+  if (toolsError && inlineError)
+    return (
+      <DetailFactError error={toolsError} testId="mcp-browse-tools-error" />
     );
   if (toolsError)
     return (
@@ -340,7 +598,9 @@ function McpToolsBody({
           render: (tool: string): JSX.Element => (
             <span
               data-testid="mcp-browse-tool-chip"
-              className="font-mono text-xs"
+              // A server's tool names can carry private organization names:
+              // session replay keeps a placeholder for them.
+              className={`font-mono text-xs${inlineError ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
             >
               {tool}
             </span>

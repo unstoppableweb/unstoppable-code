@@ -22,6 +22,7 @@ import {
   parseMigrationCoreFrame,
   type CopilotHandoffCorrelation,
   type MigrationWireFrame,
+  type CopilotAuthorityRecord,
 } from '@canopy/core-runtime/node/vault';
 import {
   CopilotHostSelectionSchema,
@@ -30,6 +31,7 @@ import {
 import { observeCopilotSelectionAuthority } from '../lib/preferences-store';
 import { beginCopilotMigrationBarrier } from './grant-authority';
 import type { CopilotMigrationSource } from './credential-store';
+import type { CopilotSetupLineage } from './setup-lineage';
 import {
   createCopilotSelectionReceipt,
   readCopilotSelectionPreferences,
@@ -109,6 +111,7 @@ export function createCopilotHandoffFile(dataRoot: string): CopilotHandoffFile {
 export interface CopilotQualificationHandoff {
   phase(): Promise<CopilotHandoffPhase>;
   custody(): Promise<'unused' | 'pending' | 'selected'>;
+  ordinarySetup(): Promise<boolean>;
   connect(cancel?: boolean): Promise<readonly MigrationWireFrame[]>;
   verify(): Promise<readonly MigrationWireFrame[]>;
   cleanup(): Promise<readonly MigrationWireFrame[]>;
@@ -124,8 +127,11 @@ export function createCopilotQualificationHandoff(options: {
   /** Synthetic fixtures may inject repositories; ordinary production never constructs the host. */
   selection?: ReturnType<typeof createCopilotSelectionReceipt>;
   readSelection?: typeof readCopilotSelectionPreferences;
+  setupLineage: CopilotSetupLineage;
   proveUnused?(): Promise<boolean>;
   corePhase?(): Promise<CopilotHandoffPhase>;
+  retiredBinding?(): Promise<CopilotHandoffCorrelation['binding']>;
+  ordinaryAuthority?(): Promise<CopilotAuthorityRecord | null>;
   /** Retire the trusted channel and recipient admission synchronously on host-authority loss. */
   retireChannel(): void;
   /** Close recipient/submission admission synchronously without destroying cancellation transport. */
@@ -133,7 +139,9 @@ export function createCopilotQualificationHandoff(options: {
 }): CopilotQualificationHandoff {
   let barrier = beginCopilotMigrationBarrier(); // closes legacy admission before the first await
   const file = createCopilotHandoffFile(options.dataRoot);
-  const selection = options.selection ?? createCopilotSelectionReceipt();
+  const lineage = options.setupLineage;
+  const selection =
+    options.selection ?? createCopilotSelectionReceipt(undefined, lineage);
   const readSelection =
     options.readSelection ?? readCopilotSelectionPreferences;
   const stopped = new AbortController();
@@ -152,18 +160,21 @@ export function createCopilotQualificationHandoff(options: {
   let expectedOperation: CopilotHandoffCorrelation['operation'] = 'begin';
   let busy = false;
   let closed = false;
-  let confirmedSelection: CopilotHostSelection | undefined;
+  let confirmedImportSelection: CopilotHostSelection | undefined;
   let observedSelection: CopilotHostSelection | null | undefined;
   const unobserve = observeCopilotSelectionAuthority((change) => {
     if (change.kind === 'unavailable') {
       interrupt();
       return;
     }
-    observedSelection =
+    const nextSelection =
       CopilotHostSelectionSchema.safeParse(change.selection).data ?? null;
-    if (
-      confirmedSelection &&
-      JSON.stringify(observedSelection) !== JSON.stringify(confirmedSelection)
+    observedSelection = nextSelection;
+    if (lineage.active()) {
+      if (!lineage.observe(nextSelection)) interrupt();
+    } else if (
+      confirmedImportSelection &&
+      JSON.stringify(nextSelection) !== JSON.stringify(confirmedImportSelection)
     )
       interrupt();
   });
@@ -216,7 +227,8 @@ export function createCopilotQualificationHandoff(options: {
   function interrupt(): void {
     if (closed) return;
     closed = true;
-    confirmedSelection = undefined;
+    lineage.interrupt();
+    confirmedImportSelection = undefined;
     unobserve();
     try {
       options.retireChannel();
@@ -357,7 +369,19 @@ export function createCopilotQualificationHandoff(options: {
     if (action.kind === 'freeze') {
       if (action.retirement) {
         const before = await load();
-        if (!before || !['cancelling', 'retired'].includes(before.disposition))
+        if (before?.disposition === 'selected') {
+          const selected = CopilotHostSelectionSchema.parse(
+            (await readSelection()).copilotVaultSelection,
+          );
+          if (
+            selected.state !== 'disabled' ||
+            selected.identity.operationId !== before.binding?.operationId ||
+            selected.identity.epoch !== before.binding.accountEpoch
+          )
+            throw new Error('Published retirement receipt unavailable.');
+          await save({ disposition: 'cancelling' });
+        }
+        if (!record || !['cancelling', 'retired'].includes(record.disposition))
           throw new Error('Retirement fence missing.');
         return 'true';
       }
@@ -445,7 +469,7 @@ export function createCopilotQualificationHandoff(options: {
               JSON.stringify(observedSelection) !== JSON.stringify(expected)
             )
               throw new Error('Host receipt changed during confirmation.');
-            confirmedSelection = expected;
+            confirmedImportSelection = expected;
           }
           return JSON.stringify(result);
         }
@@ -576,8 +600,12 @@ export function createCopilotQualificationHandoff(options: {
         before?.disposition === 'cancelling' ||
         before?.disposition === 'retired';
       if (cancel) options.cancelAdmission();
-      confirmedSelection = undefined;
-      if (cancel && before && before.disposition !== 'retired')
+      confirmedImportSelection = undefined;
+      if (
+        cancel &&
+        before &&
+        !['selected', 'retired'].includes(before.disposition)
+      )
         await save({ disposition: 'cancelling' });
       const hello = await exchange(encodeMigrationFrame({ type: 'hello' }));
       const offers = hello.frames.map(parseMigrationCoreFrame);
@@ -664,6 +692,63 @@ export function createCopilotQualificationHandoff(options: {
     }
   }
   return {
+    async ordinarySetup(): Promise<boolean> {
+      if (closed) return false;
+      const fence = await load();
+      const retired = await options.retiredBinding?.();
+      if (
+        closed ||
+        !retired ||
+        fence?.disposition !== 'retired' ||
+        JSON.stringify(fence.binding) !== JSON.stringify(retired)
+      )
+        return false;
+      const revision = lineage.revision();
+      const preferences = await readSelection();
+      const authority = await options.ordinaryAuthority?.();
+      const selected = CopilotHostSelectionSchema.safeParse(
+        preferences.copilotVaultSelection,
+      ).data;
+      if (closed) return false;
+      if (!selected || !authority) {
+        interrupt();
+        return false;
+      }
+      if (
+        lineage.stale(selected, authority) ||
+        (revision !== lineage.revision() &&
+          JSON.stringify(selected) !== JSON.stringify(lineage.current()))
+      )
+        return false;
+      // Revalidate both owners after the preference read; neither is a legacy-unused claim.
+      const currentRetired = await options.retiredBinding?.();
+      const currentAuthority = await options.ordinaryAuthority?.();
+      const currentFence = await load();
+      if (
+        closed ||
+        JSON.stringify(currentRetired) !== JSON.stringify(retired) ||
+        JSON.stringify(currentAuthority) !== JSON.stringify(authority) ||
+        JSON.stringify(currentFence) !== JSON.stringify(fence)
+      )
+        return false;
+      if (
+        lineage.stale(selected, authority) ||
+        (revision !== lineage.revision() &&
+          JSON.stringify(selected) !== JSON.stringify(lineage.current()))
+      )
+        return false;
+      if (
+        !lineage.admit(selected, preferences.copilotEnabled, authority, {
+          operationId: retired.operationId,
+          epoch: retired.accountEpoch,
+        })
+      ) {
+        interrupt();
+        return false;
+      }
+      confirmedImportSelection = undefined;
+      return true;
+    },
     async phase(): Promise<CopilotHandoffPhase> {
       const fence = await load();
       if (
@@ -696,8 +781,9 @@ export function createCopilotQualificationHandoff(options: {
           preferences.copilotVaultSelection,
         ).data;
         if (
-          confirmedSelection &&
-          JSON.stringify(selected) !== JSON.stringify(confirmedSelection)
+          (lineage.current() ?? confirmedImportSelection) &&
+          JSON.stringify(selected) !==
+            JSON.stringify(lineage.current() ?? confirmedImportSelection)
         )
           throw new Error('Host receipt changed.');
         if (

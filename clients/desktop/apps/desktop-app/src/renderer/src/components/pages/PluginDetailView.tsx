@@ -1,6 +1,11 @@
-import type { PluginMcpNavigationTarget } from '@canopy/ui-shared/components';
+import {
+  DetailFactError,
+  type DetailVersionUpdate,
+  type PluginMcpNavigationTarget,
+} from '@canopy/ui-shared/components';
 import {
   marketplaceDisplayName,
+  linkRecordedAppError,
   pluginDisplayName,
   Notice,
   type UnifiedEntryAlternative,
@@ -32,16 +37,8 @@ import type {
   PluginInfo,
 } from '@canopy/execution-engine/types/plugins';
 import type { PluginStandInCandidate } from '@canopy/protocol/plugins';
-import {
-  offeredPluginHarnesses,
-  pluginHarnessRows,
-  type PluginHarnessId,
-  type PluginHarnessRow,
-} from '@canopy/plugin-interop/harness-support';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { pluginInfoHarnessRows } from '@canopy/plugin-interop/harness-support';
 import { claudeModPluginId } from '@canopy/protocol/claude-mods';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
-import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { brandText } from '@/lib/brand';
 import {
   applyCodexCompatDisabledToMarketplaceCaches,
@@ -51,6 +48,7 @@ import {
 import { useShareAccess } from '@/hooks/useShareAccess';
 import { usePluginMcpServerHealth } from '@/hooks/usePluginMcpServerHealth';
 import { useItemHarnessInstall } from '@/hooks/useItemHarnessInstall';
+import { useOfferedPluginHarnesses } from '@/hooks/useOfferedPluginHarnesses';
 import { useCustomizeDiscoveryEnabled } from '@canopy/ui-app/customize-discovery';
 import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import { SharePluginModal } from '@/components/plugins/SharePluginModal';
@@ -67,28 +65,7 @@ function resultError(error: unknown): Error {
 }
 
 /** Harness rows for an installed plugin, through the shared row rule. */
-function installedPluginHarnessRows(
-  plugin: PluginInfo,
-  harnesses: readonly PluginHarnessId[],
-  showHarnessInstalls: boolean,
-): PluginHarnessRow[] {
-  return pluginHarnessRows({
-    harnesses,
-    // One Add for every harness (CAN-6816): New Customize only.
-    ...(showHarnessInstalls && plugin.harnessInstalls
-      ? { harnessInstalls: plugin.harnessInstalls }
-      : {}),
-    providerSupport: plugin.providerSupport,
-    codexCompatDisabled: plugin.codexCompatDisabled,
-    facets: plugin.facets,
-    installed: plugin.globalInstallStatus
-      ? {
-          claude: plugin.globalInstallStatus.claude?.installed ?? false,
-          codex: plugin.globalInstallStatus.codex?.installed ?? false,
-        }
-      : true,
-  });
-}
+const installedPluginHarnessRows = pluginInfoHarnessRows;
 
 /** Desktop IPC adapter for the browser-safe shared full-plugin composition. */
 export function PluginDetailView({
@@ -110,7 +87,13 @@ export function PluginDetailView({
   onOpenSource,
   bundledServerRows,
   standIn,
+  publisher,
+  versionUpdate,
 }: {
+  /** New Customize: the tile's publisher line. */
+  publisher?: ReactNode;
+  /** New Customize: an available update, for the Version row. */
+  versionUpdate?: DetailVersionUpdate;
   onOpenSource?: () => void;
   /**
    * The publisher's MCP server one Add installs where this plugin's ChatGPT
@@ -168,38 +151,14 @@ export function PluginDetailView({
     mcpConnectTarget,
   );
   // List only the harnesses this build offers; the gates are its own flags.
-  const cursorEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key),
-  );
-  const copilotEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopCopilotHarness.key),
-  );
-  const opencodeEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key),
-  );
-  // Labs: listed only where Google models were discovered, as in the picker.
-  const antigravityFlag = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key),
-  );
-  const antigravityDiscovered = useModelCatalogStore(
-    (state) => (state.snapshot?.antigravity?.length ?? 0) > 0,
-  );
-  const antigravityEnabled = antigravityFlag && antigravityDiscovered;
-  const harnesses = useMemo(
-    () =>
-      offeredPluginHarnesses({
-        cursor: cursorEnabled,
-        copilot: copilotEnabled,
-        opencode: opencodeEnabled,
-        antigravity: antigravityEnabled,
-      }),
-    [cursorEnabled, copilotEnabled, opencodeEnabled, antigravityEnabled],
-  );
+  const harnesses = useOfferedPluginHarnesses();
   const autoInstallStarted = useRef(false);
   const onPluginUpdatedRef = useRef(onPluginUpdated);
   onPluginUpdatedRef.current = onPluginUpdated;
   const [autoInstalling, setAutoInstalling] = useState(false);
   const [autoInstallError, setAutoInstallError] = useState('');
+  // The auto-install failure text main already recorded; its notice records nothing.
+  const [recordedAutoInstallError, setRecordedAutoInstallError] = useState('');
   // One Add for every harness (CAN-6816): New Customize only.
   const installForHarnesses = useItemHarnessInstall();
   const discoveryEnabled = useCustomizeDiscoveryEnabled();
@@ -216,9 +175,9 @@ export function PluginDetailView({
       mountedRef.current = false;
     };
   }, []);
-  const recordHarnessInstalls = useCallback(
-    (installed: PluginInfo): void => {
-      void installForHarnesses(
+  const runHarnessInstalls = useCallback(
+    (installed: PluginInfo): Promise<void> =>
+      installForHarnesses(
         {
           kind: 'plugin',
           marketplaceId: installed.marketplaceId,
@@ -248,10 +207,28 @@ export function PluginDetailView({
             });
         } else if (outcome.kind === 'failed')
           setHarnessInstallNotice(outcome.message);
-      });
-    },
+      }),
     [installForHarnesses, standIn],
   );
+  const recordHarnessInstalls = useCallback(
+    (installed: PluginInfo): void => {
+      void runHarnessInstalls(installed);
+    },
+    [runHarnessInstalls],
+  );
+  // The page's own Add for missing copies: held until it settles, so a
+  // second click never starts an overlapping Add.
+  const [addingCopies, setAddingCopies] = useState(false);
+  const addingCopiesRef = useRef(false);
+  const addHarnessCopies = useCallback((): void => {
+    if (addingCopiesRef.current) return;
+    addingCopiesRef.current = true;
+    setAddingCopies(true);
+    void runHarnessInstalls(latestPluginRef.current).finally(() => {
+      addingCopiesRef.current = false;
+      if (mountedRef.current) setAddingCopies(false);
+    });
+  }, [runHarnessInstalls]);
   const sourceUrl =
     typeof plugin.externalSource === 'string'
       ? plugin.externalSource
@@ -274,8 +251,15 @@ export function PluginDetailView({
         if (result.success && result.data) {
           onPluginUpdatedRef.current(result.data);
           recordHarnessInstalls(result.data);
-        } else if (!cancelled)
-          setAutoInstallError(result.error ?? 'Unable to install. Try again.');
+        } else if (!cancelled) {
+          const message = result.error ?? 'Unable to install. Try again.';
+          // Main recorded it; the notice records nothing but links it to this session.
+          linkRecordedAppError(result.appError, 'plugin-detail-auto-install');
+          setRecordedAutoInstallError(
+            result.appError?.recordedBy !== undefined ? message : '',
+          );
+          setAutoInstallError(message);
+        }
       })
       .catch((cause) => {
         if (!cancelled) setAutoInstallError(resultError(cause).message);
@@ -372,7 +356,9 @@ export function PluginDetailView({
           providers: request.providers,
         });
         if (!result.success || !result.data)
-          throw new Error(result.error ?? 'Unknown error.');
+          throw Object.assign(new Error(result.error ?? 'Unknown error.'), {
+            appError: result.appError,
+          });
         onPluginUpdated(result.data.plugin);
         recordHarnessInstalls(result.data.plugin);
         return result.data;
@@ -389,7 +375,10 @@ export function PluginDetailView({
         sourceUrl,
       );
       if (!result.success || !result.data)
-        throw new Error(result.error ?? 'Failed to install plugin.');
+        throw Object.assign(
+          new Error(result.error ?? 'Failed to install plugin.'),
+          { appError: result.appError },
+        );
       onPluginUpdated(result.data);
       recordHarnessInstalls(result.data);
       return { plugin: result.data };
@@ -466,12 +455,40 @@ export function PluginDetailView({
         headerActions={headerActions}
         renderPrimaryAction={renderPrimaryAction}
         alternatives={alternatives}
+        // New Customize: an installed plugin's missing native copies, added
+        // through the same one Add for every harness.
+        {...(discoveryEnabled && !needsInstall && !addingCopies
+          ? { onAddHarnessCopies: addHarnessCopies }
+          : {})}
         onOpenSource={onOpenSource}
         sourceName={marketplaceDisplayName(marketplace.name)}
         onOpenEntryId={onOpenEntryId}
         bundledServerRows={bundledServerRows}
         mcpServerHealth={mcpServerHealth}
         headerIcon={headerIcon}
+        publisher={publisher}
+        versionUpdate={versionUpdate}
+        // New Customize: Add's failures sit under Works with, not below
+        // the page.
+        worksWithNotice={
+          discoveryEnabled && (autoInstallError || harnessInstallNotice) ? (
+            <div className="flex flex-col gap-1 text-s">
+              {autoInstallError && (
+                <DetailFactError
+                  error={autoInstallError}
+                  testId="plugin-detail-auto-install-error"
+                />
+              )}
+              {harnessInstallNotice && (
+                <DetailFactError
+                  error={harnessInstallNotice}
+                  tone="attention"
+                  testId="plugin-detail-harness-install-error"
+                />
+              )}
+            </div>
+          ) : undefined
+        }
         statusContent={statusContent}
         sharedContent={sharedContent}
         // Where an installed plugin runs: every offered harness, signed in or not.
@@ -486,12 +503,16 @@ export function PluginDetailView({
         compatibilityError={compatibilityError}
         formatDate={formatDate}
       />
-      {autoInstallError && (
-        <Notice errorSource="plugin-detail-auto-install" intent="destructive">
+      {autoInstallError && !discoveryEnabled && (
+        <Notice
+          errorSource="plugin-detail-auto-install"
+          errorRecordingDisabled={autoInstallError === recordedAutoInstallError}
+          intent="destructive"
+        >
           {autoInstallError}
         </Notice>
       )}
-      {harnessInstallNotice && (
+      {harnessInstallNotice && !discoveryEnabled && (
         <Notice errorSource="plugin-detail-harness-install" intent="attention">
           {harnessInstallNotice}
         </Notice>

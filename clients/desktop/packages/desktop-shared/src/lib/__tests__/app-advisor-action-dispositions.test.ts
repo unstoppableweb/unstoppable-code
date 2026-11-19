@@ -62,12 +62,33 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyWrites: count((d) => d.kind === 'legacy' && d.access === 'write'),
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
-      coreWrites: 180,
-      coreReads: 117,
+      coreWrites: 181,
+      coreReads: 119,
       hostPresentation: 3,
       presentation: 90,
       legacyWrites: 36,
       legacyReads: 9,
+    });
+  });
+
+  it('device MCP discovery is read-only and forced removal stays a shared-engine catalog write', () => {
+    for (const type of [
+      'installed_items.list_mcp_removals',
+      'installed_items.inspect_mcp_removal',
+    ] as const)
+      expect(APP_ADVISOR_ACTION_DISPOSITIONS[type]).toEqual({
+        kind: 'core',
+        access: 'read',
+        executor: 'shared-engine',
+      });
+    expect(
+      APP_ADVISOR_ACTION_DISPOSITIONS['installed_items.force_mcp_removal'],
+    ).toEqual({
+      kind: 'core',
+      access: 'write',
+      executor: 'shared-engine',
+      grants: ['core.catalog.write'],
+      revision: 'none',
     });
   });
 

@@ -1,4 +1,4 @@
-import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import type { AgentProvider, AgentSession, AgentSessionOptions } from './types';
 import {
   isSelectableOllamaModel,
@@ -38,7 +38,7 @@ export class OllamaProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (data: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     if (!isOllamaSupportedOnPlatform()) {
       throw new Error(OLLAMA_UNSUPPORTED_PLATFORM_MESSAGE);
@@ -56,7 +56,7 @@ export class OllamaProvider implements AgentProvider {
         providerType: 'ollama',
       },
       onEvent,
-      getWindow,
+      interfacePort,
     );
   }
 }

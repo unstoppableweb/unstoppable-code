@@ -1,4 +1,11 @@
 import type {
+  McpRemovalCandidatesResult,
+  InspectMcpRemovalRequest,
+  InspectMcpRemovalResult,
+  ForceMcpRemovalRequest,
+  ForceMcpRemovalResult,
+} from '@canopy/protocol/mcp-removal';
+import type {
   AccountMcpClientSetup,
   AccountMcpOAuthClientCredentials,
 } from '@canopy/protocol/mcp-servers';
@@ -473,6 +480,8 @@ export type StartAccountMcpConnectionRequest = (
     }
 ) & {
   configId: string;
+  /** The name of an account the person adds beside another (CAN-6226). */
+  label?: string;
   bearerToken?: SecretValueInput;
   /**
    * The device server whose stored secrets `headers` and `bearerToken` keep
@@ -620,6 +629,11 @@ export interface AccountMcpConnectionFailure {
 }
 
 export interface McpServersAPI {
+  removalCandidates(): Promise<McpRemovalCandidatesResult>;
+  inspectRemoval(
+    request: InspectMcpRemovalRequest,
+  ): Promise<InspectMcpRemovalResult>;
+  forceRemoval(request: ForceMcpRemovalRequest): Promise<ForceMcpRemovalResult>;
   startAccountConnection(
     request: StartAccountMcpConnectionRequest,
   ): Promise<StartAccountMcpConnectionResponse | AccountMcpConnectionFailure>;
@@ -629,9 +643,15 @@ export interface McpServersAPI {
     id: string,
     request: UpdateAccountMcpConnectionRequest,
   ): Promise<AccountMcpConnection | AccountMcpConnectionFailure>;
-  /** Removes a cloud connection; an older cloud only disconnects it. */
+  /**
+   * Removes a cloud connection; an older cloud only disconnects it. With
+   * `unlessConnected` (a sign-in's own cleanup), a connection that connected
+   * meanwhile is kept and an older cloud is left alone; both answer
+   * `removed: false`.
+   */
   removeAccountConnection(
     id: string,
+    options?: { unlessConnected?: boolean },
   ): Promise<RemoveAccountMcpConnectionResponse>;
   /** Points desktop defaults and saved chats at another server. */
   rewriteServerRefs(
@@ -719,7 +739,11 @@ export interface McpServersAPI {
    */
   refreshCurated(): Promise<CuratedMcpServerListResponse>;
   /** Fetch an untrusted image through the main-process public-network cache. */
-  resolveRemoteImage?(url: string): Promise<string | null>;
+  resolveRemoteImage?(
+    url: string,
+    /** New Customize's resolution; main also requires the experiment on. */
+    options?: { readonly enhanced?: boolean },
+  ): Promise<string | null>;
   /**
    * Read the current connection status for every configured MCP server — one
    * entry per server, with the per-config auth axis nested.

@@ -1,3 +1,5 @@
+import { McpRemovalRepair } from '@canopy/ui-app/capability';
+import { useCursorHarnessState } from '@/hooks/useCursorHarnessState';
 import type { CustomizeRowMenuItem } from '@canopy/ui-shared/components/CustomizeRowMenu';
 import { isLocalCollectionConfig } from '@canopy/protocol/collections';
 import {
@@ -150,6 +152,7 @@ import type {
   AccountMcpConnection,
 } from '@canopy/execution-engine/types/mcp-servers';
 import {
+  CUSTOMIZE_DISCOVERY_SUBTITLE,
   CUSTOMIZE_SECTION_SUBTITLE,
   EmptyState,
   PageHeader,
@@ -164,7 +167,7 @@ import {
   CustomizeBreadcrumbs,
 } from '@canopy/ui-shared/components';
 import {
-  CUSTOMIZE_DISCOVERY_TABS,
+  customizeDiscoveryTabs,
   customizeDiscoveryFiltersForLanding,
   customizeDiscoveryLanding,
   isCustomizeDiscoveryTab,
@@ -206,6 +209,7 @@ import { useSkillsChangedRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
 import { marketplaceEntryInstallLink } from '@/lib/sharedResourceInstallLink';
 import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
+import { useOfferedPluginHarnesses } from '@/hooks/useOfferedPluginHarnesses';
 import { useInstalledShareSourceHashes } from '@/hooks/useInstalledShareSourceHashes';
 import {
   installedEntryStatusStates,
@@ -480,9 +484,16 @@ export function PluginsPage({
       ? null
       : (savedPresentation?.browse.tab ?? null),
   );
-  // New Customize (CAN-6809, Labs): five tabs and one filter menu. Off, the
+  // New Customize (CAN-6809, Labs): its own tabs, filter pills and one filter menu. Off, the
   // page is exactly as before.
   const discoveryEnabled = useCustomizeDiscoveryEnabled();
+  // "Connect a harness…" points at the first harness Settings → Harnesses
+  // still offers to connect, and hides once every harness is connected.
+  const cursorHarness = useCursorHarnessState(discoveryEnabled);
+  const harnessToConnect =
+    cursorHarness.showCursor && !cursorHarness.cursorAvailable
+      ? 'cursor'
+      : undefined;
   // New Customize (CAN-6811): an integration row shows and installs its copy
   // for the harness new code chats use; Ollama and others read as Claude.
   const defaultHarness = useChatStore((s) =>
@@ -491,16 +502,23 @@ export function PluginsPage({
   const { filters: discoveryFilters, setFilters: setDiscoveryFilters } =
     useCustomizeDiscoveryFilters();
   const { active: sharedWithMeActive } = useCustomizeSharedWithMe();
+  // Shared agents list behind the Agents rollout flag, like the Agents page.
+  // Project templates get a tab once the desktop can list team and
+  // organization template shares.
+  const sharedCustomAgentsEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key),
+  );
   // A saved tab, deep link or in-page jump to a tab New Customize removed
-  // (Collections, Agents, Project templates) lands on All with the matching
-  // Also show filter before paint, so none opens an empty view. Marketplaces
-  // keeps its view.
+  // (Collections, Project templates, and Agents where agents are not listed)
+  // lands on All, with Only collections or agents shown, before paint, so
+  // none opens an empty view. Marketplaces keeps its view.
   useLayoutEffect(() => {
     if (
       !discoveryEnabled ||
       kindFilter === null ||
       kindFilter === 'sources' ||
-      isCustomizeDiscoveryTab(kindFilter)
+      (isCustomizeDiscoveryTab(kindFilter) &&
+        (kindFilter !== 'agent' || sharedCustomAgentsEnabled))
     )
       return;
     const landing = customizeDiscoveryLanding(kindFilter);
@@ -508,7 +526,12 @@ export function PluginsPage({
     setDiscoveryFilters((current) =>
       customizeDiscoveryFiltersForLanding(current, landing),
     );
-  }, [discoveryEnabled, kindFilter, setDiscoveryFilters]);
+  }, [
+    discoveryEnabled,
+    kindFilter,
+    setDiscoveryFilters,
+    sharedCustomAgentsEnabled,
+  ]);
   const [pipelineFilterValues, setPipelineFilterValues] =
     useState<PipelineFilterValues>(
       savedPresentation?.browse.pipelineFilters ?? DEFAULT_PIPELINE_FILTERS,
@@ -527,12 +550,6 @@ export function PluginsPage({
   const [focusSection, setFocusSection] = useState<
     'installed' | 'shared-by-me' | null
   >(null);
-  // Shared agents list behind the Agents rollout flag, like the Agents page.
-  // Project templates get a tab once the desktop can list team and
-  // organization template shares.
-  const sharedCustomAgentsEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key),
-  );
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(
     savedPresentation?.entry?.id ?? null,
   );
@@ -548,7 +565,7 @@ export function PluginsPage({
   const typeTabs = useMemo(
     () =>
       discoveryEnabled
-        ? CUSTOMIZE_DISCOVERY_TABS
+        ? customizeDiscoveryTabs(sharedCustomAgentsEnabled)
         : marketplaceTypeTabs({
             agents: sharedCustomAgentsEnabled,
             sources: marketplaceSourcesAvailable,
@@ -966,6 +983,7 @@ export function PluginsPage({
     [skills, shareSourceHashes],
   );
   const installedStatuses = useDesktopInstalledItemStatuses();
+  const offeredHarnesses = useOfferedPluginHarnesses();
   const entries = useMemo(
     () =>
       buildUnifiedPluginEntries({
@@ -978,6 +996,8 @@ export function PluginsPage({
         marketplaces: projectDesktopMarketplaceInventory(
           marketplaces,
           installedStatuses.state,
+          // New Customize: harness rows for the tile chips.
+          discoveryEnabled ? offeredHarnesses : undefined,
         ),
         installedSkills,
         mcpServers: pickerServers,
@@ -1019,6 +1039,8 @@ export function PluginsPage({
       personalOrganizationId,
       marketplaces,
       installedStatuses.state,
+      discoveryEnabled,
+      offeredHarnesses,
       publisherSkills.skills,
       installedSkills,
       pickerServers,
@@ -2805,7 +2827,10 @@ export function PluginsPage({
         if (mcpHasMultipleTargets(entry))
           return {
             available: true,
-            run: () => Promise.resolve(handleSelectEntry(entry)),
+            run: () => {
+              handleSelectEntry(entry);
+              return Promise.resolve('opened' as const);
+            },
           };
         const target = deviceTarget(entry);
         return target
@@ -3299,6 +3324,8 @@ export function PluginsPage({
     presentation: 'modal' | 'page',
   ): JSX.Element => (
     <PluginEntryDetail
+      workflowActions={workflowActions}
+      relatedEntries={entries}
       key={`${detailEntry.id}:${entryDetailIntent}`}
       entry={detailEntry}
       onOpenMarketplaceSource={
@@ -3364,11 +3391,20 @@ export function PluginsPage({
       onClose={
         presentation === 'page' ? navigateBackFromEntryDetail : closeEntryDetail
       }
-      onOpenEntry={(requestedEntryId) => {
-        const entryId = visibleEntryId(
-          requestedEntryId,
-          publisherSkills.skills,
+      onOpenEntry={(requestedEntryId, intent = 'view') => {
+        const requested = entries.find(
+          (entry) => entry.id === requestedEntryId,
         );
+        if (requested?.ref.type === 'curated-pipeline') {
+          selectEntry(requested, false);
+          return;
+        }
+        const targetId =
+          requested?.ref.type === 'plugin-skill'
+            ? requested.bundledBy?.entryId
+            : requestedEntryId;
+        if (targetId === undefined) return;
+        const entryId = visibleEntryId(targetId, publisherSkills.skills);
         // No-op while a detail page is already open; captures when a
         // dialog-owned detail hops to a page-owned related entry.
         captureDetailReturnScrollTop();
@@ -3376,7 +3412,7 @@ export function PluginsPage({
           detailEntry.id === entryId ? prev : [...prev, detailEntry.id],
         );
         setSelectedEntryId(entryId);
-        setEntryDetailIntent('view');
+        setEntryDetailIntent(intent);
       }}
       onOpenPipeline={(target) => {
         const returnToEntryContext = {
@@ -3790,7 +3826,7 @@ export function PluginsPage({
           </div>
         ) : null}
       </PageTitlebar>
-      <PageContent bottomInset="spacious">
+      <PageContent bottomInset="spacious" stack>
         {selectedEntryUsesDetailPage && selectedEntry ? (
           <div data-testid="plugins-entry-detail-page" className="-mt-1.5">
             {renderEntryDetail(selectedEntry, 'page')}
@@ -3807,6 +3843,7 @@ export function PluginsPage({
                 onBulkStateChange={setSourceBulkState}
                 sourceId={selectedSourceId}
                 onNavigateBack={closeMarketplaceSource}
+                onOpenSource={openMarketplaceSource}
                 breadcrumbs={null}
                 filters={sourcePluginFilters}
                 onFiltersChange={setSourcePluginFilters}
@@ -3885,7 +3922,11 @@ export function PluginsPage({
             <div className="flex flex-col gap-0">
               <PageHeader
                 title={CUSTOMIZE_LABEL}
-                description={CUSTOMIZE_SECTION_SUBTITLE}
+                description={
+                  discoveryEnabled
+                    ? CUSTOMIZE_DISCOVERY_SUBTITLE
+                    : CUSTOMIZE_SECTION_SUBTITLE
+                }
                 actions={
                   <PluginsAddCustomMenu
                     onAddMarketplace={
@@ -3973,10 +4014,22 @@ export function PluginsPage({
                       setInstalledStatusFilter(value);
                       setFocusSection(null);
                     }}
+                    workflowFilters={{
+                      values: pipelineFilterValues,
+                      onChange: setPipelineFilterValues,
+                    }}
                     discovery={{
                       onFiltersChanged: () => setFocusSection(null),
-                      onAddHarness: () =>
-                        useNavigationStore.getState().openSettings('harnesses'),
+                      ...(harnessToConnect !== undefined
+                        ? {
+                            onAddHarness: () =>
+                              useNavigationStore
+                                .getState()
+                                .openSettings('harnesses', {
+                                  scrollTo: `harness-connect-${harnessToConnect}`,
+                                }),
+                          }
+                        : {}),
                       ...(marketplaceSourcesAvailable
                         ? { onManageMarketplaces: openMarketplacesView }
                         : {}),
@@ -4059,6 +4112,7 @@ export function PluginsPage({
                     <div>
                       <ErrorBanner
                         errorSource="plugins-page-skill-updates"
+                        errorRecordingDisabled={skillUpdates.errorRecorded}
                         error={skillUpdates.error}
                       />
                       <ErrorBanner
@@ -4106,7 +4160,10 @@ export function PluginsPage({
                           mcpError ||
                           capabilityInventory.installedInventory === 'error'
                             ? 'error'
-                            : loading ||
+                            : // New Customize: an installed-items change
+                              // reloads the catalog in the background; the
+                              // rows on screen stay until it lands.
+                              (loading && !(discoveryEnabled && cache)) ||
                                 skillsLoading ||
                                 mcpLoading ||
                                 capabilityInventory.installedInventory ===
@@ -4317,6 +4374,7 @@ export function PluginsPage({
             </div>
           </Stack>
         )}
+        <McpRemovalRepair client={sourceClient} />
       </PageContent>
       {capabilityInventory.curated && (
         <CuratedPipelinePreview

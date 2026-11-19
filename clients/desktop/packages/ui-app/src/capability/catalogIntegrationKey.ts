@@ -164,6 +164,112 @@ function registrableDomain(hostname: string): string {
   return parts.slice(-2).join('.');
 }
 
+/** Hosts that only resolve inside a private network. */
+const PRIVATE_HOST_SUFFIXES = [
+  '.local',
+  '.internal',
+  '.localhost',
+  '.lan',
+  '.home.arpa',
+  '.corp',
+  '.intranet',
+  '.invalid',
+  '.test',
+  '.example',
+];
+
+/** A public, named host: never localhost, an IP or an intranet name. */
+function publicHostname(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const host = urlHostname(value);
+  if (
+    host === undefined ||
+    !host.includes('.') ||
+    host.includes(':') ||
+    /^[\d.]+$/.test(host) ||
+    host === 'localhost' ||
+    PRIVATE_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))
+  )
+    return undefined;
+  return host;
+}
+
+/**
+ * Brand domains whose own icon names their maker. They group nothing as
+ * integrations (`GENERIC_DOMAINS`), but their site icon is still right.
+ */
+const SITE_ICON_BRAND_DOMAINS = new Set([
+  'anthropic.com',
+  'apple.com',
+  'claude.ai',
+  'cloudflare.com',
+  'google.com',
+  'microsoft.com',
+  'openai.com',
+]);
+
+/**
+ * A publisher name from an MCP server's address (Sergii's Customize QA):
+ * `https://mcp.sentry.dev/mcp` reads "Sentry". `properName` (the server's or
+ * listing's own name) supplies the casing when it is the same word
+ * ("DeepWiki", not "Deepwiki"). Private hosts, hosting, package and social
+ * domains name nobody.
+ */
+export function endpointPublisherName(
+  endpoint: string | undefined,
+  properName?: string,
+): string | undefined {
+  const host = publicHostname(endpoint);
+  if (host === undefined) return undefined;
+  const domain = registrableDomain(host);
+  if (GENERIC_DOMAINS.has(domain)) return undefined;
+  const label = brandLabel(domain);
+  if (label === '') return undefined;
+  const proper = properName?.trim();
+  if (
+    proper &&
+    proper.replace(/[\s-]+/g, '').toLowerCase() === label.replace(/-/g, '')
+  )
+    return proper;
+  return label
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/**
+ * The brand an item's homepage or MCP server host names (`mcp.deepwiki.com`
+ * reads `deepwiki`), for the bundled brand marks. Private, hosting, package
+ * and social hosts name none.
+ */
+export function siteBrandKey(site: string | undefined): string | undefined {
+  const host = publicHostname(site);
+  if (host === undefined) return undefined;
+  const domain = registrableDomain(host);
+  if (GENERIC_DOMAINS.has(domain) && !SITE_ICON_BRAND_DOMAINS.has(domain))
+    return undefined;
+  const label = brandLabel(domain);
+  return label === '' ? undefined : label;
+}
+
+/**
+ * The site icon address for an item's homepage or MCP server URL (Sergii's
+ * Customize QA, logo step 4): `https://<registrable domain>/favicon.ico`.
+ * The desktop resolves it in main, trying the apple-touch-icon first, and
+ * caches it on disk. Private hosts (localhost, IP addresses, `.local`,
+ * `.internal` and other intranet names), single-label hosts and hosting,
+ * package or social domains get none.
+ */
+export function siteIconUrl(site: string | undefined): string | undefined {
+  const host = publicHostname(site);
+  if (host === undefined) return undefined;
+  const domain = registrableDomain(host);
+  if (GENERIC_DOMAINS.has(domain) && !SITE_ICON_BRAND_DOMAINS.has(domain))
+    return undefined;
+  return `https://${domain}/favicon.ico`;
+}
+
 function brandLabel(domain: string): string {
   return domain.startsWith('npm:') ? domain.slice(4) : domain.split('.')[0];
 }

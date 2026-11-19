@@ -12,6 +12,7 @@ import type {
   CoreWorkspace,
   CoreWorktree,
 } from '@canopy/protocol/canopy-core/core';
+import { projectCoreWorktree } from '../workspace/core-workspace-projection';
 import {
   at,
   finiteNumber,
@@ -132,15 +133,7 @@ function projectRow(
     | 'setupPhase'
   >,
 ): CoreWorktree {
-  return {
-    worktreeId: row.id,
-    workspaceId: context.workspaceId,
-    name: row.label || row.branchName,
-    state: row.setupPhase === 'git-pending' ? 'creating' : 'ready',
-    baseBranch: row.trackedBaseBranch ?? null,
-    branch: row.branchName,
-    createdAt: row.createdAt,
-  };
+  return projectCoreWorktree(context.workspaceId, row);
 }
 
 /** The v1 workspace receipt: `{ workspace, clonedRepoIds, scriptActionsOperationId? }`. */

@@ -3,6 +3,7 @@ import {
   type PortalPrMergeQueuePhase,
   type PortalPullRequestCheckExecutionState,
 } from '@canopy/protocol/portal';
+import type { AppError } from '@canopy/protocol/app-errors';
 import type { SplitPlanIssue } from './pr-split-plan';
 
 // ---------------------------------------------------------------------------
@@ -373,6 +374,8 @@ export interface RepoFailureResult {
   repoName: string;
   error: string;
   status: 'failed';
+  /** The error main already recorded for this failure, so the banner does not record it again. */
+  appError?: AppError;
   failureCode?: GitHubAuthFailureCode;
   /** PR preparation reached the commit stage before authentication failed. */
   commitPrepared?: boolean;
@@ -491,6 +494,7 @@ export interface GenerateCommitMessagesFailedRepo {
   repoId?: string;
   repoName: string;
   error: string;
+  appError?: AppError;
 }
 
 export interface GenerateCommitMessagesResponse extends GitActionOperationResponse {
@@ -630,6 +634,7 @@ export interface PullFailedRepo {
   repoName: string;
   error: string;
   status: 'failed';
+  appError?: AppError;
 }
 
 export interface PullAgentResolutionRepo {
@@ -1319,6 +1324,7 @@ export interface MergeLocalBranchFailedRepo {
   baseBranch?: string;
   error: string;
   status: 'failed';
+  appError?: AppError;
 }
 
 export interface MergeLocalBranchesResponse extends GitActionOperationResponse {
@@ -1446,6 +1452,7 @@ export interface MergePrFailedRepo {
   prNumber?: number;
   error: string;
   status: 'failed';
+  appError?: AppError;
 }
 
 /** A successful chat handoff; it does not mean the PR was enqueued or merged. */

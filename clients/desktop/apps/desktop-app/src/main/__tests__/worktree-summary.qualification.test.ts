@@ -28,7 +28,6 @@ jest.mock('../lib/worktree-summary-persistence', () => ({
   ...jest.requireActual<typeof WorktreeSummaryPersistence>(
     '../lib/worktree-summary-persistence',
   ),
-  emitWorktreeSummaryPortalDelta: jest.fn(),
   readWorktreeSummary: jest.fn(),
   readWorktreeSummaryWriteAbortReason: jest.fn(),
   writeWorktreeSummarySnapshot: jest.fn(),
@@ -227,14 +226,6 @@ initClaudeModels([
 initModelAliases({ 'claude-sonnet-4-6': 'sonnet' });
 
 jest.mock('../lib/atomic-file', () => ({ writeFileAtomically: jest.fn() }));
-jest.mock('../portal/portal-event-bus', () => ({
-  createPortalEvent: jest.fn((type: string, payload: unknown) => ({
-    type,
-    payload,
-  })),
-  enqueuePortalEvent: jest.fn(),
-  isCanopyPortalActive: jest.fn(() => true),
-}));
 jest.mock('../lib/worktree-display-label', () => ({
   readWorktreeDisplayLabelContext: jest.fn().mockResolvedValue({}),
   applyGeneratedDisplayLabel: jest.fn().mockResolvedValue(undefined),
@@ -275,7 +266,6 @@ import type { WorktreeSummaryChangeListener } from '../lib/worktree-summary-pers
   const {
     addWorktreeSummaryChangeListener,
     removeWorktreeSummaryChangeListener,
-    clearWorktreeSummaryPortalFingerprints,
     writeWorktreeSummarySnapshot,
     readWorktreeSummaryFile,
   } = jest.requireActual<typeof WorktreeSummaryPersistence>(
@@ -324,7 +314,6 @@ import type { WorktreeSummaryChangeListener } from '../lib/worktree-summary-pers
 
     beforeEach(() => {
       jest.clearAllMocks();
-      clearWorktreeSummaryPortalFingerprints();
       mockedResolveWorktreeSummaryFilePath.mockReturnValue(
         '/tmp/project-a/summaries/wt-1.json',
       );

@@ -1,6 +1,6 @@
 import { isNoBillingSourceErrorEventData } from '@canopy/desktop-shared/types';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
-import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import type { AgentSession, AgentSessionOptions } from './types';
 import { buildSessionKey, getOrCreateSession } from './session-manager';
 import {
@@ -8,7 +8,12 @@ import {
   GROUP_COMMIT_EVENT_PRESSURE_LIMITS,
 } from './event-pressure';
 import { IngestionAdmissionMetrics } from './ingestion-admission-metrics';
-import { takeEventReceiptTime } from './event-receipt-time';
+import {
+  recordEventReceiptTime,
+  takeEventReceiptTime,
+} from './event-receipt-time';
+import { getChatSecretStore } from '../agent-secrets/chat-secret-store';
+import { ChatSecretStorageBackstop } from '../agent-secrets/storage-redaction';
 import { hasErroredToolResult } from '../lib/tool-result-entries';
 import {
   createPreviewVisualTracker,
@@ -1012,9 +1017,24 @@ export async function getOrCreateRoutedSession(
     data: unknown,
     markPersistenceSettled?: () => void,
   ) => void | Promise<void>,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
   lifecycle: TurnRouteLifecycle,
 ): Promise<AgentSession> {
+  // The storage backstop reads the chat secret store synchronously, so it
+  // must have loaded first. A store that can't be read leaves it refusing.
+  await getChatSecretStore()
+    .ensureLoaded()
+    .catch(() => undefined);
+  // Resolved before any route changes, so nothing interleaves with them.
+  const secretScope = {
+    projectId: options.projectId,
+    worktreeId: options.worktreeId,
+    chatId: options.chatId,
+  };
+  const secretBackstop = await ChatSecretStorageBackstop.forSession(
+    secretScope,
+    options.cwd,
+  );
   const key = buildSessionKey(
     options.projectId,
     options.worktreeId,
@@ -1095,6 +1115,43 @@ export async function getOrCreateRoutedSession(
     }
   };
   try {
+    const deliver = (data: unknown): void | Promise<void> => {
+      const active = currentRoutes.get(key);
+      const current =
+        active?.session &&
+        boundSession &&
+        active.session !== boundSession &&
+        liveSessions.get(key) === boundSession
+          ? route
+          : (active ?? (!routeRemoved && !route.discarded ? route : undefined));
+      if (isOwnedDelegationEvent(data)) {
+        // Managed children can outlive the provider transport that created
+        // this callback. Route their explicitly parent-owned snapshots to
+        // the latest chat route when one exists, or finish on the retained
+        // route after removal.
+        return (current ?? route).handle(data);
+      }
+      // Creation can emit synchronously. Once bound, the old transport must
+      // never forward output into a replacement session, even without a tag.
+      if (
+        current &&
+        (!boundSession ||
+          !liveSessions.has(key) ||
+          liveSessions.get(key) === boundSession) &&
+        (boundSession ? current.session === boundSession : current === route)
+      ) {
+        return dispatchExecutionEvent(key, data, current);
+      }
+      recordChatEventDropped({
+        projectId: options.projectId,
+        worktreeId: options.worktreeId,
+        chatId: options.chatId,
+        providerType: options.providerType,
+        gate: 'router_no_route',
+        reason: current ? 'replaced_transport' : 'no_route',
+        data,
+      });
+    };
     const session = await getOrCreateSession(
       options,
       (providerData): void | Promise<void> => {
@@ -1114,48 +1171,47 @@ export async function getOrCreateRoutedSession(
                 canopy_turn_user_message_id: lifecycle.turnUserMessageId,
               }
             : providerData;
-        const data = projectPreviewVisualResult(
+        const projected = projectPreviewVisualResult(
           scopedProviderData,
           previewVisualTracker,
         );
-        const active = currentRoutes.get(key);
-        const current =
-          active?.session &&
-          boundSession &&
-          active.session !== boundSession &&
-          liveSessions.get(key) === boundSession
-            ? route
-            : (active ??
-              (!routeRemoved && !route.discarded ? route : undefined));
-        if (isOwnedDelegationEvent(data)) {
-          // Managed children can outlive the provider transport that created
-          // this callback. Route their explicitly parent-owned snapshots to
-          // the latest chat route when one exists, or finish on the retained
-          // route after removal.
-          return (current ?? route).handle(data);
+        // Agent secret values that reached the chat another way (a native
+        // command printing a secrets file) are replaced here, before any
+        // route stores, logs or forwards the event (agent secret requests).
+        const backstop = secretBackstop.apply(projected);
+        // Values that can't be read back: the event is dropped (one that
+        // settles a turn or a route goes on without its conversation text)
+        // and only metadata is recorded; so is a delegation that can't stay
+        // valid once redacted.
+        if (backstop.refused)
+          recordChatEventDropped({
+            ...secretScope,
+            providerType: options.providerType,
+            gate: 'agent_secret_redaction_unavailable',
+            reason: backstop.refused,
+            data: projected,
+          });
+        const receiptAt =
+          typeof projected === 'object' && projected !== null
+            ? takeEventReceiptTime(projected)
+            : undefined;
+        const pending: Array<Promise<void>> = [];
+        for (const event of backstop.events) {
+          if (typeof event === 'object' && event !== null) {
+            if (receiptAt !== undefined)
+              recordEventReceiptTime(event, receiptAt);
+            // The provider-run tag routes the event to its execution.
+            if (event !== projected)
+              copyProviderRunProvenance(projected, event);
+          }
+          const delivered = deliver(event);
+          if (delivered) pending.push(delivered);
         }
-        // Creation can emit synchronously. Once bound, the old transport must
-        // never forward output into a replacement session, even without a tag.
-        if (
-          current &&
-          (!boundSession ||
-            !liveSessions.has(key) ||
-            liveSessions.get(key) === boundSession) &&
-          (boundSession ? current.session === boundSession : current === route)
-        ) {
-          return dispatchExecutionEvent(key, data, current);
-        }
-        recordChatEventDropped({
-          projectId: options.projectId,
-          worktreeId: options.worktreeId,
-          chatId: options.chatId,
-          providerType: options.providerType,
-          gate: 'router_no_route',
-          reason: current ? 'replaced_transport' : 'no_route',
-          data,
-        });
+        return pending.length
+          ? Promise.all(pending).then(() => undefined)
+          : undefined;
       },
-      getWindow,
+      interfacePort,
       {
         onRemoved,
         drainEventsBeforeRemoval: async (): Promise<void> => {

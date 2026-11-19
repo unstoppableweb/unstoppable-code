@@ -29,7 +29,10 @@ import {
   ShareOperationError,
 } from '../sharing/share-operation-result';
 import type { CloudCopyAudience } from '@canopy/desktop-shared/types';
-import { readLinkedCopyAudience } from '../cloud-copy/audience';
+import {
+  cloudCopyAudience,
+  readLinkedCopyAudience,
+} from '../cloud-copy/audience';
 import {
   CloudCopyConsentStore,
   type CloudCopyConsent,
@@ -80,6 +83,7 @@ export interface PublishSkillDeps {
       capabilityPackage: PipelinePackageRef;
       committedPackageUploadId: string;
       expectedSourceSha256: string;
+      expectedAudience: CloudCopyAudience;
     },
     context: CanopyCloudCredentialContext,
   ) => Promise<SharedSkillDetail>;
@@ -261,6 +265,8 @@ export async function publishSkillToCloud(
 
   let accountId: string;
   let detail: SharedSkillDetail;
+  // The audience of the copy this writes: private for a new one.
+  let writtenAudience: CloudCopyAudience = consentedAudience;
   try {
     // Every request below uses this one context, so an account switch
     // mid-publish cannot split the copy and its link across accounts.
@@ -289,17 +295,43 @@ export async function publishSkillToCloud(
         throw new CatalogHostRefusedError('publish-package-stale');
     }
     const committed = await deps.commitPackage(pkg, credentials.context);
-    const create = (): Promise<SharedSkillDetail> =>
-      deps.createSharedSkill(
-        {
-          sourceSkillId: localId,
-          rawSkill,
-          shareScope: 'private',
-          ...committed,
-          expectedSourceSha256: checked,
-        },
-        credentials.context,
-      );
+    // A new copy is always private, including one replacing a linked copy
+    // deleted in the cloud. An identical skill the account already shares
+    // more widely is refused, never returned or relinked, and said as such
+    // (CAN-7037).
+    const create = async (): Promise<SharedSkillDetail> => {
+      let created: SharedSkillDetail;
+      try {
+        created = await deps.createSharedSkill(
+          {
+            sourceSkillId: localId,
+            rawSkill,
+            shareScope: 'private',
+            ...committed,
+            expectedSourceSha256: checked,
+            expectedAudience: 'private',
+          },
+          credentials.context,
+        );
+      } catch (error) {
+        throw error instanceof CanopyCloudClientError &&
+          error.status === 409 &&
+          error.serverCode === 'audience_changed'
+          ? new CatalogHostRefusedError('publish-audience-wider', error)
+          : error;
+      }
+      // A cloud that predates that precondition can still answer with an
+      // identical row shared more widely: nothing is linked or consented.
+      if (
+        cloudCopyAudience({
+          shareScope: created.shareScope,
+          public: created.publicShare !== null,
+        }) !== 'private'
+      )
+        throw new CatalogHostRefusedError('publish-audience-wider');
+      writtenAudience = 'private';
+      return created;
+    };
     try {
       detail =
         link === undefined
@@ -351,7 +383,7 @@ export async function publishSkillToCloud(
       selectedOptionalResourceIds: [...pkg.selectedOptionalResourceIds],
       files: facts.files,
       withheld: facts.withheld,
-      audience: consentedAudience,
+      audience: writtenAudience,
     });
   }
   return {

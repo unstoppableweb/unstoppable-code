@@ -16,6 +16,7 @@ import type {
   AccountProxySignInCallbackParams,
   AccountProxySignInOpenParams,
 } from '../remote-protocol';
+import { RpcPublicError } from '../transport/rpc-peer';
 
 /**
  * Where each provider sends the browser back after sign-in: the fixed
@@ -76,7 +77,11 @@ const PROVIDER_LABELS: Readonly<Record<AccountProxySignInProvider, string>> = {
   codex: 'Codex',
 };
 
-export class AccountProxySignInPortBusyError extends Error {
+/**
+ * The sign-in errors below are fixed copy with no paths, so they extend
+ * `RpcPublicError` and reach the computer that asked for the sign-in.
+ */
+export class AccountProxySignInPortBusyError extends RpcPublicError {
   readonly code = 'account_proxy_sign_in_port_busy';
   constructor(provider: AccountProxySignInProvider, port: number) {
     const label = PROVIDER_LABELS[provider];
@@ -110,7 +115,7 @@ interface Startup {
   readonly done: Promise<Listener>;
 }
 
-class SignInCancelledError extends Error {
+class SignInCancelledError extends RpcPublicError {
   constructor() {
     super('The sign-in was cancelled.');
     this.name = 'SignInCancelledError';
@@ -228,7 +233,9 @@ export class RemoteAccountProxySignIns {
   async open(params: AccountProxySignInOpenParams): Promise<void> {
     const url = accountProxySignInPage(params.provider, params.url);
     if (url === null) {
-      throw new Error('The other computer sent an unexpected sign-in page.');
+      throw new RpcPublicError(
+        'The other computer sent an unexpected sign-in page.',
+      );
     }
     const same = (
       entry: { provider: string; state: string } | undefined,
@@ -338,7 +345,7 @@ export class RemoteAccountProxySignIns {
       if (errorCode(error) === 'EADDRINUSE') {
         throw new AccountProxySignInPortBusyError(provider, port);
       }
-      throw new Error("This computer couldn't wait for the sign-in.");
+      throw new RpcPublicError("This computer couldn't wait for the sign-in.");
     }
     listener.timer = setTimeout(
       () => this.close(listener),

@@ -145,9 +145,14 @@ import {
 import {
   PlanModeIcon,
   PluginsIcon,
+  SkillIcon,
   RepoIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { WorkspaceEnvironmentTab } from './WorkspaceEnvironmentTab';
+import {
+  ProjectSharedSetupPage,
+  useShowsProjectSharedSetup,
+} from './ProjectSharedSetupPage';
 import { ExistingRepoOption } from './ExistingRepoOption';
 import {
   orgRepositoryRefusal,
@@ -185,6 +190,7 @@ type WorkspaceTab =
   | 'plan-detection'
   | 'claude-md'
   | 'plugins'
+  | 'shared-setup'
   | 'environment'
   | 'code-graph'
   | 'start-page'
@@ -211,6 +217,8 @@ const tabs: {
     icon: <ClaudeLogo width={14} height={14} />,
   },
   { id: 'plugins', label: 'Plugins', icon: <PluginsIcon /> },
+  // Organization projects only (CAN-6239); see `visibleTabs`.
+  { id: 'shared-setup', label: 'Shared setup', icon: <SkillIcon /> },
   { id: 'environment', label: 'Environment' },
   { id: 'start-page', label: 'Start page' },
   { id: 'danger', label: 'Danger', danger: true },
@@ -486,10 +494,13 @@ export function WorkspaceSettingsModal({
   // shared base tab list. The tab-list filter must not reset unrelated active
   // tabs when the flag snapshot updates — only a runtime flag-off while the
   // Code Graph tab itself is active moves the user back to General (below).
+  const showsSharedSetup = useShowsProjectSharedSetup(workspace.owner);
   const visibleTabs = useMemo(() => {
-    const enabledTabs = startPageEnabled
-      ? tabs
-      : tabs.filter((tab) => tab.id !== 'start-page');
+    const enabledTabs = tabs.filter(
+      (tab) =>
+        (tab.id !== 'start-page' || startPageEnabled) &&
+        (tab.id !== 'shared-setup' || showsSharedSetup),
+    );
     if (!codeGraphExperimentEnabled) return enabledTabs;
     const codeGraphTab: (typeof tabs)[number] = {
       id: 'code-graph',
@@ -505,7 +516,7 @@ export function WorkspaceSettingsModal({
       codeGraphTab,
       ...enabledTabs.slice(dangerIndex),
     ];
-  }, [codeGraphExperimentEnabled, startPageEnabled]);
+  }, [codeGraphExperimentEnabled, showsSharedSetup, startPageEnabled]);
 
   useEffect(() => {
     if (!codeGraphExperimentEnabled && activeTab === 'code-graph') {
@@ -517,6 +528,11 @@ export function WorkspaceSettingsModal({
     if (!startPageEnabled && activeTab === 'start-page')
       setActiveTab('details');
   }, [activeTab, startPageEnabled]);
+
+  useEffect(() => {
+    if (!showsSharedSetup && activeTab === 'shared-setup')
+      setActiveTab('details');
+  }, [activeTab, showsSharedSetup]);
 
   const [addStep, setAddStep] = useState<AddRepoStep>('list');
   const [addMode, setAddMode] = useState<AddRepoMode>('existing');
@@ -4295,6 +4311,16 @@ export function WorkspaceSettingsModal({
                   : 'Add instructions for agents working in this project'
               }
             />
+          </Stack>
+        )}
+
+        {activeTab === 'shared-setup' && (
+          <Stack gap="group">
+            <p className="text-s text-pretty fg-secondary">
+              Everything this project runs with, such as skills, plugins,
+              scripts and hooks, and where each comes from.
+            </p>
+            <ProjectSharedSetupPage workspace={workspace} onClose={onClose} />
           </Stack>
         )}
 

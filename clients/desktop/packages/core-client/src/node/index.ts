@@ -35,6 +35,8 @@ export {
   CANOPY_DAEMON_REFUSALS,
   canopyDaemonRefusal,
   canopyDaemonRefusalError,
+  canopyEndpointRepairRequiredError,
+  canopyLaunchDetails,
   type CanopyDaemonRefusal,
 } from './daemon-refusal';
 export type { CanopyClientEndpoint } from './endpoint';

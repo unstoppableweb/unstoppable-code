@@ -12,15 +12,12 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { expect, test } from '../portal/fixtures.mjs';
-import { PORTAL_WEB_ORIGIN_LOOPBACK } from '../portal/config.mjs';
-import {
-  ensurePortalSchema,
-  truncatePortalState,
-} from '../portal/portalHarness.mjs';
-import { seedPortalWebUser } from '../portal/seedWebUser.mjs';
-import { withPortalDbClient } from '../portal/db.mjs';
-import { warmPortalRoutes } from '../portal/web-server.mjs';
+import { expect, test } from './harness/fixtures.mjs';
+import { PORTAL_WEB_ORIGIN_LOOPBACK } from './harness/config.mjs';
+import { ensurePortalSchema } from './harness/portalHarness.mjs';
+import { seedPortalWebUser } from './harness/seedWebUser.mjs';
+import { truncateWebTestState, withPortalDbClient } from './harness/db.mjs';
+import { warmPortalRoutes } from './harness/web-server.mjs';
 import {
   buildTrackedPlan,
   DEFAULT_MOCK_BASE_URL,
@@ -414,7 +411,7 @@ test.beforeAll(async ({ portalServerManager }) => {
   // minutes; the budget absorbs it here instead of inside a case.
   test.setTimeout(900_000);
   await ensurePortalSchema();
-  await truncatePortalState();
+  await truncateWebTestState();
   relay = await startDeviceRelay();
   webServer = await portalServerManager.acquire(
     directWebServerOptions({ relay }),

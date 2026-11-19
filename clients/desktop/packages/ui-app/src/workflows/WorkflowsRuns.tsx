@@ -405,7 +405,8 @@ export function WorkflowsRunsTable({
                             className="overflow-hidden"
                           >
                             <CodeBlock
-                              variant="compact-document"
+                              variant="document"
+                              inset="compact"
                               size="xs"
                               wrap="words"
                               tone="secondary"

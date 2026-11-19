@@ -1,4 +1,5 @@
 import { Stack } from '@canopy/ui-shared/components';
+import { useOrganizationLayer } from '@/stores/organizationLayerStore';
 import { flattenMcpServerRows } from '@canopy/desktop-shared/lib/mcp-server-rows';
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -118,6 +119,9 @@ function useChatPluginLayerSubscriptions(
       state.projects.find((project) => project.id === projectId)
         ?.disabledGlobalPluginSelections,
   );
+  // The organization's shared set (CAN-6237); also starts its read when no
+  // other surface has.
+  useOrganizationLayer(projectId, worktreeId);
 }
 
 const NO_USAGE: readonly InvocableMentionTarget[] = [];

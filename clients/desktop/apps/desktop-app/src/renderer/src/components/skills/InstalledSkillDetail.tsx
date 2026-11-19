@@ -5,6 +5,7 @@ import { CustomSkillEditor, SkillDetailModal } from '../pages/SkillsTab';
 import { notifySkillsChanged } from '@/lib/skillsChanged';
 import { skillDetailEditWithAIState } from '@/lib/editSkillWithAI';
 import { ErrorBanner } from '../shared';
+import { DetailFactError } from '@canopy/ui-shared/components';
 import {
   SKILL_UPDATE_REFRESH_FAILED,
   useInstalledSkillActions,
@@ -38,6 +39,14 @@ export interface InstalledSkillDetailProps {
   onSharedSkillsChanged?: () => Promise<void>;
   onOpenAccountSettings?: () => void;
   relatedContent?: ReactNode;
+  /** New Customize: the tile's logo and publisher for the page header. */
+  identity?: {
+    logo: ReactNode;
+    publisher: ReactNode;
+    worksWith?: ReactNode;
+  };
+  /** New Customize: the Status row, first under the header. */
+  statusContent?: ReactNode;
 }
 
 /**
@@ -68,6 +77,8 @@ export function InstalledSkillDetail({
   onSharedSkillsChanged,
   onOpenAccountSettings,
   relatedContent,
+  identity,
+  statusContent,
 }: InstalledSkillDetailProps): JSX.Element {
   const [localEditing, setLocalEditing] = useState(false);
   const editing =
@@ -243,10 +254,23 @@ export function InstalledSkillDetail({
             : undefined
         }
         editWithAI={detailEditWithAI}
+        identity={identity}
+        statusContent={statusContent}
+        // New Customize: a refresh failure on the Version row, an Edit with
+        // AI failure beside the header actions that started it.
+        {...(identity
+          ? {
+              versionError: refreshError || undefined,
+              actionsNotice: editWithAI.error ? (
+                <DetailFactError
+                  error={editWithAI.error}
+                  testId="installed-skill-detail-edit-with-ai-error"
+                />
+              ) : undefined,
+            }
+          : {})}
         notice={
-          // Each failure keeps its own banner, so one cannot mask another;
-          // either takes the place of the update notice.
-          refreshError || editWithAI.error ? (
+          identity ? undefined : refreshError || editWithAI.error ? ( // either takes the place of the update notice. // Each failure keeps its own banner, so one cannot mask another;
             <div className="flex flex-col gap-2">
               {refreshError && (
                 <ErrorBanner

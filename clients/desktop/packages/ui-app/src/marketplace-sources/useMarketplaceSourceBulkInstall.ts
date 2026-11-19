@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  linkRecordedError,
+  recordedErrorOf,
+  recordSurfacedError,
+} from '@canopy/ui-shared';
 
 export interface MarketplaceSourceBulkInstallProgress {
   readonly done: number;
@@ -116,6 +121,7 @@ export function useMarketplaceSourceBulkInstall({
       setSummary(undefined);
       setProgress({ done: 0, total: keys.length });
       void (async (): Promise<void> => {
+        let firstError: { readonly error: unknown } | undefined;
         const outcome = {
           installed: 0,
           failed: 0,
@@ -142,11 +148,35 @@ export function useMarketplaceSourceBulkInstall({
               }
               if (installed) outcome.installed += 1;
               else outcome.failed += 1;
-            } catch {
+              // installPlugin (useMarketplaceSources) catches its own install
+              // failures: it links a host-recorded error to the session or leaves
+              // it to the source banner, then resolves false. So this catch only
+              // sees a host whose install rejects; those are recorded here once
+              // per run.
+            } catch (error) {
               outcome.failed += 1;
+              firstError ??= { error };
             }
           }
           if (live()) setProgress({ done: index + 1, total: keys.length });
+        }
+        // One record per run: the summary counts the rest, and every failure
+        // of a source usually shares one cause. A failure main recorded (it
+        // reached here carrying that record) is linked to this session, not
+        // recorded again.
+        if (firstError) {
+          if (recordedErrorOf(firstError.error))
+            linkRecordedError(
+              firstError.error,
+              'marketplace-source-bulk-install',
+            );
+          else
+            recordSurfacedError({
+              chokePoint: 'notice',
+              surface: 'inline',
+              identifier: 'marketplace-source-bulk-install',
+              error: firstError.error,
+            });
         }
         if (!live()) return;
         runningRef.current = false;

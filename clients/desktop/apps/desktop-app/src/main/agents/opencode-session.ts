@@ -1,4 +1,5 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import { openOpenCodeExecutionForWorkerRun } from '../agent-runs/opencode-worker-runtime';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 import { resolveSessionAiCreditsAttribution } from './ai-credits-routing';
@@ -40,6 +41,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import {
   getRawOpenCodeModelId,
   isOpenCodeModel,
@@ -71,7 +73,10 @@ import {
 } from '../approvals/approval-service';
 import { assertOpenCodeConnectionGeneration } from '../opencode/connection';
 import { authorizeOpenCodeNativeTool } from '../opencode/tool-approval';
-import { buildOpenCodeMcpServers } from '../opencode/mcp-servers';
+import {
+  buildOpenCodeMcpServers,
+  openOpenCodeMcpRoutes,
+} from '../opencode/mcp-servers';
 import { authorizeCursorMcpTool } from '../cursor/tool-approval';
 import { readOpenCodeForkContext } from '../opencode/fork-context';
 import { getOpenCodeSessionProfile } from '../opencode/session-profile';
@@ -160,9 +165,10 @@ export class OpenCodeProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (event: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('OpenCodeProvider.createSession');
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -392,6 +398,9 @@ export class OpenCodeProvider implements AgentProvider {
         );
         return emit(isRecord(projected) ? projected : event, userMessageId);
       };
+      let mcpRoutes:
+        | Awaited<ReturnType<typeof openOpenCodeMcpRoutes>>
+        | undefined;
       const closeTurn = async (): Promise<void> => {
         let failure: Error | undefined;
         const recordFailure = (error: unknown): void => {
@@ -417,6 +426,11 @@ export class OpenCodeProvider implements AgentProvider {
           } catch (error) {
             recordFailure(error);
           }
+        }
+        try {
+          await mcpRoutes?.dispose();
+        } catch (error) {
+          recordFailure(error);
         }
         approval = undefined;
         try {
@@ -603,6 +617,9 @@ export class OpenCodeProvider implements AgentProvider {
                   sessionId: key,
                   packageOverlay: opts.packageOverlay,
                   preferences: context.preferences,
+                  ...(opts.accountResolution
+                    ? { accountResolution: opts.accountResolution }
+                    : {}),
                   inheritedCursorCapabilities: inherited,
                   ...(inheritedPluginRefs.length > 0
                     ? { inheritedPluginRefs }
@@ -811,6 +828,18 @@ export class OpenCodeProvider implements AgentProvider {
           repoId: opts.selectedRepoId,
           sdkSessionId: sessionId ?? key,
           providerType: 'opencode',
+          // RequestSecrets on the `_ui` server: interactive root chats only,
+          // while the flag is on (re-checked per call). Tools only: this
+          // provider has no live environment for ambient secrets
+          // (agent-secrets/ambient-env.ts).
+          ...(serverMode === 'default' &&
+          opts.executionContext === undefined &&
+          isAgentSecretRequestsEnabled()
+            ? {
+                secretRequests: true,
+                getApprovalMode: (): ApprovalMode => approvalMode,
+              }
+            : {}),
           model: turnModel,
           supportsPreviewImages: runtime.supportsVision,
           authToken: token,
@@ -892,7 +921,10 @@ export class OpenCodeProvider implements AgentProvider {
                   : undefined;
             return tool
               ? gate(
-                  toolKey === 'ask_user_question' ? names.ui : names.main,
+                  toolKey === 'ask_user_question' ||
+                    toolKey === 'request_secrets'
+                    ? names.ui
+                    : names.main,
                   tool,
                   args,
                   call?.requestId ?? randomUUID(),
@@ -900,7 +932,7 @@ export class OpenCodeProvider implements AgentProvider {
               : Promise.resolve(false);
           },
         });
-        const servers = buildOpenCodeMcpServers({
+        let servers = buildOpenCodeMcpServers({
           mode: serverMode,
           mainUrl: proxy.getCanopyWorktreeMcpUrl(key),
           uiUrl: proxy.getCanopyWorktreeUiMcpUrl(key),
@@ -927,7 +959,17 @@ export class OpenCodeProvider implements AgentProvider {
           ),
           opts.cwd,
           runtime.signal,
+          false,
+          runtime.env,
         );
+        mcpRoutes = await openOpenCodeMcpRoutes({
+          servers,
+          cwd: opts.cwd,
+          baseEnv: runtime.env,
+          signal: runtime.signal,
+          gate,
+        });
+        servers = mcpRoutes.servers;
         const serverByUrl = new Map(
           servers.flatMap((server) =>
             'url' in server ? [[server.url, server.name] as const] : [],
@@ -1126,7 +1168,8 @@ export class OpenCodeProvider implements AgentProvider {
                 )
                   visualCalls.set(input.toolCallId, visualKey);
                 else visualCalls.delete(input.toolCallId);
-                if (allowed && identity.http) {
+                // Both HTTP proxies and stdio broker routes consume this approval.
+                if (allowed) {
                   if (approved.size >= 1024) return { decision: 'deny' };
                   const key = copilotMcpCallIdentity(
                     identity.server,

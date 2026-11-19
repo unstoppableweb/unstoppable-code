@@ -1,3 +1,11 @@
+import type {
+  McpRemovalCandidatesResult,
+  InspectMcpRemovalRequest,
+  InspectMcpRemovalResult,
+  ForceMcpRemovalRequest,
+  ForceMcpRemovalResult,
+} from '@canopy/protocol/mcp-removal';
+import { AgentPortError } from '../../port/environment-port';
 import type { AgentWritePreparation } from '../../action-support';
 import type { AgentActionToolResult } from '../../tools/definition';
 import { z } from 'zod';
@@ -35,6 +43,20 @@ export {
 } from './actions';
 export type { InstalledItemAction } from './actions';
 export interface AgentInstalledItemsPort<H> {
+  listMcpRemovals?(
+    this: void,
+    call: AgentActionCall<H>,
+  ): Promise<McpRemovalCandidatesResult>;
+  inspectMcpRemoval?(
+    this: void,
+    request: InspectMcpRemovalRequest,
+    call: AgentActionCall<H>,
+  ): Promise<InspectMcpRemovalResult>;
+  forceMcpRemoval?(
+    this: void,
+    request: ForceMcpRemovalRequest,
+    call: AgentActionCall<H>,
+  ): Promise<ForceMcpRemovalResult>;
   listStatus(
     this: void,
     call: AgentActionCall<H>,
@@ -52,6 +74,82 @@ export interface AgentInstalledItemsPort<H> {
 }
 export function installedItemActionCatalog(): readonly AgentActionCatalogEntry[] {
   return [
+    {
+      type: 'installed_items.list_mcp_removals',
+      category: 'plugins',
+      summary:
+        'Find device MCP server IDs and saved uninstalls without loading inventory.',
+      fields: [],
+      example: { type: 'installed_items.list_mcp_removals' },
+      keywords: ['repair', 'mcp', 'remove'],
+    },
+    {
+      type: 'installed_items.inspect_mcp_removal',
+      category: 'plugins',
+      summary:
+        'Inspect an exact device MCP server for evidence-preserving removal, without loading inventory.',
+      fields: [
+        {
+          name: 'serverId',
+          type: 'string',
+          required: true,
+          description: 'Exact device server ID; never an account connection.',
+        },
+      ],
+      example: {
+        type: 'installed_items.inspect_mcp_removal',
+        serverId: 'aabb-1122',
+      },
+      keywords: ['repair', 'mcp', 'remove'],
+    },
+    {
+      type: 'installed_items.force_mcp_removal',
+      category: 'plugins',
+      summary:
+        'Remove an exact device MCP server with explicit approval and preserve its files as evidence. Incomplete outcomes are not successful uninstalls.',
+      fields: [
+        {
+          name: 'serverId',
+          type: 'string',
+          required: true,
+          description: 'Exact inspected device server ID.',
+        },
+        {
+          name: 'mode',
+          type: 'string',
+          required: true,
+          description: 'preserve-evidence',
+        },
+        {
+          name: 'inspectedState',
+          type: 'string',
+          required: false,
+          description:
+            'Opaque inspection token; exactly one of inspectedState and recoveryId.',
+        },
+        {
+          name: 'finishUninstall',
+          type: 'boolean',
+          required: false,
+          description:
+            'With recoveryId only, also finish that exact saved uninstall and its workspace/chat reference cleanup.',
+        },
+        {
+          name: 'recoveryId',
+          type: 'string',
+          required: false,
+          description:
+            'Saved recovery ID from inspection; never a caller path.',
+        },
+      ],
+      example: {
+        type: 'installed_items.force_mcp_removal',
+        serverId: 'aabb-1122',
+        mode: 'preserve-evidence',
+        inspectedState: '11111111-1111-4111-8111-111111111111',
+      },
+      keywords: ['repair', 'mcp', 'remove'],
+    },
     {
       type: 'installed_items.list_status',
       category: 'plugins',
@@ -104,6 +202,11 @@ export function installedItemActionCatalog(): readonly AgentActionCatalogEntry[]
 }
 export const installedItemDispatchJsonSchema: AgentActionFamilyJsonSchema = {
   properties: {
+    serverId: { type: 'string' },
+    mode: { type: 'string', const: 'preserve-evidence' },
+    inspectedState: { type: 'string', format: 'uuid' },
+    recoveryId: { type: 'string', format: 'uuid' },
+    finishUninstall: { type: 'boolean', const: true },
     target: z
       .json()
       .parse(
@@ -112,6 +215,24 @@ export const installedItemDispatchJsonSchema: AgentActionFamilyJsonSchema = {
     status: { type: 'string', enum: ['active', 'available', 'disabled'] },
   },
   allOf: [
+    {
+      if: {
+        properties: { type: { const: 'installed_items.inspect_mcp_removal' } },
+      },
+      then: { required: ['serverId'] },
+    },
+    {
+      if: {
+        properties: { type: { const: 'installed_items.force_mcp_removal' } },
+      },
+      then: {
+        required: ['serverId', 'mode'],
+        oneOf: [
+          { required: ['inspectedState'], not: { required: ['recoveryId'] } },
+          { required: ['recoveryId'], not: { required: ['inspectedState'] } },
+        ],
+      },
+    },
     {
       if: { properties: { type: { const: 'installed_items.set_status' } } },
       then: { required: ['target', 'status'] },
@@ -130,12 +251,75 @@ export function createInstalledItemsActionFamily<H>(options: {
   return defineAgentActionFamily({
     id: 'installed-items',
     types: INSTALLED_ITEM_ACTION_TYPES,
-    supportedTypes: () => INSTALLED_ITEM_ACTION_TYPES,
+    supportedTypes: () =>
+      INSTALLED_ITEM_ACTION_TYPES.filter((type) =>
+        type === 'installed_items.list_mcp_removals'
+          ? options.port.listMcpRemovals !== undefined
+          : type === 'installed_items.inspect_mcp_removal'
+            ? options.port.inspectMcpRemoval !== undefined
+            : type === 'installed_items.force_mcp_removal'
+              ? options.port.forceMcpRemoval !== undefined
+              : true,
+      ),
     actionSchema: installedItemActionSchema,
     catalog: installedItemActionCatalog,
     dispatchJsonSchema: installedItemDispatchJsonSchema,
     async dispatch(action, call) {
       try {
+        if (action.type === 'installed_items.list_mcp_removals') {
+          if (!options.port.listMcpRemovals)
+            throw new AgentPortError(
+              'surface_unavailable',
+              'Device MCP repair is unavailable.',
+            );
+          return agentActionResult(call, action.type, {
+            ...(await options.port.listMcpRemovals(call)),
+          });
+        }
+        if (action.type === 'installed_items.inspect_mcp_removal') {
+          if (!options.port.inspectMcpRemoval)
+            throw new AgentPortError(
+              'surface_unavailable',
+              'Device MCP repair is unavailable.',
+            );
+          return agentActionResult(call, action.type, {
+            ...(await options.port.inspectMcpRemoval(
+              { serverId: action.serverId },
+              call,
+            )),
+          });
+        }
+        if (action.type === 'installed_items.force_mcp_removal') {
+          if (!options.port.forceMcpRemoval)
+            throw new AgentPortError(
+              'surface_unavailable',
+              'Device MCP repair is unavailable.',
+            );
+          const request: ForceMcpRemovalRequest = {
+            serverId: action.serverId,
+            mode: action.mode,
+            ...(action.inspectedState
+              ? { inspectedState: action.inspectedState }
+              : { recoveryId: action.recoveryId }),
+            ...(action.finishUninstall ? { finishUninstall: true } : {}),
+          };
+          const outcome = await options.port.forceMcpRemoval(request, call);
+          const response = agentActionResult(call, action.type, { ...outcome });
+          if (
+            (outcome.status !== 'complete' ||
+              outcome.uninstall === 'pending') &&
+            response.ok
+          ) {
+            response.ok = false;
+            response.error = {
+              code: 'execution_failed',
+              message:
+                'Removal is incomplete. Inspect the device server before retrying.',
+              retryable: false,
+            };
+          }
+          return response;
+        }
         if (action.type === 'installed_items.list_status')
           return agentActionResult(call, action.type, {
             ...(await options.port.listStatus(call)),

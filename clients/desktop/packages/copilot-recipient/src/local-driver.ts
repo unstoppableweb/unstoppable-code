@@ -372,6 +372,7 @@ export function bindCopilotLocalRuntime(
         secretValues,
         runtime: {
           ...owned,
+          failed: (error) => context.failed?.(error),
           tokenProviderForSession: (sessionId): GitHubTokenProvider => {
             // A resume token must never authorize a silent create recovery.
             if (

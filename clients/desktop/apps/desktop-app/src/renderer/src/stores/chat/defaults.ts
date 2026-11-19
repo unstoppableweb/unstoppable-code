@@ -13,6 +13,7 @@ import {
   getProviderForModel,
   hasHydratedGatewayCatalog,
   hasHydratedModelRegistry,
+  isOllamaModel,
   isSelectableOllamaModel,
   resolveKnownModel,
   resolveDefaultChatModel,
@@ -534,7 +535,10 @@ export function resolveLaneForTarget(
         : byProvider.claude;
   if (
     preferredSelection &&
-    getExecutionHarnessForModel(preferredSelection.model) === undefined &&
+    // An unlisted Ollama id now resolves the Ollama default harness, yet it
+    // is still unclassifiable here.
+    (getExecutionHarnessForModel(preferredSelection.model) === undefined ||
+      isOllamaModel(preferredSelection.model)) &&
     !isSelectableOllamaModel(preferredSelection.model)
   ) {
     return undefined;

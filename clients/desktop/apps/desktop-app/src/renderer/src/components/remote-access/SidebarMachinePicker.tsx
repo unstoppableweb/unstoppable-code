@@ -59,6 +59,8 @@ function useComputerMenu(): {
         .addToast(
           describeError(cause, "Couldn't open that computer. Try again."),
           'error',
+          undefined,
+          { caught: cause },
         );
     });
   };

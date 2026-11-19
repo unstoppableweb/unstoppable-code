@@ -30,24 +30,30 @@ jest.mock('../../lib/canopy-cloud-account-store', () => ({
   ),
   loadCanopyCloudAccountPublicState: mockRecord('load'),
 }));
-jest.mock('../../portal/portal-session-manager', () => ({
-  startCanopyPortal: mockRecord('startPortal'),
-  stopCanopyPortal: mockRecord('stopPortal'),
-}));
-let mockPortalFlag = true;
-jest.mock('../../feature-flags', () => ({
-  getFeatureFlagService: (): object => ({
-    isEnabled: (key: string): boolean => {
-      mockCalls.push(['flag', key]);
-      return mockPortalFlag;
-    },
-  }),
-}));
+const mockRemote = {
+  allowIncoming: false,
+  refusal: null as Error | null,
+};
+function mockRemoteState(): object {
+  return {
+    available: true,
+    signedIn: true,
+    allowIncoming: mockRemote.allowIncoming,
+  };
+}
 jest.mock('../../remote-control/electron-remote-control', () => ({
   getRemoteControlRuntime: (): object => ({
     service: {
-      getState: mockRecord('remoteGetState'),
-      setAllowIncoming: mockRecord('remoteSetAllowIncoming'),
+      getState: (...args: unknown[]): Promise<object> => {
+        mockCalls.push(['remoteGetState', ...args]);
+        return Promise.resolve(mockRemoteState());
+      },
+      setAllowIncoming: (allow: boolean): Promise<object> => {
+        mockCalls.push(['remoteSetAllowIncoming', allow]);
+        if (mockRemote.refusal) return Promise.reject(mockRemote.refusal);
+        mockRemote.allowIncoming = allow;
+        return Promise.resolve(mockRemoteState());
+      },
     },
   }),
 }));
@@ -58,8 +64,8 @@ jest.mock('../../ipc/ollama', () => ({
   installOllamaForWindow: mockRecord('installOllama'),
 }));
 
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { toPublicCanopyCloudAccountState } from '../../lib/canopy-cloud-account-store';
+import { dispatchAdvisorCredentialAction } from '../advisor-credential-actions';
 import { mainAdvisorCredentialActionHost } from '../advisor-credential-actions-host';
 
 const SECRET = 'sk-live-0123456789abcdefSECRET';
@@ -75,7 +81,8 @@ function host(): ReturnType<typeof mainAdvisorCredentialActionHost> {
 
 beforeEach(() => {
   mockCalls.length = 0;
-  mockPortalFlag = true;
+  mockRemote.allowIncoming = false;
+  mockRemote.refusal = null;
 });
 
 describe('App Advisor credential action host (CAN-6008)', () => {
@@ -89,8 +96,6 @@ describe('App Advisor credential action host (CAN-6008)', () => {
     await h.startCloudOAuthLogin();
     await h.cancelCloudOAuthLogin();
     await h.disconnectCloudAccount();
-    await h.startPortal();
-    await h.stopPortal();
     await h.remoteControl()?.getState();
     await h.remoteControl()?.setAllowIncoming(true);
     await h.openCode('connect', signal);
@@ -104,8 +109,6 @@ describe('App Advisor credential action host (CAN-6008)', () => {
       ['startOAuth'],
       ['cancelOAuth'],
       ['disconnect'],
-      ['startPortal'],
-      ['stopPortal'],
       ['remoteGetState', { discover: false }],
       ['remoteSetAllowIncoming', true],
       ['openCode', mainWindow, 'connect', signal],
@@ -113,12 +116,34 @@ describe('App Advisor credential action host (CAN-6008)', () => {
     ]);
   });
 
-  it('reads the Portal flag the window checks', () => {
-    mockPortalFlag = false;
-    expect(host().portalEnabled()).toBe(false);
+  it('turns Allow incoming on for Portal start and off for stop (CAN-5986)', async () => {
+    const h = host();
+    await expect(
+      dispatchAdvisorCredentialAction({ type: 'canopy_portal.start' }, h),
+    ).resolves.toEqual({ ok: true, result: { allowIncoming: true } });
+    await expect(
+      dispatchAdvisorCredentialAction({ type: 'canopy_portal.stop' }, h),
+    ).resolves.toEqual({ ok: true, result: { allowIncoming: false } });
     expect(mockCalls).toEqual([
-      ['flag', CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key],
+      ['remoteGetState', { discover: false }],
+      ['remoteSetAllowIncoming', true],
+      ['remoteGetState', { discover: false }],
+      ['remoteSetAllowIncoming', false],
     ]);
+  });
+
+  it("answers a Remote Control refusal as the Portal action's error", async () => {
+    mockRemote.refusal = new Error('Sign in before allowing incoming control.');
+    await expect(
+      dispatchAdvisorCredentialAction({ type: 'canopy_portal.start' }, host()),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'execution_failed',
+        message: 'Sign in before allowing incoming control.',
+      },
+    });
+    expect(mockRemote.allowIncoming).toBe(false);
   });
 
   it('refuses OpenCode without a live main window', async () => {

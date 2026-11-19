@@ -148,18 +148,12 @@ export function assertPluginPayloadAdmission(): void {
   assertPluginCatalogAdmission();
 }
 
+/** Only a legacy catalog waits for its explicit revalidation. Damaged, newer and unreadable files are read best-effort and rewritten by the next change (CAN-4481). */
 export function assertPluginCatalogHealth(allowLegacy = false): void {
-  const root = getDataDir();
-  const catalog = readPluginCatalog(join(root, 'plugins-cache.json'));
-  const index = readPluginCacheIndex(join(root, 'plugin-cache-index.json'));
-  for (const result of [catalog, index]) {
-    if (result.state === 'valid' || result.state === 'absent') continue;
-    if (allowLegacy && result === catalog && result.state === 'legacy')
-      continue;
-    throw new Error(
-      `Couldn't use the plugin catalog because it is ${result.state}. Plugin changes and execution are blocked.`,
-    );
-  }
+  if (allowLegacy || readPluginCatalogHealth().state !== 'legacy') return;
+  throw new Error(
+    "Couldn't use the plugin catalog because it is legacy. Plugin changes and execution are blocked.",
+  );
 }
 
 /** One slot includes validation, both documents when requested, and their settled notification. */

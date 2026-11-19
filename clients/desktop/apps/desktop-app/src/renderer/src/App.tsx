@@ -1,4 +1,3 @@
-import { toActiveComposerView } from '@/components/chat/types';
 import { AppLoadingScreen } from '@/components/onboarding/AppLoadingScreen';
 import { WindowsGitRequiredScreen } from '@/components/startup/WindowsGitRequiredScreen';
 import { ResumeQueueModal } from '@/components/usage-limit/ResumeQueueModal';
@@ -19,8 +18,6 @@ import {
   openIntegrationSettings,
   openSettingsDeepLink,
 } from '@/lib/navigation/settings-destinations';
-import { canTransferChatSession } from '@/lib/session-transfer-eligibility';
-import { resolveSharedRunUrl } from '@/lib/share-links';
 import { initializeDelegationActivityStore } from '@/stores/delegationActivityStore';
 import { initializeLiveBackgroundTaskStore } from '@/stores/liveBackgroundTaskStore';
 import { initializeSharedContainerReplicasStore } from '@/stores/sharedContainerReplicasStore';
@@ -34,16 +31,11 @@ import {
   CONSENT_TOS_VERSION,
   type CanopyGuestConsent,
 } from '@canopy/desktop-shared/constants/consent';
-import { codexSpeedFromFastMode } from '@canopy/execution-engine/lib/codex-speed';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
   APP_ADVISOR_PROJECT_ID,
   type AppAdvisorAction,
   type ChatWindowCommand,
-  type PortalChatComposerCommandResult,
-  type PortalChatComposerLifecycleCommand,
-  type PortalChatComposerRendererRequest,
-  type PortalChatComposerSetterRequest,
   type PreferencesLoadResult,
   type WorktreeChatBadgesSummary,
 } from '@canopy/desktop-shared/types';
@@ -86,7 +78,6 @@ import { ReleaseHighlightsHost } from './components/release-highlights/ReleaseHi
 import { RemoteControlConnectToasts } from './components/remote-access/RemoteControlConnectToasts';
 import { RemoteControlSessionsDialog } from './components/remote-access/RemoteControlSessionsDialog';
 import { WorkspaceRecoveryNotice } from './components/background-service/WorkspaceRecoveryNotice';
-import { BackgroundServiceUnavailableNotice } from './components/background-service/BackgroundServiceUnavailableNotice';
 import { RemoteAccessHost } from './components/remote-access/RemoteAccessHost';
 import { RepoRulesModalHost } from './components/repo-rules/RepoRulesModalHost';
 import { ScriptActionsDesktopHost } from './components/script-actions/ScriptActionsDesktopHost';
@@ -134,7 +125,6 @@ import { ImportSessionModalHost } from './components/worktree/ImportSessionModal
 import { APP_BOTTOM_STATUS_HOST_ID } from './hooks/useAppBottomStatusHost';
 import { useAutoArchiveNotifications } from './hooks/useAutoArchiveNotifications';
 import { useBillingLaneRuntimeSync } from './hooks/useBillingLaneRuntimeSync';
-import { useCanopyPortalSubscription } from './hooks/useCanopyPortalSubscription';
 import { useChatEventSubscriptions } from './hooks/useChatEventSubscriptions';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { useModelUnlockReturn } from './hooks/useModelUnlockReturn';
@@ -185,7 +175,6 @@ import { WatcherDeliveryDeduplicator } from './lib/watcherDeliveryDeduplicator';
 import { WatcherDeliveryScheduler } from './lib/watcherDeliveryScheduler';
 import { installWorkspaceContextSelectionSync } from './lib/workspaceContextSelection';
 import { canNavigateToWorktreeFromSidebarItems } from './lib/worktreeNavigation';
-import { useActivityStore } from './stores/activityStore';
 import { useAppAdvisorStore } from './stores/appAdvisorStore';
 import { setMainContentCoveredByAppAdvisorDock } from './stores/appAdvisorDockCover';
 import { installAppAdvisorDockLeaveOnNavigation } from './lib/appAdvisorDockLeave';
@@ -197,7 +186,6 @@ import { useBrowserStore } from './stores/browserStore';
 import { invalidateApprovalDefaults } from './stores/chat/approval-defaults';
 import { followClaudeModAdmissionPreferences } from './stores/chat/claude-mod-discovery';
 import { useChatPrefetch } from './stores/chat/chat-prefetch';
-import { tabRequestedCodexSpeed } from './stores/chat/codex-speed';
 import { waitForWorktreeHydration } from './stores/chat/hydration';
 import { isRetiredPlanChatScope } from './stores/chat/plan-explore-registry';
 import {
@@ -459,7 +447,6 @@ function App(): JSX.Element {
   // Single app-wide mount: follows a browser checkout back into the app and
   // owns the one poll loop that confirms it (CAN-4028).
   useModelUnlockReturn();
-  useCanopyPortalSubscription();
   // Device-to-device remote access: pairing state, the machine picker, and
   // the being-controlled notice all read this one store.
   useRemoteControlSubscription();
@@ -674,7 +661,6 @@ function App(): JSX.Element {
       window.api.appAdvisor.acknowledgeWatcherMessageDelivery(request),
     ),
   );
-  const portalComposerQueueRef = useRef<Promise<void>>(Promise.resolve());
   const dispatchUiAction = useCallback((action: AppAdvisorAction): void => {
     void dispatchAppAction({
       requestId: `ui-${action.type}-${Date.now()}-${Math.random()
@@ -1028,464 +1014,6 @@ function App(): JSX.Element {
             });
           },
         );
-    });
-  }, []);
-
-  // Apply Portal-originated composer control changes (CAN-1217) by driving the
-  // same desktop store actions a local click would, so the desktop chip updates
-  // live and the store's own persist re-projects the change back to the portal.
-  useEffect(() => {
-    const completeSetterRequest = async (
-      result: PortalChatComposerCommandResult,
-    ): Promise<void> => {
-      try {
-        await window.api.chat.completePortalComposerCommand(result);
-      } catch {
-        // Main process falls back to the acknowledgement timeout when the
-        // renderer cannot return this best-effort result.
-      }
-    };
-
-    const applyLifecycleCommand = async (
-      command: PortalChatComposerLifecycleCommand,
-    ): Promise<void> => {
-      await useChatStore
-        .getState()
-        .loadTabsForTarget(command.projectId, command.worktreeId);
-      const key = `${command.projectId}/${command.worktreeId}`;
-      // CAN-1233: the create command's target tab does NOT yet exist — append
-      // it (before the existence guard below, which the setters rely on). The
-      // store's persist re-projects the new empty tab to the portal. Idempotent:
-      // a duplicate id (command replay) is a no-op.
-      if (command.kind === 'create') {
-        const alreadyExists = useChatStore
-          .getState()
-          .worktreeChats[
-            key
-          ]?.tabs?.some((entry) => entry.id === command.chatId);
-        if (!alreadyExists) {
-          useChatStore.getState().createTab({
-            projectId: command.projectId,
-            worktreeId: command.worktreeId,
-            id: command.chatId,
-          });
-        }
-        return;
-      }
-      // Close (portal tab close button). `closeTab` looks the tab up itself,
-      // honors the streaming/queued/pending-plan guard, and archives-or-discards
-      // it; the committed removal re-projects the survivors and emits a
-      // `chat_summary` removal delta so the portal evicts the closed tab. A
-      // missing id is a no-op. Runs BEFORE the setter existence guard below,
-      // which would otherwise reject a tab that closeTab is allowed to remove.
-      if (command.kind === 'close') {
-        useChatStore.getState().closeTab(command.chatId, {
-          projectId: command.projectId,
-          worktreeId: command.worktreeId,
-        });
-        return;
-      }
-      // Fork (portal end-of-turn fork action). Drives the renderer's own
-      // `forkTab` for the same reason `close` drives `closeTab`: the desktop
-      // owns transcript slicing, provider-normalized model config and the
-      // clamped thinking level, so the portal inherits all of it. Omitting
-      // `forkAfterUserMessageId` forks the whole chat. Runs BEFORE the setter
-      // existence guard, which is scoped to composer setters (CAN-2527).
-      if (command.kind === 'fork') {
-        useChatStore.getState().forkTab(
-          command.chatId,
-          {
-            projectId: command.projectId,
-            worktreeId: command.worktreeId,
-          },
-          command.forkAfterUserMessageId === undefined
-            ? // Whole-chat fork. `includeActiveTurn` is what lets a STREAMING
-              // source fork at all (the selection helper rejects it
-              // otherwise); an idle source clones everything either way, so
-              // the flag is inert there. Mirrors the desktop's active-timer
-              // fork.
-              { includeActiveTurn: true }
-            : { forkAfterUserMessageId: command.forkAfterUserMessageId },
-        );
-        return;
-      }
-    };
-
-    const applySetterRequest = async (
-      request: PortalChatComposerSetterRequest,
-    ): Promise<void> => {
-      const { command, requestId } = request;
-      if (command.kind === 'branch') {
-        // Must remain comfortably below main's COMPOSER_COMMAND_ACK_TIMEOUT_MS
-        // so the renderer can settle the correlated request first.
-        const branchConfirmationDeadlineMs = 25_000;
-        let deadlineExpired = false;
-        // Set at branchTab's point of no return (just before createWorktree).
-        // From then on the deadline must not report failure: the worktree IS
-        // being created, so only the real outcome may be acked — otherwise the
-        // portal shows a failure for a branch that succeeded (TOCTOU between
-        // the cancellation check and creation).
-        let committed = false;
-        const deadlineTimer = setTimeout(() => {
-          deadlineExpired = true;
-          if (committed) return;
-          void completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error:
-              'The desktop needed user confirmation that did not arrive in time. Try again from the desktop.',
-            retryable: false,
-          });
-        }, branchConfirmationDeadlineMs);
-        try {
-          await useChatStore
-            .getState()
-            .loadTabsForTarget(command.projectId, command.worktreeId);
-          const result = await useChatStore.getState().branchTab(
-            command.chatId,
-            {
-              projectId: command.projectId,
-              worktreeId: command.worktreeId,
-            },
-            {
-              ...(command.forkAfterUserMessageId === undefined
-                ? {}
-                : {
-                    forkAfterUserMessageId: command.forkAfterUserMessageId,
-                  }),
-              cancelled: () => deadlineExpired,
-              onCommitted: (): void => {
-                committed = true;
-              },
-            },
-          );
-          if (deadlineExpired && !committed) return;
-          if (result.status === 'created') {
-            await completeSetterRequest({ requestId, ok: true });
-            return;
-          }
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error:
-              result.status === 'failed'
-                ? result.message
-                : 'Branching the chat was cancelled.',
-            retryable: result.status === 'failed' && result.retryable,
-          });
-        } catch {
-          if (deadlineExpired && !committed) return;
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error: 'The desktop app could not branch the chat.',
-            retryable: false,
-          });
-        } finally {
-          clearTimeout(deadlineTimer);
-        }
-        return;
-      }
-      if (command.kind === 'share') {
-        if (!canTransferChatSession(command.projectId)) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error: 'This chat cannot be shared as a run.',
-            retryable: false,
-          });
-          return;
-        }
-        // Same hydration branch needed: the target worktree's tabs may not be
-        // loaded yet, and shareRun reads the tab to build the run. A missing tab
-        // must fail the command, not share nothing.
-        await useChatStore
-          .getState()
-          .loadTabsForTarget(command.projectId, command.worktreeId);
-        const shareTabs =
-          useChatStore.getState().worktreeChats[
-            `${command.projectId}/${command.worktreeId}`
-          ]?.tabs ?? [];
-        const shareTab = shareTabs.find((tab) => tab.id === command.chatId);
-        if (!shareTab || shareTab.kind === 'file') {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error: 'The chat to share was not found in the target worktree.',
-            retryable: false,
-          });
-          return;
-        }
-        // Exact parity with the desktop share control's disabled state
-        // (`busy || !hasMessages`), through the SAME derivation it uses —
-        // approximating the busy predicate here would drift from
-        // `shareSessionBusy`'s queued-hook-placeholder nuance.
-        const shareView = toActiveComposerView(shareTab);
-        if (shareView.shareSessionBusy || !shareView.hasStartedSession) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error: shareView.shareSessionBusy
-              ? 'The chat is busy; wait for the current turn to finish before sharing.'
-              : 'An empty chat cannot be shared.',
-            // Busy clears when the turn ends, so a retry is meaningful.
-            retryable: shareView.shareSessionBusy,
-          });
-          return;
-        }
-        // Ack a clear timeout BEFORE the channel's opaque 30s cutoff. Unlike
-        // branch there is nothing to cancel — the cloud call IS the side
-        // effect — and none is needed: sharing is idempotent (re-sharing
-        // re-acks the SAME url, pinned by portal-chat-share.spec.mjs), so this
-        // failure is safely RETRYABLE; a retry after a slow-but-successful
-        // share converges instead of double-creating. Late real acks are
-        // ignored by the settle path once the request has been answered.
-        let shareDeadlineExpired = false;
-        const shareDeadlineTimer = setTimeout(() => {
-          shareDeadlineExpired = true;
-          void completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'execution_failed',
-            error: 'Sharing is taking longer than expected. Try again.',
-            retryable: true,
-          });
-        }, 25_000);
-        try {
-          const result = await useActivityStore
-            .getState()
-            .shareRun(command.projectId, command.worktreeId, command.chatId, {
-              shareScope: command.shareScope,
-              ...(command.teamId ? { teamId: command.teamId } : {}),
-              ...(command.organizationId
-                ? { organizationId: command.organizationId }
-                : {}),
-            });
-          if (!result.externalId) {
-            const error =
-              result.reason === 'no-activity'
-                ? 'This chat has no shareable activity.'
-                : result.reason === 'blocked-by-org-policy'
-                  ? 'An organization policy prevents sharing this chat.'
-                  : result.reason === 'blocked-by-org-billing'
-                    ? 'The target organization has no active plan, so it cannot receive shared runs.'
-                    : 'The desktop app could not share the chat.';
-            await completeSetterRequest({
-              requestId,
-              ok: false,
-              code: 'execution_failed',
-              error,
-              retryable: false,
-            });
-            return;
-          }
-          // Mirror the desktop share flow's persistence (useShareRunAction):
-          // without this the chat tab still reads as unshared on the desktop —
-          // no "Shared" indicator, no comments affordance — for a share the
-          // portal just performed. Team/organization NAMES are not on
-          // ShareRunResponse (the modal flow enriches them from its own UI
-          // request), so this records ids and scope; the desktop renders the
-          // scope when names are absent.
-          await useChatStore
-            .getState()
-            .setSharedRun(
-              command.projectId,
-              command.worktreeId,
-              command.chatId,
-              {
-                externalId: result.externalId,
-                shareScope: command.shareScope,
-                ...(command.teamId ? { teamId: command.teamId } : {}),
-                ...(command.organizationId
-                  ? { organizationId: command.organizationId }
-                  : {}),
-                sharedAt: new Date().toISOString(),
-              },
-            );
-          const shareUrl = await resolveSharedRunUrl(result.externalId);
-          if (!shareUrl) {
-            await completeSetterRequest({
-              requestId,
-              ok: false,
-              code: 'execution_failed',
-              error: 'The desktop app could not resolve the shared run URL.',
-              retryable: false,
-            });
-            return;
-          }
-          await completeSetterRequest({
-            requestId,
-            ok: true,
-            data: { shareUrl },
-          });
-        } catch (error: unknown) {
-          if (!shareDeadlineExpired) {
-            await completeSetterRequest({
-              requestId,
-              ok: false,
-              code: 'execution_failed',
-              error:
-                error instanceof Error
-                  ? error.message
-                  : 'The desktop app could not share the chat.',
-              retryable: false,
-            });
-          }
-        } finally {
-          clearTimeout(shareDeadlineTimer);
-        }
-        return;
-      }
-      const target = {
-        projectId: command.projectId,
-        worktreeId: command.worktreeId,
-        chatId: command.chatId,
-      };
-      const key = `${command.projectId}/${command.worktreeId}`;
-
-      try {
-        await useChatStore
-          .getState()
-          .loadTabsForTarget(command.projectId, command.worktreeId);
-        const tab = useChatStore
-          .getState()
-          .worktreeChats[
-            key
-          ]?.tabs.find((entry) => entry.id === command.chatId);
-        if (!tab) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'not_found',
-            error: 'The target chat is no longer available.',
-            retryable: false,
-          });
-          return;
-        }
-        if (tab.kind === 'file' || tab.readOnly === true) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'invalid_target',
-            error: 'Composer settings cannot be changed for this tab.',
-            retryable: false,
-          });
-          return;
-        }
-
-        const actions = useChatStore.getState();
-        let pluginSelectionsApplied = true;
-        let modelApplied = true;
-        switch (command.kind) {
-          case 'model':
-            modelApplied =
-              command.executionHarness === undefined
-                ? await actions.setModelAndWait(command.model, target)
-                : await actions.setModelAndWait(
-                    command.model,
-                    target,
-                    command.executionHarness,
-                  );
-            break;
-          case 'thinking':
-            await actions.setThinkingLevel(command.thinkingLevel, target);
-            break;
-          case 'fast':
-            await actions.setFastMode(command.fastMode, target);
-            break;
-          case 'plan':
-            // No explicit setter exists; only toggle when the desired state
-            // differs so the command stays idempotent.
-            if (tab.planMode !== command.planMode) {
-              actions.togglePlanMode(target);
-            }
-            break;
-          case 'plugins':
-            pluginSelectionsApplied =
-              actions.setPluginSelections(
-                command.selections,
-                target,
-                command.deferredToolsAllowed,
-              ) !== undefined;
-            break;
-        }
-
-        const updatedTab = useChatStore
-          .getState()
-          .worktreeChats[
-            key
-          ]?.tabs.find((entry) => entry.id === command.chatId);
-        const applied = ((): boolean => {
-          if (!updatedTab || !pluginSelectionsApplied) {
-            return false;
-          }
-          switch (command.kind) {
-            case 'model':
-              return (
-                modelApplied &&
-                updatedTab.model === command.model &&
-                (command.executionHarness === undefined ||
-                  updatedTab.executionHarness === command.executionHarness)
-              );
-            case 'thinking':
-              return updatedTab.thinkingLevel === command.thinkingLevel;
-            case 'fast':
-              // A legacy boolean replaces the speed. Compare the exact speed:
-              // Ultra fast also projects `false`, so the boolean alone would
-              // report a Regular command as applied while Ultra fast remains.
-              return (
-                tabRequestedCodexSpeed(updatedTab) ===
-                codexSpeedFromFastMode(command.fastMode)
-              );
-            case 'plan':
-              return updatedTab.planMode === command.planMode;
-            case 'plugins':
-              return true;
-          }
-        })();
-
-        if (!applied) {
-          await completeSetterRequest({
-            requestId,
-            ok: false,
-            code: 'invalid_target',
-            error: 'The composer change is not available for this chat.',
-            retryable: false,
-          });
-          return;
-        }
-        await completeSetterRequest({ requestId, ok: true });
-      } catch {
-        await completeSetterRequest({
-          requestId,
-          ok: false,
-          code: 'execution_failed',
-          error: 'The desktop app could not apply the composer change.',
-          retryable: false,
-        });
-      }
-    };
-
-    const applyComposerCommand = async (
-      request: PortalChatComposerRendererRequest,
-    ): Promise<void> => {
-      if ('requestId' in request) {
-        await applySetterRequest(request);
-        return;
-      }
-      await applyLifecycleCommand(request);
-    };
-
-    return window.api.chat.onPortalComposerCommand((request) => {
-      portalComposerQueueRef.current = portalComposerQueueRef.current
-        .catch(() => undefined)
-        .then(() => applyComposerCommand(request));
     });
   }, []);
 
@@ -2424,9 +1952,6 @@ function App(): JSX.Element {
         </div>
         {/* Over a live Browser page the toasts move into a native overlay
             layer above it, so the page keeps running under them. */}
-        {/* Pins its warning card into the toast stack below until the
-            background service is reached again or the card is closed. */}
-        <BackgroundServiceUnavailableNotice />
         <OverlayLayerSlot
           slot="notifications"
           placement={inAppNotificationPlacement}

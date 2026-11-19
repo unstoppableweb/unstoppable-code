@@ -30,6 +30,16 @@ export interface WorktreeMembershipRow {
 }
 
 const listeners = new Set<Listener>();
+let listChangeSequence = 0;
+
+/**
+ * Advances on every signal except `projects-loaded`, and on every worktree
+ * list write, membership change or not, so a read taken at one value has
+ * seen every row a later write changes.
+ */
+export function worktreeLifecycleSequence(): number {
+  return listChangeSequence;
+}
 
 export function subscribeWorktreeLifecycleChanges(
   listener: Listener,
@@ -44,6 +54,7 @@ export function subscribeWorktreeLifecycleChanges(
 export function publishWorktreeLifecycleChange(
   change: WorktreeLifecycleChange,
 ): void {
+  if (change !== 'projects-loaded') listChangeSequence += 1;
   listeners.forEach((listener): void => {
     try {
       listener(change);
@@ -67,6 +78,7 @@ export function publishWorktreeListWrite(
   previous: readonly WorktreeMembershipRow[],
   next: readonly WorktreeMembershipRow[],
 ): void {
+  listChangeSequence += 1;
   const before = membershipKeys(previous);
   const after = membershipKeys(next);
   if (

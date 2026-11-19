@@ -16,21 +16,41 @@ export const AGENT_VISUAL_CDN_HOSTS = [
   'https://cdnjs.cloudflare.com',
 ] as const;
 
-export const AGENT_VISUAL_CSP = [
-  "default-src 'none'",
-  `script-src 'unsafe-inline' 'unsafe-eval' ${AGENT_VISUAL_CDN_HOSTS.join(' ')}`,
-  `style-src 'unsafe-inline' ${AGENT_VISUAL_CDN_HOSTS.join(' ')}`,
-  `font-src data: ${AGENT_VISUAL_CDN_HOSTS.join(' ')}`,
-  'img-src data: blob:',
-  'media-src data: blob:',
-  'worker-src blob:',
-  "connect-src 'none'",
-  "frame-src 'none'",
-  "object-src 'none'",
-  "manifest-src 'none'",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join('; ');
+/**
+ * Build the visual's content security policy. With `remoteAssets` false (a
+ * host whose `agentVisualRemoteAssets` capability is off) no CDN host is
+ * allowed: CDN scripts and styles are dropped, and fonts come only from the
+ * faces the host posts or the bundled fallbacks.
+ */
+export function buildAgentVisualCsp(remoteAssets: boolean): string {
+  const cdnHosts = remoteAssets ? ` ${AGENT_VISUAL_CDN_HOSTS.join(' ')}` : '';
+  return [
+    "default-src 'none'",
+    `script-src 'unsafe-inline' 'unsafe-eval'${cdnHosts}`,
+    `style-src 'unsafe-inline'${cdnHosts}`,
+    `font-src data:${cdnHosts}`,
+    'img-src data: blob:',
+    'media-src data: blob:',
+    'worker-src blob:',
+    "connect-src 'none'",
+    "frame-src 'none'",
+    "object-src 'none'",
+    "manifest-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join('; ');
+}
+
+export const AGENT_VISUAL_CSP = buildAgentVisualCsp(true);
+
+/** Options shared by the documents that carry the visual's policy. */
+export interface AgentVisualDocumentOptions {
+  /**
+   * Whether the visual may load CDN scripts, styles and fonts. Defaults to
+   * true; hosts pass `allowsAgentVisualRemoteAssets(capabilities)`.
+   */
+  remoteAssets?: boolean;
+}
 
 export const AGENT_VISUAL_STRIPPED_HTTP_EQUIV: ReadonlySet<string> = new Set([
   'refresh',
@@ -214,7 +234,10 @@ function stripLeadingDoctype(content: string): string {
   return content.replace(/^\s*<!doctype[^>]*>/i, '');
 }
 
-const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${AGENT_VISUAL_CSP}">`;
+function cspMeta(options: AgentVisualDocumentOptions | undefined): string {
+  const csp = buildAgentVisualCsp(options?.remoteAssets !== false);
+  return `<meta http-equiv="Content-Security-Policy" content="${csp}">`;
+}
 const DNS_PREFETCH_META =
   '<meta http-equiv="x-dns-prefetch-control" content="off">';
 /** Runs first in the agent frame: theme, size reports, links, liveness. */
@@ -729,6 +752,7 @@ export const AGENT_VISUAL_RELAY_SCRIPT = `
 export function buildAgentVisualSrcDoc(
   document: string,
   theme: AgentVisualTheme,
+  options?: AgentVisualDocumentOptions,
 ): string {
   const withoutBom = document.startsWith('\uFEFF')
     ? document.slice(1)
@@ -742,7 +766,7 @@ export function buildAgentVisualSrcDoc(
   const themeStyle = `<style>${buildThemeStyles(sanitizedTheme)}</style>`;
   const baseStyle =
     '<style>html{background:var(--bg-base);color:var(--fg-primary);font:14px/1.5 var(--font-sans)}body{margin:0}html{scrollbar-width:none}html::-webkit-scrollbar{display:none}</style>';
-  return `<!doctype html>\n${CSP_META}\n${DNS_PREFETCH_META}\n<meta charset="utf-8">\n${themeStyle}\n${baseStyle}\n<script>${AGENT_VISUAL_BRIDGE_SCRIPT}</script>\n${markup}`;
+  return `<!doctype html>\n${cspMeta(options)}\n${DNS_PREFETCH_META}\n<meta charset="utf-8">\n${themeStyle}\n${baseStyle}\n<script>${AGENT_VISUAL_BRIDGE_SCRIPT}</script>\n${markup}`;
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -761,12 +785,15 @@ function escapeSrcDocAttribute(value: string): string {
 /** Build the trusted relay document that contains exactly one agent frame. */
 export function buildAgentVisualWrapperSrcDoc(
   agentSrcDoc: string,
-  options: { title: string; appearance: 'light' | 'dark' },
+  options: {
+    title: string;
+    appearance: 'light' | 'dark';
+  } & AgentVisualDocumentOptions,
 ): string {
   const title = escapeHtmlAttribute(options.title);
   const srcdoc = escapeSrcDocAttribute(agentSrcDoc);
   const style = `<style>html,body{margin:0;height:100%;overflow:hidden}html{color-scheme:${options.appearance}}iframe{display:block;width:100%;height:100%;border:0}</style>`;
-  return `<!doctype html>\n${CSP_META}\n<meta charset="utf-8">\n${style}\n<iframe sandbox="${AGENT_VISUAL_FRAME_SANDBOX}" referrerpolicy="no-referrer" allow="${AGENT_VISUAL_FRAME_ALLOW}" title="${title}" srcdoc="${srcdoc}"></iframe>\n<script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
+  return `<!doctype html>\n${cspMeta(options)}\n<meta charset="utf-8">\n${style}\n<iframe sandbox="${AGENT_VISUAL_FRAME_SANDBOX}" referrerpolicy="no-referrer" allow="${AGENT_VISUAL_FRAME_ALLOW}" title="${title}" srcdoc="${srcdoc}"></iframe>\n<script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
 }
 
 const WRAPPER_FRAME_STYLE =
@@ -781,7 +808,7 @@ const WRAPPER_FRAME_STYLE =
  * the same for every visual and holds nothing about any of them.
  */
 export function buildAgentVisualShellDocument(): string {
-  return `<!doctype html>\n${CSP_META}\n<meta charset="utf-8">\n<style>${WRAPPER_FRAME_STYLE}</style>\n<body><script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
+  return `<!doctype html>\n${cspMeta(undefined)}\n<meta charset="utf-8">\n<style>${WRAPPER_FRAME_STYLE}</style>\n<body><script>${AGENT_VISUAL_RELAY_SCRIPT}</script>`;
 }
 
 /**
@@ -829,13 +856,14 @@ export function buildAgentVisualExportDocument(
   document: string,
   theme: AgentVisualTheme,
   title: string,
+  options?: AgentVisualDocumentOptions,
 ): string {
   const safeTheme = sanitizeAgentVisualTheme(theme);
   const srcdoc = escapeSrcDocAttribute(
-    buildAgentVisualSrcDoc(document, safeTheme),
+    buildAgentVisualSrcDoc(document, safeTheme, options),
   );
   const safeTitle = escapeHtmlAttribute(title);
-  return `<!doctype html>\n${CSP_META}\n<meta charset="utf-8">\n<title>${safeTitle}</title>\n<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}html{color-scheme:${safeTheme.appearance}}iframe{display:block;width:100%;height:100%;border:0}</style>\n<iframe sandbox="${AGENT_VISUAL_FRAME_SANDBOX}" referrerpolicy="no-referrer" allow="${AGENT_VISUAL_FRAME_ALLOW}" title="${safeTitle}" srcdoc="${srcdoc}"></iframe>`;
+  return `<!doctype html>\n${cspMeta(options)}\n<meta charset="utf-8">\n<title>${safeTitle}</title>\n<style>html,body{margin:0;width:100%;height:100%;overflow:hidden}html{color-scheme:${safeTheme.appearance}}iframe{display:block;width:100%;height:100%;border:0}</style>\n<iframe sandbox="${AGENT_VISUAL_FRAME_SANDBOX}" referrerpolicy="no-referrer" allow="${AGENT_VISUAL_FRAME_ALLOW}" title="${safeTitle}" srcdoc="${srcdoc}"></iframe>`;
 }
 
 export type AgentVisualHostContextMessage = {

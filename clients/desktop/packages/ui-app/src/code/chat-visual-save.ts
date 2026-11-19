@@ -22,14 +22,17 @@ export function saveChatVisualAsHtml({
   theme,
   title,
   ownerDocument,
+  remoteAssets,
 }: {
   document: string;
   theme: AgentVisualTheme;
   title: string;
   ownerDocument?: Document;
+  /** Whether the saved visual may load CDN assets; see `agentVisualRemoteAssets`. */
+  remoteAssets: boolean;
 }): void {
   const blob = new Blob(
-    [buildAgentVisualExportDocument(visual, theme, title)],
+    [buildAgentVisualExportDocument(visual, theme, title, { remoteAssets })],
     {
       type: 'text/html;charset=utf-8',
     },

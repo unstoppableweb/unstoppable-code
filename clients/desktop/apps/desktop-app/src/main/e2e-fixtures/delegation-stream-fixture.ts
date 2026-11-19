@@ -1411,9 +1411,9 @@ function installLiveProgress(
   let sequence = PROGRESS_CREATION_SEQUENCE;
   let previous: Promise<unknown> = Promise.resolve();
 
-  const publishLive = async (
+  const publishLive = (
     transcript: AgentDelegationTranscript,
-  ): Promise<AgentDelegationTranscript> => {
+  ): AgentDelegationTranscript => {
     const rendererFrame = liveFrames.frame(transcript);
     if (!isAgentDelegationTranscript(rendererFrame))
       throw new Error('E2E progress live frame is invalid');
@@ -1428,32 +1428,6 @@ function installLiveProgress(
       chatId: target.chatId,
       data,
     });
-    const [bus, projection] = await Promise.all([
-      import('../portal/portal-event-bus'),
-      import('@canopy/desktop-shared/portal/runtime-chat-projection'),
-    ]);
-    if (!bus.isCanopyPortalActive()) return rendererFrame;
-    const message = projection.runtimeChatEventToPortalMessage({
-      scope: 'worktree',
-      workspaceLocalId: scope.projectId,
-      worktreeLocalId: scope.worktreeId,
-      chatId: target.chatId,
-      data: {
-        type: 'canopy_delegation',
-        delegation: transcript,
-        canopy_turn_user_message_id: transcript.parentTurnId,
-      },
-    });
-    if (!message) return rendererFrame;
-    bus.enqueuePortalEvent(
-      bus.createPortalEvent('portal.chat.event', {
-        scope: 'worktree',
-        workspaceLocalId: scope.projectId,
-        worktreeLocalId: scope.worktreeId,
-        chatId: target.chatId,
-        message,
-      }),
-    );
     return rendererFrame;
   };
 
@@ -1509,7 +1483,7 @@ function installLiveProgress(
     if (step !== 'settled') {
       sequence += 1;
       const transcript = liveProgressTranscript(step, sequence, target);
-      const rendererFrame = await publishLive(transcript);
+      const rendererFrame = publishLive(transcript);
       sentFrames.push({
         sequence: rendererFrame.sequence,
         snapshot: {

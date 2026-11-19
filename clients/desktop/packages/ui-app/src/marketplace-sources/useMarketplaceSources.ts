@@ -15,6 +15,7 @@ import type {
   MarketplaceSourcesSnapshot,
 } from '@canopy/app-core/client';
 import { useCanopyClient } from '@canopy/app-state';
+import { linkRecordedError, recordedErrorOf } from '@canopy/ui-shared';
 
 import { createMarketplaceSourceOperations } from '@canopy/app-core/client';
 import type {
@@ -97,6 +98,11 @@ export interface UseMarketplaceSourcesResult {
   readonly installingPlugins: Readonly<Record<string, string>>;
   /** Keyed by {@link marketplaceSourcePluginErrorKey}. */
   readonly pluginErrors: Readonly<Record<string, string>>;
+  /**
+   * Source and plugin error messages the host already recorded, so the
+   * banners showing them record nothing.
+   */
+  readonly recordedErrors: ReadonlySet<string>;
   readonly canInstall: boolean;
   readonly reload: () => Promise<void>;
   readonly refresh: () => Promise<void>;
@@ -206,6 +212,14 @@ export function useMarketplaceSources(
     Record<string, string>
   >({});
   const [pluginErrors, setPluginErrors] = useState<Record<string, string>>({});
+  const [recordedErrors, setRecordedErrors] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const noteRecorded = useCallback((error: unknown): void => {
+    if (recordedErrorOf(error) === undefined) return;
+    const message = marketplaceSourceErrorMessage(error);
+    setRecordedErrors((prev) => new Set(prev).add(message));
+  }, []);
 
   // Every read start bumps `readSeqRef`; every applied mutation and client
   // change bumps `dataRevisionRef`. A read applies only if neither moved.
@@ -401,6 +415,10 @@ export function useMarketplaceSources(
         return true;
       } catch (error) {
         if (current()) {
+          // A failure the host recorded is linked to this session, and its
+          // banners record nothing.
+          linkRecordedError(error, 'marketplace-source-operation');
+          noteRecorded(error);
           setSourceErrors((prev) => ({
             ...prev,
             [sourceId]: marketplaceSourceErrorMessage(error),
@@ -522,6 +540,8 @@ export function useMarketplaceSources(
             }
           } catch (error) {
             if (current()) {
+              // Linked once, where the rethrow lands in `runSourceOperation`.
+              noteRecorded(error);
               setPluginErrors((prev) => ({
                 ...prev,
                 [errorKey]: marketplaceSourceErrorMessage(error),
@@ -585,6 +605,7 @@ export function useMarketplaceSources(
     sourceProgress: usable ? sourceProgress : {},
     installingPlugins: usable ? installingPlugins : {},
     pluginErrors: usable ? pluginErrors : {},
+    recordedErrors,
     canInstall: usable && canInstall,
     reload,
     refresh,

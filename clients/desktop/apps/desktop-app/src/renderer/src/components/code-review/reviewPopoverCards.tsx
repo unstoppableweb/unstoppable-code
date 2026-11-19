@@ -85,6 +85,7 @@ export function ReviewAnnotationCard({
 
 export interface ReviewThreadCardProps {
   thread: ReviewCommentThread;
+  readOnly?: boolean;
   onReply: (body: string) => void;
   onToggleResolved: () => void;
   /** Edit an unsubmitted (staged) draft comment in this thread. */
@@ -110,6 +111,7 @@ export interface ReviewThreadCardProps {
  */
 export function ReviewThreadCard({
   thread,
+  readOnly = false,
   onReply,
   onToggleResolved,
   onEditStagedComment,
@@ -131,7 +133,7 @@ export function ReviewThreadCard({
     setEditingBody('');
   };
   const saveEditingComment = (): void => {
-    if (!editingCommentId) {
+    if (readOnly || !editingCommentId) {
       return;
     }
     const trimmed = editingBody.trim();
@@ -143,7 +145,7 @@ export function ReviewThreadCard({
   };
   const submitReply = (): void => {
     const trimmed = replyBody.trim();
-    if (trimmed.length === 0) {
+    if (readOnly || trimmed.length === 0) {
       return;
     }
     onReply(trimmed);
@@ -158,18 +160,29 @@ export function ReviewThreadCard({
       commentCount={thread.comments.length}
       reference={reference}
       footer={
-        <PlanCommentComposer
-          compact
-          value={replyBody}
-          onChange={setReplyBody}
-          onSubmit={submitReply}
-          submitLabel="Reply"
-          submitDisabled={replyBody.trim().length === 0}
-          secondaryAction={{
-            label: thread.status === 'resolved' ? 'Reopen' : 'Resolve',
-            onClick: onToggleResolved,
-          }}
-        />
+        readOnly ? (
+          replyBody.length > 0 ? (
+            <TextArea
+              aria-label="Unsent reply"
+              value={replyBody}
+              readOnly
+              rows={3}
+            />
+          ) : null
+        ) : (
+          <PlanCommentComposer
+            compact
+            value={replyBody}
+            onChange={setReplyBody}
+            onSubmit={submitReply}
+            submitLabel="Reply"
+            submitDisabled={replyBody.trim().length === 0}
+            secondaryAction={{
+              label: thread.status === 'resolved' ? 'Reopen' : 'Resolve',
+              onClick: onToggleResolved,
+            }}
+          />
+        )
       }
     >
       {thread.comments.map((comment) => {
@@ -188,6 +201,7 @@ export function ReviewThreadCard({
                 <TextArea
                   aria-label="Comment"
                   value={editingBody}
+                  readOnly={readOnly}
                   onChange={(event): void => setEditingBody(event.target.value)}
                   onKeyDown={(event): void => {
                     if (event.key === 'Escape') {
@@ -217,7 +231,7 @@ export function ReviewThreadCard({
                     variant="primary"
                     size="compact"
                     onClick={saveEditingComment}
-                    disabled={editingBody.trim().length === 0}
+                    disabled={readOnly || editingBody.trim().length === 0}
                   >
                     Save
                   </Button>
@@ -229,14 +243,15 @@ export function ReviewThreadCard({
 
         // Only unsubmitted (staged) drafts get edit/delete affordances; once a
         // comment has been submitted to the agent it is immutable.
-        const actions = pending ? (
-          <PlanReviewCommentActions
-            onEdit={(): void => startEditingComment(comment.id, comment.body)}
-            onDelete={(): void => onDeleteStagedComment(comment.id)}
-            editTestId="review-comment-edit-draft"
-            deleteTestId="review-comment-delete-draft"
-          />
-        ) : undefined;
+        const actions =
+          pending && !readOnly ? (
+            <PlanReviewCommentActions
+              onEdit={(): void => startEditingComment(comment.id, comment.body)}
+              onDelete={(): void => onDeleteStagedComment(comment.id)}
+              editTestId="review-comment-edit-draft"
+              deleteTestId="review-comment-delete-draft"
+            />
+          ) : undefined;
 
         return (
           <PlanReviewComment

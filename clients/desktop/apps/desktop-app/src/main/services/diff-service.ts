@@ -21,6 +21,10 @@ import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { isMultiRepoWorkspace } from '../lib/workspace-registry';
 import { PortalServiceError } from './portal-service-error';
+import {
+  secretSafeView,
+  SecretViewUnavailableError,
+} from '../agent-secrets/view-redaction';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
@@ -707,6 +711,14 @@ export async function readDiff(
           source: entry.source,
         });
         if (diff.binary) continue;
+        // Each side is shown whole in the patch: one holding an agent
+        // secret value, or one cut short, withholds it.
+        await secretSafeView({
+          kind: 'diff',
+          oldValue: diff.oldValue,
+          newValue: diff.newValue,
+          truncated: diff.truncated === true,
+        });
         const oldLines = diff.oldValue.split('\n');
         const newLines = diff.newValue.split('\n');
         patchParts.push(
@@ -719,9 +731,13 @@ export async function readDiff(
           ].join('\n'),
         );
       } catch (error) {
+        if (error instanceof SecretViewUnavailableError)
+          throw new PortalServiceError('invalid_target', error.message);
         if (request.path) throw error;
       }
     }
+    const sharedPatch = patchParts.join('\n');
+    if (sharedPatch) await withholdSecretPatch(sharedPatch, []);
     return {
       workspaceLocalId: request.workspaceId,
       worktreeLocalId: request.worktreeId,
@@ -738,7 +754,7 @@ export async function readDiff(
           ? {}
           : { deletions: entry.deletions }),
       })),
-      patch: patchParts.join('\n'),
+      patch: sharedPatch,
     };
   }
   const cwd = resolveWorktreeCwd(
@@ -809,6 +825,18 @@ export async function readDiff(
           ? `${base.mergeBase.slice(0, 12)}..WORKTREE`
           : 'HEAD..WORKTREE'
         : undefined;
+  // The patch is withheld whole when what it shows holds an agent secret
+  // value, or a file in it is a secrets file.
+  if (patch)
+    await withholdSecretPatch(
+      patch,
+      filePath !== undefined && !selectedFile
+        ? [join(cwd, filePath)]
+        : (selectedFile ? [selectedFile] : files).flatMap((file) => [
+            join(cwd, file.filePath),
+            ...(file.previousPath ? [join(cwd, file.previousPath)] : []),
+          ]),
+    );
   return {
     workspaceLocalId: request.workspaceId,
     worktreeLocalId: request.worktreeId,
@@ -817,4 +845,22 @@ export async function readDiff(
     patch,
     ...(rangeLabel ? { rangeLabel } : {}),
   };
+}
+
+/**
+ * Throws a Portal error, so the patch is withheld whole, when what it shows
+ * holds an agent secret value or one of `paths` is a secrets file: a patch
+ * shows parts of files with diff markers, so it can't be redacted.
+ */
+async function withholdSecretPatch(
+  patch: string,
+  paths: readonly string[],
+): Promise<void> {
+  try {
+    await secretSafeView({ kind: 'patch', patch, paths });
+  } catch (error) {
+    if (error instanceof SecretViewUnavailableError)
+      throw new PortalServiceError('invalid_target', error.message);
+    throw error;
+  }
 }

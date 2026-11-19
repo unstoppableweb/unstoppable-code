@@ -1,5 +1,22 @@
 // Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
 
+exports[`Remote Control access to tracked plans (CAN-4165 equivalence) keeps mobile, browser and hosted controllers to their plan channels 1`] = `
+{
+  "browser": [
+    "tracked-plans:get",
+    "tracked-plans:update",
+    "tracked-plans:delete",
+  ],
+  "hosted": [
+    "tracked-plans:list",
+    "tracked-plans:get",
+  ],
+  "mobile": [
+    "tracked-plans:list",
+  ],
+}
+`;
+
 exports[`tracked plan lifecycle (CAN-4165 golden) creates, reads, lists, updates and deletes through IPC 1`] = `
 {
   "created": {
@@ -28,232 +45,6 @@ First draft.",
     "updatedAt": "<time>",
     "worktreeId": "golden-wt",
   },
-  "portalEvents": [
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-First draft.",
-            "content": "# Ship the golden
-
-First draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 1,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 1,
-            "source": "claude",
-            "status": "pending",
-            "title": "Ship the golden",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-First draft.",
-            "content": "# Ship the golden
-
-First draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 1,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 1,
-            "source": "claude",
-            "status": "pending",
-            "title": "Ship the golden",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-First draft.",
-            "content": "# Ship the golden
-
-First draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 1,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 1,
-            "source": "claude",
-            "status": "pending",
-            "title": "Ship the golden",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-Second draft.",
-            "content": "# Ship the golden
-
-Second draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 2,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 2,
-            "source": "claude",
-            "status": "pending",
-            "title": "Ship the golden",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-Second draft.",
-            "content": "# Ship the golden
-
-Second draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 2,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 2,
-            "source": "claude",
-            "status": "pending",
-            "title": "Ship the golden",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-Second draft.",
-            "content": "# Ship the golden
-
-Second draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 2,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 2,
-            "source": "claude",
-            "status": "pending",
-            "title": "Renamed",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-    {
-      "event": {
-        "entity": {
-          "entityType": "plan",
-          "localId": "<id 1>",
-          "parentLocalId": "<id 2>",
-          "payload": {
-            "approvedAt": null,
-            "body": "# Ship the golden
-
-Second draft.",
-            "content": "# Ship the golden
-
-Second draft.",
-            "dismissedAt": null,
-            "hidden": undefined,
-            "latestRevisionNumber": 2,
-            "planId": "<id 1>",
-            "reviewStatus": "pending",
-            "revisionNumber": 2,
-            "source": "claude",
-            "status": "pending",
-            "title": "Renamed",
-            "updatedAt": "<time>",
-            "workspaceLocalId": "golden-plans",
-            "worktreeLocalId": "golden-wt",
-          },
-        },
-        "type": "portal.plan.event",
-      },
-      "kind": "upsert",
-    },
-  ],
   "retitled": {
     "content": "# Ship the golden
 
@@ -369,29 +160,6 @@ Second draft.",
   ],
   "version": 1,
 }
-`;
-
-exports[`tracked plan lifecycle (CAN-4165 golden) deletes through IPC and publishes the removal 1`] = `
-[
-  {
-    "event": {
-      "entityType": "plan",
-      "localId": "<id 1>",
-      "parentLocalId": "<id 2>",
-      "type": "portal.plan.event",
-    },
-    "kind": "remove",
-  },
-  {
-    "event": {
-      "entityType": "plan",
-      "localId": "<id 1>",
-      "parentLocalId": "<id 2>",
-      "type": "portal.plan.event",
-    },
-    "kind": "remove",
-  },
-]
 `;
 
 exports[`tracked plan lifecycle (CAN-4165 golden) detects plan files once, then updates and lists them 1`] = `
@@ -523,39 +291,53 @@ From a file.",
 }
 `;
 
-exports[`tracked plan lifecycle (CAN-4165 golden) publishes a direct persistence write to the Portal through the write hook 1`] = `
+exports[`tracked plans on core.plan (CAN-4165 equivalence) announces a write from another binding to every window 1`] = `
 [
   {
-    "event": {
-      "entity": {
-        "entityType": "plan",
-        "localId": "<id 1>",
-        "parentLocalId": "<id 2>",
-        "payload": {
-          "approvedAt": null,
-          "body": "# Agent plan
-
-Written by ExitPlanMode.",
-          "content": "# Agent plan
-
-Written by ExitPlanMode.",
-          "dismissedAt": null,
-          "hidden": undefined,
-          "latestRevisionNumber": 1,
-          "planId": "<id 1>",
-          "reviewStatus": "pending",
-          "revisionNumber": 1,
-          "source": "claude",
-          "status": "pending",
-          "title": "Agent plan",
-          "updatedAt": "<time>",
-          "workspaceLocalId": "golden-plans",
-          "worktreeLocalId": "golden-wt",
-        },
+    "channel": "tracked-plans:updated",
+    "payload": {
+      "change": "upsert",
+      "plan": {
+        "content": "# From the relay",
+        "createdAt": "<time>",
+        "id": "<id 2>",
+        "latestRevisionNumber": 2,
+        "linkedExecutionIds": [],
+        "projectId": "golden-plans",
+        "reviewStatus": "pending",
+        "revisions": [
+          {
+            "content": "# Before relay",
+            "createdAt": "<time>",
+            "reviewStatus": "pending",
+            "revisionNumber": 1,
+            "source": "claude",
+          },
+          {
+            "content": "# From the relay",
+            "createdAt": "<time>",
+            "reviewStatus": "pending",
+            "revisionNumber": 2,
+            "source": "claude",
+          },
+        ],
+        "source": "claude",
+        "title": "From the relay",
+        "updatedAt": "<time>",
+        "worktreeId": "<id 1>",
       },
-      "type": "portal.plan.event",
+      "projectId": "golden-plans",
+      "worktreeId": "<id 1>",
     },
-    "kind": "upsert",
+  },
+  {
+    "channel": "tracked-plans:updated",
+    "payload": {
+      "change": "remove",
+      "planId": "<id 2>",
+      "projectId": "golden-plans",
+      "worktreeId": "<id 1>",
+    },
   },
 ]
 `;

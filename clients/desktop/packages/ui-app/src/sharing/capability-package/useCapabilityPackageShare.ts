@@ -290,6 +290,20 @@ export function useCapabilityPackageShare({
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        // Main may have refused the dismissals this request carried; resending
+        // them would fail the same way. Fall back to the last set main
+        // accepted, which re-runs the analysis without them.
+        setPendingDismissals((current) =>
+          current === null || sameInvocationSet(current, echoedRef.current)
+            ? current
+            : null,
+        );
+        setPendingReferences((current) =>
+          current === null ||
+          sameReferenceSet(current, echoedReferencesRef.current)
+            ? current
+            : null,
+        );
         setAnalysis(null);
         setFailed(true);
         setFailureReason(

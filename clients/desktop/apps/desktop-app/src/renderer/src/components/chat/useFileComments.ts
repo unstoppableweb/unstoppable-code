@@ -19,6 +19,8 @@ const FILE_COMMENT_SUBMIT_HIDDEN_CONTEXT_TEXT =
 
 export interface UseFileComments {
   document: FileAnnotationDocument;
+  /** A refused review namespace must not disable independent file comments. */
+  isThreadReadOnly?: (threadId: string) => boolean;
   /** Both origins for the shared drawer; editor markers still use document. */
   drawerThreads?: ReviewCommentThread[];
   stagedCount: number;

@@ -1,3 +1,5 @@
+import { createBootRelation } from '../supervision/boot-relation';
+import { NODE_SUPERVISION } from '../supervision/shared';
 import type * as Runtime from '@canopy/core-runtime';
 import { createProcessIdentifier } from '../supervision/identify';
 import { createProcessInspector } from '../supervision/inspect';
@@ -275,6 +277,144 @@ it('preserves the largest Windows PID and never converts query failures to absen
     await expect(harness(W(fail(code), GONE))({ pid: PID })).resolves.toEqual(
       U,
     );
+});
+
+describe('local private-runtime boot evidence', () => {
+  const now = 1800000000000;
+  const boot = now / 1000 - 3600;
+  it.each([
+    [boot - 61, 'before_boot'],
+    [boot - 60, 'unknown'],
+    [boot - 1, 'unknown'],
+    [boot, 'this_boot'],
+    [now / 1000, 'this_boot'],
+    [now / 1000 + 1, 'unknown'],
+    [0, 'unknown'],
+    [Infinity, 'unknown'],
+    [NaN, 'unknown'],
+  ])('Darwin epoch %s yields %s', async (epoch, expected) => {
+    const relation = createBootRelation('darwin', {
+      ...NODE_SUPERVISION,
+      now: () => now,
+      uptimeSeconds: () => 3600,
+    });
+    expect(await relation({ startIdentity: `darwin:v1:4242:${epoch}` })).toBe(
+      expected,
+    );
+  });
+  it.each([
+    { now: undefined },
+    { uptimeSeconds: undefined },
+    { now: (): number => NaN },
+    { now: (): number => Infinity },
+    { now: (): number => 0 },
+    { uptimeSeconds: (): number => -1 },
+    { uptimeSeconds: (): number => Infinity },
+    { uptimeSeconds: (): number => NaN },
+  ])(
+    'Darwin rejects missing and implausible clock operations: %j',
+    async (override) => {
+      const relation = createBootRelation('darwin', {
+        ...NODE_SUPERVISION,
+        now: () => now,
+        uptimeSeconds: () => 3600,
+        ...override,
+      });
+      expect(
+        await relation({ startIdentity: `darwin:v1:4242:${boot - 61}` }),
+      ).toBe('unknown');
+    },
+  );
+  it.each([
+    'darwin:v1:0:1799990000',
+    'darwin:v1:4242:1.5',
+    'darwin:v2:4242:1799990000',
+    'junk',
+  ])('rejects malformed identity %s', async (startIdentity) => {
+    expect(
+      await createBootRelation('darwin', {
+        ...NODE_SUPERVISION,
+        now: () => now,
+        uptimeSeconds: () => 3600,
+      })({ startIdentity }),
+    ).toBe('unknown');
+  });
+  it.each([
+    [BOOT, 'this_boot'],
+    ['11111111-1111-1111-1111-111111111111\n', 'before_boot'],
+    ['bad', 'unknown'],
+    ['', 'unknown'],
+    [BOOT + BOOT, 'unknown'],
+  ])('Linux boot ID yields %s / %s', async (raw, expected) => {
+    expect(
+      await createBootRelation('linux', {
+        ...NODE_SUPERVISION,
+        readText: () => Promise.resolve(raw),
+      })({ startIdentity: LINUX_ID }),
+    ).toBe(expected);
+  });
+  it('Linux malformed, unreadable and cancelled evidence stays closed', async () => {
+    const readText = jest.fn(() => Promise.resolve(BOOT));
+    const relation = createBootRelation('linux', {
+      ...NODE_SUPERVISION,
+      readText,
+    });
+    expect(await relation({ startIdentity: 'linux:v1:1:invalid:9' })).toBe(
+      'unknown',
+    );
+    expect(readText).not.toHaveBeenCalled();
+    expect(
+      await createBootRelation('linux', {
+        ...NODE_SUPERVISION,
+        readText: () =>
+          Promise.resolve().then(() => {
+            throw new Error('denied');
+          }),
+      })({ startIdentity: LINUX_ID }),
+    ).toBe('unknown');
+    const controller = new AbortController();
+    const during = createBootRelation('linux', {
+      ...NODE_SUPERVISION,
+      readText: () =>
+        Promise.resolve().then(() => {
+          controller.abort();
+          return BOOT;
+        }),
+    });
+    await expect(
+      during({ startIdentity: LINUX_ID, signal: controller.signal }),
+    ).rejects.toThrow();
+    await expect(
+      relation({ startIdentity: LINUX_ID, signal: AbortSignal.abort() }),
+    ).rejects.toThrow();
+    expect(
+      await createBootRelation(
+        'win32',
+        NODE_SUPERVISION,
+      )({ startIdentity: LINUX_ID }),
+    ).toBe('unknown');
+  });
+  // A clock step larger than 60 seconds can authorize false reboot evidence;
+  // tolerance boundary coverage does not qualify arbitrary wall-clock skew.
+});
+
+it('Darwin preserves cancellation from clock observation even with invalid evidence', async () => {
+  const controller = new AbortController();
+  const reason = new Error('boot evidence cancelled');
+  const relation = createBootRelation('darwin', {
+    ...NODE_SUPERVISION,
+    now: (): number => {
+      controller.abort(reason);
+      return NaN;
+    },
+    uptimeSeconds: (): number => 100,
+  });
+  await expect(
+    relation({
+      startIdentity: 'darwin:v1:4242:1799990000',
+      signal: controller.signal,
+    }),
+  ).rejects.toBe(reason);
 });
 
 /**

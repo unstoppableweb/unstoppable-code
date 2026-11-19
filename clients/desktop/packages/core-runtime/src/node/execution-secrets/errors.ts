@@ -10,12 +10,16 @@ export function executionSecretNotGrantedError(): CanopyOperationError {
   });
 }
 
-export function executionSecretUnavailableError(): CanopyOperationError {
+/** `source_failed`: the secret reader threw, unlike a value that is missing. */
+export function executionSecretUnavailableError(
+  reason?: 'source_failed',
+): CanopyOperationError {
   return new CanopyOperationError({
     kind: 'failed_precondition',
     code: 'worker.executionSecret.unavailable',
     message:
       'A secret this work needs is no longer available. Check its environment, integration or shared-container values, then start it again.',
+    ...(reason && { details: { reason } }),
     retry: { kind: 'never' },
   });
 }

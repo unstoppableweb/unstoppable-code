@@ -100,6 +100,11 @@ interface RemoteControlStoreState {
   setAllowIncoming: (allow: boolean) => Promise<void>;
   setAllowRemoteUpdates: (allow: boolean) => Promise<void>;
   /**
+   * This computer's inventory sync switch (CAN-5986). Turning it off deletes
+   * this computer's synced lists from the web; callers confirm first.
+   */
+  setInventorySyncEnabled: (enabled: boolean) => Promise<void>;
+  /**
    * Opens, or replaces, the pairing link window. The link is returned to the
    * caller only; it is never cached here.
    */
@@ -157,6 +162,8 @@ export const useRemoteControlStore = create<RemoteControlStoreState>((set) => {
       apply((api) => api.setAllowIncoming(allow)),
     setAllowRemoteUpdates: (allow): Promise<void> =>
       apply((api) => api.setAllowRemoteUpdates(allow)),
+    setInventorySyncEnabled: (enabled): Promise<void> =>
+      apply((api) => api.setInventorySyncEnabled(enabled)),
     openPairingWindow: (): Promise<RemoteControlOpenPairingWindowResult> =>
       requireRemoteControlApi().openPairingWindow(),
     startPairing: (deviceId): Promise<void> =>

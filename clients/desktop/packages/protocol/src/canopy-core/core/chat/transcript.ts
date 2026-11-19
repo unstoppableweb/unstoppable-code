@@ -585,6 +585,28 @@ export const CORE_CHAT_EVENTS_SCHEMA_REVISION = 2;
  */
 export const CORE_CHAT_EVENTS_SANDBOX_REVISION = 3;
 
+/**
+ * Revision 4 of `core.chat.events` (CAN-4174): revision 3's output plus
+ * `chat.initiated`, which says that work started on its own behalf (an
+ * automation, for now) sent a message a client accepted, and what an attached
+ * client should do with that chat. Readers before it reject that change type,
+ * so only a subscription that asks for revision 4 gets it; any other
+ * subscription gets an empty `tab.metadata_patched` in its place, which
+ * changes nothing and keeps its revisions contiguous.
+ */
+export const CORE_CHAT_EVENTS_INITIATED_REVISION = 4;
+
+/**
+ * Revision 5 of `core.chat.events` (CAN-6746): revision 4's output plus
+ * `agent_work.changed`, a chat's paused wake turns and background work, sent
+ * only when they change. At revision 5 a stream also sends
+ * `agent_tasks.replaced` only when the list changed since it last sent it.
+ * Readers before it reject the new change type, so only a subscription that
+ * asks for revision 5 gets it, and every other one keeps getting the list
+ * with each Core batch.
+ */
+export const CORE_CHAT_EVENTS_AGENT_WORK_REVISION = 5;
+
 const tokenCount = z.number().min(0);
 /** A decimal USD amount as Core writes it, never converted to a number. */
 const usdAmount = z

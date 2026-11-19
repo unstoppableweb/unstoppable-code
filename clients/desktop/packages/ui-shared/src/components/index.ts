@@ -118,6 +118,7 @@ export * from './chat/InputDeliveryList';
 export * from './chat/SteeringTitle';
 export * from './chat/SteeringRequestTitle';
 export * from './chat/request-secrets-display';
+export * from './chat/secret-use-display';
 export * from './chat/ChatSecretsChip';
 export * from './SuggestionRow';
 export * from './InterruptedSessionRow';
@@ -231,6 +232,9 @@ export * from '../icons/PauseResumeIcon';
 export * from './ExecutionActionButton';
 export * from './SkillUpdateNotice';
 export * from './DetailHeader';
+export * from './CapabilityDetailLayout';
+export * from './AutomationReadDetail';
+export * from './AgentReadDetail';
 export * from './DetailMoreMenu';
 export * from './DetailPrimaryCta';
 export * from './UnresolvedCapabilitySelection';
@@ -409,6 +413,7 @@ export * from './CustomizeWorksWithChips';
 export * from './CustomizeInstalledUnavailable';
 export * from './UpdateMarker';
 export * from './PluginsPipelineFilters';
+export * from './HelpHint';
 export * from './WorkflowsTabBar';
 export * from './MarketplaceSearchField';
 export * from './SearchField';
@@ -535,6 +540,7 @@ export * from './DetailSeparator';
 export * from './ReferenceHoverCard';
 
 export * from './W5RecoveryNotice';
+export * from './BackgroundServiceNotice';
 
 export * from './Fieldset';
 export * from './SidebarSectionMenuItems';
@@ -543,7 +549,6 @@ export * from './SidebarAutoDeleteBadge';
 export * from './SourceBranchCommitHint';
 export * from './settings/GoogleSubscriptionRow';
 export * from './AgentAliasModelFields';
-export * from './AgentModelPicker';
 
 export * from './OrchestratorSettingsFooter';
 export * from './OrchestratorInstructionsPanel';
@@ -589,3 +594,4 @@ export * from './FileDiffSurfaces';
 
 export { MarkdownTableBlock, markdownTableCellProps } from './markdown-render';
 export * from './chat/TranscriptEventRow';
+export * from './ProjectlessChatOption';

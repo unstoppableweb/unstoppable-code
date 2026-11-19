@@ -1,8 +1,14 @@
 import type {
   DelegationPage,
+  DelegationPageRequest,
   TranscriptReadClient,
   TranscriptReadResult,
+  TranscriptReadSource,
 } from '@canopy/app-core';
+import {
+  createWebCoreTranscriptReadClient,
+  type WebCoreTranscriptScope,
+} from '@canopy/app-state/core-cowork';
 import {
   CoreChatContentReadResultSchema,
   CoreChatTranscriptBoundedBlocksPageResultSchema,
@@ -10,6 +16,8 @@ import {
 } from '@canopy/protocol/canopy-core';
 import { transcriptReadFailure } from '@canopy/protocol/portal';
 import type { CanopyCoreRelayReply } from '../../../shared/canopy-core-relay';
+import { createRelayCoreCoworkInvoker } from '@/cloud-chats/relay-invoker';
+import { webCoreLocalId } from '@/lib/chat-authority';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -56,7 +64,7 @@ async function invoke<T>(
   }
 }
 
-export const ipcTranscriptReadClient: TranscriptReadClient = {
+const localTranscriptReadClient: TranscriptReadClient = {
   delegationPage: (request, signal) =>
     invoke('core.chat.transcript.page', { ...request }, signal, readPage),
   content: (request, signal) =>
@@ -93,4 +101,64 @@ export const ipcTranscriptReadClient: TranscriptReadClient = {
         };
       },
     ),
+};
+
+const UNAVAILABLE = { ok: false, kind: 'unavailable' } as const;
+
+/**
+ * A cloud chat's own delegate, as its web core ids: null unless the chat's
+ * transcript holds that delegate's card (CAN-7027). Installed with the cloud
+ * chat runtime, which reads the chat store; until then every cloud read is
+ * refused.
+ */
+type CloudDelegationScope = (
+  request: DelegationPageRequest,
+) => WebCoreTranscriptScope | null;
+
+let cloudDelegationScope: CloudDelegationScope = () => null;
+
+export function setCloudDelegationScope(resolve: CloudDelegationScope): void {
+  cloudDelegationScope = resolve;
+}
+
+/** Whether a source names the web core: cloud, local, or neither (mixed). */
+function sourceAuthority(
+  source: TranscriptReadSource,
+): 'web-core' | 'local' | 'mixed' {
+  const ids = [source.scope.workspaceId, source.scope.worktreeId];
+  const cloud = ids.filter((id) => webCoreLocalId(id) !== null).length;
+  if (cloud === 0) return 'local';
+  return cloud === ids.length ? 'web-core' : 'mixed';
+}
+
+/**
+ * The window's transcript reads. A cloud chat's delegate pages go to the web
+ * core over the relay, only for a delegate on that chat's own card; a local
+ * chat's reads go to the local core as before. A cloud source never reaches
+ * the local core, and its bodies and block pages are unavailable, as the web
+ * core doesn't serve them here.
+ */
+export const ipcTranscriptReadClient: TranscriptReadClient = {
+  delegationPage: (request, signal) => {
+    const authority = sourceAuthority(request);
+    if (authority === 'local')
+      return localTranscriptReadClient.delegationPage(request, signal);
+    const scope =
+      authority === 'web-core' ? cloudDelegationScope(request) : null;
+    if (scope === null || typeof window === 'undefined' || !window.canopyCore)
+      return Promise.resolve(UNAVAILABLE);
+    const relay = window.canopyCore;
+    return createWebCoreTranscriptReadClient({
+      invoker: () => createRelayCoreCoworkInvoker(relay),
+      scopeFor: () => scope,
+    }).delegationPage(request, signal);
+  },
+  content: (request, signal) =>
+    sourceAuthority(request) === 'local'
+      ? localTranscriptReadClient.content(request, signal)
+      : Promise.resolve(UNAVAILABLE),
+  blocks: (request, signal) =>
+    sourceAuthority(request) === 'local'
+      ? localTranscriptReadClient.blocks(request, signal)
+      : Promise.resolve(UNAVAILABLE),
 };

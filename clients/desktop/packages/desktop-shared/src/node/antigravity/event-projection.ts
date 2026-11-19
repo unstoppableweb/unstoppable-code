@@ -1,0 +1,30 @@
+import { CursorEventProjection } from '../cursor/events';
+import {
+  antigravityToolDisplay,
+  type AntigravityToolRoutes,
+} from './tool-display';
+
+/** Routes for a surface with no MCP routes in scope: every MCP title stays raw. */
+const EMPTY_ROUTES: AntigravityToolRoutes = {
+  canonicalNameFor: (): undefined => undefined,
+};
+
+/**
+ * The one ACP projection the main Antigravity session, the delegate runner
+ * and the pipeline runner share, so native tool arguments and MCP names
+ * render identically on every surface. Cursor's error recognition is off:
+ * Antigravity's errors are not Cursor's.
+ */
+export function createAntigravityEventProjection(input: {
+  limitMessage: string;
+  routes?: AntigravityToolRoutes;
+  secretValues?: readonly string[];
+}): CursorEventProjection {
+  const routes = input.routes ?? EMPTY_ROUTES;
+  return new CursorEventProjection(input.limitMessage, {
+    recognizeCursorErrors: false,
+    toolDisplay: (tool): { name: string; input: unknown } =>
+      antigravityToolDisplay(tool, routes),
+    ...(input.secretValues ? { secretValues: input.secretValues } : {}),
+  });
+}

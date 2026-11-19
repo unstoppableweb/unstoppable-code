@@ -8,8 +8,8 @@
 // docs/ui-automation-coverage/11-build-time-gating-principle.md) via
 // `CANOPY_MOCK_LLM_BASE_URL`.
 //
-// Legacy step selection is STATELESS: every turn the SDK resends full history,
-// so this module selects scripted steps from the request body (Doc 5 §2).
+// Legacy step selection is STATELESS over full history (Doc 5 §2). Native
+// Responses WS deltas are expanded by responsesWs.mjs before selection.
 // Optional C1 v2 attempts, barriers and observations use per-scenario state:
 //
 //   1. Conversation id — scan user-role message text for a `[Canopy-C<id>]`
@@ -666,6 +666,19 @@ export function resolveCannedStep(options) {
           conversationId: marker,
         };
       }
+      const missingUserInstruction = conversation.requiredUserText?.find(
+        (text) => !userText.includes(text),
+      );
+      if (missingUserInstruction) {
+        return {
+          step: {
+            text: `Missing required user instruction: ${missingUserInstruction}`,
+            stopReason: 'end_turn',
+          },
+          usage: { ...DEFAULT_USAGE },
+          conversationId: marker,
+        };
+      }
       const requestTag = mockRequestTagFromText(userText);
       const taggedStep =
         requestTag &&
@@ -966,15 +979,20 @@ function observationRoute(route) {
 
 function recordLlmRequest(body, protocol, context, scenarioKey, metadata) {
   if (!context) return undefined;
-  return recordRequest(scenarioKey, {
+  const observation = recordRequest(scenarioKey, {
     transport: context.transport,
     route: observationRoute(context.route),
     stepId: metadata.stepId,
     tag: metadata.requestTag,
     attempt: metadata.attempt,
+    model: typeof body.model === 'string' ? body.model : null,
     toolNames: currentRequestToolNames(body),
     toolResultIds: collectToolResultIds(body, protocol),
   });
+  // Opt in only for isolated synthetic fixtures; never capture auth headers.
+  if (getScenario(scenarioKey)?.llm?.captureRequestBodies === true)
+    observation.body = structuredClone(body);
+  return observation;
 }
 
 function recordRequestTextObservers(
@@ -997,6 +1015,8 @@ function recordRequestTextObservers(
       observer.key.length > 0 &&
       typeof observer.text === 'string' &&
       observer.text.length > 0 &&
+      (observer.requestTag === undefined ||
+        observer.requestTag === mockRequestTagFromText(userText)) &&
       (observer.scope === 'tools'
         ? JSON.stringify(currentRequestTools(body))
         : typeof observer.lastMessageContaining === 'string'
@@ -1588,18 +1608,49 @@ export function buildResponsesEvents(step, usage, model) {
 
   for (const toolCall of Array.isArray(step.toolCalls) ? step.toolCalls : []) {
     const itemId = `fc_mock_${responseId}_${outputIndex}`;
-    const callId = `call_mock_${responseId}_${outputIndex}`;
-    const argsJson = JSON.stringify(toolCall.input ?? {});
+    const callId = toolCall.id ?? `call_mock_${responseId}_${outputIndex}`;
+    const custom = toolCall.type === 'custom';
     const functionCallItem = {
       id: itemId,
-      type: 'function_call',
+      type: custom ? 'custom_tool_call' : 'function_call',
       name: toolCall.name,
       ...(toolCall.namespace
         ? { namespace: openAiToolNamespace(toolCall) }
         : {}),
       call_id: callId,
-      arguments: argsJson,
+      ...(custom
+        ? { input: toolCall.input ?? '' }
+        : { arguments: JSON.stringify(toolCall.input ?? {}) }),
     };
+    if (custom) {
+      // Mirror the custom-tool input lifecycle as well as its terminal item.
+      events.push({
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          output_index: outputIndex,
+          item: { ...functionCallItem, input: '' },
+        },
+      });
+      events.push({
+        event: 'response.custom_tool_call_input.delta',
+        data: {
+          type: 'response.custom_tool_call_input.delta',
+          item_id: itemId,
+          output_index: outputIndex,
+          delta: functionCallItem.input,
+        },
+      });
+      events.push({
+        event: 'response.custom_tool_call_input.done',
+        data: {
+          type: 'response.custom_tool_call_input.done',
+          item_id: itemId,
+          output_index: outputIndex,
+          input: functionCallItem.input,
+        },
+      });
+    }
     events.push({
       event: 'response.output_item.done',
       data: {

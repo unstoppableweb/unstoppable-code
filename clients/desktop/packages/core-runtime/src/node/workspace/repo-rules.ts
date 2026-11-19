@@ -79,6 +79,17 @@ export interface RepoRulesCheckoutReader {
   missingCheckouts(repos: RepoRuleCheckout[]): Promise<string[]>;
 }
 
+/**
+ * The resolver's failure when the workspace record exists but cannot be read.
+ * `check` reports it as `unavailable`, not as a missing checkout.
+ */
+export class RepoRulesCheckoutsUnreadableError extends Error {
+  constructor() {
+    super('The code workspace is unavailable.');
+    this.name = 'RepoRulesCheckoutsUnreadableError';
+  }
+}
+
 export type RepoRulesCheckoutResolver = (
   request: RepoRulesScanRequest,
 ) => Promise<RepoRuleCheckout[]>;
@@ -192,15 +203,26 @@ export class RepoRulesPolicy {
    * What a session read of the workspace's source checkouts can't use right
    * now (CAN-6368): the same bounded read new chats run, without Git and
    * without a scan. A checkout that is gone, or can't be resolved, is
-   * reported as missing-checkout rather than failing the call.
+   * reported as missing-checkout rather than failing the call; an unreadable
+   * workspace record is reported as unavailable.
    */
   async check(workspaceId: string): Promise<RepoRulesCheckResponse> {
     const state = await this.store.read(workspaceId);
     let checkouts: RepoRuleCheckout[];
     try {
       checkouts = await this.resolve({ workspaceId });
-    } catch {
-      return { blocked: [{ repoId: '', reason: 'missing-checkout' }] };
+    } catch (error) {
+      return {
+        blocked: [
+          {
+            repoId: '',
+            reason:
+              error instanceof RepoRulesCheckoutsUnreadableError
+                ? 'unavailable'
+                : 'missing-checkout',
+          },
+        ],
+      };
     }
     const missing = new Set(await this.worker.missingCheckouts(checkouts));
     const read = await this.worker.readSession(

@@ -56,7 +56,6 @@ import {
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { getW5IdentityStore } from '../lib/w5-commit-log-file-store';
 import { W5CommitRefusedError } from '@canopy/core-runtime/node/w5/commit-log/errors';
 
@@ -341,7 +340,6 @@ async function registryTransaction<T>(
     });
   }
   if (!result) throw new Error('Sidebar group mutation did not complete');
-  if (mutate) notifyPortalStructureChanged();
   return result.value;
 }
 

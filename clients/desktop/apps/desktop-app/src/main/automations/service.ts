@@ -1,3 +1,8 @@
+import { withoutAccountsPickedOver } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import {
+  assertAutomationAccountsReady,
+  setAutomationAccountNoticeWindow,
+} from './automation-account-preflight';
 import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
 import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import {
@@ -210,6 +215,7 @@ import {
   getAutomationsFilePath,
   getChatProjectsFilePath,
 } from '../lib/paths';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import { rebindAgentSenderRequest } from '../agent-messaging/sender-context';
@@ -1573,12 +1579,21 @@ async function resolveStandaloneDefaultPluginSelections(
   }
 }
 
-/** What a created chat will resolve: its own selections plus the defaults it inherits. */
+/**
+ * What a created chat will resolve: its own selections plus the defaults it
+ * inherits, less an inherited account of a connector it picks another
+ * account of, as the chat's session layers them (CAN-6233).
+ */
 function withInheritedDefaults(
   inherited: ChatTabPluginSelections | undefined,
   selections: ChatTabPluginSelections | undefined,
 ): ChatTabPluginSelections | undefined {
-  return selections ? mergePluginSelections(inherited, selections) : inherited;
+  return selections
+    ? mergePluginSelections(
+        withoutAccountsPickedOver(inherited, selections),
+        selections,
+      )
+    : inherited;
 }
 
 type AutomationPromptAction = Extract<
@@ -1922,6 +1937,8 @@ export class AutomationsService {
   private interval: ReturnType<typeof setInterval> | null = null;
   private sessionActivityUnsubscribe: (() => void) | null = null;
   private dueCheckRunning = false;
+  // Local-only dedupe key for the last reported due-check failure; never sent.
+  private lastDueCheckFailureKey: string | null = null;
   private dueCheckRequested = false;
   private ifCommandAbortHandlers: Set<() => void> = new Set();
   private cancellableRuns = new Map<string, IfCommandAbortController>();
@@ -1932,6 +1949,7 @@ export class AutomationsService {
 
   configure(surfaces: AutomationsServiceSurfaces): void {
     this.surfaces = surfaces;
+    setAutomationAccountNoticeWindow(surfaces.getMainWindow);
   }
 
   async start(): Promise<void> {
@@ -2118,6 +2136,14 @@ export class AutomationsService {
   async allActivities(): Promise<ScheduledActivity[]> {
     const file = await this.ensureFile();
     return file.activities.map(cloneActivity);
+  }
+
+  /**
+   * {@link allActivities} without waiting, or `undefined` before the file is
+   * first read.
+   */
+  loadedActivities(): ScheduledActivity[] | undefined {
+    return this.file?.activities.map(cloneActivity);
   }
 
   /** Read activity visibility using a trusted caller's owner context. */
@@ -4447,12 +4473,35 @@ export class AutomationsService {
           .catch(() => undefined)
           .finally(entry.releaseTarget);
       }
+      this.lastDueCheckFailureKey = null;
+    } catch (error) {
+      // A failing check must not stop later ticks; report each distinct
+      // failure once until a check succeeds again. The key must not include
+      // the message, which can embed varying paths or values and would defeat
+      // the dedupe; a recurring failure shares its throw site, so the error
+      // name plus first stack frame identifies it. The key stays local.
+      const key = this.dueCheckFailureKey(error);
+      if (key !== this.lastDueCheckFailureKey) {
+        this.lastDueCheckFailureKey = key;
+        reportMainAppError(error, { source: 'automation.due_check' });
+      }
     } finally {
       this.dueCheckRunning = false;
       if (this.dueCheckRequested && this.interval !== null) {
         void this.runDueCheck().catch(() => undefined);
       }
     }
+  }
+
+  /** Local dedupe identity for a due-check failure; never sent to telemetry. */
+  private dueCheckFailureKey(error: unknown): string {
+    if (!(error instanceof Error)) return typeof error;
+    const frame =
+      (error.stack ?? '')
+        .split('\n')
+        .find((line) => /^\s*at\s/.test(line))
+        ?.trim() ?? '';
+    return `${error.name}\n${frame}`;
   }
 
   private createRun(
@@ -4721,6 +4770,9 @@ export class AutomationsService {
         ifCommandError,
       });
     } catch (error) {
+      if (!(error instanceof SharedPipelineReviewRequiredError)) {
+        reportMainAppError(error, { source: 'automation.run' });
+      }
       return await this.completeRun(activityId, runId, {
         status: 'failure',
         error:
@@ -5191,8 +5243,6 @@ export class AutomationsService {
         // shared port instead of the renderer's quick prompt. A new entry is
         // the planned task, and its founding chat shares its ID, as the quick
         // prompt's entry shared its chat's.
-        // The quick prompt always brought the window up before it sent.
-        await this.surfaces.ensureAppAdvisorWindow();
         const caller = await automationSendCaller(activity, {
           projectId: APP_ADVISOR_PROJECT_ID,
         });
@@ -5257,17 +5307,6 @@ export class AutomationsService {
             scope: { appAdvisor: true },
             itemId: created.address.taskId,
             name: action.sidebarGroupName,
-          });
-        }
-        // The quick prompt showed its chat; the message is already accepted,
-        // so a selection failure doesn't fail the run.
-        try {
-          await this.surfaces.ensureAppAdvisorWindow({
-            chatId: created.address.chatId,
-          });
-        } catch {
-          logMainProcessError('Automation Orchestrator chat selection failed', {
-            operation: 'select-orchestrator-chat',
           });
         }
         return {
@@ -5919,7 +5958,11 @@ export class AutomationsService {
         const { approvalMode, pluginSelections } = turnOverride;
         await this.authorizePromptPlugins(
           activity,
-          { projectId: action.workspaceId, worktreeId: action.worktreeId },
+          {
+            projectId: action.workspaceId,
+            worktreeId: action.worktreeId,
+            chatId: action.chatId,
+          },
           await resolveBackgroundChatPluginSelections(
             pluginSelections ?? tabOptions.pluginSelections,
             {
@@ -5961,8 +6004,6 @@ export class AutomationsService {
             projectId: action.workspaceId,
             worktreeId: action.worktreeId,
           });
-          if (isBotProjectId(action.workspaceId))
-            await this.surfaces.ensureAppAdvisorWindow();
           // A terminal chat refuses settings it would not apply, with the
           // native send's text, before the shared port accepts the input.
           await assertTerminalChatAcceptsSettings(
@@ -6466,7 +6507,7 @@ export class AutomationsService {
 
   private async authorizePromptPlugins(
     activity: ScheduledActivity,
-    args: { projectId: string; worktreeId?: string },
+    args: { projectId: string; worktreeId?: string; chatId?: string },
     pluginSelections: ChatTabPluginSelections | undefined,
     model?: ChatModel,
   ): Promise<void> {
@@ -6498,6 +6539,22 @@ export class AutomationsService {
           activity.executionContext,
         );
     }
+    // The run sends as the accounts it names, or as a connector's only
+    // account; anything else stops it here, before anything is sent
+    // (CAN-6233).
+    await assertAutomationAccountsReady(pluginSelections, {
+      automationName: activity.name,
+      ...(args.worktreeId !== undefined
+        ? {
+            scope: { projectId: args.projectId, worktreeId: args.worktreeId },
+            target: {
+              projectId: args.projectId,
+              worktreeId: args.worktreeId,
+              ...(args.chatId !== undefined ? { chatId: args.chatId } : {}),
+            },
+          }
+        : {}),
+    });
   }
 
   private async authorizeResolvedPipeline(

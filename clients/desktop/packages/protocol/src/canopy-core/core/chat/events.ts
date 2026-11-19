@@ -1,13 +1,20 @@
 import { approvalSafetyDeniedInfoSchema } from '../../approval-safety';
 import { z } from 'zod';
 import {
+  CoreChatBackgroundWorkSchema,
+  CoreChatWakeParkedSchema,
+} from './agent-tasks';
+import {
   CardStateV2Schema,
+  CORE_CHAT_EVENTS_AGENT_WORK_REVISION,
+  CORE_CHAT_EVENTS_INITIATED_REVISION,
   CORE_CHAT_EVENTS_SANDBOX_REVISION,
   CORE_CHAT_EVENTS_SCHEMA_REVISION,
   CoreChatMessageMeterSchema,
 } from './transcript';
 import { mcpActivationRecordSchema } from '../../mcp-availability';
 import { CoreChatSandboxSchema } from './snapshot';
+import { OperationOriginSchema } from '../operation/schemas';
 import {
   CanopyStreamCursorSchema,
   CanopyStreamEndSchema,
@@ -94,6 +101,39 @@ const tab = z
     createdAt: z.string(),
   })
   .catchall(extension);
+export const CoreChatInitiatedChangeSchema = z
+  .strictObject({
+    type: z.literal('chat.initiated'),
+    chatId: id,
+    userMessageId: id,
+    origin: OperationOriginSchema,
+    presentation: z.enum(['focus', 'open', 'none']),
+    acceptedAt: z.iso.datetime({ offset: true }),
+  })
+  .catchall(extension);
+export type CoreChatInitiatedChange = z.output<
+  typeof CoreChatInitiatedChangeSchema
+>;
+
+/**
+ * Revision 4's replay rule (CAN-4174): `chat.initiated` is live presentation
+ * intent. A client acts on it only when it was accepted at or after the
+ * client attached; one accepted earlier, such as a batch replayed to a
+ * client that resumed behind its cursor, is history and asks for nothing.
+ */
+export function chatInitiatedIsLive(
+  change: Pick<CoreChatInitiatedChange, 'acceptedAt'>,
+  attachedAt: string,
+): boolean {
+  const accepted = Date.parse(change.acceptedAt);
+  const attached = Date.parse(attachedAt);
+  return (
+    Number.isFinite(accepted) &&
+    Number.isFinite(attached) &&
+    accepted >= attached
+  );
+}
+
 const chatChange = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('delegation.card_state_updated'),
@@ -185,6 +225,19 @@ const chatChange = z.discriminatedUnion('type', [
       tasks: z.array(extension).max(256),
     })
     .catchall(extension),
+  /**
+   * Revision 5 (CAN-6746): the chat's paused wake turns and background work,
+   * as `core.chat.agentWork.get` reads them, sent when either changed; served
+   * by the web core only.
+   */
+  z
+    .strictObject({
+      type: z.literal('agent_work.changed'),
+      chatId: id,
+      wakeParked: CoreChatWakeParkedSchema.nullable(),
+      backgroundWork: CoreChatBackgroundWorkSchema.nullable(),
+    })
+    .catchall(extension),
   z
     .strictObject({
       type: z.literal('archive.upserted'),
@@ -227,6 +280,15 @@ const chatChange = z.discriminatedUnion('type', [
       sandbox: CoreChatSandboxSchema,
     })
     .catchall(extension),
+  /**
+   * Revision 4 (CAN-4174): initiated work sent `userMessageId` into this chat
+   * and the message was accepted, in the same batch. `origin` names what
+   * started it. `presentation` is intent for any attached client, never an
+   * instruction to a particular one: `focus` means bring this chat to the
+   * person's attention as that client's surface does, `none` means leave
+   * the person's current view alone.
+   */
+  CoreChatInitiatedChangeSchema,
 ]);
 
 export const CoreChatEventsParamsSchema = z.strictObject({
@@ -235,11 +297,13 @@ export const CoreChatEventsParamsSchema = z.strictObject({
     z.strictObject({ projectId: id, worktreeId: id }),
   ]),
   cursor: CanopyStreamCursorSchema.nullable().optional(),
-  /** Revision 2 or 3 output, sent only when the runtime advertises it. */
+  /** Revision 2, 3, 4 or 5 output, sent only when the runtime advertises it. */
   revision: z
     .union([
       z.literal(CORE_CHAT_EVENTS_SCHEMA_REVISION),
       z.literal(CORE_CHAT_EVENTS_SANDBOX_REVISION),
+      z.literal(CORE_CHAT_EVENTS_INITIATED_REVISION),
+      z.literal(CORE_CHAT_EVENTS_AGENT_WORK_REVISION),
     ])
     .optional(),
 });

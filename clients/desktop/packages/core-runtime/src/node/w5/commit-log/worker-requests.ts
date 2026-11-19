@@ -1,3 +1,9 @@
+import { WorkspaceConfigUnreadableError } from '../file-store';
+import {
+  w5UnderlyingDiagnostics,
+  w5ErrorDiagnostics,
+  isW5FilesystemCode,
+} from '../error-diagnostics';
 import { basename, join, resolve } from 'node:path';
 import { readWorkspaceIndex } from '../../workspace/read-formats';
 import { captureW5Files } from './capture';
@@ -72,6 +78,14 @@ class W5CommitLogRequestError extends Error {
 export function toW5CommitLogWorkerError(
   error: unknown,
 ): W5CommitLogWorkerError {
+  if (error instanceof WorkspaceConfigUnreadableError) {
+    const { errorCode } = w5ErrorDiagnostics(error);
+    return {
+      kind: 'config-unreadable',
+      message: new WorkspaceConfigUnreadableError().message,
+      ...(isW5FilesystemCode(errorCode) && { errorCode }),
+    };
+  }
   if (error instanceof W5FileWriteRefusedError)
     return {
       kind: 'fingerprint-conflict',
@@ -93,7 +107,12 @@ export function toW5CommitLogWorkerError(
     };
   }
   if (error instanceof W5CommitLogError) {
-    return { kind: 'log', code: error.code, message: error.message };
+    return {
+      kind: 'log',
+      code: error.code,
+      message: error.message,
+      ...w5UnderlyingDiagnostics(error.underlying),
+    };
   }
   if (error instanceof W5CommitLogRequestError) {
     return { kind: 'malformed', message: error.message };

@@ -1103,6 +1103,9 @@ function applyOneChange(
       archives[index] = { ...archives[index], unread: change.unread };
       return { ...projection, archives };
     }
+    // Intent for attached clients (CAN-4174); it changes no chat state.
+    case 'chat.initiated':
+      return projection;
     case 'messages.omitted': {
       const tab = projection.chatState.tabs.find(
         (tab) => tab.id === change.chatId,

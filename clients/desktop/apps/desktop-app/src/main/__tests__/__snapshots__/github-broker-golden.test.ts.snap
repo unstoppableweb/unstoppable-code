@@ -76,13 +76,11 @@ exports[`conditional reads and rate limits reuses a cached body on 304 and repor
 }
 `;
 
-exports[`credentials and lifecycle builds one client per credential generation and refuses without a token 1`] = `
+exports[`credentials and lifecycle builds one credential-free client, checks the credential every attempt and refuses without a token 1`] = `
 {
   "generationAdvanced": true,
   "octokitBuilds": [
-    "with-token",
-    "with-token",
-    "with-token",
+    "without-token",
   ],
   "refused": {
     "error": "not_authenticated",
@@ -90,8 +88,12 @@ exports[`credentials and lifecycle builds one client per credential generation a
   },
   "tokenReads": [
     "read",
+    "read",
+    "read",
+    "read",
     "invalidate",
     "none",
+    "read",
     "read",
   ],
 }
@@ -118,6 +120,8 @@ exports[`credentials and lifecycle reissues in-flight work on credential reset a
     "read",
     "invalidate",
     "read",
+    "read",
+    "read",
   ],
 }
 `;
@@ -125,10 +129,7 @@ exports[`credentials and lifecycle reissues in-flight work on credential reset a
 exports[`per-credential separation keeps conditional cache entries and quota apart per caller-selected credential 1`] = `
 {
   "octokitBuilds": [
-    "with-token",
-    "with-token",
-    "with-token",
-    "with-token",
+    "without-token",
   ],
   "quota": {
     "callerA": 2999,
@@ -144,6 +145,13 @@ exports[`per-credential separation keeps conditional cache entries and quota apa
     "caller-a-2 if-none-match",
   ],
   "tokenReads": [
+    "read",
+    "read",
+    "read",
+    "read",
+    "read",
+    "read",
+    "read",
     "read",
   ],
 }

@@ -185,6 +185,14 @@ export interface UnifiedEntryBundledServer {
 }
 
 /** The same app published by another catalog, linked from a plugin page. */
+/** One harness's row for a catalog plugin (`pluginHarnessRows`). */
+export interface UnifiedEntryHarnessRow {
+  readonly id: string;
+  readonly name: string;
+  readonly installation: 'Installed' | 'Not installed' | 'Not supported';
+  readonly note?: string;
+}
+
 export interface UnifiedEntryAlternative {
   readonly entryId: string;
   /** The other copy's source, worded to follow "Also available from". */
@@ -195,9 +203,47 @@ export interface UnifiedEntryAlternative {
     readonly currentVersion?: string;
     readonly version?: string;
   };
+  /**
+   * The copy's own name with its publisher, "Slack (slackapi)", for a page
+   * row naming the copy that serves a harness (New Customize only).
+   */
+  readonly copyName?: string;
+  /** Where the copy itself is installed, when its provider status is known. */
+  readonly installedHarnesses?: { claude?: boolean; codex?: boolean };
+  /** Whether the copy bundles MCP servers. */
+  readonly hasMcpServers?: boolean;
+  /** The copy's name and publisher apart: "Slack" from "slackapi". */
+  readonly copyBase?: { readonly name: string; readonly publisher?: string };
+  /** The copy's own harness rows, when its host computed them. */
+  readonly harnessRows?: readonly UnifiedEntryHarnessRow[];
+  /**
+   * Whether the item's one Add brings this copy along (New Customize): the
+   * copy is a provider's official listing, or both name the same author.
+   * The desktop installs only such copies, so only they are offered.
+   */
+  readonly addedWithItem?: boolean;
 }
 
 /** Only first-party marketplace listings participate in cross-provider grouping. */
+/**
+ * Whether an entry ships with the app (Sergii's Customize QA): a built-in
+ * skill, plugin, workflow, collection or automation template. Every such
+ * entry wears the product mark through this one rule; items people make keep
+ * their letter avatar.
+ */
+export function entryIsBuiltIn(
+  entry: Pick<UnifiedPluginEntry, 'builtIn' | 'origin' | 'kind' | 'authorName'>,
+): boolean {
+  if (entry.builtIn === true || entry.origin === 'built-in') return true;
+  // A curated workflow or automation template with no other author is the
+  // app's own; curated plugins and apps carry their publishers' marks.
+  return (
+    entry.origin === 'curated' &&
+    (entry.kind === 'pipeline' || entry.kind === 'automation') &&
+    !entry.authorName?.trim()
+  );
+}
+
 export function officialMarketplaceProvider(
   marketplaceId: string,
 ): 'Claude' | 'Codex' | undefined {
@@ -488,6 +534,12 @@ export interface UnifiedPluginEntry {
    * that refused it with why, in the Works with filter's order.
    */
   harnessInstalls?: UnifiedEntryHarnessInstalls;
+  /**
+   * New Customize: a catalog plugin's rows per offered harness, computed by
+   * the host from the plugin's facets the way its page's Works with table
+   * is. `customizeHarnessRows` turns them into chips and table rows alike.
+   */
+  harnessRows?: readonly UnifiedEntryHarnessRow[];
   builtIn?: boolean;
   custom?: boolean;
   /**
@@ -568,6 +620,26 @@ export interface UnifiedPluginEntry {
    * integration, and ids never change.
    */
   integrationKey?: string;
+  /**
+   * `authorName` was not declared by the listing: it came from the
+   * marketplace owner or the repository owner. A merged row prefers a copy's
+   * declared publisher over a derived one. Set only by New Customize.
+   */
+  publisherDerived?: true;
+  /**
+   * A publisher for a listing that declares none (the marketplace owner, the
+   * repository or server host owner). Only New Customize shows it.
+   */
+  derivedPublisher?: string;
+  /** A guessed logo (a repository owner's avatar); only New Customize uses it. */
+  derivedLogoUrl?: string;
+  /** The item's homepage or server address, for New Customize's site icon. */
+  siteUrl?: string;
+  /**
+   * `logoUrl` is a guess (a repository owner's avatar or a site favicon),
+   * not the listing's own art. Bundled marks and declared logos win over it.
+   */
+  logoDerived?: true;
   /** The integration's preferred MCP endpoint, the same on every copy. */
   integrationEndpoint?: string;
   /**

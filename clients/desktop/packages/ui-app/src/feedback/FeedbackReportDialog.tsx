@@ -497,7 +497,7 @@ export function FeedbackReportDialog({
         className="text-xs fg-secondary"
         data-testid="feedback-modal-saved-message"
       >
-        {savedMessage}
+        <span className={REPLAY_BLOCK_CLASS}>{savedMessage}</span>
       </p>
     ) : null;
 

@@ -1219,7 +1219,7 @@ const defaultDeps: DesktopEnvironmentPortDeps = {
     // most injected tool calls never need.
     const [{ buildProjectedModelCatalog }, { resolveAiCreditsScopeOwner }] =
       await Promise.all([
-        import('../portal/model-catalog-projection'),
+        import('../remote-projection/model-catalog-projection'),
         import('../agents/work-owner'),
       ]);
     // Org policy filters by the owner of the calling chat's work: the owner

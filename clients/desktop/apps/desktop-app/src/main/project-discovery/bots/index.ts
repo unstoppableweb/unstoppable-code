@@ -18,8 +18,10 @@ import {
 import type { AppAdvisorActionResponse } from '@canopy/desktop-shared/types';
 import type { ProjectDiscoveryCaller } from '../index';
 import { decideAppAdvisorAccessForCaller } from '../../lib/app-advisor-project-agent-access';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import { DiscoveryError } from '../errors';
 import { matchesChatFilters } from '../chats-list';
+import { listAuthorizedProjects } from '../owner-policy';
 import {
   cursorBinding,
   pageRows,
@@ -27,9 +29,18 @@ import {
   validateCursor,
 } from '../paging';
 import { dispatchBotReadAction } from '../reads';
-import { registeredBots, requireBot, type RegisteredBot } from './registry';
+import {
+  ensureBotRegistryLoaded,
+  registeredBots,
+  requireBot,
+  type RegisteredBot,
+} from './registry';
 import { botAccessAgent, requireBotAccess, readBotEntries } from './target';
 import { listBotChatRows, listBotTaskRows } from './rows';
+import {
+  isBotsExperimentEnabled,
+  readVisibleBots,
+} from '../../bots/visibility';
 
 export async function isBotAccessAllowed(
   caller: ProjectDiscoveryCaller,
@@ -115,29 +126,118 @@ function botNameMatches(bot: RegisteredBot, name: string): boolean {
     : name.toLowerCase() === bot.name.toLowerCase();
 }
 
-async function listBots(action: BotsListAction): Promise<BotRow[]> {
+/**
+ * Projects whose names a pin may show. A project index that can't be read
+ * hides every pin (scope falls back to global) instead of failing the list.
+ */
+async function readPinProjects(
+  caller: ProjectDiscoveryCaller,
+): Promise<Awaited<ReturnType<typeof listAuthorizedProjects>>> {
+  try {
+    return await listAuthorizedProjects(caller);
+  } catch (error) {
+    logMainProcessWarn(
+      '[bots] Pinned projects could not be read; hiding Bot pins.',
+      error,
+    );
+    return [];
+  }
+}
+
+async function listBots(
+  action: BotsListAction,
+  caller: ProjectDiscoveryCaller,
+  visibleRecords: Awaited<ReturnType<typeof readVisibleBots>>,
+): Promise<BotRow[]> {
+  const experimentEnabled = isBotsExperimentEnabled();
+  if (action.pinnedToProjectId !== undefined && !experimentEnabled)
+    throw new DiscoveryError(
+      'unsupported_filter',
+      'Filtering bots by project is not supported while user-defined bots are unavailable.',
+    );
+
+  const bots = registeredBots();
   if (action.botIds) action.botIds.forEach(requireBot);
+
+  const visibleById = new Map<string, (typeof visibleRecords)[number]>(
+    visibleRecords.map((record) => [record.botId, record] as const),
+  );
+  const registeredIds = new Set(bots.map((bot) => bot.botId));
+  if (
+    experimentEnabled &&
+    (bots.some((bot) => !visibleById.has(bot.botId)) ||
+      visibleRecords.some(
+        (record) =>
+          record.kind === 'custom' && !registeredIds.has(record.botId),
+      ))
+  )
+    throw new DiscoveryError(
+      'cursor_context_changed',
+      'This bot context changed. Restart the request.',
+    );
+
+  const authorizedProjects =
+    experimentEnabled && visibleRecords.some((record) => record.pins.length > 0)
+      ? await readPinProjects(caller)
+      : [];
+  const projectNames = new Map(
+    authorizedProjects.map(
+      (project) => [project.projectId, project.displayName] as const,
+    ),
+  );
   const rows: BotRow[] = [];
-  for (const bot of registeredBots()) {
+  for (const bot of bots) {
     if (action.botIds && !action.botIds.includes(bot.botId)) continue;
     if (action.availability && !action.availability.includes('available'))
       continue;
     if (action.name !== undefined && !botNameMatches(bot, action.name))
       continue;
+    const record = visibleById.get(bot.botId);
+    if (experimentEnabled && !record) continue;
+    const pins =
+      (experimentEnabled ? record?.pins : undefined)?.flatMap((pin) => {
+        const name = projectNames.get(pin.projectId);
+        return name === undefined ? [] : [{ projectId: pin.projectId, name }];
+      }) ?? [];
+    if (
+      action.pinnedToProjectId !== undefined &&
+      !pins.some((pin) => pin.projectId === action.pinnedToProjectId)
+    )
+      continue;
     if (
       action.query !== undefined &&
-      ![bot.botId, ...botNames(bot)].some((value) =>
+      ![
+        bot.botId,
+        ...botNames(bot),
+        ...(experimentEnabled && record?.description
+          ? [record.description]
+          : []),
+      ].some((value) =>
         value.toLowerCase().includes(action.query?.toLowerCase() ?? ''),
       )
     )
       continue;
-    const entries = await readBotEntries(bot.botId);
     rows.push({
       botId: bot.botId,
       name: bot.name,
       availability: 'available',
-      taskCount: entries.length,
+      taskCount:
+        bot.kind === 'custom' ? null : (await readBotEntries(bot.botId)).length,
       capabilities: bot.capabilities,
+      ...(experimentEnabled && record
+        ? {
+            kind: bot.kind,
+            description: record.description,
+            scope:
+              bot.kind === 'default'
+                ? 'default'
+                : pins.length === 0
+                  ? 'global'
+                  : 'pinned',
+            pins,
+            showInSidebar: record.showInSidebar,
+          }
+        : {}),
     });
   }
   return rows;
@@ -154,7 +254,10 @@ async function listBinding(
       : null;
   return (
     cursorBinding(action, caller, owner, access.accountEpoch) +
-    JSON.stringify(access.gate)
+    JSON.stringify({
+      gate: access.gate,
+      botsExperimentEnabled: isBotsExperimentEnabled(),
+    })
   );
 }
 
@@ -165,6 +268,7 @@ export async function dispatchBotAction(
   try {
     // A refusal always wins over cursor errors and unknown targets.
     await requireBotAccess(caller);
+    await ensureBotRegistryLoaded?.();
     const parsed = parseBotAction(action);
     if (!parsed.ok)
       return {
@@ -172,8 +276,21 @@ export async function dispatchBotAction(
         error: { code: 'invalid_payload', message: parsed.message },
       };
     const input = parsed.action;
-    if (input.type === 'bots.list') input.botIds?.forEach(requireBot);
-    else requireBot(input.botId);
+    const botsExperimentEnabled =
+      input.type === 'bots.list' && isBotsExperimentEnabled();
+    if (
+      input.type === 'bots.list' &&
+      input.pinnedToProjectId !== undefined &&
+      !botsExperimentEnabled
+    )
+      throw new DiscoveryError(
+        'unsupported_filter',
+        'Filtering bots by project is not supported while user-defined bots are unavailable.',
+      );
+    const visibleRecords = botsExperimentEnabled ? await readVisibleBots() : [];
+    if (input.type === 'bots.list') {
+      input.botIds?.forEach(requireBot);
+    } else requireBot(input.botId);
     if (
       input.type === 'bots.get_last_user_message' ||
       input.type === 'bots.get_last_agent_response' ||
@@ -184,7 +301,7 @@ export async function dispatchBotAction(
     validateCursor(input.cursor);
     let result: BotsListResult | BotsListTasksResult | BotsListTaskChatsResult;
     if (input.type === 'bots.list') {
-      const rows = await listBots(input);
+      const rows = await listBots(input, caller, visibleRecords);
       result = pageRows(
         rows,
         input,

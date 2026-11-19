@@ -76,11 +76,13 @@ function traceCloseCanopy(event, detail = {}) {
   }
 }
 
-function isTransientRemovalError(error) {
+function isRecoverableRemovalError(error) {
+  // A read-only directory blocks removal as ENOTEMPTY on macOS and EACCES on
+  // Linux (libstdc++ remove_all reports the unlink errno).
   return (
     error &&
     typeof error === 'object' &&
-    ['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(error.code)
+    ['ENOTEMPTY', 'EBUSY', 'EPERM', 'EACCES'].includes(error.code)
   );
 }
 
@@ -106,7 +108,7 @@ export async function removeTestDataDir(
     remove(dirPath, REMOVE_OPTIONS);
     return;
   } catch (error) {
-    if (!isTransientRemovalError(error)) {
+    if (!isRecoverableRemovalError(error)) {
       throw error;
     }
   }
@@ -143,10 +145,6 @@ const defaultViewportSize = { width: 1400, height: 900 };
 //   E2E override snapshot is seeded from enabled-unavailable defaults where the
 //   gate is enforced. Disable it for the whole suite; the gate spec re-enables
 //   it explicitly via `options.env`.
-// - `canopy-portal-enabled`: not-configured default is `true` but the
-//   enabled-unavailable default is `false`. Pin it `true` so the Portal
-//   sidebar entry stays present by default (matching the pre-override
-//   baseline); the portal spec drives it off explicitly.
 // - `canopy-desktop-pr-split`: not-configured default is `true` but the
 //   enabled-unavailable default is `false`. Pin it `true` so Split PR entry
 //   points stay present by default; specs can drive it off explicitly.
@@ -177,9 +175,6 @@ const defaultViewportSize = { width: 1400, height: 900 };
 // - `canopy-desktop-chat-visuals`: not-configured default is `true` but the
 //   enabled-unavailable default is `false`. Pin it `true` so live turns offer
 //   ShowVisual and PreviewVisual as they do without LaunchDarkly.
-// - `canopy-device-remote-control`: not-configured default is `true` but the
-//   enabled-unavailable default is `false`. Pin it `true` so the Remote access
-//   picker and settings keep the no-LaunchDarkly baseline by default.
 // - `canopy-desktop-skill-suggestions`: not-configured default is `true` but
 //   the enabled-unavailable default is `false`. Pin it `true` so the
 //   suggestion banner and Settings section keep the no-LaunchDarkly baseline.
@@ -207,7 +202,6 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-posthog-session-replay-sample-rate': 100,
   'canopy-desktop-posthog-autocapture-enabled': true,
   'canopy-cloud-sign-in-required': false,
-  'canopy-portal-enabled': true,
   'canopy-desktop-pr-split': true,
   'canopy-desktop-cursor-harness': true,
   'canopy-desktop-antigravity-harness': true,
@@ -220,7 +214,6 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-shared-space-notification-settings': true,
   'canopy-desktop-chat-visuals': true,
   'canopy-desktop-account-proxy': true,
-  'canopy-device-remote-control': true,
   'canopy-desktop-skill-suggestions': true,
   'canopy-desktop-external-agents-menu': true,
   // MUST stay pinned: this flag's LaunchDarkly-enabled-unavailable default is

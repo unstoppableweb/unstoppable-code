@@ -30,8 +30,7 @@ import {
 } from '@canopy/protocol/portal';
 import type { TranscriptContentField } from '@canopy/protocol/canopy-core/core';
 import {
-  isRequestSecretsToolName,
-  RequestSecretsRowLabel,
+  agentSecretToolRowLabel,
   Markdown,
   ErrorBanner,
   ClaudeAiCreditsFallbackErrorNotice,
@@ -879,13 +878,16 @@ function ChatPartContent({
         toolScope,
       );
       const result = readToolResult(data);
-      // A settled RequestSecrets row reads its result: "Provided 3 of 4".
+      // The agent secret tools read their result: "Provided 3 of 4", a
+      // command's exit and redactions, or "0600 · git-excluded".
       const label =
-        result?.kind === 'text' && isRequestSecretsToolName(toolName) ? (
-          <RequestSecretsRowLabel input={input} resultText={result.content} />
-        ) : (
-          derivedLabel
-        );
+        agentSecretToolRowLabel(
+          toolName,
+          input,
+          result
+            ? { text: result.content, isError: result.kind !== 'text' }
+            : null,
+        ) ?? derivedLabel;
       const rawResult = data['result'];
       const identity = isRecord(rawResult)
         ? rowFieldIdentity(rawResult.outputLocator)

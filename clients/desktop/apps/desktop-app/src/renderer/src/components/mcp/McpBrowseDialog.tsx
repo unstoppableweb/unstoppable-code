@@ -6,6 +6,7 @@ import {
 import { McpServerLogo } from '../shared/McpServerLogo';
 import {
   CuratedMcpDetail,
+  type CuratedMcpDetailProps,
   type CuratedMcpDetailRoutes,
   type McpDetailEntry,
 } from '@canopy/ui-app/capability';
@@ -53,6 +54,16 @@ function CuratedLogo({
 
 export interface CuratedDetailProps<
   T extends McpDetailEntry = CuratedMcpServerEntry,
+> extends Pick<
+  CuratedMcpDetailProps<T>,
+  | 'logo'
+  | 'publisher'
+  | 'updated'
+  | 'configuration'
+  | 'related'
+  | 'worksWith'
+  | 'renderAccounts'
+  | 'availability'
 > {
   entry: T;
   /** Installed server id when this curated entry is already added, else null. */
@@ -88,6 +99,7 @@ export function CuratedDetail<T extends McpDetailEntry>({
   statusContent,
   renderManagement,
   flush,
+  ...layoutSlots
 }: CuratedDetailProps<T>): JSX.Element {
   // Discovered tools are INSTALLED-ONLY: the catalog carries none, and
   // discovery needs a live endpoint + the user's credentials that do not exist
@@ -143,6 +155,7 @@ export function CuratedDetail<T extends McpDetailEntry>({
       statusContent={statusContent}
       renderManagement={renderManagement}
       flush={flush}
+      {...layoutSlots}
       renderLogo={(catalogEntry) => (
         <CuratedLogo
           curatedKey={catalogEntry.key}

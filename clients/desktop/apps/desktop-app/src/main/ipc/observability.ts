@@ -4,7 +4,10 @@ import {
   getDesktopPostHogSession,
   getDesktopPostHogEmailDomain,
 } from '@canopy/desktop-instrumentation/electron/main';
-import type { PostHogSessionState } from '@canopy/execution-engine/types/observability';
+import {
+  DESKTOP_INSTRUMENTATION_INIT_FAILURE_REASONS,
+  type PostHogSessionState,
+} from '@canopy/execution-engine/types/observability';
 import {
   CORE_OBSERVABILITY_GRANTS,
   ObservabilityAuditTranscriptGetParamsSchema,
@@ -43,6 +46,7 @@ import { sendToAllWindows, sendToWindow } from '../lib/window-send';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
+import { allowsAutomaticCall } from '../local-only/policy';
 import { registerRendererDiagnosticsHandler } from './renderer-diagnostics';
 
 function validateHistoryRequestIds(request: AgentAuditHistoryRequest): void {
@@ -125,8 +129,12 @@ function validateDesktopInstrumentationInitFailureRequest(
       `Invalid surface: ${typeof request.surface === 'string' ? request.surface : 'unknown'}`,
     );
   }
-  if (typeof request.reason !== 'string' || request.reason.trim() === '') {
-    throw new Error('reason must be a non-empty string');
+  if (
+    !DESKTOP_INSTRUMENTATION_INIT_FAILURE_REASONS.some(
+      (reason) => request.reason === `posthog: ${reason}`,
+    )
+  ) {
+    throw new Error('Invalid reason');
   }
 }
 
@@ -412,7 +420,11 @@ export function registerObservabilityHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.observabilityGetPostHogAnonymousId,
-    (): Promise<string> => getStablePostHogAnonymousKey(),
+    // A local-only build has no PostHog identity to hand out.
+    async (): Promise<string | null> =>
+      allowsAutomaticCall('telemetry.anonymous-id')
+        ? getStablePostHogAnonymousKey()
+        : null,
   );
 
   registerIpcHandler(IPC_CHANNELS.observabilityGetPostHogSession, () =>

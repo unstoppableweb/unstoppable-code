@@ -1,3 +1,5 @@
+import { destructiveFailureCode } from '../lib/destructive-failure-context';
+import { archiveErrorFrames } from '../lib/archive-error-frames';
 import type { ParentPort } from 'electron';
 import type { FileHandle } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -210,6 +212,12 @@ export function startArchiveIoWorker(
           result,
         });
       } catch (error) {
+        // Capture V8 call sites before anything can format the stack.
+        const frames = controller.signal.aborted
+          ? undefined
+          : archiveErrorFrames(error)
+              .filter((frame) => frame.length <= 4096)
+              .slice(0, 64);
         post({
           version: ARCHIVE_IO_PROTOCOL_VERSION,
           type: 'error',
@@ -222,6 +230,11 @@ export function startArchiveIoWorker(
                 ? ARCHIVE_IO_GIT_RECOVERY_REQUIRED_CODE
                 : 'ARCHIVE_IO_FAILED',
           message: error instanceof Error ? error.message : String(error),
+          failureCode: controller.signal.aborted
+            ? undefined
+            : destructiveFailureCode(error),
+          // Bounded optional diagnostics, independent of the local message.
+          frames,
         });
       } finally {
         // Engine operations do not complete their promise until every child

@@ -11,6 +11,7 @@ import {
   mcpSignInUnavailableMessage,
 } from '@canopy/ui-shared/lib';
 import { useRef, useState } from 'react';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   AccountMcpConnectionError,
   type AccountMcpConnectionErrorCode,
@@ -34,6 +35,8 @@ interface PendingConnection {
   cancelledConnectionId?: string;
   cancelled: boolean;
   observing: boolean;
+  /** See {@link AccountMcpConnectOptions.discardOnAbandon}. */
+  readonly discard: boolean;
   /** Shared cleanup barrier for both cancellation paths. */
   releasePromise?: Promise<void>;
 }
@@ -50,6 +53,14 @@ export interface AccountMcpConnectOptions {
   /** Creates a custom connection for this HTTPS URL instead of a server key. */
   customUrl?: string;
   displayName?: string;
+  /** The name of an account the person adds beside another (CAN-6226). */
+  label?: string;
+  /**
+   * The connection is new to this sign-in (an added account): when the
+   * sign-in is cancelled or fails, it is removed from the account instead of
+   * kept disconnected, so no copy of it is left in the list.
+   */
+  discardOnAbandon?: boolean;
   /** Extra upstream headers stored with a new custom connection. */
   headers?: Record<string, SecretValueInput>;
   /** The device server whose saved secrets the request keeps. */
@@ -229,11 +240,8 @@ export function useAccountMcpActions(
       }
     }
   };
-  // Share an in-flight/successful revocation; a failure must allow Retry.
-  const release = async (flow: PendingConnection): Promise<void> => {
-    const id = flow.id ?? flow.cancelledConnectionId;
-    if (!id) return;
-    flow.releasePromise ??= flow.cancelled
+  const revoke = (flow: PendingConnection, id: string): Promise<void> =>
+    flow.cancelled
       ? (async (): Promise<void> => {
           let failed = false;
           await disconnect(id, (): void => {
@@ -244,6 +252,44 @@ export function useAccountMcpActions(
       : window.mcpServers.disconnectAccountConnection(id).catch((): void => {
           // A caller's own failure is what the abandoned start reports.
         });
+  // An added account whose sign-in ended without connecting leaves no row
+  // behind. A start that failed before naming its row (a browser that would
+  // not open) finds it by its new configuration. A failed sign-in asks the
+  // cloud to keep a row that connected meanwhile (a poll that failed after
+  // the sign-in finished), which the cloud checks in the delete itself; a
+  // cancelled one is removed, or at least signed out when the cloud can't.
+  const discard = async (
+    flow: PendingConnection,
+    knownId: string | undefined,
+  ): Promise<void> => {
+    let id = knownId;
+    if (id === undefined) {
+      try {
+        id = (await window.mcpServers.listAccountConnections()).find(
+          (candidate): boolean =>
+            candidate.serverKey === flow.serverKey &&
+            candidate.configId === flow.configId,
+        )?.id;
+      } catch (error) {
+        reportClientAppError(error);
+      }
+      if (id === undefined) return;
+    }
+    try {
+      await window.mcpServers.removeAccountConnection(
+        id,
+        flow.cancelled ? undefined : { unlessConnected: true },
+      );
+    } catch (error) {
+      reportClientAppError(error);
+      if (flow.cancelled) await revoke(flow, id);
+    }
+  };
+  // Share an in-flight/successful revocation; a failure must allow Retry.
+  const release = async (flow: PendingConnection): Promise<void> => {
+    const id = flow.id ?? flow.cancelledConnectionId;
+    if (flow.discard) flow.releasePromise ??= discard(flow, id);
+    else if (id) flow.releasePromise ??= revoke(flow, id);
     await flow.releasePromise;
   };
   const connect = async (
@@ -291,6 +337,7 @@ export function useAccountMcpActions(
       done,
       serverKey,
       configId: configId ?? 'default',
+      discard: options.discardOnAbandon === true,
     };
     // Every key this flow is registered under; a row can change key mid-flow.
     const keys = [key];
@@ -328,6 +375,7 @@ export function useAccountMcpActions(
       const expectedAccountId = options.expectedAccountId ?? currentAccountId;
       const credentials = {
         configId,
+        ...(options.label ? { label: options.label } : {}),
         ...(options.bearerToken ? { bearerToken: options.bearerToken } : {}),
         ...(options.secretSource ? { secretSource: options.secretSource } : {}),
         ...(options.oauthClient ? { oauthClient: options.oauthClient } : {}),
@@ -450,6 +498,7 @@ export function useAccountMcpActions(
             : {},
         );
       if (settled.status !== 'CONNECTED') {
+        if (flow.discard) await release(flow);
         setError(
           'Connection needs attention. Connect again.',
           null,
@@ -514,6 +563,10 @@ export function useAccountMcpActions(
               ? new AccountMcpConnectionError(known, header).message
               : 'Could not connect. Try again.';
       if (known) options.onFailure?.(message);
+      // A failed added account goes with its sign-in, unless the app signed
+      // in to another account meanwhile: the connection isn't that one's.
+      if (flow.discard && !flow.cancelled && known !== 'account-changed')
+        await release(flow);
       if (!flow.cancelled)
         setError(
           message,

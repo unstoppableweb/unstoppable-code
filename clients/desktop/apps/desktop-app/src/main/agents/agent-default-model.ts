@@ -69,7 +69,7 @@ export async function resolveCatalogAgentDefaultModel(
   projectId: string,
 ): Promise<ChatModel | undefined> {
   const { prepareAgentCatalogCompatibility } =
-    await import('../portal/agent-catalog-compatibility');
+    await import('../remote-projection/agent-catalog-compatibility');
   await prepareAgentCatalogCompatibility(projectId);
   if (!AGENT_MODELS.some((model) => isInheritingAgentModel(model)))
     return undefined;
@@ -108,9 +108,9 @@ export async function refreshCatalogAgentDefaults(
   catalogAgentDefaults.clear();
   if (!AGENT_MODELS.some((model) => isInheritingAgentModel(model))) return;
   // Lazy: the Portal bus reaches services that import this module.
-  const { notifyPortalModelCatalogChanged } =
-    await import('../portal/portal-event-bus');
-  await notifyPortalModelCatalogChanged();
+  const { notifyModelCatalogChanged } =
+    await import('../remote-projection/agent-catalog-compatibility');
+  await notifyModelCatalogChanged();
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   WorkerPipelineInitiatorSchema,
   WorkerPipelinePauseRequestSchema,
   WorkerPipelineVariantDetailSchema,
+  WorkerPipelineSurvivalAssessmentSchema,
   type WorkerPipelineArtifact,
   type WorkerPipelineExecution,
   type WorkerPipelineExecutionDetail,
@@ -68,6 +69,9 @@ export function projectPipelineExecution(
   const statusReasonKinds = [
     ...new Set(state.status_reasons.map((reason) => reason.kind)),
   ];
+  const survival = WorkerPipelineSurvivalAssessmentSchema.safeParse(
+    state.survival_assessment,
+  );
   return {
     executionId: state.id,
     pipelineId: state.pipeline_id,
@@ -87,6 +91,7 @@ export function projectPipelineExecution(
         ? null
         : new Date(state.completed_at).toISOString(),
     pendingPauseCount: state.pending_pauses.length,
+    ...(survival.success && { survival: survival.data }),
     ...(statusReasonKinds.length > 0 && { statusReasonKinds }),
     error: state.error === undefined ? null : portableErrorText(state.error),
   };

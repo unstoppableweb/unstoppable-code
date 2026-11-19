@@ -19,6 +19,10 @@ import {
   PlanModeIcon,
 } from '../../icons/AppIcons';
 import { isRequestSecretsToolName } from './request-secrets-display';
+import {
+  isRunWithSecretsToolName,
+  isWriteSecretsFileToolName,
+} from './secret-use-display';
 
 /** The kinds of agent step a plain-words summary counts. */
 export type StepKind =
@@ -174,6 +178,9 @@ export function stepKindOfToolCall({
 }): StepKind {
   if (isPlanFileWrite(toolName, input)) return 'plan';
   if (isRequestSecretsToolName(toolName)) return 'secrets';
+  // Using secrets reads as what it is: a command run, or a file written.
+  if (isRunWithSecretsToolName(toolName)) return 'command';
+  if (isWriteSecretsFileToolName(toolName)) return 'edit';
   return stepKindOfToolFamily(family);
 }
 

@@ -2,11 +2,26 @@ import { create } from 'zustand';
 import {
   getClientFeatureFlagDefaultValue,
   getDefaultFeatureFlagSnapshot,
+  getLocalOnlyClientFeatureFlagDefaults,
   type ClientFeatureFlagKey,
   type FeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 import { addClientFeatureFlagEvaluation } from '@canopy/desktop-instrumentation/client';
+import { isLocalOnlyBuild } from '../lib/local-only-build';
 import { reportRendererConsoleError } from '../lib/renderer-error-logging';
+
+/**
+ * The snapshot the store holds until main's arrives. A local-only build
+ * (docs/local-only-build.md) starts from the same local-only defaults main's
+ * FeatureFlagService serves, so hosted flags are never on before hydrate or
+ * after a failed one.
+ */
+function initialFeatureFlagSnapshot(): FeatureFlagSnapshot {
+  const snapshot = getDefaultFeatureFlagSnapshot();
+  return isLocalOnlyBuild()
+    ? { ...snapshot, values: getLocalOnlyClientFeatureFlagDefaults() }
+    : snapshot;
+}
 
 function reportSnapshotToInstrumentation(snapshot: FeatureFlagSnapshot): void {
   for (const [key, value] of Object.entries(snapshot.values)) {
@@ -57,7 +72,7 @@ interface FeatureFlagsStoreState {
 
 export const useFeatureFlagsStore = create<FeatureFlagsStoreState>(
   (set, get) => ({
-    snapshot: getDefaultFeatureFlagSnapshot(),
+    snapshot: initialFeatureFlagSnapshot(),
     hydrate: async (): Promise<void> => {
       try {
         const snapshot = await window.api.featureFlags.getSnapshot();

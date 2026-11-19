@@ -11,7 +11,6 @@ import {
   getProviderForModel,
   getProviderForChatModel,
   isOllamaModel,
-  isAgentModel,
   isSupportedOllamaModelEntry,
   modelConfigForProviderSupportsFastMode,
   type ModelRegistrySnapshot,
@@ -1271,15 +1270,6 @@ export const createModelsSlice: StateCreator<
     if (!context) return;
     const { activeTab } = context;
     if (!activeTab || activeTab.kind === 'file') return;
-    if (
-      mode === 'auto' &&
-      isAgentModel(
-        get().pendingModelChanges[`${context.key}/${context.chatId}`]?.model ??
-          activeTab.model ??
-          '',
-      )
-    )
-      return;
     if ((activeTab.modelSelectionMode === 'auto') === (mode === 'auto')) return;
 
     set((state) =>

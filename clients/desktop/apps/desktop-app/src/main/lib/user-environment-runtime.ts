@@ -21,10 +21,19 @@ import {
   normalizeUserEnvironmentEntries,
   resolveEnvironmentForRuntime,
 } from '@canopy/desktop-shared/lib/user-environment';
-import { registerUserEnvironmentInjector } from '../pipelines/config-paths';
+import {
+  noteSpawnEnvironmentFailure,
+  noteSpawnEnvironmentSuccess,
+  registerUserEnvironmentInjector,
+} from '../pipelines/config-paths';
 import { isMissingFileError } from './fs-utils';
 import { getSecretStoragePolicy } from './secure-storage-policy';
+import {
+  classifySpawnEnvironmentFailure,
+  SpawnEnvironmentDataError,
+} from './spawn-environment-failure';
 import { readEnvironmentConfig } from './user-environment-store';
+import { initializeSpawnEnvironmentFailureReporting } from '../observability/spawn-environment-failure-reporter';
 
 let cachedConfig: EnvironmentConfigData | null = null;
 let cachedFileMtimeMs: number | null = null;
@@ -58,7 +67,9 @@ function decryptEntries(encryptedBase64: string): UserEnvironmentEntry[] {
   );
   const parsed: unknown = JSON.parse(decrypted);
   if (!Array.isArray(parsed))
-    throw new Error('Invalid encrypted environment variables');
+    throw new SpawnEnvironmentDataError(
+      'Invalid encrypted environment variables',
+    );
   return normalizeUserEnvironmentEntries(
     parsed.filter(isRecord).map((entry) => ({
       key: entry.key,
@@ -182,7 +193,7 @@ function readConfigSync(): ConfigRead {
   }
   const parsed: unknown = JSON.parse(raw);
   if (!isPersistedEnvironmentConfigFile(parsed)) {
-    throw new Error('Invalid persisted environment config');
+    throw new SpawnEnvironmentDataError('Invalid persisted environment config');
   }
   const config = normalizeEnvironmentConfig(
     {
@@ -230,12 +241,19 @@ function getEnvironmentConfigForInjection(): EnvironmentConfigData {
       }
       nextFileMtimeCheckAt = now + FILE_MTIME_RECHECK_INTERVAL_MS;
     }
+    noteSpawnEnvironmentSuccess('user-environment');
     return (
       cachedConfig ?? createDefaultEnvironmentConfig(new Date().toISOString())
     );
-  } catch {
+  } catch (error) {
     // Never install a failure as authoritative empty data or mtime.
     invalidateUserEnvironmentInjectionCache();
+    // Only the allowlisted code leaves: a JSON.parse message can echo
+    // decrypted values.
+    noteSpawnEnvironmentFailure(
+      'user-environment',
+      classifySpawnEnvironmentFailure(error),
+    );
     return createDefaultEnvironmentConfig(new Date().toISOString());
   }
 }
@@ -300,6 +318,9 @@ let initialized = false;
 export function initializeUserEnvironmentRuntime(): void {
   if (initialized) return;
   initialized = true;
+  // The host that registers an injector also registers the sink its failures
+  // report to (CAN-7096).
+  initializeSpawnEnvironmentFailureReporting();
   registerUserEnvironmentInjector(getUserEnvironmentForInjection);
   void readEnvironmentConfig()
     .then(() => {

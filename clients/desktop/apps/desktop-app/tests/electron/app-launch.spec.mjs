@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  truncateSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -24,8 +30,13 @@ test('launches the built Electron shell', async ({}, testInfo) => {
   expect(gates.isW5RecoveryEntryEnabled()).toBe(true);
   expect(isW5DaemonFlipCompiled()).toBe(true);
   expect(gates.isW5RecoveryAvailable()).toBe(true);
-  const { electronApp, userDataDir, productMainEntryPath } =
-    await launchCanopy();
+  // Linux dictation checks capture through Chromium's fake devices, so the
+  // permission handler decides, not whether this machine has a camera.
+  const { electronApp, userDataDir, productMainEntryPath } = await launchCanopy(
+    process.platform === 'linux'
+      ? { electronArgs: ['--use-fake-device-for-media-stream'] }
+      : undefined,
+  );
   const secureDir = `${userDataDir}-secure`;
   mkdirSync(secureDir, { recursive: true });
 
@@ -149,6 +160,127 @@ test('launches the built Electron shell', async ({}, testInfo) => {
           delete globalThis.__restoreVoiceHost;
         });
         await window.evaluate(() => window.api.voice.recheckSupported());
+      }
+    }
+    if (process.platform === 'linux') {
+      // Linux dictation (CAN-7232) through the real preload and main voice
+      // path (voice:reset-support, which probes like voice:is-supported,
+      // voice:get-microphone-access,
+      // voice:request-system-access, voice:start, voice:push-audio and
+      // voice:stop), with a fake helper that speaks the helper protocol. The
+      // speech model rows (CAN-7231) report this host's model state.
+      const fakeHelper = path.resolve(
+        import.meta.dirname,
+        'fixtures/dictation/fake-linux-helper.sh',
+      );
+      await electronApp.evaluate((_electron, helper) => {
+        globalThis.__restoreDictateExecutable = process.env.DICTATE_EXECUTABLE;
+        process.env.DICTATE_EXECUTABLE = helper;
+      }, fakeHelper);
+      // A verified speech model in this run's data dir: sparse files at the
+      // manifest's sizes and the marker the store writes after its check.
+      const { DEFAULT_SPEECH_MODEL: speechModel } = tsRequire(
+        '../../../../packages/core-runtime/src/dictation/manifest.ts',
+        import.meta.url,
+      );
+      const modelDir = path.join(
+        userDataDir,
+        'dictation',
+        'models',
+        speechModel.id,
+      );
+      mkdirSync(modelDir, { recursive: true });
+      for (const file of speechModel.files) {
+        const target = path.join(modelDir, path.posix.basename(file.path));
+        writeFileSync(target, '');
+        truncateSync(target, file.sizeBytes);
+      }
+      writeFileSync(
+        path.join(modelDir, '.verified.json'),
+        JSON.stringify({
+          id: speechModel.id,
+          files: speechModel.files.map(({ path: file, sizeBytes, sha256 }) => ({
+            path: file,
+            sizeBytes,
+            sha256,
+          })),
+          verifiedAt: new Date().toISOString(),
+        }),
+      );
+      try {
+        const dictation = await window.evaluate(async () => {
+          const voice = window.api.voice;
+          const support = await voice.recheckSupported();
+          const microphone = await voice.getMicrophoneAccess();
+          const access = await voice.requestSystemAccess();
+          const model = await voice.speechModel.status();
+          const events = [];
+          const stopped = new Promise((resolve) => {
+            const unsubscribe = voice.onEvent((event) => {
+              events.push(event);
+              if (event.type === 'stopped' || event.type === 'error') {
+                unsubscribe();
+                resolve();
+              }
+            });
+          });
+          const sessionId = 'linux-dictation-e2e';
+          await voice.start({ sessionId });
+          await voice.pushAudio({ sessionId, pcm: new ArrayBuffer(3200) });
+          await voice.stop({ sessionId });
+          await stopped;
+          // Audio-only capture reaches the permission handler and is not
+          // refused for permission; video stays denied.
+          const capture = async (constraints) => {
+            try {
+              const stream =
+                await navigator.mediaDevices.getUserMedia(constraints);
+              for (const track of stream.getTracks()) track.stop();
+              return 'granted';
+            } catch (error) {
+              return error instanceof Error ? error.name : 'error';
+            }
+          };
+          return {
+            support,
+            microphone,
+            access,
+            model: { state: model.state, model: model.model?.id ?? null },
+            events: events.map(({ type, text }) => ({ type, text })),
+            audio: await capture({ audio: true }),
+            video: await capture({ video: true }),
+          };
+        });
+        expect(dictation.support).toEqual({ supported: true });
+        expect(dictation.microphone).toBe('granted');
+        expect(dictation.access).toEqual({
+          microphone: 'granted',
+          speechRecognition: 'authorized',
+        });
+        expect(dictation.model).toEqual({
+          state: 'installed',
+          model: speechModel.id,
+        });
+        expect(dictation.events.map((event) => event.type)).toEqual([
+          'interim',
+          'final',
+          'stopped',
+        ]);
+        // 3,200 bytes of PCM reached the helper's stdin, and the helper was
+        // pointed at the verified model.
+        expect(dictation.events[1].text).toContain('3200 bytes');
+        expect(dictation.events[1].text).toContain(
+          `--model-dir ${modelDir} --model-arch ${speechModel.architecture}`,
+        );
+        expect(dictation.audio).toBe('granted');
+        expect(dictation.video).toBe('NotAllowedError');
+      } finally {
+        await electronApp.evaluate(() => {
+          const original = globalThis.__restoreDictateExecutable;
+          if (original === undefined) delete process.env.DICTATE_EXECUTABLE;
+          else process.env.DICTATE_EXECUTABLE = original;
+          delete globalThis.__restoreDictateExecutable;
+        });
       }
     }
     // Exercise w5-recovery:status and w5-recovery:prepare through the real

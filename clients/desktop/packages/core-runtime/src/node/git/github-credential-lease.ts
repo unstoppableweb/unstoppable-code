@@ -1,3 +1,5 @@
+import type { VaultIoClass, VaultMutationStep } from '../../vault/contracts';
+
 /** Core-internal port. Workers receive leases, never a vault or a writer. */
 export type GitHubCredentialPurpose = 'git-push' | 'git-fetch';
 export type GitHubCredentialReason =
@@ -8,12 +10,22 @@ export type GitHubCredentialReason =
   | 'unavailable'
   | 'key_missing'
   | 'unconfirmed';
+/** Content-free fence diagnostic: a validated errno or a fixed failure code. */
+export type GitHubCredentialFenceReadFailure =
+  | `E${string}`
+  | 'parse_failed'
+  | 'privacy_check_failed'
+  | 'read_failed';
 export type GitHubCredentialAdmission =
   | { readonly kind: 'admitted' }
-  | { readonly kind: 'refused'; readonly reason: GitHubCredentialReason };
+  | {
+      readonly kind: 'refused';
+      readonly reason: GitHubCredentialReason;
+      readonly fenceReadFailure?: GitHubCredentialFenceReadFailure;
+    };
 export type GitHubCredentialUse<T> =
   | { readonly kind: 'admitted'; readonly value: T }
-  | { readonly kind: 'refused'; readonly reason: GitHubCredentialReason };
+  | Exclude<GitHubCredentialAdmission, { readonly kind: 'admitted' }>;
 export type GitHubCredentialResolution =
   | {
       readonly kind: 'available';
@@ -26,6 +38,12 @@ export type GitHubCredentialResolution =
   | {
       readonly kind: 'blocked';
       readonly reason: Exclude<GitHubCredentialReason, 'absent' | 'stale'>;
+      readonly fenceReadFailure?: GitHubCredentialFenceReadFailure;
+      /** Closed vault diagnostic when a storage call threw; never a branch. */
+      readonly storage?: {
+        readonly step: VaultMutationStep;
+        readonly io: VaultIoClass;
+      };
     };
 export interface GitHubCredentialSource {
   resolve(
@@ -48,13 +66,16 @@ export interface GitHubCredentialLeaseRequest {
 }
 export type GitHubCredentialLeaseRefusal = {
   readonly kind: 'refused';
+  readonly fenceReadFailure?: GitHubCredentialFenceReadFailure;
   readonly reason:
     | GitHubCredentialReason
     | 'expired'
     | 'audience'
     | 'purpose'
     | 'consumed'
-    | 'revoked';
+    | 'revoked'
+    /** The credential source threw: distinct from an absent credential. */
+    | 'source_failed';
 };
 export type GitHubCredentialDelivery<T> =
   | { readonly kind: 'delivered'; readonly value: T }
@@ -124,10 +145,19 @@ export function createGitHubCredentialLeasePort(options: {
       try {
         resolved = await options.source.resolve(request.purpose);
       } catch {
-        return { kind: 'refused', reason: 'unavailable' };
+        return { kind: 'refused', reason: 'source_failed' };
       }
-      if (resolved.kind !== 'available')
+      // Copy known fields only: a source's extra properties must not leak.
+      if (resolved.kind === 'absent')
         return { kind: 'refused', reason: resolved.reason };
+      if (resolved.kind === 'blocked')
+        return resolved.fenceReadFailure
+          ? {
+              kind: 'refused',
+              reason: resolved.reason,
+              fenceReadFailure: resolved.fenceReadFailure,
+            }
+          : { kind: 'refused', reason: resolved.reason };
       const { material } = resolved;
       let state: 'ready' | 'consumed' | 'revoked' | 'expired' = 'ready';
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -216,7 +246,8 @@ export function createGitHubCredentialLeasePort(options: {
         retained = true;
         return { kind: 'minted', lease };
       } catch {
-        return { kind: 'refused', reason: 'unavailable' };
+        // The source's mint admission threw.
+        return { kind: 'refused', reason: 'source_failed' };
       } finally {
         if (!retained) release();
       }

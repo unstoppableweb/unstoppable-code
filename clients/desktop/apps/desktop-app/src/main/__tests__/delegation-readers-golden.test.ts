@@ -235,12 +235,6 @@ jest.mock('../lib/canopy-cloud-account-store', () => ({
   subscribeCanopyCloudAccountChanges: (): (() => void) => () => undefined,
 }));
 
-jest.mock('../portal/portal-event-bus', () => ({
-  createPortalEvent: (): object => ({}),
-  enqueuePortalEvent: (): void => undefined,
-  isCanopyPortalActive: (): boolean => false,
-}));
-
 jest.mock('../services/chat-state-service', () => ({
   getChatStateService: (): HostDouble & Record<string, unknown> =>
     ({
@@ -438,8 +432,6 @@ import {
   readManagedDelegationTreeForUser,
 } from '../agents/delegation/service';
 import { closeDelegationScope } from '../agents/delegation/lifecycle';
-import { getWorktreeChatTranscriptSeed } from '../services/chat-service';
-import { registerWorkspaceTypes } from '../lib/workspace-registry';
 
 function transcript(
   delegationId: string,
@@ -817,7 +809,7 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
     });
   });
 
-  it('captures live frames, durable cards and the Portal transcript seed, and detects a changed output', async () => {
+  it('captures live frames and durable cards, and detects a changed output', async () => {
     const itemOne = textItem('live-one', 1, 'first line');
     const itemTwo = textItem('live-two', 2, 'second line');
     const liveInputs = [
@@ -861,43 +853,10 @@ describe.each(['absent', 'production'])('%s composition', (composition) => {
     });
     for (const entry of liveInputs) persistence.offer(entry, Promise.resolve());
     await persistence.flush();
-    const finalCard = durableCards[durableCards.length - 1];
-    if (!finalCard) throw new Error('Missing durable logged card');
-    const parentRows = savedParentRows(finalCard);
-    const loggedCard = parentRows.find((row) =>
-      row.blocks.some(
-        (block) =>
-          block.type === 'delegated_agent_call' &&
-          block.delegationId === 'logged-child',
-      ),
-    );
-    if (!loggedCard) throw new Error('Missing logged parent row');
-    const tab: PersistedChatTab = {
-      id: 'reader-chat',
-      title: 'Portal seed fixture',
-      createdAt: '2026-10-17T00:00:00.000Z',
-      messages: [parentTurn(), loggedCard],
-    };
-    const portalTabs: ChatTabsFile = {
-      version: 1,
-      activeTabId: tab.id,
-      tabs: [tab],
-    };
-    registerWorkspaceTypes(new Map());
-    mockPortalRead.mockResolvedValue(portalTabs);
-    mockReadDelegationItems.mockResolvedValue([
-      textItem('portal-child-answer', 1, 'Finding from the delegate log'),
-    ]);
-    const portalSeed = await getWorktreeChatTranscriptSeed({
-      workspaceId: 'reader-project',
-      worktreeId: 'reader-worktree',
-      chatId: 'reader-chat',
-    });
     const output = {
       livePublications,
       liveFrames: frames,
       durableCards,
-      portalSeed,
     };
     const expected = compareGolden('live-durable-portal-payloads', output);
     const mutated = { ...output, liveFrames: output.liveFrames.slice(0, 2) };

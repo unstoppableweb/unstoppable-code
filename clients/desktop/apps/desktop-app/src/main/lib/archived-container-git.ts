@@ -1,3 +1,9 @@
+import {
+  matchesRecordedDirectoryIdentity,
+  directoryStatIdentity,
+  matchesRecordedRepositoryIdentity,
+} from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isArchivedGitSnapshotRef } from '@canopy/desktop-shared/lib/archived-container-contracts';
 import {
   archiveRecoveryRepositoryIdentity,
@@ -160,9 +166,11 @@ function quarantineIdentityMatches(
 ): boolean {
   return (
     !stats.isSymbolicLink() &&
-    stats.dev === identity.dev &&
-    stats.ino === identity.ino &&
-    stats.birthtimeMs === identity.birthtimeMs
+    matchesRecordedDirectoryIdentity(
+      directoryStatIdentity(identity),
+      directoryStatIdentity(stats),
+      hostOperatingSystem(),
+    )
   );
 }
 
@@ -709,17 +717,35 @@ export function isArchivedContainerSnapshotRef(
   return isArchivedGitSnapshotRef(workspaceId, containerId, repoId, ref);
 }
 
-/** Qualify the complete remaining deletion set before publishing its first intent. */
+/**
+ * Qualify the complete remaining deletion set before publishing its first
+ * intent. Each ref must lie in this container's namespace and still name its
+ * recorded commit; the source journal's identities are never consulted.
+ */
 export async function qualifyArchiveRecoveryRefDeletion(
   receipt: ArchiveRecoveryReceipt,
 ): Promise<void> {
+  const namespace = `${ARCHIVE_REF_NAMESPACE}/${receipt.workspaceId}/${receipt.worktreeId}/`;
   try {
     for (const repository of receipt.repositories) {
+      for (const ref of repository.refs)
+        if (
+          !ref.name.startsWith(namespace) ||
+          ref.name
+            .split('/')
+            .some((part) => part === '' || part.startsWith('.'))
+        )
+          throw new ArchiveRecoveryRefusedError(
+            'Retained snapshot ref is outside its archive namespace.',
+          );
       if (repository.refs.length === 0) continue;
       const commonDir = await realpath(repository.commonDir);
       if (
-        (await archiveRecoveryRepositoryIdentity(commonDir)) !==
-        repository.identity
+        !matchesRecordedRepositoryIdentity(
+          repository.identity,
+          await archiveRecoveryRepositoryIdentity(commonDir),
+          hostOperatingSystem(),
+        )
       )
         throw new ArchiveRecoveryRefusedError(
           'Retained repository changed before deletion.',
@@ -3816,8 +3842,11 @@ export async function reconcileArchivedGitRefsForWorkspace(
       if (repository.refs.length === 0) continue;
       const commonDir = await realpath(repository.commonDir);
       if (
-        repository.identity !==
-        (await archiveRecoveryRepositoryIdentity(commonDir))
+        !matchesRecordedRepositoryIdentity(
+          repository.identity,
+          await archiveRecoveryRepositoryIdentity(commonDir),
+          hostOperatingSystem(),
+        )
       )
         throw new Error('Retained recovery repository changed.');
       const held = heldRefsByCommonDir.get(commonDir) ?? new Set<string>();

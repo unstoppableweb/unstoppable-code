@@ -148,9 +148,19 @@ export function CustomizeDiscoveryProvider({
   readonly enabled: boolean;
   readonly children: ReactNode;
 }): JSX.Element {
-  const [filters, setFilters] = useState<CustomizeDiscoveryFilters>(
+  const [filters, setFiltersState] = useState<CustomizeDiscoveryFilters>(
     DEFAULT_CUSTOMIZE_DISCOVERY_FILTERS,
   );
+  // Attention is no longer a status to pick (Sergii's QA): those items lead
+  // the Installed list instead, so a saved or passed "attention" reads Any.
+  const setFilters = useCallback<
+    Dispatch<SetStateAction<CustomizeDiscoveryFilters>>
+  >((action): void => {
+    setFiltersState((current) => {
+      const next = typeof action === 'function' ? action(current) : action;
+      return next.status === 'attention' ? { ...next, status: 'any' } : next;
+    });
+  }, []);
   const [sourceOptions, setSourceOptionsState] =
     useState<readonly string[]>(NO_SOURCES);
   const setSourceOptions = useCallback((options: readonly string[]): void => {

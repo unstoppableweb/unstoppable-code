@@ -1285,6 +1285,7 @@ describe('consumer boundary', () => {
       );
     // Exact membership excludes CLI, renderer, preload, agent, Portal, relay and remote exposure.
     expect(hits).toEqual([
+      'apps/core-daemon/src/main.ts',
       'apps/desktop-app/src/main/canopy-runtime/migration-channel.ts',
       'scripts/build-peer-identity.mjs',
     ]);

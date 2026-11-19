@@ -12,7 +12,8 @@ import {
 } from '@/stores/projectsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { pipelinePackageRequirementKindLabel } from '@canopy/ui-shared/lib/pipeline-package-display';
-import { Checkbox } from '@canopy/ui-shared/components';
+import { Checkbox, ErrorBanner } from '@canopy/ui-shared/components';
+import { OrganizationRecommendationList } from './OrganizationRecommendationList';
 
 interface RecommendedPluginsPromptDialogProps {
   prompt: PendingRecommendedPluginPrompt;
@@ -76,6 +77,24 @@ const TERMINAL_STATES: ReadonlySet<RowStatus['state']> = new Set<
 export function RecommendedPluginsPromptDialog({
   prompt,
 }: RecommendedPluginsPromptDialogProps): JSX.Element {
+  // A prompt for another scope starts fresh: rows decided in one project's
+  // prompt never hide another's, and work still running for the old one
+  // can't reach the new one (CAN-6241).
+  return <PromptDialog key={promptIdentity(prompt)} prompt={prompt} />;
+}
+
+function promptIdentity(prompt: PendingRecommendedPluginPrompt): string {
+  return [
+    prompt.projectId,
+    prompt.worktreeId,
+    prompt.repoId ?? '',
+    prompt.organization?.setupProjectId ?? '',
+  ].join('\n');
+}
+
+function PromptDialog({
+  prompt,
+}: RecommendedPluginsPromptDialogProps): JSX.Element {
   const applyRecommendedPlugins = useProjectsStore(
     (state) => state.applyRecommendedPlugins,
   );
@@ -115,6 +134,36 @@ export function RecommendedPluginsPromptDialog({
       return next;
     });
   }, [actionable]);
+
+  // An organization project's recommendations are decided for everyone
+  // (CAN-6241); the rows leave as each is added or dismissed.
+  const [decidedKeys, setDecidedKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const organizationItems = useMemo(
+    () => prompt.items.filter((item) => !decidedKeys.has(item.key)),
+    [prompt.items, decidedKeys],
+  );
+  /**
+   * Set when a decision found the person can no longer change the project's
+   * setup: the rows go, and the dialog stays open so the message is read.
+   */
+  const [lostAccess, setLostAccess] = useState<string | null>(null);
+  useEffect(() => {
+    if (
+      prompt.organization &&
+      lostAccess === null &&
+      organizationItems.length === 0 &&
+      prompt.requirements.length === 0
+    )
+      dismissPendingRecommendedPluginPrompt();
+  }, [
+    lostAccess,
+    prompt.organization,
+    organizationItems.length,
+    prompt.requirements.length,
+    dismissPendingRecommendedPluginPrompt,
+  ]);
 
   const [rowStatuses, setRowStatuses] = useState<Record<string, RowStatus>>({});
   const [applying, setApplying] = useState(false);
@@ -267,14 +316,36 @@ export function RecommendedPluginsPromptDialog({
       closeOnBackdrop={!applying}
     >
       <div className="flex flex-col gap-4 text-s fg-primary">
-        <p className="text-xs fg-secondary">
-          This project&apos;s canopy.json recommends plugins or skills that are
-          not installed or selected as project defaults. Keep items checked to
-          install/select them by default. Unchecked items will not be suggested
-          again for this project.
-        </p>
+        {prompt.organization ? (
+          lostAccess !== null ? (
+            <ErrorBanner
+              errorSource="organization-recommendations-access"
+              testId="organization-recommendations-lost-access"
+              className=""
+              error={lostAccess}
+            />
+          ) : (
+            organizationItems.length > 0 && (
+              <OrganizationRecommendationList
+                setupProjectId={prompt.organization.setupProjectId}
+                items={organizationItems}
+                onDecided={(keys) =>
+                  setDecidedKeys((current) => new Set([...current, ...keys]))
+                }
+                onLostAccess={setLostAccess}
+              />
+            )
+          )
+        ) : (
+          <p className="text-xs fg-secondary">
+            This project&apos;s canopy.json recommends plugins or skills that
+            are not installed or selected as project defaults. Keep items
+            checked to install/select them by default. Unchecked items will not
+            be suggested again for this project.
+          </p>
+        )}
 
-        {actionable.length > 0 && (
+        {!prompt.organization && actionable.length > 0 && (
           <Surface variant="outline">
             <ul className="divide-y">
               {actionable.map((entry) => {
@@ -330,7 +401,7 @@ export function RecommendedPluginsPromptDialog({
           </Surface>
         )}
 
-        {informational.length > 0 && (
+        {!prompt.organization && informational.length > 0 && (
           <div className="flex flex-col gap-2">
             <div className="text-2xs font-medium fg-secondary">
               Already configured
@@ -442,13 +513,15 @@ export function RecommendedPluginsPromptDialog({
 
         <div className="flex items-center justify-between gap-2">
           <div className="text-2xs fg-secondary">
-            {actionable.length === 0
-              ? 'No recommendations need action'
-              : allChecked
-                ? `${checkedCount} of ${actionable.length} selected`
-                : noneChecked
-                  ? `0 of ${actionable.length} selected`
-                  : `${checkedCount} of ${actionable.length} selected`}
+            {prompt.organization
+              ? null
+              : actionable.length === 0
+                ? 'No recommendations need action'
+                : allChecked
+                  ? `${checkedCount} of ${actionable.length} selected`
+                  : noneChecked
+                    ? `0 of ${actionable.length} selected`
+                    : `${checkedCount} of ${actionable.length} selected`}
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -458,7 +531,7 @@ export function RecommendedPluginsPromptDialog({
             >
               Ask me later
             </Button>
-            {actionable.length > 0 && (
+            {!prompt.organization && actionable.length > 0 && (
               <Button
                 variant="primary"
                 size="compact"

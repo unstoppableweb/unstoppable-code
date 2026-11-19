@@ -7,11 +7,15 @@ const TIMED_OUT = 'Core startup timed out.';
 
 /** Port failures keep their kind but take fixed text: details may name paths or tokens. */
 export const fixed =
-  (message: string): Redact =>
+  (
+    message: string,
+    codeOf?: (error: unknown) => Readonly<Record<string, string | number>>,
+  ): Redact =>
   (error) =>
     canopyConnectError(
       error instanceof CanopyClientError ? error.payload.kind : 'unavailable',
       message,
+      codeOf?.(error),
     );
 /** For ports whose typed errors are already redacted (classification, K1 attach). */
 export const typed =

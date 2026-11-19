@@ -27,9 +27,17 @@ jest.mock('../lib/project-owner', () => ({
     Promise.resolve({ kind: 'organization', organizationId: 'org-1' }),
   ),
 }));
-jest.mock('../lib/workspace-persistence', () => ({
-  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
-}));
+jest.mock('../lib/workspace-persistence', () => {
+  const readWorkspaceWorktrees = jest.fn(() => Promise.resolve([]));
+  return {
+    readWorkspaceWorktrees,
+    // The pause reader needs the list's authority (CAN-7094).
+    readWorkspaceWorktreesDetailed: jest.fn(async () => ({
+      worktrees: await readWorkspaceWorktrees(),
+      authority: 'ok',
+    })),
+  };
+});
 jest.mock('../lib/hook-pipeline', () => ({
   launchHookPipeline: jest.fn(() =>
     Promise.resolve({

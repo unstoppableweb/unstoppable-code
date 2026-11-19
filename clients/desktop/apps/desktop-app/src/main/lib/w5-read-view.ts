@@ -11,6 +11,8 @@ import type {
 } from '../w5-commit-log/commit-log-worker-contract';
 import type { W5FileRead } from './w5-file-store';
 import { logMainProcessWarn } from './main-process-logging';
+import { recordW5Work } from '@canopy/desktop-shared/node/work-counters';
+import { W5_AGGREGATE_KEYS } from './w5-work-counters';
 
 /*
  * A request-local view that serves one query's W5 reads from a single
@@ -188,12 +190,12 @@ export function runInW5CapturedView<T>(
           uncapturedReads.push(file);
         return notCaptured();
       }
-      if (image.state === 'present')
+      if (image.state === 'present') {
+        const bytes = Buffer.from(image.base64, 'base64');
+        recordW5Work(W5_AGGREGATE_KEYS.viewDecodedBytes, bytes.byteLength);
         // The store's own `utf8` decoding, so normalization sees the same text.
-        return {
-          state: 'present',
-          raw: Buffer.from(image.base64, 'base64').toString('utf8'),
-        };
+        return { state: 'present', raw: bytes.toString('utf8') };
+      }
       return image.state === 'absent'
         ? { state: 'absent' }
         : {

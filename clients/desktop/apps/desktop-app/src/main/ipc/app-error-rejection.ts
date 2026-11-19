@@ -4,12 +4,16 @@ import { W5RecordOverloadedError } from '@canopy/core-runtime/node/w5/file-store
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
 import {
+  AppErrorDetailSchema,
   AppErrorSchema,
   classifyError,
   getAppErrorDefinition,
+  createAppError,
   getAppErrorThrownType,
   isAppCancellation,
+  isAppErrorCode,
   rememberAppErrorNativeFrames,
+  normalizeAppErrorOperationFailure,
   toAppError,
   type AppError,
 } from '@canopy/protocol/app-errors';
@@ -22,7 +26,10 @@ import {
   safeErrorProperty,
   type IpcOperationFailure,
 } from '@canopy/desktop-shared/ipc/app-error-rejection';
-import { readIpcOperationFailure } from '@canopy/desktop-shared/ipc/operation-failure';
+import {
+  readIpcOperationDiagnostic,
+  readIpcOperationFailure,
+} from '@canopy/desktop-shared/ipc/operation-failure';
 import {
   RpcClosedError,
   RpcRemoteError,
@@ -109,6 +116,18 @@ export function toIpcRejection(
         undefined,
         thrown,
       );
+    // The host sent a code with catalog copy: report this computer's view of
+    // it by code. Protocol codes (remote_*, timeout) are not app codes.
+    if (thrown instanceof RpcRemoteError && isAppErrorCode(thrown.code)) {
+      try {
+        reportMainAppError(
+          createAppError(thrown.code, { source: ipcSource(channel) }),
+          { thrownType: getAppErrorThrownType(thrown) },
+        );
+      } catch {
+        /* Reporting is best effort. */
+      }
+    }
     // Raw-text privacy exceptions: cancellation is caller-owned, and remote
     // text has already passed the controlled host's own policy.
     if (
@@ -160,14 +179,61 @@ export function toIpcRejection(
     // A shape recorded at its origin keeps that origin's identity untouched.
     if (error.recordedBy === undefined)
       error = { ...error, source: error.source ?? ipcSource(channel) };
+    // The daemon's dotted code, already grammar-checked by the payload schema;
+    // this adds the length cap. Telemetry re-applies its reviewed allowlist.
+    // A shape recorded at its origin stays untouched.
+    const operationCode = AppErrorDetailSchema.shape.operationCode.safeParse(
+      operationFailure?.code,
+    );
+    if (
+      operationCode.success &&
+      operationCode.data !== undefined &&
+      error.recordedBy === undefined
+    )
+      error = {
+        ...error,
+        detail: { ...error.detail, operationCode: operationCode.data },
+      };
+    // An unexpected daemon failure's class, code and frames; the telemetry
+    // builder re-applies its allowlists. A recorded shape stays untouched.
+    const diagnostic =
+      error.recordedBy === undefined
+        ? readIpcOperationDiagnostic(thrown)
+        : undefined;
+    if (diagnostic)
+      error = {
+        ...error,
+        detail: {
+          ...error.detail,
+          name: diagnostic.name,
+          ...(diagnostic.code === undefined ? {} : { errno: diagnostic.code }),
+        },
+      };
+    // A typed failure, local or from the daemon, carries its system code in
+    // `details.errno` (CAN-7114); only an allowlisted code is kept, and only
+    // when the diagnostic above supplied none.
+    const errno = AppErrorDetailSchema.shape.errno.safeParse(
+      safeErrorProperty(
+        safeErrorProperty(safeErrorProperty(thrown, 'payload'), 'details'),
+        'errno',
+      ),
+    );
+    if (
+      errno.success &&
+      errno.data !== undefined &&
+      error.detail.errno === undefined &&
+      error.recordedBy === undefined
+    )
+      error = { ...error, detail: { ...error.detail, errno: errno.data } };
     try {
       error =
-        reportMainAppError(
-          error,
-          nativeError
+        reportMainAppError(error, {
+          operationFailure: normalizeAppErrorOperationFailure(operationFailure),
+          ...(diagnostic ? { frames: diagnostic.frames } : {}),
+          ...(nativeError
             ? { nativeError }
-            : { thrownType: getAppErrorThrownType(thrown) },
-        )?.error ?? error;
+            : { thrownType: getAppErrorThrownType(thrown) }),
+        })?.error ?? error;
     } catch {
       /* Leave shape unrecorded. */
     }

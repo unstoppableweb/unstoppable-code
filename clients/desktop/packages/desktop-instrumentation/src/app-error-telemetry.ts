@@ -4,9 +4,12 @@ import {
   type FeedbackReportTelemetry,
 } from '@canopy/protocol/feedback-report';
 import {
+  AppErrorClassSchema,
+  AppErrorErrnoSchema,
+  AppErrorOperationFailureSchema,
   AppErrorSchema,
+  normalizeAppErrorOperationFailure,
   AppErrorSurfaceSchema,
-  getAppErrorDefinition,
   type AppError,
   type AppErrorRecord,
 } from '@canopy/protocol/app-errors';
@@ -19,6 +22,11 @@ export const APP_ERROR_POSTHOG_EVENT = 'app:operation_fail';
  * session's replay; it is not a failure count, so never sum it with the above.
  */
 export const APP_ERROR_VIEW_POSTHOG_EVENT = 'app:error_view';
+/**
+ * A main-process cap was first hit in its window. Carries only the cap name
+ * and dropped counts, so it is never a failure count either.
+ */
+export const APP_ERROR_CAP_POSTHOG_EVENT = 'app:error_cap_reach';
 
 /** Host adapters supply SDK accessors, never caller context or identity URLs. */
 export interface AppErrorTelemetrySessions {
@@ -66,10 +74,32 @@ function metadata(record: AppErrorRecord): DesktopInstrumentationContext {
     record.surface === undefined
       ? undefined
       : AppErrorSurfaceSchema.parse(record.surface);
+  const operationFailure = normalizeAppErrorOperationFailure(
+    record.operationFailure,
+  );
+  // Revalidate each value; one that fails its allowlist is omitted, not cut.
+  const errorClass = AppErrorClassSchema.safeParse(error.detail.name);
+  const errno = AppErrorErrnoSchema.safeParse(error.detail.errno);
+  const operationCode = AppErrorOperationFailureSchema.shape.code.safeParse(
+    error.detail.operationCode,
+  );
   return {
+    ...(operationFailure
+      ? {
+          operation_status: operationFailure.status,
+          ...(operationFailure.code === undefined
+            ? {}
+            : { operation_code: operationFailure.code }),
+        }
+      : {}),
     error_kind: error.kind,
     error_code: error.code,
     error_reference_id: error.referenceId,
+    ...(errorClass.success ? { error_class: errorClass.data } : {}),
+    ...(errno.success ? { error_errno: errno.data } : {}),
+    ...(operationCode.success && operationCode.data !== undefined
+      ? { error_operation_code: operationCode.data }
+      : {}),
     ...(surface === undefined ? {} : { error_surface: surface }),
     ...(error.source === undefined ? {} : { error_source: error.source }),
     ...(error.recovery === undefined ? {} : { recovery_kind: error.recovery }),
@@ -86,19 +116,7 @@ export function buildAppErrorPostHogProperties(
   return sanitizeInstrumentationContext(metadata(record)) ?? {};
 }
 
-/** Keep the catalog description and V8 stack frames. Raw detail can name private
- * work entries or contain caller prose that pattern redaction cannot identify. */
-export function appErrorException(
-  record: AppErrorRecord,
-  frames: readonly string[],
-): Error {
-  const { code } = record.error;
-  const error = new Error(getAppErrorDefinition(code).summary);
-  error.name = code;
-  // A non-empty catalog header keeps the SDK from substituting a launch stack.
-  error.stack = [error.toString(), ...frames].join('\n');
-  return error;
-}
+export { appErrorException } from '@canopy/protocol/app-errors';
 
 export function buildAppErrorViewPostHogProperties(
   value: AppError,

@@ -9,6 +9,7 @@ import {
   type WorkerAgentTurnRunParams,
   type WorkerAgentTurnRunResult,
 } from '@canopy/protocol/canopy-core';
+import { CanopyOperationError } from '../../../../runtime/errors';
 import { createCanopyDispatcher } from '../../../../runtime/dispatcher';
 import { createDirectLocalWorkerTransport } from '../../../../runtime/local-worker-transport';
 import { createWorkerExecutorReceipts } from '../../../../runtime/worker-executor-receipts';
@@ -543,4 +544,61 @@ describe('a completed worker result reporting cancelled settles the child cancel
       h.close();
     }
   });
+});
+
+it('records a typed dispatch refusal without its private message or retry instructions', async () => {
+  const h = compose(join(root, 'ledger.sqlite'), controlledWorker().worker);
+  const refusal = new CanopyOperationError({
+    kind: 'permission_denied',
+    code: 'worker.agent.privateRefusal',
+    message: 'private refusal sentinel',
+    details: { resource: 'private resource sentinel' },
+    retry: { kind: 'same_request' },
+  });
+  jest.spyOn(h.localWorker, 'dispatch').mockRejectedValueOnce(refusal);
+  try {
+    const run = await h.turns.begin(request());
+    const result = await run.settled;
+    const expected = {
+      kind: 'permission_denied',
+      code: 'worker.agent.privateRefusal',
+      message: 'This chat turn could not be dispatched.',
+      retry: { kind: 'never' },
+    };
+    expect(result).toMatchObject({ status: 'failed', error: expected });
+    expect((await h.operations.get(run.ref.operationId))?.error).toEqual(
+      expected,
+    );
+    expect(JSON.stringify(result)).not.toContain('sentinel');
+    expect(h.turns.sinkFor('run')).toBeNull();
+  } finally {
+    h.close();
+  }
+});
+
+it('cancellation while reading a refused dispatch wins over its typed failure', async () => {
+  const h = compose(join(root, 'ledger.sqlite'), controlledWorker().worker);
+  const controller = new AbortController();
+  const refusal = new CanopyOperationError({
+    kind: 'unavailable',
+    code: 'core.delegation.notStarted',
+    message: 'private refusal',
+    retry: { kind: 'never' },
+  });
+  jest.spyOn(h.localWorker, 'dispatch').mockRejectedValueOnce(refusal);
+  const get = h.operations.get.bind(h.operations);
+  jest.spyOn(h.operations, 'get').mockImplementationOnce(async (id) => {
+    controller.abort();
+    return get(id);
+  });
+  try {
+    const run = await h.turns.begin(request(), { signal: controller.signal });
+    expect(await run.settled).toMatchObject({ status: 'cancelled' });
+    expect(await h.operations.get(run.ref.operationId)).toMatchObject({
+      status: 'cancelled',
+    });
+    expect(h.turns.sinkFor('run')).toBeNull();
+  } finally {
+    h.close();
+  }
 });

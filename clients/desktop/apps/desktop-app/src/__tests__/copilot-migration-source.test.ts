@@ -1,4 +1,5 @@
 import type * as NodeFiles from 'node:fs/promises';
+import type * as RotationAttempt from '../main/copilot/rotation-attempt';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -29,6 +30,8 @@ const mockDecrypt = jest.fn((raw: Buffer): string => {
 });
 jest.mock('../main/lib/paths', () => ({
   getCopilotCredentialFilePath: (): string => mockFile,
+  getCopilotRotationAttemptPath: (): string =>
+    join(root, 'copilot-rotation-attempt.json'),
 }));
 jest.mock('../main/copilot/rotation-attempt', () => ({
   writeCopilotRotationAttempt: (): Promise<void> => Promise.resolve(),
@@ -76,6 +79,69 @@ async function proof(): Promise<CopilotMigrationQuiescence> {
 function encoded(value: unknown): Buffer {
   return Buffer.from(`synthetic:${JSON.stringify(value)}`);
 }
+it.each(['absent', 'present', 'unreadable', 'stale'] as const)(
+  'P8 diagnostic %s is observational and cannot change source capture or admit legacy demand',
+  async (kind) => {
+    const diagnostic = jest.requireActual<typeof RotationAttempt>(
+      '../main/copilot/rotation-attempt',
+    );
+    const path = join(root, 'copilot-rotation-attempt.json');
+    const bytes = encoded({ version: 1, ...grant });
+    await writeFile(mockFile, bytes);
+    if (kind === 'present' || kind === 'stale')
+      await diagnostic.writeCopilotRotationAttempt({
+        attemptId: kind,
+        bootId: 'departed-boot',
+        accountEpoch: {
+          host: grant.host,
+          id: kind === 'stale' ? 'foreign-account' : grant.id,
+          entryId: 'not-an-authoritative-entry',
+        },
+        fromDigest: 'diagnostic-only-digest',
+      });
+    else if (kind === 'unreadable') await writeFile(path, 'not json');
+    const previous = kind === 'absent' ? null : await readFile(path);
+    expect(await diagnostic.probeCopilotRotationAttempt()).toBe(
+      kind === 'stale' ? 'present' : kind,
+    );
+    const frozen = await proof();
+    expect(() => readCopilotCredential()).toThrow();
+    await frozen.withSource(async (source): Promise<void> => {
+      expect(await source.capture()).toMatchObject({
+        kind: 'present',
+        grant: { refreshToken: grant.refreshToken },
+      });
+    });
+    expect(await readFile(mockFile)).toEqual(bytes);
+    if (previous) expect(await readFile(path)).toEqual(previous);
+    else await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+it('P8 late diagnostic completion cannot remove a newer attempt or mutate the stored grant', async () => {
+  const diagnostic = jest.requireActual<typeof RotationAttempt>(
+    '../main/copilot/rotation-attempt',
+  );
+  const path = join(root, 'copilot-rotation-attempt.json');
+  const bytes = encoded({ version: 1, ...grant });
+  await writeFile(mockFile, bytes);
+  const original = {
+    attemptId: 'old-attempt',
+    bootId: 'boot',
+    accountEpoch: { host: grant.host, id: grant.id, entryId: 'old-entry' },
+    fromDigest: 'diagnostic-only-digest',
+  };
+  await diagnostic.writeCopilotRotationAttempt(original);
+  const newer = { ...original, attemptId: 'new-attempt' };
+  await diagnostic.writeCopilotRotationAttempt(newer);
+  const retained = await readFile(path);
+  await diagnostic.removeCopilotRotationAttempt(original.attemptId);
+  expect(await readFile(path)).toEqual(retained);
+  expect(retained.toString()).not.toContain(grant.refreshToken);
+  expect(retained.toString()).not.toContain(grant.accessToken);
+  await diagnostic.removeCopilotRotationAttempt(newer.attemptId);
+  expect(await diagnostic.probeCopilotRotationAttempt()).toBe('absent');
+  expect(await readFile(mockFile)).toEqual(bytes);
+});
 it.each([false, true])(
   'captures %s revisioned source without adoption, ID minting or ciphertext rewrite, and core observes those same bytes',
   async (revisioned) => {

@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import { access, readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
+import { rejectGitDiffFailure } from '../../lib/git-diff-failure';
 import { getGitExecutableCommand } from '../../lib/git-executable';
 import { setOutput, writeOutputFile } from '../_lib/output';
 import { runWithActionEnvironment } from '../_lib/action-env';
@@ -157,6 +158,15 @@ async function runGit(
     },
   );
   return trim ? result.stdout.trim() : result.stdout;
+}
+
+/** Diff and untracked reads reject with a typed error; they never yield ''. */
+function runGitDiffRead(
+  args: string[],
+  cwd: string,
+  trim = true,
+): Promise<string> {
+  return rejectGitDiffFailure(() => runGit(args, cwd, trim));
 }
 
 function parseBooleanInput(
@@ -478,18 +488,16 @@ async function loadCombinedChangedFiles(
 ): Promise<ChangedFileRecord[]> {
   const diffRef = includeUncommitted ? diffBaseRef : `${diffBaseRef}..HEAD`;
   const [statusOutput, numstatOutput, untrackedOutput] = await Promise.all([
-    runGit(
+    runGitDiffRead(
       ['diff', diffRef, '--name-status', '--find-renames', '--find-copies'],
       cwd,
-    ).catch(() => ''),
-    runGit(
+    ),
+    runGitDiffRead(
       ['diff', diffRef, '--numstat', '--find-renames', '--find-copies'],
       cwd,
-    ).catch(() => ''),
+    ),
     includeUncommitted
-      ? runGit(['ls-files', '--others', '--exclude-standard'], cwd).catch(
-          () => '',
-        )
+      ? runGitDiffRead(['ls-files', '--others', '--exclude-standard'], cwd)
       : Promise.resolve(''),
   ]);
 
@@ -612,10 +620,10 @@ function buildNewFilePatch(relativePath: string, content: string): string {
 }
 
 async function buildUntrackedDiff(cwd: string): Promise<string> {
-  const untrackedOutput = await runGit(
+  const untrackedOutput = await runGitDiffRead(
     ['ls-files', '--others', '--exclude-standard'],
     cwd,
-  ).catch(() => '');
+  );
   const untrackedFiles = untrackedOutput.split(/\r?\n/).filter(Boolean);
   let diff = '';
 
@@ -644,9 +652,7 @@ async function buildUntrackedDiff(cwd: string): Promise<string> {
 }
 
 async function buildUncommittedDiff(cwd: string): Promise<string> {
-  const trackedDiff = await runGit(['diff', 'HEAD'], cwd, false).catch(
-    () => '',
-  );
+  const trackedDiff = await runGitDiffRead(['diff', 'HEAD'], cwd, false);
   const untrackedDiff = await buildUntrackedDiff(cwd);
   return `${trackedDiff}${untrackedDiff}`;
 }
@@ -724,9 +730,7 @@ async function collectRepoDiffContext(
 
   const diffBaseRef = mergeBase ?? 'HEAD';
   const committedDiff = mergeBase
-    ? await runGit(['diff', `${mergeBase}..HEAD`], repoPath, false).catch(
-        () => '',
-      )
+    ? await runGitDiffRead(['diff', `${mergeBase}..HEAD`], repoPath, false)
     : '';
   const uncommittedDiff = includeUncommitted
     ? await buildUncommittedDiff(repoPath)

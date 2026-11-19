@@ -578,6 +578,9 @@ function SharedActivityPanelAdapterContents({
     notes: true,
     prompts: true,
     attachments: true,
+    // A project the scope can write to offers Add even with no files yet
+    // (CAN-7008).
+    'workspace-files': scopeCapabilities.cloudWorkspaceFileWrite === true,
     memory: true,
     plugins: true,
   };

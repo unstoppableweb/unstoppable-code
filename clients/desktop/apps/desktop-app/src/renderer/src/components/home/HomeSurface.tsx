@@ -88,12 +88,15 @@ import {
   Tooltip,
 } from '@canopy/ui-shared/components';
 import { defaultChatPlaceholder } from '@canopy/ui-shared/lib';
+import { DEFAULT_COWORK_WORKSPACE_ID } from '@canopy/protocol/ui-labels';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { isRegisteredCoworkWorkspaceId } from '@/lib/cowork-registry';
+import { useCanopyOrgProjectsEnabled } from '@/hooks/useCanopyOrgProjectsEnabled';
 import {
   getHomeScope,
   resolveHomeContextRebind,
-  shouldAttemptHomeSeed,
   shouldRebindHomeToContext,
   shouldShowHomeWorkspacePicker,
   useHomeScope,
@@ -102,6 +105,15 @@ import {
   type HomeContextRebind,
 } from './homeScope';
 import { HomeRestoreNotices } from './HomeRestoreNotices';
+import {
+  homeSeedKey,
+  homeSendTargetSessionKey,
+  isPersonalDefaultChatsRegistered,
+  resolveHomeTargetReadiness,
+  useHomeDefaultChatsTarget,
+  useHomePendingDeadline,
+  waitForHomeDefaultChats,
+} from './homeSendTarget';
 import {
   installHomeDraftPersistence,
   keepHomeDraftApart,
@@ -269,6 +281,31 @@ export function HomeSurface(props: HomeSurfaceProps): JSX.Element {
   );
 }
 
+/** Validate actual membership and cowork dispatch, including scoped windows. */
+function isHomeSendTargetUsable(
+  workspaceId: string | null,
+  failedWorkspaceIds = useProjectsStore.getState().failedWorkspaceIds,
+): boolean {
+  if (workspaceId === null) return false;
+  const scoped = useStandaloneChatStore.getState().scopedWorkspaceId;
+  if (scoped !== null && scoped !== workspaceId) return false;
+  const scope = getHomeScope();
+  if (!scope.isInScope(workspaceId)) return false;
+  if (isHomeCloudTarget(workspaceId)) {
+    // Keep a selected offline or removed cloud project with its draft. The
+    // cloud send path reports why it cannot send; local target provisioning
+    // must not hide that refusal or redirect the draft to another project.
+    return true;
+  }
+  const state = useProjectsStore.getState();
+  const project = state.projects.find((item) => item.id === workspaceId);
+  return (
+    project !== undefined &&
+    !failedWorkspaceIds.has(workspaceId) &&
+    (project.type !== 'cowork' || isRegisteredCoworkWorkspaceId(workspaceId))
+  );
+}
+
 function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const composerId = useId();
   const composerActionScope = useMemo(
@@ -278,12 +315,18 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const [workspaceCommandOpenSignal, setWorkspaceCommandOpenSignal] =
     useState(0);
   const projects = useProjectsStore((s) => s.projects);
+  const failedWorkspaceIds = useProjectsStore((s) => s.failedWorkspaceIds);
   const scopingContext = useSidebarScopingContext();
   const homeScope = useHomeScope();
-  // `composerDisabled` (any-workspace): the composer only locks when there is
-  // no selectable send target at all — a cowork-only fresh install must still
-  // get a fully functional composer targeting the cowork workspace.
-  const composerDisabled = homeScope.fallbackWorkspaceId === null;
+  const projectsHydrated = useProjectsStore(
+    (state) => state.hasHydratedProjects,
+  );
+  const contextHydrated = useWorkspaceContextStore((state) => state.hydrated);
+  const orgProjectsEnabled = useCanopyOrgProjectsEnabled();
+  const contextReady = !orgProjectsEnabled || contextHydrated;
+  const scopedWorkspaceId = useStandaloneChatStore(
+    (state) => state.scopedWorkspaceId,
+  );
 
   const belowComposerGallery =
     variant === 'page' && isHomeBelowComposerGalleryEnabled();
@@ -361,6 +404,62 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     })),
   );
 
+  // CAN-7038: the composer's controls lock only while there is no target to
+  // send to: nothing selectable, or Personal's Chats selected (or the only
+  // seed) before it is registered as a cowork target. The editor itself stays
+  // editable throughout, so a draft typed meanwhile is kept. Pending shows
+  // Send's spinner; unavailable shows a notice with Try again.
+  const personalDefaultRegistered = useProjectsStore((state) =>
+    isPersonalDefaultChatsRegistered(state.projects),
+  );
+  const needsPersonalDefaultChats =
+    homeScope.defaultCoworkId === DEFAULT_COWORK_WORKSPACE_ID &&
+    (workspaceId === DEFAULT_COWORK_WORKSPACE_ID ||
+      (workspaceId === null &&
+        (homeScope.fallbackWorkspaceId === null ||
+          homeScope.fallbackWorkspaceId === DEFAULT_COWORK_WORKSPACE_ID)));
+  const defaultChats = useHomeDefaultChatsTarget(needsPersonalDefaultChats);
+  const resolvedReadiness = resolveHomeTargetReadiness({
+    workspaceId,
+    fallbackWorkspaceId: homeScope.fallbackWorkspaceId,
+    personalDefaultRegistered,
+    defaultChats: defaultChats.state,
+    targetUsable: isHomeSendTargetUsable(workspaceId, failedWorkspaceIds),
+    hydrated: projectsHydrated,
+    contextReady,
+  });
+  const startupDeadline = useHomePendingDeadline(
+    resolvedReadiness === 'pending',
+    homeSendTargetSessionKey(),
+  );
+  const targetReadiness =
+    resolvedReadiness === 'pending' && startupDeadline.expired
+      ? 'unavailable'
+      : resolvedReadiness;
+  const composerDisabled = targetReadiness !== 'ready';
+  const retrySendTarget = (): void => {
+    startupDeadline.retry();
+    defaultChats.retry();
+    if (!contextReady) {
+      void useWorkspaceContextStore.getState().hydrate();
+    }
+    const projectsState = useProjectsStore.getState();
+    const targetId = workspaceId ?? homeScope.fallbackWorkspaceId;
+    if (
+      contextReady &&
+      targetId !== null &&
+      projectsState.failedWorkspaceIds.has(targetId)
+    ) {
+      // A failed refresh preserves registered targets. Reload their inventory;
+      // provisioning an already registered Chats target would do no work.
+      if (projectsState.projectInventoryStatus !== 'loading') {
+        void projectsState.loadProjects({ silent: true });
+      }
+    } else if (contextReady && !needsPersonalDefaultChats) {
+      void waitForHomeDefaultChats(homeScope.defaultCoworkId);
+    }
+  };
+
   // CAN-6019: Locate folder's progress, for the missing-folder notice it was
   // pressed on. Any other notice ignores it.
   const [locateFolder, setLocateFolder] = useState<{
@@ -423,35 +522,73 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   // selected Personal/organization context; a switch that leaves the
   // selection in another context re-targets it.
   //
-  // One attempt per project count: an attempt that ran before the projects
-  // store loaded found nothing to select, so it retries once they arrive
-  // rather than leaving Home on "Choose project" with Send disabled.
-  const [seedAttemptProjectCount, setSeedAttemptProjectCount] = useState<
-    number | null
-  >(null);
-  const projectCount = projects.length;
+  // One attempt per seed key (CAN-7038): the context, what the scope would
+  // seed, whether that target is usable yet, and the project count. An
+  // attempt that ran before the projects store loaded, before the context
+  // hydrated, or before Personal's Chats was registered found nothing usable,
+  // so it retries once any of those change rather than leaving Home on
+  // "Choose project" with Send disabled.
+  const seedAttemptKey = useRef<string | null>(null);
+  const seedFallbackWorkspaceId = homeScope.fallbackWorkspaceId;
+  const seedKey = homeSeedKey({
+    contextKey: JSON.stringify([
+      homeSendTargetSessionKey(),
+      contextReady,
+      startupDeadline.generation,
+      scopedWorkspaceId,
+    ]),
+    fallbackWorkspaceId: seedFallbackWorkspaceId,
+    fallbackUsable: isHomeSendTargetUsable(
+      seedFallbackWorkspaceId,
+      failedWorkspaceIds,
+    ),
+    projectCount: projects.length,
+    projectIds: projects.map((project) => project.id),
+    hydrated: projectsHydrated,
+  });
   useEffect(() => {
     if (
-      !shouldAttemptHomeSeed(workspaceId, seedAttemptProjectCount, projectCount)
-    ) {
+      workspaceId !== null ||
+      !contextReady ||
+      !projectsHydrated ||
+      seedAttemptKey.current === seedKey
+    )
       return;
-    }
-    setSeedAttemptProjectCount(projectCount);
+    seedAttemptKey.current = seedKey;
+    let current = true;
+    const session = homeSendTargetSessionKey();
+    const selectionGeneration =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    let preferencesTimer: ReturnType<typeof setTimeout> | undefined;
 
     void (async (): Promise<void> => {
       let mruWorkspaceId: string | null = null;
       try {
-        const preferences = await window.api.loadPreferences();
-        mruWorkspaceId = preferences.lastActiveContext?.workspaceId ?? null;
+        // Preferences are optional. A hung read must not hold a usable target.
+        const preferences = await Promise.race([
+          window.api.loadPreferences(),
+          new Promise<null>((resolve) => {
+            preferencesTimer = setTimeout(() => resolve(null), 1_000);
+          }),
+        ]);
+        mruWorkspaceId = preferences?.lastActiveContext?.workspaceId ?? null;
       } catch (error) {
         // Without preferences the seed falls back to the first workspace.
         reportClientAppError(error);
         mruWorkspaceId = null;
+      } finally {
+        clearTimeout(preferencesTimer);
       }
 
       // Re-read live state instead of the closed-over `projects`/`workspaceId`
       // in case something else already selected a workspace while awaiting.
-      if (useHomeComposerStore.getState().workspaceId !== null) {
+      if (
+        !current ||
+        homeSendTargetSessionKey() !== session ||
+        useHomeComposerStore.getState().workspaceSelectionGeneration !==
+          selectionGeneration ||
+        useHomeComposerStore.getState().workspaceId !== null
+      ) {
         return;
       }
       const scope = getHomeScope();
@@ -462,11 +599,21 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         ? mruWorkspaceId
         : scope.fallbackWorkspaceId;
 
-      if (seededWorkspaceId !== null) {
-        selectWorkspace(seededWorkspaceId);
+      // Personal's Chats is seeded only once registered: before that its id
+      // would dispatch as a code project. Its registration changes the seed
+      // key, which retries this.
+      if (
+        seededWorkspaceId !== null &&
+        isHomeSendTargetUsable(seededWorkspaceId)
+      ) {
+        selectWorkspace(seededWorkspaceId, { preserveDraft: true });
       }
     })();
-  }, [seedAttemptProjectCount, projectCount, workspaceId, selectWorkspace]);
+    return (): void => {
+      current = false;
+      clearTimeout(preferencesTimer);
+    };
+  }, [seedKey, workspaceId, selectWorkspace, contextReady, projectsHydrated]);
 
   const editor = useMemo(() => createChatEditor(), []);
   // MainPage keeps an embedded instance mounted (hidden) under other pages;
@@ -1328,6 +1475,22 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     );
     if (!draftWorkspaceId) return;
     if (pendingAttachmentImportIds.length > 0) return;
+    // Use the controls' resolver against live state for Enter and click alike.
+    const currentScope = getHomeScope();
+    if (
+      resolveHomeTargetReadiness({
+        workspaceId: draftWorkspaceId,
+        fallbackWorkspaceId: currentScope.fallbackWorkspaceId,
+        personalDefaultRegistered: isPersonalDefaultChatsRegistered(),
+        defaultChats: defaultChats.state,
+        targetUsable: isHomeSendTargetUsable(draftWorkspaceId),
+        hydrated: useProjectsStore.getState().hasHydratedProjects,
+        contextReady:
+          !orgProjectsEnabled || useWorkspaceContextStore.getState().hydrated,
+      }) !== 'ready'
+    ) {
+      return;
+    }
 
     if (mode === 'pipeline' && !isHomeCloudTarget(draftWorkspaceId)) {
       const taskText = buildPipelineTaskText(text, attachments);
@@ -1474,6 +1637,29 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         }
         aboveNotices={[
           // Notice rows stay outside the composer; their frame owns the boundary.
+          targetReadiness === 'unavailable' ? (
+            // CAN-7038: Personal's Chats couldn't be set up in time. The
+            // draft and selection stay; Try again re-observes a request still
+            // running rather than stacking another behind it.
+            <Notice
+              key="home-default-chats"
+              data-testid="home-default-chats-unavailable"
+              intent="attention"
+              title="Couldn’t prepare this chat"
+              className="pointer-events-auto"
+              actions={
+                <NoticeButton
+                  variant="primary"
+                  data-testid="home-default-chats-retry"
+                  onClick={retrySendTarget}
+                >
+                  Try again
+                </NoticeButton>
+              }
+            >
+              Your draft is kept. Try again or choose a project.
+            </Notice>
+          ) : null,
           showsRestoreNotices ? (
             <HomeRestoreNotices key="home-restore" />
           ) : null,
@@ -1699,6 +1885,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 editor={editor}
                 hintDraftRevision={hintDraftRevision}
                 disabled={composerDisabled}
+                targetPending={targetReadiness === 'pending'}
                 shortcutEnabled={variant === 'page'}
                 onSend={() => handleSend()}
                 onEditorExternallyChanged={handleEditorExternallyChanged}

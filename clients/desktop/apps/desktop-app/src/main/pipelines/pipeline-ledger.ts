@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import type { WorkerPipelineOwnerLedgerOperation } from '@canopy/protocol/canopy-core';
 import { BRAND } from '@canopy/brand/current';
 import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type {
   ApprovalRule,
-  ApprovalRuleTarget,
+  ApprovalCheck,
 } from '@canopy/execution-engine/types/approvals';
 import type { CodexHostToolPolicy } from '@canopy/execution-engine/node/codex-runtime/thread-handle';
 import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
@@ -65,6 +66,11 @@ const LEDGER_TOOL_KEYS: readonly LedgerToolKey[] = [
 export interface PipelineLedgerAttemptTools extends LedgerToolsRuntime {
   /** The Ledger block for a new thread's or session's instructions. */
   systemPrompt(): string;
+  operatePipeline(
+    operation: WorkerPipelineOwnerLedgerOperation,
+    params: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown>;
 }
 
 /**
@@ -108,6 +114,7 @@ interface OpenAttempt {
   readonly request: PipelineLedgerAttemptRequest;
   /** Routes opened for the attempt's agent, released when it closes. */
   readonly routes: Set<() => void>;
+  readonly operationApprovals: Map<string, ApprovalSessionHandle>;
 }
 
 /** The step providers whose Ledger calls the host gates itself. */
@@ -132,6 +139,47 @@ export function getPipelineLedgerAttemptTools(
   return attemptKey === undefined
     ? undefined
     : openAttempts.get(attemptKey)?.tools;
+}
+
+/** Dispatches with the attempt's original scope, actor, masking and approval rules. */
+export async function operatePipelineLedgerAttempt(
+  attemptKey: string,
+  cwd: string,
+  operation: WorkerPipelineOwnerLedgerOperation,
+  params: unknown,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const open = openAttempts.get(attemptKey);
+  if (open === undefined) throw new Error('This Ledger attempt is not open.');
+  const key =
+    operation === 'core.ledger.entry.add'
+      ? 'add_ledger_entry'
+      : operation === 'core.ledger.entry.update'
+        ? 'update_ledger_entry'
+        : 'search_ledger_entries';
+  let approval = open.operationApprovals.get(cwd);
+  if (approval === undefined) {
+    approval = createPipelineLedgerApprovalSession(
+      attemptKey,
+      open.request,
+      cwd,
+      open.request.harness,
+    );
+    open.operationApprovals.set(cwd, approval);
+  }
+  const target = ledgerToolApprovalTarget(open.request.harness, key);
+  const outcome = await approval.check(target, {
+    title: `Use ${CANOPY_INJECTED_TOOL_REGISTRY[key].displayName}?`,
+    details: target,
+    toolUseId: `pipeline-ledger-operation-${randomUUID()}`,
+  });
+  if (
+    outcome.decision !== 'allow' ||
+    signal.aborted ||
+    openAttempts.get(attemptKey) !== open
+  )
+    throw new Error('This workflow step may not use this tool.');
+  return open.tools.operatePipeline(operation, params, signal);
 }
 
 /** The Claude names of the Ledger tools on the brand's injected server. */
@@ -180,7 +228,7 @@ export interface PipelineLedgerCodexTools {
 function ledgerToolApprovalTarget(
   provider: PipelineLedgerProvider,
   key: LedgerToolKey,
-): ApprovalRuleTarget {
+): Extract<ApprovalCheck, { kind: 'tool' | 'mcp' }> {
   const tool = CANOPY_INJECTED_TOOL_REGISTRY[key];
   return provider === 'codex'
     ? { kind: 'tool', toolName: tool.codexToolName }
@@ -418,7 +466,12 @@ async function openAttempt(
   // A running agent is not an assignable owner.
   owners.noteRunning(agentSessionId);
   const attemptKey = randomUUID();
-  const open: OpenAttempt = { tools, request, routes: new Set() };
+  const open: OpenAttempt = {
+    tools,
+    request,
+    routes: new Set(),
+    operationApprovals: new Map(),
+  };
   openAttempts.set(attemptKey, open);
   let routeKey: string | undefined;
   let routeApproval: ApprovalSessionHandle | undefined;
@@ -496,6 +549,9 @@ async function openAttempt(
         getMcpHttpProxyService().unregisterCanopyWorktreeSessionRoute(routeKey);
       }
       routeApproval?.dispose();
+      for (const approval of open.operationApprovals.values())
+        approval.dispose();
+      open.operationApprovals.clear();
       for (const release of Array.from(open.routes)) release();
       if (outcome.kind === 'paused') {
         owners.notePaused({

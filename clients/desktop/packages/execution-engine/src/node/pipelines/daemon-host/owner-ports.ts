@@ -13,6 +13,7 @@ import {
   WORKER_PIPELINE_OWNER_PRECOMMIT_ERROR_MAX,
   WORKER_PIPELINE_OWNER_PRECOMMIT_REPOS_MAX,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
+  ledgerUnavailableResult,
 } from '@canopy/protocol/canopy-core';
 import { getExecutionHarnessForModel } from '@canopy/execution-engine/model-catalog';
 import {
@@ -53,6 +54,8 @@ import {
   type RemoteLedgerOperate,
 } from '../../ledger-tools/remote-session';
 import type { LedgerChatToolsSession } from '../../ledger-tools/runtime';
+import type { LedgerToolsRuntime } from '../../ledger-tools/runtime';
+import type { PipelineLedgerOwnerLifetime } from './ledger-owner-lifetime';
 import type {
   CodexPipelineEnvironmentProfile,
   CodexPipelineLedgerTools,
@@ -188,6 +191,8 @@ export function createDaemonPipelineOwnerPorts(
      * run here, over `owner.ledger.operation`, instead of in the owner.
      */
     readonly remoteLedgerTools?: boolean;
+    /** Local Ledger tools are hosted here, but their writer remains in the app. */
+    readonly ledgerOwner?: PipelineLedgerOwnerLifetime;
   },
 ): DaemonPipelineOwnerPorts {
   const step = (
@@ -380,9 +385,14 @@ export function createDaemonPipelineOwnerPorts(
     {
       readonly session: LedgerChatToolsSession;
       readonly permissionPreset: string;
+      readonly tools: LedgerToolsRuntime;
+      readonly ownerSignal?: AbortSignal;
+      readonly setCwd: (cwd: string) => void;
     }
   >();
   const hostedOwner = ledgerGlobalOwnerOf(run.owner);
+  const hostedLedgerTools =
+    run.remoteLedgerTools === true || run.ledgerOwner !== undefined;
 
   /** One Ledger operation as the attempt the remote owner opened. */
   const operate =
@@ -394,8 +404,10 @@ export function createDaemonPipelineOwnerPorts(
           'jobId' | 'stepId' | 'attempt' | 'iteration' | 'childExecutionId'
         >
       >,
+      cwdOf?: () => string | undefined,
     ): RemoteLedgerOperate =>
     async (operation, params, signal) => {
+      const cwd = cwdOf?.();
       const json = ledgerOperationJson.safeParse(params).data;
       // Params no request can carry are the agent's to fix.
       if (json === undefined)
@@ -405,6 +417,7 @@ export function createDaemonPipelineOwnerPorts(
           {
             action: 'owner.ledger.operation',
             attemptKey,
+            ...(run.ledgerOwner && cwd !== undefined ? { cwd } : {}),
             operation,
             params: json,
           },
@@ -422,6 +435,9 @@ export function createDaemonPipelineOwnerPorts(
       // keeps them in the app), and the owner request names only the
       // harnesses it hosts; an OpenCode attempt here opens nothing.
       if (request.harness === 'opencode') return null;
+      if (hostedLedgerTools && hostedOwner === null) return null;
+      const ownerSignal = run.ledgerOwner?.current();
+      if (ownerSignal === null) return null;
       const at = {
         jobId: request.physicalJobId,
         stepId: request.stepId,
@@ -429,48 +445,56 @@ export function createDaemonPipelineOwnerPorts(
         iteration: request.iteration,
         ...executionChild(request.executionId),
       };
-      const opened = expectKind(
-        await ask(
-          {
-            action: 'owner.ledger.open',
-            physicalJobId: request.physicalJobId,
-            logicalJobId: request.logicalJobId,
-            jobName: request.jobName,
-            stepId: request.stepId,
-            stepName: request.stepName,
-            attempt: request.attempt,
-            iteration: request.iteration,
-            harness: request.harness,
-            permissionPreset: request.permissionPreset,
-            ...(request.pipelineId !== undefined
-              ? { pipelineId: request.pipelineId }
-              : {}),
-            ...(request.pipelineName !== undefined
-              ? { pipelineName: request.pipelineName }
-              : {}),
-            ...(request.resumedAgentSessionId !== undefined
-              ? { resumedAgentSessionId: request.resumedAgentSessionId }
-              : {}),
-            ...(request.predecessorAgentSessionId !== undefined
-              ? { predecessorAgentSessionId: request.predecessorAgentSessionId }
-              : {}),
-            ...(request.checkpointId !== undefined
-              ? { checkpointId: request.checkpointId }
-              : {}),
-            ...(request.model !== undefined ? { model: request.model } : {}),
-            ...(request.thinkingEffort !== undefined
-              ? { thinkingEffort: request.thinkingEffort }
-              : {}),
-          },
-          PIPELINE_OWNER_DEADLINE_MS.short,
-          undefined,
-          at,
-        ),
-        'ledger.open',
-      ).attempt;
+      const opening = ask(
+        {
+          action: 'owner.ledger.open',
+          physicalJobId: request.physicalJobId,
+          logicalJobId: request.logicalJobId,
+          jobName: request.jobName,
+          stepId: request.stepId,
+          stepName: request.stepName,
+          attempt: request.attempt,
+          iteration: request.iteration,
+          harness: request.harness,
+          permissionPreset: request.permissionPreset,
+          ...(request.pipelineId !== undefined
+            ? { pipelineId: request.pipelineId }
+            : {}),
+          ...(request.pipelineName !== undefined
+            ? { pipelineName: request.pipelineName }
+            : {}),
+          ...(request.resumedAgentSessionId !== undefined
+            ? { resumedAgentSessionId: request.resumedAgentSessionId }
+            : {}),
+          ...(request.predecessorAgentSessionId !== undefined
+            ? { predecessorAgentSessionId: request.predecessorAgentSessionId }
+            : {}),
+          ...(request.checkpointId !== undefined
+            ? { checkpointId: request.checkpointId }
+            : {}),
+          ...(request.model !== undefined ? { model: request.model } : {}),
+          ...(request.thinkingEffort !== undefined
+            ? { thinkingEffort: request.thinkingEffort }
+            : {}),
+        },
+        PIPELINE_OWNER_DEADLINE_MS.short,
+        ownerSignal,
+        at,
+      ).catch((error: unknown) => {
+        if (ownerSignal?.aborted)
+          return {
+            result: {
+              status: 'owner',
+              value: { kind: 'ledger.open', attempt: null },
+            },
+          } satisfies PipelineOwnerSettlement;
+        throw error;
+      });
+      const opened = expectKind(await opening, 'ledger.open').attempt;
+      if (ownerSignal?.aborted) return null;
       if (opened === null) return null;
-      if (run.remoteLedgerTools === true)
-        return hostedAttempt(request, opened, at);
+      if (hostedLedgerTools)
+        return hostedAttempt(request, opened, at, ownerSignal);
       const attempt: PipelineLedgerAttempt = {
         attemptKey: opened.attemptKey,
         agentSessionId: opened.agentSessionId,
@@ -524,8 +548,11 @@ export function createDaemonPipelineOwnerPorts(
         'jobId' | 'stepId' | 'attempt' | 'iteration' | 'childExecutionId'
       >
     >,
+    ownerSignal?: AbortSignal,
   ): PipelineLedgerAttempt | null {
     if (hostedOwner === null) return null;
+    const attemptKey = run.ledgerOwner ? randomUUID() : opened.attemptKey;
+    let cwd: string | undefined;
     let live = true;
     const name = request.pipelineName?.trim()
       ? `${request.stepName} · ${request.pipelineName.trim()}`
@@ -558,20 +585,54 @@ export function createDaemonPipelineOwnerPorts(
         thinkingEffort: request.thinkingEffort ?? null,
         mode: request.permissionPreset,
       },
-      operate: operate(opened.attemptKey, at),
+      globalScope: request.target.kind === 'global',
+      operate: async (operation, params, signal) =>
+        operate(opened.attemptKey, at, () => cwd)(
+          operation,
+          params,
+          ownerSignal ? AbortSignal.any([signal, ownerSignal]) : signal,
+        ),
     });
-    hostedAttempts.set(opened.attemptKey, {
+    // A facade is issued from the start. Losing the app never leaves a child
+    // pointing at an Electron HTTP route, nor revives its handles on reconnect.
+    const tools: LedgerToolsRuntime = {
+      execute: async (key, args, invocation) => {
+        if (ownerSignal?.aborted)
+          return ledgerUnavailableResult('ledger_runtime_unavailable');
+        try {
+          const result = await session.execute(key, args, invocation);
+          if (!ownerSignal?.aborted) return result;
+        } catch (error) {
+          if (!ownerSignal?.aborted) throw error;
+        }
+        // An aborted mutation may already be durable in the app. No retry or
+        // replay is issued here, even if that app attaches again.
+        return ledgerUnavailableResult(
+          key === 'search_ledger_entries'
+            ? 'ledger_runtime_unavailable'
+            : 'mutation_outcome_unknown',
+        );
+      },
+    };
+    hostedAttempts.set(attemptKey, {
       session,
+      tools,
+      setCwd: (folder): void => {
+        cwd = folder;
+      },
+      ...(ownerSignal && { ownerSignal }),
       permissionPreset: request.permissionPreset,
     });
     let route: Promise<LedgerToolsMcpRoute> | undefined;
     return {
-      attemptKey: opened.attemptKey,
+      attemptKey,
       agentSessionId: opened.agentSessionId,
       instructions: session.systemPrompt(),
-      openSubprocessTools: async () => {
+      openSubprocessTools: async (cwd) => {
         if (!live) throw new Error('The pipeline agent attempt has ended.');
-        route ??= startLedgerToolsMcpRoute(session, (tool) =>
+        const hosted = hostedAttempts.get(attemptKey);
+        hosted?.setCwd(cwd);
+        route ??= startLedgerToolsMcpRoute(tools, (tool) =>
           headlessLedgerToolAllowed(request.permissionPreset, tool),
         );
         const open = await route;
@@ -584,9 +645,10 @@ export function createDaemonPipelineOwnerPorts(
       close: (outcome) => {
         if (!live) return;
         live = false;
-        hostedAttempts.delete(opened.attemptKey);
+        hostedAttempts.delete(attemptKey);
         session.dispose();
         void route?.then((open) => open.close()).catch(() => undefined);
+        if (ownerSignal?.aborted) return;
         void ask(
           {
             action: 'owner.ledger.close',
@@ -608,13 +670,18 @@ export function createDaemonPipelineOwnerPorts(
     if (attemptKey === undefined) return undefined;
     const hosted = hostedAttempts.get(attemptKey);
     if (hosted !== undefined) {
+      if (hosted.ownerSignal?.aborted) return undefined;
+      hosted.setCwd(cwd);
       // A remote owner's attempt: the tools run here, and an unattended step
       // may call exactly the three Feed tools.
       const { specs, policy } = ledgerCodexToolPolicy(
-        hosted.session,
+        hosted.tools,
         (_call, tool) =>
           Promise.resolve(
-            headlessLedgerToolAllowed(hosted.permissionPreset, tool),
+            // A withdrawn epoch can only execute the no-Ledger facade above.
+            // Let it answer explicitly instead of substituting a policy denial.
+            hosted.ownerSignal?.aborted === true ||
+              headlessLedgerToolAllowed(hosted.permissionPreset, tool),
           ),
       );
       return {
@@ -624,7 +691,9 @@ export function createDaemonPipelineOwnerPorts(
         dispose: () => undefined,
       };
     }
-    if (run.remoteLedgerTools === true) return undefined;
+    if (run.ledgerOwner !== undefined)
+      throw new Error('This Ledger attempt is not open.');
+    if (hostedLedgerTools) return undefined;
     const { tools } = expectKind(
       await ask(
         { action: 'owner.ledger.codexTools', attemptKey, cwd },

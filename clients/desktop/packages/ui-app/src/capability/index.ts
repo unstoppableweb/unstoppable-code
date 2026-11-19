@@ -1,5 +1,8 @@
 export * from './accountMcpRows';
-export * from './McpAccountConnectionPicker';
+export * from './AutomationSendAs';
+export * from './McpAccountControls';
+export * from './OrgProjectConnectorsNotice';
+export * from './OrganizationItemsLeftOutNotice';
 export * from './ResourceContext';
 export * from './curatedMcpAdd';
 export * from './mcpConnectionCopy';
@@ -9,6 +12,9 @@ export * from './McpConnectActionButton';
 export * from './CapabilityGate';
 export * from './providerConnectorRows';
 export * from './unifiedPluginEntries';
+export { customizeRowAction } from './customizeRowAction';
+export * from './customizeRelated';
+export * from './CustomizeRelatedSection';
 export * from './marketplaceBrowse';
 export * from './mcpSharedPluginEntryIds';
 export * from './MarketplaceDetailPageShell';
@@ -76,3 +82,10 @@ export * from './claude-mods';
 export { githubRepoRef } from './pluginProvenance';
 export * from './CopyMcpServerDialog';
 export * from './CloudCopyConsentDialog';
+export {
+  customizeDiscoveryIdentity,
+  marketplacePluginTileListing,
+  useCustomizeEntryIdentity,
+} from './customizeCopyIdentity';
+
+export * from './McpRemovalRepair';

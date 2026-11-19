@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 22,
+  "protocolVersion": 24,
   "tunneledChannels": [
     "account-proxy:changed",
     "account-proxy:connect",
@@ -575,6 +575,8 @@
     "org-projects:setup-from-folder",
     "org-projects:setup-progress",
     "org-projects:setup-start",
+    "organization-capabilities:get-layer",
+    "organization-capabilities:layer-changed",
     "panel-layout:delete",
     "panel-layout:initialize-mode",
     "panel-layout:load",
@@ -696,6 +698,7 @@
     "project:source-changes-applied",
     "projects:load",
     "projects:save",
+    "provider-usage:limits-get",
     "recommended-plugins:apply",
     "recommended-plugins:inspect",
     "reference-preview:github",
@@ -927,6 +930,7 @@
     "work-entries:create",
     "work-entries:delete",
     "work-entries:list",
+    "work-entries:list-archived",
     "work-entries:reorder",
     "work-entries:resolve-chat",
     "work-entries:update",

@@ -31,7 +31,7 @@ export async function navigateToLiveChat(
 ): Promise<void> {
   try {
     await openLiveChat(target);
-  } catch {
+  } catch (error) {
     useGitHubStore
       .getState()
       .addToast(
@@ -39,6 +39,8 @@ export async function navigateToLiveChat(
           ? 'This interrupted review chat has no available chat view.'
           : "Couldn't open the chat. It may no longer be available. Try opening it from the sidebar.",
         'error',
+        undefined,
+        { caught: error },
       );
   }
 }

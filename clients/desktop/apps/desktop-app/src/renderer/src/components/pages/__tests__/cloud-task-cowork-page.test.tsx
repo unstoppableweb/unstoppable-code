@@ -18,6 +18,7 @@ import {
   createDesktopCanopyClient,
   createDesktopCapabilities,
 } from '@/client/ipc-canopy-client';
+import { ipcTranscriptReadClient } from '@/client/ipc-transcript-read-client';
 import { cloudCoworkStore } from '@/cloud-chats/cloud-cowork-store';
 import { discardDeletedCloudTask } from '@/cloud-chats/cloud-task-deletion';
 import {
@@ -26,6 +27,8 @@ import {
 } from '@/stores/chat/web-core/task-deletions';
 import { useCloudArchivedTasksStore } from '@/cloud-chats/cloud-archived-tasks';
 import { resetWebCoreServedOperations } from '@/lib/web-core-served-operations';
+import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
+import type { AppAdvisorActionResponse } from '@/lib/app-actions/types';
 import { desktopCostNavigatorFor } from '@/lib/cost/cost-navigator';
 import { createRelayCoreCoworkInvoker } from '@/cloud-chats/relay-invoker';
 import { CloudChatFileTargetContext } from '@/cloud-chats/cloud-chat-file-target';
@@ -41,7 +44,10 @@ import {
   ensureWorktreePanelLayout,
 } from '@/lib/panels/persistence-bridge';
 import { setWorkspacePanelLayoutMode } from '@/lib/panels/workspace-layout-mode-actions';
-import { panelKindsUnavailableFor } from '@/lib/panels/scope-panel-kinds';
+import {
+  layoutScopeServesPanelKind,
+  panelKindsUnavailableFor,
+} from '@/lib/panels/scope-panel-kinds';
 import { listAddablePanels } from '@/lib/panels/registry';
 import { webCoreScopeCapabilities } from '@/lib/web-core-scope-capabilities';
 import { clearWebCoreModelCatalog } from '@/stores/chat/web-core/model-catalog';
@@ -593,6 +599,16 @@ let loseCreateReply = false;
 let forkAnswer: 'apply' | 'refuse' | 'lose' = 'apply';
 /** The claim each core.chat.fork carried, in order. */
 const forkClaims: string[] = [];
+/** The forks the stub made, one per claim it hadn't seen (CAN-5541). */
+let forkCreations = 0;
+/** Whether the web core's manifest serves core.chat.fork (CAN-7007). */
+let servesFork = false;
+/**
+ * The `details` the manifest lists for core.chat.transcript.page (CAN-7027):
+ * `null` leaves the operation out of the manifest, and undefined lists it
+ * with none, as an older web core does.
+ */
+let transcriptPageDetails: string[] | undefined | null = null;
 /**
  * Whether the stub lists projects and tasks, so the cloud cowork store can
  * connect through the relay. Off by default: the cases that seed the store
@@ -836,6 +852,8 @@ let pageGate: Promise<void> | null = null;
  * advertises it (CAN-6755); a chat not listed has none.
  */
 let transcripts: Record<string, unknown[]> = {};
+/** Each delegation's own chat rows, which a delegation target reads. */
+const delegateTranscripts = new Map<string, unknown[]>();
 /**
  * Holds each task snapshot reply until released. The snapshot is read as the
  * request arrives, so a held reply lands stale.
@@ -1036,7 +1054,10 @@ Object.defineProperty(window, 'canopyCore', {
             retry: { kind: 'never' },
           },
         });
-      if (servesCost && request.method === 'core.runtime.manifest.get')
+      if (
+        (servesCost || servesFork || transcriptPageDetails !== null) &&
+        request.method === 'core.runtime.manifest.get'
+      )
         return ok({
           runtime: {
             runtimeId: 'web-core',
@@ -1048,13 +1069,44 @@ Object.defineProperty(window, 'canopyCore', {
             state: 'ready',
           },
           operations: [
-            costOperation('core.cost.scope.get'),
-            {
-              ...costOperation('core.cost.chat.get'),
-              ...(costChatDetails === undefined
-                ? {}
-                : { details: costChatDetails }),
-            },
+            ...(servesCost
+              ? [
+                  costOperation('core.cost.scope.get'),
+                  {
+                    ...costOperation('core.cost.chat.get'),
+                    ...(costChatDetails === undefined
+                      ? {}
+                      : { details: costChatDetails }),
+                  },
+                ]
+              : []),
+            ...(servesFork
+              ? [
+                  {
+                    name: 'core.chat.fork',
+                    kind: 'instruction',
+                    version: 1,
+                    placement: 'core-only',
+                    requiredGrants: ['core.chat.write'],
+                    available: true,
+                  },
+                ]
+              : []),
+            ...(transcriptPageDetails === null
+              ? []
+              : [
+                  {
+                    name: 'core.chat.transcript.page',
+                    kind: 'query',
+                    version: 1,
+                    placement: 'core-only',
+                    requiredGrants: ['core.chat.read'],
+                    available: true,
+                    ...(transcriptPageDetails === undefined
+                      ? {}
+                      : { details: transcriptPageDetails }),
+                  },
+                ]),
           ],
           generatedAt: CREATED_AT,
         });
@@ -1292,6 +1344,35 @@ Object.defineProperty(window, 'canopyCore', {
                   ],
           });
         case 'core.chat.transcript.page': {
+          const target = request.params?.target;
+          // A delegation target reads that delegate's own chat, as the web
+          // core does for the parent's owner, and is not found otherwise.
+          if (
+            typeof target === 'object' &&
+            target !== null &&
+            'kind' in target &&
+            target.kind === 'delegation'
+          ) {
+            const rows =
+              'delegationId' in target &&
+              typeof target.delegationId === 'string'
+                ? delegateTranscripts.get(target.delegationId)
+                : undefined;
+            return rows === undefined
+              ? Promise.resolve({
+                  ok: false,
+                  error: {
+                    kind: 'not_found',
+                    message: 'The delegation was not found.',
+                    retry: { kind: 'never' },
+                  },
+                })
+              : ok({
+                  messages: rows,
+                  totalMessages: rows.length,
+                  transcriptRevision: Math.max(1, rows.length),
+                });
+          }
           const scope = request.params?.scope;
           const chatId =
             typeof scope === 'object' &&
@@ -1488,6 +1569,7 @@ Object.defineProperty(window, 'canopyCore', {
           // The fork is a new task whose own chat it is; this stub names it
           // by its claim.
           const replayed = createdTasks.has(claim);
+          if (!replayed) forkCreations += 1;
           createdTasks.add(claim);
           if (answer === 'lose')
             return Promise.resolve({
@@ -2196,6 +2278,9 @@ beforeEach(() => {
   createdTasks.clear();
   forkAnswer = 'apply';
   forkClaims.length = 0;
+  forkCreations = 0;
+  servesFork = false;
+  transcriptPageDetails = null;
   clearCloudForks();
   loseCreateReply = false;
   servesCoworkLists = false;
@@ -2237,6 +2322,7 @@ beforeEach(() => {
   sendsNameMessage = false;
   cancelledPrompts.length = 0;
   startedPrompts.length = 0;
+  delegateTranscripts.clear();
   attachmentBytes.clear();
   artifactReads.length = 0;
   deletedPaths.clear();
@@ -4398,6 +4484,12 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   async function openTaskChat(options?: {
     /** Delivers the backends' pushed events, as the window does. */
     readonly followsEvents?: boolean;
+    /**
+     * Settles after opening the task and after selecting its chat, in place
+     * of the fixed `settle()`. Only the CAN-6689 queued-message case passes
+     * one (CAN-7223); every other case keeps the fixed settles.
+     */
+    readonly settleWith?: (step: 'opened' | 'selected') => Promise<void>;
   }): Promise<{
     readonly stop: () => Promise<void>;
     /** Presses Stop without waiting for it, outside act, for a held cancel. */
@@ -4415,11 +4507,12 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
      */
     readonly endTurn: () => Promise<void>;
   }> {
+    const settleStep = options?.settleWith ?? ((): Promise<void> => settle());
     renderPage(options);
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
     });
-    await settle();
+    await settleStep('opened');
     const target = {
       projectId: 'web-core:ws-1',
       worktreeId: 'web-core:wt-1',
@@ -4428,7 +4521,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     act(() => {
       useChatStore.getState().switchTab(target.chatId, target);
     });
-    await settle();
+    await settleStep('selected');
     const flush = async (): Promise<void> => {
       for (let i = 0; i < 60; i += 1)
         await act(() => jest.advanceTimersByTimeAsync(0));
@@ -4545,6 +4638,355 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       false,
     );
   });
+
+  function runningDelegateCard(run: string): Record<string, unknown> {
+    return {
+      type: 'delegated_agent_call',
+      delegationId: `cloud-delegate-${run}`,
+      agentBlockId: `delegated-agent-cloud-delegate-${run}`,
+      runGeneration: 1,
+      status: 'running',
+      outputTruncated: false,
+      transcriptStore: 'chat-stream-v2',
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'cloud-turn',
+      parentToolCallId: `cloud-spawn-${run}`,
+      selectedModelId: 'cloud-model',
+      runtimeModelId: 'cloud-model',
+      targetHarnessId: 'claude',
+      description: `Review ${run}`,
+      prompt: `Review ${run}.`,
+      executionMode: 'background',
+      createdAt: Date.now() - 1000,
+    };
+  }
+
+  it("offers no delegate Stop, Stop all or Load changes on a cloud chat, whose scope can't stop its delegates, and sends main no cloud id for them", async () => {
+    startedPrompts.push(
+      {
+        id: 'delegating-u',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review both halves' }],
+        timestamp: Date.now(),
+      },
+      {
+        id: 'delegating-a',
+        role: 'assistant',
+        blocks: [
+          {
+            ...runningDelegateCard('first'),
+            isolatedWorkspace: {
+              revision: 'rev-1',
+              dirtyParentChangesIncluded: false,
+            },
+          },
+          runningDelegateCard('second'),
+        ],
+        timestamp: Date.now(),
+      },
+    );
+    await openTaskChat();
+    await rereadTranscript();
+    expect(cloudScopeCapabilitiesNow().delegationStop === true).toBe(false);
+    // The finished turn folds its steps under its Worked header, whose
+    // toggle scrolls with CSS.escape, which jsdom lacks.
+    Object.defineProperty(globalThis, 'CSS', {
+      configurable: true,
+      value: { escape: (value: string): string => value },
+    });
+    onCaseEnd(() => {
+      Reflect.deleteProperty(globalThis, 'CSS');
+    });
+    const header = container.querySelector<HTMLElement>(
+      '[data-testid="turn-work-header"] button',
+    );
+    expect(header).not.toBeNull();
+    act(() => {
+      header?.click();
+    });
+    await settle();
+    expect(
+      container.querySelectorAll('[data-testid="chat-delegated-agent"]'),
+    ).toHaveLength(2);
+    const details = container.querySelector<HTMLElement>(
+      '[data-delegation-id="cloud-delegate-first"] button[aria-label="Expand delegated task"]',
+    );
+    expect(details).not.toBeNull();
+    act(() => {
+      details?.click();
+    });
+    await settle();
+    expect(shown('delegated-agent-metadata')).toBe(true);
+    const toggle = container.querySelector<HTMLElement>(
+      '[data-testid="background-tray-toggle"]',
+    );
+    if (toggle !== null)
+      act(() => {
+        toggle.click();
+      });
+    await settle();
+    expect(
+      container.querySelectorAll('[data-testid="background-tray-agent"]'),
+    ).toHaveLength(2);
+    expect({
+      cardStop: shown('delegated-agent-stop'),
+      loadChanges: shown('delegated-agent-show-changes'),
+      trayRowStop: shown('background-tray-agent-stop'),
+      stopAll: shown('background-tray-stop-all'),
+    }).toEqual({
+      cardStop: false,
+      loadChanges: false,
+      trayRowStop: false,
+      stopAll: false,
+    });
+    // Reading an expanded card's transcript is CAN-7027's.
+    expect(
+      calls.filter((call) =>
+        [
+          'api.managedDelegation.stop',
+          'api.managedDelegation.stopAll',
+          'api.managedDelegation.changes',
+        ].includes(call.path),
+      ),
+    ).toEqual([]);
+  });
+
+  /** A running background delegate of the cloud task's chat (CAN-7027). */
+  function cloudDelegateCard(delegationId: string): Record<string, unknown> {
+    return {
+      type: 'delegated_agent_call',
+      delegationId,
+      agentBlockId: `delegated-agent-${delegationId}`,
+      runGeneration: 1,
+      status: 'running',
+      outputTruncated: false,
+      transcriptStore: 'chat-stream-v2',
+      sequence: 1,
+      parentHarnessId: 'claude',
+      parentTurnId: 'cloud-turn',
+      parentToolCallId: `cloud-spawn-${delegationId}`,
+      selectedModelId: 'cloud-model',
+      runtimeModelId: 'cloud-model',
+      targetHarnessId: 'claude',
+      description: 'Review the notes',
+      prompt: 'Review the notes.',
+      executionMode: 'background',
+      createdAt: Date.now() - 1000,
+    };
+  }
+
+  /**
+   * Opens the task with one delegate card in its chat and expands it: the
+   * finished turn folds its steps under its Worked header, whose toggle
+   * scrolls with CSS.escape, which jsdom lacks.
+   */
+  async function openDelegateCard(delegationId: string): Promise<void> {
+    startedPrompts.push(
+      {
+        id: 'delegating-u',
+        role: 'user',
+        blocks: [{ type: 'text', text: 'Review the notes' }],
+        timestamp: Date.now(),
+      },
+      {
+        id: 'delegating-a',
+        role: 'assistant',
+        blocks: [cloudDelegateCard(delegationId)],
+        timestamp: Date.now(),
+      },
+    );
+    Object.defineProperty(globalThis, 'CSS', {
+      configurable: true,
+      value: { escape: (value: string): string => value },
+    });
+    onCaseEnd(() => {
+      Reflect.deleteProperty(globalThis, 'CSS');
+    });
+    await openTaskChat();
+    await rereadTranscript();
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="turn-work-header"] button')
+        ?.click();
+    });
+    await settle();
+    act(() => {
+      container
+        .querySelector<HTMLElement>(
+          `[data-delegation-id="${delegationId}"] button[aria-label="Expand delegated task"]`,
+        )
+        ?.click();
+    });
+    await settle();
+  }
+
+  const delegationReads = (): Record<string, unknown>[] =>
+    coreRequestLog
+      .filter(
+        (entry) =>
+          entry.method === 'core.chat.transcript.page' &&
+          entry.params.target !== undefined,
+      )
+      .map((entry) => entry.params);
+
+  const delegationIpc = (): string[] =>
+    calls
+      .filter((call) => call.path.startsWith('api.managedDelegation.'))
+      .map((call) => call.path);
+
+  it("reads none of a cloud delegate's pages while the cloud scope doesn't read delegate transcripts, and asks main for none (CAN-7027)", async () => {
+    delegateTranscripts.set('cloud-delegate-off', [
+      {
+        id: 'child-1',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'Child row' }],
+        timestamp: Date.now(),
+      },
+    ]);
+    await openDelegateCard('cloud-delegate-off');
+    expect(cloudScopeCapabilitiesNow().delegationTranscriptReads === true).toBe(
+      false,
+    );
+    expect(shown('chat-delegated-agent')).toBe(true);
+    expect(shown('delegation-child-pages-unavailable')).toBe(true);
+    expect(delegationReads()).toEqual([]);
+    expect(delegationIpc()).toEqual([]);
+  });
+
+  it("reads a cloud chat's own delegate's pages from the web core by a delegation target scoped to that chat, and never from main (CAN-7027)", async () => {
+    transcriptPageDetails = ['delegation'];
+    delegateTranscripts.set('cloud-delegate-on', [
+      {
+        id: 'child-1',
+        role: 'assistant',
+        blocks: [{ type: 'text', text: 'CHILD-ROW-FROM-WEB-CORE' }],
+        timestamp: Date.now(),
+      },
+    ]);
+    await openDelegateCard('cloud-delegate-on');
+    await settle();
+    expect(cloudScopeCapabilitiesNow().delegationTranscriptReads).toBe(true);
+    expect(delegationReads()).toEqual([
+      {
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-1', chatId: 'wt-1' },
+        target: {
+          kind: 'delegation',
+          chatId: 'wt-1',
+          delegationId: 'cloud-delegate-on',
+          runGeneration: 1,
+        },
+      },
+    ]);
+    expect(
+      container.querySelector('[data-testid="delegation-child-pages"]')
+        ?.textContent,
+    ).toContain('CHILD-ROW-FROM-WEB-CORE');
+    expect(delegationIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+    // The delegate's rows reach only its card: no window bridge call (main's
+    // notifications and stores) carries them, and nothing else on the page
+    // shows them, the Activity tab included.
+    const outsideTheCard = (): boolean => {
+      const page = container.cloneNode(true);
+      if (!(page instanceof HTMLElement)) throw new Error('No page.');
+      for (const pages of page.querySelectorAll(
+        '[data-testid="delegation-child-pages"]',
+      ))
+        pages.remove();
+      return (page.textContent ?? '').includes('CHILD-ROW-FROM-WEB-CORE');
+    };
+    expect(
+      calls
+        .filter((call) =>
+          JSON.stringify(call.args).includes('CHILD-ROW-FROM-WEB-CORE'),
+        )
+        .map((call) => call.path),
+    ).toEqual([]);
+    expect(outsideTheCard()).toBe(false);
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="panel-tab-panel-activity"]')
+        ?.click();
+    });
+    await settle();
+    expect(shown('cloud-attachments-add')).toBe(true);
+    expect(outsideTheCard()).toBe(false);
+  });
+
+  it("refuses a delegate that isn't on a card in that cloud chat, or is read for another chat, before asking the web core, and shows a web core refusal as unavailable (CAN-7027)", async () => {
+    transcriptPageDetails = ['delegation'];
+    await openDelegateCard('cloud-delegate-own');
+    const before = delegationReads().length;
+    const read = (
+      delegationId: string,
+      chatId = 'web-core:wt-1',
+    ): ReturnType<typeof ipcTranscriptReadClient.delegationPage> =>
+      ipcTranscriptReadClient.delegationPage(
+        {
+          scope: {
+            workspaceId: 'web-core:ws-1',
+            worktreeId: 'web-core:wt-1',
+            chatId: 'web-core:wt-1',
+          },
+          target: {
+            kind: 'delegation',
+            chatId,
+            delegationId,
+            runGeneration: 1,
+          },
+        },
+        new AbortController().signal,
+      );
+    await expect(read('not-on-a-card')).resolves.toEqual({
+      ok: false,
+      kind: 'unavailable',
+    });
+    await expect(
+      read('cloud-delegate-own', 'web-core:other-chat'),
+    ).resolves.toEqual({ ok: false, kind: 'unavailable' });
+    expect(delegationReads().length).toBe(before);
+    // Its own delegate goes out; the web core finds no such delegation for
+    // this caller, and the reader treats that as unavailable.
+    await expect(read('cloud-delegate-own')).resolves.toEqual({
+      ok: false,
+      kind: 'unavailable',
+    });
+    expect(delegationReads().length).toBe(before + 1);
+    expect(delegationIpc()).toEqual([]);
+  });
+
+  for (const [label, details, reads] of [
+    ['lists no details for it, as an older web core does', undefined, false],
+    ['lists a detail other than delegation', ['other'], false],
+    ['lists the delegation target', ['delegation'], true],
+  ] as const) {
+    it(`reads a cloud chat's delegate pages only when the web core's manifest ${label}, and never offers the Subagents panels there (CAN-7027)`, async () => {
+      transcriptPageDetails = details === undefined ? undefined : [...details];
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      // The capability follows the manifest, which loads after first render.
+      await settle();
+      expect(coreRequests).toContain('core.runtime.manifest.get');
+      const capabilities = cloudScopeCapabilitiesNow();
+      expect(capabilities.delegationTranscriptReads === true).toBe(reads);
+      // Their hosts read this computer's delegation service only (CAN-7133),
+      // so the add menu and the layout refuse both kinds either way.
+      expect(
+        panelKindsUnavailableFor(capabilities).filter(
+          (kind) => kind === 'subagents' || kind === 'subagent-chat',
+        ),
+      ).toEqual(['subagents', 'subagent-chat']);
+      expect(
+        (['subagents', 'subagent-chat'] as const).map((kind) =>
+          layoutScopeServesPanelKind('web-core:ws-1/web-core:wt-1', kind),
+        ),
+      ).toEqual([false, false]);
+    });
+  }
 
   /** Reads the task's transcript again: the store keeps tabs across cases. */
   async function rereadTranscript(): Promise<void> {
@@ -4808,12 +5250,13 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   });
 
   it('a message sent while a cloud turn runs waits in the queue, not the transcript, as a reload shows it (CAN-6689)', async () => {
-    const chat = await openTaskChat({ followsEvents: true });
     const tabOf = ():
       | {
           readonly messages: readonly PersistedChatMessage[];
           readonly queuedMessages: readonly { readonly text: string }[];
           readonly pendingTurn?: unknown;
+          readonly transcriptLoaded?: boolean;
+          readonly turnEnds?: Readonly<Record<string, unknown>>;
         }
       | undefined =>
       useChatStore
@@ -4831,6 +5274,65 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
             ]
           : [],
       );
+    const queuedTexts = (): string[] =>
+      (tabOf()?.queuedMessages ?? []).map((row) => row.text);
+    const textsAre = (
+      texts: readonly string[],
+      expected: readonly string[],
+    ): boolean =>
+      texts.length === expected.length &&
+      texts.every((text, index) => text === expected[index]);
+    const sixFollowsFive = (): boolean => {
+      const texts = userTexts();
+      return (
+        texts.includes('five') && texts.indexOf('six') > texts.indexOf('five')
+      );
+    };
+    // CAN-7223: the shared settle and refresh run a fixed 60 ticks each,
+    // about 1,100 act() calls for this case, more than a loaded runner fits
+    // in the case's timeout. Each step here settles until the state its
+    // checks read is there and the fake core has had no new request for a
+    // few ticks, so whatever the step started has been answered and applied.
+    // A check that something did not happen runs only after that.
+    const settleQuietly = async (ready: () => boolean): Promise<void> => {
+      let requests = coreRequestLog.length;
+      let quietTicks = 0;
+      await settleUntil(() => {
+        if (coreRequestLog.length !== requests) {
+          requests = coreRequestLog.length;
+          quietTicks = 0;
+          return false;
+        }
+        quietTicks += 1;
+        return quietTicks > 5 && ready();
+      }, 5_000);
+    };
+    // A reload of the scope, as `chat.refresh()` makes, read until applied.
+    const reloadUntil = async (ready: () => boolean): Promise<void> => {
+      const from = coreRequestLog.length;
+      snapshotRevision += 1;
+      act(() => {
+        refreshChatScopeRevisioned(TASK_CHAT.projectId, TASK_CHAT.worktreeId);
+      });
+      await settleQuietly(
+        () =>
+          coreRequestLog
+            .slice(from)
+            .some((entry) => entry.method === 'core.chat.snapshot.get') &&
+          ready(),
+      );
+    };
+    const chat = await openTaskChat({
+      followsEvents: true,
+      settleWith: (step) =>
+        settleQuietly(() =>
+          step === 'opened'
+            ? useChatStore.getState().worktreeChats[
+                `${TASK_CHAT.projectId}/${TASK_CHAT.worktreeId}`
+              ] !== undefined
+            : tabOf() !== undefined && tabOf()?.transcriptLoaded !== false,
+        ),
+    });
     // The store keeps the task's tabs across cases: read this case's prompts.
     sendsKeepRunning = true;
     sendsNameMessage = true;
@@ -4847,14 +5349,15 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     await act(() =>
       useChatStore.getState().sendMessage('five', undefined, TASK_CHAT),
     );
-    await settle();
+    await settleQuietly(
+      () => userTexts().includes('five') && tabOf()?.pendingTurn !== undefined,
+    );
     // Core holds the first turn queued while it starts, and lists it in
     // the queue, as staging reads it seconds in (13 Nov 2026): the desktop
     // shows the chat idle. The prompt starting now stays, with its timer.
     startingSend = { text: 'five', turnId: 'turn-1', messageId: 'turn-1-u' };
     taskRuntime = { status: 'queued', queuedMessageIds: ['turn-1-u'] };
-    await chat.refresh();
-    await settle();
+    await reloadUntil(() => textsAre(queuedTexts(), ['five']));
     expect(userTexts()).toContain('five');
     expect(tabOf()?.pendingTurn).toBeDefined();
     // Core queues the follow-up behind it, and a queue read lands before
@@ -4865,17 +5368,18 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     const sending = useChatStore
       .getState()
       .sendMessage('six', undefined, TASK_CHAT);
-    await settle();
+    await settleQuietly(() => queuedSends.some((each) => each.text === 'six'));
     taskRuntime = {
       status: 'queued',
       queuedMessageIds: ['turn-1-u', 'turn-2-u'],
     };
-    await chat.refresh();
-    await settle();
+    await reloadUntil(() => textsAre(queuedTexts(), ['five', 'six']));
     release();
     sendGate = null;
     await act(() => sending);
-    await settle();
+    // The receipt has landed: its send resolved, and nothing it started is
+    // still unanswered.
+    await settleQuietly(() => true);
     expect(userTexts()).not.toContain('six');
     expect(userTexts()).toContain('five');
     // The first turn now runs, with the follow-up queued behind it, and
@@ -4888,8 +5392,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       timestamp: Date.now(),
     });
     taskRuntime = null;
-    await chat.refresh();
-    await settle();
+    await reloadUntil(() => textsAre(queuedTexts(), ['six']));
     expect(queuedSends.map((each) => each.text)).toEqual(['six']);
     // It shows as the queued row only: the transcript, like a reload's,
     // still ends with the running turn's prompt, so its reply stays under it.
@@ -4902,7 +5405,11 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     act(() => {
       useChatStore.getState().clearQueuedMessage(0, TASK_CHAT);
     });
-    await settle();
+    await settleQuietly(
+      () =>
+        cancelledPrompts.some((each) => each.id === 'turn-2-u') &&
+        queuedTexts().length === 0,
+    );
     expect(cancelledPrompts.map((each) => each.id)).toEqual(['turn-2-u']);
     snapshotRevision += 1;
     pushFrame('core.chat.events', (params) => worktreeOf(params) === 'wt-1', {
@@ -4934,9 +5441,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         ],
       },
     });
-    await settle();
-    await chat.refresh();
-    await settle();
+    await settleQuietly(sixFollowsFive);
+    await reloadUntil(() => queuedTexts().length === 0 && sixFollowsFive());
     expect(tabOf()?.queuedMessages ?? []).toEqual([]);
     expect(userTexts().indexOf('five')).toBeGreaterThanOrEqual(0);
     expect(userTexts().indexOf('six')).toBeGreaterThan(
@@ -4987,7 +5493,6 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
           </CanopyClientProvider>,
         );
       });
-      await settle();
       const bubbleOf = (text: string): string | undefined =>
         [
           ...list.querySelectorAll(
@@ -4996,6 +5501,10 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         ]
           .map((bubble) => bubble.textContent ?? '')
           .find((content) => content.startsWith(text));
+      await settleQuietly(
+        () =>
+          bubbleOf('six') === 'sixCancelled' && bubbleOf('five') !== undefined,
+      );
       expect(bubbleOf('six')).toBe('sixCancelled');
       expect(bubbleOf('five')).toBe('five');
       // A turn stopped once it ran keeps its prompt unmarked: its label
@@ -5036,7 +5545,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
           };
         });
       });
-      await settle();
+      await settleQuietly(
+        () => fiveId !== undefined && tabOf()?.turnEnds?.[fiveId] !== undefined,
+      );
       expect(bubbleOf('five')).toBe('five');
       expect(bubbleOf('six')).toBe('sixCancelled');
     } finally {
@@ -7156,7 +7667,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(callsCarryingWebCoreIds()).toEqual([]);
   });
 
-  it('a local scope keeps every composer and tab control a cloud scope hides', () => {
+  it('a local scope keeps every composer, tab and delegate control a cloud scope hides', () => {
     const local = createDesktopCapabilities('darwin', {}, {});
     const cloud = webCoreScopeCapabilities(local);
     for (const key of [
@@ -7166,6 +7677,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       'chatResetToPoint',
       'chatFileMentions',
       'chatInterfaceModes',
+      // A delegate card's Stop and Load changes, and the drawer's Stop and
+      // Stop all (CAN-7055).
+      'delegationStop',
     ] as const) {
       expect([key, local[key]]).toEqual([key, true]);
       expect([key, cloud[key] === true]).toEqual([key, false]);
@@ -7185,6 +7699,64 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     // Folded from each answer's meter, which the web core serves (CAN-6755).
     expect(local.chatContextUsage).toBe(true);
     expect(cloud.chatContextUsage).toBe(true);
+  });
+
+  it("keeps a cloud scope's whole-chat fork and delegate transcript reads on separate cached capability sets (CAN-7027)", () => {
+    const host = createDesktopCapabilities('darwin', {}, {});
+    const base = webCoreScopeCapabilities(host, { durableTerminals: false });
+    const fork = webCoreScopeCapabilities(host, {
+      durableTerminals: false,
+      taskFork: true,
+    });
+    const reads = webCoreScopeCapabilities(host, {
+      durableTerminals: false,
+      delegationTranscriptReads: true,
+    });
+    expect(new Set([base, fork, reads]).size).toBe(3);
+    expect([
+      base.chatTaskFork === true,
+      base.delegationTranscriptReads === true,
+    ]).toEqual([false, false]);
+    expect([
+      fork.chatTaskFork === true,
+      fork.delegationTranscriptReads === true,
+    ]).toEqual([true, false]);
+    expect([
+      reads.chatTaskFork === true,
+      reads.delegationTranscriptReads === true,
+    ]).toEqual([false, true]);
+  });
+
+  it('offers the Subagents panels only to a scope that runs its delegates on this computer and reads their transcripts (CAN-7027)', () => {
+    const local = createDesktopCapabilities('darwin', {}, {});
+    const subagentKinds = (capabilities: CanopyCapabilities): string[] =>
+      panelKindsUnavailableFor(capabilities).filter(
+        (kind) => kind === 'subagents' || kind === 'subagent-chat',
+      );
+    expect([local.localExecution, local.delegationTranscriptReads]).toEqual([
+      true,
+      true,
+    ]);
+    expect(subagentKinds(local)).toEqual([]);
+    // Without the reads, as before.
+    expect(
+      subagentKinds({ ...local, delegationTranscriptReads: false }),
+    ).toEqual(['subagents', 'subagent-chat']);
+    // With the reads but not run here: a cloud scope's delegates aren't in
+    // this computer's delegation service, which the panels read.
+    const cloud = webCoreScopeCapabilities(local, {
+      durableTerminals: false,
+      delegationTranscriptReads: true,
+    });
+    expect([cloud.localExecution, cloud.delegationTranscriptReads]).toEqual([
+      false,
+      true,
+    ]);
+    expect(subagentKinds(cloud)).toEqual(['subagents', 'subagent-chat']);
+    expect(subagentKinds({ ...local, localExecution: false })).toEqual([
+      'subagents',
+      'subagent-chat',
+    ]);
   });
 
   it('offers a local scope every panel kind a cloud scope lacks', () => {
@@ -7225,7 +7797,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(withoutCost.activitySectionIds).not.toContain('cost');
   });
 
-  it('forks a cloud chat into a new task from its latest turn under one claim: a refusal changes nothing, and a lost reply waits for Try again with the same claim (CAN-7007)', async () => {
+  it('forks a cowork cloud chat into a new task when the web core serves the fork, from its latest turn under one claim: a refusal changes nothing, and a lost reply waits for Try again with the same claim and forks once (CAN-7007)', async () => {
     transcripts['wt-1'] = [
       {
         id: 'fork-u1',
@@ -7263,13 +7835,40 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         ),
       );
     try {
-      // A cloud scope that can't fork into a new task offers no Fork.
+      // A cowork project's scope offers no Fork while the web core's
+      // manifest doesn't serve the fork.
       renderPage({ followsEvents: true });
       act(() => {
         openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
       });
       await settle();
       expect(forkButtons()).toHaveLength(0);
+      expect(cloudScopeCapabilitiesNow().chatTaskFork).not.toBe(true);
+      // An agent's fork action (a chat agent's or App Advisor's, both
+      // dispatched in this window) refuses there before any request.
+      const forkAction = (
+        requestId: string,
+      ): Promise<AppAdvisorActionResponse> =>
+        dispatchAppAction({
+          requestId,
+          source: 'assistant',
+          action: {
+            type: 'worktree-chat.run_chat_action',
+            projectId: 'web-core:ws-1',
+            worktreeId: 'web-core:wt-1',
+            chatId: 'web-core:wt-1',
+            action: 'fork',
+          },
+        });
+      let refusedAction: unknown;
+      await act(async () => {
+        refusedAction = await forkAction('fork-action-off');
+      });
+      expect(refusedAction).toMatchObject({
+        ok: false,
+        error: { code: 'surface_unavailable' },
+      });
+      expect(forkClaims).toEqual([]);
 
       // The tab fork gate, which the local scope reports, offers Fork on
       // every completed turn.
@@ -7285,18 +7884,30 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       expect(
         createDesktopCapabilities('darwin', {}, {}).chatTaskFork,
       ).toBeUndefined();
-      // The cloud scope ships neither until its fork reaches the web core.
-      const cloud = webCoreScopeCapabilities(
-        createDesktopCapabilities('darwin', {}, {}),
-      );
+      // A cloud scope never reports the tab fork, and reports the whole-chat
+      // fork only when its project and the web core allow it.
+      const host = createDesktopCapabilities('darwin', {}, {});
+      const cloud = webCoreScopeCapabilities(host);
       expect(cloud.chatTabFork).not.toBe(true);
       expect(cloud.chatTaskFork).not.toBe(true);
+      expect(
+        webCoreScopeCapabilities(host, {
+          durableTerminals: false,
+          taskFork: true,
+        }),
+      ).toMatchObject({ chatTabFork: false, chatTaskFork: true });
 
-      renderPage({
-        followsEvents: true,
-        cloudScopeExtras: { chatTaskFork: true },
-      });
+      // With the manifest serving core.chat.fork, a listed cowork project's
+      // scope reports it, and an unlisted project's doesn't.
+      servesFork = true;
+      resetWebCoreServedOperations();
+      renderPage({ followsEvents: true });
       await settle();
+      expect(cloudScopeCapabilitiesNow().chatTaskFork).toBe(true);
+      expect(
+        createDesktopCanopyClient(host).capabilitiesFor?.('web-core:ws-9')
+          ?.chatTaskFork,
+      ).not.toBe(true);
       // A whole-chat fork into a new task has no fork point, so only the
       // latest completed turn offers it.
       expect(forkButtons()).toHaveLength(1);
@@ -7343,6 +7954,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       };
       asKind('git');
       await settle();
+      expect(cloudScopeCapabilitiesNow().chatTaskFork).not.toBe(true);
       expect(forkButtons()).toHaveLength(0);
       await act(async () => {
         expect(
@@ -7357,6 +7969,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       clearCloudForks();
       asKind('cowork');
       await settle();
+      expect(cloudScopeCapabilitiesNow().chatTaskFork).toBe(true);
       expect(forkButtons()).toHaveLength(1);
 
       // A stray tab fork on a cloud chat is still refused: it never reaches
@@ -7427,6 +8040,9 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       await settle();
       const claim = forkClaims[1];
       expect(forkClaims).toEqual([forkClaims[0], claim, claim]);
+      // The lost reply's fork and its retry are one fork, never two
+      // (CAN-5541).
+      expect(forkCreations).toBe(1);
       expect(claim).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
       );
@@ -7450,6 +8066,21 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       });
       expect(shown('cloud-fork-unknown')).toBe(false);
       expect(callsCarryingWebCoreIds()).toEqual([]);
+
+      // With the fork served, the agent's fork action takes the same cloud
+      // path under a fresh claim and names the new task.
+      let forkedAction: unknown;
+      await act(async () => {
+        forkedAction = await forkAction('fork-action-on');
+      });
+      const actionClaim = forkClaims[3];
+      expect(actionClaim).toBeDefined();
+      expect(actionClaim).not.toBe(claim);
+      expect(forkedAction).toMatchObject({
+        ok: true,
+        result: { action: 'fork', worktreeId: `web-core:${actionClaim}` },
+      });
+      expect(forkCreations).toBe(2);
     } finally {
       act(() => {
         cloudCoworkStore.getState().disconnect('offline');
@@ -10264,7 +10895,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
           ?.click();
       });
       await settle();
-      expect(homeOptions()).toEqual(['web-core:ws-org']);
+      // CAN-7038 adds the context's projectless destination above its projects.
+      expect(homeOptions()).toEqual(['no-project', 'web-core:ws-org']);
       expect(callsCarryingWebCoreIds()).toEqual([]);
     });
 

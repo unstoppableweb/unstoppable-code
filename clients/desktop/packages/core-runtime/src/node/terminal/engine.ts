@@ -4,6 +4,7 @@ import path, { basename } from 'node:path';
 import {
   TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL,
   TERMINAL_CONNECTION_LOST_SIGNAL,
+  TERMINAL_SANDBOX_ASLEEP_SIGNAL,
   TERMINAL_WORKTREE_CLEANUP_SIGNAL,
   type PersistedTerminalEntry,
   type TerminalAttachResponse,
@@ -27,6 +28,7 @@ import type {
   TerminalCreateRequest,
   TerminalEngineHost,
   TerminalEnvironment,
+  TerminalKillAllOptions,
   TerminalProcessPort,
   TerminalPty,
   TerminalPtySpawnOptions,
@@ -248,6 +250,13 @@ interface TerminalRecord {
   windowsPromptTail: string;
   exited: boolean;
   pendingExitSignalOverride: string | null;
+  /**
+   * Killed by an app shutdown or under a signal that ends no command: no
+   * idle reaches listeners before its exit, whatever the exit signal.
+   */
+  killEndsNoCommand: boolean;
+  /** An idle dropped during a release drain; reported if the drain fails. */
+  heldIdle: { interruptedByUser: boolean } | null;
   pendingUserInterruptAt: number | null;
   pendingUserInterruptProcessName: string | null;
 }
@@ -314,6 +323,21 @@ export function isRestorableExitSignal(signal: string | null): boolean {
     signal === 'fatal-exit' ||
     signal === 'pipe-error' ||
     signal === TERMINAL_CONNECTION_LOST_SIGNAL
+  );
+}
+
+/**
+ * Whether an exit was caused by the app or the environment rather than by
+ * the shell: it finishes no command, so it gets no idle `runningChanged`.
+ */
+export function exitEndsNoCommand(signal: string | null): boolean {
+  return (
+    signal === TERMINAL_WORKTREE_CLEANUP_SIGNAL ||
+    signal === TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL ||
+    signal === TERMINAL_CONNECTION_LOST_SIGNAL ||
+    signal === TERMINAL_SANDBOX_ASLEEP_SIGNAL ||
+    signal === 'app-quit' ||
+    signal === 'fatal-exit'
   );
 }
 
@@ -778,6 +802,8 @@ export class TerminalEngine
       shellBasename === 'bash'
         ? { BASH_SILENCE_DEPRECATION_WARNING: '1' }
         : {};
+    // This is the agent's payload environment. Private-Node hook stubs scrub
+    // their own startup variables without removing the agent's CA/tool settings.
     const env = {
       ...processEnv,
       TERM: 'xterm-256color',
@@ -866,6 +892,8 @@ export class TerminalEngine
       windowsPromptTail: '',
       exited: false,
       pendingExitSignalOverride: null,
+      killEndsNoCommand: false,
+      heldIdle: null,
       pendingUserInterruptAt: null,
       pendingUserInterruptProcessName: null,
     };
@@ -1133,6 +1161,7 @@ export class TerminalEngine
 
     if (options.signal) {
       record.pendingExitSignalOverride = options.signal;
+      record.killEndsNoCommand ||= exitEndsNoCommand(options.signal);
     }
     this.forceKill(record.pty);
     this.scheduleForcedExitCleanup(record);
@@ -1365,6 +1394,7 @@ export class TerminalEngine
         record.session.worktreeId === worktreeId
       ) {
         record.pendingExitSignalOverride = TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+        record.killEndsNoCommand = true;
         this.forceKill(record.pty);
         this.scheduleForcedExitCleanup(record);
       }
@@ -1394,6 +1424,9 @@ export class TerminalEngine
         })
         .catch((error: unknown) => {
           record.archiveDrain = undefined;
+          const held = record.heldIdle;
+          if (held && !record.exited)
+            this.emitRunningChanged(record, held.interruptedByUser);
           throw error;
         });
     }
@@ -1428,8 +1461,9 @@ export class TerminalEngine
     );
   }
 
-  public killAll(): void {
+  public killAll(options?: TerminalKillAllOptions): void {
     for (const record of Array.from(this.records.values())) {
+      if (options) record.killEndsNoCommand = true;
       this.forceKill(record.pty);
       this.scheduleForcedExitCleanup(record);
     }
@@ -1679,9 +1713,8 @@ export class TerminalEngine
     this.disposeRecordResources(record, { destroyPty: true });
     this.flushQueuedOutput(terminalId);
     const resolvedSignal = record.pendingExitSignalOverride ?? signal;
-    const shouldEmitRunningChanged =
-      resolvedSignal !== TERMINAL_WORKTREE_CLEANUP_SIGNAL &&
-      resolvedSignal !== TERMINAL_CANOPY_MANAGED_CLEANUP_SIGNAL;
+    // `signal`, not the override: an override can outlive a failed release.
+    const shouldEmitRunningChanged = !exitEndsNoCommand(signal);
 
     if (record.running || record.lastProcessName !== null) {
       const interruptedByUser = this.consumePendingUserInterrupt(
@@ -1778,6 +1811,16 @@ export class TerminalEngine
     record: TerminalRecord,
     interruptedByUser = false,
   ): void {
+    // The running detector can poll between such a kill and its exit; an
+    // in-flight release drain ends no command either.
+    if (
+      !record.running &&
+      (record.killEndsNoCommand || record.archiveDrain !== undefined)
+    ) {
+      record.heldIdle = { interruptedByUser };
+      return;
+    }
+    record.heldIdle = null;
     const event: TerminalRunningChangedEvent = {
       projectId: record.session.projectId,
       worktreeId: record.session.worktreeId,

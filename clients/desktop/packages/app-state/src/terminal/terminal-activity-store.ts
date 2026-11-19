@@ -20,6 +20,7 @@ import type {
   TerminalRunningChangedEvent,
 } from '@canopy/protocol/terminal';
 import {
+  endedByAppShutdown,
   isEnvironmentTerminalShutdown,
   isIntentionalTerminalShutdown,
   normalizeTerminalExitSignal,
@@ -557,16 +558,24 @@ export const useTerminalActivityStore = create<TerminalActivityState>(
 
         // Intentional cleanup signals are filtered everywhere — they should
         // not affect indicator state, even after a restart re-emits exit events.
-        if (isIntentionalTerminalShutdown(signal)) {
+        // An app shutdown still clears the running state below: its exit
+        // carries no idle `runningChanged`.
+        if (
+          isIntentionalTerminalShutdown(signal) &&
+          !endedByAppShutdown(signal)
+        ) {
           return prev;
         }
 
-        // Environment shutdowns (connection lost, project asleep) are neither
-        // a command nor a shell outcome. Drop only this terminal's entry and
-        // baseline, so its running state clears and a restart that reuses the
-        // id re-seeds. The worktree's unread badges stay sticky (no add, no
-        // recompute) until selection acknowledges them.
-        if (isEnvironmentTerminalShutdown(signal)) {
+        // Environment shutdowns (connection lost, project asleep) and app
+        // shutdowns are neither a command nor a shell outcome. Drop only this
+        // terminal's entry and baseline, so its running state clears and a
+        // restart that reuses the id re-seeds. The worktree's unread badges
+        // stay sticky (no add, no recompute) until selection acknowledges them.
+        if (
+          isEnvironmentTerminalShutdown(signal) ||
+          endedByAppShutdown(signal)
+        ) {
           const patch = removeActivityEntryByWorktreeKey(
             prev,
             worktreeKey,

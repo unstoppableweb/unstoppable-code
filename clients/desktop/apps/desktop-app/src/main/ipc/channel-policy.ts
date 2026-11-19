@@ -10,6 +10,10 @@ export const IPC_PRIVATE_CHANNELS = new Set<string>([
   IPC_CHANNELS.approvalSecretInput,
   IPC_CHANNELS.secretRequestSubmit,
   IPC_CHANNELS.secretRequestDecline,
+  IPC_CHANNELS.agentSecretsList,
+  IPC_CHANNELS.agentSecretsRevoke,
+  IPC_CHANNELS.agentSecretsStorePasted,
+  IPC_CHANNELS.agentSecretsRestart,
   IPC_CHANNELS.slowActionSnapshot,
   IPC_CHANNELS.slowActionClear,
 ]);

@@ -11,6 +11,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../runtime/errors';
 import {
+  isDefaultIgnoredPath,
   readDirectoryEntries,
   sortDirectoryEntries,
   type FileSystemReadBoundary,
@@ -203,18 +204,21 @@ export async function walkFileIndex(
  * ignored untracked paths (`git ls-files --others --ignored --exclude-standard
  * --directory -z`), instead of a `check-ignore` test per file, which takes
  * minutes in a large repository. A path is ignored when it is listed or lies
- * under a listed directory (an entry ending in `/`). A failed or absent
- * listing marks nothing.
+ * under a listed directory (an entry ending in `/`). An absent listing marks
+ * nothing. A failed one marks the default ignore list instead and calls
+ * `onIgnoreStateUnknown`.
  */
 export async function readIgnoredPathMatcher(
   list: (() => Promise<readonly string[]>) | null,
+  onIgnoreStateUnknown?: () => void,
 ): Promise<(relativePath: string) => boolean> {
   if (!list) return () => false;
   let entries: readonly string[];
   try {
     entries = await list();
   } catch {
-    return () => false;
+    onIgnoreStateUnknown?.();
+    return isDefaultIgnoredPath;
   }
   if (entries.length === 0) return () => false;
   const ignored = new Set(entries);
@@ -250,7 +254,8 @@ export interface FilesystemSearchInputs {
   /**
    * Ignored untracked paths under a Git-aware root, as `git ls-files
    * --others --ignored --exclude-standard --directory -z` lists them. Absent
-   * marks nothing ignored.
+   * marks nothing ignored; a rejection marks the default ignore list and
+   * sets `ignoreStateUnknown` on the result.
    */
   readonly listIgnoredPathEntries?: (
     root: string,
@@ -436,6 +441,7 @@ interface OpenWalk {
   readonly walk: FileIndexWalk;
   readonly accept: ((file: IndexedFile) => boolean) | undefined;
   readonly isIgnored: (relativePath: string) => boolean;
+  readonly ignoreStateUnknown: boolean;
   touchedAt: number;
 }
 
@@ -488,10 +494,14 @@ export function createFilesystemSearchEngine(
   ): Promise<OpenWalk> {
     const { root, inputs } = await host.resolve();
     const list = inputs.listIgnoredPathEntries;
+    let ignoreStateUnknown = false;
     const isIgnored = await readIgnoredPathMatcher(
       root.gitAware && list
         ? (): Promise<readonly string[]> => list(root.absolutePath)
         : null,
+      () => {
+        ignoreStateUnknown = true;
+      },
     );
     return {
       identity,
@@ -503,6 +513,7 @@ export function createFilesystemSearchEngine(
       }),
       accept: matchFilter(params, inputs.policy),
       isIgnored,
+      ignoreStateUnknown,
       touchedAt: now(),
     };
   }
@@ -559,6 +570,7 @@ export function createFilesystemSearchEngine(
           matches,
           nextCursor: page.exhausted ? null : keep(walk),
           truncated: !page.exhausted,
+          ...(walk.ignoreStateUnknown && { ignoreStateUnknown: true }),
         },
         files,
       };

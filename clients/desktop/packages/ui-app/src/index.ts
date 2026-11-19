@@ -79,6 +79,7 @@ export {
 } from './capability/McpWorkspaceDefaultsSection';
 export {
   PipelineReadDetail,
+  type PipelineReadDetailLayout,
   type PipelineReadDetailProps,
 } from './pipelines/PipelineReadDetail';
 export {
@@ -468,6 +469,20 @@ export {
   type PipelineRunDetailProps,
   type PipelineRunDetailStepSelection,
 } from './code/activity/pipeline/PipelineRunDetail';
+export { PipelineRunBackgroundNotice } from './code/activity/pipeline/PipelineRunBackgroundNotice';
+// "Ran on AI Credits" under a workflow step (CAN-7256).
+export {
+  PipelineStepBillingLine,
+  type PipelineStepBillingLineProps,
+  type PipelineStepBillingOwnerKind,
+  type PipelineStepBillingRoute,
+} from './code/activity/pipeline/PipelineStepBillingLine';
+// Where a packaged code review landed on GitHub (CAN-6989).
+export {
+  GitHubReviewOutcome,
+  githubReviewOutcomeFromJobOutputs,
+  type GitHubReviewOutcomeProps,
+} from './code/activity/pipeline/GitHubReviewOutcome';
 export {
   buildPipelineRunDetailJobs,
   flattenPipelineRunDetailSteps,
@@ -957,7 +972,6 @@ export {
   toUsageIndicatorUsage,
   type ComposerOverflowMenuArgs,
 } from './code/composer/composer-helpers';
-export { portalAgentModelRows } from './code/composer/portal-agent-selection';
 export {
   usePlanModeSuggestion,
   type PlanModeSuggestion,
@@ -1062,6 +1076,15 @@ export {
   type CloudProjectSetupUnavailableReason,
 } from './cloud-projects/CloudProjectSetupPanel';
 export {
+  CloudProjectHostTab,
+  CloudProjectNetworkTab,
+  CloudProjectPluginsTab,
+  type CloudProjectHostRoutes,
+  type CloudProjectHostTabProps,
+  type CloudProjectNetworkTabProps,
+  type CloudProjectSandboxRoute,
+} from './cloud-projects/CloudProjectSettingsTabs';
+export {
   OrgRepositoryOwnerNotice,
   orgRepositoryOwnerNoticeCopy,
   orgRepositoryOwnerSwitchFailure,
@@ -1122,3 +1145,4 @@ export {
 } from './code/shell/SidebarAutoDelete';
 
 export { readInlineReplyDocument } from './code/read-inline-reply-document';
+export { delegateTrayAgent } from './code/activity/background-tray/AgentRow';

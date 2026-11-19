@@ -371,6 +371,63 @@ const isRevisionConflict = (error: unknown): boolean =>
   error instanceof CoreCoworkRequestError &&
   error.payload.code === 'core.chat.revisionConflict';
 
+/**
+ * A project's catalog snapshot read (`core.catalog.snapshot.get`), at the
+ * compatibility revision first. Older web cores reject that optional
+ * revision at parameter validation, so only that refusal retries this read
+ * at the existing model-catalog revision. Transient and permission failures
+ * keep their own error and never downgrade it. `latch` remembers a web core
+ * that refused, so the reads after it skip the rejected request.
+ */
+async function readCatalogSnapshotReply(
+  invoker: CoreCoworkInvoker,
+  workspaceId: string,
+  latch: { compatibilityRefused: boolean },
+): Promise<CanopyCoreRelayLikeReply> {
+  const params = {
+    scope: { workspaceId },
+    kinds: [],
+    includeUnavailable: true,
+  };
+  const atSchemaRevision = (): Promise<CanopyCoreRelayLikeReply> =>
+    invoker.request('core.catalog.snapshot.get', {
+      ...params,
+      revision: CORE_CATALOG_SNAPSHOT_GET_SCHEMA_REVISION,
+    });
+  if (latch.compatibilityRefused) return atSchemaRevision();
+  const reply = await invoker.request('core.catalog.snapshot.get', {
+    ...params,
+    revision: CORE_CATALOG_SNAPSHOT_GET_COMPATIBILITY_REVISION,
+  });
+  if (reply.ok || reply.error.kind !== 'invalid_argument') return reply;
+  // Latch only when the older revision succeeds, which shows the revision
+  // was what the web core refused.
+  const fallback = await atSchemaRevision();
+  if (fallback.ok) latch.compatibilityRefused = true;
+  return fallback;
+}
+
+/**
+ * The plugins a cloud project's default selection is chosen from (CAN-7053):
+ * its catalog snapshot, mapped as a chat's picker maps it, so the project's
+ * settings offer what its chats offer. A curated skill the defaults already
+ * name stays on offer, as a chat's selected one does.
+ */
+export async function readCloudProjectPluginCatalog(
+  invoker: CoreCoworkInvoker,
+  workspaceId: string,
+  selections: PortalChatTabPluginSelections | null,
+): Promise<PortalPluginCatalog> {
+  const reply = await readCatalogSnapshotReply(invoker, workspaceId, {
+    compatibilityRefused: false,
+  });
+  const { entries } = CatalogSnapshotGetResultSchema.parse(unwrap(reply));
+  const selected = (selections?.skillRefs ?? []).map((ref) =>
+    skillEntryId(ref),
+  );
+  return mapCloudChatCatalog(entries, selected).plugins;
+}
+
 /** The catalog of one cloud chat over the web core (CAN-5972). */
 export function createCloudChatCatalog(
   invoker: CoreCoworkInvoker,
@@ -425,34 +482,9 @@ export function createCloudChatCatalog(
 
   // Set once a web core refuses the compatibility revision, so later
   // refreshes of this catalog skip the rejected request.
-  let compatibilityRefused = false;
-
-  async function readSnapshot(): Promise<CanopyCoreRelayLikeReply> {
-    const params = {
-      scope: { workspaceId: scope.workspaceId },
-      kinds: [],
-      includeUnavailable: true,
-    };
-    const atSchemaRevision = (): Promise<CanopyCoreRelayLikeReply> =>
-      invoker.request('core.catalog.snapshot.get', {
-        ...params,
-        revision: CORE_CATALOG_SNAPSHOT_GET_SCHEMA_REVISION,
-      });
-    if (compatibilityRefused) return atSchemaRevision();
-    const reply = await invoker.request('core.catalog.snapshot.get', {
-      ...params,
-      revision: CORE_CATALOG_SNAPSHOT_GET_COMPATIBILITY_REVISION,
-    });
-    // Older web cores reject the optional revision at parameter validation.
-    // Retry only this read at the existing model-catalog revision. Transient
-    // and permission failures keep their own error; they never downgrade it.
-    if (reply.ok || reply.error.kind !== 'invalid_argument') return reply;
-    // Latch only when the older revision succeeds, which shows the revision
-    // was what the web core refused.
-    const fallback = await atSchemaRevision();
-    if (fallback.ok) compatibilityRefused = true;
-    return fallback;
-  }
+  const revisionLatch = { compatibilityRefused: false };
+  const readSnapshot = (): Promise<CanopyCoreRelayLikeReply> =>
+    readCatalogSnapshotReply(invoker, scope.workspaceId, revisionLatch);
 
   async function refresh(conflict = false): Promise<void> {
     const read = ++reads;

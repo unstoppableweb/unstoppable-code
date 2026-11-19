@@ -7,6 +7,7 @@ import {
   type RuntimeModule,
 } from '../../kernel/runtime-profile-graph';
 import { CanopyOperationError } from '../../runtime/errors';
+import type { VaultIoClass, VaultMutationStep } from '../../vault/contracts';
 import type {
   GitHubCredentialAuthority,
   GitHubCredentialIdentity,
@@ -15,11 +16,14 @@ import type {
 
 function refused(
   code: 'storageUnavailable' | 'writeFailed' | 'removeFailed',
+  storage?: { readonly step: VaultMutationStep; readonly io: VaultIoClass },
 ): CanopyOperationError {
   return new CanopyOperationError({
     kind: 'unavailable',
     code: `core.integration.credential.${code}`,
     message: 'Credential storage could not complete the request.',
+    // Closed vault enums only; never a path, errno text or message.
+    ...(storage && { details: { step: storage.step, io: storage.io } }),
     retry: { kind: 'never' },
   });
 }
@@ -44,7 +48,7 @@ function result(
     outcome.kind === 'blocked' &&
     ['locked', 'key_missing', 'unavailable'].includes(outcome.reason)
   )
-    throw refused('storageUnavailable');
+    throw refused('storageUnavailable', outcome.storage);
   throw refused(configured ? 'writeFailed' : 'removeFailed');
 }
 

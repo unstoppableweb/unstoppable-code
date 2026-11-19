@@ -1,9 +1,8 @@
 // CAN-4070 rule: captured on the unchanged `workspace-items:*` note and prompt
-// IPC handlers and the Portal `portal.workspace_items.*` note and prompt
-// commands before CAN-4152 routed them through `core.workspace.item.*`. Real
-// data root, real stores and the real workspace registry; only handler
-// registration, the native dialog, publication scheduling and the Portal
-// session are mocked. Deliberate changes are pinned in
+// IPC handlers before CAN-4152 routed them through `core.workspace.item.*`.
+// Real data root, real stores and the real workspace registry; only handler
+// registration, the native dialog and publication scheduling are mocked.
+// Deliberate changes are pinned in
 // workspace-items-ipc-changes.test.ts, not here.
 import {
   chmodSync,
@@ -27,10 +26,6 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
-import type {
-  PortalCommandEnvelope,
-  PortalEventEnvelope,
-} from '@canopy/protocol/portal';
 
 // Jest runs tests in a separate realm, so built-in fs errors fail the
 // production `instanceof Error` checks. Rethrow them as same-realm errors with
@@ -104,20 +99,8 @@ jest.mock('../shared-containers/publish/scheduler', () => ({
     },
   }),
 }));
-jest.mock('../portal/portal-session-manager', () => ({
-  getCanopyPortalState: (): { sessionId: string } => ({
-    sessionId: 'golden-session',
-  }),
-}));
 
 import { registerWorkspaceItemHandlers } from '../ipc/workspace-items';
-import {
-  handlePortalWorkspaceItemsListNotes,
-  handlePortalWorkspaceItemsListPrompts,
-  handlePortalWorkspaceItemsReadNote,
-  handlePortalWorkspaceItemsReadPrompt,
-} from '../portal/adapters/workspace-items-adapter';
-import type { PortalAdapterContext } from '../portal/adapters/types';
 import { registerWorkspaceTypes } from '../lib/workspace-registry';
 import {
   createDesktopRuntime,
@@ -1083,7 +1066,7 @@ describe('CAN-4152 workspace items IPC golden: limits', () => {
   );
 
   it.each(KINDS)(
-    'returns indexed code %s titles of any length, and the Portal list fits its budget',
+    'returns indexed code %s titles of any length',
     async (kind) => {
       const { list } = ops(kind);
       const store = storeDir('code-ws', kind);
@@ -1107,12 +1090,7 @@ describe('CAN-4152 workspace items IPC golden: limits', () => {
           ),
         }),
       );
-      const [event] = await portal(PORTAL_COMMANDS[kind].list, {
-        projectId: 'code-ws',
-      });
-      expect(
-        abbreviate({ listed: await list('code-ws'), portal: event }),
-      ).toMatchSnapshot();
+      expect(abbreviate({ listed: await list('code-ws') })).toMatchSnapshot();
     },
   );
 
@@ -1389,176 +1367,4 @@ describe('CAN-4152 workspace items IPC golden: viewer and invalid requests', () 
       );
     },
   );
-});
-
-function portalContext(events: PortalEventEnvelope[]): PortalAdapterContext {
-  return {
-    sessionId: 'golden-session',
-    getWindow: () => null,
-    enqueueEvent: (event) => events.push(event),
-    complete: (command, result): void => {
-      events.push({
-        type: 'portal.command.completed',
-        commandId: command.id,
-        payload: { result: describeValue(result) },
-      } as PortalEventEnvelope);
-    },
-    fail: (command, code, message, retryable): void => {
-      events.push({
-        type: 'portal.command.failed',
-        commandId: command.id,
-        payload: { error: { code, message: scrub(message), retryable } },
-      } as PortalEventEnvelope);
-    },
-  };
-}
-
-type PortalItemsCommand =
-  | 'portal.workspace_items.list_notes'
-  | 'portal.workspace_items.read_note'
-  | 'portal.workspace_items.list_prompts'
-  | 'portal.workspace_items.read_prompt';
-
-async function portal(
-  type: PortalItemsCommand,
-  payload: unknown,
-): Promise<PortalEventEnvelope[]> {
-  const events: PortalEventEnvelope[] = [];
-  const command = {
-    id: 'cmd-golden',
-    sequence: 1,
-    type,
-    payload,
-    createdAt: '2026-10-31T00:00:00.000Z',
-    expiresAt: null,
-  };
-  const context = portalContext(events);
-  if (type === 'portal.workspace_items.list_notes')
-    await handlePortalWorkspaceItemsListNotes(
-      command as PortalCommandEnvelope<{ projectId: string }>,
-      context,
-    );
-  else if (type === 'portal.workspace_items.read_note')
-    await handlePortalWorkspaceItemsReadNote(
-      command as PortalCommandEnvelope<{ projectId: string; noteId: string }>,
-      context,
-    );
-  else if (type === 'portal.workspace_items.list_prompts')
-    await handlePortalWorkspaceItemsListPrompts(
-      command as PortalCommandEnvelope<{ projectId: string }>,
-      context,
-    );
-  else
-    await handlePortalWorkspaceItemsReadPrompt(
-      command as PortalCommandEnvelope<{ projectId: string; promptId: string }>,
-      context,
-    );
-  return events;
-}
-
-const PORTAL_COMMANDS: Record<
-  Kind,
-  { list: PortalItemsCommand; read: PortalItemsCommand }
-> = {
-  note: {
-    list: 'portal.workspace_items.list_notes',
-    read: 'portal.workspace_items.read_note',
-  },
-  prompt: {
-    list: 'portal.workspace_items.list_prompts',
-    read: 'portal.workspace_items.read_prompt',
-  },
-};
-
-describe('CAN-4152 workspace items Portal golden', () => {
-  it.each(KINDS)(
-    'lists and reads %s items without host paths for each layout',
-    async (kind) => {
-      const { save } = ops(kind);
-      const commands = PORTAL_COMMANDS[kind];
-      const idKey = CHANNELS[kind].idKey;
-      writeWorktrees('code-ws', [['wt-1', 'feature/one']]);
-      await save({
-        projectId: 'code-ws',
-        title: 'Portal item',
-        content: '# Portal item\nbody\n',
-        originWorktreeId: 'wt-1',
-      });
-      await save({
-        projectId: 'cowork-ws',
-        title: 'Portal item',
-        content: '# Portal item\nbody\n',
-      });
-      const results = {
-        codeList: await portal(commands.list, { projectId: 'code-ws' }),
-        codeRead: await portal(commands.read, {
-          projectId: 'code-ws',
-          [idKey]: 'portal-item',
-        }),
-        coworkList: await portal(commands.list, { projectId: 'cowork-ws' }),
-        coworkRead: await portal(commands.read, {
-          projectId: 'cowork-ws',
-          [idKey]: 'portal-item',
-        }),
-      };
-      expect(JSON.stringify(results)).not.toContain('<root>');
-      expect(results).toMatchSnapshot();
-    },
-  );
-
-  it.each(KINDS)('truncates a large %s body on read', async (kind) => {
-    const { save } = ops(kind);
-    const idKey = CHANNELS[kind].idKey;
-    await save({
-      projectId: 'code-ws',
-      title: 'Large',
-      content: 'x'.repeat(300 * 1024),
-    });
-    const [event] = await portal(PORTAL_COMMANDS[kind].read, {
-      projectId: 'code-ws',
-      [idKey]: 'large',
-    });
-    const result = field(field(event, 'payload'), 'result');
-    const content = field(result, 'content');
-    expect(field(event, 'type')).toBe('portal.command.completed');
-    expect(field(result, 'truncated')).toBe(true);
-    expect(typeof content === 'string' ? content.length : -1).toBe(256 * 1024);
-  });
-
-  const PORTAL_FAILURES: ReadonlyArray<[string, (kind: Kind) => unknown]> = [
-    ['non-object', () => 'nope'],
-    ['missing ids', () => ({})],
-    ['malformed project', () => ({ projectId: 'Bad Id!' })],
-    [
-      'viewer project',
-      () => ({ projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID }),
-    ],
-    [
-      'missing item',
-      (kind) => ({ projectId: 'code-ws', [CHANNELS[kind].idKey]: 'missing' }),
-    ],
-    [
-      'missing Cowork item',
-      (kind) => ({ projectId: 'cowork-ws', [CHANNELS[kind].idKey]: 'missing' }),
-    ],
-    [
-      'malformed item',
-      (kind) => ({ projectId: 'code-ws', [CHANNELS[kind].idKey]: '../x' }),
-    ],
-  ];
-
-  it.each(
-    PORTAL_FAILURES.flatMap(([name, payload]) =>
-      KINDS.map((kind): [string, Kind, (kind: Kind) => unknown] => [
-        `${kind} ${name}`,
-        kind,
-        payload,
-      ]),
-    ),
-  )('pins list and read for %s', async (_name, kind, payload) => {
-    expect({
-      list: await portal(PORTAL_COMMANDS[kind].list, payload(kind)),
-      read: await portal(PORTAL_COMMANDS[kind].read, payload(kind)),
-    }).toMatchSnapshot();
-  });
 });

@@ -51,6 +51,14 @@ import {
   TimingSummaryCard,
 } from './PipelineStepDetailParts';
 import { SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  PipelineStepBillingLine,
+  type PipelineStepBillingOwnerKind,
+} from '@canopy/ui-app';
+import {
+  STEP_BILLING_ROUTE_OUTPUT_KEYS,
+  stepBillingRoute,
+} from '@canopy/execution-engine/pipelines/step-billing-route';
 
 interface PipelineStepDetailProps {
   executionId: string;
@@ -73,6 +81,11 @@ interface PipelineStepDetailProps {
    * gate). Defaults to true; ignored for archived steps.
    */
   logsEnabled?: boolean;
+  /**
+   * Personal or organization owner of the run, for the billing line
+   * (CAN-7256). Absent when the host has no execution state.
+   */
+  ownerKind?: PipelineStepBillingOwnerKind;
 }
 
 /**
@@ -128,6 +141,7 @@ export function PipelineStepDetail({
   onViewWorker,
   archivedSource,
   logsEnabled = true,
+  ownerKind,
 }: PipelineStepDetailProps): JSX.Element {
   const archived = archivedSource !== undefined;
   // A panel keeps the user's raw/rich choice across remounts; until they
@@ -332,7 +346,10 @@ export function PipelineStepDetail({
     Object.keys(stepDef.with ?? {}).length > 0 ||
     Object.keys(stepDef.env ?? {}).length > 0;
   const hasOutputs =
-    Object.keys(stepResult?.outputs ?? {}).length > 0 ||
+    // The route keys render as the billing line, not as outputs.
+    Object.keys(stepResult?.outputs ?? {}).some(
+      (key) => !STEP_BILLING_ROUTE_OUTPUT_KEYS.has(key),
+    ) ||
     Object.keys(stepResult?.dynamic_env ?? {}).length > 0 ||
     stepResult?.exit_code !== undefined ||
     Boolean(stepResult?.error);
@@ -431,6 +448,10 @@ export function PipelineStepDetail({
           )}
         </div>
       )}
+      <PipelineStepBillingLine
+        route={stepBillingRoute(stepResult?.outputs)}
+        ownerKind={ownerKind}
+      />
 
       <DetailSection title="Timing" content={timingContent} collapsible />
       <DetailSection

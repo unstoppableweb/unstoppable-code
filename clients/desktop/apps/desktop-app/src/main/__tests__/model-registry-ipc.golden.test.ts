@@ -2,6 +2,7 @@
 // `worker.agent.provider.list` on a real desktop runtime and returns the
 // registry snapshot the in-process worker built, unchanged. The synchronous
 // bootstrap listener keeps the direct snapshot.
+import type * as AgentCatalogCompatibility from '../remote-projection/agent-catalog-compatibility';
 import {
   IPC_CHANNELS,
   type ModelRegistrySnapshot,
@@ -109,9 +110,11 @@ jest.mock('../models/model-registry', () => ({
   broadcastModelRegistryUpdated: (): void => undefined,
 }));
 const mockPortalCatalogChanged = jest.fn(() => Promise.resolve());
-jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalModelCatalogChanged: (): Promise<void> =>
-    mockPortalCatalogChanged(),
+jest.mock('../remote-projection/agent-catalog-compatibility', () => ({
+  ...jest.requireActual<typeof AgentCatalogCompatibility>(
+    '../remote-projection/agent-catalog-compatibility',
+  ),
+  notifyModelCatalogChanged: (): Promise<void> => mockPortalCatalogChanged(),
 }));
 const mockRefresh = jest.fn(async (): Promise<void> => {
   await Promise.resolve();

@@ -33,18 +33,25 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import type {
   NewSessionResponse,
   ResumeSessionResponse,
+  SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import type { ApprovalMode } from '@canopy/desktop-shared/types';
+import type {
+  ApprovalMode,
+  PlanExitRequestEvent,
+} from '@canopy/desktop-shared/types';
 import type { TurnBinding } from '@canopy/protocol/canopy-core';
 import {
   antigravityModelsFromConfig,
   getRawAntigravityModelId,
   isAntigravityModel,
 } from '@canopy/execution-engine/lib/antigravity-models';
-import { CursorEventProjection } from '@canopy/desktop-shared/node/cursor/events';
+import { createAntigravityEventProjection } from '@canopy/desktop-shared/node/antigravity/event-projection';
+import type { AntigravityToolRoutes } from '@canopy/desktop-shared/node/antigravity/tool-display';
+import { normalizeCanopyMcpServerDisplayName } from '@canopy/desktop-shared/lib/turn-utils';
 import {
   readAntigravityAttachments,
   readAntigravityHistoricalAttachments,
@@ -60,6 +67,7 @@ import {
   isAntigravitySessionMissing,
 } from '@canopy/desktop-shared/node/antigravity/recovery';
 import { antigravityTokenUsage } from '@canopy/desktop-shared/node/antigravity/usage';
+import { collectAntigravityPlanProposal } from '@canopy/desktop-shared/node/antigravity/plan-proposal';
 import {
   AntigravitySessionConfigError,
   applyAntigravitySessionConfig,
@@ -74,7 +82,11 @@ import {
   type AntigravityRuntime,
 } from '../antigravity/runtime';
 import { authorizeAntigravityTool } from '../antigravity/tool-approval';
+import { additionalDirectoriesParam } from '@canopy/desktop-shared/node/acp/capabilities';
+import { antigravityAdditionalDirectories } from '../antigravity/workspace-directories';
 import { isAntigravityConnectionEnabled } from '../antigravity/connection';
+import { getAttentionTracker } from '../services/attention-tracker';
+import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
 import {
   createApprovalSession,
   type ApprovalSessionHandle,
@@ -112,9 +124,10 @@ export class AntigravityProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (event: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('AntigravityProvider.createSession');
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const scope = {
       projectId: opts.projectId,
@@ -237,10 +250,26 @@ export class AntigravityProvider implements AgentProvider {
         abort.signal,
       );
       assertCurrent();
-      const projection = new CursorEventProjection(
-        'Google response exceeded the local chat limit.',
-        { recognizeCursorErrors: false },
-      );
+      // Advertised route name -> the server's original name, filled once this
+      // turn's routes are known; tool calls cannot arrive before then.
+      const routeNames = new Map<string, string>();
+      const routes: AntigravityToolRoutes = {
+        canonicalNameFor: (
+          server: string,
+          tool: string,
+        ): { server: string; tool: string } | undefined => {
+          const original = routeNames.get(server);
+          return original === undefined
+            ? undefined
+            : { server: original, tool };
+        },
+      };
+      const projection = createAntigravityEventProjection({
+        limitMessage: 'Google response exceeded the local chat limit.',
+        routes,
+      });
+      // The ACP plans a plan-mode turn reports, for its proposal.
+      const planUpdates: SessionUpdate[] = [];
       const currentApproval = createApprovalSession({
         sessionKey: key,
         ...scope,
@@ -320,6 +349,8 @@ export class AntigravityProvider implements AgentProvider {
           appToolServers.ui,
           ...extensions.servers.map((server) => server.name),
         ];
+        for (const name of routedMcpServers)
+          routeNames.set(name, normalizeCanopyMcpServerDisplayName(name));
         const opened = await openAntigravityRuntime({
           cwd: opts.cwd,
           owner: { kind: worker.kind, id: worker.runId },
@@ -333,6 +364,8 @@ export class AntigravityProvider implements AgentProvider {
             )
               return;
             try {
+              if (planMode && update.update.sessionUpdate === 'plan')
+                planUpdates.push(update.update);
               const event = projection.update(update);
               for (const flushed of projection.takeFlushed())
                 await buffer.push(flushed);
@@ -527,8 +560,20 @@ export class AntigravityProvider implements AgentProvider {
         ]
           .filter(Boolean)
           .join('\n\n');
+        // Other repositories of a multi-repo worktree, sent only when the
+        // runtime advertised additional workspace roots.
+        const additionalDirectories = await antigravityAdditionalDirectories({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          cwd: opts.cwd,
+        });
+        assertCurrent();
         const params = {
           cwd: opts.cwd,
+          ...additionalDirectoriesParam(
+            additionalDirectories,
+            opened.client.supportsAdditionalDirectories(),
+          ),
           mcpServers: [...appTools.servers, ...extensions.servers],
           _meta: { antigravity: { systemPrompt: { append } } },
         };
@@ -626,6 +671,7 @@ export class AntigravityProvider implements AgentProvider {
         // The reverse drift is not an error: nothing was sent, as the picker
         // showed. Rediscover so the picker can offer the new levels.
         if (applied.thinkingControlAdded) markAntigravityCatalogStale();
+        projection.observeMode(applied.mode);
         const turnThinking = applied.thinkingLevel;
         turnSettings = {
           model: requested.model,
@@ -773,6 +819,47 @@ export class AntigravityProvider implements AgentProvider {
           if (recovery !== undefined) await publishSession();
         }
         for (const event of projection.finish()) await buffer.push(event);
+        const proposal =
+          planMode && result.stopReason === 'end_turn'
+            ? collectAntigravityPlanProposal(
+                planUpdates,
+                projection.getFinalResponseText(),
+              )
+            : null;
+        // The plan's own text reaches the transcript before its review.
+        if (proposal !== null) await buffer.flush();
+        // A turn stopped by then commits no review: a committed one would
+        // stay pending without ever being presented.
+        if (proposal !== null && !abort.signal.aborted) {
+          const event: PlanExitRequestEvent = {
+            requestId: randomUUID(),
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
+            source: 'antigravity',
+            reviewMode: 'proposal',
+            toolInput: {
+              plan: proposal,
+              source: 'antigravity',
+              reviewMode: 'proposal',
+            },
+            ...(send?.userMessageId
+              ? { turnUserMessageId: send.userMessageId }
+              : {}),
+          };
+          await commitPendingPlanExit(event);
+          // Once committed, the review is shown even if the turn stops now.
+          interfacePort.presentPlanExit(event);
+          // A plan awaiting review blocks on a human (CAN-3195).
+          getAttentionTracker().mark({
+            projectId: opts.projectId,
+            worktreeId: opts.worktreeId,
+            chatId: opts.chatId,
+            state: 'needs_input',
+            reason: 'plan_review',
+            sourceId: 'plan-review',
+          });
+        }
         const isError =
           result.stopReason !== 'end_turn' && result.stopReason !== 'cancelled';
         // Explain native refusal or turn limits instead of repeating streamed text.

@@ -29,7 +29,9 @@ import {
   type PipelineRunDetailView,
 } from './PipelineRunDetailModel';
 import { PipelineRunPauseForm } from './PipelineRunPauseForm';
+import { PipelineRunBackgroundNotice } from './PipelineRunBackgroundNotice';
 import { PipelineRunStepTree } from './PipelineRunStepTree';
+import { PipelineStepBillingLine } from './PipelineStepBillingLine';
 import { Surface } from '@canopy/ui-shared/components';
 
 export interface PipelineRunDetailLog {
@@ -55,6 +57,8 @@ export interface PipelineRunDetailStepSelection {
 
 export interface PipelineRunDetailProps {
   readonly run: PipelineRunDetailView;
+  /** Whether background support is assessed against loss of the app owner. */
+  readonly appDependencyApplicable: boolean;
   /** The host's row summary; drives the shared action guards. */
   readonly summary: PipelineRunSummary;
   /** Drives the DAG bar and the rerun-replay gate. Omit when the host has none. */
@@ -118,6 +122,7 @@ export interface PipelineRunDetailProps {
  */
 export function PipelineRunDetail({
   run,
+  appDependencyApplicable,
   summary,
   executionState,
   selectedStep,
@@ -142,6 +147,14 @@ export function PipelineRunDetail({
     [run.jobs],
   );
   const steps = useMemo(() => flattenPipelineRunDetailSteps(groups), [groups]);
+  const selectedStepBillingRoute =
+    selectedStep === null
+      ? undefined
+      : steps.find(
+          (entry) =>
+            entry.job_id === selectedStep.job_id &&
+            entry.step.step_id === selectedStep.step_id,
+        )?.step.billing_route;
   const checkpoints = run.pending_pauses ?? [];
 
   const showCancel =
@@ -230,6 +243,12 @@ export function PipelineRunDetail({
       )}
 
       {children}
+      <PipelineRunBackgroundNotice
+        appDependencyApplicable={appDependencyApplicable}
+        assessment={run.survival}
+        status={summary.status}
+        pausedAt={run.paused_at}
+      />
 
       {showPauseForm && (
         <PipelineRunPauseForm
@@ -275,6 +294,10 @@ export function PipelineRunDetail({
             // keeps selecting the same surfaces.
             data-testid="portal-pipeline-step-log"
           >
+            <PipelineStepBillingLine
+              route={selectedStepBillingRoute}
+              ownerKind={run.owner_kind}
+            />
             <AnsiOutput
               key={
                 selectedStep === null

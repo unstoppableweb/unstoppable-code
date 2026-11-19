@@ -177,6 +177,7 @@ function isTrackedPlanSource(value: unknown): value is TrackedPlanSource {
     value === 'opencode' ||
     value === 'cursor' ||
     value === 'ollama' ||
+    value === 'antigravity' ||
     value === 'pipeline' ||
     value === 'imported' ||
     value === 'detected'
@@ -264,7 +265,7 @@ function isTrackedPlanRevisionData(
   );
 }
 
-function isTrackedPlanData(value: unknown): value is TrackedPlanData {
+export function isTrackedPlanData(value: unknown): value is TrackedPlanData {
   if (!isRecord(value)) {
     return false;
   }
@@ -906,7 +907,7 @@ export async function withTrackedPlanRevision<T>(
 }
 
 export async function updateTrackedPlan(
-  request: UpdateTrackedPlanRequest,
+  request: UpdateTrackedPlanRequest & { expectedRevision?: number },
   guard?: {
     revisionNumber: number;
     source: TrackedPlanData['source'];
@@ -917,6 +918,7 @@ export async function updateTrackedPlan(
       projectId: request.projectId,
       worktreeId: request.worktreeId,
       planId: request.planId,
+      expectedRevision: request.expectedRevision,
       proposalRequestId: request.proposalRequestId,
       content: request.content,
       title: request.title,
@@ -1498,12 +1500,13 @@ export async function removePlanDiagramArtifact(
   });
 }
 
+/** False when the worktree did not have the plan. */
 export async function deleteTrackedPlan(
   projectId: string,
   worktreeId: string,
   planId: string,
-): Promise<void> {
-  await trackedPlanEngine.delete({ projectId, worktreeId }, planId);
+): Promise<boolean> {
+  return trackedPlanEngine.delete({ projectId, worktreeId }, planId);
 }
 
 export async function deleteTrackedPlansForWorktree(

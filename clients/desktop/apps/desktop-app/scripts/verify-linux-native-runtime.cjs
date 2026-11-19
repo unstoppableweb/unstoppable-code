@@ -1,9 +1,9 @@
-// Diagnostic only: launched by the final packaged Electron, never shipped.
+// Fixed packaged diagnostic implementation; no standalone/external-code entry.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-async function probe(appDir, outputDir) {
+async function probe(appDir, outputDir, complete) {
   appDir = fs.realpathSync(appDir);
   const result = {
     schemaVersion: 1,
@@ -31,16 +31,12 @@ async function probe(appDir, outputDir) {
     } catch {
       // PTY exit can race failure cleanup.
     }
-    fs.mkdirSync(outputDir, { recursive: true });
-    const temp = path.join(outputDir, `runtime-${process.pid}.tmp`);
-    fs.writeFileSync(temp, `${JSON.stringify(result, null, 2)}\n`);
-    fs.renameSync(temp, path.join(outputDir, 'runtime.json'));
     if (code !== 0) {
       console.error(result.diagnostic);
       for (const entry of result.loadErrors)
         console.error(`Native load ${entry.logicalPath}: ${entry.diagnostic}`);
     }
-    process.exit(code);
+    complete(result, code);
   }
   try {
     const manifest = JSON.parse(
@@ -64,6 +60,21 @@ async function probe(appDir, outputDir) {
       manifest.electron.napi !== process.versions.napi
     )
       throw new Error('Packaged Electron version/ABI mismatch');
+    for (const entry of manifest.modules) {
+      const expectedLogical =
+        entry.name === 'node-pty'
+          ? 'node_modules/node-pty/build/Release/pty.node'
+          : entry.name === 'koffi'
+            ? `node_modules/koffi/build/koffi/linux_${arch}/koffi.node`
+            : null;
+      if (
+        !expectedLogical ||
+        entry.logicalPath !== expectedLogical ||
+        entry.archivePath !== 'resources/app.asar' ||
+        entry.physicalPath !== `resources/app.asar.unpacked/${expectedLogical}`
+      )
+        throw new Error('Native inventory attempted external code selection');
+    }
     result.stage = 'load';
     const loaded = [];
     const originalDlopen = process.dlopen;
@@ -134,6 +145,11 @@ async function probe(appDir, outputDir) {
     const pid = library.func('int getpid(void)')();
     result.ffi = { passed: pid === process.pid, pid, expectedPid: process.pid };
     if (!result.ffi.passed) throw new Error('Koffi libc getpid() failed');
+    // node-pty forks directly; keep the private result pipe out of its exec.
+    const fcntl = library.func('int fcntl(int, int, int)');
+    const flags = fcntl(3, 1, 0);
+    if (flags < 0 || fcntl(3, 2, flags | 1) !== 0)
+      throw new Error('Cannot isolate diagnostic result descriptor');
     result.stage = 'pty';
     const marker = 'CAN3208_NATIVE_PTY_OK';
     result.pty = await new Promise((resolve, reject) => {
@@ -142,7 +158,7 @@ async function probe(appDir, outputDir) {
         '/bin/sh',
         [
           '-c',
-          `[ -t 0 ] || exit 31; printf 'CAN3208_READY\\n'; IFS= read -r line; [ "$line" = 'can3208-input' ] || exit 32; printf '${marker}\\n'; IFS= read -r ack || exit 33; [ "$ack" = 'can3208-ack' ] || exit 33`,
+          `[ ! -e /proc/self/fd/3 ] || exit 34; [ -t 0 ] || exit 31; printf 'CAN3208_READY\\n'; IFS= read -r line; [ "$line" = 'can3208-input' ] || exit 32; printf '${marker}\\n'; IFS= read -r ack || exit 33; [ "$ack" = 'can3208-ack' ] || exit 33`,
         ],
         {
           name: 'xterm',
@@ -203,5 +219,4 @@ async function probe(appDir, outputDir) {
   }
 }
 
-if (require.main === module)
-  probe(path.resolve(process.argv[2]), path.resolve(process.argv[3]));
+module.exports = { probe };

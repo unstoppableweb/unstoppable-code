@@ -1,4 +1,5 @@
 import type { ChatCancelRequest } from '@canopy/desktop-shared/types';
+import { stopRunningSecretCommands } from '../agent-secrets/running-commands';
 import type { AgentSession } from '../agents/types';
 import {
   captureClaudeStopFence,
@@ -246,6 +247,13 @@ export async function cancelChatTurn(
     return { context, outcome: 'not-found' };
   }
   suppressCodexAuthenticationRecovery(req);
+  // A RunWithSecrets command must not outlive the turn: every Stop entry
+  // point (the window, the Portal, a turn-specific cancel) ends it here.
+  stopRunningSecretCommands({
+    projectId: req.projectId,
+    worktreeId: req.worktreeId,
+    chatId: req.chatId,
+  });
   // The local preparation table is synchronous, so cancel the captured send
   // before any dynamic service import can yield to a newer send or wake.
   const preparations = cancelOwnedPreparations(context, intent);

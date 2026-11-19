@@ -6,10 +6,19 @@ import {
   W5_RECOVERY_QUIT_ALL_GUIDANCE,
 } from '../lib/w5-recovery-copy';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import {
+  BackgroundServiceNotice,
+  type BackgroundServiceNoticeProps,
+} from './BackgroundServiceNotice';
 import { Notice, NoticeButton } from './Notice';
 
 export interface W5RecoveryNoticeProps {
   readonly status?: W5RecoveryStatus;
+  /**
+   * The background service failure behind blocked changes (CAN-7061),
+   * shown as its own notice above this one; `recovery` is this `status`.
+   */
+  readonly service?: Omit<BackgroundServiceNoticeProps, 'recovery'>;
   /** Live archive review does not grant access to cold workspace recovery. */
   readonly archiveRecovery?: {
     readonly unavailable: boolean;
@@ -24,12 +33,26 @@ export interface W5RecoveryNoticeProps {
 }
 
 export function W5RecoveryNotice({
+  service,
+  ...props
+}: W5RecoveryNoticeProps): JSX.Element | null {
+  return (
+    <>
+      {service ? (
+        <BackgroundServiceNotice {...service} recovery={props.status} />
+      ) : null}
+      <BlockedChangesNotice {...props} />
+    </>
+  );
+}
+
+function BlockedChangesNotice({
   status,
   archiveRecovery,
   canRecover = false,
   onRecover,
   busy = false,
-}: W5RecoveryNoticeProps): JSX.Element | null {
+}: Omit<W5RecoveryNoticeProps, 'service'>): JSX.Element | null {
   const cold = status && status.state !== 'hidden' ? status : null;
   if (!cold && !archiveRecovery) return null;
   const restart = cold?.state === 'restart-required';
@@ -92,19 +115,28 @@ export function W5RecoveryNotice({
       ) : null}
       {cold ? (
         <>
+          {/* Native dialogs keep generic restart copy; running notices need a
+              target. Older desktops report no target to a remote viewer. */}
           <p>
             {restart
               ? 'Quit and reopen the app to inspect the records and choose what to do. Writes are paused until restart.'
               : complete
                 ? 'The selected recovery decisions finished.'
-                : w5RecoveryGuidance(cold.reason)}
+                : cold.reason
+                  ? w5RecoveryGuidance(cold.reason)
+                  : cold.canRecover
+                    ? 'Some changes to workspace records are blocked. Restart for recovery to inspect those records and choose what to do.'
+                    : canRecover
+                      ? 'Some workspace changes need attention. Recovery at startup is not available for these changes.'
+                      : 'Some workspace changes need attention. Check them in the app on the computer that holds them.'}
           </p>
           {!complete &&
+            cold.canRecover &&
             cold.state !== 'refused' &&
             cold.reason !== 'platform-unsupported' && (
               <p>{W5_RECOVERY_QUIT_ALL_GUIDANCE}</p>
             )}
-          {!canRecover && !restart && !complete && (
+          {!canRecover && cold.canRecover && !restart && !complete && (
             <p>
               Recover workspace records in the app on the computer that holds
               them. This step cannot run from Remote Control.

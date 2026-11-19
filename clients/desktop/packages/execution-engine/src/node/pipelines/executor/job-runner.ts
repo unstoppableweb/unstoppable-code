@@ -674,7 +674,6 @@ async function executeJobAttempt(
         error: refusal,
       };
     }
-
     if (recoveryCheckpoint) {
       const recoveryTranscriptFile = stepResult.outputs.transcript_file;
       if (

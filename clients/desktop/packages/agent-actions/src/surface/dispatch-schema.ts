@@ -1,14 +1,15 @@
 import type { AgentActionBrand } from '../brand';
 import type { AgentJsonSchema } from '../tools/definition';
 import { composeDispatchActionJsonSchema } from '../tools/dispatch-action';
-import type { AgentActionFamilyJsonSchema } from './family';
+import type { AgentActionHostCapabilities } from './capabilities';
+import type { AgentActionFamilyJsonSchemaSource } from './family';
 
 /** The parts of an action family that shape the advertised DispatchAction. */
 export interface AgentActionFamilyDispatchSchema {
   readonly types: readonly string[];
   /** Pins the advertised DispatchAction type enum order. */
   readonly jsonEnumOrder?: readonly string[];
-  readonly dispatchJsonSchema?: AgentActionFamilyJsonSchema;
+  readonly dispatchJsonSchema?: AgentActionFamilyJsonSchemaSource;
   readonly targetFields?: readonly string[];
 }
 
@@ -24,20 +25,23 @@ export function agentActionDispatchJsonSchema(
   brand: AgentActionBrand,
   families: readonly AgentActionFamilyDispatchSchema[],
   actionTypes: readonly string[],
+  capabilities?: AgentActionHostCapabilities,
 ): AgentJsonSchema {
   return composeDispatchActionJsonSchema(
     brand,
-    families.map((family) => ({
-      actionTypes: (family.jsonEnumOrder ?? family.types).filter((type) =>
-        actionTypes.includes(type),
-      ),
-      ...(family.dispatchJsonSchema?.properties
-        ? { properties: family.dispatchJsonSchema.properties }
-        : {}),
-      ...(family.dispatchJsonSchema?.allOf
-        ? { allOf: family.dispatchJsonSchema.allOf }
-        : {}),
-      ...(family.targetFields ? { targetFields: family.targetFields } : {}),
-    })),
+    families.map((family) => {
+      const schema =
+        typeof family.dispatchJsonSchema === 'function'
+          ? family.dispatchJsonSchema(capabilities)
+          : family.dispatchJsonSchema;
+      return {
+        actionTypes: (family.jsonEnumOrder ?? family.types).filter((type) =>
+          actionTypes.includes(type),
+        ),
+        ...(schema?.properties ? { properties: schema.properties } : {}),
+        ...(schema?.allOf ? { allOf: schema.allOf } : {}),
+        ...(family.targetFields ? { targetFields: family.targetFields } : {}),
+      };
+    }),
   );
 }

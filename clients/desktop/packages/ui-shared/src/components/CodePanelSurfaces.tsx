@@ -62,7 +62,7 @@ export function TerminalReadOnlyNotice({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="pointer-events-auto flex max-w-xl items-center gap-2 rounded bg-card/95 px-3 py-1.5 text-2xs fg-secondary shadow-sm backdrop-blur">
+    <div className="pointer-events-auto flex max-w-xl items-center gap-2 rounded bg-card px-3 py-1.5 text-2xs fg-secondary shadow-sm">
       {children}
     </div>
   );

@@ -58,7 +58,7 @@ jest.mock('../../lib/model-policy-state', () => ({
 jest.mock('../../agents/work-owner', () => ({
   resolveAiCreditsScopeOwner: jest.fn(() => Promise.resolve(undefined)),
 }));
-jest.mock('../../portal/provider-usage-projection', () => ({
+jest.mock('../provider-usage-projection', () => ({
   projectPortalProviderUsage: jest.fn(),
   readPortalProviderUsageAccountProxySource: jest.fn(),
 }));

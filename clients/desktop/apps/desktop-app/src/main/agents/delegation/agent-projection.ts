@@ -851,7 +851,15 @@ export async function materializeDelegationCapabilities(
     directory: string,
   ) => Promise<Pick<NativeDelegationFiles, 'list' | 'read' | 'close'>>,
   harness: ModelHarness,
-  options?: { readonly cache?: DelegationCapabilityCache },
+  options?: {
+    readonly cache?: DelegationCapabilityCache;
+    /**
+     * The workspace the parent chat resolved its plugins for, so a delegate
+     * keeps the organization skills that workspace allows (CAN-6237);
+     * without it none load.
+     */
+    readonly workspaceId?: string;
+  },
 ): Promise<MaterializedDelegationCapabilities> {
   if (
     harness !== 'claude' &&
@@ -975,6 +983,7 @@ export async function materializeDelegationCapabilities(
       const refs = await resolveEffectivePluginSelectionRefs(
         selections,
         resolverWarnings,
+        options?.workspaceId,
       );
       if (resolverWarnings.length > 0 || refs.warnings.length > 0)
         layerWarnings.push({

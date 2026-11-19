@@ -76,6 +76,8 @@ export const SEEDED_CLOUD_CHATS = Object.freeze({
 
 const EPOCH = 'web-core-e2e';
 const AT = '2026-11-11T09:00:00.000Z';
+/** When a task deleted to the Trash goes for good: its project's 7 days on. */
+const TRASH_EXPIRES_AT = '2026-11-18T09:00:00.000Z';
 const AT_MS = Date.parse(AT);
 /** The task folder's one file root. */
 const FILE_ROOT_ID = 'e2e-cloud-root';
@@ -335,7 +337,20 @@ const SCOPES = {
   'worker.filesystem.directory.list': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.search': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.file.read': { served: ['chatId'], needs: ['chatId'] },
-  'worker.artifact.delete': { served: ['chatId'], needs: ['chatId'] },
+  // An attachment by its chat, a workspace file by its project (CAN-7008).
+  'worker.artifact.delete': { served: ['chatId', 'workspaceId'] },
+  'worker.artifact.upload.open': {
+    served: ['workspaceId'],
+    needs: ['workspaceId'],
+  },
+  'worker.artifact.upload.write': {
+    served: ['workspaceId'],
+    needs: ['workspaceId'],
+  },
+  'worker.artifact.upload.commit': {
+    served: ['workspaceId'],
+    needs: ['workspaceId'],
+  },
   'worker.filesystem.link.resolve': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.entry.move': { served: ['chatId'], needs: ['chatId'] },
   'worker.filesystem.entry.delete': { served: ['chatId'], needs: ['chatId'] },
@@ -537,6 +552,13 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
     refuseNextSecretSubmit: false,
     /** Tasks archived through `core.chat.archive` (CAN-6511); the list drops them. */
     archived: new Set(),
+    /**
+     * Of `archived`, the tasks deleted to the Trash through `core.chat.delete`
+     * (CAN-7052): listed unlocked, restorable until they expire.
+     */
+    trashed: new Set(),
+    /** Every `core.chat.delete` the desktop made, in order (CAN-7052). */
+    taskDeletes: [],
     /** Each archived task's container revision, which a restore is fenced by. */
     archiveRevisions: new Map(),
     /** Every `core.archive.container.restore` the desktop made, in order. */
@@ -547,6 +569,10 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
     artifactReads: [],
     /** The project's shared workspace files (CAN-6568); `addWorkspaceFile` adds one. */
     workspaceFiles: [],
+    /** Every workspace file upload instruction made, in order (CAN-7008). */
+    workspaceFileUploads: [],
+    /** Open workspace file uploads by upload id. */
+    openUploads: new Map(),
     /** Tool approvals raised in a chat, as the web core lists them (CAN-6515). */
     approvals: [],
     /** Every `core.approval.request.respond` the desktop made, in order. */
@@ -985,6 +1011,8 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
               revision: 1,
               repositorySources: [],
               settings: {},
+              // How long the Trash keeps a deleted task (CAN-7052).
+              deletionRetentionDays: 7,
             },
           ],
           nextCursor: null,
@@ -1008,9 +1036,9 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
             name: state.chats.get(chatId)?.title ?? 'Untitled',
             branchName: null,
             archivedAt: AT,
-            expiresAt: null,
-            locked: true,
-            lockedAt: AT,
+            expiresAt: state.trashed.has(chatId) ? TRASH_EXPIRES_AT : null,
+            locked: !state.trashed.has(chatId),
+            lockedAt: state.trashed.has(chatId) ? null : AT,
             chatCount: 0,
             archivedChatCount: 0,
             executionCount: 0,
@@ -1039,6 +1067,7 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
             'core.archive.revisionConflict',
           );
         state.archived.delete(chatId);
+        state.trashed.delete(chatId);
         state.revision += 1;
         return ok({
           operation: {
@@ -1063,6 +1092,32 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
           return refuse('not_found', 'The chat was not found.');
         const already = state.archived.has(chatId);
         state.archived.add(chatId);
+        if (!already) state.revision += 1;
+        return ok({
+          commandId: params.commandId,
+          revision: 0,
+          outcome: already ? 'already_applied' : 'applied',
+          entityId: chatId,
+        });
+      }
+      case 'core.chat.delete': {
+        // As the web core serves it (chat.ts): a task's own chat in discard
+        // mode moves the task with its tabs to the Trash; one already there
+        // is already applied, whatever its command id (CAN-7052).
+        state.taskDeletes.push(params);
+        const { action } = params;
+        const chatId = String(action.tabId).toLowerCase();
+        if (
+          action.type !== 'chat.close_tab' ||
+          action.mode !== 'discard' ||
+          !same(params.projectId, seeded.workspaceId) ||
+          !isTask(chatId) ||
+          !same(params.worktreeId, chatId)
+        )
+          return refuse('not_found', 'The chat was not found.');
+        const already = state.trashed.has(chatId);
+        state.archived.add(chatId);
+        state.trashed.add(chatId);
         if (!already) state.revision += 1;
         return ok({
           commandId: params.commandId,
@@ -1096,6 +1151,7 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
                 createdAt: AT,
                 availability: 'available',
                 transfer: null,
+                ...(params.revision === 2 ? { versionId: file.versionId } : {}),
               }))
             : [];
         const attached =
@@ -1676,7 +1732,86 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
         });
       case 'core.chat.create':
         return createChat(params);
+      case 'worker.artifact.upload.open': {
+        state.workspaceFileUploads.push({ method, params });
+        const fileId = params.artifactId.slice('workspace-file:'.length);
+        const uploadId = `upload-${params._meta.idempotencyKey}`;
+        if (!state.openUploads.has(uploadId))
+          state.openUploads.set(uploadId, { ...params, fileId, bytes: [] });
+        return ok({
+          artifact: {
+            artifactId: params.artifactId,
+            name: params.name,
+            mediaType: params.mediaType,
+            sizeBytes: params.sizeBytes,
+            sha256: params.sha256,
+            storageState: 'pending',
+            createdAt: AT,
+          },
+          uploadId,
+          chunkSizeBytes: 4 * 1024 * 1024,
+          nextOffset: 0,
+        });
+      }
+      case 'worker.artifact.upload.write': {
+        state.workspaceFileUploads.push({ method, params });
+        const upload = state.openUploads.get(params.uploadId);
+        if (upload === undefined)
+          return refuse('not_found', 'The upload was not found.');
+        const bytes = Buffer.from(params.data, 'base64');
+        upload.bytes.push(bytes);
+        return ok({ nextOffset: params.offset + bytes.byteLength });
+      }
+      case 'worker.artifact.upload.commit': {
+        state.workspaceFileUploads.push({ method, params });
+        const upload = state.openUploads.get(params.uploadId);
+        if (upload === undefined)
+          return refuse('not_found', 'The upload was not found.');
+        if (
+          upload.fileId !== '' &&
+          state.workspaceFiles.find((row) => row.id === upload.fileId)
+            ?.versionId !== upload.expectedVersionId
+        )
+          return refuse(
+            'conflict',
+            'This file has a newer version.',
+            'worker.artifact.upload.revisionConflict',
+          );
+        state.openUploads.delete(params.uploadId);
+        const id = upload.fileId === '' ? randomUUID() : upload.fileId;
+        state.workspaceFiles = [
+          ...state.workspaceFiles.filter((row) => row.id !== id),
+          {
+            id,
+            versionId: randomUUID(),
+            name: upload.name,
+            mediaType: upload.mediaType,
+            sizeBytes: upload.sizeBytes,
+          },
+        ];
+        return ok({
+          artifactId: `workspace-file:${id}`,
+          name: upload.name,
+          mediaType: upload.mediaType,
+          sizeBytes: upload.sizeBytes,
+          sha256: upload.sha256,
+          storageState: 'available',
+          createdAt: AT,
+        });
+      }
       case 'worker.artifact.delete': {
+        if (params.artifactId.startsWith('workspace-file:')) {
+          const fileId = params.artifactId.slice('workspace-file:'.length);
+          const kept = state.workspaceFiles.filter((row) => row.id !== fileId);
+          if (kept.length === state.workspaceFiles.length)
+            return refuse(
+              'not_found',
+              'The artifact was not found.',
+              'worker.artifact.notFound',
+            );
+          state.workspaceFiles = kept;
+          return ok({ artifactId: params.artifactId, storageState: 'deleted' });
+        }
         const chatId = params.scope.chatId.toLowerCase();
         const [kind, attachmentId] = params.artifactId.split(':');
         const rows = state.attachments.get(chatId) ?? [];
@@ -1847,10 +1982,21 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       case 'worker.filesystem.directory.list':
       case 'worker.filesystem.search':
       case 'worker.filesystem.file.read':
-      case 'worker.artifact.delete':
       case 'worker.filesystem.link.resolve':
       case 'worker.filesystem.entry.move':
         return heldChat(params.scope.chatId) ? null : chatNotFound();
+      case 'worker.artifact.delete':
+        if (params.artifactId.startsWith('workspace-file:'))
+          return same(params.scope.workspaceId, seeded.workspaceId)
+            ? null
+            : refuse('not_found', 'The workspace was not found.');
+        return heldChat(params.scope.chatId) ? null : chatNotFound();
+      case 'worker.artifact.upload.open':
+      case 'worker.artifact.upload.write':
+      case 'worker.artifact.upload.commit':
+        return same(params.scope.workspaceId, seeded.workspaceId)
+          ? null
+          : refuse('not_found', 'The workspace was not found.');
       case 'worker.filesystem.entry.delete':
         return heldChat(params.scope.chatId) ? null : chatNotFound();
       case 'core.artifact.list':
@@ -1925,6 +2071,7 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       'core.approval.request.respond',
       'core.chat.create',
       'core.chat.archive',
+      'core.chat.delete',
       'core.archive.container.list',
       'core.archive.container.restore',
       'core.catalog.snapshot.get',
@@ -1938,6 +2085,9 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       'worker.filesystem.link.resolve',
       'worker.filesystem.entry.move',
       'worker.artifact.download.read',
+      'worker.artifact.upload.open',
+      'worker.artifact.upload.write',
+      'worker.artifact.upload.commit',
       'worker.filesystem.entry.delete',
       'core.client.lease.acquire',
       'core.client.lease.renew',
@@ -2154,7 +2304,9 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
     /** Adds a shared workspace file to the project, as an upload on the web would. */
     addWorkspaceFile: ({ name, mediaType = 'text/csv', sizeBytes = 2048 }) => {
       state.workspaceFiles.push({
-        id: `file-${state.workspaceFiles.length + 1}`,
+        // The web core's workspace file ids are UUIDs, which main checks.
+        id: randomUUID(),
+        versionId: randomUUID(),
         name,
         mediaType,
         sizeBytes,
@@ -2215,6 +2367,8 @@ export function createCloudChatsWorld({ accountId, extraTasks = 0 }) {
       // Each answer's meter (CAN-6509), which the desktop asks for (CAN-6755).
       'core.chat.transcript.page': TRANSCRIPT_PAGE_REVISION,
       'core.chat.events': EVENTS_REVISION,
+      // Each workspace file's current version (CAN-7008).
+      'core.artifact.list': 2,
     }),
   };
 }

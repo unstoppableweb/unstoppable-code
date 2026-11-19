@@ -31,16 +31,38 @@ export function problemOf(
 ): LedgerViewProblem {
   return result.status === 'unavailable'
     ? { kind: 'unavailable', reason: result.reason }
-    : { kind: 'error', reason: result.reason, message: result.message };
+    : keepCause(
+        { kind: 'error', reason: result.reason, message: result.message },
+        result,
+      );
 }
 
-/** A transport failure the client did not turn into a result. */
+/**
+ * Carries a {@link thrownResult}'s non-enumerable `cause` onto the problem a
+ * view keeps, so the caught error stays reachable for local debugging without
+ * reaching what is rendered, serialized or recorded.
+ */
+export function keepCause<T extends object>(value: T, from: object): T {
+  const cause: unknown = Reflect.get(from, 'cause');
+  if (cause !== undefined)
+    Object.defineProperty(value, 'cause', { value: cause, enumerable: false });
+  return value;
+}
+
+/**
+ * A transport failure the client did not turn into a result. The message is
+ * fixed copy: a caught message can quote paths and command output, so it
+ * stays out of what the views render and replay records. The caught error
+ * stays on a non-enumerable `cause` for local debugging.
+ */
 export function thrownResult(error: unknown): LedgerViewResult<never> {
-  return {
+  const result: LedgerViewResult<never> = {
     status: 'error',
     reason: 'UNKNOWN',
-    message: error instanceof Error ? error.message : String(error),
+    message: "Couldn't complete this action.",
   };
+  Object.defineProperty(result, 'cause', { value: error, enumerable: false });
+  return result;
 }
 
 /** Query text as the Ledger accepts it: no control characters, bounded. */

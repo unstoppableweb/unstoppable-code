@@ -14,7 +14,6 @@ import type {
   RelayBindingConnection,
   RelayBindingProvider,
 } from '../canopy-runtime/renderer-relay/definitions';
-import { logMainProcessWarn } from '../lib/main-process-logging';
 
 /**
  * Electron main's connection to the web core (CAN-4185 D1, D3; CAN-5989).
@@ -105,45 +104,6 @@ const WRONG_ACCOUNT: CanopyErrorPayload = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Parked subscriptions on one connection that log a warning, once. */
-export const PARKED_SUBSCRIPTION_WARNING_AT = 16;
-
-/**
- * The connection with a local stream release. A web core that serves
- * `core.events.unsubscribe` drops a stream the renderer closes (the shared
- * client asks it, CAN-5970). One that predates it parks the stream: the relay
- * stops delivering and acknowledging it, and the core holds at most its
- * `maxInFlight` undelivered pushes until the connection ends. Other streams
- * keep running either way.
- */
-function withParkedStreams(
-  connection: CanopyFramedConnection,
-): RelayBindingConnection {
-  const parked = new Set<string>();
-  return {
-    connectionId: connection.connectionId,
-    signal: connection.signal,
-    send: (message) => connection.send(message),
-    receive: (options) => connection.receive(options),
-    openChannel: (request) => connection.openChannel(request),
-    onChannel: (listener, options) => connection.onChannel(listener, options),
-    close: (error) => connection.close(error),
-    releaseStream: (subscriptionId, reason) => {
-      if (
-        reason === 'ended' ||
-        reason === 'unsubscribed' ||
-        parked.has(subscriptionId)
-      )
-        return;
-      parked.add(subscriptionId);
-      if (parked.size === PARKED_SUBSCRIPTION_WARNING_AT)
-        logMainProcessWarn(
-          '[web-core] A web core connection holds 16 parked stream subscriptions.',
-        );
-    },
-  };
 }
 
 /**
@@ -307,7 +267,12 @@ async function openWebCore(
   connection = opened;
   opened.signal.addEventListener('abort', stop, { once: true });
   if (ended) opened.close(SESSION_ENDED);
-  return withParkedStreams(withPrincipalCheck(opened, read.accountId));
+  return {
+    ...withPrincipalCheck(opened, read.accountId),
+    // Nothing to free here: the shared client sends `core.events.unsubscribe`
+    // for a released stream (CAN-5970, CAN-6194) and drops its late frames.
+    releaseStream: () => undefined,
+  };
 }
 
 /**

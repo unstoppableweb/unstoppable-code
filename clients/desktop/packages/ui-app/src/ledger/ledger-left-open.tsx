@@ -144,12 +144,8 @@ export interface LedgerLeftOpenNoteProps {
 
 type PendingAction = 'hand-to' | 'take-it' | 'close';
 
-function actionFailureMessage(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-  return "Couldn't complete this action.";
-}
+/** Fixed copy: a caught message can quote paths and command output. */
+const ACTION_FAILURE_MESSAGE = "Couldn't complete this action.";
 
 /** The options for an entry a session left open, shown under its line. */
 export function LedgerLeftOpenNote({
@@ -180,8 +176,8 @@ export function LedgerLeftOpenNote({
     setPendingAction(action);
     try {
       await callback();
-    } catch (error) {
-      setFailure(actionFailureMessage(error));
+    } catch {
+      setFailure(ACTION_FAILURE_MESSAGE);
     } finally {
       setPendingAction(null);
     }

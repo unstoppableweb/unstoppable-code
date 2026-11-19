@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { settleAmbientSecretEnv } from './ambient-env';
 import {
   AGENT_SECRET_VALUE_MAX_LENGTH,
   type RequestSecretsInput,
@@ -51,6 +52,23 @@ export function secretRequestQuestionText(
   return count === 1
     ? `${agentName} needs a secret`
     : `${agentName} needs ${count} secrets`;
+}
+
+/**
+ * The agent's name on the secret request form ("<agent> needs a secret") and
+ * the RunWithSecrets approval card, for each provider offering them.
+ */
+const SECRET_REQUEST_AGENT_NAMES: Partial<Record<AgentProviderType, string>> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  cursor: 'Cursor',
+  opencode: 'OpenCode',
+  copilot: 'Copilot',
+};
+
+/** The agent's name for a provider's secret tools, or "The agent". */
+export function secretToolAgentName(providerType: AgentProviderType): string {
+  return SECRET_REQUEST_AGENT_NAMES[providerType] ?? 'The agent';
 }
 
 export class SecretRequestUnavailableError extends Error {
@@ -192,12 +210,7 @@ export async function requestSecrets(
       })),
     );
   }
-  const agentName =
-    host.providerType === 'codex'
-      ? 'Codex'
-      : host.providerType === 'claude'
-        ? 'Claude'
-        : 'The agent';
+  const agentName = secretToolAgentName(host.providerType);
   const request: McpSecretRequest = {
     reason: input.reason,
     agentName,
@@ -423,6 +436,9 @@ export async function submitSecretRequest(
     } catch {
       return refused("Couldn't store the secrets. Try again.");
     }
+    // In Full access the chat's own commands get them too: the values file
+    // is rewritten before the agent resumes, so its next command has them.
+    await settleAmbientSecretEnv(scope);
     const outcome: McpSecretRequestOutcome = {
       action: 'provide',
       secrets: request.secrets.map((secret) =>

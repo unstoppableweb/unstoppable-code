@@ -3,12 +3,20 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import type {
   PlatformProcessGroup,
   PlatformProcessIdentity,
+  PlatformProcessTable,
+  PlatformProcessTableRow,
   PlatformSupervisionServices,
 } from '@canopy/core-runtime';
-import { reapDescendantGroups } from '../descendant-groups';
+import {
+  reapDescendantGroups,
+  reapDescendantGroupsWithReason,
+  traceWithin,
+} from '../descendant-groups';
 import {
   spawnProviderProcessDirect,
   type ProviderProcess,
@@ -390,8 +398,13 @@ describe('spawnProviderProcessDirect reapDescendantGroups', () => {
   });
 
   itPosix(
-    'stops a descendant in its own group and spares an unrelated one',
+    'spares an unrelated process and never reports a requested record as no cleanup',
     async () => {
+      // Real processes and real reads, so only load-independent facts are
+      // asserted. Whether the record lands before the stop, and whether its
+      // reads meet their budgets, depends on the host's load. The fake-clock
+      // goldens below pin when the outcome is `reaped` and when it is
+      // `unverified` (CAN-7026).
       const unrelated = spawn('/bin/sh', ['-c', 'trap "" TERM; sleep 60'], {
         detached: true,
         stdio: 'ignore',
@@ -406,14 +419,13 @@ describe('spawnProviderProcessDirect reapDescendantGroups', () => {
       const command = Number(await firstLine(child));
       strays.add(command);
       child.recordDescendants?.();
-      // Lets the record start: a stop before it does drops it, and the
-      // outcome is then unverified. One in flight is awaited at the stop.
-      await new Promise((resolve) => setTimeout(resolve, 400));
       await child.stop({ graceMs: 200 });
-      await until(() => !present(command), 10_000);
-      // CAN-6738: a SIGTERM-ignoring recorded group gets SIGKILL after the
-      // grace, and only its proven absence reports `reaped`.
-      expect(await child.stopCleanup?.()).toBe('reaped');
+      const cleanup = await child.stopCleanup?.();
+      const reason = await child.stopCleanupReason?.();
+      // The reason names the path that fired, so a CI failure explains itself.
+      expect(`${String(cleanup)} (${String(reason)})`).toMatch(
+        /^(reaped \(undefined\)|unverified \([a-z-]+\))$/,
+      );
       expect(present(unrelatedPid)).toBe(true);
     },
     30_000,
@@ -575,5 +587,334 @@ describe('reapDescendantGroups membership proof', () => {
     ).resolves.toBe('reaped');
     expect(kill).toHaveBeenCalled();
     expect(afterKill).toBe(2);
+  });
+});
+
+describe('descendant cleanup on a fake clock (CAN-7026)', () => {
+  // A child whose descendant shell runs in its own group and ignores
+  // SIGTERM, driven entirely by fakes: the spawn, the kernel's signals, the
+  // supervision reads and the clock. Whether the outcome is `reaped` or
+  // `unverified` then depends only on when the reads answer.
+  const CHILD = 4_101;
+  const GROUP = 4_102;
+  const row = (
+    pid: number,
+    ppid: number,
+    pgid: number,
+  ): PlatformProcessTableRow => ({
+    pid,
+    ppid,
+    pgid,
+    cpuPercent: 0,
+    memoryRssBytes: 0,
+    command: 'sh',
+  });
+  const table: PlatformProcessTable = {
+    kind: 'sampled',
+    rows: new Map([
+      [CHILD, row(CHILD, 1, CHILD)],
+      [GROUP, row(GROUP, CHILD, GROUP)],
+    ]),
+  };
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  async function cleanupWith(
+    readTable: PlatformSupervisionServices['readProcessTable'],
+  ): Promise<{ cleanup: unknown; reason: unknown; groupSignals: unknown[] }> {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    });
+    const child = Object.assign(new EventEmitter(), {
+      pid: CHILD,
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+    let ended = false;
+    const end = (signal: NodeJS.Signals): void => {
+      if (ended) return;
+      ended = true;
+      child.emit('exit', null, signal);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', null, signal);
+    };
+    let groupKilled = false;
+    const groupSignals: unknown[] = [];
+    jest.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (
+        Math.abs(pid) === CHILD &&
+        (signal === 'SIGTERM' || signal === 'SIGKILL')
+      )
+        end(signal);
+      if (pid === -GROUP) {
+        groupSignals.push(signal);
+        if (signal === 'SIGKILL') groupKilled = true;
+      }
+      return true;
+    });
+    const supervision = fakeSupervision({
+      readProcessTable: readTable,
+      identifyProcess: ({ pid }): Promise<PlatformProcessIdentity> =>
+        Promise.resolve(
+          pid === GROUP && !groupKilled
+            ? {
+                state: 'running',
+                startIdentity: `linux:v1:${GROUP}:1`,
+                processGroupId: GROUP,
+                executablePath: '/bin/sh',
+              }
+            : { state: 'absent' },
+        ),
+    });
+    let cleanup: unknown;
+    let reason: unknown;
+    await jest.isolateModulesAsync(async (): Promise<void> => {
+      const childProcess =
+        jest.requireActual<typeof ChildProcessModule>('node:child_process');
+      jest.spyOn(childProcess, 'spawn').mockImplementation(() => {
+        process.nextTick(() => child.emit('spawn'));
+        return child as never;
+      });
+      const { spawnProviderProcessDirect: isolatedSpawn } =
+        await import('../spawn');
+      const spawned = isolatedSpawn(
+        request(['-e', ''], { reapDescendantGroups: true }),
+        supervision,
+      );
+      await new Promise((resolve) => process.nextTick(resolve));
+      spawned.recordDescendants?.();
+      await jest.advanceTimersByTimeAsync(0);
+      let settled = false;
+      const stopped = spawned.stop({ graceMs: 200 }).then(async () => {
+        cleanup = await spawned.stopCleanup?.();
+        reason = await spawned.stopCleanupReason?.();
+        settled = true;
+      });
+      for (let step = 0; step < 400 && !settled; step += 1)
+        await jest.advanceTimersByTimeAsync(50);
+      await stopped;
+    });
+    return { cleanup, reason, groupSignals };
+  }
+
+  // Descendant reaping is off on Windows (spawn.ts), so these are POSIX-only.
+  itPosix(
+    'reports a recorded SIGTERM-ignoring group reaped when every read answers within its budget',
+    async () => {
+      const { cleanup, reason, groupSignals } = await cleanupWith(() =>
+        Promise.resolve(table),
+      );
+      expect(groupSignals).toEqual(['SIGTERM', 'SIGKILL']);
+      expect({ cleanup, reason }).toEqual({
+        cleanup: 'reaped',
+        reason: undefined,
+      });
+    },
+  );
+
+  itPosix(
+    'reports the cleanup unverified when the process table answers after the record budget',
+    async () => {
+      // The record's trace gives up at its budget, so the group is never
+      // recorded or signalled, and the cleanup cannot speak for it. The
+      // product fails closed here; budgets stay as they are.
+      let tableSignal: AbortSignal | undefined;
+      const { cleanup, reason, groupSignals } = await cleanupWith(
+        ({ signal } = {}) =>
+          new Promise((resolve) => {
+            tableSignal ??= signal;
+            setTimeout(() => resolve(table), 10_000);
+          }),
+      );
+      // A budget aborts the read with a TimeoutError, as AbortSignal.timeout does.
+      expect(tableSignal?.aborted).toBe(true);
+      const abortReason: unknown = tableSignal?.reason;
+      expect(abortReason).toBeInstanceOf(DOMException);
+      expect(abortReason instanceof DOMException && abortReason.name).toBe(
+        'TimeoutError',
+      );
+      expect(groupSignals).toEqual([]);
+      expect({ cleanup, reason }).toEqual({
+        cleanup: 'unverified',
+        reason: 'record-incomplete',
+      });
+    },
+  );
+});
+
+describe('descendant reads of a member that is exiting', () => {
+  // CAN-7026: on Linux a process that is exiting but not yet a zombie still
+  // reads as running while its executable link is gone, so it reads as
+  // unverifiable for a moment. The test command's `sleep 1` loop has a
+  // member exiting every second.
+  const exiting = (): (() => PlatformProcessIdentity) => {
+    let reads = 0;
+    return () => {
+      reads += 1;
+      return reads === 1
+        ? { state: 'unverifiable', reason: 'executable path is unreadable' }
+        : { state: 'absent' };
+    };
+  };
+
+  it('keeps a trace complete when a descendant is unreadable while it exits', async () => {
+    const row = (
+      pid: number,
+      ppid: number,
+      pgid: number,
+    ): PlatformProcessTableRow => ({
+      pid,
+      ppid,
+      pgid,
+      cpuPercent: 0,
+      memoryRssBytes: 0,
+      command: 'sh',
+    });
+    const table: PlatformProcessTable = {
+      kind: 'sampled',
+      rows: new Map([
+        [100, row(100, 1, 100)],
+        [200, row(200, 100, 200)],
+        [201, row(201, 200, 200)],
+      ]),
+    };
+    const sleepRead = exiting();
+    let sleepReads = 0;
+    const services = fakeSupervision({
+      readProcessTable: () => Promise.resolve(table),
+      identifyProcess: ({ pid }): Promise<PlatformProcessIdentity> => {
+        if (pid === 201) {
+          sleepReads += 1;
+          return Promise.resolve(sleepRead());
+        }
+        return Promise.resolve({
+          state: 'running',
+          startIdentity: `linux:v1:${pid}:1`,
+          processGroupId: 200,
+          executablePath: '/bin/sh',
+        });
+      },
+    });
+    const into = new Map<number, Map<string, number>>();
+    await expect(traceWithin(100, into, 2_000, services)).resolves.toBe(true);
+    expect(into.get(200)).toEqual(new Map([['linux:v1:200:1', 200]]));
+    expect(sleepReads).toBe(2);
+  });
+
+  it('reports no cleanup when a forced stop reads a group whose only recorded member is exiting', async () => {
+    // A forced stop proves each group in one round, so the exiting member's
+    // unreadable moment must be read again within that round.
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const read = exiting();
+    const services = fakeSupervision({
+      identifyProcess: (): Promise<PlatformProcessIdentity> =>
+        Promise.resolve(read()),
+    });
+    await expect(
+      reapDescendantGroups(
+        new Map([[900, new Map([['linux:v1:901:1', 901]])]]),
+        10,
+        0,
+        services,
+      ),
+    ).resolves.toBe('none');
+    expect(kill).not.toHaveBeenCalled();
+    kill.mockRestore();
+  });
+
+  it('counts a member gone, and signals nothing, when its pid is read again as a different process', async () => {
+    // The re-read compares the recorded start identity, not just the pid: a
+    // pid that now belongs to a process with another start time means the
+    // recorded member is gone, and that new process is never signalled.
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    let reads = 0;
+    const services = fakeSupervision({
+      identifyProcess: (): Promise<PlatformProcessIdentity> => {
+        reads += 1;
+        return Promise.resolve(
+          reads === 1
+            ? { state: 'unverifiable', reason: 'executable path is unreadable' }
+            : {
+                state: 'running',
+                startIdentity: 'linux:v1:901:2',
+                processGroupId: 900,
+                executablePath: '/bin/sh',
+              },
+        );
+      },
+    });
+    await expect(
+      reapDescendantGroups(
+        new Map([[900, new Map([['linux:v1:901:1', 901]])]]),
+        10,
+        0,
+        services,
+      ),
+    ).resolves.toBe('none');
+    expect(kill).not.toHaveBeenCalled();
+    kill.mockRestore();
+  });
+
+  it('names the missed deadline when a killed group is never proven gone', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    });
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const services = fakeSupervision({
+      identifyProcess: (): Promise<PlatformProcessIdentity> =>
+        Promise.resolve({
+          state: 'running',
+          startIdentity: 'linux:v1:901:1',
+          processGroupId: 900,
+          executablePath: '/bin/sh',
+        }),
+    });
+    let result: unknown;
+    const reaping = reapDescendantGroupsWithReason(
+      new Map([[900, new Map([['linux:v1:901:1', 901]])]]),
+      10,
+      0,
+      services,
+    ).then((value) => {
+      result = value;
+    });
+    for (let step = 0; step < 100 && result === undefined; step += 1)
+      await jest.advanceTimersByTimeAsync(50);
+    await reaping;
+    expect(result).toEqual({
+      cleanup: 'unverified',
+      reason: 'verify-deadline',
+    });
+    expect(kill).toHaveBeenCalledWith(-900, 'SIGKILL');
+    kill.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('stays unverified when a member never reads absent within its budget', async () => {
+    // Re-reading is bounded by the existing budget and never assumes the
+    // member is gone: one that stays unreadable keeps the outcome unverified.
+    const kill = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    const services = fakeSupervision({
+      identifyProcess: (): Promise<PlatformProcessIdentity> =>
+        Promise.resolve({
+          state: 'unverifiable',
+          reason: 'executable path is unreadable',
+        }),
+    });
+    await expect(
+      reapDescendantGroupsWithReason(
+        new Map([[900, new Map([['linux:v1:901:1', 901]])]]),
+        10,
+        0,
+        services,
+      ),
+    ).resolves.toEqual({ cleanup: 'unverified', reason: 'proof-inconclusive' });
+    expect(kill).not.toHaveBeenCalled();
+    kill.mockRestore();
   });
 });

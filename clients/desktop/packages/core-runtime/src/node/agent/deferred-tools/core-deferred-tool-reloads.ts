@@ -482,7 +482,8 @@ export class CoreDeferredToolReloads<P> {
     let reason: string | null;
     try {
       reason = await host.revalidate(this.snapshot(record));
-    } catch {
+    } catch (error) {
+      this.report(error, 'deferred tools reload revalidation');
       if (stillCurrent())
         this.settle(
           record,
@@ -504,7 +505,8 @@ export class CoreDeferredToolReloads<P> {
     let capture: DeferredToolReloadCapture;
     try {
       capture = await host.capture(this.snapshot(record));
-    } catch {
+    } catch (error) {
+      this.report(error, 'deferred tools reload capture');
       if (stillCurrent())
         this.settle(
           record,
@@ -554,7 +556,8 @@ export class CoreDeferredToolReloads<P> {
           origin: record.origin,
           owner: record.owner,
         });
-      } catch {
+      } catch (error) {
+        this.report(error, 'deferred tools reload materialization');
         if (stillCurrent())
           this.settle(
             record,
@@ -829,6 +832,10 @@ export class CoreDeferredToolReloads<P> {
   }
 
   private report(error: unknown, context: string): void {
-    this.options.onError?.(error, context);
+    try {
+      this.options.onError?.(error, context);
+    } catch {
+      // Reporting is best effort; a throwing reporter must not skip settlement.
+    }
   }
 }

@@ -40,6 +40,7 @@ export * from './mcp-connect-errors';
 export * from './marketplace-browse-curation';
 export * from './marketplace-type-tabs';
 export * from './customize-discovery';
+export * from './customize-harness-rows';
 export * from './description-markdown-hint';
 export * from './markdown-plain-text';
 export * from './marketplace-card-subtitle';

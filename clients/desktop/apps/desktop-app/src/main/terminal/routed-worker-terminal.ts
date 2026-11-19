@@ -3,6 +3,7 @@ import type {
   TerminalAttachment,
   TerminalAttachmentRequest,
   TerminalCreateRequest,
+  TerminalKillAllOptions,
   TerminalRestoreRequest,
   TerminalWorktreeScope,
   WorkerTerminalEvent,
@@ -124,9 +125,9 @@ export class RoutedWorkerTerminal implements WorkerTerminalPort {
     this.daemon?.killWorktree(scope);
   }
 
-  public killAll(): void {
-    this.engine.killAll();
-    void this.daemon?.killAll();
+  public killAll(options?: TerminalKillAllOptions): void {
+    this.engine.killAll(options);
+    void this.daemon?.killAll(options);
   }
 
   public release(terminalId: string): Promise<void> {

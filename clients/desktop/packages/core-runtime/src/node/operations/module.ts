@@ -8,6 +8,7 @@ import {
   defineRuntimeModule,
   type RuntimeModule,
 } from '../../kernel/runtime-profile-graph';
+import type { RuntimeHealthCheck } from '../../kernel/service-container';
 import { createCoreOperationHandlers } from './handlers';
 import type { OperationService } from './service';
 
@@ -26,10 +27,12 @@ export const CORE_OPERATION_OPERATIONS: readonly string[] = [
 /**
  * `core.operation.*` over `service` as a graph module (CAN-5092). The
  * service opens its ledger on the first call and closes it when the graph
- * closes its resources.
+ * closes its resources. `health` reports the ledger's failures no caller
+ * could see, as the daemon records them from the service's `onError`.
  */
 export function createCoreOperationModule(
   service: OperationService,
+  options: { readonly health?: () => RuntimeHealthCheck } = {},
 ): RuntimeModule {
   const handlers = createCoreOperationHandlers(service);
   return defineRuntimeModule({
@@ -40,6 +43,7 @@ export function createCoreOperationModule(
         name: 'core.operation.ledger',
         plane: 'core',
         stop: { 7: () => service.close() },
+        ...(options.health && { health: options.health }),
       },
     ],
     definitions: {

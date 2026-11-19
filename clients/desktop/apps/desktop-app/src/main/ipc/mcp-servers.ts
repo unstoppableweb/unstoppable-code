@@ -1,5 +1,17 @@
+import type { McpRemovalPlan } from '../mcp/config-repository';
+import {
+  InspectMcpRemovalRequestSchema,
+  ForceMcpRemovalRequestSchema,
+} from '@canopy/protocol/mcp-removal';
+import {
+  listMcpRemovalCandidatesThroughCore,
+  inspectMcpRemovalThroughCore,
+  forceMcpRemovalThroughCore,
+} from '../canopy-runtime/mcp-removal-dispatch';
 import { z } from 'zod';
 import {
+  ACCOUNT_MCP_LABEL_MAX_LENGTH,
+  isAccountMcpInstanceConfigId,
   isMcpServerCommandAllowed,
   mcpServerCommandRefusal,
   parseMcpExtraHeaders,
@@ -25,6 +37,7 @@ import {
   listAccountMcpUpstreamTools,
   awaitAccountMcpConnection,
   invalidateAccountMcpConnections,
+  accountMcpConnectionsChanged,
   removeAccountMcpConnection,
   updateAccountMcpConnection,
 } from '../canopy-cloud/mcp-connections';
@@ -35,10 +48,25 @@ import {
   readMcpAccountIndexEntry,
   withAccountMcpProxy,
 } from '../mcp/account-routing';
-import { spawn } from 'child_process';
+import { spawnMcpConnectionProbe } from '../mcp/connection-process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile, unlink, readFile, readdir } from 'node:fs/promises';
-import { McpConfigRepository } from '../mcp/config-repository';
+import { mcpConfigRepository as configRepository } from '../mcp/config-store';
+import {
+  McpConfigRemovalService,
+  McpOrdinaryRemovalError,
+} from '../mcp/config-removal-service';
+import {
+  MCP_REMOVAL_GRANT,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import type {
+  ForceMcpRemovalRequest,
+  ForceMcpRemovalResult,
+  McpRemovalCandidatesResult,
+  InspectMcpRemovalRequest,
+  InspectMcpRemovalResult,
+} from '@canopy/protocol/mcp-removal';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import {
   McpConfigNotFoundError,
   McpConfigStateError,
@@ -88,10 +116,11 @@ import {
   resolveMcpServerInput,
 } from '../mcp/server-secret-view';
 import { StoredSecretError } from '../lib/stored-secrets';
-import { getMcpServersIndexFilePath, getMcpServerFilePath } from '../lib/paths';
+import { getRemoteImageCacheDir } from '../lib/paths';
 import {
   readPreferencesFile,
   writePreferencesFile,
+  updatePreferencesFile,
 } from '../lib/preferences-store';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { resumeChatsAfterMcpOAuthSuccess } from '../lib/auth-failure-resume';
@@ -99,6 +128,7 @@ import { setMcpOAuthSettledListener } from '../mcp/oauth-client';
 import { getMcpOAuthCoordinator } from '../mcp/oauth-coordinator';
 import {
   clearMcpOAuthToken,
+  clearMcpOAuthTokensForServer,
   getMcpOAuthAuthStatusForDefinition,
   getMcpOAuthTokenRevision,
   setMcpOAuthTokensChangedListener,
@@ -153,9 +183,11 @@ import {
   withMcpHarnessInstalls,
   type McpHarnessInstallDeps,
 } from '../mcp/harness-installs';
-import { resolveRemoteImageDataUrl } from '../mcp/remote-image-cache';
+import {
+  configureRemoteImageDiskCache,
+  resolveRemoteImageDataUrl,
+} from '../mcp/remote-image-cache';
 import { isCustomizeDiscoveryEnabledInMain } from '../lib/customize-discovery-enabled';
-import { refreshProjectedPortalMcpServers } from '../portal/adapters/mcp-adapter';
 import {
   MCP_ACCEPT_HEADER,
   discoverHttpTools,
@@ -247,6 +279,15 @@ const updateAccountSchema = z
     bearerToken: z.string().min(1).max(16384).nullable().optional(),
     expectedAccountId: z.string().trim().min(1).max(256).optional(),
     enabled: z.boolean().optional(),
+    // Naming an account and making it the default (CAN-6226).
+    label: z
+      .string()
+      .trim()
+      .min(1)
+      .max(ACCOUNT_MCP_LABEL_MAX_LENGTH)
+      .nullable()
+      .optional(),
+    isDefault: z.literal(true).optional(),
   })
   .strict()
   .refine(
@@ -255,7 +296,9 @@ const updateAccountSchema = z
       value.customUrl !== undefined ||
       value.headers !== undefined ||
       value.bearerToken !== undefined ||
-      value.enabled !== undefined,
+      value.enabled !== undefined ||
+      value.label !== undefined ||
+      value.isDefault !== undefined,
     'Nothing to update.',
   );
 
@@ -343,10 +386,120 @@ export async function rewriteMcpServerRefsOutcome(
   });
 }
 
-const configRepository = new McpConfigRepository(
-  { index: getMcpServersIndexFilePath, server: getMcpServerFilePath },
-  { mkdir, writeFile, unlink, readFile, readdir },
-);
+function removalService(
+  caller?: CanopyCallerDescriptor,
+): McpConfigRemovalService {
+  return new McpConfigRemovalService({
+    repository: configRepository,
+    authorizeForce: () =>
+      Promise.resolve(
+        caller?.authorityId === LOCAL_DESKTOP_AUTHORITY_ID &&
+          caller.grants.includes(MCP_REMOVAL_GRANT),
+      ),
+    clearServerCredentials: async (serverId) => {
+      await clearMcpOAuthTokensForServer(serverId);
+    },
+    clearConfigCredentials: clearMcpOAuthToken,
+    recordRecovery: async (serverId, recoveryId) => {
+      await updatePreferencesFile((current) => ({
+        pendingInstalledItemUninstalls: (
+          current.pendingInstalledItemUninstalls ?? []
+        ).map((intent) => {
+          if (
+            intent.target.kind !== 'mcp-server' ||
+            intent.target.serverId !== serverId
+          )
+            return intent;
+          if (intent.mcpRemoval && intent.mcpRemoval.recoveryId !== recoveryId)
+            throw new Error('Device MCP uninstall recovery identity changed.');
+          return { ...intent, mcpRemoval: { version: 1, recoveryId } };
+        }),
+      }));
+    },
+    removed: async (serverId) => {
+      await forgetMcpServerHarnessInstalls(harnessInstallStore, serverId).catch(
+        (error: unknown) => {
+          logMainProcessError('MCP harness install cleanup failed', error);
+        },
+      );
+      await notifyConfigIndexChanged().catch((error: unknown) => {
+        logMainProcessError('MCP inventory notification failed', error);
+      });
+    },
+  });
+}
+
+/** Discovery does not depend on inventory; partial hints never authorize removal. */
+export async function listDeviceMcpRemovalCandidates(): Promise<McpRemovalCandidatesResult> {
+  const discovered = await configRepository.removalCandidates();
+  const ids = new Set(discovered.serverIds);
+  const pending = new Set<string>();
+  let incomplete = discovered.incomplete;
+  try {
+    const preferences = await readPreferencesFile();
+    for (const intent of preferences.pendingInstalledItemUninstalls ?? []) {
+      if (
+        intent.target.kind === 'mcp-server' &&
+        /^[a-f0-9-]{1,256}$/.test(intent.target.serverId)
+      ) {
+        pending.add(intent.target.serverId);
+        ids.add(intent.target.serverId);
+      }
+    }
+  } catch {
+    incomplete = true;
+  }
+  const sorted = [...ids].sort(
+    (a, b) =>
+      Number(pending.has(b)) - Number(pending.has(a)) || a.localeCompare(b),
+  );
+  return {
+    candidates: sorted.slice(0, 256).map((serverId) => ({
+      serverId,
+      pendingUninstall: pending.has(serverId),
+    })),
+    incomplete: incomplete || sorted.length > 256,
+  };
+}
+
+/** Only the grant-checked core catalog host calls these device-only projections. */
+export function inspectDeviceMcpRemoval(
+  request: InspectMcpRemovalRequest,
+): Promise<InspectMcpRemovalResult> {
+  return removalService().inspect(request);
+}
+
+export async function forceDeviceMcpRemoval(
+  request: ForceMcpRemovalRequest,
+  caller: CanopyCallerDescriptor,
+): Promise<ForceMcpRemovalResult> {
+  const outcome = await removalService(caller).force(request);
+  if (
+    !request.finishUninstall ||
+    outcome.status !== 'complete' ||
+    !request.recoveryId
+  )
+    return outcome;
+  try {
+    const { installedItemService } =
+      await import('../installed-items/installed-item-service');
+    const reconciled = await installedItemService.finishDeviceMcpRemoval(
+      request.serverId,
+      request.recoveryId,
+    );
+    return {
+      ...outcome,
+      uninstall: reconciled.removed.some(
+        (target) =>
+          target.kind === 'mcp-server' && target.serverId === request.serverId,
+      )
+        ? 'complete'
+        : 'pending',
+    };
+  } catch {
+    return { ...outcome, uninstall: 'pending' };
+  }
+}
 
 /**
  * A device server as stored, secret values included, read inside its
@@ -371,45 +524,47 @@ export async function deleteMcpServer(id: string): Promise<void> {
   );
 }
 
-async function deleteMcpServerAndOAuthTokens(id: string): Promise<void> {
-  const configIds = await inMcpRefRewritePhase('retirementRead', () =>
-    readServer(id)
-      .then(({ server }): string[] =>
-        server.configs.map((config): string => config.id),
-      )
-      .catch(
-        async (): Promise<string[]> =>
-          (await readIndex()).servers
-            .find((server) => server.id === id)
-            ?.configs.map((config) => config.id) ?? [],
-      ),
-  );
-  // Sign-ins belong to the device server; a bound cloud connection keeps
-  // its own and stays in the cloud account.
-  await inMcpRefRewritePhase('tokenClear', async () => {
-    const cleanup = await Promise.allSettled(
-      configIds.map((configId) => clearMcpOAuthToken(id, configId)),
+async function prepareStrictDeviceRemoval(id: string): Promise<McpRemovalPlan> {
+  try {
+    return await configRepository.prepareRemoval(id);
+  } catch (error) {
+    const refusal = new McpOrdinaryRemovalError(
+      'preflight',
+      'none',
+      'preflight_refused',
     );
-    const failed = cleanup.find((result) => result.status === 'rejected');
-    if (failed?.status === 'rejected') throw failed.reason;
-  });
-  // Cleanup failure retains config identities for retries.
-  await configRepository.remove(id, inMcpRefRewritePhase);
-  // The server is gone from every harness it was installed for; a record
-  // left behind by a failed write is never served without its server.
-  const forgotten = await forgetMcpServerHarnessInstalls(
-    harnessInstallStore,
-    id,
-  ).catch((): boolean => false);
-  if (!forgotten)
-    logMainProcessWarn(
-      '[mcp-harness-installs]',
-      'Could not remove the install record from disk; it is ignored until a later write removes it.',
+    throw recordMcpRefRewriteFailure(
+      refusal,
+      'removalPreflight',
+      'removalRefused',
+      [error],
     );
-  await notifyConfigIndexChanged();
-  await refreshProjectedPortalMcpServers().catch((error: unknown) => {
-    logMainProcessError('Portal MCP projection refresh failed', error);
-  });
+  }
+}
+
+async function deleteMcpServerAndOAuthTokens(
+  id: string,
+  prepared?: McpRemovalPlan,
+): Promise<void> {
+  const plan = prepared ?? (await prepareStrictDeviceRemoval(id));
+  try {
+    await removalService().removeWithinLease(plan);
+  } catch (error) {
+    if (!(error instanceof McpOrdinaryRemovalError)) throw error;
+    const phase =
+      error.phase === 'preflight'
+        ? 'removalPreflight'
+        : error.phase === 'revalidation'
+          ? 'removalRevalidation'
+          : error.phase;
+    throw recordMcpRefRewriteFailure(
+      error,
+      phase,
+      error.phase === 'preflight' && error.effects === 'none'
+        ? 'removalRefused'
+        : 'retirementFailed',
+    );
+  }
 }
 
 /**
@@ -440,6 +595,8 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
         retired: 'changed',
       };
     }
+    // Refusal precedes reference changes; the same plan is revalidated after them.
+    const removalPlan = await prepareStrictDeviceRemoval(retire.serverId);
     const result = await rewriteMcpServerRefs({
       from: request.from,
       to: request.to,
@@ -452,7 +609,7 @@ async function removeServerAndOAuthTokensAfterMovingRefs(
       ),
     );
     if (!stillCurrent) return { ...result, retired: 'changed' };
-    await deleteMcpServerAndOAuthTokens(retire.serverId);
+    await deleteMcpServerAndOAuthTokens(retire.serverId, removalPlan);
     return { ...result, retired: 'removed' };
   });
 }
@@ -1116,7 +1273,7 @@ async function checkCommandHealth(
 
   return new Promise<McpServerHealthCheckResult>((resolve) => {
     const lookupCmd = process.platform === 'win32' ? 'where' : 'which';
-    const proc = spawn(lookupCmd, [command], {
+    const proc = spawnMcpConnectionProbe(lookupCmd, [command], {
       timeout: 5000,
       windowsHide: true,
     });
@@ -1343,8 +1500,7 @@ async function testCommandConnection(
   const args = def.args ?? [];
 
   return new Promise<McpServerTestConnectionResult>((resolve) => {
-    const proc = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const proc = spawnMcpConnectionProbe(command, args, {
       timeout: 15_000,
       env: { ...process.env, ...sanitizeEnvVars(envVars) },
       windowsHide: true,
@@ -1909,9 +2065,6 @@ async function writeMcpServer(
     },
   );
   await notifyConfigIndexChanged();
-  await refreshProjectedPortalMcpServers().catch((error: unknown) => {
-    logMainProcessError('Portal MCP projection refresh failed', error);
-  });
 
   return serverFile;
 }
@@ -2008,12 +2161,8 @@ export function registerMcpServerHandlers(
     sendToAllWindows(MCP_SERVER_CHANNELS.AUTH_CHANGED);
   });
   // OAuth settles asynchronously in the callback server, long after the
-  // start-login IPC returns; refresh the portal projection at that point so
-  // the MCP card reflects the post-auth status.
+  // start-login IPC returns.
   setMcpOAuthSettledListener((event): void => {
-    void refreshProjectedPortalMcpServers().catch((error: unknown) => {
-      logMainProcessError('Portal MCP projection refresh failed', error);
-    });
     if (event.success && event.serverId && event.configId) {
       const serverId = event.serverId;
       const configId = event.configId;
@@ -2131,7 +2280,7 @@ export function registerMcpServerHandlers(
     }
   };
   const accountChanged = (): void => {
-    invalidateAccountMcpConnections();
+    accountMcpConnectionsChanged();
     sendToAllWindows(MCP_SERVER_CHANNELS.AUTH_CHANGED);
     void import('../installed-items/installed-item-events')
       .then(({ notifyInstalledItemsChanged }) => notifyInstalledItemsChanged())
@@ -2140,6 +2289,13 @@ export function registerMcpServerHandlers(
       );
   };
   subscribeCanopyCloudAccountChanges(accountChanged);
+  const installedMcpChanged = (): void => {
+    void import('../installed-items/installed-item-events')
+      .then(({ notifyInstalledItemsChanged }) => notifyInstalledItemsChanged())
+      .catch((error: unknown) =>
+        logMainProcessError('Installed MCP state notification failed', error),
+      );
+  };
   const assertAccountEnabled = (): void => {
     if (!accountMcpConnectionsEnabled())
       throw new Error('Account MCP connections are unavailable.');
@@ -2230,6 +2386,13 @@ export function registerMcpServerHandlers(
             .optional(),
           expectedAccountId: z.string().trim().min(1).max(256).optional(),
           browser: z.literal('embedded').optional(),
+          // The name of an account the person adds (CAN-6226).
+          label: z
+            .string()
+            .trim()
+            .min(1)
+            .max(ACCOUNT_MCP_LABEL_MAX_LENGTH)
+            .optional(),
         })
         .strict()
         .refine((value): boolean => !(value.bearerToken && value.oauthClient))
@@ -2260,6 +2423,17 @@ export function registerMcpServerHandlers(
               displayName: input.displayName,
             },
       );
+      // Another account of a connector signs in on a clean pane, so the
+      // provider asks who to sign in as instead of reusing the last account
+      // (CAN-6226).
+      if (
+        input.browser === 'embedded' &&
+        isAccountMcpInstanceConfigId(input.configId)
+      ) {
+        const { clearMcpOAuthBrowserSession } =
+          await import('../browser/mcp-oauth-session');
+        await clearMcpOAuthBrowserSession();
+      }
       const result = await accountResult(
         (): Promise<StartAccountMcpConnectionResponse> =>
           startAccountMcpConnection({
@@ -2280,6 +2454,7 @@ export function registerMcpServerHandlers(
                     : {}),
                 }),
             configId: input.configId,
+            ...(input.label ? { label: input.label } : {}),
             ...(input.browser ? { browser: input.browser } : {}),
             ...(input.bearerToken ? { bearerToken: input.bearerToken } : {}),
             ...(input.oauthClient ? { oauthClient: input.oauthClient } : {}),
@@ -2331,6 +2506,8 @@ export function registerMcpServerHandlers(
               ? { bearerToken: input.bearerToken }
               : {}),
             ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
+            ...(input.label !== undefined ? { label: input.label } : {}),
+            ...(input.isDefault ? { isDefault: true } : {}),
             ...(input.expectedAccountId !== undefined
               ? { expectedAccountId: input.expectedAccountId }
               : {}),
@@ -2345,10 +2522,18 @@ export function registerMcpServerHandlers(
     async (
       _event,
       id: unknown,
+      options: unknown,
     ): Promise<RemoveAccountMcpConnectionResponse> => {
       assertAccountEnabled();
       validateId(id, 'MCP account connection id');
-      const result = await removeAccountMcpConnection(id);
+      const result = await removeAccountMcpConnection(
+        id,
+        z
+          .object({ unlessConnected: z.boolean().optional() })
+          .strict()
+          .optional()
+          .parse(options) ?? {},
+      );
       accountChanged();
       return result;
     },
@@ -2442,11 +2627,15 @@ export function registerMcpServerHandlers(
     MCP_SERVER_CHANNELS.INSTALL_FOR_HARNESSES,
     async (_event, request: unknown) => {
       const parsed = harnessInstallRequestSchema.parse(request);
-      // Only the record file changes; the window that asked reloads the
-      // index it shows.
-      return configRepository.withServerMutation(parsed.serverId, () =>
-        installMcpServerForHarnesses(harnessInstallDeps, parsed),
+      // The window that asked reloads the index it shows; every window
+      // rereads installed-item status, so a fresh Add never reads
+      // "Unavailable" (not in the installed list).
+      const result = await configRepository.withServerMutation(
+        parsed.serverId,
+        () => installMcpServerForHarnesses(harnessInstallDeps, parsed),
       );
+      installedMcpChanged();
+      return result;
     },
   );
 
@@ -2454,11 +2643,14 @@ export function registerMcpServerHandlers(
     MCP_SERVER_CHANNELS.RETRY_HARNESS_INSTALL,
     async (_event, request: unknown) => {
       const parsed = harnessRetryRequestSchema.parse(request);
-      // Only the record file changes; the window that asked reloads the
-      // index it shows.
-      return configRepository.withServerMutation(parsed.serverId, () =>
-        retryMcpServerHarnessInstall(harnessInstallDeps, parsed),
+      // The window that asked reloads the index it shows; every window
+      // rereads installed-item status.
+      const result = await configRepository.withServerMutation(
+        parsed.serverId,
+        () => retryMcpServerHarnessInstall(harnessInstallDeps, parsed),
       );
+      installedMcpChanged();
+      return result;
     },
   );
 
@@ -2511,9 +2703,18 @@ export function registerMcpServerHandlers(
     },
   );
 
+  // Resolved logos persist across launches with the app's other caches.
+  configureRemoteImageDiskCache(getRemoteImageCacheDir());
   registerIpcHandler(
     MCP_SERVER_CHANNELS.RESOLVE_REMOTE_IMAGE,
-    async (_event, url: string) => resolveRemoteImageDataUrl(url),
+    async (_event, url: string, options?: unknown) =>
+      resolveRemoteImageDataUrl(
+        url,
+        typeof options === 'object' &&
+          options !== null &&
+          'enhanced' in options &&
+          options.enhanced === true,
+      ),
   );
 
   registerIpcHandler(MCP_SERVER_CHANNELS.LIST_STATUS, async () =>
@@ -2536,6 +2737,8 @@ export function registerMcpServerHandlers(
           authMode,
           upstreamHost,
           hasExtraHeaders,
+          label,
+          isDefault,
         }): AccountMcpConnectionSummary => ({
           id,
           serverKey,
@@ -2546,6 +2749,9 @@ export function registerMcpServerHandlers(
           ...(authMode === undefined ? {} : { authMode }),
           ...(upstreamHost === undefined ? {} : { upstreamHost }),
           ...(hasExtraHeaders === undefined ? {} : { hasExtraHeaders }),
+          // Several accounts per connector (CAN-6226); absent on older clouds.
+          ...(label ? { label } : {}),
+          ...(isDefault === undefined ? {} : { isDefault }),
         }),
       );
     },
@@ -2568,6 +2774,22 @@ export function registerMcpServerHandlers(
     MCP_SERVER_CHANNELS.SAVE_SERVER,
     async (_event, server: SaveMcpServerRequest): Promise<McpServerFileView> =>
       projectMcpServerFile(await saveMcpServer(server)),
+  );
+
+  registerIpcHandler(MCP_SERVER_CHANNELS.REMOVAL_CANDIDATES, () =>
+    listMcpRemovalCandidatesThroughCore(),
+  );
+  registerIpcHandler(
+    MCP_SERVER_CHANNELS.INSPECT_REMOVAL,
+    async (_event, request: unknown) =>
+      inspectMcpRemovalThroughCore(
+        InspectMcpRemovalRequestSchema.parse(request),
+      ),
+  );
+  registerIpcHandler(
+    MCP_SERVER_CHANNELS.FORCE_REMOVAL,
+    async (_event, request: unknown) =>
+      forceMcpRemovalThroughCore(ForceMcpRemovalRequestSchema.parse(request)),
   );
 
   // Delete server
@@ -2746,7 +2968,6 @@ export function registerMcpServerHandlers(
             pluginServer.config,
           )
         ) {
-          await refreshProjectedPortalMcpServers();
           return { status: 'completed' };
         }
         const proxyPort = await ensureMcpProxyStartedForOAuth();
@@ -2764,9 +2985,6 @@ export function registerMcpServerHandlers(
             configId: pluginServer.config.id,
           });
         }
-        await refreshProjectedPortalMcpServers().catch((error: unknown) => {
-          logMainProcessError('Portal MCP projection refresh failed', error);
-        });
         return result;
       }
 
@@ -2796,7 +3014,6 @@ export function registerMcpServerHandlers(
 
       const probeInputs = standaloneMcpOAuthProbeInputs(definition, config);
       if (await connectNeedsNoSignIn(probeInputs, definition, config)) {
-        await refreshProjectedPortalMcpServers();
         return { status: 'completed' };
       }
       const proxyPort = await ensureMcpProxyStartedForOAuth();
@@ -2820,9 +3037,6 @@ export function registerMcpServerHandlers(
           configId: config.id,
         });
       }
-      await refreshProjectedPortalMcpServers().catch((error: unknown) => {
-        logMainProcessError('Portal MCP projection refresh failed', error);
-      });
       return result;
     },
   );
@@ -2837,9 +3051,6 @@ export function registerMcpServerHandlers(
         throw new Error(`Invalid MCP server config id: ${request.configId}`);
       }
       await clearMcpOAuthToken(request.serverId, request.configId);
-      await refreshProjectedPortalMcpServers().catch((error: unknown) => {
-        logMainProcessError('Portal MCP projection refresh failed', error);
-      });
     },
   );
 }

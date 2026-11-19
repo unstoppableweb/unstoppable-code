@@ -72,9 +72,40 @@ export function normalizeInstalledItemRef(
     : ref;
 }
 
+/**
+ * A selection ref spread into an installed-item ref may carry its selection
+ * owner (CAN-6235). Which organization or person selected an item doesn't
+ * change which installed item it is, so the key ignores it.
+ */
+function withoutSelectionOwner(ref: InstalledItemRef): InstalledItemRef {
+  if (!('owner' in ref)) return ref;
+  switch (ref.kind) {
+    case 'plugin':
+      return {
+        kind: ref.kind,
+        marketplaceId: ref.marketplaceId,
+        pluginName: ref.pluginName,
+      };
+    case 'skill':
+      return {
+        kind: ref.kind,
+        sourceId: ref.sourceId,
+        skillName: ref.skillName,
+      };
+    case 'mcp-config':
+      return { kind: ref.kind, serverId: ref.serverId, configId: ref.configId };
+    case 'collection':
+      return { kind: ref.kind, collectionId: ref.collectionId };
+    case 'account-mcp':
+      return { kind: ref.kind, connectionId: ref.connectionId };
+  }
+}
+
 /** Versioned JSON encoding: separators and percent characters are ordinary data. */
 export function installedItemKey(ref: InstalledItemRef): string {
-  const value = normalizeInstalledItemRef(InstalledItemRefSchema.parse(ref));
+  const value = normalizeInstalledItemRef(
+    InstalledItemRefSchema.parse(withoutSelectionOwner(ref)),
+  );
   switch (value.kind) {
     case 'plugin':
       return JSON.stringify([

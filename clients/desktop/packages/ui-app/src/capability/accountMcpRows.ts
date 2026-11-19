@@ -1,26 +1,18 @@
-import type {
-  AccountMcpConnection,
-  McpServerIndexEntry,
+import {
+  accountMcpAccountName,
+  isDefaultAccountMcpConnection,
+  type AccountMcpConnection,
+  type McpServerIndexEntry,
 } from '@canopy/protocol/mcp-servers';
 import { WORKSPACE_LABEL, WORKSPACE_LABEL_PLURAL } from '@canopy/protocol';
 import type { UnifiedEntrySurface } from '@canopy/ui-shared';
 
-/**
- * The configuration name an account connection shows. The cloud keys
- * configurations by id only (`default`, `work`), so the name is derived from
- * the id: every connection used to read "Default", which is how a Personal
- * and a Work connection to one provider became indistinguishable (REG-3033).
- */
-export function accountMcpConfigName(configId: string): string {
-  if (configId === 'default') return 'Default';
-  const words = configId.split(/[-_\s]+/).filter((word) => word.length > 0);
-  if (words.length === 0) return configId;
-  return words
-    .map((word, index) =>
-      index === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word,
-    )
-    .join(' ');
-}
+// The account naming rules are shared with the cloud catalog (CAN-6226).
+export {
+  accountMcpAccountName,
+  accountMcpConfigName,
+  isDefaultAccountMcpConnection,
+} from '@canopy/protocol/mcp-servers';
 
 /**
  * An account row's id is the connection's server key (curated key or
@@ -47,7 +39,7 @@ export function accountMcpIndexEntry(
     configs: [
       {
         id: connection.configId,
-        name: accountMcpConfigName(connection.configId),
+        name: accountMcpAccountName(connection),
         enabled: true,
       },
     ],
@@ -77,8 +69,8 @@ export function mergeAccountMcpInventory(
     .slice()
     .sort(
       (a, b): number =>
-        Number(b.configId === 'default') - Number(a.configId === 'default') ||
-        a.id.localeCompare(b.id),
+        Number(isDefaultAccountMcpConnection(b)) -
+          Number(isDefaultAccountMcpConnection(a)) || a.id.localeCompare(b.id),
     )) {
     // The same connection listed twice is still one connection.
     if (byConnectionId.has(connection.id)) continue;
@@ -254,6 +246,83 @@ export function withoutMcpServerRef<
       (existing): boolean => !sameMcpServerRef(existing, ref),
     ),
   };
+}
+
+/**
+ * Adds one account of a connector to a selection set and drops the
+ * connector's other accounts (CAN-6229): a project or chat that picks an
+ * account uses that one, not two at once. `otherAccountConfigIds` are the
+ * configurations of the person's other accounts of `ref.serverId`; a
+ * connector held once passes none and this is {@link withMcpServerRef}. A
+ * stored `default` ref of the connector goes too, since it reaches the
+ * default account. The same object comes back when nothing changes.
+ */
+export function withMcpServerAccount<
+  T extends { mcpServerRefs?: readonly McpServerSelectionRef[] },
+>(
+  selections: T,
+  ref: McpServerSelectionRef,
+  otherAccountConfigIds: readonly string[],
+): T {
+  const others = new Set(
+    otherAccountConfigIds.filter((configId) => configId !== ref.configId),
+  );
+  // A connector held more than once also drops a stored `default` ref: with
+  // no account under that config it stands for the default account, another
+  // account than the one picked.
+  if (others.size > 0 && ref.configId !== 'default') others.add('default');
+  const refs = selections.mcpServerRefs ?? [];
+  const kept = refs.filter(
+    (existing): boolean =>
+      existing.serverId !== ref.serverId || !others.has(existing.configId),
+  );
+  if (kept.length === refs.length) return withMcpServerRef(selections, ref);
+  return withMcpServerRef({ ...selections, mcpServerRefs: kept }, ref);
+}
+
+/**
+ * Saves a scheduled run's "Send as" choice (CAN-6233): the account becomes
+ * the selection's only ref of the connector, replacing its other accounts
+ * and any ref that names no current account, so an unattended run acts as
+ * this account alone. `accountConfigIds` are every account the person holds
+ * of `serverKey`.
+ */
+export function withAutomationSendAs<
+  T extends { mcpServerRefs?: readonly McpServerSelectionRef[] },
+>(
+  selections: T,
+  serverKey: string,
+  configId: string,
+  accountConfigIds: readonly string[],
+): T {
+  return withMcpServerAccount(selections, { serverId: serverKey, configId }, [
+    ...accountConfigIds,
+    ...(selections.mcpServerRefs ?? [])
+      .filter((ref): boolean => ref.serverId === serverKey)
+      .map((ref): string => ref.configId),
+  ]);
+}
+
+/**
+ * The selection keys a picker keeps when one is chosen (CAN-6229): choosing
+ * an account of a connector unchecks its other accounts, so a chat acts as
+ * the one picked. `siblingKeys` are the keys of every account of that
+ * connector, the chosen one included; unchecking or a connector held once
+ * just toggles.
+ */
+export function toggledAccountSelection(
+  selected: ReadonlySet<string>,
+  key: string,
+  siblingKeys: readonly string[] = [],
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(key)) {
+    next.delete(key);
+    return next;
+  }
+  for (const sibling of siblingKeys) next.delete(sibling);
+  next.add(key);
+  return next;
 }
 
 const PROJECT_NOUN = WORKSPACE_LABEL.toLowerCase();

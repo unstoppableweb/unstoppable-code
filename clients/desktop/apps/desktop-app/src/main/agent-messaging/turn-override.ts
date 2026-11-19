@@ -3,6 +3,7 @@
  * runtime, model config, plan mode, approval mode and plugins one message runs
  * with, resolved against the chat as it is when the message is sent.
  */
+import { withoutAccountsPickedOver } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import {
   getExecutionHarnessForModel,
   requireProviderForModel,
@@ -86,11 +87,14 @@ export async function resolveAutomationPromptPlugins(
   plugins: ShareablePluginRef[] | undefined,
   directSelections: ChatTabPluginSelections | undefined,
 ): Promise<ChatTabPluginSelections | undefined> {
-  const baseSelections = directSelections
-    ? mergePluginSelections(
-        defaults,
-        normalizePluginSelections(directSelections),
-      )
+  const direct = directSelections
+    ? normalizePluginSelections(directSelections)
+    : undefined;
+  // The automation's own account pick of a connector stands in for the
+  // chat's (or the defaults') other account of it (CAN-6233), so a run acts
+  // as the account its Send as names.
+  const baseSelections = direct
+    ? mergePluginSelections(withoutAccountsPickedOver(defaults, direct), direct)
     : defaults;
   if (!plugins || plugins.length === 0) {
     return baseSelections;

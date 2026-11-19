@@ -1,4 +1,9 @@
+import type {
+  InspectMcpRemovalRequest,
+  ForceMcpRemovalRequest,
+} from '../mcp-removal';
 import type { HarnessCompatibility } from '../plugins/harness-compatibility';
+import type { WorkerPipelineSurvivalAssessment } from '../canopy-core/pipeline-native-routing';
 import type { ItemHarnessInstalls } from '../plugins/harness-installs';
 import type { ProjectDeletionPendingRecovery } from './project-deletion-discard';
 import type {
@@ -9,8 +14,12 @@ import type {
 import type { AutoDeleteAttention } from './auto-delete-attention';
 import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../canopy-core/core/workspace/cowork-folder';
+import { z } from 'zod';
+import type { UsageLimitsSnapshot } from '../provider-usage';
 export * from './w5-recovery';
 import type { W5RecoveryStatus } from './w5-recovery';
+export * from './background-service';
+import type { BackgroundServiceStatus } from './background-service';
 import type {
   PortalWatcherDeletePayload,
   PortalWatcherEntity,
@@ -32,6 +41,7 @@ import type {
 import type { PortalProjectDeletionDiscardDescribePayload } from './project-deletion-discard';
 import type { WorkerFilesystemRootsListResult } from '../canopy-core/worker/filesystem';
 import type { TurnFileRecord } from '../turn-files';
+import type { SelectionRefOwner } from '../plugins/selection-ref-owner';
 import type { SuggestionsUpdate } from '../suggestions';
 import type { OnboardingTipsUpdate } from '../onboarding-tips';
 import type { ClaudeModsGetArgs, ClaudeModsUpdate } from '../claude-mods';
@@ -260,18 +270,6 @@ export type PortalConnectionStatus =
   | 'ended';
 
 /**
- * Lifecycle of a single queued command row (`PortalCommand`). Commands move
- * through these states monotonically: `pending` → `delivered` → (`completed` |
- * `failed` | `expired`). A command never moves back to `pending`.
- */
-export type PortalCommandStatus =
-  | 'pending'
-  | 'delivered'
-  | 'completed'
-  | 'failed'
-  | 'expired';
-
-/**
  * Closed enumeration of all supported portal command types. Adapters MUST
  * reject anything not in this set. New families MUST be added here first
  * before any adapter or service can use them.
@@ -289,8 +287,6 @@ export type PortalCommandType =
   | 'portal.sidebar.item_groups.move_item'
   | 'portal.sidebar.item_groups.move_group'
   | 'portal.sidebar.item_groups.assign_named'
-  | 'portal.auth.validate_code'
-  | 'portal.session.end'
   | 'portal.state.request'
   | 'portal.org_projects.shared_multi_repo'
   | 'portal.org_projects.find_repository_owner'
@@ -460,6 +456,9 @@ export type PortalCommandType =
   | 'portal.mcp.get_server'
   | 'portal.mcp.set_config_enabled'
   | 'portal.mcp.test_connection'
+  | 'portal.mcp.removal_candidates'
+  | 'portal.mcp.inspect_removal'
+  | 'portal.mcp.force_removal'
   | 'portal.mcp.delete_server'
   | 'portal.collections.list'
   | 'portal.collections.get'
@@ -468,7 +467,8 @@ export type PortalCommandType =
   | 'portal.installed_items.list_status'
   | 'portal.installed_items.set_status'
   | 'portal.installed_items.uninstall'
-  | 'portal.provider_usage.refresh';
+  | 'portal.provider_usage.refresh'
+  | 'portal.provider_usage.limits.get';
 
 /**
  * Frozen runtime list of every supported `PortalCommandType`. Use this in
@@ -482,8 +482,6 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.sidebar.item_groups.move_item',
   'portal.sidebar.item_groups.move_group',
   'portal.sidebar.item_groups.assign_named',
-  'portal.auth.validate_code',
-  'portal.session.end',
   'portal.state.request',
   'portal.org_projects.shared_multi_repo',
   'portal.org_projects.find_repository_owner',
@@ -653,6 +651,9 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.mcp.get_server',
   'portal.mcp.set_config_enabled',
   'portal.mcp.test_connection',
+  'portal.mcp.removal_candidates',
+  'portal.mcp.inspect_removal',
+  'portal.mcp.force_removal',
   'portal.mcp.delete_server',
   'portal.collections.list',
   'portal.collections.get',
@@ -662,6 +663,7 @@ export const PORTAL_COMMAND_TYPES = [
   'portal.installed_items.set_status',
   'portal.installed_items.uninstall',
   'portal.provider_usage.refresh',
+  'portal.provider_usage.limits.get',
 ] as const satisfies readonly PortalCommandType[];
 
 /**
@@ -703,15 +705,12 @@ export type PortalCommandEnumParityGuards = [
 
 /**
  * Portal command types that remove active work or perform destructive operations on
- * the paired desktop and remain gated by the `canopy-portal-destructive-actions`
- * kill-switch flag, enforced server-side at command acceptance (not just in the
- * browser UI). Keep this in lockstep with any new flag-gated destructive command
- * added to {@link PortalCommandType}.
+ * the paired desktop. Clients must confirm them first. Keep this in lockstep
+ * with any new destructive command added to {@link PortalCommandType}.
  *
  * NOTE: `portal.workspace.delete` is destructive too, but is intentionally
- * NOT in this set — workspace removal is a first-class, always-available portal
- * action guarded by an in-browser confirmation dialog rather than the flag.
- * Adding it back here would re-gate workspace removal behind the flag.
+ * NOT in this set — workspace removal is a first-class, always-available
+ * action guarded by its own confirmation dialog.
  */
 export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
   new Set<PortalCommandType>([
@@ -721,165 +720,8 @@ export const PORTAL_DESTRUCTIVE_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
     'portal.standalone_chat.archive',
     'portal.worktree.discard',
     'portal.installed_items.uninstall',
+    'portal.mcp.force_removal',
     'portal.work_entry.delete',
-  ]);
-
-/**
- * Portal command types that behave as small synchronous RPCs: the browser
- * command route waits briefly for the desktop's completion and returns
- * the `result` inline on the submit response instead of forcing the browser
- * to poll the event stream. Every member MUST produce a result comfortably
- * under the portal event size cap (~1 MiB) — list commands never carry file
- * bodies, detail commands truncate a single body to
- * {@link PORTAL_CATALOG_CONTENT_MAX_BYTES}, and every catalog result is
- * capped at {@link PORTAL_CATALOG_RESULT_MAX_BYTES} serialized bytes.
- *
- * Real wall-clock operations (`portal.workspace.create`, the plugin/
- * marketplace mutations, …) intentionally stay OUT of this set: they wait
- * longer, on a coarser poll, via {@link PORTAL_LONG_RPC_COMMAND_TYPES}.
- */
-export const PORTAL_SMALL_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
-  new Set<PortalCommandType>([
-    'portal.chat.retry_failure',
-    'portal.worktree.branches.list',
-    'portal.watcher.delete',
-    'portal.lifecycle_journal.inspect',
-    'portal.lifecycle_journal.quarantine',
-    'portal.chat.create_tab',
-    'portal.standalone_chat.create',
-    'portal.workspace.archived_work_entries.list',
-    'portal.work_entry.update',
-    'portal.work_entry.delete',
-    'portal.sidebar.item_groups.assign_named',
-    'portal.task_refs.list',
-    'portal.chat.asset.read',
-    'portal.file.asset.read',
-    'portal.chat.transcript.page',
-    'portal.chat.transcript.blocks.page',
-    'portal.chat.content.read',
-    'portal.app_advisor.create_tab',
-    'portal.sidebar.item_groups.list',
-    'portal.sidebar.item_groups.create',
-    'portal.sidebar.item_groups.update',
-    'portal.sidebar.item_groups.ungroup',
-    'portal.sidebar.item_groups.move_item',
-    'portal.sidebar.item_groups.move_group',
-    'portal.editor.list_slash_commands',
-    'portal.editor.list_file_mentions',
-    'portal.editor.list_invocables',
-    'portal.chat.list_plugin_catalog',
-    'portal.app_advisor.settings.get',
-    'portal.suggestions.get',
-    'portal.suggestions.update',
-    'portal.onboarding_tips.get',
-    'portal.onboarding_tips.update',
-    'portal.claude_mods.get',
-    'portal.claude_mods.update',
-    'portal.claude_mods.surface_command',
-    'portal.workspace.claude_md.get',
-    'portal.script_actions.list',
-    'portal.script_actions.rescan',
-    'portal.script_actions.review',
-    'portal.script_actions.set_shortcut',
-    'portal.script_actions.set_pinned',
-    'portal.script_actions.enable_shell_alias_scan',
-    'portal.script_actions.receipt',
-    'portal.workspace.scripts.get',
-    'portal.workspace.update',
-    'portal.state.request',
-    'portal.org_projects.shared_multi_repo',
-    'portal.org_projects.find_repository_owner',
-    'portal.personal_organization.projects.list',
-    'portal.personal_organization.projects.status',
-    'portal.plugins.list_marketplaces',
-    'portal.plugins.get_plugin_detail',
-    'portal.plugins.read_component_content',
-    'portal.skills.list',
-    'portal.skills.read',
-    'portal.sharing.account',
-    'portal.sharing.existing_share',
-    'portal.sharing.list_teams',
-    'portal.sharing.list_organizations',
-    'portal.mcp.list_servers',
-    'portal.mcp.get_server',
-    'portal.mcp.set_config_enabled',
-    'portal.mcp.delete_server',
-    'portal.collections.list',
-    'portal.collections.get',
-    // A collection save is a fast local file write, completed inline like the
-    // MCP config toggle.
-    'portal.collections.save',
-    'portal.workspace_items.list_notes',
-    'portal.workspace_items.read_note',
-    'portal.workspace_items.list_prompts',
-    'portal.workspace_items.read_prompt',
-    'portal.workspace_items.list_attachments',
-    'portal.pipeline.list',
-    'portal.pipeline.get',
-    'portal.pipeline.execution_list',
-    'portal.pipeline.chat_follow_up.prepare',
-    'portal.pipeline.content.read',
-    'portal.provider_usage.refresh',
-    'portal.worktree.recovery.list',
-    'portal.worktree.discard.describe',
-    'portal.workspace.delete.discard.describe',
-  ]);
-
-/**
- * How long the browser command route waits for a small RPC result. The
- * desktop work is fast, but delivery shares the runner and database with the
- * portal UI; 15 seconds leaves headroom for loaded environments while staying
- * below the proven long-poll ceiling.
- */
-export const PORTAL_SMALL_RPC_RESULT_TIMEOUT_MS = 15_000;
-
-/**
- * `errorCode` of an asset read submit that stopped waiting before the desktop
- * answered. The desktop can still complete that command and the server keeps
- * its chunk, so the browser follows the same command through
- * `GET .../commands/{commandId}` instead of failing or reading again.
- */
-export const PORTAL_ASSET_READ_PENDING_ERROR_CODE = 'portal_asset_read_pending';
-
-/**
- * Portal command types that behave as LONG synchronous RPCs: the browser
- * command route waits up to {@link PORTAL_LONG_RPC_RESULT_TIMEOUT_MS} on a
- * coarse (250ms) poll for the desktop's terminal state and returns the
- * `result`/`error` inline when it arrives in time. A timeout is NOT an error:
- * the route answers `202` without a result, the desktop keeps working, and the
- * browser reconciles with a later refetch.
- *
- * Members are real wall-clock operations (git clone, provider CLI installs,
- * marketplace syncs) that usually finish inside the window but may not.
- * `portal.marketplace.refresh_all` intentionally stays OUT of this set: it
- * fans out N provider CLI refreshes and routinely takes MINUTES — far past
- * both this wait window and the 60s command TTL — so it is fire-and-forget
- * (immediate `202`, browser refetches later).
- */
-export const PORTAL_LONG_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
-  new Set<PortalCommandType>([
-    'portal.installed_items.list_status',
-    'portal.installed_items.set_status',
-    'portal.installed_items.uninstall',
-    'portal.personal_organization.projects.convert',
-    'portal.workspace.create',
-    'portal.worktree.create',
-    'portal.worktree.discard',
-    'portal.worktree.recovery.resolve',
-    'portal.worktree.recovery.finish',
-    'portal.plugins.install_builtin',
-    'portal.plugins.install_external',
-    'portal.plugins.share_plugin',
-    'portal.skills.share_skill',
-    'portal.pipeline.share',
-    'portal.pipeline.install_curated',
-    'portal.collections.share',
-    'portal.collections.apply_update',
-    'portal.marketplace.add',
-    'portal.marketplace.update',
-    'portal.marketplace.remove',
-    // Resolving may prepare a Codex compatibility plugin before it commits.
-    'portal.editor.resolve_invocable',
   ]);
 
 /**
@@ -888,10 +730,6 @@ export const PORTAL_LONG_RPC_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
  * spontaneous local change (heartbeat, state delta, etc.).
  */
 export type PortalEventType =
-  | 'portal.auth.result'
-  | 'portal.heartbeat'
-  | 'portal.connection.restored'
-  | 'portal.session.ended'
   | 'portal.state.snapshot'
   | 'portal.state.delta'
   | 'portal.command.completed'
@@ -913,10 +751,6 @@ export type PortalEventType =
  * repos' enums element-by-element.
  */
 export const PORTAL_EVENT_TYPES = [
-  'portal.auth.result',
-  'portal.heartbeat',
-  'portal.connection.restored',
-  'portal.session.ended',
   'portal.state.snapshot',
   'portal.state.delta',
   'portal.command.completed',
@@ -1176,7 +1010,6 @@ export interface PortalCommandEnvelope<TPayload = unknown> {
   id: string;
   sequence: number;
   type: PortalCommandType;
-  status?: PortalCommandStatus;
   target?: PortalTarget;
   payload: TPayload;
   createdAt: string;
@@ -1197,8 +1030,8 @@ export interface PortalCommandEnvelope<TPayload = unknown> {
  *   deduplicate event inserts via the unique event id for the session
  *   constraint, so retries are safe.
  * - `commandId` MUST be set when the event correlates to a previously queued
- *   command (e.g. `portal.command.completed`, `portal.auth.result`). It MUST
- *   be unset for spontaneous events (e.g. `portal.heartbeat`).
+ *   command (e.g. `portal.command.completed`). It MUST be unset for
+ *   spontaneous events (e.g. `portal.state.delta`).
  */
 export interface PortalEventEnvelope<TPayload = unknown> {
   type: PortalEventType;
@@ -1212,89 +1045,19 @@ export interface PortalEventEnvelope<TPayload = unknown> {
 }
 
 // ---------------------------------------------------------------------------
-// Connection thresholds (used by both UI and backend)
+// Payload and command limits
 // ---------------------------------------------------------------------------
 
 /**
- * Inclusive upper bound (in milliseconds) on `now - lastSeenAt` for a session
- * to be considered `active`. Above this, the session is `reconnecting`.
- */
-export const PORTAL_CONNECTED_MAX_AGE_MS = 30_000;
-
-/**
- * Inclusive upper bound (in milliseconds) on `now - lastSeenAt` for a session
- * to be considered `reconnecting`. Above this, the session is `inactive`.
- */
-export const PORTAL_RECONNECTING_MAX_AGE_MS = 90_000;
-
-/**
- * Browser UI debounce: wait this long before showing `reconnecting` after a
- * heartbeat gap, to avoid flicker on transient network blips.
- */
-export const PORTAL_UI_RECONNECTING_DEBOUNCE_MS = 3_000;
-
-/**
- * Browser UI debounce: wait this long before showing `inactive`. Pairs
- * with `PORTAL_UI_RECONNECTING_DEBOUNCE_MS`.
- */
-export const PORTAL_UI_DISCONNECTED_DEBOUNCE_MS = 5_000;
-
-/**
- * Maximum number of events accepted in a single batch by
- * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/events`. Local Canopy MUST
- * chunk larger batches.
- */
-export const PORTAL_EVENT_BATCH_MAX_COUNT = 100;
-
-/**
- * Maximum total payload size (bytes) accepted in a single events batch.
+ * Maximum total payload size (bytes) of one batch of Portal events.
  */
 export const PORTAL_EVENT_BATCH_MAX_BYTES = 1_048_576;
 
 /**
- * Maximum long-poll duration (milliseconds) honored by the server for both
- * the local commands long-poll and the browser events long-poll.
- */
-export const PORTAL_LONG_POLL_MAX_TIMEOUT_MS = 25_000;
-
-/**
- * Default expiration window applied by `command-service` to non-auth portal
- * commands. The auth command keeps its own (shorter) TTL because the 6-digit
- * code is far more sensitive than the body of a typical command.
+ * Default window (ms) a command waits for its result before callers treat it
+ * as expired.
  */
 export const PORTAL_COMMAND_DEFAULT_EXPIRATION_MS = 60_000;
-
-/**
- * Historical long-RPC result timeout, still used by worktree creates and
- * plugin/marketplace mutations. Workspace clones use the shorter handoff from
- * {@link portalLongRpcResultWaitMs}; pending responses carry their command ID.
- */
-export const PORTAL_WORKSPACE_CREATE_RESULT_TIMEOUT_MS =
-  PORTAL_LONG_POLL_MAX_TIMEOUT_MS;
-
-/**
- * How long the browser `commands` route blocks waiting for ANY member of
- * {@link PORTAL_LONG_RPC_COMMAND_TYPES} to reach a terminal state before
- * returning `202` with no result. Generalizes
- * {@link PORTAL_WORKSPACE_CREATE_RESULT_TIMEOUT_MS} (kept as the historical
- * name for the same value) to every long-RPC portal command: same
- * timeout-is-not-an-error semantics, same
- * {@link PORTAL_LONG_POLL_MAX_TIMEOUT_MS} infra ceiling.
- */
-export const PORTAL_LONG_RPC_RESULT_TIMEOUT_MS =
-  PORTAL_WORKSPACE_CREATE_RESULT_TIMEOUT_MS;
-
-/** Web clone handoff bounds the result wait; native clones retain their three-second handoff. */
-export const PORTAL_WORKSPACE_CREATE_HANDOFF_WAIT_MS = 1_000;
-
-/** A queued clone may start within this window; expiry does not cancel desktop execution. */
-export const PORTAL_WORKSPACE_CREATE_EXPIRATION_MS = 30 * 60_000;
-
-export function portalLongRpcResultWaitMs(type: PortalCommandType): number {
-  return type === 'portal.workspace.create'
-    ? PORTAL_WORKSPACE_CREATE_HANDOFF_WAIT_MS
-    : PORTAL_LONG_RPC_RESULT_TIMEOUT_MS;
-}
 
 /**
  * Display/destination name from a remote path, including supported bare/local
@@ -1320,251 +1083,18 @@ export function repositoryNameFromCloneUrl(remoteUrl: string): string {
   return segment.replace(/\.git$/, '') || 'repository';
 }
 
-/**
- * Maximum JSON body size (in bytes) the server accepts for a single portal
- * command. Mirrors the events batch ceiling so a hostile or buggy client
- * cannot enqueue a megabyte-scale command.
- */
-export const PORTAL_COMMAND_MAX_BODY_BYTES = 1_048_576;
-
-/**
- * Default retention window (in ms) for an `inactive` session before its
- * cached state is purged. Reaching `inactive` itself does not purge; the
- * sweeper checks `endedAt`/`lastSeenAt` against this bound.
- */
-export const PORTAL_INACTIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-
 // ---------------------------------------------------------------------------
-// Local Canopy ↔ Server HTTP API: API-key routes
-// (called by the local Canopy main process)
+// Command submission shapes
 // ---------------------------------------------------------------------------
 
 /**
- * `POST /api/v1/desktop-app/portal/sessions`
- */
-export interface CreatePortalSessionRequest {
-  /**
-   * Stable identifier for this user's local Canopy install. Used by the server
-   * to detect re-pairing from the same device.
-   */
-  clientDeviceId: string;
-  /** Human-friendly device name shown in the browser portal UI. */
-  clientName: string;
-  clientVersion?: string;
-  clientHostname?: string;
-  /** Operating system of the host; older desktops omit it. */
-  clientPlatform?: PortalClientPlatform;
-  /**
-   * Optional capability flags announced by local Canopy. Reserved for future
-   * gating; the initial server implementation ignores unknown keys.
-   */
-  capabilities?: Record<string, boolean>;
-}
-
-export interface CreatePortalSessionResponse {
-  sessionId: string;
-  status: 'pending_auth';
-  pendingExpiresAt: string;
-  /** Initial cursor for the commands long-poll; always `0` on creation. */
-  commandCursor: number;
-}
-
-/**
- * Session shape returned by the local-side commands long-poll. Mirrors a
- * subset of `PortalSession` columns that local Canopy needs to reconcile its
- * own view of the session.
- */
-export interface PortalSessionForLocal {
-  id: string;
-  status: PortalSessionStatus;
-  connectionStatus: PortalConnectionStatus;
-  activatedAt: string | null;
-  lastSeenAt: string | null;
-  endedAt: string | null;
-}
-
-/**
- * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/commands`
- *
- * `nextCursor` equals the highest returned `commands[].sequence`, or the input
- * `afterSeq` if `commands` is empty (timeout with no new rows).
- *
- * If the session is inactive the response is
- * `{ session: { status: 'inactive', ... }, commands: [], nextCursor: afterSeq }`.
- */
-export interface PollPortalCommandsRequest {
-  /** Sequence cursor; only commands with `sequence > afterSeq` are returned. */
-  afterSeq: number;
-  /** Default 50, hard-capped at 200. */
-  maxBatch?: number;
-}
-
-export interface PollPortalCommandsResponse {
-  session: PortalSessionForLocal;
-  commands: PortalCommandEnvelope[];
-  nextCursor: number;
-}
-
-/**
- * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/events`
- *
- * Events are inserted idempotently by `(sessionId, eventId)`; duplicates
- * are ignored without erroring.
- */
-export interface PostPortalEventsRequest {
-  events: PortalEventEnvelope[];
-}
-
-export interface PostPortalEventsResponse {
-  /** Number of events newly inserted on this call. */
-  accepted: number;
-  /** Number of events skipped because they collided with an existing row. */
-  duplicates: number;
-  connectionStatus: PortalConnectionStatus;
-}
-
-/**
- * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/heartbeat`
- */
-/** Operating systems a desktop reports for its Portal session. */
-export const PORTAL_CLIENT_PLATFORMS = ['windows', 'mac', 'linux'] as const;
-export type PortalClientPlatform = (typeof PORTAL_CLIENT_PLATFORMS)[number];
-
-export interface PortalHeartbeatRequest {
-  /** Current packaged build; refreshed on restore instead of key-mint version. */
-  clientVersion?: string;
-  /** Refreshes capabilities for a session restored by a newer desktop. */
-  capabilities?: Record<string, boolean>;
-  /** Refreshes the operating system for a session restored by a newer desktop. */
-  clientPlatform?: PortalClientPlatform;
-}
-
-export interface PortalHeartbeatResponse {
-  ok: true;
-  /** Server time at response, for command start deadlines. */
-  serverNow?: string;
-  status: PortalSessionStatus;
-  /** Host code agents use for this device install; older servers omit it. */
-  hostCode?: string;
-}
-
-/**
- * `POST /api/v1/desktop-app/portal/sessions/[sessionId]/end`
- */
-export interface EndPortalSessionResponse {
-  ok: true;
-}
-
-// ---------------------------------------------------------------------------
-// Browser-authenticated routes (called by the Canopy Server portal UI)
-// ---------------------------------------------------------------------------
-
-/**
- * Subset of `PortalSession` columns surfaced to the browser portal UI.
- */
-export interface PortalSessionForBrowser {
-  /** Server-evaluated archive gate. Absent values must be treated as false. */
-  destructiveActionsEnabled?: boolean;
-  /**
-   * Server-evaluated switch for per-space notification choices (CAN-3615).
-   * Absent values must be treated as false: the choices stay hidden.
-   */
-  spaceNotificationSettingsEnabled?: boolean;
-  id: string;
-  status: PortalSessionStatus;
-  connectionStatus: PortalConnectionStatus;
-  /**
-   * The paired desktop's stable device id, so browser surfaces that also
-   * read the cloud-synced inventory (CAN-2830) can tell whether a synced
-   * document belongs to THIS desktop before scoping it by this session's
-   * workspace selection.
-   */
-  clientDeviceId: string;
-  clientName: string;
-  clientVersion: string | null;
-  activatedAt: string | null;
-  lastSeenAt: string | null;
-  /**
-   * Capability flags announced by the desktop at session creation, surfaced
-   * so browsers can gate newer request shapes such as `worktree_actions`.
-   */
-  capabilities?: Record<string, boolean>;
-}
-
-/**
- * `GET /api/portal/session`
- */
-export interface GetBrowserPortalSessionResponse {
-  session: PortalSessionForBrowser | null;
-}
-
-/**
- * `POST /api/portal/connect`
- *
- * The `code` field MUST match `/^\d{6}$/`. The route handler MUST NOT log the
- * request body and HTTP request/response logging middleware MUST redact this
- * field globally by key name.
- */
-export interface ConnectBrowserPortalRequest {
-  code: string;
-}
-
-export interface ConnectBrowserPortalSuccessResponse {
-  sessionId: string;
-  status: 'active';
-  /**
-   * Name of the desktop that accepted the code (its `PortalSession.clientName`),
-   * so the browser can confirm which machine it just connected (CAN-2938).
-   */
-  clientName: string;
-}
-
-export interface ConnectBrowserPortalErrorResponse {
-  error: string;
-}
-
-// `PORTAL_PAIRING_CODE_PATTERN` lives in `./pairing-link` with the QR pairing
-// link helpers that share it, and is re-exported at the bottom of this file.
-
-/**
- * `POST /api/portal/sessions/[sessionId]/commands`
+ * A command request as a remote surface submits it, and the receipt it gets
+ * back. Named for the retired browser Portal route that introduced them.
  */
 export interface SubmitBrowserPortalCommandRequest<TPayload = unknown> {
   type: PortalCommandType;
   target?: PortalTarget;
   payload: TPayload;
-}
-
-export const BROWSER_PORTAL_COMMAND_STATUSES = [
-  'QUEUED',
-  'DELIVERED',
-  'COMPLETED',
-  'FAILED',
-  'EXPIRED',
-] as const;
-export type BrowserPortalCommandStatus =
-  (typeof BROWSER_PORTAL_COMMAND_STATUSES)[number];
-
-/**
- * Response of `GET .../portal/browser/sessions/{sessionId}/commands/{commandId}`.
- * A small-RPC submit waits a bounded time for the desktop completion; when the
- * paired desktop's outbox is saturated the completion can land well after that
- * wait expires. This endpoint lets the browser keep asking for the late result
- * instead of treating the queued submit as a failure.
- */
-export interface BrowserPortalCommandStatusResponse {
-  /** Stable pre-save chat refusal code, paired with the authored error. */
-  errorCode?: string;
-  /** Delivered work may outlive expiry; only undelivered expiry is retryable. */
-  delivered?: boolean;
-  commandId: string;
-  /** Remaining time until a standalone archive's server-assigned start deadline. */
-  archiveDeadlineRemainingMs?: number;
-  status: BrowserPortalCommandStatus;
-  /** Present once `status` is `COMPLETED` and the desktop returned a payload. */
-  result?: Record<string, unknown>;
-  /** Present once `status` is `FAILED` or `EXPIRED`; always path-free. */
-  error?: string;
 }
 
 export interface SubmitBrowserPortalCommandResponse {
@@ -1606,95 +1136,6 @@ export interface SubmitBrowserPortalCommandResponse {
   errorDetails?: unknown;
 }
 
-/**
- * `GET /api/portal/sessions/[sessionId]/events`
- *
- * Long-polls up to `PORTAL_LONG_POLL_MAX_TIMEOUT_MS` and is the primary source
- * for debounced UI status updates.
- */
-export interface PollBrowserPortalEventsQuery {
-  after: number;
-  timeoutMs?: number;
-}
-
-export interface PollBrowserPortalEventsResponse {
-  events: PortalEventEnvelope[];
-  nextCursor: number;
-  connectionStatus: PortalConnectionStatus;
-}
-
-/** A completed targeted snapshot seeded exactly these cached rows, in desktop order. */
-export interface PortalCachedChatTailCoverage {
-  snapshotCursor: number;
-  orderedMessageIds: string[];
-}
-
-/**
- * `GET /api/portal/sessions/[sessionId]/state`
- *
- * If data is missing/stale and status is `active`/`reconnecting`, the
- * server transparently enqueues `portal.state.request` and returns the cached
- * snapshot with `refreshing: true`. If `inactive`/`ended`, returns cached
- * data with `refreshing: false`.
- */
-export interface GetBrowserPortalStateResponse<
-  TState = PortalSessionShellState,
-> {
-  state: TState;
-  chatTailCoverage?: PortalCachedChatTailCoverage;
-  scope?: PortalStateScope;
-  snapshot?: unknown;
-  connectionStatus: PortalConnectionStatus;
-  refreshing: boolean;
-  /**
-   * True only while the server has no projected snapshot to hydrate. This is
-   * distinct from `refreshing`, which can also describe background
-   * reconciliation of a valid (including legitimately empty) snapshot.
-   */
-  projectionPending?: boolean;
-  /**
-   * Highest persisted event id at the time this state was read. The browser
-   * hands this to the event poller as its initial cursor so live long-polling
-   * resumes *after* the hydrated snapshot instead of replaying the whole
-   * session event history over freshly-hydrated state (regression B1/B2).
-   * Optional for backward compatibility with older servers.
-   */
-  eventCursor?: number;
-}
-
-/**
- * `POST /api/portal/sessions/[sessionId]/end`
- */
-export interface EndBrowserPortalSessionResponse {
-  ok: true;
-}
-
-// ---------------------------------------------------------------------------
-// Auth fan-out / correlation contract
-// ---------------------------------------------------------------------------
-
-/**
- * Payload for a `portal.auth.validate_code` command. A single
- * `POST /api/portal/connect` call may fan out one of these per pending session
- * for the user; every command in a fan-out shares the same `attemptExternalId`
- * so the waiting browser handler can filter for the corresponding result.
- */
-export interface PortalAuthValidateCodePayload {
-  code: string;
-  attemptExternalId: string;
-}
-
-/**
- * Payload for a `portal.auth.result` event. The local handler MUST set
- * `commandId` on the envelope to the validate command's `externalId` (i.e.
- * `PortalCommandEnvelope.id`).
- */
-export interface PortalAuthResultPayload {
-  approved: boolean;
-  attemptExternalId: string;
-  reason?: string;
-}
-
 // ---------------------------------------------------------------------------
 // Command payload contracts (wire-only mirrors of the local IPC requests)
 //
@@ -1705,11 +1146,6 @@ export interface PortalAuthResultPayload {
 // `PortalCommandType` enum and the body-size cap (see command-service.ts);
 // per-payload field validation is delegated to local Canopy.
 // ---------------------------------------------------------------------------
-
-/** No-op payload reserved for future fields; tolerated as `{}` on the wire. */
-export interface PortalSessionEndPayload {
-  reason?: 'local_disconnect' | 'replaced' | 'server_disconnect';
-}
 
 /**
  * Scope of a `portal.state.request`. `overview` returns the top-level shell
@@ -1860,6 +1296,8 @@ export const PORTAL_CAPABILITY_WORKTREE_DISCARD =
 export const PORTAL_CAPABILITY_PROJECT_DELETION_DISCARD =
   'project_deletion_discard_v1' as const;
 /** Cached MCP health and device test/delete operations (CAN-4265). */
+export const PORTAL_CAPABILITY_MCP_REMOVAL = 'mcp_removal_v1' as const;
+
 export const PORTAL_CAPABILITY_MCP_MANAGEMENT = 'mcp_management' as const;
 
 /** Desktop can fetch and import a hash-pinned curated pipeline into its user library. */
@@ -1912,6 +1350,14 @@ export const PORTAL_CAPABILITY_STANDALONE_CHAT_ARCHIVE =
  */
 export const PORTAL_CAPABILITY_WORKTREE_CREATE_FROM =
   'worktree_create_from_v1' as const;
+
+/**
+ * `portal.worktree.create` accepts `existingBranchEncoding` for an explicit
+ * local or origin `existingBranch`, and the task ref list targets of the
+ * hosted MCP task tools carry that identity.
+ */
+export const PORTAL_CAPABILITY_TASK_CREATE_EXACT_REFS =
+  'task_create_exact_refs_v1' as const;
 
 /**
  * `portal.work_entry.update` and `portal.work_entry.delete`, and
@@ -1989,9 +1435,6 @@ export const PORTAL_CAPABILITY_CHAT_CANCEL_TURN = 'chat_cancel_turn' as const;
 export const PORTAL_CAPABILITY_CHAT_RETRY_FAILURE =
   'chat_retry_failure_v1' as const;
 
-export const PORTAL_ASSET_CHUNK_BYTES = 192 * 1024;
-export const PORTAL_ASSET_MAX_BYTES = 100 * 1024 * 1024;
-
 export interface PortalAssetReadRange {
   offset?: number;
   version?: string;
@@ -2046,17 +1489,6 @@ export const PORTAL_CAPABILITY_CHAT_VISUALS = 'chat_visuals' as const;
 export const PORTAL_CHAT_VISUAL_PAGE_BYTES = 384_000;
 
 /**
- * Commands only the web server may enqueue. Browsers never send them through
- * the generic command routes; visual pages, for example, reach a browser only
- * as inert bytes from the visual route, which clears each page after reading.
- */
-export const PORTAL_SERVER_ONLY_COMMAND_TYPES: ReadonlySet<PortalCommandType> =
-  new Set<PortalCommandType>([
-    'portal.auth.validate_code',
-    'portal.chat.visual.read',
-  ]);
-
-/**
  * The promoted visual reference a Portal `tool_result` part carries as
  * `data.visual`. Mirrors `core.chat.visual.read@1`'s reference, which the
  * desktop requires in full, so a read can be built from the part alone.
@@ -2075,7 +1507,7 @@ export interface PortalChatVisualReference {
 
 /**
  * Read one raw byte range of a promoted visual from the paired desktop. Only
- * the web visual route enqueues it ({@link PORTAL_SERVER_ONLY_COMMAND_TYPES});
+ * a trusted server visual reader sends it, never a browser command bus;
  * the desktop resolves the chat, its archive state, and authority itself.
  */
 export type PortalChatVisualReadPayload = {
@@ -2268,6 +1700,10 @@ export const PORTAL_CAPABILITY_PIPELINE_CONTENT = 'pipeline_content' as const;
  */
 export const PORTAL_CAPABILITY_PROVIDER_USAGE = 'provider_usage' as const;
 
+/** Desktop serves the passive cached provider usage-limits snapshot query. */
+export const PORTAL_CAPABILITY_PROVIDER_USAGE_LIMITS =
+  'provider_usage_limits_v1' as const;
+
 /** Plugin selections and deferred-loading policy share one durable chat commit. */
 export const PORTAL_CAPABILITY_DEFERRED_PLUGIN_POLICY =
   'deferred_plugin_policy' as const;
@@ -2281,166 +1717,6 @@ export const PORTAL_CAPABILITY_DEFERRED_PLUGIN_POLICY =
  */
 export const PORTAL_CAPABILITY_INVOCABLE_INVENTORY =
   'invocable_inventory' as const;
-
-/**
- * Canonical name used by the transport plan and the local snapshot builders.
- * Aliased onto {@link PortalStateScope} so existing call sites that import
- * the older name keep working while new call sites read the union under its
- * plan-friendly name.
- */
-export type PortalSnapshotScope = PortalStateScope;
-
-/**
- * Frozen runtime list of every supported `PortalSnapshotScope`. Mirrors the
- * union so cross-repo contract tests can compare scope coverage
- * element-by-element.
- */
-export const PORTAL_SNAPSHOT_SCOPES = [
-  'overview',
-  'workspace',
-  'worktree',
-  'standalone_chat',
-  'chat',
-  'terminal',
-  'scripts',
-  'hooks',
-  'plans',
-  'pipelines',
-  'worktree_actions',
-  'worktree_chat_summaries',
-  'diff',
-  'pr',
-  'files',
-  'app_advisor',
-] as const satisfies readonly PortalSnapshotScope[];
-
-export const PORTAL_SNAPSHOT_SCOPES_SET: ReadonlySet<string> =
-  /*#__PURE__*/ new Set(PORTAL_SNAPSHOT_SCOPES);
-
-// ---------------------------------------------------------------------------
-// Snapshot scope replacement sets (transport plan Phase T5)
-//
-// Each list enumerates the entity types the matching snapshot scope
-// replaces atomically when its `portal.state.snapshot` lands. Both repos
-// MUST agree on which entity types belong in which scope's set, so the
-// cross-repo contract tests pin these arrays element-by-element.
-//
-// Important: `chat_message` is not a `PortalEntityType` (chat messages
-// live in their own table, not the cached entity store) — it is therefore
-// absent from every list below. Chat messages are replaced atomically by
-// the `chat` feature scope and updated incrementally by `portal.chat.event`
-// frames; a `worktree` snapshot MUST NOT delete cached chat rows.
-// ---------------------------------------------------------------------------
-
-/**
- * Entity types replaced by a `worktree`-scoped snapshot. Documented in
- * transport plan Phase T5.2.
- */
-export const WORKTREE_SCOPE_ENTITY_TYPES = [
-  'worktree',
-  'worktree_summary',
-  'chat_summary',
-  'chat_todo',
-  'changed_files',
-  'pr_status',
-  'terminal_session',
-  'script_descriptor',
-  'script_run',
-  'hook_descriptor',
-  'hook_run',
-  'mcp_server',
-  'watcher',
-  'background_process',
-  'plan',
-  'pipeline',
-  'pipeline_run',
-  'file_root',
-] as const satisfies readonly PortalEntityType[];
-
-/**
- * Entity types replaced by an `overview`-scoped snapshot (transport plan
- * Phase T5.3). The overview shell carries top-level workspaces, worktrees,
- * standalone chats, the recent-activity summary row, and the account-level
- * `provider_usage` singleton. Worktree chat summaries are owned by targeted
- * worktree/chat snapshots.
- */
-export const OVERVIEW_SCOPE_ENTITY_TYPES = [
-  'workspace',
-  'worktree',
-  'standalone_chat',
-  'activity_summary',
-  'provider_usage',
-] as const satisfies readonly PortalEntityType[];
-
-/**
- * Entity types replaced by a `workspace`-scoped snapshot (transport plan
- * Phase T5.3). Carries the selected workspace, its worktrees, and the
- * lightweight per-workspace activity summary entity.
- */
-export const WORKSPACE_SCOPE_ENTITY_TYPES = [
-  'workspace',
-  'worktree',
-  'activity_summary',
-] as const satisfies readonly PortalEntityType[];
-
-/**
- * Entity types replaced by a `standalone_chat`-scoped snapshot
- * (transport plan Phase T5.3).
- */
-export const STANDALONE_CHAT_SCOPE_ENTITY_TYPES = [
-  'standalone_chat',
-  'chat_summary',
-] as const satisfies readonly PortalEntityType[];
-
-/**
- * Per-feature scope replacement sets (transport plan Phase T5.3). Each
- * feature scope replaces only the entity types belonging to that feature
- * for the selected target — not the surrounding worktree shell.
- */
-export const PORTAL_FEATURE_SCOPE_ENTITY_TYPES = {
-  chat: ['chat_summary', 'chat_todo', 'watcher'] as const,
-  terminal: ['terminal_session'] as const,
-  scripts: ['script_descriptor', 'script_run'] as const,
-  hooks: ['hook_descriptor', 'hook_run'] as const,
-  plans: ['plan'] as const,
-  pipelines: ['pipeline', 'pipeline_run'] as const,
-  files: ['file_root', 'file_tree', 'file_preview'] as const,
-  diff: ['changed_files', 'diff_snapshot'] as const,
-  pr: ['pr_status'] as const,
-  app_advisor: [
-    'app_advisor_chat',
-    'app_advisor_item_groups',
-    'watcher',
-  ] as const,
-} satisfies Record<
-  Exclude<
-    PortalSnapshotScope,
-    | 'overview'
-    | 'workspace'
-    | 'worktree'
-    | 'standalone_chat'
-    | 'worktree_actions'
-    | 'worktree_chat_summaries'
-  >,
-  readonly PortalEntityType[]
->;
-
-/** Replacement set for a batched `worktree_actions` snapshot. */
-export const WORKTREE_ACTIONS_SCOPE_ENTITY_TYPES = [
-  ...PORTAL_FEATURE_SCOPE_ENTITY_TYPES.scripts,
-  ...PORTAL_FEATURE_SCOPE_ENTITY_TYPES.pipelines,
-] as const satisfies readonly PortalEntityType[];
-
-/**
- * Replacement set for a batched `worktree_chat_summaries` snapshot
- * (CAN-1990). The snapshot is authoritative for WORKTREE-scoped chat
- * summaries only: both cache layers must preserve standalone-scope
- * `chat_summary` rows (payload `scope: 'standalone'`), which are owned by
- * `standalone_chat` snapshots and live deltas.
- */
-export const WORKTREE_CHAT_SUMMARIES_SCOPE_ENTITY_TYPES = [
-  'chat_summary',
-] as const satisfies readonly PortalEntityType[];
 
 export interface PortalStateRequestPayload {
   /** On overview or worktree_chat_summaries, return complete visible chat
@@ -2589,9 +1865,22 @@ export interface PortalChatTabPluginSelections {
    * `collectionIds` via canopy's `normalizePluginSelections` helper.
    */
   bundleIds?: string[];
-  skillRefs: { sourceId: string; skillName: string }[];
-  pluginRefs: { marketplaceId: string; pluginName: string }[];
-  mcpServerRefs?: { serverId: string; configId: string }[];
+  /** `owner` names an organization's item (CAN-6235); absent is the person's own. */
+  skillRefs: {
+    sourceId: string;
+    skillName: string;
+    owner?: SelectionRefOwner;
+  }[];
+  pluginRefs: {
+    marketplaceId: string;
+    pluginName: string;
+    owner?: SelectionRefOwner;
+  }[];
+  mcpServerRefs?: {
+    serverId: string;
+    configId: string;
+    owner?: SelectionRefOwner;
+  }[];
   mcpHttpAuthPreferences?: Array<{
     target:
       | { kind: 'standalone'; serverId: string; configId: string }
@@ -3378,6 +2667,20 @@ export interface PortalMcpConnectionMetadata {
    * do not get it. Absent without a connection and from older clouds.
    */
   connectionEnabled?: boolean;
+  /**
+   * Whether the stored connection is the person's default account of its
+   * server (CAN-6227), so a client naming the account a ref with no exact
+   * config reaches picks the same one the run does. Absent without a
+   * connection and from older hosts.
+   */
+  accountIsDefault?: boolean;
+  /**
+   * The stored connection's kind (CAN-6227): only a `CURATED` connection is
+   * one account of a connector a person can hold several of; a custom
+   * server or a desktop's own server is not. Absent without a connection and
+   * from older hosts, which list no per-account rows.
+   */
+  connectionKind?: 'CURATED' | 'CUSTOM' | 'DESKTOP';
 }
 
 export interface PortalPluginCatalogMcpServer extends PortalMcpConnectionMetadata {
@@ -3911,6 +3214,14 @@ export interface PortalMarketplacePluginSkill {
   description: string;
 }
 
+/** One harness's row for a plugin, as the desktop's Works with table shows it. */
+export interface PortalPluginHarnessRow {
+  readonly id: string;
+  readonly name: string;
+  readonly installation: 'Installed' | 'Not installed' | 'Not supported';
+  readonly note?: string;
+}
+
 /**
  * Browser-safe plugin summary row inside a {@link PortalMarketplaceRow}.
  * Projects {@link PluginInfo} without paths, facets, or install locations;
@@ -3933,6 +3244,13 @@ export interface PortalMarketplacePluginRow extends Pick<
   | 'providerSupport'
 > {
   harnessCompatibility?: HarnessCompatibility;
+  /**
+   * The desktop's row per offered harness for this plugin, read from its
+   * facets the way the desktop plugin page reads them, so a Portal tile's
+   * harness chips match its page's Works with table. Absent from an older
+   * desktop.
+   */
+  harnessRows?: readonly PortalPluginHarnessRow[];
   /** True when the plugin has a populated local cache (or is bundled). */
   installed: boolean;
   /**
@@ -4263,7 +3581,24 @@ export interface PortalMcpServerDetail {
   createdAt?: string;
   updatedAt?: string;
   configs: PortalMcpServerConfigDetail[];
+  /**
+   * The tool names the desktop last discovered for this device server, from
+   * its tools cache (no live discovery). Absent when none are cached, on
+   * account servers and on older peers. At most
+   * {@link PORTAL_MCP_TOOL_NAMES_MAX} names.
+   */
+  toolNames?: string[];
+  /**
+   * True when the desktop could not read its tools cache for this server, so
+   * "no tool names" is a failure, not an empty list. Absent otherwise.
+   */
+  toolsUnavailable?: true;
 }
+
+/** The most tool names one `portal.mcp.get_server` result carries. */
+export const PORTAL_MCP_TOOL_NAMES_MAX = 200;
+/** The longest tool name one `portal.mcp.get_server` result carries. */
+export const PORTAL_MCP_TOOL_NAME_MAX_LENGTH = 128;
 
 /** Result of `portal.mcp.get_server`. */
 export interface PortalMcpGetServerResult {
@@ -5792,6 +5127,11 @@ export interface PortalWorktreeCreatePayload extends SidebarItemGroupCreationOpt
   /** Check out this existing branch instead of creating one (`worktree_create_from_v1`). */
   existingBranch?: string;
   /**
+   * Marks `existingBranch` as `local:<name>` / `remote:<name>`, an exact
+   * identity (`task_create_exact_refs_v1`). Without it the value is a bare name.
+   */
+  existingBranchEncoding?: typeof PORTAL_WORKTREE_BASE_BRANCH_ENCODING;
+  /**
    * A pull request on the project's repository: check out its head branch, or
    * start a new branch from it (`worktree_create_from_v1`).
    */
@@ -5932,6 +5272,12 @@ export interface PortalTaskRefsListResult {
   items: PortalTaskRef[];
   /** Offset of the next page; absent on the last page. */
   nextOffset?: number;
+  /**
+   * This project's branches accept explicit `local:` / `remote:` selections
+   * (`task_create_exact_refs_v1`). Absent for multi-repository projects and
+   * older hosts, whose branches are selected by bare name.
+   */
+  exactBranchTargets?: true;
 }
 
 /**
@@ -5939,8 +5285,8 @@ export interface PortalTaskRefsListResult {
  * worktree while retaining a restorable item. An absent or `archive` mode keeps
  * that retained item until it is explicitly deleted; `delete` keeps it for the
  * workspace's deletion-retention window.
- * Clients must confirm first, and the action is gated by the
- * `canopy-portal-destructive-actions` flag. `workspaceId`/`worktreeId` are
+ * Clients must confirm first (it is in
+ * {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES}). `workspaceId`/`worktreeId` are
  * the portal localIds (1:1 with the desktop ids).
  */
 export interface PortalWorktreeArchivePayload {
@@ -6018,8 +5364,8 @@ export interface PortalWorktreeReorderPayload {
  * kept a discriminated union so those modes can be re-added without a breaking
  * change.
  *
- * Creation is additive (not destructive), so this command is NOT gated by the
- * `canopy-portal-destructive-actions` flag — matching `portal.worktree.create`.
+ * Creation is additive (not destructive), so this command is NOT in
+ * {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES} — matching `portal.worktree.create`.
  */
 export type PortalWorkspaceCreatePayload = {
   kind: 'remote-clone';
@@ -6032,9 +5378,8 @@ export type PortalWorkspaceCreatePayload = {
  * Deleting removes the persisted workspace directory (all of its worktree
  * checkouts, chats, and summaries) — it is irreversible, so the browser must
  * confirm first. Workspace removal is a first-class, always-available portal
- * action: it is NOT in {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES} and therefore
- * NOT gated by the `canopy-portal-destructive-actions` flag; the confirmation
- * dialog is the safeguard. `workspaceId` is the portal workspace localId (1:1
+ * action: it is NOT in {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES}; the
+ * confirmation dialog is the safeguard. `workspaceId` is the portal workspace localId (1:1
  * with the desktop workspace id).
  */
 export interface PortalWorkspaceDeletePayload {
@@ -6054,7 +5399,7 @@ export interface PortalWorkspaceDeletePayload {
  * from the browser workspace-settings dialog ("Details"). Both fields are
  * optional (send only what changed). `color` must be one of the desktop palette
  * swatches (`PROJECT_COLORS`); the desktop re-validates. Editing metadata is
- * additive, so this is NOT gated by the `canopy-portal-destructive-actions` flag.
+ * additive, so this is NOT in {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES}.
  */
 export interface PortalWorkspaceUpdatePayload {
   workspaceId: string;
@@ -6083,8 +5428,8 @@ export interface PortalWorkspaceClaudeMdGetPayload {
 /**
  * Payload for `portal.workspace.claude_md.save` — write a workspace's
  * `CLAUDE.md` from the browser workspace-settings dialog. Editing config is
- * additive (a normal file edit), so this is NOT gated by the
- * `canopy-portal-destructive-actions` flag.
+ * additive (a normal file edit), so this is NOT in
+ * {@link PORTAL_DESTRUCTIVE_COMMAND_TYPES}.
  */
 export interface PortalWorkspaceClaudeMdSavePayload {
   workspaceId: string;
@@ -6140,8 +5485,6 @@ export interface PortalCommandPayloadMap {
   'portal.sidebar.item_groups.move_item': SidebarItemGroupMoveItemRequest;
   'portal.sidebar.item_groups.move_group': SidebarItemGroupMoveRequest;
   'portal.sidebar.item_groups.assign_named': PortalSidebarItemGroupsAssignNamedPayload;
-  'portal.auth.validate_code': PortalAuthValidateCodePayload;
-  'portal.session.end': PortalSessionEndPayload;
   'portal.state.request': PortalStateRequestPayload;
   'portal.chat.send': PortalChatSendPayload;
   'portal.chat.cancel': PortalChatCancelPayload;
@@ -6308,6 +5651,9 @@ export interface PortalCommandPayloadMap {
   'portal.mcp.test_connection': PortalMcpGetServerPayload & {
     configId?: string;
   };
+  'portal.mcp.removal_candidates': Record<string, never>;
+  'portal.mcp.inspect_removal': InspectMcpRemovalRequest;
+  'portal.mcp.force_removal': ForceMcpRemovalRequest;
   'portal.mcp.delete_server': PortalMcpGetServerPayload;
   'portal.collections.list': PortalCollectionsListPayload;
   'portal.collections.get': PortalCollectionsGetPayload;
@@ -6321,6 +5667,7 @@ export interface PortalCommandPayloadMap {
     projectId: string;
   };
   'portal.provider_usage.refresh': PortalProviderUsageRefreshPayload;
+  'portal.provider_usage.limits.get': PortalProviderUsageLimitsGetPayload;
 }
 
 // ---------------------------------------------------------------------------
@@ -6379,9 +5726,8 @@ export interface PortalChatMessagePayload {
  * Prisma upsert happens, so the upsert path has a single normalized input
  * shape.
  *
- * `parts` is typed as `JsonValue` so the normalized row can be
- * forwarded straight to `prisma.portalChatMessage.upsert(...)` without an
- * additional cast at the call site.
+ * `parts` is typed as `JsonValue` so the normalized row can be stored as
+ * JSON without an additional cast at the call site.
  */
 export interface NormalizedPortalChatMessage {
   /** A user reply within the current turn, rather than a new turn boundary. */
@@ -6527,11 +5873,11 @@ export interface PortalCommandCompletedPayload<TResult = unknown> {
  */
 export interface PortalCommandFailedPayload {
   /**
-   * Typed refusal retained by the waited RPC path: a script-action,
-   * collection-save or task-refs-list refusal, or a chat send refused before
-   * anything was saved (`model_gateway_refused`, CAN-6701).
+   * Typed response retained by the waited RPC path: script-action,
+   * collection-save, task-refs-list or provider-usage responses, or a chat send
+   * refused before anything was saved (`model_gateway_refused`, CAN-6701).
    */
-  response?: { code: string; message: string };
+  response?: { code: string; message: string; retryable?: boolean };
   commandId: string;
   sequenceNumber: number;
   error: {
@@ -6732,16 +6078,14 @@ export interface PortalChangedFilesPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Adapter failure codes (mirror of canopy/src/main/portal/adapters/types.ts)
+// Adapter failure codes
 // ---------------------------------------------------------------------------
 
 /**
- * Stable error codes emitted by local Canopy Portal adapters via
+ * Stable error codes the desktop's remote-projection handlers emit via
  * `PortalAdapterContext.fail`. The browser may route on `error.code` rather
- * than parsing free-form messages.
- *
- * Mirrored verbatim from `repos/canopy/src/main/portal/adapters/types.ts` so
- * the cross-repo parity test can pin both unions to the same set:
+ * than parsing free-form messages. The desktop declares the same union in
+ * `apps/desktop-app/src/main/remote-projection/adapter-context.ts`:
  *
  * - `invalid_payload` — known feature command with bad payload
  * - `invalid_target` — known feature command with bad target
@@ -6754,8 +6098,8 @@ export interface PortalChangedFilesPayload {
  *   `portal.worktree.create`, with the same value in `refusal.reason`
  *
  * Adapters MAY emit codes outside this set (the wire field is `string` for
- * forward compatibility), but any new code added here MUST also be reflected
- * in the canopy-side mirror so the browser stays aware of it.
+ * forward compatibility), but any new code added here MUST also be added to
+ * the desktop's union so both sides agree.
  */
 export type PortalAdapterFailureCode =
   | 'invalid_payload'
@@ -7880,7 +7224,18 @@ export interface PortalPipelineRunStep {
    * demand via `portal.pipeline.log_request`.
    */
   outputTail?: string;
+  /**
+   * How the step's last finished attempt was billed; absent when unknown,
+   * native, or still running (CAN-7256). Older readers ignore it.
+   */
+  billingRoute?: PortalPipelineStepBillingRoute;
 }
+
+/** Billing route of a workflow step attempt that did not run natively. */
+export type PortalPipelineStepBillingRoute =
+  | 'ai_credits'
+  | 'model_gateway'
+  | 'account_proxy';
 
 export interface PortalPipelineRunVariant {
   /** Physical job id assigned by the matrix materializer. */
@@ -8004,6 +7359,15 @@ export interface PortalPipelineRunChatTurn {
 }
 
 export interface PortalPipelineRun {
+  /** Non-secret launch readiness, not proof the originating app is online. */
+  survival?: WorkerPipelineSurvivalAssessment;
+  pausedAt?: string;
+  /**
+   * Whether the run is billed to a personal or an organization owner (the
+   * kind only, never the organization id), for the step billing line
+   * (CAN-7256). Absent from older desktops.
+   */
+  ownerKind?: 'personal' | 'organization';
   /** Unique pipeline run id; matches the executor's execution id. */
   localId: string;
   /** @deprecated Use {@link PortalPipelineRun.localId}. Retained for compat. */
@@ -9731,6 +9095,13 @@ export interface PortalProviderUsageRefreshResult {
   accepted: true;
 }
 
+/** Strict empty request for `portal.provider_usage.limits.get`. */
+export const PortalProviderUsageLimitsGetPayloadSchema = z.strictObject({});
+export type PortalProviderUsageLimitsGetPayload = z.output<
+  typeof PortalProviderUsageLimitsGetPayloadSchema
+>;
+export type PortalProviderUsageLimitsGetResult = UsageLimitsSnapshot;
+
 /**
  * Chat-level provider usage-limit banner state, mirrored from the desktop
  * tab's persisted `LlmProviderUsageLimitBannerState` (CAN-2601).
@@ -10277,6 +9648,8 @@ export function readPortalWorkspaceAvatarUrl(
 export interface PortalSessionShellState {
   /** Read-only recovery presentation from the paired computer. */
   w5Recovery?: W5RecoveryStatus;
+  /** The paired computer's background service failure, while one shows (CAN-7061). */
+  backgroundService?: BackgroundServiceStatus;
   autoDeleteAttention?: AutoDeleteAttention[];
   /** Current provider account quotas, when the selected host publishes them. */
   providerUsage?: PortalProviderUsageProjection;

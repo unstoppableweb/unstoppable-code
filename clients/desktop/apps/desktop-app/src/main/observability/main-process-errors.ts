@@ -39,7 +39,7 @@ export function recordMainProcessError(
     version: 1,
     timestamp,
     kind,
-    error: describeErrorForAppDiagnostic(value),
+    error: describeErrorForAppDiagnostic(value, 'bounded'),
   });
   recorder.recordSessionDiagnostic({
     version: 1,

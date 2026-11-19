@@ -74,6 +74,8 @@ export function createW5RecordBatchingReader(options: {
     request: W5CaptureRequest,
   ) => Promise<W5CaptureResult>;
   readonly onUnserved?: (reason: W5RecordUnservedReason) => void;
+  /** Bytes each served record read decoded from its captured image. */
+  readonly onRecordDecoded?: (bytes: number) => void;
 }): W5RecordBatchingReader {
   interface Cohort {
     kind: 'ordinary';
@@ -228,11 +230,15 @@ export function createW5RecordBatchingReader(options: {
       const image = result.files.find(
         (file) => w5RecordPathFor(options.root, file) === key,
       );
-      if (image?.state === 'present')
-        return {
-          state: 'present',
-          raw: Buffer.from(image.base64, 'base64').toString('utf8'),
-        };
+      if (image?.state === 'present') {
+        const bytes = Buffer.from(image.base64, 'base64');
+        try {
+          options.onRecordDecoded?.(bytes.byteLength);
+        } catch {
+          // Counting must never change the read.
+        }
+        return { state: 'present', raw: bytes.toString('utf8') };
+      }
       if (image?.state === 'absent') return { state: 'absent' };
       return { state: 'unreadable' };
     } catch (error) {

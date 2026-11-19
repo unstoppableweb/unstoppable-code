@@ -194,6 +194,16 @@ export function parseCanopyJsonRpcMessage(
     ? null
     : CanopyJsonRpcMessageSchema.safeParse(value);
   if (parsed?.success) return { success: true, message: parsed.data };
+  // An error response keeps its known fields, as `decodeCanopyError` does,
+  // so a newer peer's extra error field does not fail the envelope.
+  const tolerant =
+    parsed && typeof value === 'object' && value !== null && 'error' in value
+      ? CanopyJsonRpcErrorResponseSchema.safeParse({
+          ...value,
+          error: knownErrorFields(value.error),
+        })
+      : undefined;
+  if (tolerant?.success) return { success: true, message: tolerant.data };
   return {
     success: false,
     error: {
@@ -218,9 +228,37 @@ export function encodeCanopyError(
   };
 }
 
-/** Inverse of `encodeCanopyError`; malformed error objects fail closed as `internal`. */
+const ERROR_OBJECT_KEYS: readonly string[] = ['code', 'message', 'data'];
+const ERROR_PAYLOAD_KEYS: readonly string[] = Object.keys(
+  CanopyErrorPayloadSchema.shape,
+);
+
+function pickKeys(value: unknown, keys: readonly string[]): unknown {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value).filter(([key]) => keys.includes(key)),
+      )
+    : value;
+}
+
+/** A newer peer's extra fields on an error object and its payload, dropped. */
+function knownErrorFields(error: unknown): unknown {
+  const object = pickKeys(error, ERROR_OBJECT_KEYS);
+  return typeof object === 'object' && object !== null && 'data' in object
+    ? { ...object, data: pickKeys(object.data, ERROR_PAYLOAD_KEYS) }
+    : object;
+}
+
+/**
+ * Inverse of `encodeCanopyError`. A newer peer's extra field on the error
+ * object or its payload is dropped; invalid known fields still fail closed
+ * as `internal`.
+ */
 export function decodeCanopyError(error: unknown): CanopyErrorPayload {
-  const parsed = CanopyJsonRpcErrorObjectSchema.safeParse(error);
+  const strict = CanopyJsonRpcErrorObjectSchema.safeParse(error);
+  const parsed = strict.success
+    ? strict
+    : CanopyJsonRpcErrorObjectSchema.safeParse(knownErrorFields(error));
   if (!parsed.success)
     return {
       kind: 'internal',

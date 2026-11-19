@@ -18,6 +18,7 @@ import {
 } from '../opencode-worker-runtime';
 import { spawnProviderProcess } from '../provider-process-host';
 import { workerProviderRuntimeFor } from '../worker-provider-runtimes';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 
 const fakeRuntime = Object.freeze({ rawModelId: 'fixture/model' });
 const fakeProcess = Object.freeze({ pid: 4242 });
@@ -69,7 +70,10 @@ it('constructs the OpenCode provider inside a turn run', async () => {
     async () => {
       const runtime = await workerProviderRuntimeFor('opencode');
       if (!runtime) throw new Error('No OpenCode runtime registered');
-      return runtime.providerFor('opencode', () => null);
+      return runtime.providerFor(
+        'opencode',
+        windowAgentInterfacePort(() => null),
+      );
     },
   );
   expect(provider).toBe(providerMock.mock.results[0]?.value);
@@ -83,7 +87,10 @@ it('a subagent run may construct the provider', async () => {
     async () => {
       const runtime = await workerProviderRuntimeFor('opencode');
       if (!runtime) throw new Error('No OpenCode runtime registered');
-      return runtime.providerFor('opencode', () => null);
+      return runtime.providerFor(
+        'opencode',
+        windowAgentInterfacePort(() => null),
+      );
     },
   );
   expect(provider).toBe(providerMock.mock.results[0]?.value);
@@ -93,7 +100,7 @@ it('a subagent run may construct the provider', async () => {
 it('refuses an OpenCode provider outside a worker run', async () => {
   const refused = getOpenCodeWorkerRuntime().providerFor(
     'opencode',
-    () => null,
+    windowAgentInterfacePort(() => null),
   );
   await expect(refused).rejects.toBeInstanceOf(AgentOutsideWorkerError);
   await expect(refused).rejects.toThrow('OpenCodeWorkerRuntime.providerFor');

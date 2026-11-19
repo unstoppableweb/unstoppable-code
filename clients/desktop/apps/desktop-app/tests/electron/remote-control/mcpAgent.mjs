@@ -2,8 +2,8 @@
 // the consent page (pre-registered `cursor` client, PKCE, loopback callback)
 // and JSON-RPC `tools/call` requests to `/api/v1/mcp/tasks`. Test-only.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { PORTAL_WEB_ORIGIN } from '../portal/config.mjs';
-import { seededSessionCookie } from '../portal/portalHarness.mjs';
+import { PORTAL_WEB_ORIGIN } from './harness/config.mjs';
+import { seededSessionCookie } from './harness/portalHarness.mjs';
 
 const LOOPBACK_CALLBACK = 'http://localhost:8787/callback';
 const TASKS_RESOURCE = `${PORTAL_WEB_ORIGIN}/api/v1/mcp/tasks`;

@@ -42,6 +42,9 @@ function build(
       definitions,
       handlers: {
         queries: {
+          'worker.agent.usageLimits.get': (): never => {
+            throw new Error('Not exercised.');
+          },
           'worker.agent.provider.list': (): never => {
             throw new Error('Not exercised.');
           },

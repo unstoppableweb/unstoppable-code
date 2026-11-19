@@ -148,18 +148,34 @@ export function readW5ManifestView(
       repos.push(repo);
     }
   }
-  const { privateMemory, privateMemoryManagedBy, owner } = document;
+  const {
+    privateMemory,
+    privateMemoryManagedBy,
+    owner,
+    repoPath,
+    sourceRepoPath,
+    temporary,
+  } = document;
+  const type = readType(document);
+  const classifiedOwner = classifyPersistedWorkspaceOwner(owner);
   return {
     view: {
-      type: readType(document),
+      type,
       repos,
       scripts: readW5ManifestScripts(document),
       privateMemoryManagedBy:
         privateMemoryManagedBy === 'organization' ? 'organization' : undefined,
       // The desktop read's owner: a malformed binding reads as Personal.
-      ...(classifyPersistedWorkspaceOwner(owner).kind === 'organization' && {
-        owner: { type: 'organization' },
+      ...(classifiedOwner.kind === 'organization' && {
+        owner: {
+          type: 'organization',
+          organizationId: classifiedOwner.owner.organizationId,
+        },
       }),
+      ...(typeof repoPath === 'string' && { repoPath }),
+      ...(typeof sourceRepoPath === 'string' && { sourceRepoPath }),
+      ...(type === 'multi-repo' &&
+        typeof temporary === 'boolean' && { temporary }),
     },
     read: {
       authority: 'ok',

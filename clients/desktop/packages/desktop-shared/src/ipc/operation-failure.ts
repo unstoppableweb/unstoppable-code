@@ -3,6 +3,8 @@ import {
   CanopyErrorPayloadSchema,
   CanopyOperationCodeSchema,
   CanopyRetryDirectiveSchema,
+  readCanopyErrorDiagnostic,
+  type CanopyErrorDiagnostic,
   type CanopyErrorPayload,
 } from '@canopy/protocol/canopy-core';
 import { z } from 'zod';
@@ -62,9 +64,7 @@ function toOperationFailure(payload: CanopyErrorPayload): IpcOperationFailure {
 }
 
 /** Only a schema-valid payload counts; the outermost in the cause chain wins. */
-export function readIpcOperationFailure(
-  thrown: unknown,
-): IpcOperationFailure | undefined {
+function readOperationPayload(thrown: unknown): CanopyErrorPayload | undefined {
   const visited = new Set<unknown>();
   let current = thrown;
   for (let depth = 0; depth <= 4 && !visited.has(current); depth++) {
@@ -73,10 +73,27 @@ export function readIpcOperationFailure(
       const parsed = CanopyErrorPayloadSchema.safeParse(
         safeErrorProperty(current, key),
       );
-      if (parsed.success) return toOperationFailure(parsed.data);
+      if (parsed.success) return parsed.data;
     }
     current = safeErrorProperty(current, 'cause');
     if (current === undefined) break;
   }
   return undefined;
+}
+
+export function readIpcOperationFailure(
+  thrown: unknown,
+): IpcOperationFailure | undefined {
+  const payload = readOperationPayload(thrown);
+  return payload && toOperationFailure(payload);
+}
+
+/**
+ * The class, system code and frames a daemon kept of an unexpected failure.
+ * Separate from the preload-facing failure shape; an invalid one is ignored.
+ */
+export function readIpcOperationDiagnostic(
+  thrown: unknown,
+): CanopyErrorDiagnostic | undefined {
+  return readCanopyErrorDiagnostic(readOperationPayload(thrown)?.details);
 }

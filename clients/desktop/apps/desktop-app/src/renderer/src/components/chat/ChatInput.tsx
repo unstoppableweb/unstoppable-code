@@ -1,6 +1,7 @@
 import { resumeFailureUserIndex } from '@canopy/protocol/session-recovery';
 import { SessionResumeNotice } from '@canopy/ui-shared/components';
 import { chatModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
+import { OrgProjectConnectorsNoticeHost } from './OrgProjectConnectorsNoticeHost';
 import type { ModelRecoveryFreshness } from '@/lib/modelRecoveryLease';
 import { creditNoticeVisibility } from '@canopy/ui-shared/lib';
 import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
@@ -112,6 +113,12 @@ import {
   type ComposerQuestionDelivery,
 } from './useComposerQuestionPrompt';
 import { SecretRequestComposerPrompt } from './SecretRequestComposerPrompt';
+import {
+  AgentSecretsComposerControl,
+  AgentSecretsComposerRestartNotice,
+} from './AgentSecretsComposerControls';
+import { useChatAgentSecrets } from '@/hooks/useChatAgentSecrets';
+import { usePastedSecretGuard } from './usePastedSecretGuard';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useComposerQuestions } from './useComposerQuestions';
 import {
@@ -164,9 +171,26 @@ import {
 } from '@/stores/modelPolicyRuntime';
 import { useGlobalPluginDefaultsStore } from '@/stores/globalPluginDefaultsStore';
 import {
+  useOrganizationLayer,
+  useOrganizationLayerStore,
+} from '@/stores/organizationLayerStore';
+import {
+  allowedOrganizationItemsOf,
+  organizationSkillDisplayName,
+  withOnlyAllowedOrganizationRefs,
+  type OrganizationLayerView,
+} from '@canopy/desktop-shared/lib/organization-capabilities';
+import {
+  OrganizationItemsLeftOutNotice,
+  type OrganizationItemLeftOut,
+} from '@canopy/ui-app/capability';
+import { editChatPlugins } from '@/lib/chatPluginEditing';
+import {
   chatInheritsProjectDefaults,
   chatSurfaceUsesGlobalPluginDefaults,
   effectiveChatPluginSelections,
+  globalConnectorsLeftOut,
+  organizationLayersFor,
   splitChosenChatPluginSelections,
   subtractPluginSelections,
   unionPluginSelections,
@@ -175,6 +199,9 @@ import {
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { queueDesktopTryItSelectionUpdate } from '@/lib/tryItContinuationRunner';
 import {
+  connectorScopeForOwner,
+  connectorScopeWorkspaceId,
+  getProjectConnectorScope,
   getProjectPluginDefaults,
   getProjectPluginTombstones,
 } from '@/stores/chat/tab-utils';
@@ -217,6 +244,7 @@ import {
 } from '@/lib/openBillingPage';
 import { settingsActionErrorCopy } from '@canopy/ui-app/settings/errors';
 import { resolveComposerWorkflowGates } from './composer-workflow-gates';
+import { composerHasSendableContent } from '@canopy/ui-app/code/composer/composer-send-content';
 import {
   isChatAttachmentShortcutTarget,
   OPEN_CHAT_ATTACHMENTS_EVENT,
@@ -336,6 +364,7 @@ import {
 } from './AiCreditsRoutingStatusBanner';
 import { useSubscriptionSwitch } from './useSubscriptionSwitch';
 import { useEffectiveAiCreditsRouting } from '@/hooks/useEffectiveAiCreditsRouting';
+import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
 import { useResumeInterruptedTurnOnAiCredits } from '@/hooks/useResumeInterruptedTurnOnAiCredits';
 import { ModelUnlockConfirmedBanner } from './ModelUnlockConfirmedBanner';
 import { ModelUnlockPendingBanner } from './ModelUnlockPendingBanner';
@@ -465,7 +494,10 @@ import { createSlateVoiceTarget } from '@/lib/voice/insert-into-slate';
 import { shouldMarkFinalTranscriptAsVoiceInput } from './dictation-input-mode';
 import { shouldMaterializeCodexThread } from './codex-thread-materialization';
 import { localPlatform } from '@/lib/local-platform';
-import { shouldProbeVoiceSupport } from '@/lib/voice/voice-platform';
+import {
+  shouldProbeVoiceSupport,
+  showsVoiceAffordance,
+} from '@/lib/voice/voice-platform';
 import {
   getCwdFromFileIndex,
   rewriteFileReferencesForCwd,
@@ -1585,9 +1617,13 @@ function ChatInputContent({
     DEFAULT_APPROVAL_DEFAULTS.worktree;
   const handleApprovalModeChange = useCallback(
     (mode: ApprovalMode): void => {
-      void setTabApprovalMode(approvalModeTarget, mode).catch(() => {
-        addToast('Failed to change approval mode.', 'error');
-      });
+      void setTabApprovalMode(approvalModeTarget, mode).catch(
+        (error: unknown) => {
+          addToast('Failed to change approval mode.', 'error', undefined, {
+            caught: error,
+          });
+        },
+      );
     },
     [addToast, approvalModeTarget, setTabApprovalMode],
   );
@@ -1667,6 +1703,54 @@ function ChatInputContent({
           ?.disabledGlobalPluginSelections
       : undefined,
   );
+  // In an organization's workspace a person's global connectors stay out
+  // (CAN-6230); the owner binding keeps its identity until that row changes.
+  const connectorScopeWorkspace =
+    overlayProjectId !== undefined && overlayWorktreeId !== undefined
+      ? connectorScopeWorkspaceId(overlayProjectId, overlayWorktreeId)
+      : undefined;
+  const connectorScopeOwner = useProjectsStore((state) =>
+    connectorScopeWorkspace === undefined
+      ? undefined
+      : state.projects.find((project) => project.id === connectorScopeWorkspace)
+          ?.owner,
+  );
+  const connectorScope = useMemo(
+    () => connectorScopeForOwner(connectorScopeOwner),
+    [connectorScopeOwner],
+  );
+  // The organization's shared skills and plugins this workspace's chats
+  // inherit, as the turn resolves them (CAN-6237).
+  const organizationLayer = useOrganizationLayer(
+    globalOverlayEligible ? overlayProjectId : undefined,
+    overlayWorktreeId,
+  );
+  const organizationLayers = useMemo(
+    () => organizationLayersFor(organizationLayer, tabInheritsProjectDefaults),
+    [organizationLayer, tabInheritsProjectDefaults],
+  );
+  // The chat's own organization picks its project no longer shares, which
+  // the turn leaves out (CAN-6240). Only once the layer has been read, so a
+  // pick never shows as left out while it loads.
+  const organizationPicksLeftOut = useMemo((): OrganizationItemLeftOut[] => {
+    if (organizationLayer === undefined || !pluginSelections) return [];
+    const { dropped } = withOnlyAllowedOrganizationRefs(
+      normalizePluginSelections(pluginSelections),
+      organizationLayer
+        ? allowedOrganizationItemsOf(organizationLayer)
+        : undefined,
+    );
+    return [
+      ...dropped.skillRefs.map((ref) => ({
+        key: `skill:${ref.sourceId}/${ref.skillName}`,
+        name: organizationSkillDisplayName(ref.skillName),
+      })),
+      ...dropped.pluginRefs.map((ref) => ({
+        key: `plugin:${ref.marketplaceId}/${ref.pluginName}`,
+        name: ref.pluginName,
+      })),
+    ];
+  }, [organizationLayer, pluginSelections]);
   const projectPluginDefaults = useMemo(() => {
     const layer = tabInheritsProjectDefaults
       ? (scopedProjectPluginDefaults ?? workspaceProjectPluginDefaults)
@@ -1677,6 +1761,39 @@ function ChatInputContent({
     tabInheritsProjectDefaults,
     workspaceProjectPluginDefaults,
   ]);
+  // The global connectors this organization project leaves out (CAN-6230),
+  // for the one-time notice; empty in Personal workspaces.
+  const workspaceDefaultsForNotice = useMemo(() => {
+    const layer = scopedProjectPluginDefaults ?? workspaceProjectPluginDefaults;
+    return layer ? normalizePluginSelections(layer) : undefined;
+  }, [scopedProjectPluginDefaults, workspaceProjectPluginDefaults]);
+  const orgProjectConnectorsLeftOut = useMemo(
+    () =>
+      globalConnectorsLeftOut({
+        global: globalPluginDefaults,
+        scope: connectorScope,
+        ...(pluginSelections ? { local: pluginSelections } : {}),
+        ...(tabDisabledGlobalPluginSelections
+          ? { chatTombstones: tabDisabledGlobalPluginSelections }
+          : {}),
+        // The workspace's own defaults, inherited or not: a connector already
+        // there is one Add can't bring back, so it is not listed.
+        ...(workspaceDefaultsForNotice
+          ? { projectDefaults: workspaceDefaultsForNotice }
+          : {}),
+        ...(projectPluginTombstones
+          ? { projectTombstones: projectPluginTombstones }
+          : {}),
+      }),
+    [
+      connectorScope,
+      globalPluginDefaults,
+      pluginSelections,
+      workspaceDefaultsForNotice,
+      projectPluginTombstones,
+      tabDisabledGlobalPluginSelections,
+    ],
+  );
   const agentPluginSelections = useModelCatalogStore(
     useShallow((state) =>
       model
@@ -1689,17 +1806,22 @@ function ChatInputContent({
   const previousAgentPluginSelectionsRef = useRef(agentPluginSelections);
   const displayedPluginSelections = useMemo(
     () =>
-      globalPluginDefaults || projectPluginDefaults
+      globalPluginDefaults || projectPluginDefaults || organizationLayer
         ? effectiveChatPluginSelections({
             local: pluginSelections,
             projectDefaults: projectPluginDefaults,
             global: globalPluginDefaults,
             projectTombstones: projectPluginTombstones,
             chatTombstones: tabDisabledGlobalPluginSelections,
+            connectorScope,
+            ...organizationLayers,
           })
         : pluginSelections,
     [
+      connectorScope,
       globalPluginDefaults,
+      organizationLayer,
+      organizationLayers,
       pluginSelections,
       projectPluginDefaults,
       projectPluginTombstones,
@@ -2391,6 +2513,40 @@ function ChatInputContent({
     composerProjectId !== undefined && isWebCoreScope(composerProjectId)
       ? composerProjectId
       : undefined;
+  // The local chat's held agent secrets (U3): the Secrets chip and Codex's
+  // Restart to apply. Cloud chats list theirs through the web core (U5).
+  const agentSecrets = useChatAgentSecrets(
+    webCoreProjectId === undefined ? approvalModeTarget : undefined,
+  );
+  const agentSecretsAgentName =
+    effectiveProviderType === 'codex'
+      ? 'Codex'
+      : effectiveProviderType === 'cursor'
+        ? 'Cursor'
+        : effectiveProviderType === 'opencode'
+          ? 'OpenCode'
+          : effectiveProviderType === 'copilot'
+            ? 'Copilot'
+            : 'Claude';
+  // The paste guard (U6): a local chat's pasted secret is held out of the
+  // editor and its draft until the person sends it anyway or as a secret.
+  const syncPastedText = useCallback((): void => {
+    setValue([...editor.children]);
+  }, [editor]);
+  const { interceptPaste: interceptSecretPaste, notice: pastedSecretNotice } =
+    usePastedSecretGuard({
+      editor,
+      // Only chats whose agents can use a chat secret: not cloud chats (their
+      // secrets live in the cloud) and not App Advisor, which has no secret
+      // tools.
+      scope:
+        webCoreProjectId === undefined &&
+        !(composerProjectId !== undefined && isBotProjectId(composerProjectId))
+          ? approvalModeTarget
+          : undefined,
+      readOnly,
+      onInserted: syncPastedText,
+    });
   // CAN-6444 — this local chat's model can't run for this account; offer the
   // user's own gateway model before send. Cloud chats bill in the web core.
   const unbillableModelCandidate = useUnbillableModelSwitch(
@@ -2907,6 +3063,9 @@ function ChatInputContent({
   // inherit defaults.
   const [pluginsModalInheritedLayers, setPluginsModalInheritedLayers] =
     useState<InheritedPluginLayers | null>(null);
+  const [pluginsModalOrganization, setPluginsModalOrganization] = useState<
+    OrganizationLayerView | undefined
+  >(undefined);
   const openPluginsModal = useCallback(async (): Promise<void> => {
     if (webCoreProjectId !== undefined) {
       if (cloudPluginsTarget !== null) setPluginsModalOpen(true);
@@ -2938,6 +3097,22 @@ function ChatInputContent({
       overlayProjectId !== undefined
         ? getProjectPluginTombstones(overlayProjectId)
         : undefined;
+    // The organization layer is read before the picker opens, so it shows
+    // the shared items and a save keeps their owners (CAN-6237).
+    let organizationView: OrganizationLayerView | null | undefined;
+    if (
+      globalOverlayEligible &&
+      overlayProjectId !== undefined &&
+      overlayWorktreeId !== undefined
+    ) {
+      const organizationStore = useOrganizationLayerStore.getState();
+      await organizationStore.load(overlayProjectId, overlayWorktreeId);
+      organizationView =
+        useOrganizationLayerStore.getState().views[
+          `${overlayProjectId}/${overlayWorktreeId}`
+        ];
+    }
+    setPluginsModalOrganization(organizationView ?? undefined);
     setPluginsModalInheritedLayers(
       globalOverlayEligible
         ? {
@@ -2948,6 +3123,19 @@ function ChatInputContent({
               ? { global: defaultsStore.selections }
               : {}),
             ...(projectTombstones ? { projectTombstones } : {}),
+            ...(overlayProjectId !== undefined &&
+            overlayWorktreeId !== undefined
+              ? {
+                  connectorScope: getProjectConnectorScope(
+                    overlayProjectId,
+                    overlayWorktreeId,
+                  ),
+                }
+              : {}),
+            ...organizationLayersFor(
+              organizationView,
+              tabInheritsProjectDefaults,
+            ),
           }
         : null,
     );
@@ -3672,7 +3860,16 @@ function ChatInputContent({
   // for gateway-only models. Native-capable models keep the switch while auth
   // is inconclusive; a confirmed sign-out with available credits and no
   // explicit subscription override locks to credits, so the card offers no
-  // switch (CAN-5349). Applies streaming or idle.
+  // switch (CAN-5349), unless routing mode is `off` and the chat has no
+  // explicit credits choice: then nothing bills, no card shows, and the No
+  // billing source banner offers the choice (CAN-7062). Applies streaming or
+  // idle.
+  //
+  // The routing mode comes from the unscoped AI Credits usage cache, which the
+  // composer's UsageIndicator already subscribes to (`useChatAccountSource`),
+  // so this read adds no IPC and re-renders only when that snapshot changes.
+  // `null` until loaded keeps the CAN-5349 lock rather than flashing the banner.
+  const { routingMode: aiCreditsRoutingMode } = useAiCreditsUsage();
   const billingResolution = useMemo<ChatBillingResolution>(
     () =>
       resolveChatBillingFramework({
@@ -3683,6 +3880,7 @@ function ChatInputContent({
         subscriptionBillingOverride: tab?.subscriptionBillingOverride ?? false,
         routingActiveForChat: billingRoutingActiveForChat,
         modelGatewayEnforced,
+        aiCreditsRoutingMode,
       }),
     [
       modelForBilling,
@@ -3692,6 +3890,7 @@ function ChatInputContent({
       tab?.subscriptionBillingOverride,
       billingRoutingActiveForChat,
       modelGatewayEnforced,
+      aiCreditsRoutingMode,
     ],
   );
   const creditNotice = creditNoticeVisibility({
@@ -3705,10 +3904,17 @@ function ChatInputContent({
   // in that card, and the CTA learns of a purchase before this composer's
   // eligibility read does; the banner waits for the card instead of flashing
   // its own notice first (CAN-5160).
-  const aiCreditsCardExpectedWhenFunded = useMemo((): boolean => {
+  //
+  // In the signed-out `off` state (CAN-7062) a funded chat resolves to the
+  // No billing source lock, and a purchase from this chat counts as choosing
+  // credits for it (`onCreditsArrived`), so the expected outcome is the
+  // consented credits lock and its card, not the banner again. Judged on the
+  // funded resolution: a buyer starts with no credits, where the current lock
+  // is `'no-credits'`.
+  const fundedBillingResolution = useMemo((): ChatBillingResolution => {
     const availability = providerAvailability[billingProvider];
     if (!availability || availability.creditsEligible) {
-      return billingResolution.aiCreditsBannerVisible;
+      return billingResolution;
     }
     return resolveChatBillingFramework({
       model: modelForBilling,
@@ -3718,9 +3924,10 @@ function ChatInputContent({
       subscriptionBillingOverride: tab?.subscriptionBillingOverride ?? false,
       routingActiveForChat: billingRoutingActiveForChat,
       modelGatewayEnforced,
-    }).aiCreditsBannerVisible;
+      aiCreditsRoutingMode,
+    });
   }, [
-    billingResolution.aiCreditsBannerVisible,
+    billingResolution,
     modelForBilling,
     billingProvider,
     providerAvailability,
@@ -3728,6 +3935,37 @@ function ChatInputContent({
     tab?.subscriptionBillingOverride,
     billingRoutingActiveForChat,
     modelGatewayEnforced,
+    aiCreditsRoutingMode,
+  ]);
+  const signedOutNoSourceWhenFunded =
+    fundedBillingResolution.lockKind === 'no-billing-source';
+  const aiCreditsCardExpectedWhenFunded = useMemo((): boolean => {
+    if (!signedOutNoSourceWhenFunded) {
+      return fundedBillingResolution.aiCreditsBannerVisible;
+    }
+    const availability = providerAvailability[billingProvider];
+    return resolveChatBillingFramework({
+      model: modelForBilling,
+      provider: billingProvider,
+      availability: availability
+        ? { ...availability, creditsEligible: true }
+        : undefined,
+      aiCreditsRoutingActive: true,
+      subscriptionBillingOverride: tab?.subscriptionBillingOverride ?? false,
+      routingActiveForChat: billingRoutingActiveForChat,
+      modelGatewayEnforced,
+      aiCreditsRoutingMode,
+    }).aiCreditsBannerVisible;
+  }, [
+    signedOutNoSourceWhenFunded,
+    fundedBillingResolution.aiCreditsBannerVisible,
+    modelForBilling,
+    billingProvider,
+    providerAvailability,
+    tab?.subscriptionBillingOverride,
+    billingRoutingActiveForChat,
+    modelGatewayEnforced,
+    aiCreditsRoutingMode,
   ]);
   const aiCreditsCardExpected = creditNoticeVisibility({
     creditHeld: tab?.queuedCreditHeld === true,
@@ -3748,10 +3986,14 @@ function ChatInputContent({
     if (!bannerTarget) return undefined;
     const { framework, toggleVisible, toggleDisabled, lockedReason, lockKind } =
       billingResolution;
-    if (!toggleVisible || !framework) return undefined;
+    // The signed-out `off` lock (CAN-7062) bills nothing, but the picker still
+    // shows the toggle off and locked, with the shared reason and sign-in
+    // remedy.
+    if (!toggleVisible) return undefined;
+    if (!framework && lockKind !== 'no-billing-source') return undefined;
     const autoLaneLocked = autoSelected && hasStartedSession;
     return {
-      value: framework,
+      value: framework ?? 'subscription',
       allowUnverifiedSubscription: tab?.subscriptionBillingOverride === true,
       disabled: toggleDisabled || autoLaneLocked,
       provider: billingProvider,
@@ -4112,6 +4354,37 @@ function ChatInputContent({
       usageLimitBanner?.resetsAt,
     ],
   );
+  // Choosing AI Credits for this chat on its current model: "Just this chat"
+  // routing on worktree chats, the per-chat billing choice elsewhere. Shared by
+  // the provider list's credits row and by credits bought from this chat's No
+  // billing source banner while it is signed out (CAN-7062). Safe to call
+  // twice: both writes set the same choice again.
+  const chooseCreditsForThisChat = useCallback((): boolean => {
+    if (worktreeChatTarget) {
+      return enableSessionCreditsRouting(worktreeChatTarget);
+    }
+    if (!bannerTarget) return false;
+    selectBillingFramework('ai-credits', bannerTarget);
+    return true;
+  }, [
+    bannerTarget,
+    enableSessionCreditsRouting,
+    selectBillingFramework,
+    worktreeChatTarget,
+  ]);
+  // A purchase from this chat's signed-out banner is an explicit credits
+  // choice for this chat. The banner calls this once per arrival record; a
+  // chat that already routes to credits needs nothing more. Returns `false`
+  // while the choice cannot be applied yet, so the banner retries it.
+  const handleSignedOutCreditsArrived = useCallback((): boolean => {
+    if (aiCreditsRoutingInEffect) return true;
+    if (creditsModelRoutability !== 'routable') return false;
+    return chooseCreditsForThisChat();
+  }, [
+    aiCreditsRoutingInEffect,
+    chooseCreditsForThisChat,
+    creditsModelRoutability,
+  ]);
   const handleUseAiCreditsJustThisTime = useCallback((): void => {
     // Saved routing must match what the banner shows (CAN-4900).
     if (!worktreeChatTarget || creditsModelRoutability !== 'routable') return;
@@ -4343,8 +4616,12 @@ function ChatInputContent({
           ) === undefined);
     // Outside worktree chats, moving onto credits is the per-chat billing
     // choice, so it honors the billing toggle's lock.
+    // The signed-out `off` lock (CAN-7062) is the one lock whose remedy is
+    // choosing credits here, so it never blocks the credits row.
     const creditsUseBlockedReason =
-      worktreeChatTarget === null && billingControl?.disabled === true
+      worktreeChatTarget === null &&
+      billingControl?.disabled === true &&
+      billingResolution.lockKind !== 'no-billing-source'
         ? (billingControl.lockedReason ?? 'Start a new chat to change billing.')
         : undefined;
     // A chat on a Personal gateway model bills that gateway, not a
@@ -4464,11 +4741,7 @@ function ChatInputContent({
           }
           // Same model: today's "Just this chat" on worktree chats, the
           // per-chat billing choice elsewhere, then resend what stopped.
-          if (worktreeChatTarget) {
-            if (!enableSessionCreditsRouting(worktreeChatTarget)) return false;
-          } else {
-            selectBillingFramework('ai-credits', bannerTarget);
-          }
+          if (!chooseCreditsForThisChat()) return false;
           if (sessionChatTarget !== null && interruptedTurnPending) {
             handleContinueOnAiCredits();
           }
@@ -4512,11 +4785,12 @@ function ChatInputContent({
     billingControl,
     billingProvider,
     billingResolution.framework,
+    billingResolution.lockKind,
+    chooseCreditsForThisChat,
     continueEligibility,
     continueTargetProvider,
     creditsModelRoutability,
     creditsTargetRoutable,
-    enableSessionCreditsRouting,
     handleContinueOnAiCredits,
     handleContinueOnCreditsModel,
     handleRecoveryCommit,
@@ -5097,7 +5371,7 @@ function ChatInputContent({
     void voiceApi
       .isSupported()
       .then((result) => {
-        if (!cancelled) setVoiceSupported(result.supported);
+        if (!cancelled) setVoiceSupported(showsVoiceAffordance(result));
       })
       .catch(() => {
         if (!cancelled) setVoiceSupported(false);
@@ -5317,10 +5591,12 @@ function ChatInputContent({
               },
             );
             return true;
-          } catch {
+          } catch (error) {
             addToast(
               'Could not enable this plugin. Please try again.',
               'error',
+              undefined,
+              { caught: error },
             );
             return false;
           }
@@ -5360,6 +5636,14 @@ function ChatInputContent({
   const cloudUploading =
     sharedCloudUploading ||
     (tabId !== undefined && (cloudUploadsByTab[tabId] ?? 0) > 0);
+  // Send is offered for typed text or, from the live composer, attached
+  // files alone; handleSend applies the same rule to the live store.
+  const draftHasSendableContent = composerHasSendableContent({
+    text: serializedDraft.text,
+    attachmentCount: pendingAttachments.length,
+    attachmentsCarried:
+      !isEditingQueued && !isTerminalMode && !tab?.scheduledSendDraft?.runAt,
+  });
   // A cloud task deleted on another device takes no message; its notice
   // offers a new chat with the draft instead (CAN-6614).
   const cloudChatDeleted = useCloudChatDeleted(
@@ -5405,7 +5689,30 @@ function ChatInputContent({
       }
       return;
     }
-    if (!trimmed) return;
+    const attachmentTarget =
+      targetOverride ??
+      (selectedWorktree && tabId
+        ? { ...selectedWorktree, chatId: tabId }
+        : undefined);
+    const submittedAttachments =
+      !editingState && !isTerminalMode && !tab?.scheduledSendDraft?.runAt
+        ? attachmentTarget
+          ? (useChatStore
+              .getState()
+              .worktreeChats[
+                `${attachmentTarget.projectId}/${attachmentTarget.worktreeId}`
+              ]?.tabs.find((candidate) => candidate.id === attachmentTarget.chatId)
+              ?.pendingAttachments ?? [])
+          : pendingAttachments
+        : [];
+    if (
+      !composerHasSendableContent({
+        text: trimmed,
+        // Empty when this send cannot carry attachments (see above).
+        attachmentCount: submittedAttachments.length,
+      })
+    )
+      return;
     // Read the live intent as well as disabling the button: a keyboard send
     // can arrive in the same task as a model click, before React repaints.
     if (
@@ -5441,27 +5748,11 @@ function ChatInputContent({
     const stagedSelectionIds = stagedSelections.map(
       (selection) => selection.id,
     );
-    const attachmentTarget =
-      targetOverride ??
-      (selectedWorktree && tabId
-        ? { ...selectedWorktree, chatId: tabId }
-        : undefined);
     // The target worktree's active plan, read at submit before anything
     // yields: a plan focused while this send waits belongs to the next one.
     const activePlan = captureActivePlanContext(
       targetOverride ?? selectedWorktree,
     );
-    const submittedAttachments =
-      !editingState && !isTerminalMode && !tab?.scheduledSendDraft?.runAt
-        ? attachmentTarget
-          ? (useChatStore
-              .getState()
-              .worktreeChats[
-                `${attachmentTarget.projectId}/${attachmentTarget.worktreeId}`
-              ]?.tabs.find((candidate) => candidate.id === attachmentTarget.chatId)
-              ?.pendingAttachments ?? [])
-          : pendingAttachments
-        : [];
     const reserveComposerInputs =
       !editingState && !isTerminalMode && !tab?.scheduledSendDraft?.runAt;
     let submittedRevertAttachmentPath: string | undefined;
@@ -6276,7 +6567,9 @@ function ChatInputContent({
           );
         })
         .catch((error: unknown) => {
-          reportClientAppError(error);
+          reportClientAppError(error, {
+            source: 'chat_input.web_core_attachments',
+          });
           if (isCurrent())
             setAttachmentProblems((current) => [
               ...new Set([...current, ATTACHMENT_IMPORT_ERROR_MESSAGE]),
@@ -6423,6 +6716,7 @@ function ChatInputContent({
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
+      if (interceptSecretPaste(event)) return;
       const items = event.clipboardData?.items;
       if (!items || !Array.from(items).some((item) => item.kind === 'file'))
         return;
@@ -6487,16 +6781,23 @@ function ChatInputContent({
             targetOverride,
           );
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          const reported = reportClientAppError(error, {
+            source: 'chat_input.paste_attachments',
+          });
           if (!isCurrent()) return;
+          // The report's own error, so the toast links it instead of
+          // recording the same failure a second time.
           addToast(ATTACHMENT_IMPORT_ERROR_MESSAGE, 'error', undefined, {
             category: 'Chat',
+            ...(reported === undefined ? {} : { caught: reported.error }),
           });
         });
     },
     [
       attachWebCoreFiles,
       filesGuestGate,
+      interceptSecretPaste,
       readOnly,
       addToast,
       selectedWorktree,
@@ -6554,10 +6855,16 @@ function ChatInputContent({
             targetOverrideRef.current,
           );
         })
-        .catch(() => {
+        .catch((error: unknown) => {
+          const reported = reportClientAppError(error, {
+            source: 'chat_input.drop_attachments',
+          });
           if (!isCurrent()) return;
+          // The report's own error, so the toast links it instead of
+          // recording the same failure a second time.
           addToast(ATTACHMENT_IMPORT_ERROR_MESSAGE, 'error', undefined, {
             category: 'Chat',
+            ...(reported === undefined ? {} : { caught: reported.error }),
           });
         });
     },
@@ -6730,7 +7037,7 @@ function ChatInputContent({
         error instanceof Error ? error.message : 'Failed to open plan',
         'error',
         undefined,
-        { category: 'Chat', projectId, worktreeId },
+        { category: 'Chat', projectId, worktreeId, caught: error },
       );
     }
   }, [pendingExit, trackedPlanId, addToast]);
@@ -7844,7 +8151,7 @@ function ChatInputContent({
             />
           </>
         ) : voiceAvailable &&
-          !serializedDraft.text.trim() &&
+          !draftHasSendableContent &&
           pendingModelChange === undefined ? (
           renderVoiceButton(true)
         ) : (
@@ -7854,7 +8161,7 @@ function ChatInputContent({
               kind="send"
               onSend={handleSend}
               disabled={
-                !serializedDraft.text.trim() ||
+                !draftHasSendableContent ||
                 isResourceGuardBlocked ||
                 tab?.firstSendPreparing === true ||
                 cloudUploading ||
@@ -8306,6 +8613,10 @@ function ChatInputContent({
             <ModelGatewayKeyBanner
               selectedGatewayOrganizationId={selectedGatewayOrganizationId}
             />
+            <AgentSecretsComposerRestartNotice
+              secrets={agentSecrets}
+              agentName={agentSecretsAgentName}
+            />
             {scopeCapabilities.chatApprovalMode === true && (
               <ApprovalsUpgradeNotice />
             )}
@@ -8341,6 +8652,12 @@ function ChatInputContent({
                 turnActive={isStreaming}
                 aiCreditsCardVisible={aiCreditsCardVisible}
                 aiCreditsCardExpected={aiCreditsCardExpected}
+                signedOutNoSource={
+                  billingResolution.lockKind === 'no-billing-source'
+                }
+                {...(signedOutNoSourceWhenFunded
+                  ? { onCreditsArrived: handleSignedOutCreditsArrived }
+                  : {})}
               />
             )}
           </>
@@ -8402,6 +8719,27 @@ function ChatInputContent({
 
         {/* Mods of plugins this chat turned on that its next message won't
             load, from discovery for the provider the chat uses now. */}
+        {sessionChatTarget !== null && organizationPicksLeftOut.length > 0 ? (
+          <OrganizationItemsLeftOutNotice
+            items={organizationPicksLeftOut}
+            // Any save of the chat's plugins resolves them against the
+            // project, which leaves these out.
+            onRemove={(): Promise<void> =>
+              editChatPlugins(
+                useChatStore.getState,
+                sessionChatTarget,
+                (current) => current,
+              )
+            }
+          />
+        ) : null}
+        {connectorScopeWorkspace !== undefined &&
+        orgProjectConnectorsLeftOut.length > 0 ? (
+          <OrgProjectConnectorsNoticeHost
+            workspaceId={connectorScopeWorkspace}
+            refs={orgProjectConnectorsLeftOut}
+          />
+        ) : null}
         {!isEditingQueued &&
         claudeModsComposerContext &&
         tabDiscovery?.skippedMods &&
@@ -8598,6 +8936,8 @@ function ChatInputContent({
           />
         )}
 
+        {pastedSecretNotice}
+
         {questionPromptOpen &&
         activeQuestion !== undefined &&
         activeSecretRequest !== undefined ? (
@@ -8669,7 +9009,7 @@ function ChatInputContent({
                   // brand name the web passes for rows no vendor claims
                   // (CAN-6753).
                   <PortalModelPicker
-                    allowLegacyAgentRows={false}
+                    hideAgents
                     statusRow
                     brandDisplayName={brandText.appName}
                     catalog={webCorePickerRows}
@@ -8702,12 +9042,6 @@ function ChatInputContent({
                 ) : (
                   <ModelPicker
                     browserLayout="harnesses"
-                    separateAgents
-                    selectionModel={
-                      autoSelected
-                        ? undefined
-                        : (pendingModelChange?.model ?? model)
-                    }
                     currentModel={
                       pendingModelChange?.model ?? model ?? fallbackModel
                     }
@@ -8738,6 +9072,7 @@ function ChatInputContent({
                       ? { lockedProviderReason: continueEligibility.reason }
                       : {})}
                     providerAvailability={providerAvailability}
+                    aiCreditsRoutingMode={aiCreditsRoutingMode}
                     {...(autoPickerOption ? { auto: autoPickerOption } : {})}
                     {...(canStartNewChatWithModel
                       ? { onStartNewChat: handleStartNewChatWithModel }
@@ -8830,90 +9165,98 @@ function ChatInputContent({
             </>
           }
           end={
-            <ComposerAccessUsage
-              access={
-                scopeCapabilities.chatApprovalMode === true ? (
-                  <ApprovalModePicker
-                    mode={approvalMode}
-                    onChange={handleApprovalModeChange}
-                    disabled={isTerminalMode}
-                    hideTriggerIcon
-                    hideTriggerChevron
-                    menuAlignRef={dropContainerRef}
-                    menuAlignEdge="right"
-                  />
-                ) : null
-              }
-              usage={
-                scopeCapabilities.chatContextUsage === true &&
-                // A cloud chat's meter is folded from its answers' meters
-                // only: with none, no meter, never a zero (CAN-6755).
-                (webCoreProjectId === undefined || tabUsage !== undefined) ? (
-                  <UsageIndicator
-                    usage={tabUsage}
-                    isCodex={isCodex}
-                    isCursor={effectiveProviderType === 'cursor'}
-                    executionHarness={
-                      lockedHarness ??
-                      draftExecutionHarness ??
-                      (effectiveProviderType === 'opencode'
-                        ? 'opencode'
-                        : undefined)
-                    }
-                    model={model}
-                    {...(effectiveProviderType
-                      ? { providerType: effectiveProviderType }
-                      : {})}
-                    // Every cloud turn bills to AI Credits, so a cloud chat's
-                    // meter shows no USD and no plan limits (CAN-5028).
-                    aiCreditsRouted={
-                      webCoreProjectId !== undefined || aiCreditsRouted
-                    }
-                    aiCreditsBilled={
-                      webCoreProjectId !== undefined ||
-                      billingResolution.framework === 'ai-credits'
-                    }
-                    hideCost={webCoreProjectId !== undefined}
-                    subscriptionBillingOverride={
-                      tab?.subscriptionBillingOverride === true
-                    }
-                    accountProxyRouted={tab?.accountProxyRouted}
-                    alignRef={dropContainerRef}
-                    {...(tab
-                      ? {
-                          creditTarget: {
-                            ...(composerProjectId !== undefined
-                              ? { projectId: composerProjectId }
-                              : {}),
-                            ...(composerWorktreeId !== undefined
-                              ? { worktreeId: composerWorktreeId }
-                              : {}),
-                            chatId: tab.id,
-                          },
-                        }
-                      : {})}
-                    turnActive={isStreaming}
-                    {...(tab?.modelConfig?.contextWindow !== undefined
-                      ? { contextWindowSetting: tab.modelConfig.contextWindow }
-                      : {})}
-                    // Only this computer's own sessions answer what fills
-                    // their window or what they cost; never a cloud chat.
-                    {...(composerProjectId &&
-                    composerWorktreeId &&
-                    tab &&
-                    webCoreProjectId === undefined
-                      ? {
-                          contextTarget: {
-                            projectId: composerProjectId,
-                            worktreeId: composerWorktreeId,
-                            chatId: tab.id,
-                          },
-                        }
-                      : {})}
-                  />
-                ) : null
-              }
-            />
+            <>
+              <AgentSecretsComposerControl
+                secrets={agentSecrets}
+                agentName={agentSecretsAgentName}
+              />
+              <ComposerAccessUsage
+                access={
+                  scopeCapabilities.chatApprovalMode === true ? (
+                    <ApprovalModePicker
+                      mode={approvalMode}
+                      onChange={handleApprovalModeChange}
+                      disabled={isTerminalMode}
+                      hideTriggerIcon
+                      hideTriggerChevron
+                      menuAlignRef={dropContainerRef}
+                      menuAlignEdge="right"
+                    />
+                  ) : null
+                }
+                usage={
+                  scopeCapabilities.chatContextUsage === true &&
+                  // A cloud chat's meter is folded from its answers' meters
+                  // only: with none, no meter, never a zero (CAN-6755).
+                  (webCoreProjectId === undefined || tabUsage !== undefined) ? (
+                    <UsageIndicator
+                      usage={tabUsage}
+                      isCodex={isCodex}
+                      isCursor={effectiveProviderType === 'cursor'}
+                      executionHarness={
+                        lockedHarness ??
+                        draftExecutionHarness ??
+                        (effectiveProviderType === 'opencode'
+                          ? 'opencode'
+                          : undefined)
+                      }
+                      model={model}
+                      {...(effectiveProviderType
+                        ? { providerType: effectiveProviderType }
+                        : {})}
+                      // Every cloud turn bills to AI Credits, so a cloud chat's
+                      // meter shows no USD and no plan limits (CAN-5028).
+                      aiCreditsRouted={
+                        webCoreProjectId !== undefined || aiCreditsRouted
+                      }
+                      aiCreditsBilled={
+                        webCoreProjectId !== undefined ||
+                        billingResolution.framework === 'ai-credits'
+                      }
+                      hideCost={webCoreProjectId !== undefined}
+                      subscriptionBillingOverride={
+                        tab?.subscriptionBillingOverride === true
+                      }
+                      accountProxyRouted={tab?.accountProxyRouted}
+                      alignRef={dropContainerRef}
+                      {...(tab
+                        ? {
+                            creditTarget: {
+                              ...(composerProjectId !== undefined
+                                ? { projectId: composerProjectId }
+                                : {}),
+                              ...(composerWorktreeId !== undefined
+                                ? { worktreeId: composerWorktreeId }
+                                : {}),
+                              chatId: tab.id,
+                            },
+                          }
+                        : {})}
+                      turnActive={isStreaming}
+                      {...(tab?.modelConfig?.contextWindow !== undefined
+                        ? {
+                            contextWindowSetting: tab.modelConfig.contextWindow,
+                          }
+                        : {})}
+                      // Only this computer's own sessions answer what fills
+                      // their window or what they cost; never a cloud chat.
+                      {...(composerProjectId &&
+                      composerWorktreeId &&
+                      tab &&
+                      webCoreProjectId === undefined
+                        ? {
+                            contextTarget: {
+                              projectId: composerProjectId,
+                              worktreeId: composerWorktreeId,
+                              chatId: tab.id,
+                            },
+                          }
+                        : {})}
+                    />
+                  ) : null
+                }
+              />
+            </>
           }
         />
       )}
@@ -8957,6 +9300,9 @@ function ChatInputContent({
               ? inheritedDefaultLayers(pluginsModalInheritedLayers)
               : undefined
           }
+          {...(pluginsModalOrganization
+            ? { organization: pluginsModalOrganization }
+            : {})}
           onSave={async (
             selections: ChatTabPluginSelections,
             deferredToolsAllowed: boolean,

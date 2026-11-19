@@ -15,6 +15,7 @@ import {
   CORE_CHAT_TASK_QUERY_DEFINITIONS,
   CORE_CHAT_TASK_STREAM_DEFINITIONS,
   CORE_COST_CLOUD_RUN_QUERY_DEFINITIONS,
+  CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS,
   CORE_INSTRUCTION_DEFINITIONS,
   CORE_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
@@ -22,6 +23,7 @@ import {
   CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
   CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_SANDBOX_QUERY_DEFINITIONS,
   WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
   WORKER_ARTIFACT_QUERY_DEFINITIONS,
   WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
@@ -37,6 +39,13 @@ import {
   composeCanopyStreamRegistries,
   type CanopyErrorPayload,
 } from '@canopy/protocol/canopy-core';
+import {
+  MAX_HOST_PORT,
+  MAX_HOST_PORTS,
+  MIN_HOST_PORT,
+  parseEgressAllowedHosts,
+  parseHostPorts,
+} from '@canopy/protocol/canopy-core/core';
 import type { RelayDefinitions } from './definitions';
 import type { InterfaceRelayOperationKind } from './interface-allowlist.generated';
 import type { RendererRelaySurface } from './surface-allowlist';
@@ -81,6 +90,12 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.workspace.reorder',
   'core.workspace.update',
   'core.workspace.delete',
+  // A cloud project's instructions and default plugins in its settings
+  // (CAN-7053); each narrowed by `webCoreRelayRefuseParams`.
+  'core.workspace.instructions.update',
+  'core.workspace.plugins.update',
+  // The Host tab's live forwarded URLs (CAN-7053).
+  'core.workspace.sandboxRoutes.get',
   'core.chat.task.list',
   'core.chat.task.events',
   'core.chat.list',
@@ -93,6 +108,12 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.chat.create',
   'core.chat.update',
   'core.chat.archive',
+  // Deleting a cloud task to the Trash from the sidebar (CAN-7052): its own
+  // chat closes in discard mode only (`webCoreRelayRefuseParams`).
+  'core.chat.delete',
+  // Fork a cowork cloud chat whole into a new task under the renderer's UUID
+  // claim (CAN-7007); the web core checks the source chat is the caller's.
+  'core.chat.fork',
   // A cloud project's archived tasks, and restoring one in place (CAN-6511).
   // The rest of the archive (update, delete, chat.get) stays off the relay.
   'core.archive.container.list',
@@ -164,42 +185,58 @@ function allowed<D>(map: Readonly<Record<string, D>>): Record<string, D> {
  * dispatcher must serve.
  */
 export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
-  queries: allowed(
-    composeCanopyQueryRegistries(
-      CORE_QUERY_DEFINITIONS,
-      // Only the manifest, which offers a cloud task's Cost (CAN-6180).
-      CORE_TRANSPORT_QUERY_DEFINITIONS,
-      CORE_CHAT_TASK_QUERY_DEFINITIONS,
-      CORE_CATALOG_QUERY_DEFINITIONS,
-      CORE_ARTIFACT_QUERY_DEFINITIONS,
-      CORE_ARCHIVE_QUERY_DEFINITIONS,
-      CORE_APPROVAL_QUERY_DEFINITIONS,
-      CORE_CHAT_SECRET_QUERY_DEFINITIONS,
-      CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
-      CORE_COST_CLOUD_RUN_QUERY_DEFINITIONS,
-      WORKER_FILESYSTEM_QUERY_DEFINITIONS,
-      WORKER_TERMINAL_QUERY_DEFINITIONS,
-      WORKER_PIPELINE_QUERY_DEFINITIONS,
-      WORKER_ARTIFACT_QUERY_DEFINITIONS,
+  queries: {
+    ...allowed(
+      composeCanopyQueryRegistries(
+        CORE_QUERY_DEFINITIONS,
+        // Only the manifest, which offers a cloud task's Cost (CAN-6180).
+        CORE_TRANSPORT_QUERY_DEFINITIONS,
+        CORE_CHAT_TASK_QUERY_DEFINITIONS,
+        CORE_CATALOG_QUERY_DEFINITIONS,
+        CORE_ARTIFACT_QUERY_DEFINITIONS,
+        CORE_ARCHIVE_QUERY_DEFINITIONS,
+        CORE_APPROVAL_QUERY_DEFINITIONS,
+        CORE_CHAT_SECRET_QUERY_DEFINITIONS,
+        CORE_PIPELINE_RUN_READ_QUERY_DEFINITIONS,
+        CORE_COST_CLOUD_RUN_QUERY_DEFINITIONS,
+        WORKER_FILESYSTEM_QUERY_DEFINITIONS,
+        WORKER_TERMINAL_QUERY_DEFINITIONS,
+        WORKER_PIPELINE_QUERY_DEFINITIONS,
+        WORKER_ARTIFACT_QUERY_DEFINITIONS,
+      ),
     ),
-  ),
-  instructions: allowed(
-    composeCanopyInstructionRegistries(
-      CORE_INSTRUCTION_DEFINITIONS,
-      CORE_CATALOG_INSTRUCTION_DEFINITIONS,
-      CORE_ARCHIVE_COMMAND_INSTRUCTION_DEFINITIONS,
-      CORE_APPROVAL_INSTRUCTION_DEFINITIONS,
-      CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
-      CORE_CHAT_SECRET_INSTRUCTION_DEFINITIONS,
-      CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
-      CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
-      WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
-      WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
-      WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
-      WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
-      WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
+    // The web core serves this read alone, so it stays out of the workspace
+    // registry the desktop dispatcher serves (CAN-7053).
+    'core.workspace.sandboxRoutes.get':
+      CORE_WORKSPACE_SANDBOX_QUERY_DEFINITIONS[
+        'core.workspace.sandboxRoutes.get'
+      ],
+  },
+  instructions: {
+    ...allowed(
+      composeCanopyInstructionRegistries(
+        CORE_INSTRUCTION_DEFINITIONS,
+        CORE_CATALOG_INSTRUCTION_DEFINITIONS,
+        CORE_ARCHIVE_COMMAND_INSTRUCTION_DEFINITIONS,
+        CORE_APPROVAL_INSTRUCTION_DEFINITIONS,
+        CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
+        CORE_CHAT_SECRET_INSTRUCTION_DEFINITIONS,
+        CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
+        CORE_WORKSPACE_METADATA_INSTRUCTION_DEFINITIONS,
+        WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
+        WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
+        WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
+        WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
+        WORKER_ARTIFACT_INSTRUCTION_DEFINITIONS,
+      ),
     ),
-  ),
+    // Only the default plugins save of the guarded settings commands
+    // (CAN-7053); the rest of that registry stays off the relay.
+    'core.workspace.plugins.update':
+      CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS[
+        'core.workspace.plugins.update'
+      ],
+  },
   streams: allowed(
     composeCanopyStreamRegistries(
       CANOPY_STREAM_DEFINITIONS,
@@ -283,30 +320,202 @@ export function webCoreRelayAllows(
   return surface === 'main' && WEB_CORE_RELAY_OPERATIONS.has(method);
 }
 
-/** The project fields the desktop edits on the web core: a cloud project's name and colour. */
+/**
+ * The project fields the desktop edits on the web core: a cloud project's
+ * name and colour (CAN-6099), and its sandbox's egress hosts and host mode
+ * and ports (CAN-7053).
+ */
 const WEB_CORE_WORKSPACE_PATCH_FIELDS: ReadonlySet<string> = new Set([
   'name',
   'color',
+  'hostModeEnabled',
+  'hostPorts',
+  'egressAllowedHosts',
+]);
+
+/** The params a project update takes, `_meta` aside. */
+const WEB_CORE_WORKSPACE_UPDATE_PARAMS: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'expectedRevision',
+  'patch',
+]);
+
+/** The params a project's sandbox routes read takes. */
+const WEB_CORE_SANDBOX_ROUTES_PARAMS: ReadonlySet<string> = new Set([
+  'workspaceId',
 ]);
 
 /**
+ * The parsers the relay checks a project's sandbox fields with: the web
+ * core's own, imported from @canopy/protocol, never a copy (CAN-7053).
+ */
+export const WEB_CORE_SANDBOX_FIELD_PARSERS = Object.freeze({
+  parseHostPorts,
+  parseEgressAllowedHosts,
+});
+
+const sameList = (
+  left: readonly unknown[],
+  right: readonly unknown[],
+): boolean =>
+  left.length === right.length &&
+  left.every((value, index) => value === right[index]);
+
+/**
+ * Why a project patch's sandbox fields can't be sent, or null. They pass the
+ * web core's own parsers, the same functions, and must already be in their
+ * canonical form: a value the parser would change (a duplicate, an upper-case
+ * host) is refused rather than rewritten. The web core still checks them.
+ */
+function refuseSandboxFields(
+  patch: Readonly<Record<string, unknown>>,
+): string | null {
+  if ('hostModeEnabled' in patch && typeof patch.hostModeEnabled !== 'boolean')
+    return 'Host mode must be on or off.';
+  if ('hostPorts' in patch) {
+    const parsed = parseHostPorts(patch.hostPorts);
+    if (!parsed.ok)
+      return parsed.reason === 'too_many'
+        ? `At most ${MAX_HOST_PORTS} ports can be exposed.`
+        : `Ports must be whole numbers between ${MIN_HOST_PORT} and ${MAX_HOST_PORT}.`;
+    if (
+      !Array.isArray(patch.hostPorts) ||
+      !sameList(parsed.ports, patch.hostPorts)
+    )
+      return 'Each port can be listed once.';
+  }
+  if ('egressAllowedHosts' in patch) {
+    const parsed = parseEgressAllowedHosts(patch.egressAllowedHosts);
+    if (!parsed.ok) return parsed.error;
+    if (
+      !Array.isArray(patch.egressAllowedHosts) ||
+      !sameList(parsed.hosts, patch.egressAllowedHosts)
+    )
+      return 'Enter each hostname once, in lower case, without spaces.';
+  }
+  return null;
+}
+
+/** The only `core.chat.delete` action the desktop sends: one task to the Trash. */
+const WEB_CORE_CHAT_DELETE_FIELDS: ReadonlySet<string> = new Set([
+  'type',
+  'tabId',
+  'mode',
+]);
+
+function refuseChatDelete(
+  params: Readonly<Record<string, unknown>>,
+): string | null {
+  const action = params.action;
+  if (typeof action !== 'object' || action === null || Array.isArray(action))
+    return 'A chat delete needs an action.';
+  return 'type' in action &&
+    action.type === 'chat.close_tab' &&
+    'mode' in action &&
+    action.mode === 'discard' &&
+    Object.keys(action).every((field) => WEB_CORE_CHAT_DELETE_FIELDS.has(field))
+    ? null
+    : 'Only a cloud task can be deleted here, one at a time.';
+}
+
+/** The params a cloud project's instructions save takes: its whole text. */
+const WEB_CORE_INSTRUCTIONS_PARAMS: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'content',
+  'revision',
+]);
+
+/** The params a cloud project's default plugins save takes. */
+const WEB_CORE_PLUGINS_PARAMS: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'expectedRevision',
+  'change',
+  '_meta',
+]);
+
+/** A `setDefaults` change's fields, the only plugins change the relay sends. */
+const WEB_CORE_PLUGINS_SET_DEFAULTS_FIELDS: ReadonlySet<string> = new Set([
+  'kind',
+  'defaultPluginSelections',
+  'expectedDefaultPluginSelectionsRevision',
+]);
+
+const onlyKeys = (
+  value: Readonly<Record<string, unknown>>,
+  allowed: ReadonlySet<string>,
+): boolean => Object.keys(value).every((key) => allowed.has(key));
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Refuses a delegate's pages read for a chat other than its scope's. */
+function refuseOtherChatDelegationPage(
+  params: Readonly<Record<string, unknown>>,
+): string | null {
+  const target = params.target;
+  if (!isPlainRecord(target) || target.kind !== 'delegation') return null;
+  const scope = params.scope;
+  return isPlainRecord(scope) &&
+    typeof scope.chatId === 'string' &&
+    target.chatId === scope.chatId
+    ? null
+    : "Only this chat's own delegates can be read here.";
+}
+
+/**
  * What a renderer may send with an allowed web core operation, narrower than
- * the operation itself (CAN-6099): `core.workspace.update` changes only a
- * project's name and colour, as the web app's settings do.
+ * the operation itself:
+ * - `core.workspace.update` changes only a project's name and colour
+ *   (CAN-6099) and its sandbox's egress hosts, host mode and host ports
+ *   (CAN-7053), each sandbox field valid and canonical for the web core's own
+ *   parser.
+ * - `core.workspace.sandboxRoutes.get` reads one project's routes and takes
+ *   nothing else (CAN-7053).
+ * - `core.workspace.instructions.update` overwrites a project's instructions
+ *   and nothing else (CAN-7053).
+ * - `core.workspace.plugins.update` only sets a project's default plugins;
+ *   its other changes, such as recommended selections, stay on the web
+ *   (CAN-7053).
+ * - `core.chat.delete` only moves one task to the Trash (CAN-7052).
+ *   Archiving goes through `core.chat.archive`, and the web core decides
+ *   whether the chat is a task.
+ * - `core.chat.transcript.page` reads a delegate's pages only for the chat
+ *   the read is scoped to (CAN-7027). The web core also checks the delegate
+ *   is that chat's own.
  */
 export function webCoreRelayRefuseParams(
   method: string,
   params: Readonly<Record<string, unknown>>,
 ): string | null {
+  if (method === 'core.chat.delete') return refuseChatDelete(params);
+  if (method === 'core.chat.transcript.page')
+    return refuseOtherChatDelegationPage(params);
+  if (method === 'core.workspace.instructions.update')
+    return onlyKeys(params, WEB_CORE_INSTRUCTIONS_PARAMS)
+      ? null
+      : "Only a cloud project's instructions can be saved here.";
+  if (method === 'core.workspace.plugins.update') {
+    const change = params.change;
+    return onlyKeys(params, WEB_CORE_PLUGINS_PARAMS) &&
+      isPlainRecord(change) &&
+      change.kind === 'setDefaults' &&
+      onlyKeys(change, WEB_CORE_PLUGINS_SET_DEFAULTS_FIELDS)
+      ? null
+      : "Only a cloud project's default plugins can be changed here.";
+  }
+  if (method === 'core.workspace.sandboxRoutes.get')
+    return onlyKeys(params, WEB_CORE_SANDBOX_ROUTES_PARAMS)
+      ? null
+      : "Only a cloud project's sandbox routes can be read here.";
   if (method !== 'core.workspace.update') return null;
+  if (!onlyKeys(params, WEB_CORE_WORKSPACE_UPDATE_PARAMS))
+    return 'A project update takes only its project, revision and patch.';
   const patch = params.patch;
-  if (typeof patch !== 'object' || patch === null || Array.isArray(patch))
+  if (!isPlainRecord(patch) || Object.keys(patch).length === 0)
     return 'A project update needs a patch.';
-  return Object.keys(patch).every((field) =>
-    WEB_CORE_WORKSPACE_PATCH_FIELDS.has(field),
-  )
-    ? null
-    : "Only a cloud project's name and colour can be changed here.";
+  if (!onlyKeys(patch, WEB_CORE_WORKSPACE_PATCH_FIELDS))
+    return "Only a cloud project's name, colour, egress hosts and host settings can be changed here.";
+  return refuseSandboxFields(patch);
 }
 
 /** The file operations that take `wake` (CAN-6114). */

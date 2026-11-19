@@ -228,6 +228,8 @@ interface StreamSpec {
    * locally, so the core may still send its frames.
    */
   readonly forget: (orphaned: boolean) => void;
+  /** Observes a listener that threw; never throws itself. */
+  readonly listenerFailed: (error: unknown) => void;
 }
 
 /** A stream opened by the core but refused locally; its frames are dropped. */
@@ -243,8 +245,9 @@ interface Entry {
  * One subscription on one connection. The receive loop never waits on it:
  * undelivered frames are bounded by count and encoded bytes, and listener
  * errors are contained. Close, abort, and deadline end it locally and later
- * frames are dropped. A core that lists `core.events.unsubscribe` is asked to
- * drop the subscription (CAN-5970); any other core's handler runs until its
+ * frames are dropped. When the definitions list `core.events.unsubscribe`,
+ * the core is asked to drop the subscription (CAN-5970, CAN-6194); a core that
+ * does not serve it answers an error, ignored, and runs its handler until its
  * own end.
  */
 class ClientStream {
@@ -410,8 +413,9 @@ class ClientStream {
         for (const listener of Array.from(this.listeners))
           try {
             listener(frame);
-          } catch {
+          } catch (error) {
             // A failing consumer must not stop the receive loop or its siblings.
+            this.spec.listenerFailed(error);
           }
     } finally {
       this.draining = false;
@@ -478,9 +482,19 @@ class ClientSession {
   constructor(
     private readonly connection: CanopyFramedConnection,
     private readonly definitions: WideDefinitions,
+    private readonly onListenerError?: (error: unknown) => void,
   ) {
     this.done = this.receiveLoop();
   }
+
+  /** Hands a listener's failure to the host; a failing hook is contained. */
+  readonly listenerFailed = (error: unknown): void => {
+    try {
+      this.onListenerError?.(error);
+    } catch {
+      // Observing a failure must not stop the receive loop either.
+    }
+  };
 
   request<T>(
     method: string,
@@ -669,6 +683,7 @@ class ClientSession {
           notification,
           options,
           budget,
+          listenerFailed: this.listenerFailed,
           forget: (orphaned): void => {
             if (this.streams.get(subscriptionId) !== stream) return;
             this.streams.delete(subscriptionId);
@@ -737,7 +752,12 @@ class ClientSession {
   } {
     if (this.closeReason) throw forDefinition(this.closeReason, definition);
     const manifestKind = kind === 'stream' ? 'streams' : 'operations';
-    if (!definition || !this.accepted?.manifest.has(manifestKind, name))
+    // Unsubscribe is sent unlisted too: every web core serves it (CAN-6194),
+    // and an older core's method-not-found is ignored.
+    const listed =
+      this.accepted !== null &&
+      (name === UNSUBSCRIBE || this.accepted.manifest.has(manifestKind, name));
+    if (!definition || !listed)
       throw clientError(
         'capability_unavailable',
         `${name} is not available on this connection.`,
@@ -842,8 +862,9 @@ class ClientSession {
           this.leaseEvictions.forEach((listener) => {
             try {
               listener(parsed.data);
-            } catch {
-              /* Isolate lifecycle observers. */
+            } catch (error) {
+              // Isolate lifecycle observers.
+              this.listenerFailed(error);
             }
           });
           continue;
@@ -874,8 +895,8 @@ class ClientSession {
   /** A subscription the core may still serve that nothing here reads. */
   private orphan(subscriptionId: string, name: string): void {
     this.orphans.set(subscriptionId, name);
-    // Refused locally, never sent, unless both the definitions and the
-    // core's manifest list it. A later turn, outside the receive loop.
+    // Refused locally, never sent, unless the definitions list it. A later
+    // turn, outside the receive loop.
     void Promise.resolve()
       .then(() => this.call('instruction', UNSUBSCRIBE, { subscriptionId }, {}))
       .catch(() => {});
@@ -1028,7 +1049,11 @@ export async function createCanopyClient(
   const { connection, signal } = options;
   const protocolVersions =
     options.protocolVersions ?? CANOPY_CLIENT_PROTOCOL_VERSIONS;
-  const session = new ClientSession(connection, options.definitions);
+  const session = new ClientSession(
+    connection,
+    options.definitions,
+    options.onListenerError,
+  );
   try {
     if (signal?.aborted) throw cancelled();
     signal?.addEventListener('abort', () => void session.close(cancelled()), {

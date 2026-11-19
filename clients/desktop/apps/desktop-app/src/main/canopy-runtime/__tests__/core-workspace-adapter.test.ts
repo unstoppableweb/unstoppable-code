@@ -1,5 +1,6 @@
 import type * as SidebarModule from '../../lib/sidebar-items';
 import type * as W5FileStoreModule from '../../lib/w5-commit-log-file-store';
+import { createHash } from 'node:crypto';
 import {
   CoreWorkspaceSchema,
   CoreWorktreeSchema,
@@ -8,6 +9,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import type {
   SidebarItemsFile,
+  WorkspaceIndexEntry,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
 import {
@@ -23,7 +25,20 @@ import { DEFAULT_ACTIVITY_SECTION_ORDER } from '@canopy/desktop-shared/constants
 import { CORE_READ_SNAPSHOT_LIMITS } from '@canopy/core-runtime/node/workspace/core-workspace-read-snapshots';
 import { sanitizeRemoteUrl } from '../../lib/plan-share-repos';
 import type { W5ReadViewOutcome } from '../../lib/w5-read-view';
-import type { W5CaptureResult } from '../../w5-commit-log/commit-log-worker-contract';
+import type {
+  W5CaptureFile,
+  W5CaptureResult,
+  W5FileImage,
+} from '../../w5-commit-log/commit-log-worker-contract';
+import {
+  createW5CommittedProjection,
+  type W5CommittedProjection,
+} from '@canopy/core-runtime/node/w5/committed-projection';
+import {
+  coreWorkspaceResourceKey,
+  publishableRevisions,
+  type CoreWorkspaceReadProvenance,
+} from '../core-workspace-read-provenance';
 
 const caller = {
   principalId: 'test-user',
@@ -1842,4 +1857,276 @@ describe('unreadable workspace index (CAN-5565)', () => {
       runtime.query('core.workspace.get', { workspaceId: 'ws-1' }, { caller }),
     ).rejects.toMatchObject({ payload: { kind: 'not_found' } });
   });
+});
+
+/*
+ * CAN-7155 (W5 readers S-9, PR 1): the read cache's projection, filled from
+ * the capture a read view served, answers every label that read published.
+ * Pages either side of the 100-row default, partial filters and an absent or
+ * unreadable index; the cache serves no reader until PR 3 switches one.
+ */
+describe('the read cache answers as the captured read (CAN-7155)', () => {
+  const sha = (text: string): string =>
+    createHash('sha256').update(text, 'utf8').digest('hex');
+  const INDEX: W5CaptureFile = { kind: 'index' };
+
+  function capturedRoot(
+    rows: number,
+    index: 'present' | 'absent' | 'unreadable' = 'present',
+  ): { capture: W5CaptureResult; sidebar: SidebarItemsFile } {
+    const base = fixture('multi-repo').items[0];
+    if (base?.type !== 'multi-repo') throw new Error('fixture');
+    const ids = Array.from({ length: rows }, (_, i) => `ws-${i + 1}`);
+    const worktrees = ids.map((_, i) => ({ id: `wt-${i + 1}` }));
+    const specs: {
+      file: W5CaptureFile;
+      contents: string | null;
+      unreadable?: boolean;
+      logged?: string;
+    }[] = [
+      {
+        file: INDEX,
+        contents:
+          index === 'present'
+            ? JSON.stringify({
+                version: 1,
+                workspaces: ids.map((id) => ({ id })),
+              })
+            : index === 'absent'
+              ? null
+              : '',
+        unreadable: index === 'unreadable',
+      },
+      ...ids.slice(0, 120).map((workspaceId, i) => ({
+        file: { kind: 'manifest' as const, workspaceId },
+        contents: '{"version":1}',
+        // Every seventh manifest was edited outside the log.
+        ...(i % 7 === 6 && { logged: '{"version":2}' }),
+      })),
+      {
+        file: { kind: 'worktrees', workspaceId: 'ws-1' },
+        contents: JSON.stringify({ worktrees }),
+      },
+    ];
+    const revisions: Record<string, number> = {
+      workspaces: 5,
+      'worktrees:ws-1': 3,
+    };
+    // ws-2 has no counter row: `no-revision`.
+    ids.forEach((id, i) => {
+      if (id !== 'ws-2') revisions[`workspace:${id}`] = i + 1;
+    });
+    worktrees.forEach(({ id }) => (revisions[`worktree:ws-1/${id}`] = 1));
+    const capture: W5CaptureResult = {
+      files: specs.map(
+        ({ file, contents, unreadable }): W5FileImage =>
+          unreadable
+            ? { ...file, state: 'unreadable', reason: 'io' }
+            : contents === null
+              ? { ...file, state: 'absent' }
+              : {
+                  ...file,
+                  state: 'present',
+                  base64: Buffer.from(contents, 'utf8').toString('base64'),
+                },
+      ),
+      discovery: 'complete',
+      log: {
+        commitId: 9,
+        retainedCommits: 9,
+        unresolvedCommits: 0,
+        schemaVersion: 2,
+        revisions,
+        files: specs
+          .filter(({ contents }) => contents !== null)
+          .map(({ file, contents, logged }) => ({
+            file,
+            commitId: 9,
+            state: 'applied' as const,
+            previousFingerprint: null,
+            newFingerprint: sha(logged ?? String(contents)),
+          })),
+        chains: specs.map(({ file, contents }) => ({
+          file,
+          decisions: contents === null ? 0 : 1,
+          startsAbsent: contents !== null,
+          discontinuities: 0,
+        })),
+        resourceRevisionEligibility: 'unproven',
+      },
+    };
+    return {
+      capture,
+      sidebar: {
+        version: 1,
+        items: index === 'present' ? ids.map((id) => ({ ...base, id })) : [],
+      },
+    };
+  }
+
+  function runtimeOver(
+    capture: W5CaptureResult,
+    sidebar: SidebarItemsFile,
+  ): DesktopCanopyDispatcher {
+    const ids = sidebar.items.map((item) => item.id);
+    return createDesktopRuntime({
+      workspaceServices: {
+        readAllSidebarItems: jest.fn(),
+        readWorkspaceWorktrees: jest.fn(),
+        readWorkspaceConfig: jest.fn(),
+        readEffectiveWorkspaceConfig: jest
+          .fn()
+          .mockResolvedValue({ repos: [] }),
+        readWorkspaceIndexEntry: jest.fn(
+          (workspaceId: string): Promise<WorkspaceIndexEntry | null> =>
+            Promise.resolve(
+              ids.includes(workspaceId)
+                ? {
+                    id: workspaceId,
+                    name: 'Workspace',
+                    type: 'multi-repo',
+                    color: 'blue',
+                    collapsed: false,
+                    order: 0,
+                  }
+                : null,
+            ),
+        ),
+        readAllSidebarItemsSnapshot: jest.fn().mockResolvedValue({
+          file: sidebar,
+          authority: 'ok',
+          indexAuthority: 'ok',
+          indexedWorkspaceIds: ids,
+          workspaceReads: new Map(
+            ids.map((id) => [id, { manifest: 'ok', worktrees: 'ok' }]),
+          ),
+        }),
+        readWorkspaceConfigDetailed: jest.fn().mockResolvedValue({
+          config: {
+            version: 1,
+            type: 'multi-repo',
+            repos: [],
+            owner: { kind: 'organization', organizationId: 'org-1' },
+          },
+          authority: 'ok',
+          ownerMalformed: false,
+        }),
+        readWorkspaceWorktreesDetailed: jest.fn().mockResolvedValue({
+          worktrees: ids.map((_, i) => ({ ...worktree, id: `wt-${i + 1}` })),
+          authority: 'ok',
+        }),
+        readView: (_request, work) =>
+          work({ status: 'captured', capture, uncapturedReads: [] }),
+      },
+    });
+  }
+
+  /** The cache's answer for everything `provenance` labelled. */
+  function expectCacheAgrees(
+    projection: W5CommittedProjection,
+    provenance: CoreWorkspaceReadProvenance | undefined,
+  ): void {
+    if (!provenance) throw new Error('The read recorded no provenance');
+    const cached = new Map<string, number>();
+    for (const {
+      resource,
+      completeness,
+      eligibility,
+    } of provenance.resources) {
+      expect({
+        resource,
+        completeness,
+        eligibility: projection.eligibility(resource, completeness),
+      }).toEqual({ resource, completeness, eligibility });
+      if (eligibility.status === 'eligible')
+        cached.set(coreWorkspaceResourceKey(resource), eligibility.revision);
+    }
+    expect(cached).toEqual(publishableRevisions(provenance));
+    for (const { file, provenance: expected } of provenance.files)
+      expect({ file, provenance: projection.provenance(file) }).toEqual({
+        file,
+        provenance: expected,
+      });
+  }
+
+  test.each([99, 100, 101, 107])(
+    '%i rows: every label equals the captured read, paged and filtered',
+    async (rows) => {
+      const { capture, sidebar } = capturedRoot(rows);
+      const projection = createW5CommittedProjection();
+      projection.installCapture(capture, { ticket: projection.ticket() });
+      const runtime = runtimeOver(capture, sidebar);
+      const reads = [
+        runtime.queryWorkspaceListForLegacyIpc({}, { caller }),
+        runtime.queryWorkspaceListForLegacyIpc({ pageSize: 7 }, { caller }),
+        runtime.queryWorkspaceListForLegacyIpc(
+          { scope: { organizationId: 'org-1' } },
+          { caller },
+        ),
+        runtime.queryWorktreeListForLegacyIpc(
+          { scope: { workspaceId: 'ws-1' } },
+          { caller },
+        ),
+        runtime.queryWorktreeListForLegacyIpc(
+          { scope: { workspaceId: 'ws-1', worktreeId: 'wt-2' } },
+          { caller },
+        ),
+        runtime.queryWorkspaceGetForLegacyIpc(
+          { workspaceId: 'ws-2' },
+          { caller },
+        ),
+        runtime.queryWorkspaceGetForLegacyIpc(
+          { workspaceId: 'ws-3' },
+          { caller },
+        ),
+        runtime.queryWorkspaceGetForLegacyIpc(
+          { workspaceId: 'ws-7' },
+          { caller },
+        ),
+      ];
+      const results = await Promise.all(reads);
+      for (const result of results)
+        expectCacheAgrees(projection, result.legacyAuthority?.provenance);
+      // The fixture exercises eligible, partial and unverified labels.
+      const labels = results.flatMap(
+        (result) =>
+          result.legacyAuthority?.provenance?.resources.map(
+            ({ eligibility }) =>
+              eligibility.status === 'eligible'
+                ? 'eligible'
+                : eligibility.reason,
+          ) ?? [],
+      );
+      expect(new Set(labels)).toEqual(
+        new Set([
+          'eligible',
+          'projection-incomplete',
+          'diverged',
+          'no-revision',
+        ]),
+      );
+      await runtime.shutdown();
+    },
+  );
+
+  test.each(['absent', 'unreadable'] as const)(
+    'an %s index answers as the captured read',
+    async (index) => {
+      const { capture, sidebar } = capturedRoot(3, index);
+      const projection = createW5CommittedProjection();
+      projection.installCapture(capture, { ticket: projection.ticket() });
+      expect(projection.image(INDEX)).toEqual(capture.files[0]);
+      expect(projection.provenance(INDEX)).toEqual({
+        status: 'unverified',
+        reason: index === 'absent' ? 'untracked' : 'unreadable',
+      });
+      const runtime = runtimeOver(capture, sidebar);
+      const listed = await runtime.queryWorkspaceListForLegacyIpc(
+        {},
+        { caller },
+      );
+      expectCacheAgrees(projection, listed.legacyAuthority?.provenance);
+      await runtime.shutdown();
+    },
+  );
 });

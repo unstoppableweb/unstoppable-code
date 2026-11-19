@@ -21,9 +21,9 @@ async function invoke(
     if (!reply.ok && warnOnFailure)
       // eslint-disable-next-line no-console
       console.warn('[interface-tools] registration failed', reply.error.kind);
-  } catch {
+  } catch (cause) {
     // The tools are then simply absent.
-    reportClientAppError(new Error('Interface tool registration failed'));
+    reportClientAppError(cause);
   }
 }
 

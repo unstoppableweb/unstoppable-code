@@ -83,6 +83,7 @@ export function OrchestratorSettingsModal({
       maxWidth="2xl"
       minHeight="28rem"
       dataTestId={`${prefix}-settings-modal`}
+      trapFocus
     >
       <TabBar
         items={TABS.map((tab) => ({

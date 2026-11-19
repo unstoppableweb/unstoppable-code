@@ -1,4 +1,4 @@
-import type { ComponentType, JSX, SVGProps } from 'react';
+import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
 import type { AgentExecutionHarness } from '@canopy/protocol/models';
 import { Button } from './Button';
 import { ComponentSection } from './ComponentSection';
@@ -11,6 +11,7 @@ import { AntigravityLogo } from '../icons/AntigravityLogo';
 import { DataTable } from './DataTable';
 import { Tooltip } from './Tooltip';
 import { useItemStateMarks } from './ItemStateMark';
+import { DetailFactError } from './CapabilityDetailLayout';
 
 /** Plugin harness names and marks, in display order. */
 const HARNESSES: Readonly<
@@ -69,6 +70,53 @@ export interface PluginHarnessConnectionRow {
   installation: 'Installed' | 'Not installed' | 'Not supported';
 }
 
+/**
+ * Another copy of the same plugin that serves a harness (New Customize):
+ * "via Slack (slackapi) from Claude official", the name opening that copy.
+ */
+export interface PluginHarnessViaCopy {
+  readonly name: string;
+  /** Where the copy comes from: its marketplace or catalog. */
+  readonly source?: string;
+  readonly onOpen?: () => void;
+}
+
+/** A harness whose MCP server comes from another copy of the plugin. */
+export interface PluginMcpServerVia {
+  /** The harness id, as on the Works with rows. */
+  readonly harness: string;
+  readonly via: PluginHarnessViaCopy;
+  readonly installed: boolean;
+}
+
+/** One line: "via <copy> from <source>", truncated to the space it has. */
+export function PluginHarnessVia({
+  via,
+  testId,
+}: {
+  via: PluginHarnessViaCopy;
+  testId: string;
+}): JSX.Element {
+  const full = `via ${via.name}${via.source ? ` from ${via.source}` : ''}`;
+  return (
+    <span
+      className="min-w-0 truncate text-left font-normal fg-tertiary"
+      title={full}
+      data-testid={testId}
+    >
+      via{' '}
+      {via.onOpen ? (
+        <Button variant="link" onClick={via.onOpen}>
+          {via.name}
+        </Button>
+      ) : (
+        via.name
+      )}
+      {via.source ? ` from ${via.source}` : ''}
+    </span>
+  );
+}
+
 /** Availability is per harness; the shared account connection is shown once. */
 interface PluginHarnessConnectionsProps {
   rows: readonly (PluginHarnessConnectionRow & {
@@ -81,11 +129,26 @@ interface PluginHarnessConnectionsProps {
     };
     /** Plain guidance when this harness has no install of its own. */
     readonly note?: string;
+    /** Another copy that serves this harness, named on the row. */
+    readonly via?: PluginHarnessViaCopy;
+    /**
+     * A harness-only setting on its row (New Customize), such as the Codex
+     * compatibility toggle.
+     */
+    readonly control?: ReactNode;
+    /** That setting's failure, said on its row instead of a page banner. */
+    readonly error?: string;
   })[];
+  /** The table's accessible caption; it names the kind of item. */
+  caption?: string;
 }
+
+/** One Works with row, with its optional actions, note and setting. */
+export type PluginWorksWithRow = PluginHarnessConnectionsProps['rows'][number];
 
 export function PluginHarnessConnections({
   rows,
+  caption = 'Plugin installation by harness',
 }: PluginHarnessConnectionsProps): JSX.Element | null {
   // New Customize: the check carries the color; "Installed" stays plain.
   const neutralText = useItemStateMarks();
@@ -93,7 +156,7 @@ export function PluginHarnessConnections({
   return (
     <DataTable
       testId="plugin-harness-connections"
-      caption="Plugin installation by harness"
+      caption={caption}
       layout="fixed"
       rows={rows}
       rowKey={(row) => row.id}
@@ -135,8 +198,27 @@ export function PluginHarnessConnections({
                 ? 'success'
                 : 'secondary',
           render: (row) => (
-            <span className="inline-flex items-center justify-end gap-3">
+            <span
+              className={
+                row.via
+                  ? 'flex min-w-0 items-center justify-end gap-3'
+                  : 'inline-flex items-center justify-end gap-3'
+              }
+            >
+              {row.via && (
+                <PluginHarnessVia
+                  via={row.via}
+                  testId={`plugin-harness-${row.id}-via`}
+                />
+              )}
               {row.note && <span className="fg-tertiary">{row.note}</span>}
+              {row.error && (
+                <DetailFactError
+                  error={row.error}
+                  testId={`plugin-harness-${row.id}-error`}
+                />
+              )}
+              {row.control}
               {row.alternative?.iconOnly ? (
                 <Tooltip label={row.alternative.label}>
                   <Button
@@ -164,7 +246,7 @@ export function PluginHarnessConnections({
                 )
               )}
               {/* Last, so every row's status lines up at the table's edge. */}
-              <span className="inline-flex items-center gap-1.5">
+              <span className="inline-flex shrink-0 items-center gap-1.5">
                 {row.installation === 'Installed' && (
                   <CheckIcon
                     size={16}
@@ -185,11 +267,12 @@ export function PluginHarnessConnections({
 /** The harness table under its heading; nothing at all without a row to show. */
 export function PluginWorksWith({
   rows,
+  caption,
 }: PluginHarnessConnectionsProps): JSX.Element | null {
   if (rows.length === 0) return null;
   return (
     <ComponentSection title="Works with">
-      <PluginHarnessConnections rows={rows} />
+      <PluginHarnessConnections rows={rows} caption={caption} />
     </ComponentSection>
   );
 }

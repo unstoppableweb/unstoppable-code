@@ -1,4 +1,7 @@
-import { resolveGitHubTokenWithSource } from '../lib/github-auth';
+import {
+  getGitHubBrokerCredentialPort,
+  type GitHubBrokerCredentialLease,
+} from '../lib/github-broker/credential-port';
 import {
   countCommits,
   getHeadCommitSha,
@@ -31,12 +34,13 @@ export interface SharedContainerPushedBaseDependencies {
   mergeBase(repoPath: string, a: string, b: string): Promise<string | null>;
   countCommits(repoPath: string, range: string): Promise<number>;
   getRemoteUrl(repoPath: string): Promise<string | null>;
-  resolveToken(): Promise<string>;
+  /** A lease on the resolved GitHub credential; null when there is none. */
+  resolveCredential(): Promise<GitHubBrokerCredentialLease | null>;
   probeCommit(
     owner: string,
     repository: string,
     sha: string,
-    token: string,
+    credential: GitHubBrokerCredentialLease,
   ): Promise<void>;
 }
 
@@ -47,8 +51,9 @@ const DEFAULT_DEPENDENCIES: SharedContainerPushedBaseDependencies = {
   mergeBase,
   countCommits,
   getRemoteUrl: getRemoteUrlStrict,
-  resolveToken: async () => (await resolveGitHubTokenWithSource()).token,
-  probeCommit: async (owner, repository, sha, token) => {
+  resolveCredential: async () =>
+    (await getGitHubBrokerCredentialPort().lease('resolved'))?.lease ?? null,
+  probeCommit: async (owner, repository, sha, credential) => {
     await getGitHubClient().enqueue(
       (octokit) =>
         octokit.request('GET /repos/{owner}/{repo}/commits/{ref}', {
@@ -57,7 +62,7 @@ const DEFAULT_DEPENDENCIES: SharedContainerPushedBaseDependencies = {
           ref: sha,
         }),
       'high',
-      { authenticationToken: token },
+      { credential },
     );
   },
 };
@@ -106,15 +111,17 @@ export async function resolveSharedContainerPushedBase(
   const coordinates = remote
     ? parseGitHubRemote(sanitizeRemoteUrl(remote) ?? '')
     : null;
-  const token = coordinates ? await deps.resolveToken().catch(() => '') : '';
+  const credential = coordinates
+    ? await deps.resolveCredential().catch(() => null)
+    : null;
   for (const candidate of candidates) {
-    if (coordinates && token) {
+    if (coordinates && credential) {
       try {
         await deps.probeCommit(
           coordinates.owner,
           coordinates.repository,
           candidate.baseSha,
-          token,
+          credential,
         );
       } catch (error) {
         if (isNotFound(error)) continue;

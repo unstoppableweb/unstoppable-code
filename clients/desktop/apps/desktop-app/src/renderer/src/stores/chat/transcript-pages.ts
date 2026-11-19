@@ -767,10 +767,13 @@ async function reloadTranscriptWindowAfterResetLoop(
         }
       }
     }
+    // Rows without an ordinal (web-core pages carry none) take the reloaded
+    // pages' order, never the pre-reset one; a live row keeps its place after
+    // its predecessor in the tab.
     const mergedMessages = orderRowsByTranscriptOrdinal(
       rows,
       stagedTab.transcriptWindow?.messageOrdinals ?? {},
-      latest.messages,
+      [...stagedTab.messages, ...latest.messages],
     );
     const finalTab = preservePendingUserMessages(
       {

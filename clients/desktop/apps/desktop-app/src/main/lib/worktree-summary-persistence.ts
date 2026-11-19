@@ -14,62 +14,6 @@ import { MAX_TELEMETRY_SUMMARIES_PER_WORKTREE } from '@canopy/protocol';
 import { writeFileAtomically } from './atomic-file';
 import { resolveWorktreeSummaryFilePath } from './resolve-worktree';
 import { isRecord } from './type-guards';
-import { worktreeScopedParentLocalId } from '@canopy/protocol/portal';
-import {
-  createPortalEvent,
-  enqueuePortalEvent,
-  isCanopyPortalActive,
-} from '../portal/portal-event-bus';
-
-const lastEmittedPortalSummaryFingerprints = new Map<string, string>();
-
-export function clearWorktreeSummaryPortalFingerprints(): void {
-  lastEmittedPortalSummaryFingerprints.clear();
-}
-
-export function emitWorktreeSummaryPortalDelta(
-  projectId: string,
-  worktreeId: string,
-  summary: WorktreeSummaryData,
-  generating: boolean,
-): void {
-  // Match chat TODO / hook-descriptor re-emission: desktop-only writes must
-  // avoid even projection/fingerprint work when no portal session can consume it.
-  if (!isCanopyPortalActive()) return;
-  const payload = {
-    workspaceLocalId: projectId,
-    worktreeLocalId: worktreeId,
-    title: summary.title,
-    description: summary.description,
-    highlights: summary.highlights,
-    repos: summary.repos,
-    generatedAt: summary.generatedAt,
-    lastFullRefreshAt: summary.lastFullRefreshAt,
-    generating,
-  };
-  const key = `${projectId}\u0000${worktreeId}`;
-  const fingerprint = JSON.stringify(payload);
-  if (lastEmittedPortalSummaryFingerprints.get(key) === fingerprint) return;
-  lastEmittedPortalSummaryFingerprints.set(key, fingerprint);
-  enqueuePortalEvent(
-    createPortalEvent('portal.state.delta', {
-      scope: 'worktree',
-      target: {
-        workspaceLocalId: projectId,
-        worktreeLocalId: worktreeId,
-      },
-      entities: [
-        {
-          entityType: 'worktree_summary',
-          localId: worktreeId,
-          parentLocalId: worktreeScopedParentLocalId(projectId, worktreeId),
-          payload,
-        },
-      ],
-      generatedAt: new Date().toISOString(),
-    }),
-  );
-}
 
 /**
  * Dependency-inverted hook fired whenever a worktree summary is (re)written.
@@ -331,7 +275,6 @@ export async function writeWorktreeSummarySnapshot(
       encoding: 'utf8',
       durable: true,
     });
-    emitWorktreeSummaryPortalDelta(projectId, worktreeId, summary, false);
     emitWorktreeSummaryChange(
       projectId,
       worktreeId,

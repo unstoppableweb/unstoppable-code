@@ -30,6 +30,7 @@ import {
 import type { OrgUsageDataProhibition } from '@canopy/desktop-shared/lib/telemetry-enforcement';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
+import { allowsAutomaticCall } from '../local-only/policy';
 
 export type UsageDataProhibitionState =
   | ReadonlyMap<string, OrgUsageDataProhibition>
@@ -152,6 +153,10 @@ function buildSnapshot(
   const effective = { ...stored };
   for (const key of ORG_PROHIBITABLE_USAGE_DATA_KEYS) {
     if (prohibitedBy[key]) effective[key] = false;
+  }
+  // A local-only build never sends the active-use signal.
+  if (!allowsAutomaticCall('telemetry.active-use-signal')) {
+    effective.activeUseSignal = false;
   }
   return { preferences: { ...stored }, effective, prohibitedBy };
 }

@@ -70,39 +70,100 @@ export function validAnnotationCommentThreads(
     : [];
 }
 
+/**
+ * How many stored entries reading `value` as a collection leaves out: each
+ * invalid entry, or one for a value that is not a list. An absent collection
+ * holds nothing.
+ */
+function unreadableIn(value: unknown, valid: readonly unknown[]): number {
+  if (value === undefined || value === null) return 0;
+  return Array.isArray(value) ? value.length - valid.length : 1;
+}
+
+/** A document, and how many of its stored entries this version cannot read. */
+function readFileAnnotationDocument(value: unknown): {
+  document: StoredFileAnnotationDocument | null;
+  unreadableEntries: number;
+} {
+  if (!isRecord(value) || typeof value.filePath !== 'string')
+    return { document: null, unreadableEntries: 1 };
+  const annotations = validFileAnnotations(value.annotations);
+  const commentThreads = validAnnotationCommentThreads(value.commentThreads);
+  return {
+    document: {
+      filePath: normalize(value.filePath),
+      revision: storedRevision(value.revision),
+      annotations,
+      commentThreads,
+    },
+    unreadableEntries:
+      unreadableIn(value.annotations, annotations) +
+      unreadableIn(value.commentThreads, commentThreads),
+  };
+}
+
 /** A stored or submitted document, or null without a string file path. */
 export function normalizeFileAnnotationDocument(
   value: unknown,
 ): StoredFileAnnotationDocument | null {
-  if (!isRecord(value) || typeof value.filePath !== 'string') return null;
-  return {
-    filePath: normalize(value.filePath),
-    revision: storedRevision(value.revision),
-    annotations: validFileAnnotations(value.annotations),
-    commentThreads: validAnnotationCommentThreads(value.commentThreads),
-  };
+  return readFileAnnotationDocument(value).document;
 }
 
-/** Parses state text; an unreadable or unknown-version state is empty. */
-export function parseFileAnnotationsState(
+export type FileAnnotationsStateRead =
+  | {
+      kind: 'ok';
+      state: FileAnnotationsStateV1;
+      /**
+       * Stored entries this version cannot read (a document without a path,
+       * an invalid annotation or thread). `state` leaves them out, so a write
+       * built on it drops them.
+       */
+      unreadableEntries: number;
+    }
+  | { kind: 'damaged' };
+
+/**
+ * Parses state text. A file that is not JSON, not a v1 document (a newer
+ * version wrote it) or has no file list is `damaged`. Inside a v1 file,
+ * entries this version cannot read are left out and counted.
+ */
+export function readFileAnnotationsState(
   raw: string | null,
-): FileAnnotationsStateV1 {
-  if (raw === null) return { version: 1, files: [] };
+): FileAnnotationsStateRead {
+  if (raw === null)
+    return {
+      kind: 'ok',
+      state: { version: 1, files: [] },
+      unreadableEntries: 0,
+    };
   let value: unknown;
   try {
     value = JSON.parse(raw);
   } catch {
-    return { version: 1, files: [] };
+    return { kind: 'damaged' };
   }
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.files)) {
-    return { version: 1, files: [] };
+    return { kind: 'damaged' };
   }
-  return {
-    version: 1,
-    files: value.files
-      .map(normalizeFileAnnotationDocument)
-      .filter((entry) => entry !== null),
-  };
+  const files: StoredFileAnnotationDocument[] = [];
+  let unreadableEntries = 0;
+  for (const entry of value.files) {
+    const read = readFileAnnotationDocument(entry);
+    unreadableEntries += read.unreadableEntries;
+    if (read.document) files.push(read.document);
+  }
+  return { kind: 'ok', state: { version: 1, files }, unreadableEntries };
+}
+
+/**
+ * Parses state text for a read; a damaged state reads as empty. Writes use
+ * {@link readFileAnnotationsState} and refuse a damaged state instead.
+ */
+export function parseFileAnnotationsState(
+  raw: string | null,
+): FileAnnotationsStateV1 {
+  const read = readFileAnnotationsState(raw);
+  return read.kind === 'ok' ? read.state : { version: 1, files: [] };
 }
 
 export function serializeFileAnnotationsState(

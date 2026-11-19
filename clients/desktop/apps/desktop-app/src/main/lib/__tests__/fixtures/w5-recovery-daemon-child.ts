@@ -1,5 +1,6 @@
 // Owned test process: reserve through the real daemon W5 host and framed
 // authority, then remain alive until the test crashes this process.
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { STORAGE_OWNERSHIP } from '@canopy/core-runtime/storage';
 import { startW5DaemonRecordHarness } from '@canopy/desktop-shared/node/w5-routed-writes/__tests__/fixtures/w5-daemon-record-harness';
 import { createDaemonW5Host } from '../../../../../../core-daemon/src/w5-host';
@@ -15,6 +16,7 @@ async function main(): Promise<void> {
     )
       Object.assign(row, { transitionOwner: 'daemon', currentWriters: [] });
   const daemon = createDaemonW5Host({
+    os: hostPlatformOperatingSystem(),
     canonicalDataRoot: dataRoot,
     workerEntry,
     admission: () => Promise.resolve(),

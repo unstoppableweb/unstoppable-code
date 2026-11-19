@@ -33,7 +33,7 @@ import {
 } from '../lib/canopy-cloud-account-store';
 import { getOrgProjectCatalogDir } from '../lib/paths';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
-import { readPortalStateStore } from '../portal/portal-state-store';
+import { getInstallId } from '../lib/install-identity';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import { recordOrganizationPrivateMemory } from '../lib/workspace-private-memory';
 import { logMainProcessWarn } from '../lib/main-process-logging';
@@ -819,7 +819,7 @@ export function createOrgProjectCatalogService(): OrgProjectCatalogService {
     initialize(): Promise<void> {
       initialized ??= (async (): Promise<void> => {
         try {
-          deviceId = (await readPortalStateStore()).clientDeviceId ?? null;
+          deviceId = await getInstallId();
         } catch {
           deviceId = null;
         }

@@ -7,6 +7,11 @@ import type * as ActionCallerModule from '../action-caller';
 import type * as AppAdvisorIpcModule from '../../ipc/app-advisor';
 import type * as ResourceActionsModule from '../../canopy-tools/resource-actions';
 import type * as ResolveWorktreeModule from '../../lib/resolve-worktree';
+import type * as DesktopSurfaceModule from '../../agent-actions/desktop-surface';
+import type {
+  InspectMcpRemovalResult,
+  ForceMcpRemovalResult,
+} from '@canopy/protocol/mcp-removal';
 
 jest.mock('electron', () => ({
   app: { isPackaged: false },
@@ -55,6 +60,61 @@ jest.mock('../presentation-tools', () => ({
 
 jest.mock('../../agent-actions/desktop-surface', () => ({
   executeDesktopAgentActionTool: jest.fn(),
+}));
+
+const mockApprovalCheck = jest.fn(() => Promise.resolve({ decision: 'allow' }));
+const mockApprovalDispose = jest.fn();
+const mockCreateApprovalSession = jest.fn<
+  {
+    check: typeof mockApprovalCheck;
+    dispose: typeof mockApprovalDispose;
+  },
+  [unknown]
+>(() => ({
+  check: mockApprovalCheck,
+  dispose: mockApprovalDispose,
+}));
+jest.mock('../../approvals/approval-service', () => ({
+  createApprovalSession: (options: unknown): unknown =>
+    mockCreateApprovalSession(options),
+}));
+
+const mockRemovalCandidates = jest.fn(() =>
+  Promise.resolve({
+    candidates: [{ serverId: 'a1', pendingUninstall: false }],
+    incomplete: false,
+  }),
+);
+const mockInspectRemoval = jest.fn<Promise<InspectMcpRemovalResult>, [unknown]>(
+  () =>
+    Promise.resolve({
+      serverId: 'a1',
+      target: 'malformed',
+      index: 'malformed',
+      inspectedState: '11111111-1111-4111-8111-111111111111',
+      scope: 'preserve-evidence',
+      recoveries: [],
+    }),
+);
+const mockForceRemoval = jest.fn<Promise<ForceMcpRemovalResult>, [unknown]>(
+  () =>
+    Promise.resolve({
+      serverId: 'a1',
+      status: 'complete',
+      custody: true,
+      credentials: true,
+      index: 'complete',
+    }),
+);
+const mockBeforeForceDispatch = jest.fn();
+jest.mock('../../canopy-runtime/mcp-removal-dispatch', () => ({
+  listMcpRemovalCandidatesThroughCore: (): unknown => mockRemovalCandidates(),
+  inspectMcpRemovalThroughCore: (request: unknown): unknown =>
+    mockInspectRemoval(request),
+  get forceMcpRemovalThroughCore(): (request: unknown) => unknown {
+    mockBeforeForceDispatch();
+    return (request: unknown): unknown => mockForceRemoval(request);
+  },
 }));
 
 const mockRequestRendererTool = jest.fn();
@@ -107,6 +167,7 @@ import {
   APP_ADVISOR_WORKTREE_ID,
 } from '@canopy/desktop-shared/types';
 import { appAdvisorActionCaller } from '../action-caller';
+import { executeDesktopAgentActionTool } from '../../agent-actions/desktop-surface';
 import {
   APP_ADVISOR_ACTION_TEXTS,
   routeAppAdvisorAction,
@@ -127,7 +188,9 @@ function action(input: unknown): AppAdvisorDispatchPayload {
   return dispatchActionSchema.parse({ action: input }).action;
 }
 
-function setup(): {
+function setup(
+  runtimeContext?: Parameters<typeof createAppAdvisorToolRuntime>[2],
+): {
   surfaces: AppAdvisorToolRuntimeSurfaces & {
     getMainWindow: jest.Mock;
     getAppAdvisorWindow: jest.Mock;
@@ -146,11 +209,15 @@ function setup(): {
     openAppAdvisorWindow: jest.fn(),
     ensureAppAdvisorWindow: jest.fn(),
   };
-  const created = createAppAdvisorToolRuntime(surfaces, {
-    projectId: APP_ADVISOR_PROJECT_ID,
-    worktreeId: APP_ADVISOR_WORKTREE_ID,
-    chatId: 'advisor-chat',
-  });
+  const created = createAppAdvisorToolRuntime(
+    surfaces,
+    {
+      projectId: APP_ADVISOR_PROJECT_ID,
+      worktreeId: APP_ADVISOR_WORKTREE_ID,
+      chatId: 'advisor-chat',
+    },
+    runtimeContext,
+  );
   const rendererAction = jest.fn<
     Promise<AppAdvisorActionResponse>,
     Parameters<typeof created.dispatchRendererAction>
@@ -189,6 +256,13 @@ beforeEach(() => {
   mockRequestRendererTool.mockClear();
   mockPresent.mockClear();
   mockForcedMissingGrants = null;
+  mockCreateApprovalSession.mockClear();
+  mockApprovalCheck.mockReset().mockResolvedValue({ decision: 'allow' });
+  mockApprovalDispose.mockClear();
+  mockRemovalCandidates.mockClear();
+  mockInspectRemoval.mockClear();
+  mockForceRemoval.mockClear();
+  mockBeforeForceDispatch.mockReset();
 });
 afterEach(() => {
   operations.close();
@@ -196,6 +270,262 @@ afterEach(() => {
 });
 
 describe('App Advisor action router (CAN-4133)', () => {
+  const repairActions = [
+    { type: 'installed_items.list_mcp_removals' },
+    { type: 'installed_items.inspect_mcp_removal', serverId: 'a1' },
+    {
+      type: 'installed_items.force_mcp_removal',
+      serverId: 'a1',
+      mode: 'preserve-evidence',
+      recoveryId: '11111111-1111-4111-8111-111111111111',
+      finishUninstall: true,
+    },
+  ];
+
+  it.each(repairActions)(
+    'routes $type through the shared engine without a window',
+    async (input) => {
+      const h = setup();
+      const parsed = action(input);
+      const response = { text: JSON.stringify({ ok: true }), isError: false };
+      const engine = jest.mocked(executeDesktopAgentActionTool);
+      engine.mockReset();
+      engine.mockResolvedValue(response);
+
+      expect(await h.route(parsed)).toEqual(response);
+      expect(engine).toHaveBeenCalledTimes(1);
+      const expectedDestination: unknown = expect.objectContaining({
+        chatId: 'advisor-chat',
+      });
+      expect(engine).toHaveBeenCalledWith(
+        'dispatch_action',
+        { action: parsed },
+        expect.objectContaining({
+          watcherDestination: expectedDestination,
+        }),
+        undefined,
+      );
+      expect(h.rendererAction).not.toHaveBeenCalled();
+      expect(mockDispatchResource).not.toHaveBeenCalled();
+      expect(await recordedOperations()).toBe(
+        input.type === 'installed_items.force_mcp_removal' ? 1 : 0,
+      );
+    },
+  );
+
+  it('refuses forced MCP removal without the catalog write grant before shared execution', async () => {
+    const h = setup();
+    const engine = jest.mocked(executeDesktopAgentActionTool);
+    engine.mockReset();
+    mockForcedMissingGrants = ['core.catalog.write'];
+
+    expect(
+      JSON.parse((await h.route(action(repairActions[2]))).text),
+    ).toMatchObject({
+      ok: false,
+      error: { code: 'missing_capability' },
+    });
+    expect(engine).not.toHaveBeenCalled();
+    expect(await recordedOperations()).toBe(0);
+  });
+
+  it('preserves a denied force approval from the shared engine without a fallback', async () => {
+    const h = setup();
+    const engine = jest.mocked(executeDesktopAgentActionTool);
+    engine.mockReset();
+    const denied = {
+      text: JSON.stringify({
+        ok: false,
+        error: { code: 'authorization_conflict' },
+      }),
+      isError: true,
+    };
+    engine.mockResolvedValue(denied);
+
+    expect(await h.route(action(repairActions[2]))).toEqual(denied);
+    expect(engine).toHaveBeenCalledTimes(1);
+    expect(mockDispatchResource).not.toHaveBeenCalled();
+    expect(h.rendererAction).not.toHaveBeenCalled();
+  });
+
+  describe('MCP repair through the real shared action engine and desktop port', () => {
+    function realEngine(): void {
+      const actual = jest.requireActual<typeof DesktopSurfaceModule>(
+        '../../agent-actions/desktop-surface',
+      );
+      jest
+        .mocked(executeDesktopAgentActionTool)
+        .mockReset()
+        .mockImplementation(actual.executeDesktopAgentActionTool);
+    }
+
+    it.each(repairActions.slice(0, 2))(
+      '$type is read-only and needs neither a window nor approval',
+      async (input) => {
+        realEngine();
+        const h = setup();
+        expect(JSON.parse((await h.route(action(input))).text)).toMatchObject({
+          ok: true,
+        });
+        expect(
+          input.type === 'installed_items.list_mcp_removals'
+            ? mockRemovalCandidates
+            : mockInspectRemoval,
+        ).toHaveBeenCalledTimes(1);
+        expect(mockCreateApprovalSession).not.toHaveBeenCalled();
+        expect(mockForceRemoval).not.toHaveBeenCalled();
+        expect(h.rendererAction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('creates a fresh ask-mode session and check for each exact forced removal', async () => {
+      realEngine();
+      const h = setup({ approvalMode: 'full-access' });
+      h.surfaces.getMainWindow.mockReturnValue({ isDestroyed: () => false });
+      for (const toolUseId of ['approved-1', 'approved-2']) {
+        expect(
+          JSON.parse(
+            (await h.route(action(repairActions[2]), { toolUseId })).text,
+          ),
+        ).toMatchObject({ ok: true });
+      }
+      expect(mockCreateApprovalSession).toHaveBeenCalledTimes(2);
+      const expectedWindow: unknown = expect.any(Function);
+      expect(mockCreateApprovalSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'ask',
+          sessionRules: [],
+          chatId: 'advisor-chat',
+          getWindow: expectedWindow,
+        }),
+      );
+      const expectedDetails: unknown = expect.objectContaining({
+        inputSummary: JSON.stringify({
+          serverId: 'a1',
+          mode: 'preserve-evidence',
+          recoveryId: '11111111-1111-4111-8111-111111111111',
+          finishUninstall: true,
+        }),
+      });
+      expect(mockApprovalCheck).toHaveBeenCalledWith(
+        { kind: 'tool', toolName: 'installed_items.force_mcp_removal' },
+        expect.objectContaining({
+          details: expectedDetails,
+        }),
+      );
+      expect(mockForceRemoval).toHaveBeenCalledTimes(2);
+      expect(mockForceRemoval).toHaveBeenCalledWith({
+        serverId: 'a1',
+        mode: 'preserve-evidence',
+        recoveryId: '11111111-1111-4111-8111-111111111111',
+        finishUninstall: true,
+      });
+      expect(mockApprovalDispose).toHaveBeenCalledTimes(2);
+    });
+
+    it('a denied shared approval cannot reach forced removal', async () => {
+      realEngine();
+      const h = setup();
+      h.surfaces.getAppAdvisorWindow.mockReturnValue({
+        isDestroyed: () => false,
+      });
+      mockApprovalCheck.mockResolvedValue({ decision: 'deny' });
+      expect(
+        JSON.parse((await h.route(action(repairActions[2]))).text),
+      ).toMatchObject({
+        ok: false,
+        error: { code: 'authorization_conflict' },
+      });
+      expect(mockApprovalCheck).toHaveBeenCalledTimes(1);
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+      expect(mockApprovalDispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('an unavailable approval window fails closed', async () => {
+      realEngine();
+      const h = setup();
+      expect(
+        JSON.parse((await h.route(action(repairActions[2]))).text),
+      ).toMatchObject({
+        ok: false,
+        error: {
+          code: 'authorization_conflict',
+        },
+      });
+      expect(mockCreateApprovalSession).not.toHaveBeenCalled();
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+    });
+
+    it('a failed approval delivery cannot reach forced removal', async () => {
+      realEngine();
+      const h = setup();
+      h.surfaces.getMainWindow.mockReturnValue({ isDestroyed: () => false });
+      mockApprovalCheck.mockRejectedValue(
+        new Error('Approval delivery unavailable'),
+      );
+      const response: unknown = JSON.parse(
+        (await h.route(action(repairActions[2]))).text,
+      );
+      expect(response).toMatchObject({
+        ok: false,
+        error: { code: 'authorization_conflict' },
+      });
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+      expect(mockApprovalDispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('a destroyed approval window fails closed before opening a session', async () => {
+      realEngine();
+      const h = setup();
+      h.surfaces.getMainWindow.mockReturnValue({ isDestroyed: () => true });
+      expect(
+        JSON.parse((await h.route(action(repairActions[2]))).text),
+      ).toMatchObject({
+        ok: false,
+        error: { code: 'authorization_conflict' },
+      });
+      expect(mockCreateApprovalSession).not.toHaveBeenCalled();
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+    });
+
+    it('cancellation during approval wins over an allow response', async () => {
+      realEngine();
+      const h = setup();
+      h.surfaces.getMainWindow.mockReturnValue({ isDestroyed: () => false });
+      const controller = new AbortController();
+      mockApprovalCheck.mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.resolve({ decision: 'allow' });
+      });
+      const result = await h.route(action(repairActions[2]), {
+        context: { signal: controller.signal },
+      });
+      expect(JSON.parse(result.text)).toMatchObject({ ok: false });
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+      expect(mockApprovalDispose).toHaveBeenCalled();
+    });
+
+    it('cancellation while loading the removal dispatcher wins over completed approval', async () => {
+      realEngine();
+      const h = setup();
+      h.surfaces.getMainWindow.mockReturnValue({ isDestroyed: () => false });
+      const controller = new AbortController();
+      mockBeforeForceDispatch.mockImplementationOnce(() => controller.abort());
+
+      const result = await h.route(action(repairActions[2]), {
+        context: { signal: controller.signal },
+      });
+
+      expect(mockApprovalCheck).toHaveBeenCalledTimes(1);
+      expect(mockBeforeForceDispatch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result.text)).toMatchObject({
+        ok: false,
+        error: { code: 'authorization_conflict' },
+      });
+      expect(mockForceRemoval).not.toHaveBeenCalled();
+    });
+  });
+
   it('a core action runs with no window', async () => {
     const h = setup();
 

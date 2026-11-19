@@ -977,7 +977,7 @@ Version: 3.2.0
 License: MIT
 
 @hono/node-server
-Version: 1.19.14
+Version: 1.19.19
 License: MIT
 
 @iconify/types
@@ -1921,7 +1921,7 @@ Version: 6.8.3
 License: MIT
 
 electron
-Version: 45.3.0
+Version: 45.3.3
 License: MIT
 
 elkjs
@@ -2121,7 +2121,7 @@ Version: 3.3.2
 License: BSD-3-Clause
 
 hono
-Version: 4.13.14
+Version: 4.13.19
 License: MIT
 
 http-errors

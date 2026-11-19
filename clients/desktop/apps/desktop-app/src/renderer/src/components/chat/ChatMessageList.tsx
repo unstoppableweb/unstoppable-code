@@ -86,6 +86,7 @@ import {
   useSubagentEntryActionsValue,
 } from '@/components/subagents/subagent-entry-actions';
 import { useInvocableInventory } from '@/hooks/useInvocableInventory';
+import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
 import { useValueHeldWhile } from '@/hooks/useValueHeldWhile';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { getCwdFromFileIndex } from '@/lib/file-reference-paths';
@@ -1248,12 +1249,17 @@ export function ChatMessageList({
   // Every managed delegation queued or running in this chat, at any depth.
   // The delegated cards and the drawer's delegate rows get their Stop from
   // this; the drawer and, under the Subagents view, the Subagents panel get
-  // Stop all. Read-only views offer neither.
+  // Stop all. Read-only views offer neither, and nor does a scope that
+  // doesn't stop its delegates itself (a cloud chat's).
   const delegationStopState = useMemo(
     () => selectManagedDelegationStopState(turnGroups),
     [turnGroups],
   );
-  const canStopDelegations = !readOnlyScope && worktreeTarget !== null;
+  const { delegationStop } = useScopeCapabilities({
+    projectId: worktreeTarget?.projectId ?? '',
+  });
+  const canStopDelegations =
+    !readOnlyScope && worktreeTarget !== null && delegationStop === true;
   useEffect(() => {
     if (backgroundWorkChatKey === null) return;
     publishChatBackgroundRuns(backgroundWorkChatKey, placement.live);
@@ -1261,13 +1267,19 @@ export function ChatMessageList({
   const liveDescendantKey = delegationStopState.withLiveDescendants.join('\n');
   const backgroundTrayAgentRows = useMemo(
     () =>
-      backgroundTrayAgents(
-        activeAgents,
-        backgroundProcesses ?? [],
-        chatId,
-        new Set(liveDescendantKey ? liveDescendantKey.split('\n') : []),
-      ),
-    [activeAgents, backgroundProcesses, chatId, liveDescendantKey],
+      backgroundTrayAgents(activeAgents, backgroundProcesses ?? [], chatId, {
+        withLiveDescendants: new Set(
+          liveDescendantKey ? liveDescendantKey.split('\n') : [],
+        ),
+        canStopDelegates: delegationStop === true,
+      }),
+    [
+      activeAgents,
+      backgroundProcesses,
+      chatId,
+      delegationStop,
+      liveDescendantKey,
+    ],
   );
   useEffect(() => {
     if (backgroundWorkChatKey === null) return;

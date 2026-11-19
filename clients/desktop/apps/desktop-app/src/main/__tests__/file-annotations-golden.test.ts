@@ -643,8 +643,10 @@ const SCENARIO: Array<[label: string, scope: string, step: Step]> = [
       });
     },
   ],
+  // CAN-7094: a write refuses a damaged state file instead of replacing it
+  // with an empty document, and leaves the file as it was.
   [
-    'a save replaces corrupt state',
+    'a save refuses corrupt state and leaves it unchanged',
     'p3-w3',
     (h): Promise<unknown> =>
       h.ipc(IPC_CHANNELS.fileAnnotationsSave, {
@@ -674,6 +676,18 @@ const SCENARIO: Array<[label: string, scope: string, step: Step]> = [
         filePath: FILE,
       });
     },
+  ],
+  // CAN-7094: after a downgrade, a write never replaces a newer state file.
+  [
+    'a write refuses an unknown state version and leaves it unchanged',
+    'p4-w4',
+    (h): Promise<unknown> =>
+      h.ipc(IPC_CHANNELS.fileAnnotationsAppend, {
+        ...scope('p4', 'w4'),
+        filePath: FILE,
+        annotations: [annotation('ann-2')],
+        commentThreads: [],
+      }),
   ],
   [
     'existing data keeps unknown fields and drops invalid entries',

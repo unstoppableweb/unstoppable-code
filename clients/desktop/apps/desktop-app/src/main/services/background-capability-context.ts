@@ -10,6 +10,10 @@ import {
   type ResourceContextSubject,
 } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { ChatTabPluginSelections } from '@canopy/desktop-shared/types';
+import {
+  isOrganizationSkillSourceId,
+  organizationIdOfSkillSource,
+} from '@canopy/desktop-shared/lib/organization-capabilities';
 import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-models';
 import {
   normalizeMcpServerFile,
@@ -36,6 +40,12 @@ const missing: ResourceContextDecision = {
   allow: false,
   reason: 'missing-dependency',
 };
+/** Missing selections use generic copy; stored refs are internal identifiers. */
+function missingSelection(
+  subject: ResourceContextSubject,
+): ResourceContextDecision {
+  return { allow: false, reason: 'missing-dependency', subject };
+}
 const unknown: ResourceContextDecision = {
   allow: false,
   reason: 'unknown-provenance',
@@ -131,32 +141,9 @@ export function createBackgroundCapabilityResolver(
   function catalog(): Promise<ShareablePluginCatalog> {
     return (catalogPromise ??= (async (): Promise<ShareablePluginCatalog> => {
       // Defer plugin inventory and provider scans until a plugin is selected.
-      const {
-        loadMarketplaces,
-        readPluginCatalogHealth,
-        readPluginIndexHealth,
-      } = await import('../plugins/plugin-service');
-      for (const health of [
-        readPluginCatalogHealth(),
-        readPluginIndexHealth(),
-      ]) {
-        // A newer build's catalog won't become readable by waiting.
-        if (health.state === 'unsupported')
-          throw new InventoryRefusal({
-            allow: false,
-            reason: 'plugin-catalog-newer',
-          });
-        // The catalog is rewritten in place, so a read during a write looks
-        // damaged too: retried first, it stands only if it stays damaged.
-        if (health.state === 'damaged')
-          throw new InventoryRefusal({
-            allow: false,
-            reason: 'plugin-catalog-damaged',
-            transient: true,
-          });
-      }
+      const { loadMarketplaces } = await import('../plugins/plugin-service');
       const marketplaces = await loadMarketplaces();
-      // Mid-migration (legacy), unreadable, or a refresh that failed.
+      // Mid-migration (legacy) or a refresh that failed.
       if (!marketplaces.success || !marketplaces.data)
         throw new InventoryRefusal(unavailable);
       return {
@@ -414,10 +401,28 @@ export function createBackgroundCapabilityResolver(
       if (!members.allow) return members;
     }
     for (const ref of value.skillRefs ?? []) {
+      // An organization's skill copy (CAN-6237) has no inventory row or
+      // install receipt: it is the organization's, so the run must be in that
+      // organization's context. The run's resolver then holds it to the
+      // destination workspace's shared set, as on a chat's turn.
+      if (isOrganizationSkillSourceId(ref.sourceId)) {
+        const organizationId = organizationIdOfSkillSource(ref.sourceId);
+        if (organizationId === undefined) return missing;
+        const result = await authorize({
+          owner: { type: 'organization', id: organizationId, name: null },
+          subject: { kind: 'skill', name: ref.skillName },
+        });
+        if (!result.allow) return result;
+        continue;
+      }
       const skill = (await skills()).find(
         (row) => row.sourceId === ref.sourceId && row.name === ref.skillName,
       );
-      if (!skill) return missing;
+      if (!skill)
+        return missingSelection({
+          kind: 'skill',
+          name: 'A selected skill',
+        });
       const result = await installed(
         'skills',
         `${ref.sourceId}/${ref.skillName}`,
@@ -434,7 +439,11 @@ export function createBackgroundCapabilityResolver(
       const plugin = marketplace?.plugins.find(
         (row) => row.name === ref.pluginName,
       );
-      if (!plugin) return missing;
+      if (!plugin)
+        return missingSelection({
+          kind: 'plugin',
+          name: 'A selected plugin',
+        });
       const result = await authorize({
         owner:
           marketplace?.builtIn === true
@@ -456,7 +465,13 @@ export function createBackgroundCapabilityResolver(
     }
     for (const ref of value.mcpServerRefs ?? []) {
       const subjectName = await mcpServerName(ref);
-      if (typeof subjectName !== 'string') return subjectName;
+      if (typeof subjectName !== 'string')
+        return !subjectName.allow && subjectName.reason === 'missing-dependency'
+          ? missingSelection({
+              kind: 'mcp',
+              name: 'A selected MCP server',
+            })
+          : subjectName;
       const result = await authorize({
         ...local,
         subject: { kind: 'mcp', name: subjectName },

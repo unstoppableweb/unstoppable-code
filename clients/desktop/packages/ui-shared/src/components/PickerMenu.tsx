@@ -119,7 +119,8 @@ export interface PickerTriggerProps extends ButtonHTMLAttributes<HTMLButtonEleme
    * `secondary` quiets a field's value to the secondary ink (a base-branch
    * field in the PR status bar). A capsule already rests in secondary ink.
    */
-  tone?: 'default' | 'secondary';
+  /** `selected` is a filter pill that is on: a filled background, nothing else changes. */
+  tone?: 'default' | 'secondary' | 'selected';
   /**
    * A capsule that carries only a label and its trailing chevron (no leading
    * glyph) takes a 14px leading inset, so the label balances the chevron's
@@ -172,6 +173,11 @@ const PICKER_TRIGGER_WRAPPER_HOVERS: Record<PickerTriggerVariant, string> = {
     ' enabled:group-hover/picker-trigger:bg-subtle enabled:group-hover/picker-trigger:fg-primary',
   field: ' enabled:group-hover/picker-trigger:bg-subtle',
 };
+
+// A capsule that is on only swaps its transparent resting fill for a filled
+// one; the ink, icon and chevron stay as they were.
+const PICKER_TRIGGER_SELECTED_CAPSULE_SHELL =
+  'gap-1 rounded-full border-0 bg-muted px-2.5 transition-colors hover:bg-muted hover:fg-primary';
 
 const PICKER_TRIGGER_SHELLS: Record<PickerTriggerVariant, string> = {
   capsule:
@@ -232,7 +238,7 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
         {...props}
         ref={ref}
         type={type}
-        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : size === 'composer' ? COMPOSER_PICKER_FIELD : 'h-8 bg-transparent px-2'} ${PICKER_TRIGGER_SHELLS[variant]}${
+        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : size === 'composer' ? COMPOSER_PICKER_FIELD : 'h-8 bg-transparent px-2'} ${tone === 'selected' && variant === 'capsule' ? PICKER_TRIGGER_SELECTED_CAPSULE_SHELL : PICKER_TRIGGER_SHELLS[variant]}${
           variant !== 'capsule' || size === 'page'
             ? ''
             : labelOnly
@@ -240,7 +246,7 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
               : textLead
                 ? ' pl-3'
                 : ''
-        }${variant === 'capsule' && size !== 'page' && textTrail ? ' pr-3' : ''}${wrapperHover ? PICKER_TRIGGER_WRAPPER_HOVERS[variant] : ''} ${tone === 'secondary' ? 'fg-secondary' : PICKER_TRIGGER_INKS[variant]}${mono ? ' font-mono' : ''} ${className}`}
+        }${variant === 'capsule' && size !== 'page' && textTrail ? ' pr-3' : ''}${wrapperHover ? PICKER_TRIGGER_WRAPPER_HOVERS[variant] : ''} ${tone === 'secondary' ? 'fg-secondary' : tone === 'selected' ? 'fg-secondary' : PICKER_TRIGGER_INKS[variant]}${mono ? ' font-mono' : ''} ${className}`}
       />
     );
   },

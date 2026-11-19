@@ -1,7 +1,9 @@
+import { accountResolutionSignature } from './turn-account-resolution';
 import { randomUUID } from 'node:crypto';
+import { stopRunningSecretCommands } from '../agent-secrets/running-commands';
 import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { clearPresentationTurn } from '../canopy-tools/presentation-state';
-import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type { ChildToolLiveness } from '@canopy/agent-transcript';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
@@ -46,6 +48,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import type { ActivityLiveBgTask } from '@canopy/desktop-shared/types/activity-panel';
+import { recordStaleWork } from '@canopy/desktop-shared/node/work-counters';
 import {
   isGatewayOnlyModel,
   resolveGatewayModelEntry,
@@ -87,6 +90,7 @@ import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import {
   isAiCreditsChosenOverAccountProxy,
   resolveAiCreditsRoutingActivation,
+  signedOutRoutesToAiCredits,
 } from './ai-credits-routing';
 import {
   billedProviderFor,
@@ -147,11 +151,16 @@ function pluginSelectionsSignature(
     | 'applyGlobalPluginDefaults'
     | 'projectId'
     | 'worktreeId'
+    | 'accountResolution'
   >,
 ): string {
-  const revisionSuffix = opts.applyGlobalPluginDefaults
-    ? `@defaults:${String(getInheritedPluginDefaultsRevision(opts))}`
-    : '';
+  // An automation's turn resolves accounts unattended (CAN-6232); a session
+  // resolved for a person never serves it, nor the reverse.
+  const revisionSuffix = `${
+    opts.applyGlobalPluginDefaults
+      ? `@defaults:${String(getInheritedPluginDefaultsRevision(opts))}`
+      : ''
+  }${accountResolutionSignature(opts)}`;
   const selections = opts.pluginSelections;
   if (!selections) {
     return `null${revisionSuffix}`;
@@ -507,7 +516,30 @@ subscribePluginDefaultsRevision(() => {
   }
 });
 
-function notifyChatSessionActivityListeners(): void {
+/**
+ * Why chat session activity listeners were told (CAN-6970), with the counter
+ * key each reason is recorded under, built once.
+ */
+const CHAT_ACTIVITY_KEYS = {
+  'turn-sync': 'chat-activity.turn-sync',
+  'session-removed': 'chat-activity.session-removed',
+  stop: 'chat-activity.stop',
+  register: 'chat-activity.register',
+  'turn-start': 'chat-activity.turn-start',
+  'turn-idle': 'chat-activity.turn-idle',
+  'message-queued': 'chat-activity.message-queued',
+  'provider-transition': 'chat-activity.provider-transition',
+  'background-reset': 'chat-activity.background-reset',
+  'codex-background-tasks': 'chat-activity.codex-background-tasks',
+  'codex-background-retired': 'chat-activity.codex-background-retired',
+} as const;
+
+type ChatSessionActivityReason = keyof typeof CHAT_ACTIVITY_KEYS;
+
+function notifyChatSessionActivityListeners(
+  reason: ChatSessionActivityReason,
+): void {
+  recordStaleWork(CHAT_ACTIVITY_KEYS[reason]);
   evaluateIdleSessionReleases();
   for (const listener of Array.from(chatSessionActivityListeners)) {
     try {
@@ -664,12 +696,13 @@ export function resetProviderAuthGenerationsForTests(): void {
 async function createProvider(
   harness: NonNullable<AgentSessionOptions['executionHarness']>,
   providerType: AgentProviderType,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
 ): Promise<AgentProvider> {
   // Harnesses with a worker-owned runtime construct their providers there
   // (CAN-4116 Claude; CAN-4117 Codex).
   const workerRuntime = await workerProviderRuntimeFor(harness);
-  if (workerRuntime) return workerRuntime.providerFor(providerType, getWindow);
+  if (workerRuntime)
+    return workerRuntime.providerFor(providerType, interfacePort);
   throw new Error(`No provider runtime serves the ${harness} harness.`);
 }
 
@@ -871,7 +904,7 @@ export function syncSessionTurnForChat(
     getChatTurnOwnership().isBound() &&
     (dispatchChanged || (foregroundChanged && sessions.has(key)))
   )
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('turn-sync');
 }
 
 getChatTurnOwnership().subscribe((snapshot) => {
@@ -907,7 +940,7 @@ function removeSessionEntry(
   recordSessionDiagnostic(key, entry, {
     kind: 'session_unregistered',
   });
-  notifyChatSessionActivityListeners();
+  notifyChatSessionActivityListeners('session-removed');
 
   // Drain any pending telemetry for this worktree immediately (bypassing the
   // debounce) when a chat tab closes / a session is killed (CAN-402). No-ops
@@ -1069,7 +1102,7 @@ function hasPendingSessionCreation(key: string): boolean {
 async function getOrCreateSessionWithoutStartReservation(
   opts: AgentSessionOptions,
   onEvent: (data: unknown) => void | Promise<void>,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
   lifecycle?: {
     onRemoved?: () => void;
     drainEventsBeforeRemoval?: () => Promise<void>;
@@ -1086,7 +1119,7 @@ async function getOrCreateSessionWithoutStartReservation(
     const session = await getOrCreateSessionImpl(
       opts,
       onEvent,
-      getWindow,
+      interfacePort,
       lifecycle,
       epoch,
     );
@@ -1103,7 +1136,7 @@ async function getOrCreateSessionWithoutStartReservation(
 async function getOrCreateSessionImpl(
   opts: AgentSessionOptions,
   onEvent: (data: unknown) => void | Promise<void>,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
   lifecycle?: {
     onRemoved?: () => void;
     drainEventsBeforeRemoval?: () => Promise<void>;
@@ -1279,7 +1312,7 @@ async function getOrCreateSessionImpl(
   const provider = await createProvider(
     executionHarness,
     providerType,
-    getWindow,
+    interfacePort,
   );
   // Checked after the last await, so a stop or a Codex sign-in that began
   // while either await was pending still keeps this session from starting.
@@ -1293,7 +1326,7 @@ async function getOrCreateSessionImpl(
   const session = provider.createSession(
     { ...effectiveOpts, accountProxyRouting },
     onEvent,
-    getWindow,
+    interfacePort,
   );
   // The provider registers the session synchronously inside createSession;
   // stamp the routing signature it was created under so the next turn can detect
@@ -1394,7 +1427,7 @@ async function withSessionCreationLane<T>(
 export function getOrCreateSession(
   opts: AgentSessionOptions,
   onEvent: (data: unknown) => void | Promise<void>,
-  getWindow: () => BrowserWindow | null,
+  interfacePort: AgentInterfacePort,
   lifecycle?: {
     onRemoved?: () => void;
     drainEventsBeforeRemoval?: () => Promise<void>;
@@ -1411,7 +1444,7 @@ export function getOrCreateSession(
           getOrCreateSessionWithoutStartReservation(
             opts,
             onEvent,
-            getWindow,
+            interfacePort,
             lifecycle,
           ),
       ),
@@ -1885,17 +1918,25 @@ function resolveAiCreditsRoutingSignature(
     providerType,
   );
   if (!activation) {
-    // No mode-driven activation, but a confirmed missing native login still
-    // routes through AI Credits (ECW-9091), so the signature must say so —
-    // otherwise a credits-routed session reports `'native'` and mis-attributes
-    // its account scope and `aiCreditsRouted` turn metadata.
+    // No mode-driven activation, but a confirmed missing native login changes
+    // the outcome, so the signature must say so. In any mode except `off` it
+    // routes through AI Credits (`no-native-auth`); otherwise a credits-routed session
+    // would report `'native'` and mis-attribute its account scope and
+    // `aiCreditsRouted` turn metadata. In `off` mode the turn is refused with
+    // `no_billing_source` (CAN-7062); its own bucket recreates the session after
+    // either remedy (signing in moves it to `'native'`, choosing credits or
+    // switching off `off` moves it to `routed:`). The bucket does not start
+    // with `routed:`, so it counts as not routed.
     //
     // `peekProviderNativeAuthAvailability` is the right read here: it is
     // cache-only and synchronous, honoring this function's cheapness contract,
     // and it omits the provider key when cold or probe-failed — degrading to
     // today's `'native'` rather than guessing.
+    // An unloaded routing mode degrades to `'native'` the same way.
     if (peekProviderNativeAuthAvailability()[providerType] === false) {
-      return `routed:${opts.model ?? ''}`;
+      const routes = signedOutRoutesToAiCredits();
+      if (routes === null) return 'native';
+      return routes ? `routed:${opts.model ?? ''}` : 'no-billing-source';
     }
     return 'native';
   }
@@ -3747,7 +3788,7 @@ export async function stopTaskForSession(
     }
     syncChatWake(sessionKey(projectId, worktreeId, chatId));
     if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
-      notifyChatSessionActivityListeners();
+      notifyChatSessionActivityListeners('stop');
     }
   }
   return outcome;
@@ -3871,7 +3912,7 @@ export function registerSession(
   }
   if (sessionRunsClaudeCli(entry)) startClaudeSessionIdleWatch(key);
   else clearClaudeSessionIdleState(key);
-  notifyChatSessionActivityListeners();
+  notifyChatSessionActivityListeners('register');
 }
 
 export function getSessionCodeGraphToolsAdvertised(
@@ -4166,7 +4207,7 @@ export function markTurnActive(key: string, userMessageId?: string): void {
     recordSessionDiagnostic(key, entry, {
       kind: 'turn_active',
     });
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('turn-start');
   }
   syncChatWake(key);
 }
@@ -4215,7 +4256,7 @@ function markTurnIdleState(
     });
   }
   if (wasTurnActive || hadPendingMessages) {
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('turn-idle');
   }
   syncChatWake(key);
 }
@@ -4336,6 +4377,14 @@ export function cancelActiveChatTurn(
   }
 
   entry.cancelRequestedUserMessageId = userMessageId;
+  // A RunWithSecrets command must not outlive the turn: whatever signal its
+  // provider passes, the chat's Stop ends it.
+  const [projectId = '', worktreeId = '', ...chatIdParts] = key.split('/');
+  stopRunningSecretCommands({
+    projectId,
+    worktreeId,
+    chatId: chatIdParts.join('/'),
+  });
   // Claude-compatible providers stop by aborting the session-wide query, as
   // the chat Stop does; the next turn must start a fresh session.
   if (entry.providerType === 'claude' || entry.providerType === 'ollama') {
@@ -4356,6 +4405,26 @@ export function cancelActiveChatTurn(
     throw error;
   }
   return true;
+}
+
+/**
+ * Stops whatever turn the chat's provider is running now, as the chat's Stop
+ * does. For a tool that must end its own turn, such as an agent secret use
+ * the person denied with "Deny and stop". False when no turn is running.
+ */
+export function cancelCurrentChatTurn(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): boolean {
+  const key = sessionKey(projectId, worktreeId, chatId);
+  const entry = sessions.get(key);
+  const userMessageId = entry
+    ? providerTurnUserMessageId(key, entry)
+    : undefined;
+  return userMessageId !== undefined
+    ? cancelActiveChatTurn(key, userMessageId)
+    : false;
 }
 
 /**
@@ -4433,7 +4502,7 @@ export function noteSessionMessageQueued(
     recordSessionDiagnostic(key, entry, {
       kind: 'message_queued',
     });
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('message-queued');
   }
   syncChatWake(key);
 }
@@ -4513,7 +4582,7 @@ export function recordSessionEvent(key: string, data: unknown): void {
     backgroundTaskActivityChanged ||
     providerBackgroundBusyChanged
   ) {
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('provider-transition');
   }
   syncChatWake(key);
   // Live-task and native-subagent sets change without an activity signal.
@@ -5424,7 +5493,7 @@ export function resetSessionLiveBackgroundTasks(key: string): void {
   syncChatWake(key);
   notifyLiveBackgroundTasksListeners(key);
   if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('background-reset');
   }
 }
 
@@ -5658,7 +5727,7 @@ export function replaceCodexLiveBackgroundTasks(
   notifyLiveBackgroundTasksListeners(key);
   syncChatWake(key);
   if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('codex-background-tasks');
   }
   return true;
 }
@@ -5688,7 +5757,7 @@ export function retireCodexLiveBackgroundTasks(
   notifyLiveBackgroundTasksListeners(key);
   syncChatWake(key);
   if (wasBackgroundBusy !== hasBusyBackgroundWork(entry)) {
-    notifyChatSessionActivityListeners();
+    notifyChatSessionActivityListeners('codex-background-retired');
   }
   return true;
 }

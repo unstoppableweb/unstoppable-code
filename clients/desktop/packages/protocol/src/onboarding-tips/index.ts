@@ -16,6 +16,10 @@ export const ONBOARDING_TIP_IDS = [
   'workflows',
   'worktree-chat',
   'workflows-schedule',
+  // Not a slot tip: the one-time notice that a person's global connectors
+  // stay out of organization projects (CAN-6230) keeps its dismissal here, so
+  // the desktop and a Portal tab agree on it.
+  'org-project-connectors',
 ] as const;
 
 export type OnboardingTipId = (typeof ONBOARDING_TIP_IDS)[number];

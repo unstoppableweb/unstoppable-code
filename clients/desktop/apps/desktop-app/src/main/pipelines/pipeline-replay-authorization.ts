@@ -3,6 +3,8 @@ import type {
   ExecutionState,
   ExecutionOptions,
 } from '@canopy/execution-engine/node/pipelines/executor';
+import { parseSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
+import { assertOrganizationPipelineAllowed } from '../organization-capabilities/pipeline-gate';
 import { getStoredPipelineBySource } from './pipeline-service';
 import {
   backgroundExecutionDeniedMessage,
@@ -21,6 +23,11 @@ export async function authorizePipelineReplay(
   | Pick<ExecutionOptions, 'executionContext' | 'childPipelineAuthorizations'>
   | undefined
 > {
+  // A shared organization pipeline the run's project switched off is not
+  // started over or resumed there, as a fresh start is not (CAN-6237).
+  const shared = parseSharedPipelineLocalId(state.pipeline_id);
+  if (shared)
+    await assertOrganizationPipelineAllowed(state.project_id, shared.remoteId);
   if (!backgroundExecutionContextEnabled()) return undefined;
   const authorizations: ChildPipelineAuthorization[] = [];
   const executionContext =

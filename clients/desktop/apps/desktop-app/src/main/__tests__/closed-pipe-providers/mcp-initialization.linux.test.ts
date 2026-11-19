@@ -77,9 +77,6 @@ jest.mock('../../agents/session-manager', () => ({
   },
 }));
 jest.mock('../../mcp/server-ref-rewrite-outcome', () => ({}));
-jest.mock('../../portal/adapters/mcp-adapter', () => ({
-  refreshProjectedPortalMcpServers: jest.fn().mockResolvedValue(undefined),
-}));
 jest.mock('../../ipc/register', () => ({ registerIpcHandler: jest.fn() }));
 
 import { testMcpServerConnection } from '../../ipc/mcp-servers';

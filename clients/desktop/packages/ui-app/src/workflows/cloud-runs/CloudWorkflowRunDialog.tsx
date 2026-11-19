@@ -28,6 +28,12 @@ import {
   Notice,
   type SelectOption,
 } from '@canopy/ui-shared/components';
+import { pipelineDefinitionPublishesReview } from '@canopy/protocol/settings/github-review-approvals';
+import {
+  gitHubRepositoryOfPullRequestUrl,
+  ReviewApprovalLaunchNotice,
+  reviewApprovalReadinessInput,
+} from '../../code/activity/ReviewApprovalLinkNotice';
 import { CloudModelReplacementDialog } from '../../pipelines/CloudModelReplacementDialog';
 import { PipelineInputField } from '../PipelineInputField';
 import {
@@ -64,6 +70,11 @@ export interface CloudWorkflowRunDialogProps {
   readonly onClose: () => void;
   /** The run started; its execution id. */
   readonly onStarted: (executionId: string) => void;
+  /**
+   * The product name for the review approval "Link GitHub" notice above Run
+   * (CAN-7162). Absent: no notice.
+   */
+  readonly reviewApprovalBrandName?: string;
 }
 
 type Loaded =
@@ -91,6 +102,7 @@ export function CloudWorkflowRunDialog({
   initialOwner,
   onClose,
   onStarted,
+  reviewApprovalBrandName,
 }: CloudWorkflowRunDialogProps): JSX.Element {
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
@@ -126,6 +138,24 @@ export function CloudWorkflowRunDialog({
     setValues(initializeInputValues(inputs));
     setErrors({});
   }, [inputs]);
+
+  // The review approval notice: a workflow that publishes a review, read for
+  // the entered pull request's base repository under the selected owner (a
+  // new owner re-reads). The library page has no workspace repository.
+  const publishesReview =
+    reviewApprovalBrandName !== undefined &&
+    definition !== null &&
+    pipelineDefinitionPublishesReview(definition.normalized);
+  const reviewApprovalInputs = useMemo(() => {
+    if (!publishesReview) return [];
+    return Object.values(values).flatMap((value) => {
+      const input = reviewApprovalReadinessInput(
+        owner,
+        gitHubRepositoryOfPullRequestUrl(value.trim()),
+      );
+      return input === null ? [] : [input];
+    });
+  }, [publishesReview, values, owner]);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -340,6 +370,13 @@ export function CloudWorkflowRunDialog({
                 ))}
               </div>
             )}
+            {reviewApprovalBrandName !== undefined &&
+            reviewApprovalInputs.length > 0 ? (
+              <ReviewApprovalLaunchNotice
+                inputs={reviewApprovalInputs}
+                brandName={reviewApprovalBrandName}
+              />
+            ) : null}
           </div>
         )}
       </DialogModal>

@@ -94,6 +94,10 @@ import {
   AgentToolOperationRefusedError,
 } from '../../canopy-tools/agent-core-operations';
 import { executeCanopyInjectedTool } from '../../canopy-tools/core';
+import {
+  clearLiveApprovalMode,
+  setLiveApprovalMode,
+} from '../../approvals/live-approval-modes';
 import { AskUserDismissedError } from '../ask-user-outcomes';
 import { setWorktreeBaseBranchForAgent } from '../../canopy-tools/set-base-branch-runtime';
 import { dispatchActionSchema } from '../../app-advisor/definitions';
@@ -279,6 +283,7 @@ beforeEach(() => {
   mockPorts = null;
   mockPortsCallers.length = 0;
   resetGitActionCancellationsForTests();
+  clearLiveApprovalMode('proj', 'wt', 'chat-1');
 });
 
 describe('SetBaseBranch in main (CAN-6024)', () => {
@@ -381,6 +386,48 @@ describe('SetBaseBranch in main (CAN-6024)', () => {
       },
     });
     expect(recorded.writes).toEqual([]);
+    expect(recorded.prUpdates).toEqual([]);
+  });
+
+  it('with Full access the pull request base is updated without asking (CAN-7222)', async () => {
+    setLiveApprovalMode('proj', 'wt', 'chat-1', 'full-access');
+    const recorded = fakePorts({
+      readPrStatus: () => Promise.resolve(openPr()),
+    });
+    const ask = answering(new Error('ask_user_no_client'));
+
+    const response = await change(recorded, ask);
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: { baseBranch: 'develop', pullRequestUpdated: true },
+    });
+    expect(ask).not.toHaveBeenCalled();
+    expect(recorded.writes).toHaveLength(1);
+    expect(recorded.prUpdates).toEqual([
+      {
+        projectId: 'proj',
+        worktreeId: 'wt',
+        prNumber: 42,
+        baseBranch: 'develop',
+      },
+    ]);
+  });
+
+  it('a pull request already on the new base is never asked about (CAN-7222)', async () => {
+    const recorded = fakePorts({
+      readPrStatus: () => Promise.resolve(openPr(42, 'develop')),
+    });
+    const ask = answering(new Error('ask_user_no_client'));
+
+    const response = await change(recorded, ask);
+
+    expect(response).toMatchObject({
+      ok: true,
+      result: { baseBranch: 'develop', pullRequestUpdated: false },
+    });
+    expect(ask).not.toHaveBeenCalled();
+    expect(recorded.writes).toHaveLength(1);
     expect(recorded.prUpdates).toEqual([]);
   });
 

@@ -4,6 +4,7 @@ import {
   resolveIpcOperationFailure,
   restoreIpcAppError,
 } from './ipc-app-errors';
+import { parseOrganizationLayerView } from '@canopy/desktop-shared/lib/organization-capabilities';
 import type {
   ApprovalSecretInputRequest,
   UsageDataPolicySnapshot,
@@ -100,7 +101,6 @@ import {
 } from './api/remote-control-api';
 import { electronAPI } from '@electron-toolkit/preload';
 import {
-  restoreOptionalRemoteControlFlag,
   CLIENT_FEATURE_FLAGS,
   isLabsExperimentFlagKey,
 } from '@canopy/protocol/feature-flags';
@@ -183,7 +183,6 @@ import {
   type ChatQueueUpdatedEvent,
   type ClaudeTerminalScheduledPromptEvent,
   type ChatWindowCommand,
-  type PortalChatComposerRendererRequest,
   type HookChatTabStartedEvent,
   type McpAskUserEvent,
   type McpExpireAskUserEvent,
@@ -219,7 +218,6 @@ import {
   type DefaultBrowserRegistrationStatus,
   type AuthTerminalExitEvent,
   type AuthTerminalOutputEvent,
-  type CanopyPortalState,
   type FeatureFlagSnapshot,
   type WakeLockState,
   type AppAdvisorRendererToolRequest,
@@ -622,7 +620,9 @@ function isApprovalRequestDetails(value: unknown): boolean {
         typeof value.server === 'string' &&
         typeof value.tool === 'string' &&
         isOptionalString(value.paramsDisplay) &&
-        isOptionalString(value.reason)
+        isOptionalString(value.reason) &&
+        isOptionalString(value.connector) &&
+        isOptionalString(value.account)
       );
     case 'network':
       return typeof value.host === 'string' && isOptionalString(value.reason);
@@ -647,6 +647,16 @@ function isApprovalRequestDetails(value: unknown): boolean {
         isOptionalString(value.topOrigin) &&
         isOptionalString(value.purpose) &&
         typeof value.multiple === 'boolean'
+      );
+    case 'agent-secret-use':
+      return (
+        (value.tool === 'RunWithSecrets' ||
+          value.tool === 'WriteSecretsFile') &&
+        isOptionalString(value.command) &&
+        isOptionalString(value.cwd) &&
+        isOptionalString(value.path) &&
+        Array.isArray(value.secretNames) &&
+        value.secretNames.every((name) => typeof name === 'string')
       );
     default:
       return false;
@@ -1068,7 +1078,6 @@ function isFeatureFlagSnapshot(value: unknown): value is FeatureFlagSnapshot {
     return false;
   }
   const values = value.values;
-  restoreOptionalRemoteControlFlag(values);
   const status = value.status;
   const allFlagsValid = Object.values(CLIENT_FEATURE_FLAGS).every(
     ({ key, launchDarklyEnabledUnavailableValue }) =>
@@ -2266,7 +2275,19 @@ function organizationReply<T>(
   return schema.parse(value);
 }
 
+// The local-only build profile. The same rule as `isLocalOnlyBuild()` in
+// @canopy/execution-engine/node/local-only-build, evaluated inline so the
+// sandboxed preload does not import Node-side execution-engine code. The E2E
+// seam is folded away in production bundles. Exposed as a constant on
+// `window.api`, not an IPC channel.
+const localOnlyBuild =
+  (typeof __CANOPY_LOCAL_ONLY__ === 'boolean' && __CANOPY_LOCAL_ONLY__) ||
+  (typeof __CANOPY_E2E__ === 'boolean' &&
+    __CANOPY_E2E__ &&
+    process.env.CANOPY_E2E_LOCAL_ONLY === '1');
+
 const canopyApi: CanopyApi = {
+  localOnlyBuild,
   reloadWindow: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowReload),
   restartApp: () => ipcRenderer.invoke(IPC_CHANNELS.appWindowRestart),
   waitForWorkspaceStartup: () =>
@@ -2425,6 +2446,12 @@ const canopyApi: CanopyApi = {
     ? {
         e2eReportFirstProjectsLoad,
         e2eIsFirstProjectsLoadActive,
+      }
+    : {}),
+  ...(__CANOPY_E2E__
+    ? {
+        e2eLivenessPing: (): Promise<void> =>
+          ipcRenderer.invoke('canopy:e2e:liveness-ping'),
       }
     : {}),
   onAutoArchiveCompleted: (callback) => {
@@ -3836,21 +3863,6 @@ const canopyApi: CanopyApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.chatWindowCommand, handler);
       };
     },
-    onPortalComposerCommand: (callback) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        data: PortalChatComposerRendererRequest,
-      ): void => callback(data);
-      ipcRenderer.on(IPC_CHANNELS.chatPortalComposerCommand, handler);
-      return () => {
-        ipcRenderer.removeListener(
-          IPC_CHANNELS.chatPortalComposerCommand,
-          handler,
-        );
-      };
-    },
-    completePortalComposerCommand: (result) =>
-      ipcRenderer.invoke(IPC_CHANNELS.chatPortalComposerCommandResult, result),
     onHookQueueRemoved: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -3945,6 +3957,40 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.secretRequestSubmit, req),
     declineSecretRequest: (req) =>
       ipcRenderer.invoke(IPC_CHANNELS.secretRequestDecline, req),
+    listAgentSecrets: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agentSecretsList, req),
+    revokeAgentSecret: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agentSecretsRevoke, req),
+    restartForAgentSecrets: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agentSecretsRestart, req),
+    onAgentSecretsChanged: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: unknown,
+      ): void => {
+        if (
+          typeof data === 'object' &&
+          data !== null &&
+          'projectId' in data &&
+          typeof data.projectId === 'string' &&
+          'worktreeId' in data &&
+          typeof data.worktreeId === 'string' &&
+          'chatId' in data &&
+          typeof data.chatId === 'string'
+        )
+          callback({
+            projectId: data.projectId,
+            worktreeId: data.worktreeId,
+            chatId: data.chatId,
+          });
+      };
+      ipcRenderer.on(IPC_CHANNELS.agentSecretsChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_CHANNELS.agentSecretsChanged, handler);
+      };
+    },
+    storePastedAgentSecret: (req) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agentSecretsStorePasted, req),
     onPlanExitRequest: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -4720,6 +4766,12 @@ const canopyApi: CanopyApi = {
     },
     openSettings: (request) =>
       ipcRenderer.invoke(IPC_CHANNELS.voiceOpenSettings, request),
+    speechModel: {
+      status: () => ipcRenderer.invoke(IPC_CHANNELS.voiceSpeechModelStatus),
+      install: () => ipcRenderer.invoke(IPC_CHANNELS.voiceSpeechModelInstall),
+      cancel: () => ipcRenderer.invoke(IPC_CHANNELS.voiceSpeechModelCancel),
+      remove: () => ipcRenderer.invoke(IPC_CHANNELS.voiceSpeechModelRemove),
+    },
   },
   terminal: {
     listProfiles: () => ipcRenderer.invoke(IPC_CHANNELS.terminalListProfiles),
@@ -5450,32 +5502,6 @@ const canopyApi: CanopyApi = {
       };
     },
   },
-  canopyPortal: {
-    getState: () => ipcRenderer.invoke(IPC_CHANNELS.canopyPortalGetState),
-    start: () => ipcRenderer.invoke(IPC_CHANNELS.canopyPortalStart),
-    stop: () => ipcRenderer.invoke(IPC_CHANNELS.canopyPortalStop),
-    regeneratePairingCode: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.canopyPortalRegeneratePairingCode),
-    cancelPairingCode: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.canopyPortalCancelPairingCode),
-    onStateChanged: (callback) => {
-      const handler = (
-        _event: Electron.IpcRendererEvent,
-        data: unknown,
-      ): void => {
-        // Trust the main-process broadcast: the state shape has a single
-        // producer on this channel.
-        callback(data as CanopyPortalState);
-      };
-      ipcRenderer.on(IPC_CHANNELS.canopyPortalStateChanged, handler);
-      return () => {
-        ipcRenderer.removeListener(
-          IPC_CHANNELS.canopyPortalStateChanged,
-          handler,
-        );
-      };
-    },
-  },
   appAdvisor: {
     getState: () => ipcRenderer.invoke(IPC_CHANNELS.appAdvisorGetState),
     settingsLoad: () => ipcRenderer.invoke(IPC_CHANNELS.appAdvisorSettingsLoad),
@@ -5958,6 +5984,8 @@ const canopyApi: CanopyApi = {
       ipcRenderer.invoke(IPC_CHANNELS.cloudChatsDownloadFile, target, file),
     wakeFiles: (target) =>
       ipcRenderer.invoke(IPC_CHANNELS.cloudChatsWakeFiles, target),
+    uploadWorkspaceFile: (request) =>
+      ipcRenderer.invoke(IPC_CHANNELS.cloudChatsUploadWorkspaceFile, request),
   },
   cloudCopy: {
     analyze: (request) =>
@@ -6207,6 +6235,34 @@ const canopyApi: CanopyApi = {
       ipcRenderer.on(IPC_CHANNELS.costUpdated, handler);
       return () => {
         ipcRenderer.removeListener(IPC_CHANNELS.costUpdated, handler);
+      };
+    },
+  },
+  organizationCapabilities: {
+    getLayer: async (projectId, worktreeId) =>
+      parseOrganizationLayerView(
+        await ipcRenderer.invoke(
+          IPC_CHANNELS.organizationCapabilitiesGetLayer,
+          projectId,
+          worktreeId,
+        ),
+      ),
+    onLayerChanged: (cb): (() => void) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        workspaceId: unknown,
+      ): void => {
+        if (typeof workspaceId === 'string') cb(workspaceId);
+      };
+      ipcRenderer.on(
+        IPC_CHANNELS.organizationCapabilitiesLayerChanged,
+        handler,
+      );
+      return (): void => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.organizationCapabilitiesLayerChanged,
+          handler,
+        );
       };
     },
   },

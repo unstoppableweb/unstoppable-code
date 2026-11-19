@@ -39,7 +39,7 @@ import {
   createW5DegradedStore,
   W5DaemonHandoffError,
 } from '../../w5-handoff-store';
-import { schedulePortalStructuralSync } from '../../../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../../../services/desktop-structure-signal';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   snapshot,
@@ -69,7 +69,6 @@ function isInitialReservation(contents: string | null): boolean {
     )
   );
 }
-import type * as PortalEvents from '../../../portal/portal-event-bus';
 
 // Creation stops at the reservation fault: isolate unrelated Git validation,
 // but never stub group/list owners, operation reservations, or cleanup reads.
@@ -97,14 +96,8 @@ jest.mock('../../../observability', () => ({
     recordUsageMetricEvent: (): void => undefined,
   }),
 }));
-jest.mock('../../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../../../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
-  createPortalEvent: jest.requireActual<typeof PortalEvents>(
-    '../../../portal/portal-event-bus',
-  ).createPortalEvent,
+jest.mock('../../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../../code-graph-eager-seed', () => ({
   eagerSeedNewWorktreeCodeGraph: (): Promise<void> => Promise.resolve(),
@@ -554,7 +547,7 @@ ownedTest(
           gitEffects: jest.mocked(Git.createWorktree).mock.calls.length,
           snapshot: await snapshot(root),
           signals,
-          portalSync: jest.mocked(schedulePortalStructuralSync).mock.calls
+          portalSync: jest.mocked(scheduleDesktopStructureChanged).mock.calls
             .length,
         });
       } else {
@@ -657,7 +650,7 @@ ownedTest(
           calls,
           snapshot: await snapshot(root),
           signals,
-          portalSync: jest.mocked(schedulePortalStructuralSync).mock.calls
+          portalSync: jest.mocked(scheduleDesktopStructureChanged).mock.calls
             .length,
         });
       }

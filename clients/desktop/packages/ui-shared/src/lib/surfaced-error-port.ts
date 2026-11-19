@@ -1,6 +1,8 @@
-import type {
-  AppErrorReport,
-  SurfacedErrorInput,
+import {
+  AppErrorSchema,
+  type AppError,
+  type AppErrorReport,
+  type SurfacedErrorInput,
 } from '@canopy/protocol/app-errors';
 
 /**
@@ -42,4 +44,44 @@ export function recordSurfacedError(
     // Recording is best effort and must not report its own failure.
     return undefined;
   }
+}
+
+/**
+ * The failure a host already recorded, carried as the `appError` of the error
+ * thrown for it (`Object.assign(new Error(text), { appError: result.appError })`),
+ * so callers link to that record instead of recording the failure again.
+ * `undefined` for any other error, including a carried error the host did not
+ * record.
+ */
+export function recordedErrorOf(error: unknown): AppError | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const parsed = AppErrorSchema.safeParse(Reflect.get(error, 'appError'));
+  return parsed.success && parsed.data.recordedBy !== undefined
+    ? parsed.data
+    : undefined;
+}
+
+/**
+ * Links a failure the host already recorded to this session without recording
+ * it again: the sink resolves the carried `AppError` (a recorded error is never
+ * reported twice) and the host's resolver emits the session link. Only the
+ * existing `AppError` leaves, never the display text. A no-op when the error
+ * carries no host record.
+ */
+export function linkRecordedAppError(
+  appError: AppError | undefined,
+  identifier: string,
+): void {
+  if (appError?.recordedBy === undefined) return;
+  recordSurfacedError({
+    chokePoint: 'notice',
+    surface: 'inline',
+    identifier,
+    error: appError,
+  });
+}
+
+/** `linkRecordedAppError` for an error thrown with the host's `appError`. */
+export function linkRecordedError(error: unknown, identifier: string): void {
+  linkRecordedAppError(recordedErrorOf(error), identifier);
 }

@@ -19,6 +19,8 @@ export interface FileSystemListingOptions {
   globMatcher: FileGlobMatcher;
   excludedDescendantRoots?: string[];
   readBoundary?: FileSystemReadBoundary;
+  /** Called when a failed ignore check made the listing use defaults. */
+  onIgnoreStateUnknown?: () => void;
 }
 
 export interface FileIndexBuildResult {
@@ -48,6 +50,9 @@ export async function listDirectory(
     matchingRules: options.globMatcher,
     gitIgnore: { checkIgnoredPaths },
     ...(options.readBoundary ? { readBoundary: options.readBoundary } : {}),
+    ...(options.onIgnoreStateUnknown
+      ? { onIgnoreStateUnknown: options.onIgnoreStateUnknown }
+      : {}),
   });
 }
 

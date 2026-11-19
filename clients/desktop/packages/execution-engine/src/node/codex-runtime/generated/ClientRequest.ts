@@ -47,6 +47,8 @@ import type { FsRemoveParams } from './v2/FsRemoveParams';
 import type { FsUnwatchParams } from './v2/FsUnwatchParams';
 import type { FsWatchParams } from './v2/FsWatchParams';
 import type { FsWriteFileParams } from './v2/FsWriteFileParams';
+import type { GatewayOAuthLoginParams } from './v2/GatewayOAuthLoginParams';
+import type { GatewayOAuthReadParams } from './v2/GatewayOAuthReadParams';
 import type { GcpSetupParams } from './v2/GcpSetupParams';
 import type { GetAccountParams } from './v2/GetAccountParams';
 import type { GetAccountRateLimitsParams } from './v2/GetAccountRateLimitsParams';
@@ -66,6 +68,8 @@ import type { MemoryStatusParams } from './v2/MemoryStatusParams';
 import type { MockExperimentalMethodParams } from './v2/MockExperimentalMethodParams';
 import type { ModelListParams } from './v2/ModelListParams';
 import type { ModelProviderCapabilitiesReadParams } from './v2/ModelProviderCapabilitiesReadParams';
+import type { ModelProviderConfigWriteParams } from './v2/ModelProviderConfigWriteParams';
+import type { ModelProviderListParams } from './v2/ModelProviderListParams';
 import type { PermissionProfileListParams } from './v2/PermissionProfileListParams';
 import type { PluginInstallParams } from './v2/PluginInstallParams';
 import type { PluginInstalledParams } from './v2/PluginInstalledParams';
@@ -130,6 +134,7 @@ import type { ThreadMemoryModeSetParams } from './v2/ThreadMemoryModeSetParams';
 import type { ThreadMemoryReadParams } from './v2/ThreadMemoryReadParams';
 import type { ThreadMetadataUpdateParams } from './v2/ThreadMetadataUpdateParams';
 import type { ThreadPredictionRequestParams } from './v2/ThreadPredictionRequestParams';
+import type { ThreadPrepareApprovedPlanParams } from './v2/ThreadPrepareApprovedPlanParams';
 import type { ThreadQueueAddParams } from './v2/ThreadQueueAddParams';
 import type { ThreadQueueDeleteParams } from './v2/ThreadQueueDeleteParams';
 import type { ThreadQueueListParams } from './v2/ThreadQueueListParams';
@@ -424,6 +429,11 @@ export type ClientRequest =
       id: RequestId;
       params: ThreadInjectItemsParams;
     }
+  | {
+      method: 'thread/prepareApprovedPlan';
+      id: RequestId;
+      params: ThreadPrepareApprovedPlanParams;
+    }
   | { method: 'skills/list'; id: RequestId; params: SkillsListParams }
   | {
       method: 'skills/extraRoots/set';
@@ -545,9 +555,27 @@ export type ClientRequest =
     }
   | { method: 'review/start'; id: RequestId; params: ReviewStartParams }
   | { method: 'model/list'; id: RequestId; params: ModelListParams }
-  | { method: 'account/gatewayOAuth/read'; id: RequestId; params: undefined }
-  | { method: 'account/gatewayOAuth/login'; id: RequestId; params: undefined }
+  | {
+      method: 'account/gatewayOAuth/read';
+      id: RequestId;
+      params?: GatewayOAuthReadParams | null | undefined;
+    }
+  | {
+      method: 'account/gatewayOAuth/login';
+      id: RequestId;
+      params?: GatewayOAuthLoginParams | null | undefined;
+    }
   | { method: 'account/gatewayOAuth/cancel'; id: RequestId; params: undefined }
+  | {
+      method: 'modelProvider/list';
+      id: RequestId;
+      params: ModelProviderListParams;
+    }
+  | {
+      method: 'modelProvider/config/write';
+      id: RequestId;
+      params: ModelProviderConfigWriteParams;
+    }
   | {
       method: 'modelProvider/capabilities/read';
       id: RequestId;
@@ -686,6 +714,7 @@ export type ClientRequest =
       params: AccountSessionsSwitchParams;
     }
   | { method: 'account/logout'; id: RequestId; params: undefined }
+  | { method: 'account/securitySetup/read'; id: RequestId; params: undefined }
   | {
       method: 'account/rateLimits/read';
       id: RequestId;

@@ -121,7 +121,7 @@ export function CtaBanner({
       role="status"
       aria-live="polite"
       data-testid={dataTestId}
-      className={`pointer-events-auto animate-slide-up flex w-max max-w-[calc(100vw-2rem)] items-center gap-2 rounded-xl bg-card/95 p-2 pl-3 fg-primary shadow-lg backdrop-blur-sm ${
+      className={`pointer-events-auto animate-slide-up flex w-max max-w-[calc(100vw-2rem)] items-center gap-2 rounded-xl bg-card p-2 pl-3 fg-primary shadow-lg ${
         align === 'end' ? 'self-end' : 'self-start'
       }`}
     >

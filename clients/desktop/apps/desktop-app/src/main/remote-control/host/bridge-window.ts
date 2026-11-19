@@ -1,5 +1,7 @@
 import { BrowserWindow, ipcMain, type IpcMainEvent } from 'electron';
+import { RpcPublicError } from '../transport/rpc-peer';
 import { CoworkFolderMissingSchema } from '@canopy/protocol/canopy-core';
+import { readRemoteOperationFailure } from '@canopy/protocol/remote-control';
 import {
   REMOTE_BRIDGE_CHANNELS,
   type RemoteBridgeInvokeMessage,
@@ -146,7 +148,7 @@ export async function createBridgeWindow(options: {
 
   const failAll = (message: string): void => {
     for (const entry of Array.from(pending.values()))
-      entry.reject(new Error(message));
+      entry.reject(new RpcPublicError(message));
     pending.clear();
   };
 
@@ -170,11 +172,13 @@ export async function createBridgeWindow(options: {
         const missing = CoworkFolderMissingSchema.safeParse(
           message.coworkFolderMissing,
         );
-        const error = new Error(
+        const error = new RpcPublicError(
           typeof message.message === 'string'
             ? message.message
             : 'Remote call failed.',
         );
+        const operationFailure = readRemoteOperationFailure(message);
+        if (operationFailure) Object.assign(error, { operationFailure });
         entry.reject(
           missing.success ? Object.assign(error, missing.data) : error,
         );
@@ -204,7 +208,8 @@ export async function createBridgeWindow(options: {
       Promise.all([window.loadURL(BRIDGE_PAGE), ready]),
       new Promise<never>((_resolve, reject) => {
         setTimeout(
-          () => reject(new Error('Remote control bridge did not start.')),
+          () =>
+            reject(new RpcPublicError('Remote control bridge did not start.')),
           READY_TIMEOUT_MS,
         ).unref?.();
       }),
@@ -220,7 +225,7 @@ export async function createBridgeWindow(options: {
     window,
     invoke(channel: string, args: unknown[]): Promise<unknown> {
       if (destroyed) {
-        return Promise.reject(new Error('The remote session ended.'));
+        return Promise.reject(new RpcPublicError('The remote session ended.'));
       }
       const id = nextId;
       nextId += 1;

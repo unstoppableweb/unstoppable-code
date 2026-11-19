@@ -15,7 +15,7 @@
  *   chosen (`previewAccountProxySessionRoute`),
  * - AI Credits / organization gateway routing
  *   (`getModelGatewayRequirementForOwner`, `resolveGatewayModelEntry`,
- *   `resolveAiCreditsRoutingAttempt` with the canonical tab's persisted
+ *   `resolveAiCreditsRoutingDecision` with the canonical tab's persisted
  *   routing state and billing override),
  *
  * then classified by the same `buildCodexSpeedRouteFacts` admission uses. No
@@ -37,7 +37,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   isAiCreditsChosenOverAccountProxy,
-  resolveAiCreditsRoutingAttempt,
+  resolveAiCreditsRoutingDecision,
+  routingAttemptOf,
 } from '../agents/ai-credits-routing';
 import { ACCOUNT_PROXY_CODEX_PROVIDER_ID } from '../account-proxy/codex-provider';
 import { previewAccountProxySessionRoute } from '../account-proxy/routing';
@@ -103,12 +104,19 @@ async function predictGateway(
   if (entry?.gatewayOnly === true) {
     return codexSpeedGatewayForOrigin(entry.origin);
   }
-  const attempt = await resolveAiCreditsRoutingAttempt(
-    inputs.aiCreditsRouting,
-    'codex',
-    () =>
-      isProviderNativelyAuthenticatedForRouting('codex', 'ai-credits-routing'),
-    inputs.subscriptionBillingOverride,
+  // An `off`-mode sign-out (`no-billing-source`) is refused at spawn, never
+  // routed, so it is reported like the native path (CAN-7062).
+  const attempt = routingAttemptOf(
+    await resolveAiCreditsRoutingDecision(
+      inputs.aiCreditsRouting,
+      'codex',
+      () =>
+        isProviderNativelyAuthenticatedForRouting(
+          'codex',
+          'ai-credits-routing',
+        ),
+      inputs.subscriptionBillingOverride,
+    ),
   );
   if (!attempt) return null;
   // Routing may still fall back to the native sign-in (no gateway entry, a

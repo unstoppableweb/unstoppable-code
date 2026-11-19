@@ -5,6 +5,7 @@ import { GitBranchWriteInterrupted } from './branch-writes';
 import type { GitChildEnvironment } from './repository-reads';
 import {
   GitRepositoryWriteError,
+  gitWriteExitError,
   type GitRepositoryWrite,
   type GitRepositoryWriteFailureCode,
   type GitRepositoryWriteOutput,
@@ -79,9 +80,9 @@ export function createRecordedWorkerGitSyncHost<
       }
     };
     const succeeded = async (write: GitRepositoryWrite): Promise<string> => {
-      const { exitCode, stdout } = await run(write);
-      if (exitCode !== 0) throw new GitRepositoryWriteError('exit_status');
-      return stdout;
+      const output = await run(write);
+      if (output.exitCode !== 0) throw gitWriteExitError(output);
+      return output.stdout;
     };
     // The caller was already answered `cancelled`: a command that has not
     // started does not start.

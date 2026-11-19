@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, realpath } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { constants } from 'node:os';
 import * as path from 'node:path';
 import { createCanopyDispatcher } from '@canopy/core-runtime';
@@ -8,7 +9,10 @@ import {
   refusingExecutionSecretSource,
 } from '@canopy/core-runtime/node/execution-secrets';
 import { isTerminalPipelineExecution } from '@canopy/core-runtime/node/pipeline';
-import { PIPELINE_HOST_DEFINITIONS } from '@canopy/core-runtime/node/pipeline/host';
+import {
+  PIPELINE_HOST_DEFINITIONS,
+  type PipelineHostLauncherCommand,
+} from '@canopy/core-runtime/node/pipeline/host';
 import { createOwnedProcessHostPort } from '@canopy/core-platform/execution-host';
 import { DAEMON_PIPELINE_HOST_ENTRY } from '@canopy/core-platform/execution-host/daemon-payload';
 import { createExecutionProcessServices } from '@canopy/core-platform/supervision/execution-process';
@@ -29,8 +33,10 @@ import {
 import {
   PIPELINE_RUNNER_BUNDLE_LAYOUT,
   PIPELINE_RUNNER_HOST_BUDGET,
+  PIPELINE_RUNNER_SETPRIV_PATHS,
   assertPipelineRunnerNotInit,
   createPipelineRunner,
+  pipelineRunnerHostCommands,
   pipelineRunnerLayout,
   verifyPipelineRunnerLayout,
   type PipelineRunnerLayout,
@@ -95,8 +101,32 @@ async function directoryFlag(
 
 class UsageError extends Error {}
 
+/** The first `setpriv` the image has, if any. */
+async function findSetpriv(): Promise<string | undefined> {
+  for (const candidate of PIPELINE_RUNNER_SETPRIV_PATHS) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // the next one
+    }
+  }
+  return undefined;
+}
+
+/** The runner's own capability sets, or `''` off Linux. */
+async function ownProcessStatus(): Promise<string> {
+  try {
+    return await readFile('/proc/self/status', 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 interface RunnerProcess {
   readonly layout: PipelineRunnerLayout;
+  /** The Codex MCP launcher its host's Codex steps use (CAN-7235). */
+  readonly codexMcpLauncher: PipelineHostLauncherCommand;
   readonly launchHost: () => ReturnType<
     ReturnType<typeof createOwnedProcessHostPort>['launch']
   >;
@@ -147,9 +177,22 @@ async function runnerProcess(
   const missing = await verifyPipelineRunnerLayout(layout);
   if (missing.length > 0)
     throw new Error(`The runner layout is missing ${missing.join(', ')}.`);
+  // The host starts without the sandbox's ambient capabilities, so Codex's
+  // shell sandbox starts (CAN-7235), and its Codex steps launch MCP with the
+  // daemon, as the desktop daemon's do.
+  const commands = pipelineRunnerHostCommands({
+    daemon: at(bundle.record.daemon),
+    processStatus: await ownProcessStatus(),
+    setpriv: await findSetpriv(),
+  });
+  if (commands.capabilitiesKept !== null)
+    print({
+      event: 'pipeline-runner.capabilities-kept',
+      reason: commands.capabilitiesKept,
+    });
   const hosts = createOwnedProcessHostPort({
     services: createExecutionProcessServices({ os: 'linux' }),
-    shell: { executable: at(bundle.record.daemon), args: [] },
+    shell: commands.shell,
     cwd: dataRoot,
     // The host refuses a data root that is not its own, and finds the
     // bundle's tools through their overrides: on Linux it would otherwise
@@ -171,6 +214,7 @@ async function runnerProcess(
   });
   return {
     layout,
+    codexMcpLauncher: commands.codexMcpLauncher,
     launchHost: () =>
       hosts.launch({
         entry: DAEMON_PIPELINE_HOST_ENTRY,
@@ -193,15 +237,13 @@ async function runStart(
   );
   if (!params.portableLaunch)
     throw new UsageError('The start must be a portable start.');
-  const { layout, launchHost, stopHosts } = await runnerProcess(
-    bundleRoot,
-    bundle,
-    args,
-  );
+  const { layout, codexMcpLauncher, launchHost, stopHosts } =
+    await runnerProcess(bundleRoot, bundle, args);
   const runner = createPipelineRunner({
     layout,
     launchHost,
     stopHosts,
+    codexMcpLauncher,
     // Secrets come with a relay activation (CP-27); a local run has none.
     secrets: refusingExecutionSecretSource,
     targetId: flag(args, 'target-id') ?? 'pipeline-runner:local',
@@ -323,17 +365,15 @@ async function serveRelay(
     throw new UsageError(
       '--chat-reserve needs --memory-budget and a positive number of bytes below it.',
     );
-  const { layout, launchHost, stopHosts } = await runnerProcess(
-    bundleRoot,
-    bundle,
-    args,
-  );
+  const { layout, codexMcpLauncher, launchHost, stopHosts } =
+    await runnerProcess(bundleRoot, bundle, args);
   // The grant is staged in memory as the runner starts (CAN-6215).
   const secrets = createActivationExecutionSecretSource(activation.secrets);
   const runner = createPipelineRunner({
     layout,
     launchHost,
     stopHosts,
+    codexMcpLauncher,
     secrets,
     // Its TTL comes with the first portable start; one incarnation serves
     // one delegation. Model routes resolve with its AI Credits session (CP-68).

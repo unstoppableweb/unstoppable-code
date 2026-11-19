@@ -19,6 +19,7 @@ import {
 import { CopilotEventProjection } from './events';
 import { CopilotToolAuthorization } from './tool-authorization';
 import { handleCopilotTurnCleanupError } from './turn-cleanup';
+import { CopilotRecipientFailure, copilotSdkErrorType } from './failure';
 
 type TurnSession = Pick<CopilotSession, 'sessionId' | 'send' | 'abort'> & {
   rpc?: CopilotToolMetadataRpc;
@@ -26,6 +27,8 @@ type TurnSession = Pick<CopilotSession, 'sessionId' | 'send' | 'abort'> & {
 /** Minimal SDK boundary consumed by a turn; the full owned runtime satisfies it. */
 interface TurnRuntime extends Pick<OwnedCopilotRuntime, 'exited' | 'close'> {
   tokenProviderForSession?(sessionId?: string): GitHubTokenProvider;
+  /** Sees the turn's failure before the runtime is closed for it. */
+  failed?(error: Error): void;
   client: {
     createSession(
       ...args: Parameters<OwnedCopilotRuntime['client']['createSession']>
@@ -123,12 +126,16 @@ export async function runCopilotTurn(
       error instanceof Error || error instanceof DOMException
         ? error
         : new Error('Copilot event delivery failed.');
+    options.runtime.failed?.(failure);
     rejectFailure(failure);
     void options.runtime.close().catch(() => undefined);
   };
   const deliver = (event: Record<string, unknown>): Promise<void> => {
     if (admissions.size >= 1024)
-      throw new Error('Copilot output could not be saved fast enough.');
+      throw new CopilotRecipientFailure(
+        'Copilot output could not be saved fast enough.',
+        'limit',
+      );
     const delivered = deliveryTail.then(() => options.emit(event));
     admissions.add(delivered);
     deliveryTail = delivered
@@ -157,7 +164,13 @@ export async function runCopilotTurn(
         idle();
       }
       if (event.type === 'session.error' && !event.agentId) {
-        fail(new Error(event.data.message));
+        fail(
+          new CopilotRecipientFailure(
+            event.data.message,
+            'provider_error',
+            copilotSdkErrorType(event.data.errorType),
+          ),
+        );
         return;
       }
       if (
@@ -362,6 +375,7 @@ export async function runCopilotTurn(
     return { sessionId: session.sessionId, text: projection.text, usage };
   } catch (error) {
     turnFailed = true;
+    if (!failure && error instanceof Error) options.runtime.failed?.(error);
     options.signal.throwIfAborted();
     throw failure ?? error;
   } finally {

@@ -158,6 +158,30 @@ export type ChatJournalStorageManifest =
   | DeltaJournalStorageManifest
   | Format4StorageManifest;
 
+export interface ChatStorageV2Manifest {
+  version: 2;
+  scopeId: string;
+  migrationId: string;
+  sourceRevision: number;
+  sourceDigest: string;
+  cleanupComplete: boolean;
+}
+
+export function isChatStorageV2Manifest(
+  value: unknown,
+): value is ChatStorageV2Manifest {
+  return (
+    isRecord(value) &&
+    value.version === 2 &&
+    typeof value.scopeId === 'string' &&
+    typeof value.migrationId === 'string' &&
+    Number.isSafeInteger(value.sourceRevision) &&
+    typeof value.sourceDigest === 'string' &&
+    /^[a-f0-9]{64}$/.test(value.sourceDigest) &&
+    typeof value.cleanupComplete === 'boolean'
+  );
+}
+
 /** Strict format-4 authority parsing; older manifest-3 bytes stay compatible. */
 export function parseChatStorageManifest(
   value: unknown,

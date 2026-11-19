@@ -77,6 +77,7 @@ export interface PlanDataModelDiffDiagramProps {
   isGenerating?: boolean;
   /** Stage a comment anchored to the selected entity. */
   onAddNodeComment?: (input: AddNodeCommentInput) => void;
+  commentsReadOnly?: boolean;
 }
 
 type PrimaryView = 'current' | 'planned' | 'diff';
@@ -219,10 +220,12 @@ function SelectedEntityDetail({
   entity,
   onClose,
   onAddNodeComment,
+  commentsReadOnly,
 }: {
   entity: SelectedEntity;
   onClose: () => void;
   onAddNodeComment?: (input: AddNodeCommentInput) => void;
+  commentsReadOnly: boolean;
 }): JSX.Element {
   const { data } = entity;
   const style = data.changeType ? CHANGE_STYLES[data.changeType] : undefined;
@@ -231,7 +234,7 @@ function SelectedEntityDetail({
 
   const handleSave = (): void => {
     const trimmed = body.trim();
-    if (trimmed.length === 0 || !onAddNodeComment) {
+    if (commentsReadOnly || trimmed.length === 0 || !onAddNodeComment) {
       return;
     }
     onAddNodeComment({
@@ -407,7 +410,7 @@ function SelectedEntityDetail({
             )}
           </div>
         </Stack>
-        {onAddNodeComment && (
+        {onAddNodeComment && (!commentsReadOnly || composing) && (
           <div className="">
             <Divider />
             <div className="pt-2">
@@ -416,6 +419,7 @@ function SelectedEntityDetail({
                   <TextArea
                     aria-label="Comment"
                     value={body}
+                    readOnly={commentsReadOnly}
                     onChange={(e): void => setBody(e.target.value)}
                     placeholder="Comment on this entity…"
                     rows={3}
@@ -436,7 +440,7 @@ function SelectedEntityDetail({
                       variant="primary"
                       size="compact"
                       onClick={handleSave}
-                      disabled={body.trim().length === 0}
+                      disabled={commentsReadOnly || body.trim().length === 0}
                       data-testid="plan-node-comment-save"
                     >
                       Save comment
@@ -590,7 +594,13 @@ export const PlanDataModelDiffDiagram = forwardRef<
   DiagramSearchHandle,
   PlanDataModelDiffDiagramProps
 >(function PlanDataModelDiffDiagram(
-  { artifact, onGenerate, isGenerating = false, onAddNodeComment },
+  {
+    artifact,
+    onGenerate,
+    isGenerating = false,
+    onAddNodeComment,
+    commentsReadOnly = false,
+  },
   ref,
 ): JSX.Element {
   const [primaryView, setPrimaryView] = useState<PrimaryView>('diff');
@@ -1073,6 +1083,7 @@ export const PlanDataModelDiffDiagram = forwardRef<
             entity={selected}
             onClose={(): void => setSelected(null)}
             onAddNodeComment={onAddNodeComment}
+            commentsReadOnly={commentsReadOnly}
           />
         )}
       </div>

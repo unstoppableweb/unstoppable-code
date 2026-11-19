@@ -2,10 +2,12 @@ import {
   isTerminalOperationStatus,
   type CanopyErrorPayload,
   type CanopyJsonValue,
+  type DelegationRecord,
   type OperationRecord,
   type OperationRestart,
   type OperationRestartClass,
   type OperationRestartDisposition,
+  type OperationStatus,
   type OperationTerminalStatus,
 } from '@canopy/protocol/canopy-core';
 
@@ -17,6 +19,8 @@ import type {
   OperationListPage,
   OperationListQuery,
   OperationNonTerminalStatus,
+  OperationReceiptInput,
+  OperationReceiptLookup,
 } from './ledger/ledger';
 import {
   OperationLedgerError,
@@ -89,7 +93,11 @@ export type OperationCancelOutcome =
 export interface OperationServiceOptions {
   /** Opens the ledger on first use, so hosts that never use it pay nothing. */
   openLedger: () => OperationLedger | Promise<OperationLedger>;
-  /** Failures the service cannot return to a caller: domain recovery, child cancellation. */
+  /**
+   * Failures the service cannot return to a caller: domain recovery, child
+   * cancellation, listeners, and `finishOrRecord` writes that failed twice or
+   * `transitionOrRecord` writes that failed once.
+   */
   onError?: (error: unknown, context: string) => void;
   clock?: () => number;
 }
@@ -247,6 +255,43 @@ export class OperationService {
     return (await this.ready()).get(operationId);
   }
 
+  /**
+   * What the ledger recorded for a keyed request: absent, the operation it
+   * admitted, or `key-reused` when the key was used with other parameters.
+   */
+  async lookupReceipt(
+    kind: string,
+    receipt: OperationReceiptInput,
+  ): Promise<OperationReceiptLookup> {
+    return (await this.ready()).lookupReceipt(kind, receipt);
+  }
+
+  /**
+   * The status an operation had when the last restart reconciled it, when
+   * that was queued or running; fixed once the ledger has opened.
+   */
+  async statusBeforeRestart(
+    operationId: string,
+  ): Promise<OperationStatus | null> {
+    return (await this.ready()).statusBeforeRestart(operationId);
+  }
+
+  /** The state a source last recorded for a subject. */
+  async sourceHead(source: string, subject: string): Promise<string | null> {
+    return (await this.ready()).sourceHead(source, subject);
+  }
+
+  async getDelegation(delegationId: string): Promise<DelegationRecord | null> {
+    return (await this.ready()).getDelegation(delegationId);
+  }
+
+  /** A parent's dispatches, oldest first. */
+  async listDelegations(
+    parentOperationId: string,
+  ): Promise<DelegationRecord[]> {
+    return (await this.ready()).listDelegations(parentOperationId);
+  }
+
   async list(
     query: OperationListQuery,
   ): Promise<OperationListPage & { eventsHead: number }> {
@@ -283,6 +328,40 @@ export class OperationService {
     const change = (await this.ready()).finish(operationId, terminal);
     this.publish(change.event);
     return change.operation;
+  }
+
+  /**
+   * {@link finish} for a caller that cannot act on a failure (CAN-7116). A
+   * failed write is tried once more (a second finish after a settle is a
+   * refusal, so the retry cannot overwrite a newer state); a second failure
+   * goes to `onError` as `finish`, so an unfinished record never goes
+   * unnoticed. A refusal means the record already settled another way, so it
+   * is not reported, nor is a write after {@link close}. Resolves null
+   * instead of rejecting.
+   */
+  finishOrRecord(
+    operationId: string,
+    terminal: Parameters<OperationService['finish']>[1],
+  ): Promise<OperationRecord | null> {
+    return this.writeOrRecord('finish', () =>
+      this.finish(operationId, terminal),
+    );
+  }
+
+  /**
+   * {@link transition} under the rules of {@link finishOrRecord}, except that
+   * it is not retried: a late retry of an older transition could overwrite a
+   * newer one, so the first failure goes to `onError` as `transition`.
+   */
+  transitionOrRecord(
+    operationId: string,
+    status: OperationNonTerminalStatus,
+  ): Promise<OperationRecord | null> {
+    return this.writeOrRecord(
+      'transition',
+      () => this.transition(operationId, status),
+      1,
+    );
   }
 
   /**
@@ -427,6 +506,31 @@ export class OperationService {
     this.listeners.clear();
     this.ledger?.close();
     this.ledger = null;
+  }
+
+  // A retried finish is safe: the same terminal status again changes nothing
+  // and a different one is refused. A transition has no such guard.
+  private async writeOrRecord(
+    context: 'finish' | 'transition',
+    write: () => Promise<OperationRecord>,
+    attempts = 2,
+  ): Promise<OperationRecord | null> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await write();
+      } catch (error) {
+        if (error instanceof OperationLedgerRefusedError || this.closed)
+          return null;
+        if (attempt >= attempts) {
+          try {
+            this.options.onError?.(error, context);
+          } catch {
+            // Callers do not await this; a failing observer changes nothing.
+          }
+          return null;
+        }
+      }
+    }
   }
 
   private async serializeCancel<T>(

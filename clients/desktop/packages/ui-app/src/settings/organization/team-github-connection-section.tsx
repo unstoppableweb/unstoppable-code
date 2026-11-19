@@ -19,6 +19,7 @@ import {
 } from '../host';
 import { useSettingsErrorCopy } from '../errors';
 import { GITHUB_CONNECT_KNOWN_ERRORS } from '../github/github-organization-error-copy';
+import { CodeReviewApprovalsSection } from '../github/code-review-approvals-section';
 import { useOrganizationSettingsSubtabSlots } from './settings/organization-settings-subtab-slots';
 import {
   disconnectGitHub,
@@ -208,6 +209,14 @@ export function TeamGitHubConnectionSection({
           </div>
         ) : null}
       </div>
+
+      {connected ? (
+        // The card renders only for `canEditOrg` viewers, the same role set
+        // as `canEditOrgEnforcedSettings`, so the section needs no check.
+        <CodeReviewApprovalsSection
+          owner={{ kind: 'organization', organizationId: detail.id }}
+        />
+      ) : null}
 
       {confirmingDisconnect ? (
         <SettingsConfirmDialog

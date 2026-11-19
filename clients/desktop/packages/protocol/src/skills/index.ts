@@ -36,6 +36,12 @@ import type {
  * - `team`    — visible to every member of the owning team.
  * - `organization` — visible to every member of the owning organization.
  */
+/** The source id every built-in skill is installed under. */
+export const BUILT_IN_SKILL_SOURCE_ID = 'builtin:app';
+
+/** The source id every skill the user writes is saved under. */
+export const CUSTOM_SKILL_SOURCE_ID = 'custom:app';
+
 export const SKILL_SHARE_SCOPES = ['private', 'team', 'organization'] as const;
 
 export type SkillShareScope = (typeof SKILL_SHARE_SCOPES)[number];

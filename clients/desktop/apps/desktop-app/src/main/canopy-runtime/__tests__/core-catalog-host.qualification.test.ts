@@ -18,7 +18,11 @@ import {
   type CatalogPluginHarnesses,
 } from '@canopy/protocol/canopy-core';
 import type { PortalPluginCatalog } from '@canopy/protocol/portal';
-import { INHERITED_PLUGIN_DEFAULTS_VERSION } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import {
+  INHERITED_PLUGIN_DEFAULTS_VERSION,
+  globalConnectorsLeftOut,
+  globalLayerForConnectorScope,
+} from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/desktop-shared/types';
 import type {
@@ -161,6 +165,7 @@ function workspaceConfig(
 interface WorkspaceRead {
   config: WorkspaceConfigFile;
   authority: 'ok' | 'absent' | 'unreadable';
+  ownerMalformed?: boolean;
 }
 
 interface Fakes {
@@ -446,6 +451,232 @@ describe('desktop catalog host (CAN-4123)', () => {
     expect((await host.readSelection(chatScope)).revision).not.toBe(
       read.revision,
     );
+  });
+
+  it("leaves a person's global connectors out of an organization's workspace (CAN-6230)", async () => {
+    const f = fakes();
+    const slack = { serverId: 'slack', configId: 'default' };
+    f.preferences.value = {
+      ...f.preferences.value,
+      globalPluginSelections: {
+        ...pluginSelections('g'),
+        mcpServerRefs: [slack],
+      },
+    };
+    f.tabs = [
+      tab({
+        inheritedPluginDefaultsVersion: INHERITED_PLUGIN_DEFAULTS_VERSION,
+      }),
+    ];
+    const read = async (
+      owner?: WorkspaceConfigFile['owner'],
+    ): ReturnType<
+      ReturnType<typeof createDesktopCatalogHost>['readSelection']
+    > => {
+      f.workspaces.set('ws', {
+        config: workspaceConfig(owner ? { owner } : {}),
+        authority: 'ok',
+      });
+      return createDesktopCatalogHost(f.deps).readSelection(chatScope);
+    };
+    // Personal: the whole global layer, connectors included.
+    const personal = await read();
+    expect(personal.selections.mcpServerRefs).toEqual([slack]);
+    // An organization project: the connector stays out, the plugin loads.
+    const org = await read({
+      type: 'organization',
+      organizationId: '00000000-0000-4000-8000-0000000000a1',
+      projectId: '00000000-0000-4000-8000-0000000000b1',
+      instanceId: '00000000-0000-4000-8000-0000000000c1',
+      bindingGeneration: 1,
+    });
+    expect(org.selections.mcpServerRefs ?? []).toEqual([]);
+    expect(org.selections.pluginRefs).toEqual([ref('g')]);
+    // An owner that failed validation is never read as Personal.
+    f.workspaces.set('ws', {
+      config: workspaceConfig(),
+      authority: 'ok',
+      ownerMalformed: true,
+    });
+    const malformed = await createDesktopCatalogHost(f.deps).readSelection(
+      chatScope,
+    );
+    expect(malformed.selections.mcpServerRefs ?? []).toEqual([]);
+  });
+
+  it("keeps a kept plugin's auth choice, and the notice lists only what this chat lost (CAN-6230)", () => {
+    const slack = { serverId: 'slack', configId: 'default' };
+    const linear = { serverId: 'linear', configId: 'default' };
+    const scope = {
+      kind: 'org-project',
+      organizationId: '00000000-0000-4000-8000-0000000000a1',
+      orgProjectId: '00000000-0000-4000-8000-0000000000b1',
+    } as const;
+    const pluginAuth = {
+      target: {
+        kind: 'plugin',
+        marketplaceId: 'm',
+        pluginName: 'g',
+        serverName: 'tracker',
+      },
+      handler: 'provider',
+    } as const;
+    const global = {
+      ...pluginSelections('g'),
+      mcpServerRefs: [slack, linear],
+      mcpHttpAuthPreferences: [
+        pluginAuth,
+        {
+          target: { kind: 'standalone', ...slack },
+          handler: 'canopy',
+        } as const,
+      ],
+    };
+    // The plugin it keeps keeps its auth choice; the dropped connector's goes.
+    expect(
+      globalLayerForConnectorScope(global, scope)?.mcpHttpAuthPreferences,
+    ).toEqual([pluginAuth]);
+    // A connector this chat selects itself, or had turned off, is not listed.
+    expect(
+      globalConnectorsLeftOut({
+        global,
+        scope,
+        local: { ...pluginSelections(), mcpServerRefs: [slack] },
+      }),
+    ).toEqual([linear]);
+    expect(
+      globalConnectorsLeftOut({
+        global,
+        scope,
+        chatTombstones: { mcpServerRefs: [slack, linear] },
+      }),
+    ).toEqual([]);
+    expect(
+      globalConnectorsLeftOut({ global, scope: { kind: 'personal' } }),
+    ).toEqual([]);
+  });
+
+  it("inherits an organization project's shared set and holds picks to it (CAN-6237, CAN-6240)", async () => {
+    const f = fakes();
+    const organizationId = '00000000-0000-4000-8000-0000000000a1';
+    const owned = { type: 'organization' as const, organizationId };
+    const shared = { sourceId: `org:${organizationId}`, skillName: 'review' };
+    const removed = { sourceId: `org:${organizationId}`, skillName: 'gone' };
+    const personal = { sourceId: 'custom:app', skillName: 'mine' };
+    f.workspaces.set('ws', {
+      config: workspaceConfig({
+        owner: {
+          type: 'organization',
+          organizationId,
+          projectId: '00000000-0000-4000-8000-0000000000b1',
+          instanceId: '00000000-0000-4000-8000-0000000000c1',
+          bindingGeneration: 1,
+        },
+      }),
+      authority: 'ok',
+    });
+    f.tabs = [
+      tab({
+        inheritedPluginDefaultsVersion: INHERITED_PLUGIN_DEFAULTS_VERSION,
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [personal, { ...removed, owner: owned }],
+          pluginRefs: [],
+        },
+      }),
+    ];
+    let layer: ChatTabPluginSelections = {
+      collectionIds: [],
+      skillRefs: [{ ...shared, owner: owned }],
+      pluginRefs: [],
+    };
+    const scopes: string[] = [];
+    const host = createDesktopCatalogHost({
+      ...f.deps,
+      readOrganizationLayer: (workspaceId, scope) => {
+        scopes.push(`${workspaceId}:${scope.kind}`);
+        return Promise.resolve({
+          layer,
+          allowed: { organizationId, selections: layer },
+          items: [],
+        });
+      },
+    });
+    const first = await host.readSelection(chatScope);
+    expect(scopes).toEqual(['ws:org-project']);
+    // The shared skill is inherited and the person's own pick stays; the
+    // pick of an item the project no longer shares is dropped.
+    expect(first.selections.skillRefs).toHaveLength(2);
+    expect(first.selections.skillRefs).toEqual(
+      expect.arrayContaining([personal, { ...shared, owner: owned }]),
+    );
+    // The skill inventory has no organization copies, so the read vouches
+    // for the ones the workspace allows.
+    expect(first.offered?.skillRefs).toEqual([{ ...shared, owner: owned }]);
+    // A change to the shared set is a new selection revision.
+    layer = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+    const second = await host.readSelection(chatScope);
+    expect(second.selections.skillRefs).toEqual([personal]);
+    expect(second.revision).not.toBe(first.revision);
+    // A chat that does not inherit project defaults (saved before them)
+    // gets no inherited organization item.
+    layer = {
+      collectionIds: [],
+      skillRefs: [{ ...shared, owner: owned }],
+      pluginRefs: [],
+    };
+    f.tabs = [
+      tab({
+        pluginSelections: {
+          collectionIds: [],
+          skillRefs: [personal],
+          pluginRefs: [],
+        },
+      }),
+    ];
+    expect((await host.readSelection(chatScope)).selections.skillRefs).toEqual([
+      personal,
+    ]);
+  });
+
+  it('uses the account a project picked over a global account of the same connector (CAN-6229)', async () => {
+    const f = fakes();
+    const globalAccount = { serverId: 'slack', configId: 'default' };
+    const projectAccount = { serverId: 'slack', configId: 'acct-b' };
+    const device = { serverId: 'files', configId: 'one' };
+    f.preferences.value = {
+      ...f.preferences.value,
+      globalPluginSelections: {
+        ...pluginSelections(),
+        mcpServerRefs: [globalAccount, device],
+      },
+    };
+    f.workspaces.set('ws', {
+      config: workspaceConfig({
+        defaultPluginSelections: {
+          ...pluginSelections(),
+          mcpServerRefs: [
+            projectAccount,
+            { serverId: 'files', configId: 'two' },
+          ],
+        },
+      }),
+      authority: 'ok',
+    });
+    f.tabs = [
+      tab({
+        inheritedPluginDefaultsVersion: INHERITED_PLUGIN_DEFAULTS_VERSION,
+      }),
+    ];
+    const read = await createDesktopCatalogHost(f.deps).readSelection(
+      chatScope,
+    );
+    const refs = (read.selections.mcpServerRefs ?? []).map(
+      (ref) => `${ref.serverId}/${ref.configId}`,
+    );
+    // The project's account replaces the global one; two configurations of a
+    // device server still load together.
+    expect(refs.sort()).toEqual(['files/one', 'files/two', 'slack/acct-b']);
   });
 
   it('reads an app-managed chat that has no workspace manifest', async () => {

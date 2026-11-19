@@ -1,5 +1,5 @@
 import { ControlButton } from './Button';
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 import { McpServerLogo } from './McpServerLogo';
@@ -7,6 +7,7 @@ import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 import { Heading } from './Heading';
 import { Badge } from './Badge';
 import { PipelineSourceLabel } from './EntrySourceLabel';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 /** One row in a related-items section (CAN-2382). */
 export interface RelatedItemRow {
@@ -23,6 +24,14 @@ export interface RelatedItemRow {
   kind?: UnifiedEntryKind;
   /** Why this item is related, when it is not obvious. */
   reason?: string;
+  /** A user's own name (a workflow, an automation): masked in session replay. */
+  privateTitle?: boolean;
+  /** The row's own logo in a list (the tile's), instead of a monogram. */
+  logo?: ReactNode;
+  /** The subtitle's own replay class (a person's name is blocked). */
+  subtitleReplayClass?: string;
+  /** In a list, say the reason after the subtitle instead of hiding it. */
+  reasonInline?: boolean;
   onOpen: () => void;
 }
 
@@ -35,6 +44,8 @@ interface RelatedItemsSectionProps {
   testId: string;
   presentation?: 'cards' | 'list';
   hideWhenEmpty?: boolean;
+  /** Said inside the section, under its rows: a partial read's failure. */
+  footer?: ReactNode;
 }
 
 /**
@@ -53,6 +64,7 @@ export function RelatedItemsSection({
   testId,
   presentation = 'cards',
   hideWhenEmpty = false,
+  footer,
 }: RelatedItemsSectionProps): JSX.Element {
   if (hideWhenEmpty && items.length === 0) return <></>;
   const list = presentation === 'list';
@@ -89,10 +101,18 @@ export function RelatedItemsSection({
               presentation="customize-related-item"
               appearance={{ list }}
             >
-              {list && item.icon === undefined && (
+              {list && item.icon === undefined && item.logo !== undefined && (
                 <span
                   data-testid={`${testId}-item-${item.key}-avatar`}
-                  className="flex shrink-0"
+                  className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+                >
+                  {item.logo}
+                </span>
+              )}
+              {list && item.icon === undefined && item.logo === undefined && (
+                <span
+                  data-testid={`${testId}-item-${item.key}-avatar`}
+                  className={`flex shrink-0${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
                 >
                   <McpServerLogo
                     size={28}
@@ -112,7 +132,9 @@ export function RelatedItemsSection({
                 <div
                   className={`flex items-center ${list ? 'gap-1.5' : 'gap-2'}`}
                 >
-                  <span className="min-w-0 truncate text-s font-medium fg-primary">
+                  <span
+                    className={`min-w-0 truncate text-s font-medium fg-primary${item.privateTitle ? ` ${REPLAY_MASK_CLASS}` : ''}`}
+                  >
                     {item.title}
                   </span>
                   {item.badge && item.kind && (
@@ -133,11 +155,22 @@ export function RelatedItemsSection({
                     </PipelineSourceLabel>
                   )}
                 </div>
-                {item.subtitle && (
+                {(item.subtitle ||
+                  (list && item.reasonInline && item.reason)) && (
                   <p
                     className={`mt-0.5 truncate text-xs ${list ? 'fg-tertiary' : 'fg-secondary'}`}
                   >
-                    {item.subtitle}
+                    {item.subtitle && (
+                      <span className={item.subtitleReplayClass}>
+                        {item.subtitle}
+                      </span>
+                    )}
+                    {list && item.reasonInline && item.reason && (
+                      <>
+                        {item.subtitle && ' · '}
+                        {item.reason}
+                      </>
+                    )}
                   </p>
                 )}
                 {item.reason && !list && (
@@ -150,6 +183,7 @@ export function RelatedItemsSection({
           ))}
         </div>
       )}
+      {footer}
     </section>
   );
 }

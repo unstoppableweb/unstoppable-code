@@ -1,11 +1,10 @@
 import { isWorktreeReadAvailable } from '../lib/worktree-read-availability';
-import { portalSnapshotWorkBudget } from '../portal/portal-snapshot-work-budget';
+import { portalSnapshotWorkBudget } from '../remote-projection/worktree-work-budget';
 import {
   getWorktreeDiffStatsOnly,
   type WorktreeRepoDiffStatsReader,
 } from '../lib/worktree-service';
 import { readAllSidebarItems } from '../lib/sidebar-items';
-import { emitWorktreeDiffStatsDelta } from '../portal/portal-event-bus';
 import { mapWithConcurrency } from '../lib/concurrency';
 import { getRemoteTrackingCommitSha } from '../lib/git';
 import { listSharedContainerLocalRepositories } from '../shared-containers/local-repositories';
@@ -218,7 +217,6 @@ export function primeWorktreeDiffStats(
     refreshedAt: Date.now(),
     generation,
   });
-  void emitWorktreeDiffStatsDelta(workspaceId, worktreeId, generation);
 }
 
 export function removeCachedWorktreeDiffStats(
@@ -301,10 +299,6 @@ export function refreshWorktreeDiffStats(
         generation,
       };
       entries.set(cacheKey, refreshed);
-      // Publication state, rather than cache history, decides whether the
-      // browser needs a delta. This also retries values whose earlier delta was
-      // rejected after the cache commit.
-      void emitWorktreeDiffStatsDelta(workspaceId, worktreeId, generation);
       return didPushedBaseChange(workspaceId, worktreeId).then(() => {
         // Periodic refreshes are the file-activity signal for edits made
         // outside the app. The scheduler fingerprints content and suppresses

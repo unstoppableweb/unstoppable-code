@@ -123,6 +123,13 @@ export interface CanopyDaemonControlPlaneOptions {
   readonly idleGrace?: CanopyIdleGraceOptions;
   /** Called once when the idle grace elapses; the host runs the phased stop. */
   readonly onIdle: () => void;
+  /**
+   * Called once when the accept loop fails before the plane closes
+   * (CAN-7116). No new client can connect, while held leases would keep the
+   * daemon alive, so the host runs the phased stop and its supervisor starts
+   * a fresh daemon.
+   */
+  readonly onAcceptFailed?: () => void;
   readonly connection?: CanopyControlPlaneConnectionOptions;
   /** Requests served at once per connection; excess fails `resource_exhausted`. */
   readonly maxActiveRequests?: number;
@@ -324,6 +331,8 @@ function admitMetadata(
     });
 }
 
+// Bare: with no operation's error schema here, a diagnostic could make the
+// client reject the error as undeclared. Handler failures already carry one.
 function errorPayload(error: unknown): CanopyOperationError['payload'] {
   return error instanceof CanopyOperationError
     ? error.payload
@@ -1024,16 +1033,20 @@ export function serveCanopyDaemonControlPlane(
     options.idleGrace,
     options.clock ?? CANOPY_SYSTEM_CLOCK,
   );
+  let closed = false;
   acceptCanopyFramedConnections({
     listener: options.binding.listener,
     auth: options.binding.auth,
     connection: options.connection,
     onConnection: serving.serve,
-  }).done.catch(() => undefined);
+  }).done.catch(() => {
+    if (!closed) options.onAcceptFailed?.();
+  });
   return {
     leases: serving.leases,
     obligations,
     close: (): Promise<void> => {
+      closed = true;
       idle.close();
       serving.close();
       return Promise.resolve();

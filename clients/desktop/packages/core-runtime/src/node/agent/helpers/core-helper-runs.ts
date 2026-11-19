@@ -146,21 +146,17 @@ export class CoreHelperRuns {
       if (dispatched.operation.status === 'completed' && parsed.success) {
         const result = parsed.data;
         if (result.status === 'succeeded') {
-          await operations
-            .finish(parent.operationId, {
-              status: 'completed',
-              outcome: result,
-            })
-            .catch(() => undefined);
+          await operations.finishOrRecord(parent.operationId, {
+            status: 'completed',
+            outcome: result,
+          });
           return { ...base, status: 'succeeded', result };
         }
         if (result.status === 'failed') {
-          await operations
-            .finish(parent.operationId, {
-              status: 'failed',
-              error: HELPER_FAILED,
-            })
-            .catch(() => undefined);
+          await operations.finishOrRecord(parent.operationId, {
+            status: 'failed',
+            error: HELPER_FAILED,
+          });
           return {
             ...base,
             status: 'failed',
@@ -175,9 +171,9 @@ export class CoreHelperRuns {
           parsed.success &&
           parsed.data.status === 'cancelled')
       ) {
-        await operations
-          .finish(parent.operationId, { status: 'cancelled' })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'cancelled',
+        });
         return {
           ...base,
           status: 'cancelled',
@@ -187,30 +183,29 @@ export class CoreHelperRuns {
       const error = dispatched.operation.error
         ? toErrorPayload(dispatched.operation.error)
         : OUTCOME_UNKNOWN;
-      await operations
-        .finish(parent.operationId, { status: 'failed', error })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error,
+      });
       return { ...base, status: 'failed', error, usage: null };
     } catch (error) {
       const current = await operations
         .get(parent.operationId)
         .catch(() => null);
       if (signal?.aborted || current?.cancellation) {
-        await operations
-          .finish(parent.operationId, { status: 'cancelled' })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'cancelled',
+        });
         return { ...base, status: 'cancelled', usage: null };
       }
-      await operations
-        .finish(parent.operationId, {
-          status: 'failed',
-          error: {
-            kind: 'internal',
-            message: 'This helper run could not be dispatched.',
-            retry: { kind: 'never' },
-          },
-        })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: {
+          kind: 'internal',
+          message: 'This helper run could not be dispatched.',
+          retry: { kind: 'never' },
+        },
+      });
       throw error;
     } finally {
       signal?.removeEventListener('abort', onAbort);

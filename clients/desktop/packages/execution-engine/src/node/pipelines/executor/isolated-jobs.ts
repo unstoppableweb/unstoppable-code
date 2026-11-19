@@ -46,6 +46,10 @@ import type {
   ExpressionCanopyContext,
   ExpressionNeedsState,
 } from './execution-context';
+import {
+  isExecutionFailureCode,
+  isExecutionFailureOrigin,
+} from './execution-failure';
 import { runJob, type RunJobOptions } from './job-runner';
 import { createPendingStep } from './retry-utils';
 
@@ -321,6 +325,13 @@ function moveStep(step: StepResult, pairs: readonly RootPair[]): StepResult {
     ...(step.error === undefined
       ? {}
       : { error: movePaths(step.error, pairs) }),
+    // Closed values only: a value outside the closed sets is dropped.
+    ...(isExecutionFailureOrigin(step.failure_origin)
+      ? { failure_origin: step.failure_origin }
+      : {}),
+    ...(isExecutionFailureCode(step.failure_code)
+      ? { failure_code: step.failure_code }
+      : {}),
     ...(step.log_file === undefined
       ? {}
       : { log_file: movePaths(step.log_file, pairs) }),

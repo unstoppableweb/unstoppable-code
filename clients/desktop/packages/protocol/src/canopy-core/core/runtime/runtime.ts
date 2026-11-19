@@ -132,8 +132,9 @@ export const CoreRuntimeManifestOperationSchema = z
     available: z.boolean(),
     /**
      * For an operation that takes a `detail` param, the values this host
-     * serves (CAN-6941). Absent declares none, so a client turns on what
-     * needs a detail only when it is listed.
+     * serves (CAN-6941); for `core.chat.transcript.page`, the target kinds
+     * it serves beyond a chat's own pages (CAN-7027). Absent declares none,
+     * so a client turns on what needs a detail only when it is listed.
      */
     details: z.array(z.string()).optional(),
   })

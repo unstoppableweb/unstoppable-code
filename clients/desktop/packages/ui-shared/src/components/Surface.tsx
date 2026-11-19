@@ -245,8 +245,7 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   'advisor-window-clear': 'bg-transparent fg-primary',
   'gallery-banner': 'bg-depth',
   'attached-action-card': 'overflow-hidden bg-tertiary shadow-sm',
-  'guest-nudge':
-    'animate-slide-up bg-card/95 fg-primary shadow-lg backdrop-blur-sm',
+  'guest-nudge': 'animate-slide-up bg-card fg-primary shadow-lg',
   pane: 'bg-base',
   'app-pane': 'bg-base fg-primary',
   'startup-pane': 'bg-base fg-primary animate-fade-in',

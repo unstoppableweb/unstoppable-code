@@ -36,6 +36,72 @@ export class UnsupportedModelHarnessOverridesVersionError extends Error {
   }
 }
 
+/**
+ * The errno codes a refusal may report; any other code is `UNKNOWN`, so no
+ * message or path leaves the store in one.
+ */
+const REPORTED_ERROR_CODES = [
+  'EACCES',
+  'EPERM',
+  'EIO',
+  'EMFILE',
+  'ENFILE',
+  'EISDIR',
+  'ENOTDIR',
+  'EBUSY',
+  'EAGAIN',
+  'ELOOP',
+  'ENAMETOOLONG',
+  'EROFS',
+  'ENOSPC',
+  'EEXIST',
+  'EXDEV',
+  'ETIMEDOUT',
+  'ESTALE',
+  'ENOENT',
+] as const;
+
+export type ModelHarnessOverridesErrorCode =
+  | (typeof REPORTED_ERROR_CODES)[number]
+  | 'UNKNOWN';
+
+function reportedErrorCode(error: unknown): ModelHarnessOverridesErrorCode {
+  // Not `instanceof Error`: fs errors can come from another realm.
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? error.code
+      : undefined;
+  return REPORTED_ERROR_CODES.find((listed) => listed === code) ?? 'UNKNOWN';
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
+}
+
+/**
+ * A change refused because the saved overrides could not be read, or a
+ * corrupt overrides file could not be set aside, so writing would replace
+ * overrides this process never saw (CAN-7094).
+ */
+export class ModelHarnessOverridesUnreadableError extends Error {
+  constructor(
+    readonly code: ModelHarnessOverridesErrorCode,
+    readonly stage: 'read' | 'repair',
+  ) {
+    super(
+      stage === 'read'
+        ? `The saved model harness overrides could not be read (${code}), so they were left unchanged`
+        : `The damaged model harness overrides file could not be set aside (${code}), so it was left unchanged`,
+    );
+    this.name = 'ModelHarnessOverridesUnreadableError';
+  }
+}
+
 export interface ModelHarnessOverrideStoreOptions {
   filePath?: string;
   getCatalog: () => ModelHarnessCatalog;
@@ -92,6 +158,13 @@ export class ModelHarnessOverrideStore {
   private loadPromise: Promise<Record<string, ModelHarness>> | undefined;
   private overrides: Record<string, ModelHarness> = {};
   private needsCleanup = false;
+  /** Why the last load could not read the file; the next load reads again. */
+  private readFailure: ModelHarnessOverridesErrorCode | undefined;
+  /**
+   * Why the last load could not set a corrupt file aside. The file may still
+   * be in place, so the next load reads it again before anything is written.
+   */
+  private repairFailure: ModelHarnessOverridesErrorCode | undefined;
   private unsupportedVersion: number | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
 
@@ -130,25 +203,32 @@ export class ModelHarnessOverrideStore {
   }
 
   private async loadFromDisk(): Promise<Record<string, ModelHarness>> {
+    this.repairFailure = undefined;
     let raw: string;
     try {
       raw = await readFile(this.filePath, 'utf8');
-    } catch {
-      // Harness overrides are optional user preferences. An unreadable file
-      // must not poison the memoized load promise or abort desktop startup;
-      // treat it exactly like a missing/corrupt preference file. A later
-      // mutation still writes a clean authoritative document atomically.
-      this.loaded = true;
+    } catch (error) {
+      // Harness overrides are optional user preferences: an unreadable file
+      // must not abort desktop startup, so it loads as no overrides. Only a
+      // missing file is known to hold none. Any other failure (EACCES, EIO,
+      // EMFILE, ...) refuses changes until a later load reads the file, so a
+      // change never replaces overrides this process could not read.
+      if (isMissingFile(error)) {
+        this.readFailure = undefined;
+        this.loaded = true;
+      } else {
+        this.readFailure = reportedErrorCode(error);
+        this.loadPromise = undefined;
+      }
       return this.overrides;
     }
+    this.readFailure = undefined;
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      await this.recoverCorruptFileBestEffort();
-      this.loaded = true;
-      return this.overrides;
+      return this.recoverCorruptFile();
     }
 
     if (
@@ -167,9 +247,7 @@ export class ModelHarnessOverrideStore {
       parsed.version !== MODEL_HARNESS_OVERRIDES_VERSION ||
       !isRecord(parsed.overrides)
     ) {
-      await this.recoverCorruptFileBestEffort();
-      this.loaded = true;
-      return this.overrides;
+      return this.recoverCorruptFile();
     }
 
     this.overrides = normalizeModelHarnessOverrides(
@@ -196,6 +274,15 @@ export class ModelHarnessOverrideStore {
     reset: boolean;
   }): Promise<ModelHarnessOverrideMutationResult> {
     await this.load();
+    if (this.readFailure !== undefined) {
+      throw new ModelHarnessOverridesUnreadableError(this.readFailure, 'read');
+    }
+    if (this.repairFailure !== undefined) {
+      throw new ModelHarnessOverridesUnreadableError(
+        this.repairFailure,
+        'repair',
+      );
+    }
     if (this.unsupportedVersion !== undefined) {
       throw new UnsupportedModelHarnessOverridesVersionError(
         this.unsupportedVersion,
@@ -233,16 +320,23 @@ export class ModelHarnessOverrideStore {
     this.needsCleanup = false;
   }
 
-  private async recoverCorruptFileBestEffort(): Promise<void> {
+  /**
+   * Sets a corrupt file aside and loads as no overrides. A failure must not
+   * abort startup or poison the memoized load, so it also loads as no
+   * overrides; but the corrupt file may still be in place, so the load is
+   * not kept. The next load, and so the next change, reads the file again:
+   * it sets aside what is still corrupt, builds on a file that was repaired
+   * meanwhile, and a change is refused while neither works.
+   */
+  private async recoverCorruptFile(): Promise<Record<string, ModelHarness>> {
     try {
       await (this.healCorruptFile?.() ?? this.backupAndReplaceCorruptFile());
-    } catch {
-      // Harness overrides are optional preferences. Failure to heal a corrupt
-      // file must not poison the memoized load promise or abort startup. Keep
-      // the in-memory state empty and retry cleanup on the next mutation.
-      this.overrides = {};
-      this.needsCleanup = true;
+      this.loaded = true;
+    } catch (error) {
+      this.repairFailure = reportedErrorCode(error);
+      this.loadPromise = undefined;
     }
+    return this.overrides;
   }
 
   private async atomicWrite(

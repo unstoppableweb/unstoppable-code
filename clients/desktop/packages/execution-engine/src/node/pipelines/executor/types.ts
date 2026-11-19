@@ -1,5 +1,9 @@
 import type { RepositoryPolicyScope } from '@canopy/execution-engine/node/lib/repository-policy';
-import type { LedgerGlobalOwner } from '@canopy/protocol/canopy-core';
+import type {
+  LedgerGlobalOwner,
+  WorkerPipelineSurvivalAssessment,
+  WorkerPipelineNativeRouteEvidence,
+} from '@canopy/protocol/canopy-core';
 import type { ResourceContextInput } from '@canopy/execution-engine/lib/resource-context-policy';
 import type { PipelineResourceParent } from './child-pipeline-resolver';
 import type { ChildPipelineAuthorization } from './child-pipeline-resolver';
@@ -10,6 +14,7 @@ import type {
 import type {
   CanopyEventInput,
   ExecutionEvent,
+  ExecutionFailureCode,
   ExecutionState,
   PipelineAgentAuthor,
   PipelineAgentChatAddress,
@@ -73,6 +78,7 @@ import type {
 } from '@canopy/execution-engine/pipelines/host-create-entry';
 import type { ResolvedSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import type { WaitForAgentReplyInputs } from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
+import type { PublishReviewRequestInputs } from '@canopy/execution-engine/pipelines/host-publish-review';
 import type { CodexConfig } from '@canopy/execution-engine/lib/codex-model-config';
 import type { AgentActionFailureMetadata } from '@canopy/execution-engine/agent-failures';
 import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
@@ -142,6 +148,24 @@ export interface ExecutionLifecycleHooks {
   onExecutionStart?(state: ExecutionState): void;
   onExecutionSettled?(state: ExecutionState): void;
 }
+
+/**
+ * Where the engine met an error it reports to its host (CAN-7118): the run
+ * or a step failed with it (`execution`, `step_runner`, `job_expansion`, and
+ * a host port that threw: `process_host`, `host_action`, `child_pipeline`),
+ * or the run went on without the work (`plan_persist`, `post_step_hook`,
+ * `ledger_attempt`).
+ */
+export type PipelineEngineErrorSite =
+  | 'execution'
+  | 'step_runner'
+  | 'job_expansion'
+  | 'process_host'
+  | 'host_action'
+  | 'child_pipeline'
+  | 'plan_persist'
+  | 'post_step_hook'
+  | 'ledger_attempt';
 
 export interface PipelineModelPolicyScope {
   projectId?: string;
@@ -308,6 +332,10 @@ export interface ModelHarnessInvocationOptions {
 }
 
 export interface ExecutionRuntime {
+  /** Core-admitted, immutable identities; never a source of Ledger authority. */
+  readonly nativeModelPlan?: readonly Readonly<
+    WorkerPipelineNativeRouteEvidence['routes'][number]
+  >[];
   resolvePipelineContextResource?: (
     parent: PipelineResourceParent,
     executionContext?: string,
@@ -350,7 +378,24 @@ export interface ExecutionRuntime {
    * (CAN-6316 G1).
    */
   tsxCli?: string;
+  /** Resolve an on-demand interpreter only when preparing Node/TSX work. */
+  resolveNodeRuntime?: () =>
+    | Pick<ExecutionRuntime, 'nodeProcess' | 'tsxCli'>
+    | Promise<Pick<ExecutionRuntime, 'nodeProcess' | 'tsxCli'>>;
   lifecycle?: ExecutionLifecycleHooks;
+  /**
+   * Told of an engine or host-port error the run absorbed or failed with
+   * (CAN-7118). `site` and `code` are closed; a host must not send the
+   * error's message, which can quote paths or user content. A throw is
+   * ignored.
+   */
+  reportEngineError?: (
+    error: unknown,
+    context: {
+      readonly site: PipelineEngineErrorSite;
+      readonly code: ExecutionFailureCode;
+    },
+  ) => void;
   onStepPostProcess?: (ctx: StepPostProcessContext) => void | Promise<void>;
   planPersistence?: ExecutionPlanPersistenceHooks;
   /** The run's owner keeps its plan (CAN-6327); replaces `planPersistence`. */
@@ -507,7 +552,7 @@ export interface ExecutionRuntime {
    */
   admitChildPipeline?: (
     request: ChildPipelineAdmissionRequest,
-  ) => void | Promise<void>;
+  ) => ChildPipelineAdmission | Promise<ChildPipelineAdmission>;
   /**
    * Runs each variant of an `isolation: read_only` job in a sandbox of its
    * own (CAN-6892). Only the pipeline host of a cloud runner supplies it;
@@ -529,6 +574,15 @@ export interface ExecutionRuntime {
   delegateChildPipeline?: (
     request: DelegatedChildPipelineRequest,
   ) => Promise<PipelineHostActionResult>;
+}
+
+/**
+ * What a child's check admits: a starting child runs `pipeline` instead of
+ * the definition its step resolved, when the check answers one (the cloud
+ * models its run's person chose, CAN-7044).
+ */
+export interface ChildPipelineAdmission {
+  readonly pipeline?: Pipeline;
 }
 
 /** A child workflow on another target, as the executor hands it over. */
@@ -756,7 +810,8 @@ export type PipelineHostActionRequest =
   | { action: 'create-project-entry'; inputs: CreateProjectEntryInputs }
   | { action: 'create-bot-entry'; inputs: CreateBotEntryInputs }
   | { action: 'send-agent-message'; inputs: ResolvedSendAgentMessageInputs }
-  | { action: 'wait-for-agent-reply'; inputs: WaitForAgentReplyInputs };
+  | { action: 'wait-for-agent-reply'; inputs: WaitForAgentReplyInputs }
+  | { action: 'github-publish-review'; inputs: PublishReviewRequestInputs };
 
 /**
  * `chatSend` is the message a step sent. A failure carries it too when the
@@ -1138,6 +1193,8 @@ export interface ExecutionResourceMonitor {
 }
 
 export interface ExecutionOptions {
+  /** Trusted admission output, persisted before the first step. */
+  survivalAssessment?: WorkerPipelineSurvivalAssessment;
   cwd: string;
   pipelineId: string;
   /**
@@ -1359,6 +1416,10 @@ export interface ResolvedChildPipeline {
 
 export interface ExecutionHandle {
   id: string;
+  /** Revoke launch-time admission through the same execution persistence queue. */
+  invalidateSurvival?(
+    blocker: WorkerPipelineSurvivalAssessment['blockers'][number],
+  ): Promise<void>;
   cancel(): Promise<ExecutionState>;
   /** Stop active work and retain checkpoints for explicit resume after app restart. */
   pauseForShutdown?(): Promise<ExecutionState>;

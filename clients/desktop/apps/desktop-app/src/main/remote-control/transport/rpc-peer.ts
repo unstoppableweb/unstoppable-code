@@ -1,9 +1,27 @@
 import {
+  getAppErrorDefinition,
+  toAppError,
+  type AppErrorCode,
+} from '@canopy/protocol/app-errors';
+import {
   CoworkFolderMissingSchema,
   readCoworkFolderMissing,
   type CoworkFolderMissing,
 } from '@canopy/protocol/canopy-core';
+import {
+  CHANNEL_UNAVAILABLE_CODE,
+  CONTROLLER_REFUSED_CODE,
+  REMOTE_FILE_TOO_LARGE_CODE,
+  REMOTE_PROTOCOL_MISMATCH_CODE,
+  UNKNOWN_METHOD_CODE,
+} from '@canopy/protocol/remote-control';
+import { classifySystemError } from '@canopy/desktop-shared/node/lib/app-error-classification';
 import { z } from 'zod';
+import {
+  RemoteOperationFailureSchema,
+  readRemoteOperationFailure,
+  type RemoteOperationFailure,
+} from '@canopy/protocol/remote-control';
 import type { SecureSession, SessionCloseReason } from './session-manager';
 
 /**
@@ -31,6 +49,7 @@ const FailureSchema = z.object({
     message: z.string(),
     code: z.string().optional(),
     coworkFolderMissing: CoworkFolderMissingSchema.optional(),
+    operationFailure: RemoteOperationFailureSchema.optional(),
   }),
 });
 const EventSchema = z.object({
@@ -55,9 +74,21 @@ export class RpcRemoteError extends Error {
     message: string,
     readonly code: string | undefined,
     readonly coworkFolderMissing?: CoworkFolderMissing,
+    readonly operationFailure?: RemoteOperationFailure,
   ) {
     super(message);
     this.name = 'RpcRemoteError';
+  }
+}
+
+/**
+ * A host failure whose message is fixed copy, already safe for the paired
+ * device. Any other host error reaches the peer as its code and catalog copy.
+ */
+export class RpcPublicError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RpcPublicError';
   }
 }
 
@@ -108,6 +139,45 @@ function errorCode(error: unknown): string | undefined {
     return error.code;
   }
   return undefined;
+}
+
+/** Protocol errors whose fixed text the peer's controller matches on. */
+const FIXED_TEXT_CODES: ReadonlySet<string> = new Set([
+  UNKNOWN_METHOD_CODE,
+  CHANNEL_UNAVAILABLE_CODE,
+  REMOTE_PROTOCOL_MISMATCH_CODE,
+  CONTROLLER_REFUSED_CODE,
+  REMOTE_FILE_TOO_LARGE_CODE,
+]);
+
+/**
+ * What the paired device may read. A raw error message can carry host paths or
+ * user content, so only fixed text passes; everything else is a code plus the
+ * catalog copy local failures show.
+ */
+function wireError(error: unknown): { message: string; code?: string } {
+  let appCode: AppErrorCode = 'app.unexpected';
+  try {
+    const code = errorCode(error);
+    if (
+      error instanceof Error &&
+      (error instanceof RpcPublicError ||
+        (code !== undefined && FIXED_TEXT_CODES.has(code)))
+    ) {
+      return {
+        message: error.message,
+        ...(code === undefined ? {} : { code }),
+      };
+    }
+    appCode = toAppError(classifySystemError(error))?.code ?? appCode;
+  } catch {
+    // A value that throws when read still gets an answer, never its text.
+  }
+  const { copy } = getAppErrorDefinition(appCode);
+  return {
+    message: `${copy.title}${copy.description ? ` ${copy.description}` : ''}`,
+    code: appCode,
+  };
 }
 
 export class RpcPeer {
@@ -307,6 +377,7 @@ export class RpcPeer {
                 message.error.message,
                 message.error.code,
                 message.error.coworkFolderMissing,
+                message.error.operationFailure,
               ),
               message.error.coworkFolderMissing,
             ),
@@ -333,18 +404,16 @@ export class RpcPeer {
       const value = await this.options.onRequest(method, params);
       this.session.sendMessage({ kind: 'response', id, ok: true, value });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Remote request failed.';
-      const code = errorCode(error);
       const coworkFolderMissing = readCoworkFolderMissing(error);
+      const operationFailure = readRemoteOperationFailure(error);
       this.session.sendMessage({
         kind: 'response',
         id,
         ok: false,
         error: {
-          message,
-          ...(code === undefined ? {} : { code }),
+          ...wireError(error),
           ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+          ...(operationFailure ? { operationFailure } : {}),
         },
       });
     }

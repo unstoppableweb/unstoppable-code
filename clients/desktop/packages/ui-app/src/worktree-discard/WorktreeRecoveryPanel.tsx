@@ -29,6 +29,7 @@ import {
   LoadingButton,
   Stack,
   W5RecoveryNotice,
+  type W5RecoveryNoticeProps,
 } from '@canopy/ui-shared/components';
 import {
   worktreeRecoveryResultCopy,
@@ -193,6 +194,7 @@ export function WorktreeRecoveryPanel({
   canRecover,
   onRecover,
   coldBusy,
+  service,
 }: {
   readonly client: CanopyClient;
   /** null waits for the shell; undefined supports hosts without a shell snapshot. */
@@ -201,6 +203,8 @@ export function WorktreeRecoveryPanel({
   readonly canRecover?: boolean;
   readonly onRecover?: () => void;
   readonly coldBusy?: boolean;
+  /** The background service notice shown with the blocked-changes notice. */
+  readonly service?: W5RecoveryNoticeProps['service'];
 }): JSX.Element {
   const supported = client.capabilities.worktreeRecoveryResolution === true;
   const [, setDismissalRevision] = useState(0);
@@ -455,6 +459,7 @@ export function WorktreeRecoveryPanel({
     return (
       <>
         <W5RecoveryNotice
+          service={service}
           status={status}
           canRecover={canRecover}
           onRecover={onRecover}
@@ -528,6 +533,7 @@ export function WorktreeRecoveryPanel({
     projects,
     refresh,
     resolveHold,
+    service,
     status,
     showArchiveRecovery,
   ]);

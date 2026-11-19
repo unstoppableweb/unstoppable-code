@@ -142,6 +142,11 @@ function markerForAccount(
   };
 }
 
+/** Admission observes the persisted projection after its effective route read. */
+export function settleModelPolicyMarkerWrites(): Promise<void> {
+  return markerWriteQueue;
+}
+
 function writeMarker(marker: ModelPolicyMarkerFile): void {
   currentMarker = marker;
   markerLoad = null;

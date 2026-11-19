@@ -11,7 +11,7 @@ import {
 } from '../projects';
 import { PROJECT_DISCOVERY_ID_MAX } from '../projects/actions';
 import { BOT_ACTION_TYPES, botActionSchema, type BotAction } from './actions';
-import { BOT_ACTION_CATALOG } from './catalog';
+import { BOT_ACTION_CATALOG, BOT_REGISTRY_ACTION_CATALOG } from './catalog';
 
 export {
   APP_ADVISOR_BOT_ID,
@@ -56,6 +56,19 @@ export const botDispatchJsonSchema: AgentActionFamilyJsonSchema = {
   ],
 };
 
+const botRegistryDispatchJsonSchema: AgentActionFamilyJsonSchema = {
+  ...botDispatchJsonSchema,
+  properties: {
+    ...botDispatchJsonSchema.properties,
+    pinnedToProjectId: {
+      type: 'string',
+      minLength: 1,
+      maxLength: PROJECT_DISCOVERY_ID_MAX,
+      description: 'Filter bots to those pinned to this canonical project ID.',
+    },
+  },
+};
+
 /**
  * The bot actions: discovery of bots, their tasks and chats, and bounded
  * reads of one chat. Hosts offer them only while the caller's bot access is
@@ -69,13 +82,19 @@ export function createBotActionFamily<H>(
     types: BOT_ACTION_TYPES,
     // Explicit bot targets: the envelope strips no scope field.
     targetFields: [],
-    catalog: () => BOT_ACTION_CATALOG,
+    catalog: (_brand, capabilities) =>
+      capabilities?.botsRegistry === true
+        ? BOT_REGISTRY_ACTION_CATALOG
+        : BOT_ACTION_CATALOG,
     supportedTypes: (capabilities) =>
       BOT_ACTION_TYPES.filter((type) =>
         capabilities.actionTypes.includes(type),
       ),
     actionSchema: botActionSchema,
-    dispatchJsonSchema: botDispatchJsonSchema,
+    dispatchJsonSchema: (capabilities) =>
+      capabilities?.botsRegistry === true
+        ? botRegistryDispatchJsonSchema
+        : botDispatchJsonSchema,
     dispatch: (action, call) => dispatchProjectBotAction(action, port, call),
   });
 }

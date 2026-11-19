@@ -6,6 +6,10 @@ import {
 } from '../lib/desktop-telemetry';
 import { pushBranchWithAuthFailure } from '../lib/github-push';
 import {
+  reportRepoGitFailure,
+  type GitFailureSource,
+} from '../lib/git-failure-reporting';
+import {
   classifyGitHubAuthFailure,
   GitHubAuthFailureError,
   githubAuthFailureCode,
@@ -129,11 +133,7 @@ import {
   cancelPrCreationProgress,
   recordPrCreationProgress,
 } from '../services/pr-creation-progress';
-import {
-  projectPortalPrStatus,
-  refreshPullRequestState,
-  registerPortalPrStatusProjection,
-} from '../services/pr-service';
+import { refreshPullRequestState } from '../services/pr-service';
 import {
   launchMergeConflictResolutionChat,
   launchPrCommentTriageChat,
@@ -1200,8 +1200,10 @@ export function registerGitHubHandlers(
     request: { projectId: string; worktreeId: string },
     repo: RepoEntry,
     error: unknown,
+    source: GitFailureSource,
     commitPrepared?: boolean,
   ): void {
+    const appError = reportRepoGitFailure(error, source);
     const errorMessage =
       error instanceof Error ? error.message : 'Unknown error';
     sendCommitProgress(
@@ -1216,6 +1218,7 @@ export function registerGitHubHandlers(
       repoName: repo.repoName,
       error: errorMessage,
       status: 'failed',
+      ...(appError ? { appError } : {}),
       ...(githubAuthFailureCode(error)
         ? {
             failureCode: githubAuthFailureCode(error),
@@ -1411,7 +1414,13 @@ export function registerGitHubHandlers(
         successRepos.push(config.buildSuccess(entry));
       } catch (err) {
         if (isGitActionCancelledError(err)) throw err;
-        pushFailedRepoAndEmitProgress(failedRepos, request, entry, err);
+        pushFailedRepoAndEmitProgress(
+          failedRepos,
+          request,
+          entry,
+          err,
+          'git.push',
+        );
       }
     }
 
@@ -1537,11 +1546,16 @@ export function registerGitHubHandlers(
             if (isGitActionCancelledError(result.reason)) throw result.reason;
             if (request.repoIds?.length === 1 && !failureCode)
               throw result.reason;
+            const appError = reportRepoGitFailure(
+              result.reason,
+              'git.create_pr',
+            );
             failedRepos.push({
               repoId: repo.repoId,
               repoName: repo.repoName,
               status: 'failed',
               error: errorMsg,
+              ...(appError ? { appError } : {}),
               ...(failureCode
                 ? {
                     failureCode,
@@ -1841,11 +1855,6 @@ export function registerGitHubHandlers(
             if (!scope.cancelled) {
               scope.enterRefreshing();
               sendPrRefreshing(request);
-              // Re-project the fresh pr_status to a connected portal once creation
-              // settles: the live 'done'/'error' feed deltas carry the
-              // last-remembered payload, which predates a just-created PR
-              // (CAN-1528 L2 review). Fire-and-forget; never throws.
-              void projectPortalPrStatus(request.projectId, request.worktreeId);
               if (isMultiRepoWorkspace(request.projectId)) {
                 // refreshNow fetches per-repo PR status sequentially; awaiting it
                 // here keeps the "Creating pull request…" state stuck on the card
@@ -2068,10 +2077,15 @@ export function registerGitHubHandlers(
                 });
               } catch (err) {
                 if (isGitActionCancelledError(err)) throw err;
+                const appError = reportRepoGitFailure(
+                  err,
+                  'git.commit_message',
+                );
                 failedRepos.push({
                   repoId: entry.repoId,
                   repoName: entry.repoName,
                   error: err instanceof Error ? err.message : 'Unknown error',
+                  ...(appError ? { appError } : {}),
                 });
               }
             }
@@ -2125,10 +2139,15 @@ export function registerGitHubHandlers(
                 repos.push({ repoId, repoName, message });
               } catch (err) {
                 if (isGitActionCancelledError(err)) throw err;
+                const appError = reportRepoGitFailure(
+                  err,
+                  'git.commit_message',
+                );
                 failedRepos.push({
                   repoId,
                   repoName,
                   error: err instanceof Error ? err.message : 'Unknown error',
+                  ...(appError ? { appError } : {}),
                 });
               }
             }
@@ -2432,6 +2451,7 @@ export function registerGitHubHandlers(
                 request,
                 entry,
                 err,
+                'git.commit_and_push',
                 commitPrepared,
               );
             }
@@ -2663,6 +2683,7 @@ export function registerGitHubHandlers(
                 classifyGitHubAuthFailure(originUrl, error)
                   ? new GitHubAuthFailureError(error)
                   : error,
+                'git.pull',
               );
               continue;
             }
@@ -2743,7 +2764,13 @@ export function registerGitHubHandlers(
               await scope.runGitStep(() =>
                 fetchOrigin(entry.repoPath, { prune: true }),
               );
-              pushFailedRepoAndEmitProgress(failedRepos, request, entry, err);
+              pushFailedRepoAndEmitProgress(
+                failedRepos,
+                request,
+                entry,
+                err,
+                'git.pull',
+              );
             }
           }
 
@@ -2902,6 +2929,7 @@ export function registerGitHubHandlers(
               });
             } catch (error) {
               if (isGitActionCancelledError(error)) throw error;
+              const appError = reportRepoGitFailure(error, 'git.merge_local');
               failedRepos.push({
                 repoId,
                 repoName,
@@ -2909,6 +2937,7 @@ export function registerGitHubHandlers(
                 baseBranch,
                 error: error instanceof Error ? error.message : 'Unknown error',
                 status: 'failed',
+                ...(appError ? { appError } : {}),
               });
             }
           }
@@ -3329,12 +3358,14 @@ export function registerGitHubHandlers(
                     error instanceof Error ? error.message : 'Unknown error',
                 });
               }
+              const appError = reportRepoGitFailure(error, 'git.merge_pr');
               failedRepos.push({
                 repoId,
                 repoName,
                 prNumber,
                 error: error instanceof Error ? error.message : 'Unknown error',
                 status: 'failed',
+                ...(appError ? { appError } : {}),
               });
             }
           };
@@ -3409,12 +3440,14 @@ export function registerGitHubHandlers(
               if (isGitActionCancelledError(error)) throw error;
               const message =
                 error instanceof Error ? error.message : 'Unknown error';
+              const appError = reportRepoGitFailure(error, 'git.merge_pr');
               failedRepos.push({
                 repoId,
                 repoName,
                 prNumber: deferred.prNumber,
                 error: message,
                 status: 'failed',
+                ...(appError ? { appError } : {}),
               });
               sendMergePrProgress({
                 projectId: request.projectId,
@@ -3494,7 +3527,6 @@ export function registerGitHubHandlers(
     },
   );
 
-  registerPortalPrStatusProjection();
   registerWorktreePrActions({
     create: (request) => {
       assertWritableScope(request.projectId);

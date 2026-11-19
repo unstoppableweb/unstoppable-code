@@ -19,6 +19,25 @@ export interface OctokitClientOptions {
   baseUrl?: string;
 }
 
+/** Octokit's logger. Each method receives a message and nothing else. */
+export interface OctokitClientLog {
+  debug: (message: string) => void;
+  info: (message: string) => void;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+/**
+ * Options for the broker's credential-free client: no `auth`, an auth
+ * strategy whose hook Octokit wraps first (so it runs innermost, after every
+ * plugin hook), and an explicit logger.
+ */
+export interface OctokitBrokerClientOptions {
+  authStrategy: () => unknown;
+  log: OctokitClientLog;
+  baseUrl?: string;
+}
+
 /**
  * Build the Octokit constructor options.
  *
@@ -51,4 +70,15 @@ export function resolveOctokitClientOptions(
   auth: string,
 ): OctokitClientOptions {
   return buildOctokitClientOptions(auth, resolveE2eGithubApiBaseUrl());
+}
+
+/** Broker client options with the E2E base-URL seam applied. */
+export function resolveOctokitBrokerClientOptions(
+  authStrategy: () => unknown,
+  log: OctokitClientLog,
+): OctokitBrokerClientOptions {
+  const baseUrl = resolveE2eGithubApiBaseUrl();
+  return typeof baseUrl === 'string' && baseUrl.length > 0
+    ? { authStrategy, log, baseUrl }
+    : { authStrategy, log };
 }

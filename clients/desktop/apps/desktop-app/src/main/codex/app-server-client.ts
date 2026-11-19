@@ -1,3 +1,4 @@
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import {
   ASK_USER_HTTP_TIMEOUT_MS,
   CANOPY_INJECTED_TOOL_REGISTRY,
@@ -62,8 +63,13 @@ import {
 } from '../lib/main-process-logging';
 import {
   codexApprovalPolicyFor,
-  codexSandboxModeFor,
-  codexSandboxPolicyFor,
+  codexCanopyPermissionProfiles,
+  codexDefaultPermissionsFor,
+  codexThreadSandboxFields,
+  codexThreadSandboxKind,
+  codexNeedsSandboxReopen,
+  codexTurnSandbox,
+  type CodexThreadSandboxKind,
 } from './approval-policy';
 import {
   buildCodexPlanModeDeveloperInstructions,
@@ -561,6 +567,8 @@ interface ParsedUserInputQuestion {
 }
 
 interface ThreadConfigOptions {
+  /** The thread's approval mode, for its default permissions profile. */
+  approvalMode: ApprovalMode;
   threadConfig?: { [key in string]?: JsonValue };
   mcpServersConfig?: { [key in string]?: JsonValue };
   multiAgentEnabled?: boolean;
@@ -577,6 +585,20 @@ function buildThreadConfig(
   const config: { [key in string]?: JsonValue } = {
     ...(options.threadConfig ?? {}),
   };
+  // The read-only profile sandboxed chats select (approval-policy.ts),
+  // defined on every thread so a mode change can switch to it.
+  const profiles = codexCanopyPermissionProfiles();
+  if (profiles) {
+    const existing =
+      config.permissions &&
+      typeof config.permissions === 'object' &&
+      !Array.isArray(config.permissions)
+        ? config.permissions
+        : {};
+    config.permissions = { ...existing, ...profiles };
+  }
+  const defaultPermissions = codexDefaultPermissionsFor(options.approvalMode);
+  if (defaultPermissions) config.default_permissions = defaultPermissions;
 
   if (
     projection.includeSelectedMcpServers &&
@@ -2078,6 +2100,8 @@ export function parseGetAccountResponsePayload(
   return {
     account:
       chatGptAccount ?? (accountType === 'apiKey' ? { type: 'apiKey' } : null),
+    // Canopy does not consume the ChatGPT user id; avoid retaining it.
+    userId: null,
     requiresOpenaiAuth: readBoolean(value, 'requiresOpenaiAuth') === true,
     // Canopy does not consume backend routing; avoid retaining its account id.
     workspaceRouting: null,
@@ -2464,6 +2488,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   >();
   private readonly approvalSession?: ApprovalSessionHandle;
   private approvalMode: ApprovalMode;
+  /** How the client's thread was sandboxed when it last opened. */
+  private threadSandboxKind: CodexThreadSandboxKind | null = null;
   private readonly onAwaitingUser?: () => void;
   private readonly onSteeringEligibilityChanged?: () => void;
   private readonly onTurnLifecycleObservation?: (
@@ -3846,6 +3872,13 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
             }
           : undefined;
 
+    // Codex keeps a turn's sandbox override for later turns: remember it.
+    const turnSandbox = codexTurnSandbox(
+      approvalMode,
+      opts.cwd,
+      this.threadSandboxKind ?? codexThreadSandboxKind(approvalMode),
+    );
+    this.threadSandboxKind = turnSandbox.threadKind;
     try {
       const startParams: AppServerRequestParams<'turn/start'> = {
         threadId,
@@ -3855,7 +3888,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           : {}),
         cwd: opts.cwd,
         approvalPolicy: codexApprovalPolicyFor(approvalMode),
-        sandboxPolicy: codexSandboxPolicyFor(approvalMode, opts.cwd),
+        ...turnSandbox.fields,
         // The exact (admitted) tier for this turn.
         serviceTier: codexServiceTierForModelConfig(startTurnModelConfig(opts)),
         ...(opts.model ? { model: opts.model } : {}),
@@ -3993,6 +4026,19 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
   getThreadId(): string | undefined {
     return this.threadId;
+  }
+
+  /** Whether a turn in `mode` must reopen the thread first (approval-policy.ts). */
+  needsSandboxReopen(mode: ApprovalMode): boolean {
+    return codexNeedsSandboxReopen(this.threadSandboxKind, mode);
+  }
+
+  /** A thread open's sandbox selection, remembered for its turns. */
+  private openedThreadSandboxFields(
+    mode: ApprovalMode,
+  ): ReturnType<typeof codexThreadSandboxFields> {
+    this.threadSandboxKind = codexThreadSandboxKind(mode);
+    return codexThreadSandboxFields(mode);
   }
 
   /**
@@ -4573,6 +4619,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   async forkThread(sourceThreadId: string): Promise<string> {
     await this.connection.ensureInitialized();
     const threadConfig = buildThreadConfig({
+      approvalMode: this.approvalMode,
       threadConfig: this.threadConfig,
       multiAgentEnabled: this.multiAgentEnabled,
       maxConcurrentSubagents: this.maxConcurrentSubagents,
@@ -4581,7 +4628,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       threadId: sourceThreadId,
       cwd: this.cwd,
       approvalPolicy: codexApprovalPolicyFor(this.approvalMode),
-      sandbox: codexSandboxModeFor(this.approvalMode),
+      ...codexThreadSandboxFields(this.approvalMode),
       // Metadata-only lifecycle request: never persists unadmitted Ultra fast.
       serviceTier: codexLifecycleServiceTier(this.getModelConfig?.()),
       ...(threadConfig ? { config: threadConfig } : {}),
@@ -4611,6 +4658,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
     const startThreadConfig = buildThreadConfig(
       {
+        approvalMode: this.approvalMode,
         threadConfig: this.threadConfig,
         mcpServersConfig: this.mcpServersConfig,
         multiAgentEnabled: this.multiAgentEnabled,
@@ -4623,6 +4671,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     );
     const resumeThreadConfig = buildThreadConfig(
       {
+        approvalMode: this.approvalMode,
         threadConfig: this.threadConfig,
         mcpServersConfig: this.mcpServersConfig,
         multiAgentEnabled: this.multiAgentEnabled,
@@ -4646,7 +4695,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const startParams: ThreadStartParams = {
       cwd: opts.cwd,
       approvalPolicy: codexApprovalPolicyFor(approvalMode),
-      sandbox: codexSandboxModeFor(approvalMode),
+      ...this.openedThreadSandboxFields(approvalMode),
       // Thread start/resume/materialization is lifecycle metadata: Regular and
       // Fast keep their exact tier, Ultra fast sends an explicit `default`
       // (clearing any inherited tier) and each admitted `turn/start` carries
@@ -4736,7 +4785,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
               threadId: resumeThreadId,
               cwd: opts.cwd,
               approvalPolicy: codexApprovalPolicyFor(approvalMode),
-              sandbox: codexSandboxModeFor(approvalMode),
+              ...this.openedThreadSandboxFields(approvalMode),
               serviceTier: startParams.serviceTier,
               ...(opts.model ? { model: opts.model } : {}),
               ...(resumeThreadConfig ? { config: resumeThreadConfig } : {}),
@@ -5412,6 +5461,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       if (signal?.aborted || isExpectedPromptCancellation(error)) {
         return undefined;
       }
+      reportMainAppError(error, { source: 'codex.approval' });
       return { decision: 'deny' };
     }
   }
@@ -6243,8 +6293,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
     const requestsSecrets =
       parsed.tool ===
-      CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName;
-    // Native subagent threads don't get secret requests in v1.
+        CANOPY_INJECTED_TOOL_REGISTRY.request_secrets.codexToolName ||
+      parsed.tool ===
+        CANOPY_INJECTED_TOOL_REGISTRY.run_with_secrets.codexToolName ||
+      parsed.tool ===
+        CANOPY_INJECTED_TOOL_REGISTRY.write_secrets_file.codexToolName;
+    // Native subagent threads don't get the secret tools in v1. They wait on
+    // the person (the form, or the secrets approval), so they keep the
+    // ask-user timeout.
     if (requestsSecrets && parsed.threadId !== this.threadId) {
       if (!this.connection.completePendingServerRequest(requestId)) return;
       this.connection.send({
@@ -6253,7 +6309,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           contentItems: [
             {
               type: 'inputText',
-              text: 'RequestSecrets is not available to subagents. Ask from the main conversation instead.',
+              text: 'RequestSecrets, RunWithSecrets and WriteSecretsFile are not available to subagents. Use them from the main conversation instead.',
             },
           ],
           success: false,
@@ -8322,6 +8378,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         this.connection.registerRootThread(active.rootThreadId);
         const resumeConfig = buildThreadConfig(
           {
+            approvalMode: this.approvalMode,
             threadConfig: this.threadConfig,
             mcpServersConfig: this.mcpServersConfig,
             multiAgentEnabled: this.multiAgentEnabled,
@@ -8333,7 +8390,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           threadId: active.rootThreadId,
           cwd: active.startParams?.cwd ?? this.cwd,
           approvalPolicy: codexApprovalPolicyFor(this.approvalMode),
-          sandbox: codexSandboxModeFor(this.approvalMode),
+          ...this.openedThreadSandboxFields(this.approvalMode),
           ...(active.startParams?.serviceTier
             ? {
                 // Recovery resume is lifecycle metadata; the continuation

@@ -25,6 +25,7 @@ export type W5HandoffFailure =
   | 'cancelled';
 
 export class W5DaemonHandoffError extends Error {
+  declare readonly cause?: unknown;
   constructor(
     readonly reason: W5HandoffFailure,
     /** A path-free sub-reason, such as the backup refusal. */
@@ -36,6 +37,12 @@ export class W5DaemonHandoffError extends Error {
       `W5 startup handoff failed (${reason}${detail ? `: ${detail}` : ''})`,
     );
     this.name = 'W5DaemonHandoffError';
+    if (underlying !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: underlying,
+        configurable: true,
+        writable: true,
+      });
   }
 }
 

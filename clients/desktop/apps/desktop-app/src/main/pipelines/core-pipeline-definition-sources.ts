@@ -1,5 +1,9 @@
 import { readFile, realpath } from 'node:fs/promises';
 import {
+  assertOrganizationPipelineAllowed,
+  organizationPipelinesSwitchedOff,
+} from '../organization-capabilities/pipeline-gate';
+import {
   createPipelineDefinitionService,
   PipelineDefinitionSourceError,
   type PipelineDefinitionService,
@@ -792,30 +796,37 @@ function sharedPort(): PipelineDefinitionSourcePort {
       context,
     ): Promise<readonly PipelineDefinitionSourceEntry[]> => {
       let listed: Awaited<ReturnType<typeof listSharedPipelines>>;
+      let switchedOff: ReadonlySet<string>;
       try {
         await assertCanopyCloudCapability('pipelines-crud-v1');
-        listed = await listSharedPipelines({
-          limit: 100,
-          ...(context.query === undefined ? {} : { q: context.query }),
-        });
+        [listed, switchedOff] = await Promise.all([
+          listSharedPipelines({
+            limit: 100,
+            ...(context.query === undefined ? {} : { q: context.query }),
+          }),
+          // An organization project's switched-off defaults (CAN-6237).
+          organizationPipelinesSwitchedOff(context.scope.workspaceId),
+        ]);
       } catch (error) {
         presentSourceFailure('shared', error);
         throw error;
       }
-      return sharedPipelineRows(listed.data).map((pipeline) => ({
-        source: 'shared',
-        definitionId: presentSharedPipeline('listed', pipeline),
-        name: pipeline.name,
-        description: pipeline.description,
-        icon: pipeline.icon,
-        readonly: !pipeline.canUpdate,
-        revision: 0,
-        owner: null,
-        createdAt: isoTimestamp(pipeline.createdAt),
-        updatedAt: isoTimestamp(pipeline.updatedAt),
-        triggerTypes: pipeline.triggerTypes,
-        ...(pipeline.scopes ? { executionScopes: pipeline.scopes } : {}),
-      }));
+      return sharedPipelineRows(listed.data)
+        .filter((pipeline) => !switchedOff.has(pipeline.id))
+        .map((pipeline) => ({
+          source: 'shared',
+          definitionId: presentSharedPipeline('listed', pipeline),
+          name: pipeline.name,
+          description: pipeline.description,
+          icon: pipeline.icon,
+          readonly: !pipeline.canUpdate,
+          revision: 0,
+          owner: null,
+          createdAt: isoTimestamp(pipeline.createdAt),
+          updatedAt: isoTimestamp(pipeline.updatedAt),
+          triggerTypes: pipeline.triggerTypes,
+          ...(pipeline.scopes ? { executionScopes: pipeline.scopes } : {}),
+        }));
     },
     read: async (
       _source,
@@ -832,6 +843,12 @@ function sharedPort(): PipelineDefinitionSourcePort {
       await assertCanopyCloudCapability('pipelines-crud-v1');
       let detail: Awaited<ReturnType<typeof getSharedPipeline>>;
       try {
+        // A default the organization project switched off is not read for
+        // it; answered as a context mismatch below.
+        await assertOrganizationPipelineAllowed(
+          context.scope.workspaceId,
+          parsed.remoteId,
+        );
         detail = await (context.owner === undefined
           ? getSharedPipeline(parsed.remoteId)
           : getSharedPipelineForExecutionContext(parsed.remoteId));

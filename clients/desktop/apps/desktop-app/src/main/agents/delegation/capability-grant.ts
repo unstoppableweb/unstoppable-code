@@ -28,6 +28,7 @@ import {
 import type { DelegationCapabilityDiscovery } from '@canopy/desktop-shared/node/delegation/projections';
 import { resolveEffectivePluginSelectionRefs } from '../../plugins/plugin-resolver';
 import { resolveEffectiveChatPluginSelections } from '../../plugins/global-plugin-overlay';
+import { pluginDefaultsWorkspaceId } from '../../plugins/plugin-defaults-revision';
 import type { AgentSessionOptions } from '../types';
 import type {
   DelegationCapabilityLayer,
@@ -133,9 +134,14 @@ export function selectionsFromRefs(
 
 async function effectiveKeysForSelections(
   selections: ChatTabPluginSelections,
+  workspaceId: string,
 ): Promise<Set<string>> {
   if (!hasSelections(selections)) return new Set();
-  const refs = await resolveEffectivePluginSelectionRefs(selections);
+  const refs = await resolveEffectivePluginSelectionRefs(
+    selections,
+    [],
+    workspaceId,
+  );
   return new Set([
     ...refs.skillRefs.map((ref) =>
       delegationCapabilityRefKey({ kind: 'skill', ...ref }),
@@ -169,7 +175,11 @@ export async function resolveRootCallerCapabilities(
   return Object.freeze({
     depth: 0,
     selections,
-    effectiveKeys: await effectiveKeysForSelections(selections),
+    // The workspace its organization skills were resolved for (CAN-6237).
+    effectiveKeys: await effectiveKeysForSelections(
+      selections,
+      pluginDefaultsWorkspaceId(owner),
+    ),
     mayDiscover: owner.deferredToolsAllowed === true,
     rootDeferredToolsAllowed: owner.deferredToolsAllowed === true,
     inheritedOverlay: selectHomeCapabilityOverlay(

@@ -360,6 +360,11 @@ export type PlatformProcessTable =
   | { readonly kind: 'unavailable'; readonly reason: string };
 
 export interface PlatformSupervisionServices {
+  /** Local private-runtime reboot evidence; never host authentication. Absence fails closed. */
+  bootRelation?(request: {
+    readonly startIdentity: string;
+    readonly signal?: AbortSignal;
+  }): Promise<'before_boot' | 'this_boot' | 'unknown'>;
   childProcessOptions(
     request: PlatformChildProcessRequest,
   ): PlatformChildProcessOptions;

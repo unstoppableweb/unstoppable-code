@@ -253,6 +253,7 @@ import { getAiCreditsRoutingContextWithStatus } from '../agents/ai-credits-routi
 import { resolveNavigationWorkOwner } from '../agents/work-owner';
 import { resolveGatewayModelEntry } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { AUTOMATION_SHARE_BLOCK_MESSAGES } from '@canopy/desktop-shared/lib/automation-sharing';
+import { rebindChatAutomationPackage } from '@canopy/desktop-shared/lib/chat-automation-package-rebind';
 import {
   getEnhancedEnv,
   getProjectActionsDirCandidates,
@@ -2767,14 +2768,15 @@ function assertAutomationPackageHasValidBindings(
   }
 }
 
-async function commitInstalledAutomationCapabilityPackage(
-  request: {
-    localAutomationId: string;
-    packageRef: PipelinePackageRef;
-    expectedPackageContentHash?: string | null;
-  },
-  getWindow?: () => BrowserWindow | null,
-): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
+/**
+ * The verified manifest of the package installed for an automation, and its
+ * cache path, once the install still pins the content the share expects.
+ */
+async function verifiedInstalledAutomationPackage(request: {
+  localAutomationId: string;
+  packageRef: PipelinePackageRef;
+  expectedPackageContentHash?: string | null;
+}): Promise<{ manifest: PipelinePackageManifestV1; packagePath: string }> {
   const install = await findCapabilityPackageInstallByOwner(
     getPipelinePackageInstallStorePath(),
     { kind: 'automation', localAutomationId: request.localAutomationId },
@@ -2829,11 +2831,87 @@ async function commitInstalledAutomationCapabilityPackage(
     );
   }
   assertAutomationPackageHasValidBindings(manifest);
+  return { manifest, packagePath };
+}
+
+async function commitInstalledAutomationCapabilityPackage(
+  request: {
+    localAutomationId: string;
+    packageRef: PipelinePackageRef;
+    expectedPackageContentHash?: string | null;
+  },
+  getWindow?: () => BrowserWindow | null,
+): Promise<{ uploadId: string; packageRef: PipelinePackageRef }> {
+  const { manifest, packagePath } =
+    await verifiedInstalledAutomationPackage(request);
   return commitCapabilityPackageUpload(
     manifest,
     (sha256) => readFile(path.join(packagePath, 'blobs', sha256)),
     getWindow,
   );
+}
+
+/**
+ * Shares a packaged install as the workflow it runs (CAN-6455): rebuilds the
+ * installed package for that workflow with `rebindChatAutomationPackage` (the
+ * same files, bound to the send step, keyed to the workflow's YAML) and
+ * uploads it. The server already holds the files, so usually nothing is
+ * uploaded but the manifest. `workflowPipelineId` comes from the saved
+ * automation, never the request; the YAML the share carries must be its
+ * stored bytes.
+ */
+export async function createReboundAutomationCapabilityPackage(
+  request: {
+    localAutomationId: string;
+    packageRef: PipelinePackageRef;
+    expectedPackageContentHash: string;
+    reboundWorkflow: string;
+  },
+  workflowPipelineId: string,
+  getWindow?: () => BrowserWindow | null,
+): Promise<{
+  capabilityPackage: PipelinePackageRef;
+  committedPackageUploadId: string;
+}> {
+  const { manifest, packagePath } =
+    await verifiedInstalledAutomationPackage(request);
+  const workflowPath = storedPipelineFilePath(workflowPipelineId);
+  const stored =
+    workflowPath === undefined
+      ? null
+      : await readFile(workflowPath, 'utf8').catch(() => null);
+  if (stored !== request.reboundWorkflow) {
+    throw new ShareOperationError(
+      'unavailable',
+      'The automation’s workflow changed while it was being shared. Try again.',
+    );
+  }
+  const rebound = await rebindChatAutomationPackage(
+    manifest,
+    request.reboundWorkflow,
+  );
+  if (!rebound.ok) {
+    throw new ShareOperationError(
+      'unavailable',
+      'This automation’s installed skills can’t be shared with its workflow. Reinstall the automation or share without local skills and plugins.',
+    );
+  }
+  assertAutomationPackageHasValidBindings(rebound.manifest);
+  const committed = await commitCapabilityPackageUpload(
+    rebound.manifest,
+    (sha256) => readFile(path.join(packagePath, 'blobs', sha256)),
+    getWindow,
+  );
+  if (committed.packageRef.digest !== rebound.packageRef.digest) {
+    throw new ShareOperationError(
+      'unavailable',
+      'The rebuilt capability package could not be verified. Try again.',
+    );
+  }
+  return {
+    capabilityPackage: committed.packageRef,
+    committedPackageUploadId: committed.uploadId,
+  };
 }
 
 export async function createPackagedSharedPipeline(
@@ -3052,6 +3130,13 @@ export async function createPackagedAutomationCapabilityPackage(
   capabilityPackage: PipelinePackageRef;
   committedPackageUploadId: string;
 }> {
+  // A rebuilt package needs the automation's stored workflow, which only the
+  // IPC handler resolves (`createReboundAutomationCapabilityPackage`).
+  if ('reboundWorkflow' in request)
+    throw new ShareOperationError(
+      'unavailable',
+      'A rebuilt package needs the automation’s workflow.',
+    );
   const committed =
     'analysisId' in request
       ? await commitAnalyzedCapabilityPackage(

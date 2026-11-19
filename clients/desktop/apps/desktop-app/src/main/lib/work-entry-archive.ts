@@ -21,15 +21,11 @@ import {
   broadcastArchivedContainersChanged,
   withArchivedWorkspaceOperationLock,
 } from './archived-containers';
-import {
-  listWorkEntries,
-  listWorkEntryChatSummaries,
-  removeWorkEntryRow,
-} from './cowork-work-entries';
+import { listWorkEntries, removeWorkEntryRow } from './cowork-work-entries';
 import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
 import { validateId } from './validation';
 import { WorkspaceTargetAutoArchiveExcludedError } from './workspace-target-exclusion';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import { runWithWorkspaceTargetActivityDeletion } from './workspace-activity';
 import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
 
@@ -165,7 +161,6 @@ async function archiveWorkEntryWithoutOperationLock({
 
   let retained = false;
   const warnings: string[] = [];
-  let removedChatIds: string[] = [];
   const chatStateService = getChatStateService();
   const scope = { projectId: workspaceId, worktreeId: entryId };
   await chatStateService.runWithScopeDeletionLifecycle(scope, async () => {
@@ -199,13 +194,6 @@ async function archiveWorkEntryWithoutOperationLock({
       await destroyWorktreeSessions(workspaceId, entryId);
       sessionsDestroyed = true;
       await chatStateService.runWithScopeDeletion(scope, async () => {
-        if (!isBotProjectId(workspaceId)) {
-          const summaries = await listWorkEntryChatSummaries(workspaceId);
-          removedChatIds =
-            summaries
-              .find((candidate) => candidate.entryId === entryId)
-              ?.chats.map((chat) => chat.id) ?? [];
-        }
         await getTelemetrySyncService()
           .drainWorktreeForDeletion(workspaceId, entryId)
           .catch(() => undefined);
@@ -240,7 +228,7 @@ async function archiveWorkEntryWithoutOperationLock({
           workspaceId,
           entryId,
         );
-        schedulePortalStructuralSync();
+        scheduleDesktopStructureChanged('structural.work-entry-archive');
       });
       queueDeletion.commit();
       queueDeletionCommitted = true;
@@ -265,7 +253,7 @@ async function archiveWorkEntryWithoutOperationLock({
     // work-entry archival does not need it until cowork removal runs.
     const { emitStandaloneChatRemovals } =
       await import('../services/standalone-chat-service');
-    emitStandaloneChatRemovals(workspaceId, removedChatIds);
+    emitStandaloneChatRemovals();
   }
   if (retained) broadcastArchivedContainersChanged(workspaceId);
   return { retained, warnings };

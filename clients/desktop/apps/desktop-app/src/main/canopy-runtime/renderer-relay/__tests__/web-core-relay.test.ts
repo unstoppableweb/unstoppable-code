@@ -3,6 +3,7 @@ import type {
   CanopyJsonValue,
 } from '@canopy/protocol/canopy-core';
 import { CanopyTransportError } from '@canopy/core-transport';
+import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { RelayBindingProvider } from '../definitions';
 import {
   createRendererRelay,
@@ -13,9 +14,18 @@ import { routeRendererRelayRequest } from '../relay-authority';
 import type { RendererRelaySurface } from '../surface-allowlist';
 import {
   WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
+  WEB_CORE_SANDBOX_FIELD_PARSERS,
   WEB_CORE_TEARDOWN_RELAY_OPERATIONS,
   WEB_CORE_RELAY_OPERATIONS,
+  webCoreRelayNarrowParams,
+  webCoreRelayRefuseParams,
 } from '../web-core-relay-definitions';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import {
+  parseEgressAllowedHosts,
+  parseHostPorts,
+} from '@canopy/protocol/canopy-core/core';
 import { createWebCoreRendererRelay } from '../../../ipc/canopy-core-relay';
 
 const CALLER: CanopyCallerDescriptor = {
@@ -302,6 +312,303 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
     advisor.dispose();
   });
 
+  it("a cloud project's instructions and default plugins reach only the web core, from the main window, narrowed to those fields (CAN-7053)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const local = {
+      invoke: jest.fn(() =>
+        Promise.resolve({ ok: true as const, value: { from: 'local' } }),
+      ),
+    };
+    const targets = { local, webCore: relay };
+    const send = (
+      method: string,
+      params: Record<string, unknown>,
+    ): ReturnType<typeof routeRendererRelayRequest> =>
+      routeRendererRelayRequest(targets, rendererEvent(), {
+        kind: 'request',
+        method,
+        params,
+        authority: 'web-core',
+      });
+    const instructions = {
+      workspaceId: 'ws-1',
+      content: 'Be brief.',
+      revision: 2,
+    };
+    const setDefaults = {
+      workspaceId: 'ws-1',
+      change: {
+        kind: 'setDefaults',
+        defaultPluginSelections: null,
+        expectedDefaultPluginSelectionsRevision: 4,
+      },
+      _meta: { idempotencyKey: 'key-p' },
+    };
+
+    // App Advisor's surface reaches neither.
+    for (const method of [
+      'core.workspace.instructions.update',
+      'core.workspace.plugins.update',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      await expect(
+        advisor.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    // Remote Control's contract names neither, so a phone can't send them.
+    const contract = JSON.stringify(
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('../../../remote-control/remote-protocol-contract.json'),
+    );
+    expect(contract).not.toContain('core.workspace.instructions.update');
+    expect(contract).not.toContain('core.workspace.plugins.update');
+
+    // Anything beyond the instructions' text, a plugins change other than
+    // setDefaults, or a field a setDefaults doesn't take is refused before it
+    // leaves main.
+    for (const [method, params] of [
+      [
+        'core.workspace.instructions.update',
+        { ...instructions, egressAllowedHosts: ['example.com'] },
+      ],
+      [
+        'core.workspace.plugins.update',
+        {
+          ...setDefaults,
+          change: {
+            kind: 'selectRecommended',
+            selections: [],
+            optOutKeys: [],
+            clearOptOutKeys: [],
+          },
+        },
+      ],
+      [
+        'core.workspace.plugins.update',
+        { ...setDefaults, change: { ...setDefaults.change, hostPorts: [80] } },
+      ],
+      [
+        'core.workspace.plugins.update',
+        { ...setDefaults, change: 'setDefaults' },
+      ],
+      [
+        'core.workspace.plugins.update',
+        { ...setDefaults, hostModeEnabled: true },
+      ],
+    ] as const) {
+      await expect(send(method, params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // The project patch takes no other project field.
+    for (const patch of [{ defaultAgentInstructions: 'x' }]) {
+      await expect(
+        send('core.workspace.update', {
+          workspaceId: 'ws-1',
+          patch,
+          _meta: { idempotencyKey: 'key-u' },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // The narrowed saves pass to the web core binding, and never to the local
+    // relay.
+    for (const [method, params] of [
+      ['core.workspace.instructions.update', instructions],
+      [
+        'core.workspace.instructions.update',
+        { workspaceId: 'ws-1', content: '' },
+      ],
+      ['core.workspace.plugins.update', setDefaults],
+    ] as const) {
+      await expect(send(method, params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable' },
+      });
+    }
+    expect(binding).toHaveBeenCalledTimes(3);
+    expect(local.invoke).not.toHaveBeenCalled();
+    relay.dispose();
+    advisor.dispose();
+  });
+
+  it("a cloud project's egress hosts and host settings reach only the web core, from the main window, valid and canonical (CAN-7053)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const local = {
+      invoke: jest.fn(() =>
+        Promise.resolve({ ok: true as const, value: { from: 'local' } }),
+      ),
+    };
+    const targets = { local, webCore: relay };
+    const send = (
+      method: string,
+      params: Record<string, unknown>,
+    ): ReturnType<typeof routeRendererRelayRequest> =>
+      routeRendererRelayRequest(targets, rendererEvent(), {
+        kind: 'request',
+        method,
+        params,
+        authority: 'web-core',
+      });
+    const update = (
+      patch: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      workspaceId: 'ws-1',
+      expectedRevision: 7,
+      patch,
+      _meta: { idempotencyKey: 'key-s' },
+    });
+
+    // The relay checks with the web core's own parsers, not a copy.
+    expect(WEB_CORE_SANDBOX_FIELD_PARSERS.parseHostPorts).toBe(parseHostPorts);
+    expect(WEB_CORE_SANDBOX_FIELD_PARSERS.parseEgressAllowedHosts).toBe(
+      parseEgressAllowedHosts,
+    );
+
+    // App Advisor's surface reaches neither the save nor the routes.
+    for (const [method, params] of [
+      ['core.workspace.update', update({ egressAllowedHosts: ['a.io'] })],
+      ['core.workspace.update', update({ hostModeEnabled: true })],
+      ['core.workspace.update', update({ hostPorts: [3000] })],
+      ['core.workspace.sandboxRoutes.get', { workspaceId: 'ws-1' }],
+    ] as const) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      await expect(
+        advisor.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    // Remote Control's contract names no project method, and no agent action
+    // (the allowlist and its ledger) names either, so no controller or agent
+    // has a path to them.
+    const repoRoot = resolve(__dirname, '../../../../../../..');
+    const contract = readFileSync(
+      resolve(
+        repoRoot,
+        'apps/desktop-app/src/main/remote-control/remote-protocol-contract.json',
+      ),
+      'utf8',
+    );
+    expect(contract).not.toContain('core.workspace.');
+    for (const file of [
+      'docs/agent-actions/agent-actions.allowlist.json',
+      'docs/agent-actions/agent-actions-ledger.yaml',
+    ]) {
+      const text = readFileSync(resolve(repoRoot, file), 'utf8');
+      expect(text).not.toContain('core.workspace.update');
+      expect(text).not.toContain('core.workspace.sandboxRoutes');
+    }
+
+    // Each malformed or non-canonical value is refused, typed, before it
+    // leaves main.
+    const refused: Record<string, unknown>[] = [
+      { egressAllowedHosts: ['https://example.com'] },
+      { egressAllowedHosts: ['example.com:443'] },
+      { egressAllowedHosts: ['*.example.com'] },
+      { egressAllowedHosts: ['*'] },
+      { egressAllowedHosts: ['a..io'] },
+      { egressAllowedHosts: [`${'a'.repeat(250)}.io`] },
+      { egressAllowedHosts: Array.from({ length: 65 }, (_, i) => `h${i}.io`) },
+      { egressAllowedHosts: ['Example.com'] },
+      { egressAllowedHosts: ['a.io', 'a.io'] },
+      { egressAllowedHosts: [' a.io'] },
+      { egressAllowedHosts: 'a.io' },
+      { hostPorts: [0] },
+      { hostPorts: [65536] },
+      { hostPorts: [3000.5] },
+      { hostPorts: ['3000'] },
+      { hostPorts: [1, 2, 3, 4, 5] },
+      { hostPorts: [3000, 3000] },
+      { hostPorts: null },
+      { hostModeEnabled: 'yes' },
+      { description: 'x' },
+      { startPage: null },
+      {},
+    ];
+    for (const patch of refused) {
+      await expect(
+        send('core.workspace.update', update(patch)),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    for (const params of [
+      { ...update({ name: 'N' }), cowork: true },
+      { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+    ]) {
+      const method =
+        'cowork' in params
+          ? 'core.workspace.update'
+          : 'core.workspace.sandboxRoutes.get';
+      await expect(send(method, params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // A valid, canonical patch passes byte-identical, and so does the read.
+    const valid = {
+      workspaceId: 'ws-1',
+      expectedRevision: 7,
+      patch: {
+        name: 'Research',
+        hostModeEnabled: true,
+        hostPorts: [3000, 8080],
+        egressAllowedHosts: ['api.example.com', 'example.org'],
+      },
+    };
+    const sent = JSON.stringify(valid);
+    expect(webCoreRelayRefuseParams('core.workspace.update', valid)).toBeNull();
+    expect(
+      JSON.stringify(webCoreRelayNarrowParams('core.workspace.update', valid)),
+    ).toBe(sent);
+    expect(JSON.stringify(valid)).toBe(sent);
+    for (const [method, params] of [
+      ['core.workspace.update', { ...valid, _meta: { idempotencyKey: 'k' } }],
+      ['core.workspace.update', update({ hostModeEnabled: false })],
+      ['core.workspace.update', update({ hostPorts: [] })],
+      ['core.workspace.update', update({ egressAllowedHosts: [] })],
+      ['core.workspace.sandboxRoutes.get', { workspaceId: 'ws-1' }],
+    ] as const) {
+      await expect(send(method, params)).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'unavailable' },
+      });
+    }
+    expect(binding).toHaveBeenCalledTimes(5);
+    expect(local.invoke).not.toHaveBeenCalled();
+    relay.dispose();
+    advisor.dispose();
+  });
+
   it('cloud file reads reach the web core binding (CAN-6175 R9)', async () => {
     const binding = jest.fn<
       ReturnType<RelayBindingProvider>,
@@ -517,6 +824,201 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
       ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     }
     expect(binding).toHaveBeenCalledTimes(2);
+    relay.dispose();
+  });
+
+  it("a cloud chat's fork into a new task reaches the web core from the main window only, and no other chat write joins it (CAN-7007)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const claim = '00000000-0000-4000-8000-0000000000f1';
+    const params = {
+      projectId: '00000000-0000-4000-8000-000000000001',
+      worktreeId: '00000000-0000-4000-8000-000000000002',
+      commandId: claim,
+      action: {
+        type: 'chat.fork_tab',
+        sourceTabId: '00000000-0000-4000-8000-000000000002',
+        targetTabId: claim,
+      },
+      _meta: { idempotencyKey: claim },
+    };
+    expect(WEB_CORE_RELAY_OPERATIONS.has('core.chat.fork')).toBe(true);
+    // Another surface (App Advisor's) never reaches it.
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    await expect(
+      advisor.invoke(rendererEvent(), {
+        kind: 'request',
+        method: 'core.chat.fork',
+        params,
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    expect(binding).not.toHaveBeenCalled();
+    advisor.dispose();
+    // The other chat writes the web core doesn't serve the desktop stay off.
+    const relay = webCoreRelay(binding);
+    for (const method of ['core.chat.backgroundWork.extend']) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
+      await expect(
+        relay.invoke(rendererEvent(), { kind: 'request', method, params: {} }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+    // From the main window it passes the allowlist and fails only at the
+    // unreachable binding.
+    await expect(
+      relay.invoke(rendererEvent(), {
+        kind: 'request',
+        method: 'core.chat.fork',
+        params,
+      }),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    relay.dispose();
+  });
+
+  it('deleting a cloud task reaches the web core from the main window only, as one task to the Trash (CAN-7052)', async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const remove = (action: unknown): Record<string, unknown> => ({
+      kind: 'request',
+      method: 'core.chat.delete',
+      params: {
+        projectId: '00000000-0000-4000-8000-000000000001',
+        worktreeId: '00000000-0000-4000-8000-000000000002',
+        commandId: '00000000-0000-4000-8000-000000000003',
+        _meta: { idempotencyKey: '00000000-0000-4000-8000-000000000003' },
+        action,
+      },
+    });
+    const discard = {
+      type: 'chat.close_tab',
+      tabId: '00000000-0000-4000-8000-000000000002',
+      mode: 'discard',
+    };
+    expect(WEB_CORE_RELAY_OPERATIONS.has('core.chat.delete')).toBe(true);
+    // A window controlling another computer can't reach the relay at all.
+    expect(IPC_REMOTE_DISPOSITIONS.canopyCoreRelay).toBe('blocked');
+
+    // App Advisor's surface gets no delete, even a valid one.
+    await expect(
+      advisor.invoke(rendererEvent(), remove(discard)),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    // Anything but one task to the Trash is refused before it leaves main:
+    // archive mode (core.chat.archive archives), an empty-tab discard, a
+    // batch, a replacement tab, or no action at all.
+    for (const action of [
+      { ...discard, mode: 'archive' },
+      { ...discard, mode: 'discard_empty' },
+      { ...discard, replacementTabId: '00000000-0000-4000-8000-000000000004' },
+      {
+        type: 'chat.close_tabs',
+        targets: [{ tabId: discard.tabId, mode: 'discard' }],
+      },
+      null,
+      [discard],
+    ]) {
+      await expect(
+        relay.invoke(rendererEvent(), remove(action)),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // Past the allowlist and the action check, it fails only at the
+    // unreachable binding.
+    await expect(
+      relay.invoke(rendererEvent(), remove(discard)),
+    ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    expect(binding).toHaveBeenCalledTimes(1);
+    relay.dispose();
+    advisor.dispose();
+  });
+
+  it("a cloud chat's delegate pages reach the web core only for the chat the read is scoped to (CAN-7027)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const scope = { workspaceId: 'ws-1', worktreeId: 'wt-1', chatId: 'chat-1' };
+    const page = (
+      params: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      kind: 'request',
+      method: 'core.chat.transcript.page',
+      params,
+    });
+    const delegation = (chatId?: string): Record<string, unknown> => ({
+      kind: 'delegation',
+      ...(chatId === undefined ? {} : { chatId }),
+      delegationId: 'delegation-1',
+      runGeneration: 1,
+    });
+    expect(WEB_CORE_RELAY_OPERATIONS.has('core.chat.transcript.page')).toBe(
+      true,
+    );
+
+    // Another chat's delegate, or one with no chat to compare against, is
+    // refused before it leaves main: a sibling chat in the same task and a
+    // chat in another of the user's own projects, both theirs, as well as a
+    // chat that isn't. The relay compares ids only, so ownership doesn't
+    // matter.
+    for (const params of [
+      { scope, target: delegation('chat-2') },
+      {
+        scope,
+        target: delegation('chat-in-another-of-their-projects'),
+      },
+      { scope, target: delegation('someone-elses-chat') },
+      {
+        scope: { workspaceId: 'ws-2', worktreeId: 'wt-2', chatId: 'chat-3' },
+        target: delegation('chat-1'),
+      },
+      { scope, target: delegation() },
+      {
+        scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+        target: delegation('chat-1'),
+      },
+      { target: delegation('chat-1') },
+    ]) {
+      await expect(
+        relay.invoke(rendererEvent(), page(params)),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'invalid_argument' },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // The chat's own delegate and the chat's own pages pass, and fail only
+    // at the unreachable binding.
+    for (const params of [
+      { scope, target: delegation('chat-1') },
+      { scope },
+      { scope, target: { kind: 'primary', chatId: 'chat-1' } },
+    ]) {
+      await expect(
+        relay.invoke(rendererEvent(), page(params)),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalledTimes(3);
     relay.dispose();
   });
 

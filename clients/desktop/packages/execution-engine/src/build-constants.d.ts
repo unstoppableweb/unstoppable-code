@@ -59,6 +59,13 @@ declare const __CANOPY_GOOGLE_OAUTH_CLIENT_SECRET__: string | undefined;
 declare const __CANOPY_E2E__: boolean;
 
 /**
+ * The local-only build profile (`CANOPY_LOCAL_ONLY=true`). `false`, or not
+ * defined at all, in every other bundle. Read it only through
+ * `isLocalOnlyBuild()` with the `typeof` guard; see docs/local-only-build.md.
+ */
+declare const __CANOPY_LOCAL_ONLY__: boolean;
+
+/**
  * Build policy for Ollama, enabled by default and overridable with
  * CANOPY_OLLAMA_ENABLED. The shared capability helper combines it with the
  * runtime platform identifier: process.platform in main/preload and

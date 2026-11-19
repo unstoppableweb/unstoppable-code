@@ -4,14 +4,7 @@ import type {
   PortalPullRequestState,
   PrCreationProgressEvent,
 } from '@canopy/desktop-shared/types';
-import {
-  emitPrStatusDelta,
-  forgetPortalPrState,
-  rememberPortalPrState,
-} from './portal-pr-delta';
 import { clearPrMergeProgressFeed } from './pr-merge-progress';
-
-export { rememberPortalPrState };
 
 /**
  * Main-process aggregator for the PR-creation feed (CAN-1528 L2).
@@ -20,9 +13,7 @@ export { rememberPortalPrState };
  * githubStore's `creationProgress` map; the portal has no renderer, so this
  * registry mirrors that reducer main-side and exposes the accumulated feed to
  * `refreshPullRequestState`, which projects it as
- * `PortalPullRequestState.creationProgress`. Progress events additionally
- * push a live `pr_status` delta so the portal checklist updates while a
- * creation is in flight instead of waiting for the next snapshot.
+ * `PortalPullRequestState.creationProgress`.
  *
  * State is per-window-of-work runtime state on the Electron main process —
  * intentionally not persisted (a restart mid-creation also drops the
@@ -48,16 +39,14 @@ export function beginPrCreationProgress(
     steps: [],
     currentPhase: 'gathering_changes',
   });
-  emitCreationProgressDelta(projectId, worktreeId);
 }
 
-/** Clear an in-flight feed with an explicit wire tombstone on cancellation. */
+/** Clear an in-flight feed on cancellation. */
 export function cancelPrCreationProgress(
   projectId: string,
   worktreeId: string,
 ): void {
   progressByKey.delete(progressKey(projectId, worktreeId));
-  emitCreationProgressDelta(projectId, worktreeId);
 }
 
 /**
@@ -88,7 +77,6 @@ export function recordPrCreationProgress(event: PrCreationProgressEvent): void {
         ? 'error'
         : event.phase;
   progressByKey.set(key, { steps, currentPhase });
-  emitCreationProgressDelta(event.projectId, event.worktreeId);
 }
 
 /** Read the accumulated feed for the worktree, if any. */
@@ -145,23 +133,12 @@ export function clearStalePrCreationProgress(
 
 /**
  * Drop every map entry for a worktree. Called from the worktree-data cleanup
- * path so deleted worktrees do not pin their last projected PR payload (and
- * any leftover feed) in these module maps for the process lifetime.
+ * path so deleted worktrees do not pin a leftover feed in this module map for
+ * the process lifetime.
  */
 export function clearPortalPrTracking(
   projectId: string,
   worktreeId: string,
 ): void {
   progressByKey.delete(progressKey(projectId, worktreeId));
-  forgetPortalPrState(projectId, worktreeId);
-}
-
-function emitCreationProgressDelta(
-  projectId: string,
-  worktreeId: string,
-): void {
-  emitPrStatusDelta(projectId, worktreeId, {
-    creationProgress:
-      progressByKey.get(progressKey(projectId, worktreeId)) ?? null,
-  });
 }

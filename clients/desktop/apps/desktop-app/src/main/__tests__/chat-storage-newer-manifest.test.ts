@@ -920,7 +920,7 @@ describe('format-4 production reader lanes', () => {
     );
   });
 
-  it('MCP rewrite can read format-4 scopes without an aggregate refusal', async () => {
+  it('mcp-servers:rewrite-refs can read format-4 scopes without an aggregate refusal', async () => {
     const result = await rewriteMcpServerRefs({
       from: [{ serverId: 'unused-server' }],
       to: { serverId: 'custom:new', configId: 'default' },

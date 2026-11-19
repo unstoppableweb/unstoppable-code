@@ -7,13 +7,11 @@ import {
   useState,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { CopyButton } from '@/components/shared/CopyButton';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
-import { useCanopyPortalStore } from '@/stores/canopyPortalStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
   getRemoteControlApi,
@@ -42,7 +40,6 @@ import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useQrCodeDataUrl } from '@/hooks/useQrCodeDataUrl';
 import type {
   CanopyCloudAccountPublicState,
-  CanopyPortalState,
   RemoteControlOpenPairingWindowResult,
   RemoteIncomingPairing,
 } from '@canopy/desktop-shared/types';
@@ -55,13 +52,7 @@ import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
 import {
-  ConfirmDialog,
-  Disclosure,
-  formatPairingCode,
-  Inline,
-  LoadingSpinner,
   Notice,
-  NoticeButton,
   Skeleton,
   Stack,
   TextLinkButton,
@@ -102,38 +93,6 @@ function noAccountMessage(accountLocation: string): string {
   return `Connect ${CLOUD_NAME} in ${accountLocation} before enabling ${REMOTE_CONTROL_LABEL.toLowerCase()}.`;
 }
 
-/**
- * The Portal's own code, kept while Portal stays on during the rollout
- * (CAN-5985): a browser that still connects through Portal pairs with it.
- * It sits behind a disclosure so it never reads as the matching code the
- * app method compares, and the whole block goes when Portal does.
- */
-const PORTAL_CODE_TOGGLE = `Code for ${CLOUD_NAME}`;
-const PORTAL_CODE_PROMPT = `If ${CLOUD_NAME} asks for a code, enter`;
-const COPY_CODE_LABEL = 'Copy code';
-/**
- * A live Portal session. Portal state names no connecting device and counts
- * none (one session can serve several), so the copy names neither, and says
- * why the paired count below leaves them out.
- */
-const PORTAL_CONNECTED_TITLE = `Connected to ${CLOUD_NAME}.`;
-const PORTAL_CONNECTED_BODY =
-  "Devices that joined with a code aren't counted as paired devices.";
-const PORTAL_RECONNECTING_TITLE = `Reconnecting to ${CLOUD_NAME}.`;
-const PORTAL_RECONNECTING_BODY =
-  'Sessions stay open while this computer reconnects.';
-/**
- * Ends the Portal session on its own, without turning Remote Control off, so
- * a computer that still has a Portal session can be tested over the direct
- * path during the rollout. Stopping records a local disconnect, which the
- * next launch does not resume; turning Remote Control off and on starts
- * Portal again while its flag is on.
- */
-const PORTAL_DISCONNECT_BUTTON = 'Disconnect';
-const PORTAL_DISCONNECT_TITLE = `Disconnect from ${CLOUD_NAME}?`;
-const PORTAL_DISCONNECT_MESSAGE = `Devices using ${CLOUD_NAME} lose access to this computer. Paired devices aren't affected. To reconnect, turn ${REMOTE_CONTROL_LABEL} off and on in Settings.`;
-const PORTAL_DISCONNECT_FAILED = `Couldn't disconnect from ${CLOUD_NAME}. Try again.`;
-
 const SIGN_IN_BUTTON = `Sign in to enable ${REMOTE_CONTROL_LABEL}`;
 /**
  * Title and supporting line for the sign-in gate a guest opens from the pairing
@@ -155,7 +114,6 @@ const GUEST_GATE_DESCRIPTION = `An account is what pairs this device with ${REMO
  */
 const GUEST_GATE_TOAST = `You're all set. Your guest work is synced and ${REMOTE_CONTROL_LABEL} is ready to enable.`;
 const OPEN_SETTINGS_BUTTON = 'Open settings';
-const VIEW_PORTAL_BUTTON = `Open ${CLOUD_NAME}`;
 const ACCOUNT_LOADING_LABEL = `Checking ${CLOUD_NAME} account…`;
 
 interface CanopyPortalModalProps {
@@ -215,7 +173,6 @@ export function CanopyPortalModal({
   onOpenAccountSettings,
   onRequestSignIn,
 }: CanopyPortalModalProps): JSX.Element {
-  const portal = useCanopyPortalStore((s) => s.state);
   const accountLocation = useSettingsLocationLabel('account');
 
   const [cloudAccount, setCloudAccount] =
@@ -428,86 +385,6 @@ export function CanopyPortalModal({
     windowEnded,
   ]);
 
-  // Resolve the Canopy Cloud base URL this build talks to (a localhost origin
-  // in dev, staging for internal builds, production for releases), so the
-  // View web portal button targets the environment the Portal session is
-  // paired with. Stays null when the base URL is not configured — the button
-  // is hidden rather than pointing at a dead origin.
-  const [cloudBaseUrl, setCloudBaseUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    void window.api
-      .getCanopyCloudBaseUrl()
-      .then((base) => {
-        if (cancelled || !base) return;
-        setCloudBaseUrl(base.replace(/\/+$/, ''));
-      })
-      .catch(() => {
-        // Leave null; the View web portal button stays hidden.
-      });
-    return (): void => {
-      cancelled = true;
-    };
-  }, []);
-
-  const portalLive =
-    portal.status === 'active' || portal.status === 'reconnecting';
-  const portalPairingCode =
-    portal.status === 'pending_auth' || portal.status === 'active'
-      ? portal.pairingCode
-      : null;
-  // While pairing, deep-link to the code-entry dialog: `/portal` permanently
-  // redirects to `/chat`, where the pairing form only opens on an explicit
-  // Connect-a-device click — `?pair=1` opens it on arrival (CAN-2357).
-  const portalPath =
-    portal.status === 'pending_auth' ? '/chat?pair=1' : '/portal';
-
-  const openPortal = useCallback(() => {
-    // Hand the user off to the remote-control surface already signed in. The
-    // main process exchanges the desktop cloud credential for a one-time
-    // code; if that is unavailable (flag off, no token, offline, mint failure,
-    // or an older build without the handler) we fall back to the plain,
-    // unauthenticated portal URL so the button still works.
-    const openUnauthenticated = (): void => {
-      if (!cloudBaseUrl) return;
-      void window.api.browser.openExternal({
-        url: `${cloudBaseUrl}${portalPath}`,
-      });
-    };
-    try {
-      void window.api
-        .openAuthenticatedPortalPage(portalPath)
-        .catch(openUnauthenticated);
-    } catch {
-      openUnauthenticated();
-    }
-  }, [cloudBaseUrl, portalPath]);
-
-  const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
-  const [disconnectError, setDisconnectError] = useState<InlineFailure | null>(
-    null,
-  );
-  const disconnectPortal = useCallback(async (): Promise<void> => {
-    setDisconnecting(true);
-    setDisconnectError(null);
-    try {
-      // The pushed Portal state then hides the notice.
-      await window.api.canopyPortal.stop();
-      setConfirmingDisconnect(false);
-    } catch (err) {
-      const appError = toAppError(resolveClientAppError(err));
-      setDisconnectError(
-        appError
-          ? inlineFailure(appError, PORTAL_DISCONNECT_FAILED)
-          : { error: PORTAL_DISCONNECT_FAILED },
-      );
-    } finally {
-      setDisconnecting(false);
-    }
-  }, []);
-
-  const viewPortalVisible = portalLive && cloudBaseUrl !== null;
   // Expose the inline sign-in affordance (shown in the no-account state) so the
   // App Advisor knows the user can sign in from here (CAN-936, WS3).
   const signInAffordanceVisible = view.kind === 'signed-out';
@@ -516,7 +393,6 @@ export function CanopyPortalModal({
     busy,
     errorVisible: Boolean(actionError),
     signInAffordanceVisible,
-    viewPortalVisible,
     // compat: the App Advisor state key stays; there is no upgrade state.
     upgradeCtaVisible: false,
     guestCtaVisible: view.kind === 'guest',
@@ -586,7 +462,7 @@ export function CanopyPortalModal({
             size="compact"
             onClick={() => void enable()}
             disabled={busy !== 'idle'}
-            data-testid="canopy-portal-enable"
+            data-testid="remote-control-enable"
           >
             {busy === 'enabling' ? 'Enabling…' : ENABLE_BUTTON}
           </Button>
@@ -613,7 +489,7 @@ export function CanopyPortalModal({
       subtitle={subtitle}
       maxWidth="md"
       closeOnBackdrop={busy !== 'enabling'}
-      dataTestId="canopy-portal-modal"
+      dataTestId="remote-control-modal"
       footer={footer}
     >
       {view.kind === 'loading' ? (
@@ -621,7 +497,7 @@ export function CanopyPortalModal({
       ) : null}
 
       {view.kind === 'signed-out' ? (
-        <Stack gap="item" data-testid="canopy-portal-no-account">
+        <Stack gap="item" data-testid="remote-control-no-account">
           <p className="text-s fg-secondary">
             {noAccountMessage(accountLocation)}
           </p>
@@ -630,7 +506,7 @@ export function CanopyPortalModal({
               variant="primary"
               size="compact"
               onClick={onRequestSignIn}
-              data-testid="canopy-portal-sign-in"
+              data-testid="remote-control-sign-in"
             >
               {SIGN_IN_BUTTON}
             </Button>
@@ -638,7 +514,7 @@ export function CanopyPortalModal({
               variant="secondary"
               size="compact"
               onClick={onOpenAccountSettings}
-              data-testid="canopy-portal-open-settings"
+              data-testid="remote-control-open-settings"
             >
               {OPEN_SETTINGS_BUTTON}
             </Button>
@@ -718,52 +594,14 @@ export function CanopyPortalModal({
         />
       ) : null}
 
-      {view.kind !== 'request' && view.kind !== 'paired' ? (
-        <PortalCompatibility
-          portal={portal}
-          pairingCode={portalPairingCode}
-          live={portalLive}
-          viewPortal={viewPortalVisible ? openPortal : null}
-          onDisconnect={() => {
-            setDisconnectError(null);
-            setConfirmingDisconnect(true);
-          }}
-        />
-      ) : null}
-
-      {confirmingDisconnect ? (
-        <ConfirmDialog
-          title={PORTAL_DISCONNECT_TITLE}
-          message={PORTAL_DISCONNECT_MESSAGE}
-          confirmLabel={PORTAL_DISCONNECT_BUTTON}
-          busyLabel="Disconnecting…"
-          busy={disconnecting}
-          errorMessage={
-            disconnectError === null
-              ? null
-              : typeof disconnectError.error === 'string'
-                ? disconnectError.error
-                : PORTAL_DISCONNECT_FAILED
-          }
-          {...(disconnectError?.details === undefined
-            ? {}
-            : { errorDetails: disconnectError.details })}
-          destructive
-          onConfirm={() => void disconnectPortal()}
-          onCancel={() => setConfirmingDisconnect(false)}
-          confirmTestId="canopy-portal-disconnect-confirm"
-          dataTestId="canopy-portal-disconnect-dialog"
-        />
-      ) : null}
-
       <DesktopErrorBanner
-        errorSource="canopy-portal-action-error"
+        errorSource="remote-control-action-error"
         className=""
         error={actionError?.error}
         {...(actionError?.details === undefined
           ? {}
           : { details: actionError.details })}
-        testId="canopy-portal-action-error"
+        testId="remote-control-action-error"
       />
 
       {/* Deliberate download surface for the states before Remote Control is
@@ -897,89 +735,6 @@ function PairingLink(props: PairingLinkProps): JSX.Element {
         </Stack>
       </Stack>
       <p className="text-s text-pretty fg-secondary">{PAIRING_ALTERNATIVE}</p>
-    </Stack>
-  );
-}
-
-/**
- * A browser that connects through Portal during the rollout: its live
- * session, and its code behind a disclosure while Portal waits. Portal
- * follows the Remote Control opt-in, so there is no separate switch.
- */
-function PortalCompatibility({
-  portal,
-  pairingCode,
-  live,
-  viewPortal,
-  onDisconnect,
-}: {
-  readonly portal: CanopyPortalState;
-  readonly pairingCode: string | null;
-  readonly live: boolean;
-  readonly viewPortal: (() => void) | null;
-  readonly onDisconnect: () => void;
-}): JSX.Element | null {
-  if (pairingCode === null && !live) return null;
-  const reconnecting = portal.status === 'reconnecting';
-  return (
-    <Stack gap="item" data-testid="remote-control-portal">
-      {live ? (
-        <Notice
-          intent={reconnecting ? 'neutral' : 'positive'}
-          {...(reconnecting ? { icon: <LoadingSpinner /> } : {})}
-          title={
-            reconnecting ? PORTAL_RECONNECTING_TITLE : PORTAL_CONNECTED_TITLE
-          }
-          actions={
-            <>
-              {viewPortal ? (
-                <NoticeButton
-                  variant="secondary"
-                  onClick={viewPortal}
-                  data-testid="canopy-portal-view-web-portal"
-                >
-                  {VIEW_PORTAL_BUTTON}
-                </NoticeButton>
-              ) : null}
-              <NoticeButton
-                variant="secondary"
-                onClick={onDisconnect}
-                data-testid="canopy-portal-disconnect"
-              >
-                {PORTAL_DISCONNECT_BUTTON}
-              </NoticeButton>
-            </>
-          }
-          data-testid="canopy-portal-status-row"
-        >
-          {reconnecting ? PORTAL_RECONNECTING_BODY : PORTAL_CONNECTED_BODY}
-        </Notice>
-      ) : null}
-      {pairingCode !== null ? (
-        <Disclosure
-          label={PORTAL_CODE_TOGGLE}
-          dataTestId="canopy-portal-pairing-code-disclosure"
-        >
-          <Inline gap="inline" wrap data-testid="canopy-portal-pairing-code">
-            <span className="text-s fg-secondary">{PORTAL_CODE_PROMPT}</span>
-            <span
-              className={`${POSTHOG_REPLAY_BLOCK_CLASS} font-mono text-s fg-primary select-all`}
-              data-testid="canopy-portal-pairing-code-value"
-            >
-              {formatPairingCode(pairingCode)}
-            </span>
-            <CopyButton
-              value={pairingCode}
-              label={COPY_CODE_LABEL}
-              ariaLabel={COPY_CODE_LABEL}
-              title={COPY_CODE_LABEL}
-              variant="secondary"
-              size="compact"
-              dataTestId="canopy-portal-copy-code"
-            />
-          </Inline>
-        </Disclosure>
-      ) : null}
     </Stack>
   );
 }

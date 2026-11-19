@@ -1,14 +1,16 @@
 import { expect, test } from '@playwright/test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -272,6 +274,135 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
   }
 });
 
+const RECOVERY_PROJECT_ID = 'recovery-proof';
+const RECOVERY_WORKTREE_ID = 'recovery-task';
+const RECOVERY_TARGET = {
+  projectId: RECOVERY_PROJECT_ID,
+  worktreeId: RECOVERY_WORKTREE_ID,
+};
+
+/** One project with one worktree, so a Files read reaches the daemon. */
+function seedRecoveryProject({ owner, userDataDir }) {
+  const projectId = RECOVERY_PROJECT_ID;
+  const worktreeId = RECOVERY_WORKTREE_ID;
+  const repoPath = initRepo(path.join(owner, 'repo'));
+  initRepo(
+    path.join(userDataDir, 'workspaces', projectId, 'worktrees', worktreeId),
+  );
+  seedSingleRepoProject(userDataDir, {
+    id: projectId,
+    name: 'Recovery proof',
+    repoPath,
+    worktrees: [
+      {
+        id: worktreeId,
+        branchName: 'main',
+        label: 'Recovery task',
+        createdAt: '2026-05-01T12:00:00.000Z',
+      },
+    ],
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: projectId,
+    worktreeId,
+    tabs: [{ id: 'empty', title: 'Recovery proof' }],
+  });
+}
+
+/**
+ * A private app root with the checkout's e2e build and its own copy of the
+ * pinned daemon, so a test can remove or restage only its own executable.
+ */
+function stageRecoveryRuntime({
+  repoRoot,
+  runtimeRoot,
+  userDataDir,
+  sourceSha,
+}) {
+  mkdirSync(userDataDir, { mode: 0o700 });
+  mkdirSync(path.join(runtimeRoot, '.cache'), { recursive: true });
+  const outDir = process.env.CANOPY_E2E_OUT_DIR ?? 'out-e2e';
+  // A symlink makes Electron load the checkout's real renderer URL,
+  // which correctly fails the launcher's private-root window identity.
+  cpSync(path.join(repoRoot, outDir), path.join(runtimeRoot, outDir), {
+    recursive: true,
+  });
+  for (const member of ['node_modules', 'resources']) {
+    symlinkSync(
+      path.join(repoRoot, member),
+      path.join(runtimeRoot, member),
+      'junction',
+    );
+  }
+  cpSync(
+    path.join(repoRoot, 'package.json'),
+    path.join(runtimeRoot, 'package.json'),
+  );
+  // A private copy lets this test remove only its own executable, never a
+  // shared build. Verification pins the complete artifact to checkout HEAD.
+  cpSync(
+    path.join(repoRoot, '.cache/e2e-core-daemon'),
+    path.join(runtimeRoot, '.cache/e2e-core-daemon'),
+    { recursive: true },
+  );
+  preflightDaemonDataRoot(userDataDir);
+  return stageProductDaemonBridge({
+    runtimeRoot,
+    sourceSha,
+    platform: process.platform,
+    arch: process.arch,
+    brand: loadBrand(process.env.CANOPY_BRAND ?? 'canopy'),
+  });
+}
+
+/** Closes the app, stops only this fixture's daemon, and removes the root. */
+async function cleanUpRecoveryFixture({
+  launched,
+  userDataDir,
+  supervision,
+  bridge,
+  owner,
+}) {
+  try {
+    if (launched)
+      await closeCanopy(launched.electronApp, userDataDir, {
+        keepUserData: true,
+      });
+  } finally {
+    const descriptorPath = path.join(userDataDir, 'runtime/core.json');
+    if (existsSync(descriptorPath)) {
+      const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
+      const state = await supervision.inspectProcess({
+        pid: descriptor.pid,
+      });
+      if (state.state !== 'absent') {
+        // Never signal a PID that no longer belongs to this fixture.
+        assert.deepEqual(state, {
+          state: 'running',
+          startIdentity: descriptor.startIdentity,
+        });
+        await supervision.killProcessTree({
+          pid: descriptor.pid,
+          mode: 'force',
+        });
+        await expect
+          .poll(() => supervision.inspectProcess({ pid: descriptor.pid }))
+          .toEqual({ state: 'absent' });
+      }
+    }
+    if (bridge)
+      expect(
+        bridge
+          .cleanup()
+          .every((entry) =>
+            ['removed', 'already-removed', 'absent'].includes(entry.outcome),
+          ),
+      ).toBe(true);
+    await removeTestDataDir(owner);
+  }
+}
+
 test.describe('native background service recovery', () => {
   test.describe.configure({ retries: 0 });
 
@@ -291,79 +422,23 @@ test.describe('native background service recovery', () => {
     const runtimeRoot = path.join(owner, 'app');
     const userDataDir = path.join(owner, 'data');
     const descriptorPath = path.join(userDataDir, 'runtime/core.json');
-    const projectId = 'recovery-proof';
-    const worktreeId = 'recovery-task';
+    const projectId = RECOVERY_PROJECT_ID;
+    const worktreeId = RECOVERY_TARGET.worktreeId;
     const target = { projectId, worktreeId };
     const supervision = createSupervisionServices(process.platform);
     let bridge;
     let launched;
 
     try {
-      mkdirSync(userDataDir, { mode: 0o700 });
-      mkdirSync(path.join(runtimeRoot, '.cache'), { recursive: true });
-      const outDir = process.env.CANOPY_E2E_OUT_DIR ?? 'out-e2e';
-      // A symlink makes Electron load the checkout's real renderer URL,
-      // which correctly fails the launcher's private-root window identity.
-      cpSync(path.join(repoRoot, outDir), path.join(runtimeRoot, outDir), {
-        recursive: true,
-      });
-      for (const member of ['node_modules', 'resources']) {
-        symlinkSync(
-          path.join(repoRoot, member),
-          path.join(runtimeRoot, member),
-          'junction',
-        );
-      }
-      cpSync(
-        path.join(repoRoot, 'package.json'),
-        path.join(runtimeRoot, 'package.json'),
-      );
-      // A private copy lets this test remove only its own executable, never a
-      // shared build. Verification pins the complete artifact to checkout HEAD.
-      cpSync(
-        path.join(repoRoot, '.cache/e2e-core-daemon'),
-        path.join(runtimeRoot, '.cache/e2e-core-daemon'),
-        { recursive: true },
-      );
-      preflightDaemonDataRoot(userDataDir);
-      bridge = stageProductDaemonBridge({
+      bridge = stageRecoveryRuntime({
+        repoRoot,
         runtimeRoot,
+        userDataDir,
         sourceSha,
-        platform: process.platform,
-        arch: process.arch,
-        brand: loadBrand(process.env.CANOPY_BRAND ?? 'canopy'),
       });
       assert(bridge.entries.every((entry) => entry.owned));
 
-      const repoPath = initRepo(path.join(owner, 'repo'));
-      initRepo(
-        path.join(
-          userDataDir,
-          'workspaces',
-          projectId,
-          'worktrees',
-          worktreeId,
-        ),
-      );
-      seedSingleRepoProject(userDataDir, {
-        id: projectId,
-        name: 'Recovery proof',
-        repoPath,
-        worktrees: [
-          {
-            id: worktreeId,
-            branchName: 'main',
-            label: 'Recovery task',
-            createdAt: '2026-05-01T12:00:00.000Z',
-          },
-        ],
-      });
-      seedWorktreeChat({
-        userDataDir,
-        workspaceId: projectId,
-        worktreeId,
-        tabs: [{ id: 'empty', title: 'Recovery proof' }],
-      });
+      seedRecoveryProject({ owner, userDataDir });
       if (degradedStartup)
         expect(bridge.remove('packaged daemon')).toBe('removed');
       launched = await launchCanopy({
@@ -373,7 +448,7 @@ test.describe('native background service recovery', () => {
       const window = await launched.electronApp.firstWindow();
       await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
       await expect(
-        window.getByTestId(`sidebar-project-header-${projectId}`),
+        window.getByTestId(`sidebar-project-header-${RECOVERY_PROJECT_ID}`),
       ).toBeVisible();
       const readRoots = () =>
         window.evaluate(
@@ -381,11 +456,14 @@ test.describe('native background service recovery', () => {
           target,
         );
       if (degradedStartup) {
-        // A failed handoff closes its W5 lease and disables that consumer.
-        // Files is lazy: the first read enables it and replays the failure.
-        expect((await readRoots()).roots.length).toBeGreaterThan(0);
+        // A failed handoff closes its W5 lease before it requires a restart.
+        // The notice shows anyway, before Files is opened (CAN-7061).
         const notice = window.getByTestId('background-service-notice');
         await expect(notice).toBeVisible({ timeout: 45_000 });
+        await expect(
+          window.getByTestId('background-service-notice-copy-diagnostics'),
+        ).toBeVisible();
+        expect((await readRoots()).roots.length).toBeGreaterThan(0);
         await expect
           .poll(() =>
             window.evaluate(() => window.api.backgroundService.getStatus()),
@@ -521,46 +599,249 @@ test.describe('native background service recovery', () => {
       );
       expect((await readRoots()).roots.length).toBeGreaterThan(0);
     } finally {
-      try {
-        if (launched)
-          await closeCanopy(launched.electronApp, userDataDir, {
-            keepUserData: true,
-          });
-      } finally {
-        if (existsSync(descriptorPath)) {
-          const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
-          const state = await supervision.inspectProcess({
-            pid: descriptor.pid,
-          });
-          if (state.state !== 'absent') {
-            // Never signal a PID that no longer belongs to this fixture.
-            assert.deepEqual(state, {
-              state: 'running',
-              startIdentity: descriptor.startIdentity,
-            });
-            await supervision.killProcessTree({
-              pid: descriptor.pid,
-              mode: 'force',
-            });
-            await expect
-              .poll(() => supervision.inspectProcess({ pid: descriptor.pid }))
-              .toEqual({ state: 'absent' });
-          }
-        }
-        if (bridge)
-          expect(
-            bridge
-              .cleanup()
-              .every((entry) =>
-                ['removed', 'already-removed', 'absent'].includes(
-                  entry.outcome,
-                ),
-              ),
-          ).toBe(true);
-        await removeTestDataDir(owner);
-      }
+      await cleanUpRecoveryFixture({
+        launched,
+        userDataDir,
+        supervision,
+        bridge,
+        owner,
+      });
     }
   }
+
+  test('a refused earlier-run endpoint names the repair command until the CLI moves its files', async () => {
+    // Two launches, each allowing the handoff's failure-delivery bound.
+    test.setTimeout(150_000);
+    test.skip(
+      process.platform === 'win32',
+      'Named pipes never leave a socket file behind',
+    );
+    test.skip(
+      process.env.CANOPY_E2E_DAEMON_FILES_DRY_RUN === '1',
+      'Intentional daemon outage cannot run in the zero-fallback Files dry-run lane',
+    );
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+    const sourceSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+    const owner = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'cn8-')));
+    const runtimeRoot = path.join(owner, 'app');
+    const userDataDir = path.join(owner, 'data');
+    const runtimeDir = path.join(userDataDir, 'runtime');
+    const socketPath = path.join(runtimeDir, 'core.sock');
+    const descriptorPath = path.join(runtimeDir, 'core.json');
+    const supervision = createSupervisionServices(process.platform);
+    let bridge;
+    let launched;
+
+    try {
+      bridge = stageRecoveryRuntime({
+        repoRoot,
+        runtimeRoot,
+        userDataDir,
+        sourceSha,
+      });
+      assert(bridge.entries.every((entry) => entry.owned));
+
+      // An earlier run that died holding core.sock: the socket file stays and
+      // refuses connections, and its owner has departed.
+      mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+      const earlier = spawn(
+        process.execPath,
+        [
+          '-e',
+          "require('node:net').createServer().listen(process.argv[1], () => console.log('listening'))",
+          socketPath,
+        ],
+        { stdio: ['ignore', 'pipe', 'inherit'] },
+      );
+      await new Promise((resolve, reject) => {
+        earlier.once('error', reject);
+        earlier.stdout.once('data', resolve);
+      });
+      const earlierIdentity = await supervision.inspectProcess({
+        pid: earlier.pid,
+      });
+      assert.equal(earlierIdentity.state, 'running');
+      const exited = new Promise((resolve) => earlier.once('exit', resolve));
+      earlier.kill('SIGKILL');
+      await exited;
+      expect(existsSync(socketPath)).toBe(true);
+      // The receipt names this socket's inode on another device, and the
+      // earlier run started after this boot: no boot evidence authorizes
+      // automatic recovery, so only explicit repair can move it.
+      const socketStat = lstatSync(socketPath, { bigint: true });
+      writeFileSync(
+        descriptorPath,
+        JSON.stringify({
+          version: 1,
+          pid: earlier.pid,
+          startIdentity: earlierIdentity.startIdentity,
+          endpoint: { kind: 'socket', path: socketPath },
+          protocolRange: { min: 1, max: 1 },
+          buildVersion: 'earlier',
+          tokenRef: path.join(
+            runtimeDir,
+            'core-00000000-0000-4000-8000-000000000000.token',
+          ),
+          socketIdentity: {
+            device: String(socketStat.dev + 1n),
+            inode: String(socketStat.ino),
+          },
+        }),
+        { mode: 0o600 },
+      );
+
+      seedRecoveryProject({ owner, userDataDir });
+      launched = await launchCanopy({ rootPath: runtimeRoot, userDataDir });
+      const window = await launched.electronApp.firstWindow();
+      await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+      const readRoots = () =>
+        window.evaluate(
+          (request) => window.api.getFileTreeRoots(request),
+          RECOVERY_TARGET,
+        );
+      // The startup handoff's spawn refuses the endpoint before it spawns,
+      // then closes its W5 lease. The reason survives that close, and the
+      // notice shows before Files is opened (CAN-7061).
+      const notice = window.getByTestId('background-service-notice');
+      await expect(notice).toBeVisible({ timeout: 45_000 });
+      const repairRefused = {
+        state: 'unavailable',
+        reason: 'endpoint_repair_required',
+        recovery: 'restart_app',
+        handoff: 'endpoint_repair_required',
+      };
+      await expect
+        .poll(() =>
+          window.evaluate(() => window.api.backgroundService.getStatus()),
+        )
+        .toMatchObject(repairRefused);
+      const brand = loadBrand(process.env.CANOPY_BRAND ?? 'canopy');
+      await expect(notice).toContainText(
+        `${brand.cliName} daemon repair-endpoint`,
+      );
+      await expect(notice).toContainText('then restart the app');
+      // The settled handoff can only recover on a new launch.
+      await expect(
+        window.getByTestId('background-service-notice-retry'),
+      ).toHaveCount(0);
+      await expect(
+        window.getByTestId('background-service-notice-restart'),
+      ).toHaveText('Restart app');
+      await expect(
+        window.getByTestId('background-service-notice-copy-diagnostics'),
+      ).toBeVisible();
+      // Files reads stay in-process; opening Files keeps the repair reason.
+      expect((await readRoots()).roots.length).toBeGreaterThan(0);
+      expect(
+        await window.evaluate(() => window.api.backgroundService.getStatus()),
+      ).toMatchObject(repairRefused);
+      // The refusal left the earlier run's files exactly where they were.
+      expect(existsSync(socketPath)).toBe(true);
+      expect(JSON.parse(readFileSync(descriptorPath, 'utf8')).pid).toBe(
+        earlier.pid,
+      );
+
+      // The staged CLI from the same E2E archive, run as the user would.
+      const repair = execFileSync(
+        path.join(runtimeRoot, '.cache/e2e-core-daemon/cli'),
+        ['daemon', 'repair-endpoint'],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, CANOPY_DATA_DIR: userDataDir },
+        },
+      );
+      const moved =
+        /^Moved the earlier run's connection files to (endpoint-repair-\d{8}T\d{6}Z)\.$/m.exec(
+          repair,
+        );
+      assert(moved, repair);
+      const backup = path.join(runtimeDir, moved[1]);
+      expect(existsSync(socketPath)).toBe(false);
+      expect(existsSync(path.join(backup, 'core.sock'))).toBe(true);
+      expect(
+        JSON.parse(readFileSync(path.join(backup, 'core.json'), 'utf8')).pid,
+      ).toBe(earlier.pid);
+
+      // The repair alone cannot reopen this launch's settled handoff.
+      expect(
+        await window.evaluate(() => window.api.backgroundService.getStatus()),
+      ).toMatchObject(repairRefused);
+
+      // main.old.log holds the lines a size rotation moved.
+      const mainLogPaths = ['main.old.log', 'main.log'].map((name) =>
+        path.join(userDataDir, 'logs', name),
+      );
+      const failedHandoffs = () =>
+        mainLogPaths
+          .map((logPath) =>
+            existsSync(logPath) ? readFileSync(logPath, 'utf8') : '',
+          )
+          .join('\n')
+          .split('\n')
+          .filter((line) =>
+            line.includes(
+              'W5 startup handoff failed; workspace records are read-only',
+            ),
+          ).length;
+      await expect.poll(failedHandoffs).toBe(1);
+
+      // Restart, as the notice says: the next launch's handoff starts the
+      // service over the moved files.
+      await closeCanopy(launched.electronApp, userDataDir, {
+        keepUserData: true,
+      });
+      launched = undefined;
+      launched = await launchCanopy({ rootPath: runtimeRoot, userDataDir });
+      const restarted = await launched.electronApp.firstWindow();
+      await new CanopyAppDriver(restarted).waitForShell({ timeout: 30_000 });
+      await expect
+        .poll(() => existsSync(descriptorPath), { timeout: 45_000 })
+        .toBe(true);
+      const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));
+      expect(descriptor.pid).not.toBe(earlier.pid);
+      await expect
+        .poll(() => supervision.inspectProcess({ pid: descriptor.pid }), {
+          timeout: 15_000,
+        })
+        .toEqual({ state: 'running', startIdentity: descriptor.startIdentity });
+      await expect
+        .poll(
+          () =>
+            restarted.evaluate(() => window.api.backgroundService.getStatus()),
+          { timeout: 45_000 },
+        )
+        .toMatchObject({ state: 'ok', retry: 'idle' });
+      const status = await restarted.evaluate(() =>
+        window.api.backgroundService.getStatus(),
+      );
+      expect(status.recovery).toBeUndefined();
+      expect(status.handoff).toBeUndefined();
+      await expect(
+        restarted.getByTestId('background-service-notice'),
+      ).toBeHidden();
+      // This launch's handoff did not degrade.
+      expect(failedHandoffs()).toBe(1);
+      expect(
+        (
+          await restarted.evaluate(
+            (request) => window.api.getFileTreeRoots(request),
+            RECOVERY_TARGET,
+          )
+        ).roots.length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await cleanUpRecoveryFixture({
+        launched,
+        userDataDir,
+        supervision,
+        bridge,
+        owner,
+      });
+    }
+  });
 
   test('Try again recovers the service and delivers the sidebar invalidation through preload', async () => {
     await exerciseRecovery(false);

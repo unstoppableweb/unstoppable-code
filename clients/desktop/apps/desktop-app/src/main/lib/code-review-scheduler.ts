@@ -16,7 +16,9 @@ import {
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
 import {
+  CodeReviewStateAdmissionError,
   readCodeReviewState,
+  readCodeReviewStateProjection,
   reevaluateReviewAnchors,
   removeCodeReviewDiagramArtifact,
   setCodeReviewArmed,
@@ -43,6 +45,7 @@ import {
   startObservedHelperTask,
 } from './helper-observed-task';
 import { createHelperTranscriptObserver } from './helper-transcript-observer';
+import { logMainProcessWarn } from './main-process-logging';
 import {
   __testing as deletionFenceTesting,
   drainCodeReviewTasks,
@@ -94,7 +97,22 @@ function trackReviewTask(
   scope: CodeReviewScopeRequest,
   run: () => Promise<void>,
 ): Promise<void> {
-  return runCodeReviewTask(scope, run, () => undefined);
+  return runCodeReviewTask(scope, run, () => undefined).catch(
+    (error: unknown) => {
+      // These callers are fire-and-forget; awaited arm/refresh still rejects.
+      logMainProcessWarn(
+        '[code-review] background review failed',
+        error instanceof CodeReviewStateAdmissionError
+          ? {
+              ...scope,
+              code: error.code,
+              namespace: error.namespace,
+              reason: error.reason,
+            }
+          : { ...scope, error },
+      );
+    },
+  );
 }
 
 /** Fence new work and await every writer before worktree-owned artifacts are removed. */
@@ -239,8 +257,11 @@ async function checkActivityAndScheduleRun(
 ): Promise<void> {
   if (isCodeReviewScopeStopped(projectId, worktreeId)) return;
   const state = getOrCreateState(projectId, worktreeId);
-  const file = await readCodeReviewState(projectId, worktreeId);
-  if (!file.armed) {
+  const { review, mutationFailure } = await readCodeReviewStateProjection(
+    projectId,
+    worktreeId,
+  );
+  if (mutationFailure || !review.armed) {
     return;
   }
   const repos = await listReviewRepos(projectId, worktreeId);
@@ -267,8 +288,8 @@ async function checkActivityAndScheduleRun(
 
 /**
  * Turn-start gate. `scopeKey` is the code-review sentinel scope's worktreeId
- * (the `projectId--worktreeId` composite); resolve the real ids via the
- * registry so scheduler state keys on the real worktree.
+ * (any scope key version); resolve the real ids via the registry so scheduler
+ * state keys on the real worktree.
  */
 export function noteCodeReviewTurnStart(scopeKey: string): void {
   const ref = getCodeReviewTargetSync(scopeKey);
@@ -682,14 +703,17 @@ async function runAnnotationsArtifact(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await persistArtifact(
-      scope,
-      'annotations',
-      buildErrorArtifact(fingerprint, previousArtifact, message),
-      getWindow,
-      fingerprint,
-    );
-    finalizeObservedHelperTask(taskKey, 'failure', message);
+    try {
+      await persistArtifact(
+        scope,
+        'annotations',
+        buildErrorArtifact(fingerprint, previousArtifact, message),
+        getWindow,
+        fingerprint,
+      );
+    } finally {
+      finalizeObservedHelperTask(taskKey, 'failure', message);
+    }
   }
 }
 
@@ -755,14 +779,17 @@ async function runLogicDiffArtifact(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await persistArtifact(
-      scope,
-      'logicDiff',
-      buildErrorArtifact(fingerprint, previousArtifact, message),
-      getWindow,
-      fingerprint,
-    );
-    finalizeObservedHelperTask(taskKey, 'failure', message);
+    try {
+      await persistArtifact(
+        scope,
+        'logicDiff',
+        buildErrorArtifact(fingerprint, previousArtifact, message),
+        getWindow,
+        fingerprint,
+      );
+    } finally {
+      finalizeObservedHelperTask(taskKey, 'failure', message);
+    }
   }
 }
 
@@ -852,14 +879,17 @@ async function runDataModelArtifact(
     finalizeObservedHelperTask(taskKey, 'failure', message, usage);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await persistArtifact(
-      scope,
-      'dataModelDiff',
-      buildErrorArtifact(fingerprint, previousArtifact, message),
-      getWindow,
-      fingerprint,
-    );
-    finalizeObservedHelperTask(taskKey, 'failure', message);
+    try {
+      await persistArtifact(
+        scope,
+        'dataModelDiff',
+        buildErrorArtifact(fingerprint, previousArtifact, message),
+        getWindow,
+        fingerprint,
+      );
+    } finally {
+      finalizeObservedHelperTask(taskKey, 'failure', message);
+    }
   }
 }
 
@@ -876,5 +906,9 @@ export const __testing = {
       clearInterval(pollTimer);
       pollTimer = null;
     }
+  },
+  /** Resolves once the scope has no review task left, queued reruns included. */
+  idle(scope: CodeReviewScopeRequest): Promise<void> {
+    return deletionFenceTesting.idle(scope.projectId, scope.worktreeId);
   },
 };

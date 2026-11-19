@@ -62,7 +62,11 @@ function isReleaseFlavor(value: unknown): value is DesktopReleaseFlavor {
 }
 
 /** Unsupported reasons that mean a development build. */
-const DEVELOPMENT_BUILD_REASONS = new Set(['source_build', 'not_packaged']);
+const DEVELOPMENT_BUILD_REASONS = new Set([
+  'local_only_build',
+  'source_build',
+  'not_packaged',
+]);
 
 /** How long a restarting host may stay away before this computer says so. */
 export const HOST_RESTART_TIMEOUT_MS = 10 * 60_000;

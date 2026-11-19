@@ -85,6 +85,7 @@ import {
   type SettingsOperationRequest,
   type SettingsSignedUpload,
 } from './operation-definition';
+import { organizationReviewApprovalOperations } from './github-review-approvals';
 import {
   ORGANIZATION_LOGO_CONTENT_TYPES,
   ORGANIZATION_LOGO_MAX_BYTES,
@@ -128,6 +129,15 @@ import {
   type SetOrganizationRepositoryHiddenResult,
 } from './organization-repositories';
 import { settingsRouteIdSchema } from './routes';
+import {
+  CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT,
+  CAPABILITY_SETUP_ITEM_LIMIT,
+  CapabilitySetupItemRefSchema,
+  CatalogOrganizationDefaultsGetResultSchema,
+  CatalogOrganizationDefaultsUpdateResultSchema,
+  CatalogProjectSetupGetResultSchema,
+  CatalogProjectSetupUpdateResultSchema,
+} from '../canopy-core/core/catalog/capability-setup';
 
 /**
  * The organization half of the hosted settings operation table: one entry per
@@ -195,6 +205,32 @@ function gitHubPath(organizationId: string, suffix: string): string {
 
 function memoryExplorerPath(organizationId: string, suffix: string): string {
   return organizationPath(organizationId, `/memory-explorer${suffix}`);
+}
+
+/**
+ * The organization's project defaults (CAN-6237): a compatibility route over
+ * the service behind `core.catalog.organizationDefaults.*`. Desktop main
+ * answers these two entries through that web core operation instead.
+ */
+function organizationProjectDefaultsPath(organizationId: string): string {
+  return `/api/v1/settings/organization/${settingsPathSegment(organizationId)}/project-defaults`;
+}
+
+/**
+ * Server codes a refused organization defaults or project setup save
+ * carries, on both hosts: the stored setup changed since it was read (409),
+ * or an item is not the organization's (400).
+ */
+export const CAPABILITY_SETUP_REVISION_CONFLICT_CODE = 'revision_conflict';
+export const CAPABILITY_SETUP_INVALID_ITEM_CODE = 'invalid_item';
+
+/**
+ * An organization project's shared setup (CAN-6239): a compatibility route
+ * over the service behind `core.catalog.projectSetup.*`. Desktop main
+ * answers these entries through that web core operation instead.
+ */
+function projectSetupPath(projectId: string): string {
+  return `/api/v1/settings/projects/${settingsPathSegment(projectId)}/setup`;
 }
 
 function cloudGatewayKeyPath(organizationId: string): string {
@@ -1373,6 +1409,80 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       body,
     }),
   }),
+  /**
+   * Project defaults subtab (CAN-6237): the skills and plugins every project
+   * gets, and the organization's own items an owner or admin can mark. The
+   * results are `core.catalog.organizationDefaults.get` / `.update`'s.
+   */
+  'organization.settings.projectDefaults': defineSettingsRead({
+    transport: 'backend',
+    input: organizationInputSchema,
+    result: CatalogOrganizationDefaultsGetResultSchema,
+    request: (input) =>
+      get(organizationProjectDefaultsPath(input.organizationId)),
+  }),
+  /**
+   * Replaces the whole defaults list at the revision read; another revision
+   * refuses with 409 `revision_conflict`. The key replays a committed write.
+   */
+  'organization.settings.projectDefaults.update': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      expectedRevision: z.number().int().min(0),
+      items: z
+        .array(CapabilitySetupItemRefSchema)
+        .max(CAPABILITY_SETUP_ITEM_LIMIT),
+      idempotencyKey: z.string().min(1).max(512),
+    }),
+    result: CatalogOrganizationDefaultsUpdateResultSchema,
+    request: ({ organizationId, ...body }) => ({
+      method: 'PUT',
+      path: organizationProjectDefaultsPath(organizationId),
+      body,
+    }),
+  }),
+  /**
+   * An organization project's shared setup (CAN-6239): its organization
+   * defaults, its own additions and the defaults it switched off, what every
+   * member gets with each item's source, and whether the caller may change
+   * it. The results are `core.catalog.projectSetup.get` / `.update`'s.
+   */
+  'organization.projects.setup': defineSettingsRead({
+    transport: 'backend',
+    input: z.strictObject({ projectId: settingsRouteIdSchema }),
+    result: CatalogProjectSetupGetResultSchema,
+    request: (input) => get(projectSetupPath(input.projectId)),
+  }),
+  /**
+   * Replaces the project's additions, switched-off defaults and dismissed
+   * recommendations at the revision read; another revision refuses with 409
+   * `revision_conflict`. The key replays a committed write.
+   */
+  'organization.projects.setup.update': defineSettingsWrite({
+    transport: 'backend',
+    maxInputBytes: 512 * 1024,
+    input: z.strictObject({
+      projectId: settingsRouteIdSchema,
+      expectedRevision: z.number().int().min(0),
+      added: z
+        .array(CapabilitySetupItemRefSchema)
+        .max(CAPABILITY_SETUP_ITEM_LIMIT),
+      removed: z
+        .array(CapabilitySetupItemRefSchema)
+        .max(CAPABILITY_SETUP_ITEM_LIMIT),
+      dismissedRecommendations: z
+        .array(z.string().min(1).max(1024))
+        .max(CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT),
+      idempotencyKey: z.string().min(1).max(512),
+    }),
+    result: CatalogProjectSetupUpdateResultSchema,
+    request: ({ projectId, ...body }) => ({
+      method: 'PUT',
+      path: projectSetupPath(projectId),
+      body,
+    }),
+  }),
   /** The catalog the model policy is expressed against (authenticated). */
   'organization.settings.modelCatalog': defineSettingsRead({
     transport: 'backend',
@@ -1436,6 +1546,8 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       path: gitHubPath(input.organizationId, '/connect'),
     }),
   }),
+  /** Code review approval policy (shared with the other scope). */
+  ...organizationReviewApprovalOperations(),
   /** Repository picker over the org GitHub App installation (CAN-2945). */
   'organization.github.repositories': defineSettingsRead({
     transport: 'backend',

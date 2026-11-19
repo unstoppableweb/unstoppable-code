@@ -87,3 +87,4 @@ export * from './CompactTranscriptMessage';
 export * from './ChatControlSurfaces';
 export * from './TranscriptSurfaces';
 export * from './ChatDropOverlay';
+export { delegatedAgentUsageText } from './DelegatedAgentCard';

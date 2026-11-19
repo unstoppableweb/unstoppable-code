@@ -10,8 +10,11 @@ import {
 } from '@canopy/core-runtime/node/agent/sign-in';
 import {
   createWorkerAgentProviderHandlers,
+  createWorkerAgentUsageLimitsHandlers,
   type WorkerAgentProviderHandlers,
   type WorkerAgentProviderHost,
+  type WorkerAgentUsageLimitsHandlers,
+  type WorkerAgentUsageLimitsHost,
 } from '@canopy/core-runtime/node/agent/providers';
 import {
   createWorkerAgentRunHandlers,
@@ -21,9 +24,11 @@ import {
   type WorkerAgentRunHandlers,
 } from '@canopy/core-runtime/node/agent/turns';
 import { createDesktopProviderHost } from '../agent-providers/desktop-provider-host';
+import { createDesktopUsageLimitsHost } from '../agent-providers/desktop-usage-limits-host';
 
 export type WorkerAgentAdapter = {
-  queries: WorkerAgentProviderHandlers['queries'];
+  queries: WorkerAgentProviderHandlers['queries'] &
+    WorkerAgentUsageLimitsHandlers['queries'];
   instructions: WorkerAgentHelperHandlers['instructions'] &
     WorkerAgentRunHandlers['instructions'] &
     WorkerAgentSignInHandlers['instructions'];
@@ -41,6 +46,8 @@ export function createWorkerAgentAdapter(options: {
   sinkFor: (turnRunId: string) => TurnEventSink | null;
   /** The provider list host (CAN-4121); defaults to the desktop host. */
   providerHost?: WorkerAgentProviderHost;
+  /** Cached passive usage source; defaults to the current desktop worker host. */
+  usageHost?: WorkerAgentUsageLimitsHost;
 }): WorkerAgentAdapter {
   const loadHelpers =
     options.loadHelpers ??
@@ -81,9 +88,14 @@ export function createWorkerAgentAdapter(options: {
       }),
     ));
   return {
-    queries: createWorkerAgentProviderHandlers(
-      options.providerHost ?? createDesktopProviderHost(),
-    ).queries,
+    queries: {
+      ...createWorkerAgentProviderHandlers(
+        options.providerHost ?? createDesktopProviderHost(),
+      ).queries,
+      ...createWorkerAgentUsageLimitsHandlers(
+        options.usageHost ?? createDesktopUsageLimitsHost(),
+      ).queries,
+    },
     instructions: {
       'worker.agent.helper.run': async (params, context) =>
         (await helpers()).instructions['worker.agent.helper.run'](

@@ -29,6 +29,7 @@ const proxy = createCopilotConnectionProxy({
     if (!vault) throw new CopilotVaultUnavailableError();
     return vault;
   },
+  shutdownVault: () => vault?.shutdownCopilotRuntimes() ?? Promise.resolve(),
   assertEnabled: assertCopilotHarnessEnabled,
 });
 export const {

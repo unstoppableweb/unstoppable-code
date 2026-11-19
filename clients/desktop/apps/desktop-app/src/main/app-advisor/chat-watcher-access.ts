@@ -11,7 +11,10 @@ import {
   COWORK_HOME_WORKTREE_ID,
   type ProjectOwnerContext,
 } from '@canopy/desktop-shared/types';
-import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import {
+  botIdForProjectId,
+  isBotProjectId,
+} from '@canopy/protocol/chat-targets';
 import { isRetiredPlanChatScope } from '@canopy/desktop-shared/lib/retired-chat-scopes';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import {
@@ -35,14 +38,22 @@ import {
 import {
   readCommittedTaskSnapshot,
   readProjectEntries,
-  readProjectWorktrees,
+  readProjectWorktree,
 } from '../project-discovery/sources';
-import { requireBot } from '../project-discovery/bots/registry';
+import {
+  ensureBotRegistryLoaded,
+  requireBot,
+  requireBotWorkspace,
+} from '../project-discovery/bots/registry';
 import {
   isBotTaskEligible,
   readBotEntries,
   requireBotAccess,
 } from '../project-discovery/bots/target';
+import {
+  recordWatcherAccessRead,
+  recordWatcherInspectResource,
+} from '../observability/work-aggregates';
 
 /** Safe to project: never propagate target-derived errors from policy/storage. */
 export class ChatWatcherAccessError extends Error {
@@ -155,6 +166,25 @@ function assertLiveScope(projectId: string, taskId?: string): void {
   assertWorkspaceTargetRuntimeStartAllowed(projectId, taskId);
 }
 
+async function requireBotWorkspaceForProjectId(
+  projectId: string,
+): Promise<void> {
+  const botId = botIdForProjectId(projectId);
+  if (botId) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(botId);
+  }
+}
+
+async function requireWatcherBotWorkspace(
+  target: ResolvedChatWatcherTarget,
+): Promise<void> {
+  if (target.kind === 'bot') {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(target.address.botId);
+  } else await requireBotWorkspaceForProjectId(target.address.projectId);
+}
+
 type ResourceSnapshot = {
   binding: string;
   target: ResolvedChatWatcherTarget;
@@ -201,6 +231,8 @@ async function inspectResource(
   target: ResolvedChatWatcherTarget,
   epoch: number,
 ): Promise<ResourceSnapshot> {
+  recordWatcherInspectResource();
+  await requireWatcherBotWorkspace(target);
   const { address } = target;
   if (target.kind === 'bot' && 'botId' in address) {
     const bot = requireBot(address.botId);
@@ -208,9 +240,10 @@ async function inspectResource(
     await coherentRead(epoch, () => requireBotAccess(resourceCaller));
     let taskCreatedAt: string | undefined;
     if (address.taskId !== undefined) {
-      const entries = await coherentRead(epoch, () =>
-        readBotEntries(bot.botId),
-      );
+      const entries = await coherentRead(epoch, () => {
+        recordWatcherAccessRead('registry.botEntries');
+        return readBotEntries(bot.botId);
+      });
       const entry = entries.find(
         (candidate) => candidate.id === address.taskId,
       );
@@ -220,9 +253,10 @@ async function inspectResource(
     }
     let context: AuthorizedWatcherChatIdentity | undefined;
     if ('chatId' in address && address.taskId !== undefined) {
-      const snapshot = await coherentRead(epoch, () =>
-        readCommittedTaskSnapshot(bot.projectId, address.taskId),
-      );
+      const snapshot = await coherentRead(epoch, () => {
+        recordWatcherAccessRead('taskSnapshot');
+        return readCommittedTaskSnapshot(bot.projectId, address.taskId);
+      });
       const tab = snapshot.tabsFile.tabs.find(
         (candidate) =>
           candidate.id === address.chatId && candidate.kind !== 'file',
@@ -256,9 +290,10 @@ async function inspectResource(
   if (target.kind !== 'project' || !('projectId' in address))
     throw new ChatWatcherAccessError('migration_required');
   assertLiveScope(address.projectId, address.taskId);
-  const project = await coherentRead(epoch, () =>
-    requireAuthorizedProjectIdentity(address.projectId, resourceCaller),
-  );
+  const project = await coherentRead(epoch, () => {
+    recordWatcherAccessRead('identity');
+    return requireAuthorizedProjectIdentity(address.projectId, resourceCaller);
+  });
   // Policy maps legacy aliases; explicit watcher targets must be canonical.
   if (project.projectId !== address.projectId)
     throw new ChatWatcherAccessError('runtime_unavailable');
@@ -267,27 +302,26 @@ async function inspectResource(
   if (project.type !== target.projectType)
     throw new ChatWatcherAccessError('migration_required');
   let task: { id: string; createdAt?: string } | undefined;
-  if (address.taskId !== undefined) {
-    task =
-      project.type === 'cowork'
-        ? (
-            await coherentRead(epoch, () =>
-              readProjectEntries(address.projectId),
-            )
-          ).entries.find(
-            (candidate) =>
-              candidate.id === address.taskId &&
-              isDiscoverableWorkEntry(candidate),
-          )
-        : (
-            await coherentRead(epoch, () =>
-              readProjectWorktrees(address.projectId),
-            )
-          ).find(
-            (candidate) =>
-              candidate.id === address.taskId &&
-              isDiscoverableWorktree(candidate),
-          );
+  const taskId = address.taskId;
+  if (taskId !== undefined) {
+    if (project.type === 'cowork')
+      task = (
+        await coherentRead(epoch, () => {
+          recordWatcherAccessRead('registry.coworkEntries');
+          return readProjectEntries(address.projectId);
+        })
+      ).entries.find(
+        (candidate) =>
+          candidate.id === taskId && isDiscoverableWorkEntry(candidate),
+      );
+    else {
+      const worktree = await coherentRead(epoch, () => {
+        recordWatcherAccessRead('registry.worktrees');
+        return readProjectWorktree(address.projectId, taskId);
+      });
+      task =
+        worktree && isDiscoverableWorktree(worktree) ? worktree : undefined;
+    }
     if (!task) throw new ChatWatcherAccessError('runtime_unavailable');
   }
   let context: AuthorizedWatcherChatIdentity | undefined;
@@ -298,9 +332,11 @@ async function inspectResource(
       taskId: address.taskId,
       chatId: address.chatId,
     };
-    context = await coherentRead(epoch, () =>
-      resolveAuthorizedWatcherChat(chatAddress, project, authorizedTask),
-    );
+    context = await coherentRead(epoch, () => {
+      // Its one committed task snapshot read.
+      recordWatcherAccessRead('taskSnapshot');
+      return resolveAuthorizedWatcherChat(chatAddress, project, authorizedTask);
+    });
   }
   assertLiveScope(address.projectId, address.taskId);
   const incarnation = normalizeChatWatcherResourceIncarnation(
@@ -344,6 +380,11 @@ export async function decideChatWatcherAccess(
   target: ResolvedChatWatcherTarget,
   evidence?: ChatWatcherEvidence,
 ): Promise<ChatWatcherAccessDecision> {
+  try {
+    await requireWatcherBotWorkspace(target);
+  } catch (error) {
+    return { allowed: false, reason: failureReason(error) };
+  }
   // A routine account refresh invalidates the sample, not the durable event.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
@@ -415,13 +456,21 @@ export async function resolveChatWatcherTarget(
   entry: CanonicalChatWatcherEntry,
 ): Promise<ResolvedChatWatcherTarget> {
   try {
+    const entryTarget = entry.target;
+    if ('botId' in entryTarget) {
+      await ensureBotRegistryLoaded?.();
+      requireBotWorkspace(entryTarget.botId);
+    } else await requireBotWorkspaceForProjectId(entryTarget.projectId);
     const epoch = await beginRead();
     let target: ResolvedChatWatcherTarget;
-    const entryTarget = entry.target;
     if ('projectId' in entryTarget) {
-      const project = await coherentRead(epoch, () =>
-        requireAuthorizedProjectIdentity(entryTarget.projectId, resourceCaller),
-      );
+      const project = await coherentRead(epoch, () => {
+        recordWatcherAccessRead('identity');
+        return requireAuthorizedProjectIdentity(
+          entryTarget.projectId,
+          resourceCaller,
+        );
+      });
       target = {
         kind: 'project',
         projectType: project.type,
@@ -450,23 +499,30 @@ export async function resolveLegacyChatWatcher(
   legacy: UnresolvedLegacyChatWatcher,
 ): Promise<LegacyChatWatcherAccessResolution> {
   try {
+    await requireBotWorkspaceForProjectId(legacy.target.projectId);
     const epoch = await beginRead();
-    const project = await coherentRead(epoch, () =>
-      requireAuthorizedProjectIdentity(legacy.target.projectId, resourceCaller),
-    );
+    const project = await coherentRead(epoch, () => {
+      recordWatcherAccessRead('identity');
+      return requireAuthorizedProjectIdentity(
+        legacy.target.projectId,
+        resourceCaller,
+      );
+    });
     let address: ResolvedChatWatcherTarget & { kind: 'project' };
     if (legacy.trigger === 'standalone_chat_completion') {
       if (project.type !== 'cowork')
         return { ok: false, reason: 'migration_required' };
-      const tasks = await coherentRead(epoch, () =>
-        listDiscoverableTaskIds(project.projectId, 'cowork'),
-      );
+      const tasks = await coherentRead(epoch, () => {
+        recordWatcherAccessRead('registry.taskIds');
+        return listDiscoverableTaskIds(project.projectId, 'cowork');
+      });
       const matches: string[] = [];
       for (const taskId of tasks) {
         assertLiveScope(project.projectId, taskId);
-        const snapshot = await coherentRead(epoch, () =>
-          readCommittedTaskSnapshot(project.projectId, taskId),
-        );
+        const snapshot = await coherentRead(epoch, () => {
+          recordWatcherAccessRead('taskSnapshot');
+          return readCommittedTaskSnapshot(project.projectId, taskId);
+        });
         if (
           snapshot.tabsFile.tabs.some(
             (tab) => tab.kind !== 'file' && tab.id === legacy.target.chatId,

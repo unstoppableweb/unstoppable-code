@@ -21,6 +21,8 @@ import * as claudeTuiChats from '../../lib/claude-tui-chats';
 import { browserHandoffs } from '../../browser/browser-handoffs';
 import {
   capturePresentationTurn,
+  stageTerminalPresentationTurn,
+  acceptTerminalPresentationTurn,
   recordPresentationTurn,
   forgetPresentationChat,
   presentationChatKey,
@@ -166,7 +168,10 @@ import {
   markApprovalDefaultsChanged,
 } from '../../approvals/rule-revisions';
 import { ChatTurnStateHandoff } from '../chat-turn-state-handoff';
-import type { TurnStarted } from '@canopy/protocol/canopy-core';
+import {
+  CoreChatUpdateParamsSchema,
+  type TurnStarted,
+} from '@canopy/protocol/canopy-core';
 import {
   flushTurnState,
   observeTurn,
@@ -4288,6 +4293,88 @@ describe('chat state service', () => {
         await direct.getState(SCOPE),
       );
     } finally {
+      setChatStateCommandPort(null);
+    }
+  });
+
+  it('commits core.chat.update plugin selections only while the expected selections are still stored (CAN-7221)', async () => {
+    const { target } = serviceWithRepository();
+    await createChat(target);
+    setChatStateCommandPort(target);
+    const dispatcher = createDesktopRuntime();
+    try {
+      // As Orchestrator's plugin setters send it: their own principal, only
+      // core.chat.write, and the selections they read as the expected ones.
+      const update = (
+        commandId: string,
+        pluginSelections: unknown,
+        expectedPluginSelections: unknown,
+      ) =>
+        dispatcher.instruction(
+          'core.chat.update',
+          CoreChatUpdateParamsSchema.parse({
+            ...SCOPE,
+            commandId,
+            origin: 'desktop',
+            action: {
+              type: 'chat.patch_tab_settings',
+              tabId: 'chat-1',
+              patch: { pluginSelections },
+              expectedPluginSelections,
+            },
+            _meta: { idempotencyKey: commandId },
+          }),
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: 'agent-action:advisor-chat',
+              authorityId: 'local-desktop',
+              interfaceKind: 'mcp',
+              grants: ['core.chat.write'],
+            },
+            metadata: { idempotencyKey: commandId },
+          },
+        );
+      const stored = async (): Promise<unknown> =>
+        normalizePluginSelections(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]?.pluginSelections,
+        );
+      const none = normalizePluginSelections(undefined);
+      const linear = {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [{ serverId: 'linear-mcp', configId: 'default' }],
+      };
+      const other = {
+        ...linear,
+        mcpServerRefs: [{ serverId: 'other-mcp', configId: 'default' }],
+      };
+
+      await expect(
+        update('plugins-enable', linear, none),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      await expect(stored()).resolves.toEqual(
+        normalizePluginSelections(linear),
+      );
+      // Read before the enable committed: the stored selections changed
+      // since, so this change conflicts and overwrites nothing.
+      await expect(update('plugins-stale', other, none)).resolves.toMatchObject(
+        { outcome: 'conflict' },
+      );
+      await expect(
+        update('plugins-malformed', other, { collectionIds: 'linear-mcp' }),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'invalid_argument',
+          message: 'command.expectedPluginSelections is malformed.',
+        },
+      });
+      await expect(stored()).resolves.toEqual(
+        normalizePluginSelections(linear),
+      );
+    } finally {
+      await dispatcher.shutdown();
       setChatStateCommandPort(null);
     }
   });
@@ -22572,6 +22659,21 @@ describe('chat state service', () => {
       stepId: 'notify',
       automationId: 'automation-1',
     };
+    /**
+     * Drops wall-clock fields, which differ between two otherwise equal runs,
+     * and the initiation facts the input row's own copy of its request keeps.
+     */
+    function normalizeAutomationRun(value: unknown): unknown {
+      return JSON.parse(
+        JSON.stringify(value, (key, field: unknown) => {
+          if (key === 'initiated') return undefined;
+          return /(At|Ms|timestamp|^createdAt)$/.test(key) &&
+            (typeof field === 'number' || typeof field === 'string')
+            ? '<time>'
+            : field;
+        }),
+      );
+    }
 
     it('keeps the banner, usage source, overlay and lineage on the admitted request', async () => {
       const validation = jest
@@ -22618,6 +22720,161 @@ describe('chat state service', () => {
           ],
         });
         expect(messages[1]).toMatchObject({ userMessageSource: 'agent' });
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('changes no revision, tab or message a reader sees when a send is initiated (CAN-4174)', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const run = async (
+        initiated: boolean,
+      ): Promise<{
+        revisions: number[];
+        changes: ChatStateChange[];
+        state: unknown;
+      }> => {
+        const runDir = join(tempDir, initiated ? 'initiated' : 'plain');
+        mkdirSync(runDir, { recursive: true });
+        const fixture = serviceWithRepository(
+          {
+            dispatch: async (request) => {
+              await fixture.target.reconcileHostQueue(
+                { ...SCOPE, chatId: request.chatId },
+                [],
+                true,
+                {
+                  type: 'agent-send-accepted',
+                  request,
+                  acceptance: {
+                    acceptedInputId: request.userMessageId,
+                    disposition: 'started',
+                    acceptedAt: '2026-11-16T12:00:00.000Z',
+                  },
+                },
+                [],
+              );
+            },
+          },
+          {
+            tabs: join(runDir, 'chats.json'),
+            archives: join(runDir, 'archives.json'),
+            journal: join(runDir, 'journal.jsonl'),
+          },
+        );
+        const { target } = fixture;
+        await createChat(target);
+        const revisions: number[] = [];
+        const changes: ChatStateChange[] = [];
+        target.subscribe((event) => {
+          revisions.push(event.revision);
+          changes.push(...event.changes);
+        });
+        const send = automationCommand('same-input');
+        if (send.command.type !== 'chat.send_message')
+          throw new Error('Expected a send');
+        if (initiated)
+          send.command.automationDispatch = {
+            ...automationDispatch,
+            initiated: {
+              origin: { kind: 'automation', sourceId: 'automation-1' },
+              presentation: 'focus',
+            },
+          };
+        await target.command(send);
+        return {
+          revisions,
+          changes: changes.filter((change) => change.type !== 'chat.initiated'),
+          state: await target.getState(SCOPE),
+        };
+      };
+      try {
+        const plain = await run(false);
+        const initiated = await run(true);
+        expect(initiated.revisions).toEqual(plain.revisions);
+        expect(normalizeAutomationRun(initiated.changes)).toEqual(
+          normalizeAutomationRun(plain.changes),
+        );
+        expect(normalizeAutomationRun(initiated.state)).toEqual(
+          normalizeAutomationRun(plain.state),
+        );
+      } finally {
+        validation.mockRestore();
+      }
+    });
+
+    it('publishes chat.initiated in the batch that accepts an initiated send, and only then (CAN-4174)', async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const fixture = serviceWithRepository({
+        // The queue persists the input's acceptance as it starts.
+        dispatch: async (request) => {
+          await target.reconcileHostQueue(
+            { ...SCOPE, chatId: request.chatId },
+            [],
+            true,
+            {
+              type: 'agent-send-accepted',
+              request,
+              acceptance: {
+                acceptedInputId: request.userMessageId,
+                disposition: 'started',
+                acceptedAt: '2026-11-16T12:00:00.000Z',
+              },
+            },
+            [],
+          );
+        },
+      });
+      const target = fixture.target;
+      try {
+        await createChat(target);
+        const batches: ChatStateChange[][] = [];
+        target.subscribe((event) => batches.push(event.changes));
+        const initiated = automationCommand('initiated-input');
+        if (initiated.command.type !== 'chat.send_message')
+          throw new Error('Expected a send');
+        initiated.command.automationDispatch = {
+          ...automationDispatch,
+          initiated: {
+            origin: { kind: 'automation', sourceId: 'automation-1' },
+            presentation: 'focus',
+          },
+        };
+        await expect(target.command(initiated)).resolves.toMatchObject({
+          outcome: 'applied',
+        });
+        await expect(
+          target.command(automationCommand('plain-input')),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+
+        const published = batches.flatMap((changes) =>
+          changes.filter((change) => change.type === 'chat.initiated'),
+        );
+        expect(published).toEqual([
+          {
+            type: 'chat.initiated',
+            chatId: 'chat-1',
+            userMessageId: 'initiated-input',
+            origin: { kind: 'automation', sourceId: 'automation-1' },
+            presentation: 'focus',
+            acceptedAt: '2026-11-16T12:00:00.000Z',
+          },
+        ]);
+        // It rides the batch that holds the accepted input, never its own.
+        const carrying = batches.find((changes) =>
+          changes.some((change) => change.type === 'chat.initiated'),
+        );
+        expect(
+          carrying?.some((change) => change.type !== 'chat.initiated'),
+        ).toBe(true);
+        // It changes no stored chat state.
+        expect(JSON.stringify(await target.getState(SCOPE))).not.toContain(
+          'chat.initiated',
+        );
       } finally {
         validation.mockRestore();
       }
@@ -24994,6 +25251,50 @@ describe('chat state service', () => {
       (await target.getState(SCOPE)).tabsFile.tabs[0]?.attentionDismissedAt,
     ).toBeUndefined();
   });
+
+  it.each([
+    ['antigravity', 'dismissed', undefined, undefined],
+    ['antigravity', 'pending', 'plan-earlier', 3],
+    ['codex', 'dismissed', 'plan-earlier', 3],
+  ] as const)(
+    'unlinks a dismissed tracked plan only for a new %s proposal (prior status %s)',
+    async (source, priorStatus, trackedPlanId, latestRevisionNumber) => {
+      const target = service();
+      await createChat(target);
+      await expect(
+        target.command(
+          envelope(`link-${source}-${priorStatus}`, {
+            type: 'chat.patch_tab_settings',
+            tabId: 'chat-1',
+            patch: {
+              trackedPlanId: 'plan-earlier',
+              trackedPlanSource: source,
+              trackedPlanReviewStatus: priorStatus,
+              latestRevisionNumber: 3,
+            },
+          }),
+        ),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+
+      await target.commitPlanExit({
+        requestId: `next-${source}-proposal`,
+        ...SCOPE,
+        chatId: 'chat-1',
+        source,
+        reviewMode: 'proposal',
+        toolInput: { plan: 'Next plan' },
+      });
+
+      const tab = (await target.getState(SCOPE)).tabsFile.tabs[0];
+      expect(tab).toMatchObject({
+        pendingPlanExitRequestId: `next-${source}-proposal`,
+        trackedPlanSource: source,
+        trackedPlanReviewStatus: 'pending',
+      });
+      expect(tab?.trackedPlanId).toBe(trackedPlanId);
+      expect(tab?.latestRevisionNumber).toBe(latestRevisionNumber);
+    },
+  );
 
   it('does not publish an OpenCode proposal after its planning mode or active turn changes', async () => {
     const target = service();
@@ -31975,6 +32276,442 @@ describe('chat state service', () => {
       'applied',
     ]);
     expect((await target.getState(SCOPE)).tabsFile.tabs).toHaveLength(1);
+  });
+
+  describe('committed removal browser handoffs', () => {
+    it('keeps same-id chats in other scopes admitted when one origin is removed', async () => {
+      const fixture = createChatStateServiceFixture();
+      const target = fixture.service;
+      const tabId = 'same-id-removal-isolation';
+      const origins = [
+        { ...SCOPE, chatTabId: tabId },
+        { ...SCOPE, worktreeId: 'other-origin-worktree', chatTabId: tabId },
+      ];
+      const destinations = origins.map((_, index) => ({
+        projectId: 'isolation-target',
+        worktreeId: `same-id-${index}`,
+      }));
+      try {
+        for (const origin of origins) {
+          await expect(
+            target.command({
+              ...envelope(`create-${origin.worktreeId}`, {
+                type: 'chat.create_tab',
+                tabId,
+              }),
+              projectId: origin.projectId,
+              worktreeId: origin.worktreeId,
+            }),
+          ).resolves.toMatchObject({ outcome: 'applied' });
+          recordPresentationTurn(presentationChatKey(origin), 'turn', 'user');
+        }
+        const admissions = origins.map((origin, index) => {
+          const destination = destinations[index];
+          browserHandoffs.request(
+            { ...destination, origin, browserId: `same-id-browser-${index}` },
+            () => undefined,
+          );
+          return browserHandoffs.captureAdmission(
+            destination.projectId,
+            destination.worktreeId,
+            origin,
+          );
+        });
+        await expect(
+          target.command(
+            envelope('close-same-id-origin', {
+              type: 'chat.close_tab',
+              tabId,
+              mode: 'archive',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(
+          origins.map((origin, index) =>
+            browserHandoffs.isAdmissionCurrent(
+              destinations[index].projectId,
+              destinations[index].worktreeId,
+              origin,
+              admissions[index],
+            ),
+          ),
+        ).toEqual([false, true]);
+        expect(
+          browserHandoffs.snapshot(
+            destinations[0].projectId,
+            destinations[0].worktreeId,
+          ).handoff,
+        ).toBeNull();
+        expect(
+          browserHandoffs.snapshot(
+            destinations[1].projectId,
+            destinations[1].worktreeId,
+          ).handoff?.origin,
+        ).toEqual(origins[1]);
+        expect(capturePresentationTurn(origins[0])).toBeUndefined();
+        expect(capturePresentationTurn(origins[1])).toEqual({
+          turnId: 'turn',
+          source: 'user',
+        });
+      } finally {
+        destinations.forEach((destination) =>
+          browserHandoffs.releaseWorktree(
+            destination.projectId,
+            destination.worktreeId,
+          ),
+        );
+        origins.forEach((origin) =>
+          forgetPresentationChat(presentationChatKey(origin)),
+        );
+        await fixture.dispose();
+      }
+    });
+
+    let sequence = 0;
+
+    async function handoffFixture(scope = SCOPE) {
+      const target = service();
+      // Revision tombstones intentionally survive releases. Use new identities,
+      // rather than assuming target cleanup resets admission revisions.
+      const prefix = `removed-handoff-${++sequence}`;
+      const origins = [0, 1, 2].map((index) => ({
+        ...scope,
+        chatTabId: `${prefix}-${index}`,
+      }));
+      for (const origin of origins) {
+        await target.command({
+          ...envelope(`create-${origin.chatTabId}`, {
+            type: 'chat.create_tab',
+            tabId: origin.chatTabId,
+          }),
+          ...scope,
+        });
+      }
+      const targets = [0, 1, 2, 3].map((index) => ({
+        projectId: 'handoff-target',
+        worktreeId: `${prefix}-${index}`,
+      }));
+      const publishers = targets.map(() => jest.fn());
+      const owners = [origins[0], origins[0], origins[1], origins[2]];
+      const admissions = targets.map((destination, index) =>
+        browserHandoffs.captureAdmission(
+          destination.projectId,
+          destination.worktreeId,
+          owners[index],
+        ),
+      );
+      for (const origin of origins) {
+        recordPresentationTurn(presentationChatKey(origin), 'turn', 'user');
+        stageTerminalPresentationTurn(
+          presentationChatKey(origin),
+          'queued',
+          'hook',
+        );
+      }
+      targets.forEach((destination, index) => {
+        browserHandoffs.request(
+          {
+            ...destination,
+            origin: owners[index],
+            browserId: `browser-${index}`,
+          },
+          publishers[index],
+        );
+        publishers[index].mockClear();
+      });
+      const current = (index: number) =>
+        browserHandoffs.isAdmissionCurrent(
+          targets[index].projectId,
+          targets[index].worktreeId,
+          owners[index],
+          admissions[index],
+        );
+      const pin = (index: number) =>
+        browserHandoffs.snapshot(
+          targets[index].projectId,
+          targets[index].worktreeId,
+        ).handoff;
+      const cleanup = () => {
+        publishers.forEach((publisher) => publisher.mockReset());
+        targets.forEach((destination) =>
+          browserHandoffs.releaseWorktree(
+            destination.projectId,
+            destination.worktreeId,
+          ),
+        );
+        origins.forEach((origin) =>
+          forgetPresentationChat(presentationChatKey(origin)),
+        );
+      };
+      return {
+        target,
+        origins,
+        targets,
+        publishers,
+        admissions,
+        current,
+        pin,
+        cleanup,
+      };
+    }
+
+    it.each([
+      'close',
+      'archive',
+      'keep-session',
+      'batch',
+      'legacy',
+      'move',
+      'state-replacement',
+      'scope-delete',
+      'orchestrator',
+    ] as const)(
+      'releases originated pins and turn state before notifying %s removal subscribers',
+      async (kind) => {
+        const scope =
+          kind === 'orchestrator'
+            ? { projectId: APP_ADVISOR_PROJECT_ID, worktreeId: 'work-entry' }
+            : SCOPE;
+        const f = await handoffFixture(scope);
+        const removed = kind === 'scope-delete' ? f.origins : [f.origins[0]];
+        const observations: boolean[] = [];
+        const unsubscribe = f.target.subscribe((event) => {
+          if (!event.changes.some((change) => change.type === 'tab.removed'))
+            return;
+          observations.push(
+            f.pin(0) === null &&
+              f.pin(1) === null &&
+              !f.current(0) &&
+              !f.current(1) &&
+              removed.every(
+                (origin) => capturePresentationTurn(origin) === undefined,
+              ),
+          );
+        });
+        try {
+          const tabId = f.origins[0].chatTabId;
+          const releasedIds = [f.pin(0)?.handoffId, f.pin(1)?.handoffId];
+          if (kind === 'legacy') {
+            // chat:archive-tab forwards to this canonical compatibility boundary.
+            const tab = (
+              await f.target.getCompatibilityTabs(scope, {
+                chatIds: [tabId],
+                fullTranscript: true,
+              })
+            ).tabs.find((candidate) => candidate.id === tabId);
+            if (!tab) throw new Error('Missing legacy archive tab');
+            await f.target.archiveCompatibilityTab(scope, {
+              tab,
+              archivedAt: '2026-08-10T00:00:00.000Z',
+              turnCount: 0,
+            });
+          } else if (kind === 'move' || kind === 'state-replacement') {
+            // A move commits removal through this source-scope boundary.
+            const before = await f.target.getCompatibilityTabs(scope, {
+              chatIds: f.origins.map((origin) => origin.chatTabId),
+              fullTranscript: true,
+            });
+            const remaining = {
+              ...before,
+              tabs: before.tabs.filter((tab) => tab.id !== tabId),
+            };
+            if (kind === 'move')
+              await f.target.replaceCompatibilityTabs(scope, remaining);
+            else
+              await f.target.replaceCompatibilityState(scope, remaining, {
+                version: 1,
+                archived: [],
+              });
+          } else if (kind === 'scope-delete') {
+            await f.target.deleteScope(scope);
+          } else {
+            const command: ChatCommand =
+              kind === 'archive' || kind === 'keep-session'
+                ? {
+                    type: 'chat.archive_tab',
+                    tabId,
+                    keepSession: kind === 'keep-session',
+                  }
+                : kind === 'batch'
+                  ? {
+                      type: 'chat.close_tabs',
+                      targets: [{ tabId, mode: 'archive' }],
+                    }
+                  : { type: 'chat.close_tab', tabId, mode: 'archive' };
+            await expect(
+              f.target.command({
+                ...envelope(`remove-${kind}`, command),
+                ...scope,
+              }),
+            ).resolves.toMatchObject({ outcome: 'applied' });
+          }
+          expect(observations).toEqual([true]);
+          // The renderer applies releases by target worktree, handoff id and
+          // revision, so each event must name its own target, not the origin.
+          [0, 1].forEach((index) => {
+            expect(f.publishers[index]).toHaveBeenCalledTimes(1);
+            expect(f.publishers[index]).toHaveBeenCalledWith({
+              type: 'handoff-released',
+              browserId: `browser-${index}`,
+              handoffId: releasedIds[index],
+              ...f.targets[index],
+              revision: expect.any(Number),
+              runtimeGeneration: undefined,
+            });
+          });
+          for (const origin of removed) {
+            // The staged terminal admission must be forgotten as well.
+            expect(
+              acceptTerminalPresentationTurn(
+                presentationChatKey(origin),
+                'queued',
+                'user',
+              ).source,
+            ).toBe('user');
+          }
+          if (kind !== 'scope-delete') {
+            expect(f.pin(2)?.origin).toEqual(f.origins[1]);
+            expect(f.pin(3)?.origin).toEqual(f.origins[2]);
+            expect(f.current(2)).toBe(true);
+            expect(capturePresentationTurn(f.origins[1])).toEqual({
+              turnId: 'turn',
+              source: 'user',
+            });
+          }
+        } finally {
+          unsubscribe();
+          f.cleanup();
+        }
+      },
+    );
+
+    it('completes all removals and notifications despite a throwing release publisher', async () => {
+      const f = await handoffFixture();
+      const observations: boolean[] = [];
+      const publisherObservations: boolean[] = [];
+      const unsubscribe = f.target.subscribe((event) => {
+        if (!event.changes.some((change) => change.type === 'tab.removed'))
+          return;
+        observations.push(
+          [0, 1, 2].every(
+            (index) => f.pin(index) === null && !f.current(index),
+          ) &&
+            f.origins
+              .slice(0, 2)
+              .every((origin) => capturePresentationTurn(origin) === undefined),
+        );
+      });
+      f.publishers[0].mockImplementation(() => {
+        // Every matching target is already cleared before any window callback.
+        publisherObservations.push(f.pin(1) === null);
+        throw new Error('window closed');
+      });
+      try {
+        await expect(
+          f.target.command(
+            envelope('remove-throwing-publisher', {
+              type: 'chat.close_tabs',
+              targets: f.origins.slice(0, 2).map((origin) => ({
+                tabId: origin.chatTabId,
+                mode: 'archive',
+              })),
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(observations).toEqual([true]);
+        expect(publisherObservations).toEqual([true]);
+        expect(
+          f.publishers.map((publisher) => publisher.mock.calls.length),
+        ).toEqual([1, 1, 1, 0]);
+        expect(f.pin(3)?.origin).toEqual(f.origins[2]);
+        expect(
+          (await f.target.getState(SCOPE)).tabsFile.tabs.map((tab) => tab.id),
+        ).toEqual([f.origins[2].chatTabId]);
+      } finally {
+        unsubscribe();
+        f.cleanup();
+      }
+    });
+
+    it('fences empty pending sets, preserves no-op state and admits fresh handoffs after restore', async () => {
+      const f = await handoffFixture();
+      try {
+        await expect(
+          f.target.command(
+            envelope('remove-missing', {
+              type: 'chat.close_tab',
+              tabId: 'missing',
+              mode: 'archive',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'not_found' });
+        await expect(
+          f.target.command(
+            envelope('reject-discard', {
+              type: 'chat.close_tab',
+              tabId: f.origins[0].chatTabId,
+              mode: 'discard',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'rejected' });
+        expect(f.current(0)).toBe(true);
+        expect(f.pin(0)).not.toBeNull();
+        expect(capturePresentationTurn(f.origins[0])).toEqual({
+          turnId: 'turn',
+          source: 'user',
+        });
+        browserHandoffs.release(f.pin(0)?.handoffId ?? 'missing');
+        browserHandoffs.release(f.pin(1)?.handoffId ?? 'missing');
+        const close = envelope('remove-without-pins', {
+          type: 'chat.close_tab' as const,
+          tabId: f.origins[0].chatTabId,
+          mode: 'archive' as const,
+        });
+        await f.target.command(close);
+        expect(f.current(0)).toBe(false);
+        const afterClose = browserHandoffs.captureAdmission(
+          f.targets[0].projectId,
+          f.targets[0].worktreeId,
+          f.origins[0],
+        );
+        await f.target.command(close);
+        expect(
+          browserHandoffs.captureAdmission(
+            f.targets[0].projectId,
+            f.targets[0].worktreeId,
+            f.origins[0],
+          ),
+        ).toEqual(afterClose);
+        expect(f.publishers[0]).toHaveBeenCalledTimes(1);
+        await f.target.command(
+          envelope('restore-without-old-pins', {
+            type: 'chat.restore_archive',
+            archiveEntryId: f.origins[0].chatTabId,
+          }),
+        );
+        expect(f.current(0)).toBe(false);
+        expect(f.pin(0)).toBeNull();
+        expect(
+          browserHandoffs.isAdmissionCurrent(
+            f.targets[0].projectId,
+            f.targets[0].worktreeId,
+            f.origins[0],
+            afterClose,
+          ),
+        ).toBe(true);
+        browserHandoffs.request(
+          {
+            ...f.targets[0],
+            origin: f.origins[0],
+            browserId: 'fresh-browser',
+          },
+          f.publishers[0],
+        );
+        expect(f.pin(0)?.browserId).toBe('fresh-browser');
+      } finally {
+        f.cleanup();
+      }
+    });
   });
 
   it('persists the renderer successor when closing the active tab', async () => {

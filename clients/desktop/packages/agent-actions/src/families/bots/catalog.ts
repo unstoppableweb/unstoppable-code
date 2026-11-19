@@ -89,6 +89,20 @@ const BOT_LIST_NOTES: readonly string[] = [
   `Read-only bot catalog. Only ${ORCHESTRATOR_AGENT_NAME} is implemented on this surface today; use its canonical botId for task and chat discovery.`,
   'cursor_expired and cursor_context_changed require restarting from the first page without a cursor. Keep filters, sort, and order unchanged during continuation.',
 ];
+const BOT_REGISTRY_LIST_FIELDS: readonly AgentActionField[] = [
+  field(
+    'pinnedToProjectId',
+    'string',
+    false,
+    'Filter to bots pinned to this canonical project ID.',
+  ),
+];
+const BOT_REGISTRY_LIST_NOTES: readonly string[] = [
+  "With the registry capability enabled, every row includes kind ('default' for the Orchestrator or 'custom' for a user-created Bot), description (a string or null), scope ('default' for the default Bot, 'global' for a custom Bot with no caller-visible pins, otherwise 'pinned'), ordered pins ({ projectId, name } for only projects this caller may discover), and the raw showInSidebar preference.",
+  'The list labels the default Bot Default, a custom Bot with no caller-visible pins Global, and a custom Bot with visible pins Pinned to projects. Pinning is placement, not authority: it may add project context but never grants access.',
+  'The `capabilities` object reports `listTasks`, `readChats`, `sendMessages`, `createTasks`, `createChats`, and `watchChats`. Custom Bots currently report only `listTasks` and `readChats` as available; `sendMessages`, `createTasks`, `createChats`, and `watchChats` remain unavailable until custom workspace execution is available. `taskCount` is a count when available and `null` when it cannot be provided; `null` is not zero.',
+  'cursor_expired and cursor_context_changed require restarting from the first page without a cursor. Keep filters, sort, and order unchanged during continuation.',
+];
 const BOT_READ_NOTES: readonly string[] = [
   'Read-only explicit address from bots.list, bots.list_tasks, and bots.list_task_chats. No UI fields or expectedUiRevision; archived or unknown task/chat targets return not_found.',
   'Visible user/assistant text and basename-only file references only; no tool calls, tool results, thinking, hidden context, system/hook/info blocks, or child agents. Empty visible projections are excluded. Each message is capped at 8,000 characters with truncation marked.',
@@ -433,3 +447,17 @@ export const BOT_ACTION_CATALOG: readonly AgentActionCatalogEntry<
     ],
   },
 ];
+
+/** The registry-enabled catalog; the legacy constant above stays unchanged. */
+export const BOT_REGISTRY_ACTION_CATALOG: readonly AgentActionCatalogEntry<
+  BotActionType,
+  BotAction
+>[] = BOT_ACTION_CATALOG.map((entry) =>
+  entry.type === 'bots.list'
+    ? {
+        ...entry,
+        fields: [...entry.fields, ...BOT_REGISTRY_LIST_FIELDS],
+        notes: BOT_REGISTRY_LIST_NOTES,
+      }
+    : entry,
+);

@@ -34,11 +34,12 @@ export type ModelExecutionLane = 'provider_subscription' | 'ai_credits';
  * not list use the OpenAI API Standard rates served by the web OpenAI pricing
  * payload, fetched 2026-10-27. The three approved non-OpenAI additions use
  * Gateway rates fetched 2026-10-29, including Mercury 3 launch pricing.
+ * GPT-6.2 Astra and Sol use the OpenAI API Standard rates fetched 2026-11-17.
  * Updating rates must change this revision so
  * persisted estimates retain their historical basis.
  */
 export const MODEL_ROUTING_PRICING_REVISION =
-  'gateway:2026-10-07+openai:2026-10-27+approved:2026-10-29' as const;
+  'gateway:2026-10-07+openai:2026-11-17+approved:2026-10-29' as const;
 
 export interface ModelRoutingUsage {
   input: number;
@@ -146,6 +147,32 @@ const MODEL_ROUTING_STANDARD_TOKEN_RATES: Readonly<
     output: 0.000025,
     cacheReadInput: 0.0000005,
     cacheCreationInput: 0.00000625,
+  },
+  'openai/gpt-6.2-astra': {
+    input: 0.000008,
+    output: 0.00004,
+    cacheReadInput: 0.0000004,
+    cacheCreationInput: 0.00001,
+    longContext: {
+      thresholdExclusive: 272_000,
+      inputMultiplier: 2,
+      outputMultiplier: 1.5,
+      cacheReadMultiplier: 2,
+      cacheCreationMultiplier: 2,
+    },
+  },
+  'openai/gpt-6.2-sol': {
+    input: 0.000002,
+    output: 0.00001,
+    cacheReadInput: 0.0000001,
+    cacheCreationInput: 0.0000025,
+    longContext: {
+      thresholdExclusive: 272_000,
+      inputMultiplier: 2,
+      outputMultiplier: 1.5,
+      cacheReadMultiplier: 2,
+      cacheCreationMultiplier: 2,
+    },
   },
   'openai/gpt-6-astra': {
     input: 0.00001,
@@ -321,6 +348,8 @@ const MODEL_ROUTING_PRICING_ALIASES: Readonly<Record<string, string>> = {
   'claude-opus-4.7': 'anthropic/claude-opus-4.7',
   'claude-opus-4-6': 'anthropic/claude-opus-4.6',
   'claude-opus-4.6': 'anthropic/claude-opus-4.6',
+  'gpt-6.2-astra': 'openai/gpt-6.2-astra',
+  'gpt-6.2-sol': 'openai/gpt-6.2-sol',
   'gpt-6-astra': 'openai/gpt-6-astra',
   'gpt-6.1-sol': 'openai/gpt-6.1-sol',
   'gpt-6.1-terra': 'openai/gpt-6.1-terra',

@@ -1,3 +1,5 @@
+import { WorkspaceConfigUnreadableError } from './file-store';
+import { w5UnderlyingFromDiagnostics } from './error-diagnostics';
 import {
   dirname,
   isAbsolute,
@@ -145,6 +147,7 @@ export class W5CommitLogHostError extends Error {
 
 /** A failed call: the commit log's own error, or the host's. */
 type W5CommitLogCallError =
+  | WorkspaceConfigUnreadableError
   | W5CommitLogError
   | W5ProcessFileLockTimeoutError
   | W5FileWriteRefusedError
@@ -157,8 +160,16 @@ function toCallError(error: W5CommitLogWorkerError): W5CommitLogCallError {
       return new W5FileWriteRefusedError(error.path);
     case 'process-lock-timeout':
       return new W5ProcessFileLockTimeoutError(error.path);
+    case 'config-unreadable':
+      return new WorkspaceConfigUnreadableError(
+        error.errorCode === undefined ? undefined : { code: error.errorCode },
+      );
     case 'log':
-      return new W5CommitLogError(error.code, error.message);
+      return new W5CommitLogError(
+        error.code,
+        error.message,
+        w5UnderlyingFromDiagnostics(error),
+      );
     case 'refused':
       return new W5CommitRefusedError(
         error.reason,

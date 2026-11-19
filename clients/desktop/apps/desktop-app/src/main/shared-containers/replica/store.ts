@@ -1,3 +1,5 @@
+import { getDesktopNodeRuntime } from '../../lib/node-runtime';
+import { cleanTrustedNodeEnvironment } from '../../lib/trusted-node-environment';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { constants, type BigIntStats, type Dirent } from 'node:fs';
@@ -1227,11 +1229,16 @@ export class SharedContainerReplicaStore {
     expectedIdentity: ReplicaRootIdentity,
   ): Promise<void> {
     const child = spawn(
-      process.execPath,
-      ['--input-type=commonjs', '--eval', BOUND_REPLICA_CLEANUP_SCRIPT],
+      (await getDesktopNodeRuntime()).nodeProcess.command,
+      [
+        '--disable-sigusr1',
+        '--input-type=commonjs',
+        '--eval',
+        BOUND_REPLICA_CLEANUP_SCRIPT,
+      ],
       {
         cwd: quarantinePath,
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        env: cleanTrustedNodeEnvironment(process.env),
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },

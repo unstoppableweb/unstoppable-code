@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState, type JSX } from 'react';
+import { useWorktreeReviewApprovalInputs } from '@/lib/review-approval-run-owner';
 import {
   PipelineTriggerModal,
   type PipelinePluginCollectionRunContext,
@@ -78,6 +79,10 @@ export function DispatchPipelineModal({
     projectId,
     worktreeId,
   );
+  const reviewApprovalInputs = useWorktreeReviewApprovalInputs(
+    projectId,
+    worktreeId,
+  );
 
   // A resolved worktree cwd means this dispatch surface runs in a worktree
   // context (so it should also list `directory`/legacy pipelines via the
@@ -127,6 +132,7 @@ export function DispatchPipelineModal({
       onClearError={onClearError}
       watcherRecipientGroups={watcherRecipientGroups}
       onWatcherSelectionChange={onWatcherSelectionChange}
+      reviewApprovalInputs={reviewApprovalInputs}
     />
   );
 }

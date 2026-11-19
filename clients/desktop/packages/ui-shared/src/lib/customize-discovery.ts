@@ -18,6 +18,7 @@ export type CustomizeDiscoveryTabId =
   | 'plugin'
   | 'app'
   | 'skill'
+  | 'agent'
   | 'workflow';
 
 const DISCOVERY_TAB_IDS: readonly CustomizeDiscoveryTabId[] = [
@@ -25,6 +26,7 @@ const DISCOVERY_TAB_IDS: readonly CustomizeDiscoveryTabId[] = [
   'plugin',
   'app',
   'skill',
+  'agent',
   'workflow',
 ];
 
@@ -34,25 +36,31 @@ export function isCustomizeDiscoveryTab(
   return DISCOVERY_TAB_IDS.some((candidate) => candidate === tab);
 }
 
-/** All, Plugins, MCP servers, Skills and Workflows, with today's labels. */
+/**
+ * All, Plugins, MCP servers, Skills, Agents and Workflows, with today's
+ * labels. Agents sits before Workflows and shows only where the host lists
+ * agents; `customizeDiscoveryTabs` drops it elsewhere.
+ */
 export const CUSTOMIZE_DISCOVERY_TABS: readonly MarketplaceTypeTab[] =
-  MARKETPLACE_TYPE_TABS.filter((tab) => isCustomizeDiscoveryTab(tab.id));
+  DISCOVERY_TAB_IDS.flatMap((id) => {
+    const tab = MARKETPLACE_TYPE_TABS.find((candidate) => candidate.id === id);
+    return tab ? [tab] : [];
+  });
+
+/** The discovery tabs for a host, with Agents only where agents are listed. */
+export function customizeDiscoveryTabs(
+  agentsAvailable: boolean,
+): readonly MarketplaceTypeTab[] {
+  return agentsAvailable
+    ? CUSTOMIZE_DISCOVERY_TABS
+    : CUSTOMIZE_DISCOVERY_TABS.filter((tab) => tab.id !== 'agent');
+}
 
 export type CustomizeDiscoveryStatus =
   | 'any'
   | 'installed'
   | 'available'
   | 'attention';
-
-export const CUSTOMIZE_DISCOVERY_STATUS_OPTIONS: readonly {
-  readonly value: CustomizeDiscoveryStatus;
-  readonly label: string;
-}[] = [
-  { value: 'any', label: 'Any' },
-  { value: 'installed', label: 'Installed' },
-  { value: 'available', label: 'Available' },
-  { value: 'attention', label: 'Attention' },
-];
 
 /** The harnesses Works with offers, in the design's order. */
 export type CustomizeDiscoveryHarness =
@@ -164,8 +172,12 @@ export function customizeHarnessInstallWarning(
 
 export interface CustomizeDiscoveryFilters {
   readonly status: CustomizeDiscoveryStatus;
-  /** Also show: off by default, so All lists the five kinds the tabs name. */
+  /**
+   * Only collections: the filter menu's Yes / No on the All tab. Off, the list
+   * shows collections among everything else.
+   */
   readonly collections: boolean;
+  /** Lists agents that are not installed: the Agents tab turns it on. */
   readonly agents: boolean;
   /** A marketplace's source label; `null` is Any marketplace. */
   readonly source: string | null;
@@ -189,10 +201,31 @@ export function customizeDiscoveryFilterCount(
   return (
     (filters.status !== 'any' ? 1 : 0) +
     (filters.collections ? 1 : 0) +
-    (filters.agents ? 1 : 0) +
     (filters.source !== null ? 1 : 0) +
     (filters.harnesses.length > 0 ? 1 : 0)
   );
+}
+
+/**
+ * The filters a tab applies. Workflows don't come from marketplaces, so the
+ * Workflows tab ignores a marketplace picked on another tab (it neither
+ * filters nor counts there) and keeps it for when you switch back.
+ */
+export function customizeDiscoveryFiltersForTab(
+  filters: CustomizeDiscoveryFilters,
+  tab: string,
+): CustomizeDiscoveryFilters {
+  // The Agents tab lists agents whether or not they are installed.
+  const withAgents = tab === 'agent' ? { ...filters, agents: true } : filters;
+  // Collections only is All's view; other tabs ignore it and keep it for when
+  // you switch back, as Workflows does with a marketplace.
+  const withCollections =
+    tab !== 'all' && withAgents.collections
+      ? { ...withAgents, collections: false }
+      : withAgents;
+  return tab === 'workflow' && withCollections.source !== null
+    ? { ...withCollections, source: null }
+    : withCollections;
 }
 
 /** Where an old tab lands in New Customize. */
@@ -204,8 +237,9 @@ export interface CustomizeDiscoveryLanding {
 }
 
 /**
- * Old deep links and saved tab choices: Collections and Agents open All with
- * Also show on, Project templates opens All (where they are listed), and
+ * Old deep links and saved tab choices: Collections opens All showing only
+ * collections, Agents opens All with agents listed, Project templates opens
+ * All (where they are listed), and
  * Marketplaces keeps its view. None lands on an empty view.
  */
 export function customizeDiscoveryLanding(
@@ -239,6 +273,8 @@ export function customizeDiscoveryNeedsAttention(
 ): boolean {
   if (entry.state === 'needs-auth') return true;
   if ((entry.pendingSignIns ?? 0) > 0) return true;
+  // Drift: a harness one Add could not install for (CAN-6815).
+  if ((entry.harnessInstalls?.failed.length ?? 0) > 0) return true;
   const connection = entry.aggregateConnection ?? entry.connection;
   return (
     connection !== undefined &&
@@ -329,9 +365,8 @@ export function customizeWorksWithChips(entry: WorksWithEntry): {
 }
 
 /**
- * A Works with chip's tooltip: "Works with Cursor", or, where the publisher's
- * MCP server stands in for the plugin's ChatGPT app, "Uses the Canva MCP
- * server in Cursor" (CAN-6818).
+ * A Works with chip's short tooltip when no installation rows are available.
+ * Preserve the publisher's MCP stand-in attribution for ChatGPT apps (CAN-6818).
  */
 export function customizeWorksWithChipLabel(
   entry: Pick<UnifiedPluginEntry, 'chatGptAppStandIn'>,
@@ -340,8 +375,8 @@ export function customizeWorksWithChipLabel(
 ): string {
   const standIn = entry.chatGptAppStandIn;
   return standIn !== undefined && standIn.harnesses.includes(harness)
-    ? `Uses the ${standIn.name} MCP server in ${harnessName}`
-    : `Works with ${harnessName}`;
+    ? `${harnessName}: uses the ${standIn.name} MCP server version`
+    : `${harnessName}: works natively`;
 }
 
 /** Whether an entry works with a harness, as the Works with filter reads it. */
@@ -355,8 +390,8 @@ export function customizeDiscoveryWorksWith(
 /**
  * Whether New Customize lists an entry. `installed` is the host's own
  * installed test (`marketplaceEntryIsInstalled`), so Installed shows exactly
- * what it shows today: Also show only adds collections and agents that are
- * not installed, and an installed one stays listed. `hasUpdate` is the host's
+ * what it shows today: an installed collection or agent is always listed, and
+ * `collections` narrows the list to collections alone. `hasUpdate` is the host's
  * update test: an update is a badge on the row (CAN-6810), so Attention still
  * finds it.
  */
@@ -366,8 +401,7 @@ export function customizeDiscoveryEntryMatches(
   installed: boolean,
   hasUpdate = false,
 ): boolean {
-  if (!installed && entry.kind === 'collection' && !filters.collections)
-    return false;
+  if (filters.collections && entry.kind !== 'collection') return false;
   if (!installed && entry.kind === 'agent' && !filters.agents) return false;
   switch (filters.status) {
     case 'installed':
@@ -586,6 +620,30 @@ export function customizeSkillMatch(
 }
 
 /**
+ * The "Includes <skill>" hint a search result shows (CAN-6812, trimmed in
+ * Sergii's QA): only when the row itself (its name, publisher or
+ * description) does not match, and only for skills whose name differs from
+ * the row's. Otherwise the hint says nothing the row doesn't.
+ */
+export function customizeSkillMatchHint(
+  row: Pick<UnifiedPluginEntry, 'name' | 'authorName' | 'description'>,
+  match: CustomizeSkillMatch,
+  query: string,
+): CustomizeSkillMatch | undefined {
+  const needle = relevanceText(query);
+  if (needle === '') return undefined;
+  const rowMatches = [row.name, row.authorName, row.description].some(
+    (text) => text !== undefined && relevanceText(text).includes(needle),
+  );
+  if (rowMatches) return undefined;
+  const own = relevanceText(row.name).replace(/\s+/g, '');
+  const names = match.names.filter(
+    (name) => relevanceText(name).replace(/\s+/g, '') !== own,
+  );
+  return names.length === 0 ? undefined : { ...match, names };
+}
+
+/**
  * Search relevance for Browse (CAN-6810): 3 for a name match, 2 when one of
  * the item's skills matches by name, 1 for a description match, else 0 (the
  * item matched on other metadata, such as its author). Grouped listings take
@@ -620,6 +678,96 @@ export function customizeRelevanceScore(
   );
 }
 
+/** Lowercase words, punctuation and separators as spaces. */
+function searchWords(value: string | undefined): string {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/** One search match tier, 1 best; 7 matched on nothing the tiers name. */
+export function customizeMatchTier(
+  entry: Pick<
+    UnifiedPluginEntry,
+    'name' | 'description' | 'authorName' | 'categories'
+  > & {
+    readonly marketplaceListings?: readonly Pick<
+      UnifiedPluginEntry,
+      'name' | 'description' | 'authorName' | 'categories'
+    >[];
+  },
+  query: string,
+  skillNames: readonly string[] = [],
+): number {
+  const needle = searchWords(query);
+  if (needle === '') return 7;
+  const compactNeedle = needle.replace(/ /g, '');
+  const tierOf = (
+    item: Pick<
+      UnifiedPluginEntry,
+      'name' | 'description' | 'authorName' | 'categories'
+    >,
+  ): number => {
+    const name = searchWords(item.name);
+    if (name.replace(/ /g, '') === compactNeedle) return 1;
+    if (name.startsWith(needle) || ` ${name} `.includes(` ${needle} `))
+      return 2;
+    if (searchWords(item.authorName).replace(/ /g, '') === compactNeedle)
+      return 3;
+    if (name.includes(needle) || name.replace(/ /g, '').includes(compactNeedle))
+      return 4;
+    if (
+      searchWords(item.description).includes(needle) ||
+      (item.categories ?? []).some((category) =>
+        searchWords(category).includes(needle),
+      )
+    )
+      return 5;
+    return 7;
+  };
+  const direct = Math.min(
+    tierOf(entry),
+    ...(entry.marketplaceListings ?? []).map(tierOf),
+  );
+  if (direct < 7) return direct;
+  return skillNames.some((name) => customizeSkillNameMatches(name, query))
+    ? 6
+    : 7;
+}
+
+/**
+ * New Customize's one search ranker, for Installed and Browse (Sergii's QA):
+ * match tier first (exact name, name start or word, publisher, name
+ * contains, description or keywords, then only an inner skill), then the
+ * recommended signal, then the list's own order where it means something
+ * (Installed: recently used), then the name.
+ */
+export function rankCustomizeSearch<T extends UnifiedPluginEntry>(
+  entries: readonly T[],
+  query: string,
+  skillNamesOf: (entry: T) => readonly string[] = () => [],
+  options: { readonly keepOrder?: boolean } = {},
+): T[] {
+  if (searchWords(query) === '') return [...entries];
+  return entries
+    .map((entry, index) => ({
+      entry,
+      index,
+      tier: customizeMatchTier(entry, query, skillNamesOf(entry)),
+      recommended: entry.recommended === true ? 0 : 1,
+    }))
+    .sort(
+      (left, right) =>
+        left.tier - right.tier ||
+        left.recommended - right.recommended ||
+        (options.keepOrder === true ? left.index - right.index : 0) ||
+        left.entry.name.localeCompare(right.entry.name) ||
+        left.index - right.index,
+    )
+    .map(({ entry }) => entry);
+}
+
 /**
  * Browse search results, best match first. Stable: equal scores keep the
  * input order, which is today's Browse order.
@@ -629,13 +777,5 @@ export function rankCustomizeByRelevance<T extends UnifiedPluginEntry>(
   query: string,
   skillNamesOf: (entry: T) => readonly string[] = () => [],
 ): T[] {
-  if (relevanceText(query) === '') return [...entries];
-  return entries
-    .map((entry, index): { entry: T; index: number; score: number } => ({
-      entry,
-      index,
-      score: customizeRelevanceScore(entry, query, skillNamesOf(entry)),
-    }))
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .map(({ entry }) => entry);
+  return rankCustomizeSearch(entries, query, skillNamesOf);
 }

@@ -5,6 +5,11 @@
 // section (`fieldGroup`) over the same `FormState`.
 
 import {
+  AutomationSendAs,
+  withAutomationSendAs,
+} from '@canopy/ui-app/capability';
+import { useAutomationSendAs } from './useAutomationSendAs';
+import {
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -635,6 +640,20 @@ export function ActivityFormBody({
   // re-pointed (Run-in + picker stay interactive below).
   const formReadOnly = hasChatAuthoredPayload(state);
   const destinationOnlyEdit = hasChatAuthoredPayload(state);
+  // "Send as" for each connector the prompt uses that the person holds
+  // several accounts of (CAN-6233): a scheduled run never picks one, so Save
+  // waits for a choice. A chat-authored payload can't change its plugins, so
+  // it is never held up here; the run's own check still applies.
+  const sendAsConnectors = useAutomationSendAs(
+    state.pluginSelections,
+    previewTab?.pluginSelections,
+    showDefinition &&
+      (state.actionType === 'app_advisor_prompt' ||
+        workspaceActionMode === 'chat'),
+  );
+  const sendAsBlocked =
+    !formReadOnly &&
+    sendAsConnectors.some((connector) => connector.value === null);
   const isAppAdvisorTarget = actionCategory === 'app_advisor';
   // The picker's scope: App Advisor Work Entries, or the selected project.
   const chatTargetWorkspaceId = isAppAdvisorTarget
@@ -865,9 +884,21 @@ export function ActivityFormBody({
 
   const handleSubmitForm = useCallback(async (): Promise<void> => {
     ifCommandGenerationRevisionRef.current += 1;
-    if (composerBlocked || chatTargetBlocked || pipelineTargetBlocked) return;
+    if (
+      composerBlocked ||
+      sendAsBlocked ||
+      chatTargetBlocked ||
+      pipelineTargetBlocked
+    )
+      return;
     await onSubmit?.();
-  }, [onSubmit, composerBlocked, chatTargetBlocked, pipelineTargetBlocked]);
+  }, [
+    onSubmit,
+    composerBlocked,
+    sendAsBlocked,
+    chatTargetBlocked,
+    pipelineTargetBlocked,
+  ]);
 
   useImperativeHandle(
     handleRef,
@@ -977,6 +1008,7 @@ export function ActivityFormBody({
     !modelAliasBlockingError &&
     !chatTargetBlocked &&
     !composerBlocked &&
+    !sendAsBlocked &&
     !pipelineTargetBlocked;
   // Before paint, so a host's Save button never shows a stale state.
   useLayoutEffect(() => {
@@ -1566,7 +1598,6 @@ export function ActivityFormBody({
                   }
                 >
                   <ConfigurationChatComposer
-                    allowAgents
                     editorId={`automation-${state.id ?? 'new'}`}
                     dataTestId="automations-form-prompt"
                     draftGeneration={0}
@@ -1641,6 +1672,28 @@ export function ActivityFormBody({
                       ...variable,
                       token: createAutomationPromptVariableToken(variable.name),
                     }))}
+                  />
+                  <AutomationSendAs
+                    connectors={sendAsConnectors}
+                    disabled={saving || formReadOnly}
+                    onChange={(serverKey, configId) => {
+                      const connector = sendAsConnectors.find(
+                        (entry) => entry.serverKey === serverKey,
+                      );
+                      // The choice replaces every other ref of the connector,
+                      // so the run acts as this account alone.
+                      onFieldChange({
+                        ...state,
+                        pluginSelections: withAutomationSendAs(
+                          state.pluginSelections,
+                          serverKey,
+                          configId,
+                          (connector?.accounts ?? []).map(
+                            (account) => account.configId,
+                          ),
+                        ),
+                      });
+                    }}
                   />
                   {!formReadOnly && isWorktreeSessionPrompt && (
                     <p className="text-2xs fg-secondary">

@@ -1,3 +1,10 @@
+import {
+  isW5ErrorName,
+  isW5ErrorCode,
+  isW5SqliteErrcode,
+  isW5FilesystemCode,
+  type W5UnderlyingDiagnostics,
+} from '../error-diagnostics';
 export {
   isW5CaptureRequest,
   isW5CaptureResult,
@@ -139,7 +146,12 @@ export type W5RecoveryRetryOutcome =
  * which a commit may or may not have been made.
  */
 export type W5CommitLogWorkerError =
-  | { kind: 'log'; code: W5CommitLogErrorCode; message: string }
+  | ({
+      kind: 'log';
+      code: W5CommitLogErrorCode;
+      message: string;
+    } & W5UnderlyingDiagnostics)
+  | { kind: 'config-unreadable'; message: string; errorCode?: string }
   | { kind: 'process-lock-timeout'; path: string; message: string }
   | { kind: 'fingerprint-conflict'; path: string; message: string }
   | {
@@ -208,7 +220,19 @@ function isWorkerError(value: unknown): value is W5CommitLogWorkerError {
   if (!isRecord(value) || typeof value.message !== 'string') return false;
   switch (value.kind) {
     case 'log':
-      return typeof value.code === 'string';
+      return (
+        typeof value.code === 'string' &&
+        (value.underlyingName === undefined ||
+          isW5ErrorName(value.underlyingName)) &&
+        (value.underlyingCode === undefined ||
+          isW5ErrorCode(value.underlyingCode)) &&
+        (value.underlyingErrcode === undefined ||
+          isW5SqliteErrcode(value.underlyingErrcode))
+      );
+    case 'config-unreadable':
+      return (
+        value.errorCode === undefined || isW5FilesystemCode(value.errorCode)
+      );
     case 'process-lock-timeout':
     case 'fingerprint-conflict':
       return typeof value.path === 'string' && value.path.length > 0;

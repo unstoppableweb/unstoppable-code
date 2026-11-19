@@ -2,15 +2,11 @@ import {
   APP_ADVISOR_PROJECT_ID,
   type CoworkWorkEntryMeta,
 } from '@canopy/desktop-shared/types';
-import type { PortalCommandEnvelope } from '@canopy/protocol/portal';
-import { handlePortalStandaloneChatArchive } from '../../portal/adapters/standalone-chat-adapter';
 import { destroyWorktreeSessions } from '../../agents/session-manager';
 import { assertWorktreeCanBeRemoved } from '../../agents/background-work';
 import {
   listWorkEntries,
   listWorkEntryChatSummaries,
-  readWorkEntryRegistryRowState,
-  workEntryRegistryExists,
   removeWorkEntryRow,
   updateWorkEntry,
 } from '../../lib/cowork-work-entries';
@@ -20,7 +16,7 @@ import { captureWorkEntryArchivedContainer } from '../../lib/archived-container-
 import { resolveContainerRetentionDays } from '../../lib/archived-container-retention';
 import { broadcastArchivedContainersChanged } from '../../lib/archived-containers';
 import { notifyLedgerContainerArchived } from '../../ledger/lifecycle';
-import { schedulePortalStructuralSync } from '../../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../../services/desktop-structure-signal';
 import {
   deleteWorkEntryMutation,
   updateWorkEntryMutation,
@@ -102,8 +98,8 @@ jest.mock('../../services/chat-queue-service', () => {
   };
   return { getChatQueueService: (): typeof queue => queue, queue, deletion };
 });
-jest.mock('../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
+jest.mock('../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../../ledger/lifecycle', () => ({
   notifyLedgerContainerArchived: jest.fn(),
@@ -139,9 +135,7 @@ jest.mock('../../services/standalone-chat-service', () => ({
   emitStandaloneWorkEntrySummary: jest.fn(),
   emitStandaloneChatRemovals: jest.fn(),
 }));
-jest.mock('../../portal/adapters/chat-adapter', () => ({}));
-jest.mock('../../portal/adapters/chat-plugin-selections', () => ({}));
-jest.mock('../../portal/portal-chat-attachments', () => ({}));
+jest.mock('../../remote-projection/chat-plugin-selections', () => ({}));
 jest.mock('../../agents/work-owner', () => ({}));
 jest.mock('../../agents/delegation/activity', () => ({
   LiveDelegationsError: class extends Error {},
@@ -151,9 +145,7 @@ jest.mock('../../cursor/runtime-availability', () => ({}));
 jest.mock('../../copilot/runtime-availability', () => ({}));
 jest.mock('../../opencode/runtime-availability', () => ({}));
 
-jest.mock('../../services/chat-service', () => ({
-  projectAppAdvisorChatSummaries: jest.fn(),
-}));
+jest.mock('../../services/chat-service', () => ({}));
 
 const entry: CoworkWorkEntryMeta = {
   id: 'entry-a',
@@ -195,9 +187,6 @@ const standalone = jest.requireMock<{
   emitStandaloneChatRemovals: jest.Mock;
   resolveStandaloneChatTarget: jest.Mock;
 }>('../../services/standalone-chat-service');
-const appAdvisor = jest.requireMock<{
-  projectAppAdvisorChatSummaries: jest.Mock;
-}>('../../services/chat-service');
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -210,71 +199,7 @@ beforeEach(() => {
 });
 
 describe('Work Entry mutation lifecycle', () => {
-  it('reports reconciliation failure and runs a fresh Portal Retry through deletion preflight', async () => {
-    const project = 'project-a';
-    const chat = 'chat-a';
-    const reconciliationError = new Error('sidebar reconciliation failed');
-    jest.mocked(workEntryRegistryExists).mockResolvedValue(true);
-    jest.mocked(readWorkEntryRegistryRowState).mockResolvedValue('absent');
-    standalone.resolveStandaloneChatTarget.mockResolvedValue({
-      workspaceId: project,
-      entryId: entry.id,
-      archivedInEntryId: null,
-      isArchived: false,
-    });
-    jest.mocked(removeWorkEntryRow).mockImplementationOnce(() => {
-      // The registry installs the removal before reconciliation rejects.
-      jest.mocked(listWorkEntries).mockResolvedValue([]);
-      standalone.resolveStandaloneChatTarget.mockResolvedValue({
-        workspaceId: project,
-        entryId: null,
-        archivedInEntryId: entry.id,
-        isArchived: true,
-      });
-      return Promise.reject(reconciliationError);
-    });
-    const command: PortalCommandEnvelope = {
-      id: 'archive-a',
-      sequence: 1,
-      createdAt: entry.createdAt,
-      expiresAt: null,
-      type: 'portal.standalone_chat.archive',
-      target: { standaloneChatLocalId: chat },
-      payload: { chatId: chat, workEntryId: entry.id, projectLocalId: project },
-    };
-    const context = {
-      complete: jest.fn(),
-      fail: jest.fn(),
-      enqueueEvent: jest.fn(),
-      getWindow: (): null => null,
-      canArchiveStandaloneChats: (): boolean => true,
-      confirmArchivePairing: (): Promise<boolean> => Promise.resolve(true),
-    };
-    await handlePortalStandaloneChatArchive(command, context);
-    expect(context.fail).toHaveBeenCalledWith(
-      command,
-      'execution_failed',
-      "Couldn't archive the chat.",
-      false,
-    );
-    expect(context.complete).not.toHaveBeenCalled();
-    jest.mocked(listWorkEntries).mockClear();
-
-    const retry = { ...command, id: 'archive-retry', sequence: 2 };
-    await handlePortalStandaloneChatArchive(retry, context);
-    expect(context.complete).not.toHaveBeenCalled();
-    expect(context.fail).toHaveBeenCalledWith(
-      retry,
-      'execution_failed',
-      "Couldn't archive the chat.",
-      false,
-    );
-    expect(listWorkEntries).toHaveBeenCalledWith(project, { strictRead: true });
-    expect(captureWorkEntryArchivedContainer).toHaveBeenCalledTimes(1);
-    expect(removeWorkEntryRow).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps cowork and App Advisor update projections and telemetry', async () => {
+  it('keeps the cowork update projection and telemetry', async () => {
     await updateWorkEntryMutation({
       projectId: 'project-a',
       entryId: 'entry-a',
@@ -284,10 +209,7 @@ describe('Work Entry mutation lifecycle', () => {
     expect(updateWorkEntry).toHaveBeenCalledWith('project-a', 'entry-a', {
       title: 'Renamed',
     });
-    expect(standalone.emitStandaloneWorkEntrySummary).toHaveBeenCalledWith(
-      'project-a',
-      'entry-a',
-    );
+    expect(standalone.emitStandaloneWorkEntrySummary).toHaveBeenCalledTimes(1);
     expect(telemetry.refreshWorktreeMetadata).toHaveBeenCalledWith(
       'project-a',
       'entry-a',
@@ -302,9 +224,6 @@ describe('Work Entry mutation lifecycle', () => {
       APP_ADVISOR_PROJECT_ID,
       'entry-a',
       { title: null },
-    );
-    expect(appAdvisor.projectAppAdvisorChatSummaries).toHaveBeenCalledWith(
-      'entry-a',
     );
     expect(standalone.emitStandaloneWorkEntrySummary).toHaveBeenCalledTimes(1);
   });
@@ -341,7 +260,6 @@ describe('Work Entry mutation lifecycle', () => {
         'project-a',
         'entry-a',
       );
-      expect(listWorkEntryChatSummaries).toHaveBeenCalledWith('project-a');
       expect(chatState.runWithScopeDeletion).toHaveBeenCalledWith(
         { projectId: 'project-a', worktreeId: 'entry-a' },
         expect.any(Function),
@@ -368,7 +286,7 @@ describe('Work Entry mutation lifecycle', () => {
       );
       expect(removeWorkEntryRow).toHaveBeenCalledWith('project-a', 'entry-a');
       expect(notifyLedgerContainerArchived).toHaveBeenCalled();
-      expect(schedulePortalStructuralSync).toHaveBeenCalledTimes(1);
+      expect(scheduleDesktopStructureChanged).toHaveBeenCalledTimes(1);
       expect(browser.commitTaskBrowserRetirement).toHaveBeenCalledWith(
         'project-a',
         'entry-a',
@@ -381,10 +299,7 @@ describe('Work Entry mutation lifecycle', () => {
       );
       expect(queue.deletion.commit).toHaveBeenCalledTimes(1);
       expect(queue.deletion.rollback).not.toHaveBeenCalled();
-      expect(standalone.emitStandaloneChatRemovals).toHaveBeenCalledWith(
-        'project-a',
-        [],
-      );
+      expect(standalone.emitStandaloneChatRemovals).toHaveBeenCalledTimes(1);
       expect(broadcastArchivedContainersChanged).toHaveBeenCalledWith(
         'project-a',
       );
@@ -434,10 +349,7 @@ describe('Work Entry mutation lifecycle', () => {
       expect.any(String),
       watcherError,
     );
-    expect(standalone.emitStandaloneChatRemovals).toHaveBeenCalledWith(
-      'project-a',
-      [],
-    );
+    expect(standalone.emitStandaloneChatRemovals).toHaveBeenCalledTimes(1);
     expect(broadcastArchivedContainersChanged).toHaveBeenCalledWith(
       'project-a',
     );

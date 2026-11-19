@@ -109,7 +109,7 @@ test('warm second-instance routes with modeled minimized state while the real wi
     await electronApp.evaluate(({ app }, url) => {
       app.emit('second-instance', {}, ['app', '--flag', url], process.cwd());
     }, `${BRAND_SCHEME}://remote-control`);
-    await expect(window.getByTestId('canopy-portal-modal')).toBeVisible();
+    await expect(window.getByTestId('remote-control-modal')).toBeVisible();
     expect(await model.evaluate((state) => state.snapshot())).toEqual(before);
     expect(electronApp.windows()).toHaveLength(1);
   } finally {

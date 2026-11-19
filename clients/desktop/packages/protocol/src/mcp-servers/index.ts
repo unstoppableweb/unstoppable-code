@@ -19,6 +19,7 @@
 // app imports. It runs in the renderer, the main process, and the web app.
 // ---------------------------------------------------------------------------
 
+import type { SelectionRefOwner } from '../plugins/selection-ref-owner';
 import type { HarnessCompatibility } from '../plugins/harness-compatibility';
 import type { McpServerHarnessInstalls } from './harness-installs';
 
@@ -273,6 +274,11 @@ export interface McpServerIndexEntry {
 export interface McpServerRef {
   serverId: string;
   configId: string;
+  /**
+   * An organization's connection (CAN-6235). Absent is the person's own,
+   * which is what every ref saved before the field existed means.
+   */
+  owner?: SelectionRefOwner;
 }
 
 /** Health check result for an MCP server */
@@ -594,6 +600,197 @@ export interface AccountMcpConnection {
    * sign-in and tool policy. Absent from older cloud releases, which means on.
    */
   enabled?: boolean;
+  /**
+   * The name the person gave this account, such as its workspace. Null or
+   * absent when they gave none; clients then name it from its config id.
+   * Absent from older cloud releases.
+   */
+  label?: string | null;
+  /**
+   * Whether this is the person's default account for its server key: the one
+   * a ref with no exact config match, or a plugin that brings the server,
+   * reaches in an attended chat. Absent from older cloud releases, whose
+   * clients fall back to {@link accountMcpDefaultConnection}'s rule.
+   */
+  isDefault?: boolean;
+}
+
+/** Longest account label, in characters after trimming. */
+export const ACCOUNT_MCP_LABEL_MAX_LENGTH = 80;
+
+/**
+ * Prefix of the config id minted for an account a person adds beside their
+ * first one ("Add another account"). A ref with such a config id names one
+ * account and resolves only to it, never to another account of the server.
+ */
+export const ACCOUNT_MCP_INSTANCE_CONFIG_PREFIX = 'acct-';
+
+/** Whether `configId` names one added account (see the prefix above). */
+export function isAccountMcpInstanceConfigId(configId: string): boolean {
+  return (
+    configId.startsWith(ACCOUNT_MCP_INSTANCE_CONFIG_PREFIX) &&
+    configId.length > ACCOUNT_MCP_INSTANCE_CONFIG_PREFIX.length
+  );
+}
+
+/** A fresh config id for another account of a server. */
+export function newAccountMcpInstanceConfigId(): string {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(12));
+  let suffix = '';
+  // 256 % 36 leaves a slight bias, harmless for an id that only has to be
+  // unique among one person's accounts of one server.
+  for (const byte of bytes) suffix += alphabet[byte % alphabet.length];
+  return `${ACCOUNT_MCP_INSTANCE_CONFIG_PREFIX}${suffix}`;
+}
+
+type AccountMcpInstanceRow = Pick<
+  AccountMcpConnection,
+  'serverKey' | 'configId' | 'isDefault'
+>;
+
+/**
+ * The person's default account for `serverKey` among `rows`: the one the
+ * cloud flags, else the `default` config, else the only one. Undefined when
+ * several remain and none is flagged (an older cloud): callers then treat the
+ * server as having no default rather than guess.
+ */
+export function accountMcpDefaultConnection<T extends AccountMcpInstanceRow>(
+  rows: readonly T[],
+  serverKey: string,
+): T | undefined {
+  const candidates = rows.filter((row) => row.serverKey === serverKey);
+  return (
+    candidates.find((row) => row.isDefault === true) ??
+    candidates.find((row) => row.configId === 'default') ??
+    (candidates.length === 1 ? candidates[0] : undefined)
+  );
+}
+
+/**
+ * How a ref with no exact config match is resolved. `attended` (a chat with
+ * someone watching) reaches the default account. `unattended` (a scheduled or
+ * background run) never picks between accounts: it reaches the only account
+ * of the server, or nothing.
+ */
+export type AccountMcpRefResolution = 'attended' | 'unattended';
+
+/**
+ * The account a `{ serverId, configId }` ref reaches among `rows` (already
+ * narrowed to the kind the caller resolves). An exact config match wins. A
+ * ref to an added account (`acct-*`) reaches only that account. Otherwise
+ * `attended` resolution reaches the default account and `unattended`
+ * resolution the server's only account.
+ */
+export function resolveAccountMcpRef<T extends AccountMcpInstanceRow>(
+  rows: readonly T[],
+  ref: { serverId: string; configId: string },
+  resolution: AccountMcpRefResolution = 'attended',
+): T | undefined {
+  const candidates = rows.filter((row) => row.serverKey === ref.serverId);
+  const exact = candidates.find((row) => row.configId === ref.configId);
+  if (exact) return exact;
+  if (isAccountMcpInstanceConfigId(ref.configId)) return undefined;
+  if (resolution === 'unattended')
+    return candidates.length === 1 ? candidates[0] : undefined;
+  return accountMcpDefaultConnection(candidates, ref.serverId);
+}
+
+/**
+ * The account config a server a plugin brings asks for (CAN-6232): the one
+ * account of that connector the same selection picks directly, so a project
+ * or chat that chose an account reaches it through its plugins too. With no
+ * direct pick, or picks of several accounts, none: the plugin's server then
+ * follows {@link resolvePluginAccountMcpServer}'s fallback. Given the
+ * connector's `rows`, refs that name one of them count first (CAN-6233): a
+ * ref beside them that names no current account reaches nothing, so it does
+ * not make the pick ambiguous.
+ */
+export function pluginAccountMcpConfigId(
+  directRefs: readonly { serverId: string; configId: string }[],
+  serverKey: string,
+  rows?: readonly { serverKey: string; configId: string }[],
+): string | undefined {
+  const refs = directRefs.filter((ref) => ref.serverId === serverKey);
+  const named = rows
+    ? refs.filter((ref) =>
+        rows.some(
+          (row) => row.serverKey === serverKey && row.configId === ref.configId,
+        ),
+      )
+    : [];
+  const picked = new Set(
+    (named.length > 0 ? named : refs).map((ref) => ref.configId),
+  );
+  return picked.size === 1 ? picked.values().next().value : undefined;
+}
+
+/**
+ * The account a server a plugin brings reaches among `rows` (curated rows):
+ * the account the selection picks for the connector directly
+ * ({@link pluginAccountMcpConfigId}), resolved as that ref; otherwise the
+ * default account, or in an unattended run the connector's only account.
+ * A pick of an added account that is gone reaches nothing, never another.
+ */
+export function resolvePluginAccountMcpServer<T extends AccountMcpInstanceRow>(
+  rows: readonly T[],
+  serverKey: string,
+  directRefs: readonly { serverId: string; configId: string }[],
+  resolution: AccountMcpRefResolution = 'attended',
+): T | undefined {
+  const configId = pluginAccountMcpConfigId(directRefs, serverKey, rows);
+  if (configId !== undefined)
+    return resolveAccountMcpRef(
+      rows,
+      { serverId: serverKey, configId },
+      resolution,
+    );
+  if (resolution === 'attended')
+    return accountMcpDefaultConnection(rows, serverKey);
+  const candidates = rows.filter((row) => row.serverKey === serverKey);
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+/**
+ * The configuration name an account connection shows. The cloud keys
+ * configurations by id only (`default`, `work`), so the name is derived from
+ * the id: every connection used to read "Default", which is how a Personal
+ * and a Work connection to one provider became indistinguishable (REG-3033).
+ */
+export function accountMcpConfigName(configId: string): string {
+  if (configId === 'default') return 'Default';
+  const words = configId.split(/[-_\s]+/).filter((word) => word.length > 0);
+  if (words.length === 0) return configId;
+  return words
+    .map((word, index) =>
+      index === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word,
+    )
+    .join(' ');
+}
+
+/**
+ * The name one account of a connector shows (CAN-6226): the label the person
+ * gave it, else its configuration's name. An added account (`acct-*`) the
+ * person never named reads "Another account" rather than its minted id.
+ */
+export function accountMcpAccountName(
+  connection: Pick<AccountMcpConnection, 'configId' | 'label'>,
+): string {
+  const label = connection.label?.trim();
+  if (label) return label;
+  return isAccountMcpInstanceConfigId(connection.configId)
+    ? 'Another account'
+    : accountMcpConfigName(connection.configId);
+}
+
+/**
+ * Whether this is the person's default account for its connector: the
+ * cloud's flag, or the `default` configuration on a cloud that sends none.
+ */
+export function isDefaultAccountMcpConnection(
+  connection: Pick<AccountMcpConnection, 'configId' | 'isDefault'>,
+): boolean {
+  return connection.isDefault ?? connection.configId === 'default';
 }
 
 /** False only for a connection the user turned off. */
@@ -619,7 +816,9 @@ export const ACCOUNT_MCP_CONNECTION_EDIT_CAPABILITY = 'mcp-connections-v2';
  * the same request supplies a new `bearerToken`. The stored headers stay for
  * an address on the same origin; a new origin removes them unless the same
  * request supplies `headers`. `enabled` turns the connection on or off for
- * chats and agents and changes nothing else.
+ * chats and agents and changes nothing else. `label` renames the account
+ * (`null` clears the name) and `isDefault: true` makes it the person's
+ * default account for its server; neither touches the sign-in.
  */
 export interface UpdateAccountMcpConnectionRequest {
   displayName?: string;
@@ -627,6 +826,8 @@ export interface UpdateAccountMcpConnectionRequest {
   headers?: Record<string, string>;
   bearerToken?: string | null;
   enabled?: boolean;
+  label?: string | null;
+  isDefault?: true;
 }
 
 /** `PATCH /mcp-connections/{id}` answer. */

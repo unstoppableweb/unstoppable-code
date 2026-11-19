@@ -18,6 +18,12 @@ export interface CloudWorkspaceFileRow {
   readonly name: string;
   readonly sizeBytes: number;
   readonly createdAt: string;
+  /**
+   * Its current version, which a replacement names. The web core sends it
+   * once main lists at revision 2 (CAN-7008); without it a file can't be
+   * replaced from desktop.
+   */
+  readonly versionId?: string;
 }
 
 export type CloudWorkspaceFileList =
@@ -96,6 +102,9 @@ export async function refreshCloudWorkspaceFiles(
           name: artifact.name,
           sizeBytes: artifact.sizeBytes,
           createdAt: artifact.createdAt,
+          ...(artifact.versionId === undefined
+            ? {}
+            : { versionId: artifact.versionId }),
         });
       }
       cursor = listed.nextCursor;

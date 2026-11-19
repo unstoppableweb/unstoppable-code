@@ -47,7 +47,9 @@ type LifecycleOperation =
   | 'core.workspace.sourceChanges.apply'
   | 'core.workspace.composition.promote'
   | 'core.worktree.branch.rename'
-  | 'core.sharedContainer.fork';
+  | 'core.sharedContainer.fork'
+  // CAN-4097: the setup cancel projects the same way.
+  | 'core.worktree.setup.cancel';
 
 /** The host request one projected call runs, and how it failed. */
 export interface WorkspaceLifecycleProjection {

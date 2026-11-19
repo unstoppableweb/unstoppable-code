@@ -93,6 +93,9 @@ interface PendingMatch {
  * match is open is kept, since it becomes one placeholder whatever its
  * length.
  */
+/** The most raw text of one open match a redactor keeps for `takeHeld`. */
+const OPEN_RAW_LIMIT = 64 * 1024;
+
 export class SecretValueRedactor {
   private readonly forms: readonly SecretForm[];
   private readonly carry: number;
@@ -101,6 +104,14 @@ export class SecretValueRedactor {
   private openName: string | null = null;
   /** Where that open match's confirmed span ends in `buffer`. */
   private openEnd = 0;
+  /**
+   * The raw text of the open match before `buffer`: neither released nor
+   * held, owed as its placeholder. Kept up to OPEN_RAW_LIMIT characters, for
+   * {@link takeHeld}; past that (a long self-overlapping run) only the fact
+   * that it overflowed is kept.
+   */
+  private openRaw = '';
+  private openRawOverflowed = false;
   private count = 0;
 
   /**
@@ -129,6 +140,16 @@ export class SecretValueRedactor {
     return this.count;
   }
 
+  /**
+   * True when an open match outgrew OPEN_RAW_LIMIT: {@link takeHeld} can
+   * then give back only its placeholder, not the text a new value might
+   * overlap, so a caller handing off to another redactor must withhold what
+   * follows instead.
+   */
+  get heldOverflowed(): boolean {
+    return this.openName !== null && this.openRawOverflowed;
+  }
+
   /** Redacts `chunk`, returning what is safe to release now. */
   push(chunk: string): string {
     if (this.forms.length === 0) return chunk;
@@ -140,6 +161,25 @@ export class SecretValueRedactor {
   flush(): string {
     if (this.forms.length === 0) return '';
     return this.drain(true);
+  }
+
+  /**
+   * Takes back everything pushed but not yet released, as it was pushed and
+   * unredacted (an open match's whole text included), and resets, so
+   * another redactor can carry on from it when the values change
+   * mid-stream.
+   */
+  takeHeld(): string {
+    // An open match too long to keep can't be matched again: it goes as its
+    // placeholder alone, rather than in part (see heldOverflowed).
+    const text = this.openRawOverflowed
+      ? agentSecretRedactionPlaceholder(this.openName ?? 'SECRET')
+      : this.openRaw + this.buffer;
+    this.buffer = '';
+    this.openRaw = '';
+    this.openRawOverflowed = false;
+    this.openName = null;
+    return text;
   }
 
   /** Redacts a whole text in one call, continuing the redaction count. */
@@ -180,6 +220,14 @@ export class SecretValueRedactor {
         // Keep the unconfirmed window and remember that a match is open.
         output += text.slice(cursor, pending.start);
         const keepFrom = Math.max(pending.start, safeEnd);
+        const openRaw =
+          (pending.open ? this.openRaw : '') +
+          text.slice(pending.start, keepFrom);
+        if (!pending.open) this.openRawOverflowed = false;
+        if (openRaw.length > OPEN_RAW_LIMIT) {
+          this.openRawOverflowed = true;
+          this.openRaw = '';
+        } else if (!this.openRawOverflowed) this.openRaw = openRaw;
         this.buffer = text.slice(keepFrom);
         this.openName = pending.name;
         this.openEnd = pending.end - keepFrom;
@@ -188,6 +236,10 @@ export class SecretValueRedactor {
       output +=
         text.slice(cursor, pending.start) +
         agentSecretRedactionPlaceholder(pending.name);
+      if (pending.open) {
+        this.openRaw = '';
+        this.openRawOverflowed = false;
+      }
       this.count += 1;
       cursor = pending.end;
       pending = null;

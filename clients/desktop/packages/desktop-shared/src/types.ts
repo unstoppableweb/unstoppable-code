@@ -1,6 +1,9 @@
+import type { AppError } from '@canopy/protocol/app-errors';
+import type { McpRemovalRecovery } from '@canopy/protocol/mcp-removal';
 import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/portal/project-deletion-discard';
 import type { AntigravityModelEntry } from '@canopy/execution-engine/lib/antigravity-models';
+import type { OrganizationLayerView } from './lib/organization-capabilities';
 import type { AssistantMode } from '@canopy/execution-engine/types/assistant-mode';
 import type { WorkspaceType } from '@canopy/execution-engine/types/workspace-type';
 import type {
@@ -22,6 +25,7 @@ import type {
   CloudModelPreflightResult,
   PipelineSchedule,
   PipelineScheduleDestination,
+  DictationModelStatus,
 } from '@canopy/protocol/canopy-core';
 import type {
   FeedbackReportContext,
@@ -401,6 +405,7 @@ import type {
   TranscriptContentField,
   TranscriptTarget,
   CardStateV2,
+  OperationOrigin,
 } from '@canopy/protocol/canopy-core';
 import type {
   ChatAgentSentInfo,
@@ -858,11 +863,7 @@ import type {
   BrowserActionError,
   BrowserActionReceipt,
 } from '@canopy/execution-engine/types/browser';
-import type { CanopyPortalApi, CanopyPortalWorkerStatus } from './types/portal';
-import type {
-  PortalConnectionStatus,
-  PortalSessionShellState,
-} from '@canopy/protocol/portal';
+import type { PortalSessionShellState } from '@canopy/protocol/portal';
 import type {
   RunShareScope,
   SharedRunCommentAnchor,
@@ -2039,6 +2040,45 @@ export type CloudChatAttachmentUploadResult =
     };
 
 /**
+ * A file the person picked, added to a cloud project's shared workspace
+ * files, or a new version of one (CAN-7008). The operation id keys the
+ * upload, so Try again resends under the same one.
+ */
+export interface CloudWorkspaceFileUploadRequest {
+  /** The project's web core workspace id. */
+  workspaceId: string;
+  operationId: string;
+  /** With `expectedVersionId`, a new version of this file. */
+  replaceFileId?: string;
+  expectedVersionId?: string;
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+/**
+ * A workspace file upload through main (CAN-7008). `unknown`: the upload was
+ * sent and no answer came back, so the file may have been stored; main never
+ * retries it.
+ */
+export type CloudWorkspaceFileUploadResult =
+  | { ok: true; fileId: string }
+  | {
+      ok: false;
+      reason:
+        | 'disabled'
+        | 'unauthenticated'
+        | 'too_large'
+        | 'unsupported_type'
+        | 'conflict'
+        | 'rejected'
+        | 'offline'
+        | 'unknown';
+      /** The web core's own words for a refusal it explained. */
+      message?: string;
+    };
+
+/**
  * One of a cloud chat's files to save to this computer: an attachment or a
  * deliverable of the chat, or a shared file of its project (CAN-6587).
  */
@@ -2152,6 +2192,13 @@ export interface CloudChatsApi {
     target: CloudChatUploadTarget,
     file: CloudChatAttachmentUploadFile,
   ): Promise<CloudChatAttachmentUploadResult>;
+  /**
+   * Adds one file to a cloud project's shared workspace files, or a new
+   * version of one, over main's web core connection (CAN-7008).
+   */
+  uploadWorkspaceFile(
+    request: CloudWorkspaceFileUploadRequest,
+  ): Promise<CloudWorkspaceFileUploadResult>;
   /**
    * Saves one of a cloud chat's files to a path the user picks in a save
    * dialog, reading it over main's web core connection.
@@ -2332,15 +2379,6 @@ export {
   getDefaultFeatureFlagSnapshot,
   isClientFeatureFlagConfirmedEnabled,
 } from '@canopy/protocol/feature-flags';
-export type {
-  CanopyPortalApi,
-  CanopyPortalState,
-  CanopyPortalWorkerStatus,
-  StartCanopyPortalResponse,
-  StopCanopyPortalResponse,
-  RegenerateCanopyPortalPairingCodeResponse,
-  CancelCanopyPortalPairingCodeResponse,
-} from './types/portal';
 
 /**
  * Default HTTP MCP auth handler when no per-server override is set. Canopy
@@ -2439,12 +2477,17 @@ export const CLOUD_REACH_BACK_APPROVAL_PROJECT_ID = 'cloud-reach-back';
 export const SHARED_CONTAINER_VIEWER_PROJECT_ID = 'shared-container-viewer';
 
 /**
- * Composite scope key for the code-review chat sentinel scope. Worktree ids
- * are only unique per workspace, so the sentinel scope's `worktreeId` is the
- * `projectId--worktreeId` composite rather than a bare worktreeId. See
+ * Scope key for the code-review chat sentinel scope: the sentinel scope's
+ * `worktreeId`, encoding the real project and worktree. Historical
+ * `projectId--worktreeId` keys remain valid storage identities. See
  * {@link buildCodeReviewScopeKey}.
  */
-export { buildCodeReviewScopeKey } from './lib/code-review-scope';
+export {
+  buildCodeReviewScopeKey,
+  parseCodeReviewScopeKey,
+  type CodeReviewScopeKeyIdentity,
+  type CodeReviewScopeTarget,
+} from './lib/code-review-scope';
 
 // ---------------------------------------------------------------------------
 // App Advisor identity constants
@@ -3871,7 +3914,8 @@ export type WorktreeHealthIssueCode =
   | 'missing-git-metadata'
   | 'invalid-git-worktree'
   | 'missing-repository'
-  | 'git-error';
+  | 'git-error'
+  | 'unreadable';
 
 export interface WorktreeHealthRepoIssue {
   repoId: string;
@@ -7633,6 +7677,8 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   pendingInstalledItemUninstalls?: Array<{
     target: InstalledItemUninstallTarget;
     refs: InstalledItemRef[];
+    /** Device-only custody retry. Absent on legacy intents; stages live in the receipt. */
+    mcpRemoval?: McpRemovalRecovery;
   }>;
   /** Local recovery state; never project source paths to a remote client. */
   parkedCodexPlugins?: Array<{
@@ -7888,7 +7934,7 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   colorMode: ColorMode;
   /**
    * Legacy sidebar material, retained for older clients and persisted objects.
-   * Current renderers ignore it: light mode is translucent and dark is opaque.
+   * Current renderers ignore it: the sidebar is opaque in every mode.
    */
   sidebarAppearance?: SidebarAppearance;
   /**
@@ -7975,12 +8021,6 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * `compact`, anything else as the default `recent`.
    */
   chatDetail?: ChatDetail;
-  /**
-   * Opt-in for device-to-device remote control (Settings → Labs →
-   * Remote access). The `canopy-device-remote-control` flag must also be on.
-   * On unless explicitly `false`; normalization always supplies a boolean.
-   */
-  remoteControlEnabled?: boolean;
   windowBounds: WindowBounds | null;
   windowMaximized: boolean;
   windowFullScreen: boolean;
@@ -8447,7 +8487,21 @@ export type WorktreeStatsRequestSource =
   | 'cli'
   | 'user-explicit';
 
-export type GitRequestSource = WorktreeStatsRequestSource | 'branch-watcher';
+/**
+ * Logical origin of a Git launch, carried to the child as
+ * `CANOPY_GIT_REQUEST_SOURCE` for diagnostic attribution only.
+ */
+export type GitRequestSource =
+  | WorktreeStatsRequestSource
+  | 'branch-watcher'
+  /** The Activity panel's changed-files read for one worktree. */
+  | 'activity-changed-files'
+  /** Background revalidation of a repository's remote default branch. */
+  | 'default-branch-revalidation'
+  /** Working-tree snapshots at chat-turn start and end. */
+  | 'turn-diff-capture'
+  /** The repository health check that precedes worktree stats. */
+  | 'worktree-health';
 
 export interface DiffStatsBatchRequest {
   worktrees: Array<{
@@ -8810,6 +8864,8 @@ export interface FileTreeDirectoryRequest {
 
 export interface FileTreeDirectoryResponse {
   entries: FileTreeEntry[];
+  /** Git's ignore check failed, so `isIgnored` uses the default list. */
+  ignoreStateUnknown?: boolean;
 }
 
 export interface FileTreeItemReference {
@@ -9100,6 +9156,8 @@ export interface WorktreeGitFailedEvent {
   projectId: string;
   worktreeId: string;
   error: string;
+  /** Main's wire-safe record of this failure; the renderer links to it instead of recording again. */
+  recordedError?: AppError;
   healthIssue?: WorktreeHealthIssue;
   /** Storage takes precedence. source-no-commits describes this source branch only. */
   failureReason?: 'storage-unavailable' | 'source-no-commits';
@@ -12244,6 +12302,19 @@ export interface ChatSendAutomationDispatch {
   /** `background` keeps the scope's active tab (a scheduled run). */
   presentation: 'foreground' | 'background';
   packageOverlay?: PipelinePackageCapabilityOverlay;
+  /**
+   * What started the send and what an attached client should do with the
+   * chat once it is accepted (CAN-4174), set by the send and creation
+   * orchestrations from what the send's path does today. Committed as the
+   * batch's `chat.initiated` change; never stored with the chat.
+   */
+  initiated?: ChatSendInitiation;
+}
+
+/** The `chat.initiated` facts a send's automation dispatch carries (CAN-4174). */
+export interface ChatSendInitiation {
+  origin: OperationOrigin;
+  presentation: 'focus' | 'open' | 'none';
 }
 
 export interface ChatSendMessageCommand {
@@ -12615,7 +12686,20 @@ export type ChatStateChange =
    * nor recently showed the chat. The window's cached transcript is stale
    * until it reads the newest page.
    */
-  | { type: 'messages.omitted'; chatId: string };
+  | { type: 'messages.omitted'; chatId: string }
+  /**
+   * Published with the commit that accepted an initiated send, never stored
+   * (CAN-4174): `core.chat.events` revision 4's `chat.initiated`. It changes
+   * no chat state.
+   */
+  | {
+      type: 'chat.initiated';
+      chatId: string;
+      userMessageId: string;
+      origin: OperationOrigin;
+      presentation: 'focus' | 'open' | 'none';
+      acceptedAt: string;
+    };
 
 export interface ChatStateSnapshot {
   schemaVersion: 1;
@@ -13605,22 +13689,6 @@ export interface ChatApi {
     cb: (event: ClaudeTerminalScheduledPromptEvent) => void,
   ): () => void;
   onWindowCommand(cb: (command: ChatWindowCommand) => void): () => void;
-  /**
-   * Subscribe to Portal-originated composer control changes so the desktop
-   * store can apply them live (CAN-1217). Returns an unsubscribe function.
-   */
-  /** @deprecated Compatibility bridge until ChatStateCommandPort is injected. */
-  onPortalComposerCommand(
-    cb: (request: PortalChatComposerRendererRequest) => void,
-  ): () => void;
-  /**
-   * Complete a correlated Portal composer-setter request after the renderer
-   * has applied it or determined why it cannot be applied.
-   */
-  /** @deprecated Compatibility bridge until ChatStateCommandPort is injected. */
-  completePortalComposerCommand(
-    result: PortalChatComposerCommandResult,
-  ): Promise<{ ok: true }>;
   loadTabs(req: ChatLoadTabsRequest): Promise<ChatTabsFile>;
   /** Journal-flush and checkpoint a scope's main-owned canonical state. */
   flushScope(req: ChatFlushScopeRequest): Promise<void>;
@@ -13672,6 +13740,26 @@ export interface ChatApi {
   declineSecretRequest(
     req: SecretRequestDeclineRequest,
   ): Promise<SecretRequestSettleResponse>;
+  /** The Secrets chip: the chat's held secrets, metadata only. */
+  listAgentSecrets(
+    req: AgentSecretsChatScope,
+  ): Promise<AgentSecretsListResponse>;
+  /** The Secrets chip's Revoke. */
+  revokeAgentSecret(
+    req: AgentSecretRevokeRequest,
+  ): Promise<AgentSecretsActionResponse>;
+  /** Codex's Restart to apply. */
+  restartForAgentSecrets(
+    req: AgentSecretsChatScope,
+  ): Promise<AgentSecretsActionResponse>;
+  /** A chat's secrets or ambient status changed; refetch its list. */
+  onAgentSecretsChanged(
+    callback: (scope: AgentSecretsChatScope) => void,
+  ): () => void;
+  /** The paste guard's "Send as secret": keeps a pasted value for the chat. */
+  storePastedAgentSecret(
+    req: AgentSecretStorePastedRequest,
+  ): Promise<AgentSecretsActionResponse>;
   onPlanExitRequest(cb: (event: PlanExitRequestEvent) => void): () => void;
   approvePlanExit(req: PlanExitApproveRequest): Promise<void>;
   denyPlanExit(req: PlanExitDenyRequest): Promise<void>;
@@ -14081,6 +14169,67 @@ export interface SecretRequestSettleResponse {
   accepted: boolean;
   /** Why the submission was refused, safe to show. Never echoes a value. */
   error?: string;
+}
+
+/** One chat, for the Secrets chip's channels. */
+export interface AgentSecretsChatScope {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+/** One held secret as the Secrets chip shows it. Never a value. */
+export interface AgentSecretSummary {
+  name: string;
+  /** `chat` in v1; `project` with saved secrets (phase 2). */
+  scope: 'chat' | 'project';
+  createdAt: number;
+  expiresAt: number;
+  lastUsedAt?: number;
+  /** `session` when the value stays in memory for this app session only. */
+  storage: 'encrypted' | 'session';
+}
+
+/**
+ * What the chat's own commands get in Full access:
+ * - `live`: held secrets are in their environment now.
+ * - `restart`: Codex started before the chat's current secrets; Restart to
+ *   apply.
+ * - `restart-pending`: a restart happens once the chat is idle, or at its
+ *   next message.
+ * - `off`: not in Full access; only the tools give secrets to commands.
+ * - `none`: nothing to report (no provider process yet, or a provider with
+ *   no live environment).
+ */
+export type AgentSecretsAmbientStatus =
+  | 'live'
+  | 'restart'
+  | 'restart-pending'
+  | 'off'
+  | 'none';
+
+export interface AgentSecretsListResponse {
+  secrets: AgentSecretSummary[];
+  ambient: AgentSecretsAmbientStatus;
+}
+
+export interface AgentSecretRevokeRequest extends AgentSecretsChatScope {
+  name: string;
+}
+
+export interface AgentSecretsActionResponse {
+  ok: boolean;
+  /** Safe to show. */
+  error?: string;
+}
+
+/**
+ * The composer's paste guard "Send as secret": a pasted value kept as a
+ * chat secret under `name`. Local window only, never tunneled.
+ */
+export interface AgentSecretStorePastedRequest extends AgentSecretsChatScope {
+  name: string;
+  value: string;
 }
 
 export interface McpQuestionAnswer {
@@ -17636,6 +17785,29 @@ export function buildNoBillingSourceError(providerLabel: string): string {
 }
 
 /**
+ * Build the user-visible message for a turn refused because its provider is
+ * confirmed signed out while AI Credits routing is `off` and the chat has no
+ * explicit credits choice (CAN-7062). Emitted with
+ * {@link NO_BILLING_SOURCE_ERROR_CODE}, like {@link buildNoBillingSourceError}.
+ *
+ * Missing native auth is not consent to spend credits, so this fires whether or
+ * not credits are spendable: credits are one way to pay, chosen in the No
+ * billing source banner, never an automatic fallback. The Portal transcript
+ * prints this sentence on its own, so it must read as a complete statement.
+ *
+ * The desktop picker's locked reason reuses this sentence. The banner body in
+ * `signedOutCopy` (`@canopy/ui-shared/components`, which may not import this
+ * package) repeats its second sentence; keep the two identical by hand.
+ *
+ * @param providerLabel User-facing provider name, e.g. `'Claude'` / `'Codex'`.
+ */
+export function buildSignedOutNoBillingSourceError(
+  providerLabel: string,
+): string {
+  return `You're signed out of ${providerLabel}. Connect ${providerLabel} again, or choose another provider for this chat.`;
+}
+
+/**
  * Build the error for a turn aborted because its model runs only on AI
  * Credits and none are spendable. Shared by every provider backstop so chat
  * turn telemetry can recognize the abort, which carries no stable code on
@@ -19009,6 +19181,23 @@ export type CommitAutomationCapabilityPackageRequest =
        * `null` when it can no longer be read.
        */
       expectedPackageContentHash?: string | null;
+    }
+  | {
+      /**
+       * Rebuild the package installed for this automation for the workflow it
+       * runs, and upload that (CAN-6455): the same files, bound to the
+       * workflow's send step and keyed to `reboundWorkflow`. For a packaged
+       * install shared as its workflow.
+       */
+      localAutomationId: string;
+      packageRef: PipelinePackageRef;
+      /** Hash of the chat projection the install is pinned to. */
+      expectedPackageContentHash: string;
+      /**
+       * The exact workflow YAML the shared document carries inline. Main
+       * checks it against the automation's stored workflow.
+       */
+      reboundWorkflow: string;
     };
 
 export interface CommitAutomationCapabilityPackageResponse {
@@ -19806,6 +19995,12 @@ export interface ManagedDelegationApi {
 }
 
 export interface CanopyApi {
+  /**
+   * True in a local-only build (docs/local-only-build.md). A static constant
+   * evaluated once in preload, not an IPC call. Absent means a normal build;
+   * the renderer reads it only through `lib/local-only-build.ts`.
+   */
+  readonly localOnlyBuild?: boolean;
   reloadWindow: () => Promise<boolean>;
   restartApp: () => Promise<boolean>;
   /** Local window boot barrier; does not route through a paired computer. */
@@ -20792,15 +20987,15 @@ export interface CanopyApi {
    * redeems for a real web session before redirecting to `path`. The raw token
    * never leaves the main process — the renderer passes only a same-origin
    * destination path (must start with `/`, may carry its own query string, e.g.
-   * `/account/billing?plan=pro`). Gated behind `canopy-portal-enabled`; when the
-   * flag is off, there is no cloud token, or the mint fails, the main process
-   * falls back to opening the page unauthenticated so the CTA still works.
+   * `/account/billing?plan=pro`). When there is no cloud token or the mint
+   * fails, the main process falls back to opening the page unauthenticated so
+   * the CTA still works.
    * Rejects only if the main handler is unavailable; callers should treat a
    * rejection as "open the plain URL instead". Never exposes the token.
    *
    * Resolves to whether a browser page was actually opened. Do NOT infer
    * success from "did not reject": the main process degrades every realistic
-   * failure (flag off, no token, offline, mint rejected, unconfigured base
+   * failure (no token, offline, mint rejected, unconfigured base
    * URL, a throwing external open) into a fallback that swallows its own
    * error, so a caller that shows a "finish this in your browser" state must
    * branch on this boolean or it will strand the user on a page that was
@@ -21185,7 +21380,6 @@ export interface CanopyApi {
    */
   authTerminal: AuthTerminalApi;
   codexLogin: CodexLoginApi;
-  canopyPortal: CanopyPortalApi;
   appAdvisor: AppAdvisorApi;
   /**
    * Renderer surface for the embedded pipeline-editor chat drawer's
@@ -21194,6 +21388,8 @@ export interface CanopyApi {
   pipelineEditor: PipelineEditorApi;
   featureFlags: FeatureFlagsApi;
   experiments: LabsExperimentsApi;
+  /** A workspace's organization skills and plugins (CAN-6237). */
+  organizationCapabilities: OrganizationCapabilitiesApi;
   /**
    * Renderer surface for the automations (triggered activities) feature.
    * Mirrors the IPC channels declared under `IPC_CHANNELS.automations*` —
@@ -21285,11 +21481,32 @@ export interface DesktopSessionSnapshotArgs {
    * Portal `standalone_chat` snapshot reads them. Older hosts ignore it.
    */
   standaloneChatLocalId?: string;
+  /**
+   * Only the computer's own notices (CAN-7061), read without the workspace
+   * discovery that fails while the background service is down. Every row
+   * list is empty. Older hosts ignore it and build the full snapshot.
+   */
+  noticesOnly?: boolean;
 }
 
 /**
  * Authoritative main-process experiment snapshots and preferences.
  */
+/**
+ * Renderer bridge for a workspace's organization layer: the organization's
+ * shared skills and plugins its chats inherit (CAN-6237). Main owns the
+ * layer; the renderer reads it for the composer and the pickers.
+ */
+export interface OrganizationCapabilitiesApi {
+  /** The layer of the chat's workspace; null outside an organization workspace or when none is known. */
+  getLayer(
+    projectId: string,
+    worktreeId: string,
+  ): Promise<OrganizationLayerView | null>;
+  /** Called with a workspace whose layer changed; read it again. */
+  onLayerChanged(cb: (workspaceId: string) => void): () => void;
+}
+
 export interface LabsExperimentsApi {
   getSnapshot(): Promise<LabsExperimentsSnapshot>;
   setChoice(
@@ -21399,6 +21616,12 @@ export interface VoiceOpenSettingsRequest {
 export interface VoiceIsSupportedResponse {
   supported: boolean;
   reason?: string;
+  /**
+   * Linux only: why the helper can't run. `model-missing` means the speech
+   * model isn't downloaded yet, which the composer explains on click instead
+   * of hiding the microphone.
+   */
+  code?: 'model-missing' | 'cpu-unsupported';
 }
 
 /**
@@ -21465,6 +21688,19 @@ export interface VoiceApi {
    * keyboard pane.
    */
   openSettings: (request: VoiceOpenSettingsRequest) => Promise<void>;
+  /**
+   * The speech model the Linux dictation helper needs, projected from
+   * `core.dictation.*`. Other hosts report `unsupported`.
+   */
+  speechModel: {
+    status: () => Promise<DictationModelStatus>;
+    /** Starts downloading the model; resolves with the status once started. */
+    install: () => Promise<DictationModelStatus>;
+    /** Stops a download, keeping its partial files and any older model. */
+    cancel: () => Promise<DictationModelStatus>;
+    /** Stops a download and deletes every downloaded model. */
+    remove: () => Promise<DictationModelStatus>;
+  };
 }
 
 export interface ChatProjectApi {
@@ -22922,27 +23158,12 @@ export interface AppAdvisorUiStateSnapshot {
       defaultPrompt?: string;
     }>;
   };
+  /** The Remote Control dialog; the key predates the rename. */
   canopyPortal?: {
-    featureEnabled: boolean;
-    status: CanopyPortalWorkerStatus;
-    connectionStatus: PortalConnectionStatus;
-    sessionId: string | null;
-    /**
-     * Whether the pairing code is currently visible in the renderer UI. The
-     * pairing code itself is intentionally *not* part of this snapshot — the
-     * assistant must never see it.
-     */
-    pairingCodeVisible: boolean;
-    pairingCodeExpiresAt: string | null;
-    activatedAt: string | null;
-    lastErrorAt: string | null;
-    error: string | null;
     modal?: {
       open: boolean;
       busy?: string;
       errorVisible?: boolean;
-      /** Whether the "View Web Portal" deep-link button is rendered — connected, reconnecting, or pairing (CAN-1272, CAN-2357). */
-      viewPortalVisible?: boolean;
       /**
        * Whether the pairing QR code is on screen (CAN-2938). Visibility only:
        * the QR code's URL carries the pairing code and is never reported.
@@ -26901,63 +27122,6 @@ export type PortalChatComposerCommand =
   | PortalChatComposerSetterCommand
   | PortalChatComposerLifecycleCommand;
 
-/**
- * Main → renderer correlated mutation for a browser-originated interactive
- * AskUserQuestion answer or dismissal. Delivered over the SAME
- * `chat:portal-composer-command` channel as the composer setters — that channel
- * is now a portal-originated chat-state bridge, not composer-only. The renderer
- * holds the pending question + provider waiter, applies the answer/dismissal,
- * and returns a {@link PortalChatComposerCommandResult}. `questionRequestId` is
- * the authoritative correlation key for the awaiting question (distinct from the
- * per-delivery `requestId` on the correlated request wrapper). The answer shape
- * mirrors the protocol `PortalAskUserQuestionAnswer` via {@link McpQuestionAnswer}.
- */
-export type PortalChatQuestionMutationCommand = PortalChatComposerTarget &
-  (
-    | {
-        kind: 'answer_question';
-        questionRequestId: string;
-        answers: McpQuestionAnswer[];
-      }
-    | {
-        kind: 'dismiss_question';
-        questionRequestId: string;
-      }
-  );
-
-/**
- * Correlated main → renderer request. Carries a persistent composer setter or
- * a branch lifecycle command; each expects a renderer result. Question answers
- * and dismissals settle in the core (CAN-4128). Lifecycle create/close/fork stay
- * one-way (see {@link PortalChatComposerRendererRequest}).
- */
-export interface PortalChatComposerSetterRequest {
-  requestId: string;
-  command:
-    | PortalChatComposerSetterCommand
-    | Extract<PortalChatComposerLifecycleCommand, { kind: 'branch' | 'share' }>;
-}
-
-/**
- * Portal-originated chat-state bridge over `chat:portal-composer-command`: the
- * composer setters, question mutations, and branch flow as correlated requests
- * that must receive a renderer result, while lifecycle create/close/fork stay
- * one-way commands.
- */
-export type PortalChatComposerRendererRequest =
-  | PortalChatComposerSetterRequest
-  | PortalChatComposerLifecycleCommand;
-
-export type PortalChatComposerCommandResult =
-  | { requestId: string; ok: true; data?: Record<string, unknown> }
-  | {
-      requestId: string;
-      ok: false;
-      code: 'not_found' | 'invalid_target' | 'execution_failed';
-      error: string;
-      retryable: boolean;
-    };
-
 export type ChatWindowCommand = {
   /**
    * A fired watcher for a terminal-backed Claude chat, whose terminal the
@@ -28128,8 +28292,6 @@ export const IPC_CHANNELS = {
   /** A page's `chat:event` decoder starts over: send outputs in full. */
   chatEventOutputReset: 'chat:event-output-reset',
   chatWindowCommand: 'chat:window-command',
-  chatPortalComposerCommand: 'chat:portal-composer-command',
-  chatPortalComposerCommandResult: 'chat:portal-composer-command-result',
   chatLoadTabs: 'chat:load-tabs',
   chatFlushScope: 'chat:flush-scope',
   chatForkOpenWorktreeTabs: 'chat:fork-open-worktree-tabs',
@@ -28186,6 +28348,11 @@ export const IPC_CHANNELS = {
   // Agent secret requests: local renderer → main only; never tunneled.
   secretRequestSubmit: 'secret-request:submit',
   secretRequestDecline: 'secret-request:decline',
+  agentSecretsList: 'agent-secrets:list',
+  agentSecretsRevoke: 'agent-secrets:revoke',
+  agentSecretsRestart: 'agent-secrets:restart',
+  agentSecretsChanged: 'agent-secrets:changed',
+  agentSecretsStorePasted: 'agent-secrets:store-pasted',
   approvalRequest: 'approval:request', // main → renderer event
   approvalCancelled: 'approval:cancelled', // main → renderer event
   // main → renderer event. Distinct from `approval:cancelled`, which means
@@ -28268,6 +28435,7 @@ export const IPC_CHANNELS = {
   workEntryAutoDeleteResolveBranch: 'work-entry-auto-delete:resolve-branch',
   workEntryAutoDeleteChanged: 'work-entry-auto-delete:changed',
   workEntriesList: REMOTE_IPC_CHANNELS.workEntriesList,
+  workEntriesListArchived: REMOTE_IPC_CHANNELS.workEntriesListArchived,
   workEntriesCreate: REMOTE_IPC_CHANNELS.workEntriesCreate,
   workEntriesUpdate: 'work-entries:update',
   workEntriesReorder: 'work-entries:reorder',
@@ -28441,6 +28609,8 @@ export const IPC_CHANNELS = {
   fileReadDocumentBytes: 'file:read-document-bytes',
   fileSaveContent: REMOTE_IPC_CHANNELS.fileSaveContent,
   modelRegistryGet: REMOTE_IPC_CHANNELS.modelRegistryGet,
+  // Hosted controller read; the portable renderer adapter does not expose it.
+  providerUsageLimitsGet: 'provider-usage:limits-get',
   modelRegistryUpdated: 'model-registry:updated',
   aiGatewayModelCatalogRetry: 'ai-gateway-model-catalog:retry',
   harnessAssignmentsLoad: 'model-harness-assignments:load',
@@ -28528,6 +28698,10 @@ export const IPC_CHANNELS = {
   voiceCancel: 'voice:cancel',
   voiceEvent: 'voice:event',
   voiceOpenSettings: 'voice:open-settings',
+  voiceSpeechModelStatus: 'voice:speech-model-status',
+  voiceSpeechModelInstall: 'voice:speech-model-install',
+  voiceSpeechModelCancel: 'voice:speech-model-cancel',
+  voiceSpeechModelRemove: 'voice:speech-model-remove',
   scriptActionsList: REMOTE_IPC_CHANNELS.scriptActionsList,
   scriptActionsRescan: REMOTE_IPC_CHANNELS.scriptActionsRescan,
   scriptActionsReview: REMOTE_IPC_CHANNELS.scriptActionsReview,
@@ -28658,12 +28832,9 @@ export const IPC_CHANNELS = {
   browserGetAuthRequest: 'browser:get-auth-request',
   browserAnswerAuthRequest: 'browser:answer-auth-request',
   browserSavePdf: 'browser:save-pdf',
-  canopyPortalGetState: 'canopy-portal:get-state',
-  canopyPortalStart: 'canopy-portal:start',
-  canopyPortalStop: 'canopy-portal:stop',
-  canopyPortalRegeneratePairingCode: 'canopy-portal:regenerate-pairing-code',
-  canopyPortalCancelPairingCode: 'canopy-portal:cancel-pairing-code',
-  canopyPortalStateChanged: 'canopy-portal:state-changed',
+  organizationCapabilitiesGetLayer: 'organization-capabilities:get-layer',
+  organizationCapabilitiesLayerChanged:
+    'organization-capabilities:layer-changed',
   experimentsGetSnapshot: 'experiments:get-snapshot',
   experimentsSetChoice: 'experiments:set-choice',
   experimentsSnapshotChanged: 'experiments:snapshot-changed',
@@ -28760,6 +28931,7 @@ export const IPC_CHANNELS = {
   cloudChatsUploadAttachment: 'cloud-chats:upload-attachment',
   cloudChatsDownloadFile: 'cloud-chats:download-file',
   cloudChatsWakeFiles: 'cloud-chats:wake-files',
+  cloudChatsUploadWorkspaceFile: 'cloud-chats:upload-workspace-file',
   cloudCopyAnalyze: 'cloud-copy:analyze',
   orgProjectsMoveBackToPersonal: 'org-projects:move-back-to-personal',
   orgProjectsOwnershipChanged: 'org-projects:ownership-changed',
@@ -28996,6 +29168,8 @@ export const IPC_CHANNELS = {
   remoteControlOpenMachine: 'remote-control:open-machine',
   remoteControlSetAllowIncoming: 'remote-control:set-allow-incoming',
   remoteControlSetAllowRemoteUpdates: 'remote-control:set-allow-remote-updates',
+  remoteControlSetInventorySyncEnabled:
+    'remote-control:set-inventory-sync-enabled',
   remoteControlStartPairing: 'remote-control:start-pairing',
   remoteControlCancelPairing: 'remote-control:cancel-pairing',
   remoteControlRespondToPairing: 'remote-control:respond-to-pairing',

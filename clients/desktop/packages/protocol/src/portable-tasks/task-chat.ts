@@ -810,6 +810,25 @@ const branchTargetSchema = z
     message: 'branch target must not contain whitespace',
   });
 
+const EXPLICIT_BRANCH_TARGET_RE = /^(?:local|remote):(.*)$/u;
+
+// An explicit local:/remote: prefix names the namespace and does not count
+// toward the branch-name limit. Bare targets keep the legacy contract. `:`
+// cannot occur in a Git branch name, so a prefix needs a name after it.
+const createBranchTargetSchema = z.union([
+  branchTargetSchema.refine(
+    (target) => !EXPLICIT_BRANCH_TARGET_RE.test(target),
+  ),
+  z.string().refine((target) => {
+    const name = EXPLICIT_BRANCH_TARGET_RE.exec(target)?.[1];
+    return (
+      name !== undefined &&
+      !name.includes(':') &&
+      branchTargetSchema.safeParse(name).success
+    );
+  }),
+]);
+
 function isSupportedPullRequestTarget(target: string): boolean {
   if (target !== target.trim()) return false;
   if (/^#?\d+$/u.test(target)) return /^#?[1-9]\d{0,9}$/u.test(target);
@@ -827,10 +846,13 @@ const pullRequestTargetSchema = z
 
 export const fromSchema = z.union([
   z.strictObject({ kind: z.literal('default') }),
-  z.strictObject({ kind: z.literal('branch'), target: branchTargetSchema }),
+  z.strictObject({
+    kind: z.literal('branch'),
+    target: createBranchTargetSchema,
+  }),
   z.strictObject({
     kind: z.literal('base_branch'),
-    target: branchTargetSchema,
+    target: createBranchTargetSchema,
   }),
   z.strictObject({ kind: z.literal('pr'), target: pullRequestTargetSchema }),
   z.strictObject({
@@ -1107,7 +1129,7 @@ export type ProjectGroupListResult = z.infer<
 const taskCreateRefSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('branch'),
-    target: branchTargetSchema,
+    target: createBranchTargetSchema,
     name: branchTargetSchema,
     local: z.boolean(),
     remote: z.boolean(),

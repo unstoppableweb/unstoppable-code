@@ -32,7 +32,6 @@ import type {
   WorktreeData,
   WorktreeEffectiveOverrides,
 } from '@canopy/desktop-shared/types';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { getObservabilityService } from '../observability';
 import {
   PROJECT_W5_STORAGE,
@@ -54,7 +53,7 @@ import {
   getWorkspaceWorktreeDir,
   getWorkspaceWorktreeRepoDir,
 } from './paths';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import {
   readWorkspaceConfigDetailed,
   readWorkspaceWorktreesDetailed,
@@ -128,7 +127,8 @@ function createDesktopWorkspaceIndexRepository(): StoredWorkspaceIndexRepository
     // so this keeps a connected portal session current (CAN-1304). Workspace
     // deletion never rewrites the index (it self-heals on read), so
     // `deleteWorkspaceById` schedules its own sync.
-    onCommitted: schedulePortalStructuralSync,
+    onCommitted: (): void =>
+      scheduleDesktopStructureChanged('structural.sidebar-items'),
     onRefused: recordWorkspaceIndexWriteRefused,
   });
   return {
@@ -554,7 +554,7 @@ function toCoworkWorkspaceConfig(item: CoworkSidebarItem): WorkspaceConfigFile {
   };
 }
 
-async function readSingleRepoWorkspace(
+export async function readSingleRepoWorkspace(
   entry: WorkspaceIndexEntry,
   collector?: ManifestAuthorityCollector,
   metadata?: PreparedW5Metadata,
@@ -631,7 +631,7 @@ async function readSingleRepoWorkspace(
   };
 }
 
-async function readMultiRepoWorkspace(
+export async function readMultiRepoWorkspace(
   entry: WorkspaceIndexEntry,
   collector?: ManifestAuthorityCollector,
   metadata?: PreparedW5Metadata,
@@ -1410,7 +1410,6 @@ async function writeAdmittedSidebarItems(
       buildWorkspaceExternalPathMap(writtenItems, writtenPreserveWorkspaceIds),
     );
     rememberSidebarItemIds(writtenIndex);
-    notifyPortalStructureChanged();
   });
   const preservedWorkspaceIds = Array.from(writtenPreserveWorkspaceIds);
   return {
@@ -1446,7 +1445,6 @@ export async function setWorkspaceActivitySectionOrder(
     });
     return found ? { result: true, entries: next } : { result: false };
   });
-  if (matched) notifyPortalStructureChanged();
   return matched;
 }
 
@@ -1492,7 +1490,6 @@ export async function renameWorkspaceIndexEntry(
       ? { result: { authority, renamed }, entries: next }
       : { result: { authority, renamed } };
   });
-  if (outcome.renamed) notifyPortalStructureChanged();
   return outcome;
 }
 
@@ -1530,7 +1527,6 @@ export async function removeWorkspaceIndexEntry(
   await afterW5Commit(() => {
     registerWorkspaceTypes(buildWorkspaceTypeMap(remaining));
     rememberSidebarItemIds(remaining);
-    notifyPortalStructureChanged();
   });
   return true;
 }

@@ -27,6 +27,64 @@ import {
 const RESPONSES_WS_PATHS = new Set(['/responses', '/v1/responses']);
 const RESPONSES_ROUTE = '/v1/responses';
 const DEFAULT_BARRIER_TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_HISTORY_BYTES = 16 * 1024 * 1024;
+const MAX_RESPONSE_HISTORY_ENTRIES = 32;
+
+// Native OpenAI sends only new input after previous_response_id. Keep that
+// protocol state per socket, not in the global scenario/cursor namespace.
+export function createResponsesHistory() {
+  const responses = new Map();
+  let retainedBytes = 0;
+  return {
+    expand(body) {
+      if (!body.previous_response_id) return body;
+      const previous = responses.get(body.previous_response_id);
+      if (!previous) {
+        const error = new Error('Mock response history is missing or expired.');
+        error.code = 'mock_context_missing';
+        throw error;
+      }
+      return {
+        ...previous.options,
+        ...body,
+        input: [...previous.input, ...(body.input ?? [])],
+      };
+    },
+    remember(body, response) {
+      const input = [...(body.input ?? []), ...(response.output ?? [])];
+      const options = Object.fromEntries(
+        ['instructions', 'tools', 'model', 'tool_choice']
+          .filter((key) => body[key] !== undefined)
+          .map((key) => [key, body[key]]),
+      );
+      const bytes = Buffer.byteLength(JSON.stringify({ input, options }));
+      if (bytes > MAX_RESPONSE_HISTORY_BYTES) {
+        const error = new Error(
+          'Mock response history exceeded its byte limit.',
+        );
+        error.code = 'mock_context_limit';
+        throw error;
+      }
+      if (responses.has(response.id))
+        retainedBytes -= responses.get(response.id).bytes;
+      responses.delete(response.id);
+      while (
+        responses.size >= MAX_RESPONSE_HISTORY_ENTRIES ||
+        retainedBytes + bytes > MAX_RESPONSE_HISTORY_BYTES
+      ) {
+        const oldest = responses.keys().next().value;
+        retainedBytes -= responses.get(oldest).bytes;
+        responses.delete(oldest);
+      }
+      responses.set(response.id, { input, options, bytes });
+      retainedBytes += bytes;
+    },
+    clear() {
+      responses.clear();
+      retainedBytes = 0;
+    },
+  };
+}
 
 function isOpen(ws) {
   return ws.readyState === WebSocket.OPEN;
@@ -213,11 +271,19 @@ function closeForMockFailure(ws, observation, errorClass) {
   }
 }
 
-async function handleResponseCreate(ws, body, key) {
+async function handleResponseCreate(ws, body, key, history) {
   let step;
   let observation;
 
   try {
+    body = history.expand(body);
+    if (body.generate === false) {
+      // A connection prewarm is not an inference or a scripted-step attempt.
+      const events = buildResponsesEvents({}, {}, body.model);
+      history.remember(body, events.at(-1).data.response);
+      for (const entry of events) send(ws, entry.data);
+      return;
+    }
     const resolved = resolveResponsesReply(body, {
       key,
       transport: 'ws',
@@ -278,6 +344,8 @@ async function handleResponseCreate(ws, body, key) {
     // this `response.create`.
     for (const entry of events) {
       if (!isOpen(ws)) return;
+      if (entry.event === 'response.completed')
+        history.remember(body, entry.data.response);
       send(ws, entry.data);
       sentFrames += 1;
 
@@ -316,6 +384,8 @@ export function attachResponsesWebSocket(httpServer) {
       keyFromBearer(request) ?? keyFromApiKey(request, { header: 'x-api-key' });
 
     wss.handleUpgrade(request, socket, head, (ws) => {
+      const history = createResponsesHistory();
+      ws.once('close', () => history.clear());
       ws.on('message', (data) => {
         let body;
         try {
@@ -329,7 +399,7 @@ export function attachResponsesWebSocket(httpServer) {
 
         // Every response.create gets its own promise/cursor and error handler;
         // overlapping requests on one socket remain independent.
-        void handleResponseCreate(ws, body, key).catch((error) => {
+        void handleResponseCreate(ws, body, key, history).catch((error) => {
           // The handler's internal catch is defensive, but keep the detached
           // promise boundary rejection-safe if that catch ever fails itself.
           sendFailed(ws, error);

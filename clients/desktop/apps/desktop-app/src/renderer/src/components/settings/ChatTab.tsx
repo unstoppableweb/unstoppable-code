@@ -79,7 +79,7 @@ type DefaultsRowKey =
   | 'aiCredits';
 
 /** The only model whose default rows offer Low (CAN-4646). */
-const SOL_LOW_MODEL = 'gpt-6.1-sol';
+const SOL_LOW_MODEL = 'gpt-6.2-sol';
 
 const PROVIDER_LABELS: Record<DefaultsRowKey, string> = {
   claude: 'Claude',

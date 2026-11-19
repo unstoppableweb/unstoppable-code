@@ -21,12 +21,16 @@ import {
   type WorkerPipelineExecutionResult,
   type WorkerPipelineExecutionStartParams,
   type WorkerPipelineHostLaunch,
+  type WorkerPipelineStartSetup,
 } from '@canopy/protocol/canopy-core';
 import {
   classifyDaemonPipeline,
   DAEMON_PIPELINE_REFUSAL_REASONS,
   resolveDaemonPipelineInputs,
   type DaemonModelAliasResolution,
+  type DaemonPipelineClassification,
+  type DaemonPipelineClassifierContext,
+  type DaemonPipelineModelSelection,
 } from '@canopy/execution-engine/node/pipelines/daemon-eligibility';
 import { resolveExecutionModelAliasPreferences } from '@canopy/execution-engine/node/pipelines/executor/model-alias-preferences';
 import { resolveExecutionPluginCollections } from '@canopy/execution-engine/node/pipelines/executor/plugin-collection-resolution';
@@ -45,6 +49,7 @@ import {
 } from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-admission';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { getDesktopNodeRuntime } from '../lib/node-runtime';
 import { PIPELINE_OWNER_MCP_ROUTES_MAX } from './pipeline-owner-mcp';
 import { readPreferencesFile } from '../lib/preferences-store';
 import {
@@ -53,6 +58,7 @@ import {
   isDaemonPipelineLaunchInRoots,
 } from '@canopy/desktop-shared/node/pipelines/daemon-launch';
 import type {
+  ExecutionLifecycleHooks,
   ExecutionOptions,
   PipelineStepNotification,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
@@ -79,6 +85,7 @@ import {
 } from '../canopy-runtime/daemon-route-telemetry';
 import { isDaemonPipelineOwnerPossible } from '../canopy-runtime/electron-daemon-owner';
 import { getExecutionAccounting } from '../execution-accounting';
+import { reportPipelinePersistFailure } from './instrumentation';
 import {
   DaemonPipelineExecutionHandle,
   registerDaemonPipelineExecution,
@@ -99,12 +106,13 @@ import {
   type DaemonPipelineHostStepsTarget,
 } from './daemon-pipeline-owner';
 import type { DaemonPipelineRouteContext } from './daemon-pipeline-route-context';
+import type { prepareNativePipelineStartAdmission } from './daemon-pipeline-start-setup';
 import { desktopPipelineHostActionsOf } from './pipeline-host-requests';
 import { isErrnoException } from '../lib/type-guards';
 import { attachDaemonPipelineOwnerRun } from './daemon-pipeline-model-owner';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
 import { buildModelRegistrySnapshot } from '@canopy/execution-engine/node/pipelines/executor/model-registry-snapshot';
-import { resolveAnthropicMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
+import { resolvePipelineMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
 import {
   getBundledClaudeBinaryPath,
   getBundledCodexBinaryPath,
@@ -200,6 +208,7 @@ export interface DaemonPipelineLaunch {
   readonly pipelineLaunch: Omit<WorkerPipelineHostLaunch, 'secretEnv'>;
   /** The base environment, `_execution.childEnvironment` (D4). */
   readonly processEnvironment: Readonly<Record<string, string>>;
+  readonly nativeModelSelections?: readonly DaemonPipelineModelSelection[];
 }
 
 /** The defined string entries of an environment. */
@@ -485,34 +494,57 @@ export async function buildDaemonPipelineLaunch(
     : undefined;
   const codexCollections = codexServing?.collections;
   const aliasResolutions = codexServing?.aliasResolutions;
-  const classification = classifyDaemonPipeline(
-    pipeline,
-    {
-      runtime: options.runtime,
-      repoPath: options.repoPath ?? options.cwd,
-      ...(aliasResolutions && { modelAliases: aliasResolutions }),
-      ...(collections && {
-        pluginCollections: new Set(Object.keys(collections.snapshots)),
-      }),
-      ...(codexCollections && { codexPluginCollections: codexCollections }),
-      ...(codexServing && { codexPluginAdmission: codexServing.admits }),
-      // A step's model may name a run input (CAN-6012).
-      ...(ownerPossible && {
-        inputs: resolveDaemonPipelineInputs(pipeline, options.inputs),
-      }),
-      // An action's model preference variable comes from the run's env (CAN-6012).
-      ...(ownerPossible && options.env && { env: options.env }),
-    },
-    {
-      hostSteps:
-        ownerPossible &&
-        desktopPipelineHostActionsOf(options.runtime) !== undefined
-          ? 'owner'
-          : 'refuse',
-      modelSteps: ownerPossible ? 'claude_codex' : 'refuse',
-      commitHooks: ownerPossible ? 'owner' : 'refuse',
-    },
-  );
+  let requiresNodeRuntime = false;
+  let nativeModelSelections: DaemonPipelineModelSelection[] = [];
+  const classify = (
+    runtime: DaemonPipelineClassifierContext['runtime'],
+  ): DaemonPipelineClassification => {
+    // A retried walk reports its selections again; keep only the admitting walk's.
+    nativeModelSelections = [];
+    return classifyDaemonPipeline(
+      pipeline,
+      {
+        runtime,
+        onNodeRuntimeRequired: () => {
+          requiresNodeRuntime = true;
+        },
+        onModelSelection: (selection): void => {
+          nativeModelSelections.push(selection);
+        },
+        repoPath: options.repoPath ?? options.cwd,
+        ...(aliasResolutions && { modelAliases: aliasResolutions }),
+        ...(collections && {
+          pluginCollections: new Set(Object.keys(collections.snapshots)),
+        }),
+        ...(codexCollections && { codexPluginCollections: codexCollections }),
+        ...(codexServing && { codexPluginAdmission: codexServing.admits }),
+        // A step's model may name a run input (CAN-6012).
+        ...(ownerPossible && {
+          inputs: resolveDaemonPipelineInputs(pipeline, options.inputs),
+        }),
+        // An action's model preference variable comes from the run's env (CAN-6012).
+        ...(ownerPossible && options.env && { env: options.env }),
+      },
+      {
+        hostSteps:
+          ownerPossible &&
+          desktopPipelineHostActionsOf(options.runtime) !== undefined
+            ? 'owner'
+            : 'refuse',
+        modelSteps: ownerPossible ? 'claude_codex' : 'refuse',
+        commitHooks: ownerPossible ? 'owner' : 'refuse',
+      },
+    );
+  };
+  let desktopNodeRuntime:
+    | Awaited<ReturnType<typeof getDesktopNodeRuntime>>
+    | undefined;
+  let classification = classify(options.runtime);
+  if (!classification.eligible && classification.reason === 'tsx_runtime') {
+    // Classification stays synchronous; validate the lazy host payload before retrying.
+    desktopNodeRuntime = await getDesktopNodeRuntime();
+    classification = classify({ ...options.runtime, ...desktopNodeRuntime });
+  }
   if (!classification.eligible)
     return { ok: false, reason: classification.reason };
   const hasModelSteps = classification.modelSteps > 0;
@@ -525,6 +557,8 @@ export async function buildDaemonPipelineLaunch(
     if (typeof value !== 'string') return { ok: false, reason: 'limits' };
     inputs[name] = value;
   }
+  if (requiresNodeRuntime && !desktopNodeRuntime)
+    desktopNodeRuntime = await getDesktopNodeRuntime();
   const candidate: Record<string, unknown> = {
     pipeline,
     cwd: options.cwd,
@@ -541,17 +575,12 @@ export async function buildDaemonPipelineLaunch(
     curatedPipelineSource: options.curatedPipelineSource,
     initiator: options.initiator,
     agentOrigin: options.agentOrigin,
-    env: {
-      ...(options.env ?? {}),
-      // UI-automation seam: an E2E build gives daemon model steps the mock LLM
-      // route its in-process step environment carries; production folds it out.
-      ...(hasModelSteps && resolveAnthropicMockEnvOverride()),
-    },
+    env: { ...(options.env ?? {}) },
     ...(options.inputs !== undefined && { inputs }),
-    nodeProcess: {
-      command: process.execPath,
-      env: { ELECTRON_RUN_AS_NODE: '1' },
-    },
+    ...(desktopNodeRuntime && {
+      nodeProcess: desktopNodeRuntime.nodeProcess,
+      tsxRuntime: desktopNodeRuntime.tsxCli,
+    }),
     secretEnv: {},
     ...(((classification.hostSteps ?? 0) > 0 || hasModelSteps) && {
       ownerBound: true,
@@ -592,7 +621,16 @@ export async function buildDaemonPipelineLaunch(
     return { ok: false, reason: 'roots' };
   const { secretEnv: _secretEnv, ...pipelineLaunch } = parsed.data;
   void _secretEnv;
-  return { ok: true, launch: { pipelineLaunch, processEnvironment } };
+  return {
+    ok: true,
+    launch: {
+      pipelineLaunch,
+      processEnvironment,
+      ...(hasModelSteps && {
+        nativeModelSelections: structuredClone(nativeModelSelections),
+      }),
+    },
+  };
 }
 
 /**
@@ -757,6 +795,76 @@ export function startPipelineInDaemon(
   );
 }
 
+type NativeStartAdmission = Awaited<
+  ReturnType<typeof prepareNativePipelineStartAdmission>
+>;
+
+const NativeSurvivalLaunchMembersSchema = WorkerPipelineHostLaunchSchema.pick({
+  nativeRouteEvidence: true,
+  nativeRouteBlockers: true,
+  nativeSetupFailure: true,
+  nativeStartSetup: true,
+});
+type NativeSurvivalLaunchMembers = Pick<
+  WorkerPipelineHostLaunch,
+  | 'nativeRouteEvidence'
+  | 'nativeRouteBlockers'
+  | 'nativeSetupFailure'
+  | 'nativeStartSetup'
+>;
+type NativeRouteBlocker = NonNullable<
+  NativeSurvivalLaunchMembers['nativeRouteBlockers']
+>[number];
+
+/** JSON data as it crosses to the daemon, or undefined when it cannot. */
+function jsonCopy(value: WorkerPipelineStartSetup): unknown {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The survival members a start carries, checked against the launch's own
+ * bounds. Evidence that cannot cross is left out, never the start: the run
+ * stays app-bound and pauses on quit with the reason recorded (CAN-6996).
+ */
+function carriedNativeSurvival(
+  admission: NativeStartAdmission,
+): NativeSurvivalLaunchMembers {
+  const blockers = (...extra: NativeRouteBlocker[]): NativeRouteBlocker[] => [
+    ...new Set([...admission.routes.blockers, ...admission.blockers, ...extra]),
+  ];
+  const setup = admission.setup && jsonCopy(admission.setup);
+  const attempts: unknown[] = [
+    {
+      ...(admission.routes.evidence && {
+        nativeRouteEvidence: admission.routes.evidence,
+      }),
+      nativeRouteBlockers:
+        setup === undefined ? blockers('setup-lease') : blockers(),
+      ...(admission.failure && { nativeSetupFailure: admission.failure }),
+      ...(setup !== undefined && { nativeStartSetup: setup }),
+    },
+    {
+      ...(admission.routes.evidence && {
+        nativeRouteEvidence: admission.routes.evidence,
+      }),
+      nativeRouteBlockers: blockers('setup-lease'),
+      nativeSetupFailure: admission.failure ?? 'invalid-snapshot',
+    },
+  ];
+  for (const attempt of attempts) {
+    const carried = NativeSurvivalLaunchMembersSchema.safeParse(attempt);
+    if (carried.success) return carried.data;
+  }
+  return {
+    nativeRouteBlockers: ['unknown', 'setup-lease'],
+    nativeSetupFailure: admission.failure ?? 'invalid-snapshot',
+  };
+}
+
 async function startPipelineRoute(
   args: {
     readonly params: WorkerPipelineExecutionStartParams;
@@ -836,6 +944,54 @@ async function startPipelineRoute(
     }
     const { secrets: _bindings, ...paramsWithoutSecrets } = params;
     void _bindings;
+    const nativeEnvironment = {
+      ...launch.processEnvironment,
+      ...launch.pipelineLaunch.codexEnvironment?.environment,
+      ...secrets.env,
+      ...launch.pipelineLaunch.env,
+    };
+    // Survival evidence only ever adds to a start: a failure to build or carry
+    // it leaves the run app-bound, pausing on quit with the reason recorded.
+    const selections = launch.nativeModelSelections;
+    const admission = selections
+      ? await import('./daemon-pipeline-start-setup')
+          .then(({ prepareNativePipelineStartAdmission: prepare }) =>
+            prepare({
+              launch: launch.pipelineLaunch,
+              selections,
+              environment: nativeEnvironment,
+              resolveAgent: (agentId) =>
+                options.runtime.resolvePipelineAgentModelAlias?.(agentId, {
+                  ...(options.projectId !== undefined && {
+                    projectId: options.projectId,
+                  }),
+                  ...(options.worktreeId !== undefined && {
+                    worktreeId: options.worktreeId,
+                  }),
+                  ...(options.executionContext !== undefined && {
+                    executionContext: options.executionContext,
+                  }),
+                }) ?? Promise.resolve(null),
+              inspectRoutes: async () =>
+                (
+                  await import('./daemon-pipeline-native-admission')
+                ).inspectNativePipelineLaunch({
+                  params,
+                  selections,
+                  environment: nativeEnvironment,
+                  modelCatalog: launch.pipelineLaunch.modelCatalog,
+                }),
+            }),
+          )
+          .catch(
+            (): NativeStartAdmission => ({
+              routes: { blockers: ['unknown'] },
+              blockers: [],
+              failure: 'setup-inspection',
+            }),
+          )
+      : undefined;
+    const nativeSurvival = admission && carriedNativeSurvival(admission);
     const send = (
       target: ElectronDaemonClient,
     ): Promise<WorkerPipelineExecutionResult> =>
@@ -848,7 +1004,15 @@ async function startPipelineRoute(
             childEnvironment: { ...launch.processEnvironment },
             pipelineLaunch: {
               ...launch.pipelineLaunch,
+              // Inspect the unmodified user route above. Only the child
+              // transport is substituted, by the existing build-gated seam.
+              env: {
+                ...launch.pipelineLaunch.env,
+                ...(launch.nativeModelSelections &&
+                  resolvePipelineMockEnvOverride()),
+              },
               secretEnv: { ...secrets.env },
+              ...nativeSurvival,
             },
           },
         },
@@ -1002,6 +1166,21 @@ function isLiveOtherProcess(pid: number | undefined): boolean {
 }
 
 /**
+ * A resumed run skips the start lifecycle, so it takes only the wake lock
+ * that start would have taken. Its settle reports a save that failed, as an
+ * in-process run's does (CAN-7095).
+ */
+function resumedRunLifecycle(executionId: string): ExecutionLifecycleHooks {
+  const release = getExecutionAccounting().keepAwake('pipeline', executionId);
+  return {
+    onExecutionSettled: (state): void => {
+      release();
+      reportPipelinePersistFailure(state);
+    },
+  };
+}
+
+/**
  * Runs an earlier launch left running under another live owner, such as the
  * daemon's pipeline host, stay active work after a restart (CAN-5086). Main
  * reopens each one's events on the daemon, so its output and step events
@@ -1050,14 +1229,7 @@ export async function followSurvivingDaemonRuns(
       sweep: async (id): Promise<void> => {
         await dispatch.sweepOrphanedPipelinesThroughLocalWorker([id]);
       },
-      // A resumed run skips the start lifecycle, so it takes only the wake
-      // lock that start would have taken.
-      lifecycle: {
-        onExecutionSettled: getExecutionAccounting().keepAwake(
-          'pipeline',
-          executionId,
-        ),
-      },
+      lifecycle: resumedRunLifecycle(executionId),
     });
     registerDaemonPipelineExecution(handle);
     handle.follow({ resumed: true });

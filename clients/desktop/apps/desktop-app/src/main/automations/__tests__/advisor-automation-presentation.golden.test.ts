@@ -2,10 +2,17 @@
 // App Advisor window today, pinned on unchanged code before CAN-4174 makes
 // the window a reaction to the run instead of a step of it. The real
 // automations service runs a native `app_advisor_prompt` from a temporary
-// automations file. Only the shared bot port that creates the Work Entry and
+// automations file, started as `automations:run-now` starts it, through
+// the service's runNow. Only the shared bot port that creates the Work Entry and
 // chat and accepts the message is replaced at its boundary, together with
 // the App Advisor Work Entry list, so the order of the window calls and the
 // send can be read from one event log.
+//
+// CAN-4174 PR 4 made the window a reaction to the accepted send
+// (app-advisor/initiated-presentation.ts, pinned by its own goldens), so the
+// service itself now opens no window: none before the send, none after it,
+// and a refused send leaves the window alone. Everything else here is
+// unchanged from the capture.
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -160,17 +167,13 @@ afterEach(async () => {
 });
 
 describe('App Advisor automation runs and the App Advisor window (CAN-4174 capture)', () => {
-  it('brings the window up, creates a Work Entry and chat, then shows that chat, and succeeds on acceptance', async () => {
+  it('creates a Work Entry and chat and succeeds on acceptance, opening no window itself', async () => {
     await seed(advisorActivity());
     configure();
 
     const run = await runToEnd();
 
-    expect(mockEvents).toEqual([
-      'window:any',
-      'send:bots.create_task',
-      'window:chat-new',
-    ]);
+    expect(mockEvents).toEqual(['send:bots.create_task']);
     expect(run).toMatchObject({
       status: 'success',
       result: {
@@ -203,11 +206,7 @@ describe('App Advisor automation runs and the App Advisor window (CAN-4174 captu
 
     const run = await runToEnd();
 
-    expect(mockEvents).toEqual([
-      'window:any',
-      'send:bots.create_task_chat',
-      'window:chat-new',
-    ]);
+    expect(mockEvents).toEqual(['send:bots.create_task_chat']);
     expect(mockSends[0]).toMatchObject({
       action: {
         type: 'bots.create_task_chat',
@@ -233,30 +232,38 @@ describe('App Advisor automation runs and the App Advisor window (CAN-4174 captu
     expect(run.error).toContain('entry-gone');
   });
 
-  it('fails the run when the message is not accepted, after the window came up, and shows no chat', async () => {
+  it('fails the run when the message is not accepted, exactly as before, and opens no window', async () => {
     mockPort.refuse = new Error('The Orchestrator refused this message.');
     await seed(advisorActivity());
     configure();
 
     const run = await runToEnd();
 
-    expect(mockEvents).toEqual(['window:any', 'send:bots.create_task']);
+    expect(mockEvents).toEqual(['send:bots.create_task']);
     expect(run).toMatchObject({ status: 'failure' });
     expect(run.result?.appAdvisorChatId).toBeUndefined();
+    // The run record a refusal leaves, which CAN-4174 PR 4 must not change.
+    expect({
+      status: run.status,
+      error: run.error,
+      result: run.result,
+      target: run.target,
+    }).toEqual({
+      status: 'failure',
+      error: 'The Orchestrator refused this message.',
+      result: undefined,
+      target: undefined,
+    });
   });
 
-  it('keeps an accepted run successful when showing its chat fails', async () => {
+  it('keeps an accepted run successful whatever the window does, since the service no longer shows the chat', async () => {
     mockWindow.selectionFails = true;
     await seed(advisorActivity());
     configure();
 
     const run = await runToEnd();
 
-    expect(mockEvents).toEqual([
-      'window:any',
-      'send:bots.create_task',
-      'window:chat-new',
-    ]);
+    expect(mockEvents).toEqual(['send:bots.create_task']);
     expect(run).toMatchObject({
       status: 'success',
       result: { appAdvisorChatId: 'chat-new' },

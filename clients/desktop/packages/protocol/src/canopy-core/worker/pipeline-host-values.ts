@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SelectionRefOwnerSchema } from '../../plugins/selection-ref-owner';
 
 import { CODEX_SPEEDS } from '../../automations';
 import {
@@ -98,9 +99,21 @@ const refs = <Shape extends z.ZodRawShape>(
  */
 export const WorkerPipelinePluginSelectionsSchema = z.strictObject({
   collectionIds: z.array(name).max(1024),
-  skillRefs: refs({ sourceId: name, skillName: name }),
-  pluginRefs: refs({ marketplaceId: name, pluginName: name }),
-  mcpServerRefs: refs({ serverId: name, configId: name }).optional(),
+  skillRefs: refs({
+    sourceId: name,
+    skillName: name,
+    owner: SelectionRefOwnerSchema.optional(),
+  }),
+  pluginRefs: refs({
+    marketplaceId: name,
+    pluginName: name,
+    owner: SelectionRefOwnerSchema.optional(),
+  }),
+  mcpServerRefs: refs({
+    serverId: name,
+    configId: name,
+    owner: SelectionRefOwnerSchema.optional(),
+  }).optional(),
   mcpHttpAuthPreferences: refs({
     target: z.discriminatedUnion('kind', [
       z.strictObject({

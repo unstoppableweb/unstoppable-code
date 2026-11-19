@@ -19,7 +19,10 @@ import { botIdForProjectId } from '@canopy/protocol/chat-targets';
 import { isInputLedger } from '@canopy/desktop-shared/chat-input-delivery';
 import { serializeVisibleReadMessage } from '@canopy/desktop-shared/lib/chat-history-serialization';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
-import { requireBot } from '../project-discovery/bots/registry';
+import {
+  ensureBotRegistryLoaded,
+  requireBotWorkspace,
+} from '../project-discovery/bots/registry';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 
 export interface ChatLifecycleTarget {
@@ -51,7 +54,8 @@ export async function resolveCanonicalChatAddress(
   }
   const botId = botIdForProjectId(projectId);
   if (botId) {
-    const bot = requireBot(botId);
+    await ensureBotRegistryLoaded?.();
+    const bot = requireBotWorkspace(botId);
     if (
       !(await readBotEntries(bot.botId)).some(
         (entry) => entry.id === target.worktreeId,
@@ -75,11 +79,20 @@ export async function resolveCanonicalChatAddress(
 export async function captureChatWatcherEvidence(
   address: CanonicalChatAddress,
 ): Promise<ChatWatcherEvidence> {
+  if ('botId' in address) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(address.botId);
+  } else {
+    const botId = botIdForProjectId(address.projectId);
+    if (botId) {
+      await ensureBotRegistryLoaded?.();
+      requireBotWorkspace(botId);
+    }
+  }
   const { requireAuthorizedProject } =
     await import('../project-discovery/owner-policy');
   const { requireBotAccess } = await import('../project-discovery/bots/target');
   if ('botId' in address) {
-    requireBot(address.botId);
     await requireBotAccess({
       kind: 'app_advisor',
       chatId: address.chatId,
@@ -179,10 +192,18 @@ export function getActiveChatInputProvider(): ActiveChatInputProvider {
       Awaited<ReturnType<ActiveChatInputProvider['getActiveChatInput']>>
     > => {
       try {
-        const projectId =
-          'projectId' in address
-            ? address.projectId
-            : requireBot(address.botId).projectId;
+        let projectId: string;
+        if ('projectId' in address) {
+          projectId = address.projectId;
+          const botId = botIdForProjectId(projectId);
+          if (botId) {
+            await ensureBotRegistryLoaded?.();
+            requireBotWorkspace(botId);
+          }
+        } else {
+          await ensureBotRegistryLoaded?.();
+          projectId = requireBotWorkspace(address.botId).projectId;
+        }
         const target = {
           projectId,
           worktreeId: address.taskId,

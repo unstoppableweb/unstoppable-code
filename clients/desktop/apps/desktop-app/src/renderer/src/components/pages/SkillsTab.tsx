@@ -72,6 +72,7 @@ import {
   TextInput,
 } from '@canopy/ui-shared/components';
 import {
+  linkRecordedAppError,
   skillFileLabel,
   type MarketplaceShareAction,
   type SkillUpdateAction,
@@ -193,6 +194,8 @@ export function AddSkillsModal({
   const [modalStep, setModalStep] = useState<ModalStep>({ step: 'source' });
   const [sourceInput, setSourceInput] = useState('');
   const [error, setError] = useState('');
+  // The install failure text main already recorded; its banner records nothing.
+  const [recordedError, setRecordedError] = useState('');
   const [selectedNames, setSelectedNames] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -266,7 +269,13 @@ export function AddSkillsModal({
           await onInstalledRef.current();
           onCloseRef.current();
         } else {
-          setError(result.error || 'Failed to install skills.');
+          const message = result.error || 'Failed to install skills.';
+          // Main recorded it; the banner records nothing but links it to this session.
+          linkRecordedAppError(result.appError, 'add-skills-modal');
+          setRecordedError(
+            result.appError?.recordedBy !== undefined ? message : '',
+          );
+          setError(message);
           setModalStep({ step: 'source' });
         }
       },
@@ -337,6 +346,7 @@ export function AddSkillsModal({
         {/* Error */}
         <ErrorBanner
           errorSource="add-skills-modal"
+          errorRecordingDisabled={error !== '' && error === recordedError}
           error={error}
           className=""
         />
@@ -531,7 +541,23 @@ export function SkillDetailModal({
   relatedContent,
   noEnterAnimation = false,
   presentation = 'modal',
+  identity,
+  statusContent,
+  versionError,
+  actionsNotice,
 }: {
+  /** New Customize: the tile's logo and publisher for the page header. */
+  identity?: {
+    logo: ReactNode;
+    publisher: ReactNode;
+    worksWith?: ReactNode;
+  };
+  /** New Customize: the Status row, first under the header. */
+  statusContent?: ReactNode;
+  /** New Customize: a failure after an update, on the Version row. */
+  versionError?: string;
+  /** New Customize: a ⋯ action's failure, beside the header actions. */
+  actionsNotice?: ReactNode;
   skill: { sourceId: string; name: string; filePath?: string } | null;
   /**
    * The installed record, for the page header's source and dates
@@ -700,8 +726,13 @@ export function SkillDetailModal({
           key={contentRevision}
           skill={skill}
           inset={presentation === 'page' ? 'page' : 'dialog'}
+          // New Customize keeps Try it as the primary, as on the Portal; a
+          // shared copy's update sits on the Version row instead.
+          {...(identity && onShareUpdate
+            ? { shareUpdate: { run: onShareUpdate } }
+            : {})}
           primaryAction={
-            onShareUpdate ? (
+            onShareUpdate && !identity ? (
               <InstalledShareUpdateButton
                 name={headerTitle}
                 onUpdate={onShareUpdate}
@@ -710,7 +741,7 @@ export function SkillDetailModal({
               tryIt.primary
             )
           }
-          {...(onShareUpdate
+          {...(onShareUpdate && !identity
             ? { leadingMenuItems: [tryItMenuItem(tryIt)] }
             : {})}
           content={content}
@@ -732,16 +763,25 @@ export function SkillDetailModal({
           // its title bar and puts the notice above the content.
           header={
             presentation === 'page'
-              ? installedSkillDetailHeader(
-                  skill.name,
-                  content,
-                  installedSkill,
-                  'skill-detail-modal-title',
-                  displayName,
-                  shareProvenance,
-                )
+              ? {
+                  ...installedSkillDetailHeader(
+                    skill.name,
+                    content,
+                    installedSkill,
+                    'skill-detail-modal-title',
+                    displayName,
+                    shareProvenance,
+                  ),
+                  ...(identity
+                    ? { logo: identity.logo, publisher: identity.publisher }
+                    : {}),
+                }
               : undefined
           }
+          statusContent={statusContent}
+          worksWith={identity?.worksWith}
+          versionError={versionError}
+          actionsNotice={actionsNotice}
           notice={presentation === 'page' ? notice : undefined}
           leadingContent={
             onNavigateBack || (notice && presentation !== 'page') ? (
@@ -1830,6 +1870,8 @@ export function CustomSkillEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // The save failure text main already recorded; its banners record nothing.
+  const [recordedError, setRecordedError] = useState('');
   const [supportingFilesReady, setSupportingFilesReady] = useState(true);
   /** Fingerprint of the fields as loaded; `null` until they load. */
   const [loadedSnapshot, setLoadedSnapshot] = useState<string | null>(null);
@@ -2021,6 +2063,11 @@ export function CustomSkillEditor({
         return { ok: true };
       }
       const message = result.error || 'Failed to save skill.';
+      // Main recorded it; the banners record nothing but link it to this session.
+      linkRecordedAppError(result.appError, 'custom-skill-edit');
+      setRecordedError(
+        result.appError?.recordedBy !== undefined ? message : '',
+      );
       setError(message);
       return { ok: false, message };
     } catch (err) {
@@ -2144,6 +2191,7 @@ export function CustomSkillEditor({
           </div>
           <ErrorBanner
             errorSource="custom-skill-edit-with-ai"
+            errorRecordingDisabled={error !== '' && error === recordedError}
             error={error || (editWithAI?.error ?? '')}
           />
         </div>
@@ -2164,7 +2212,11 @@ export function CustomSkillEditor({
       <div className="flex flex-col flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto pb-3">
           <div className="px-6">
-            <ErrorBanner errorSource="custom-skill-edit" error={error} />
+            <ErrorBanner
+              errorSource="custom-skill-edit"
+              errorRecordingDisabled={error !== '' && error === recordedError}
+              error={error}
+            />
           </div>
           {fields}
         </div>

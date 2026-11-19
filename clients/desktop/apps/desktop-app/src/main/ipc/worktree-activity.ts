@@ -19,7 +19,7 @@ export function registerWorktreeActivityHandlers(): void {
       request: WorktreeActivityEntitiesRequest,
     ): Promise<WorktreeActivityEntitiesResponse> => {
       const { listWorktreeActivityEntities } =
-        await import('../portal/portal-snapshot-builders');
+        await import('../remote-projection/worktree-activity-entities');
       return {
         entities: await listWorktreeActivityEntities({
           workspaceLocalId: request.projectId,

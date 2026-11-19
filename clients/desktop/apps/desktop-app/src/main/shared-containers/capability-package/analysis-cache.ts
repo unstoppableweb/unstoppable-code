@@ -56,12 +56,14 @@ function targetKey(target: SharedContainerCapabilityPackageTarget): string {
  * without analysis: its included chats with their transcript revisions and
  * the approved file scope that decides what the code snapshot carries.
  * Changes to definitions, selections or skill files are found by the
- * background refresh the preview starts, not by this key.
+ * background refresh the preview starts, not by this key. The workflow-form
+ * flag (CAN-6455) is part of it, so turning it on misses every entry.
  */
 export function sharedContainerCapabilityPackageScopeKey(input: {
   containerType: SharedContainerCapabilityPackageContainerType;
   chatTabs: ChatTabsFile;
   fileScope: SharedContainerFileScope;
+  workflowForm?: boolean;
 }): string {
   const chats = input.chatTabs.tabs
     .filter((tab) => tab.kind !== 'file')
@@ -85,6 +87,7 @@ export function sharedContainerCapabilityPackageScopeKey(input: {
         containerType: input.containerType,
         chats,
         fileScope: input.fileScope,
+        ...(input.workflowForm === true ? { workflowForm: true } : {}),
       }),
     )
     .digest('hex');
@@ -125,6 +128,7 @@ export function sharedContainerCapabilityPackageInputKey(
               .map(({ repoId, repoPath }) => ({ repoId, repoPath }))
               .sort((left, right) => compare(left.repoId, right.repoId))
           : null,
+        ...(input.workflowForm === true ? { workflowForm: true } : {}),
       }),
     )
     .digest('hex');

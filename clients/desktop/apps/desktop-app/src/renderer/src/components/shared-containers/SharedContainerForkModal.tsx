@@ -130,8 +130,10 @@ function partialCopyNote(response: SharedContainerForkResponse): string {
 function addOpenFailedToast(
   message: string,
   response: SharedContainerForkResponse,
+  caught: unknown,
 ): void {
   useGitHubStore.getState().addToast(message, 'error', undefined, {
+    caught,
     projectId: response.projectId,
     worktreeId: response.worktreeId,
     action: {
@@ -149,8 +151,8 @@ function addOpenFailedToast(
  * success adds no toast: the copy coming to the front is the feedback.
  */
 function reopenCopy(response: SharedContainerForkResponse): void {
-  void openForkedContainer(response).catch(() => {
-    addOpenFailedToast("The copy couldn't be opened.", response);
+  void openForkedContainer(response).catch((error: unknown) => {
+    addOpenFailedToast("The copy couldn't be opened.", response, error);
   });
 }
 
@@ -184,10 +186,11 @@ async function revealNewCopy(
           suppressOsNotification: true,
         },
       );
-  } catch {
+  } catch (error) {
     addOpenFailedToast(
       `Copy made, but it couldn't be opened.${partialCopyNote(response)}`,
       response,
+      error,
     );
   }
 }

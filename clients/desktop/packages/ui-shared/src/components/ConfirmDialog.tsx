@@ -18,6 +18,7 @@ import { CopyDetailsButton } from './CopyDetailsButton';
 import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Stack } from './Stack';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
 /** The second option of a two-way choice, such as Discard beside Save. */
 export interface ConfirmDialogSecondaryAction {
@@ -174,7 +175,7 @@ export function ConfirmDialog({
               <div
                 role="alert"
                 data-testid="confirm-dialog-error"
-                className="text-s text-pretty fg-destructive"
+                className={`text-s text-pretty fg-destructive ${REPLAY_BLOCK_CLASS}`}
               >
                 {errorMessage}
               </div>

@@ -17,7 +17,7 @@ import {
   RemoteSessionManager,
   signHostedDelegation,
 } from '@canopy/remote-session';
-import { withPortalDbClient } from '../portal/db.mjs';
+import { withPortalDbClient } from './harness/db.mjs';
 
 /** The harness web server's SECRET_ENCRYPTION_KEY_V1 (see web-server.mjs). */
 const HARNESS_MASTER_KEY = Buffer.alloc(32, 1);

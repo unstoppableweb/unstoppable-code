@@ -177,7 +177,7 @@ describe('repository reads', () => {
     });
   });
 
-  it('refuses every read on win32 before selection runs (D10)', async () => {
+  it('selects and runs repository reads on win32 instead of refusing D10', async () => {
     const world = createWorld('win32', {
       filesystem: { 'C:\\Git\\cmd\\git.exe': version('2.47.1.windows.1') },
       whereExe: { git: 'C:\\Git\\cmd\\git.exe\r\n' },
@@ -195,9 +195,13 @@ describe('repository reads', () => {
     ])
       await expect(
         failure(read(target, repositoryRead, { cwd: 'C:\\repo' })),
-      ).resolves.toMatchObject({ code: 'unsupported_command' });
-    expect(world.probes).toEqual([]);
-    expect(world.attempts).toEqual([]);
+      ).resolves.toMatchObject({ code: 'exit_status', exitCode: 128 });
+    expect(
+      world.probes.some(
+        ({ command }) => command.kind === 'git-diff-name-status',
+      ),
+    ).toBe(true);
+    expect(world.attempts.length).toBeGreaterThan(0);
   });
 
   it.each<[string, unknown]>([

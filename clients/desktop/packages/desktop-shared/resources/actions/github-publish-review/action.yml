@@ -1,0 +1,60 @@
+name: GitHub Publish Review
+description: Post a code review to its pull request as the GitHub App, approving it when the owner's code review policy allows. Answers status unavailable when the App can't post, so a later step can post with the person's GitHub account.
+scope: [directory, worktree]
+inputs:
+  pr_url:
+    description: GitHub pull request URL or owner/repo#123.
+    required: true
+  review_json_file:
+    description: Path to the review JSON with body, comments and replies, as github-post-review-comment takes it.
+    required: true
+  diff_file:
+    description: Optional path to the pull request diff, used to keep inline comments on lines in the diff.
+    required: false
+  reviewed_head:
+    description: Full commit SHA the review covered. Empty when none was recorded.
+    required: false
+  reviewed_uncommitted:
+    description: Whether the review included uncommitted changes (true or false).
+    required: false
+  verdict:
+    description: The review's verdict, such as pass.
+    required: false
+  score:
+    description: The review's score, an integer from 1 to 10.
+    required: false
+  completeness_complete:
+    description: Whether the review was complete (true or false).
+    required: false
+outputs:
+  status:
+    description: published, unavailable (nothing was posted) or failed.
+  review_id:
+    description: Id of the posted review.
+  review_url:
+    description: URL of the posted review.
+  approval_state:
+    description: approved or not_approved, when the review was posted.
+  approval_reason:
+    description: Why the review was or wasn't approved.
+  approval_min_score:
+    description: The policy's minimum score.
+  unavailable_reason:
+    description: Why nothing was posted, when status is unavailable.
+  publish_failure_reason:
+    description: Why the post failed, when status is failed.
+  inline_comment_count:
+    description: Number of inline comments posted.
+  thread_reply_count:
+    description: Number of thread replies posted.
+  thread_resolve_count:
+    description: Number of threads resolved.
+  dismissed_approval_count:
+    description: Number of earlier App approvals dismissed.
+  failure_reason:
+    description: Typed failure reason; empty when the step succeeded.
+runs:
+  using: host
+  fallback:
+    using: node
+    main: index.js

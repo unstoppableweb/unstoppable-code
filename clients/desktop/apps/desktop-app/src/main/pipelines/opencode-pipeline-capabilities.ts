@@ -20,7 +20,10 @@ import {
   type McpHttpProxyServiceForResolver,
 } from '../plugins/plugin-resolver';
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
-import { buildOpenCodeMcpServers } from '../opencode/mcp-servers';
+import {
+  buildOpenCodeMcpServers,
+  openOpenCodeMcpRoutes,
+} from '../opencode/mcp-servers';
 import { snapshotOpenCodeMcpTools } from '../opencode/capability-snapshot';
 import { validateOpenCodeMcpSchema } from '../opencode/schema-validation';
 import {
@@ -34,6 +37,7 @@ export async function prepareOpenCodePipelineCapabilities(
   profile: string,
   signal: AbortSignal,
   currentApproval: () => ApprovalSessionHandle,
+  baseEnv: NodeJS.ProcessEnv,
 ): Promise<OpenCodePipelineCapabilities> {
   signal.throwIfAborted();
   currentApproval();
@@ -41,16 +45,21 @@ export async function prepareOpenCodePipelineCapabilities(
   const sessionKey = `opencode-pipeline-capabilities:${request.executionId}:${randomUUID()}`;
   const routeIdentities = new Map<string, string>();
   let disposed = false;
+  let mcpRoutes: Awaited<ReturnType<typeof openOpenCodeMcpRoutes>> | undefined;
   let ledger: PipelineLedgerOpenCodeTools | undefined;
-  const dispose = (): void => {
+  const dispose = async (): Promise<void> => {
     disposed = true;
-    signal.removeEventListener('abort', dispose);
+    signal.removeEventListener('abort', onAbort);
     // Resolution can finish after withdrawal and register another route. Always
     // unregister again when that late result is disposed.
     proxy.unregisterRoutesForSession(sessionKey);
     ledger?.dispose();
+    await mcpRoutes?.dispose();
   };
-  signal.addEventListener('abort', dispose, { once: true });
+  const onAbort = (): void => {
+    void dispose().catch(() => undefined);
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
   try {
     proxy.setSessionToolCallGate(sessionKey, () => Promise.resolve(false));
     const resolverProxy: McpHttpProxyServiceForResolver = {
@@ -109,6 +118,8 @@ export async function prepareOpenCodePipelineCapabilities(
         mcpHttpProxyService: resolverProxy,
         sessionId: sessionKey,
         packageOverlay: request.packageOverlay,
+        // A workflow prompt has no one to pick an account (CAN-6232).
+        accountResolution: 'unattended',
       },
     );
     signal.throwIfAborted();
@@ -126,7 +137,7 @@ export async function prepareOpenCodePipelineCapabilities(
       projection,
     );
     signal.throwIfAborted();
-    const mcpServers = buildOpenCodeMcpServers({
+    let mcpServers = buildOpenCodeMcpServers({
       definitions: resolved.mcpServers,
       cwd: request.cwd,
     });
@@ -194,6 +205,8 @@ export async function prepareOpenCodePipelineCapabilities(
       serverIdentities,
       request.cwd,
       signal,
+      false,
+      baseEnv,
     );
     const ledgerServer = ledger?.server.name;
     const check = async (
@@ -239,6 +252,14 @@ export async function prepareOpenCodePipelineCapabilities(
         outcome.decision === 'allow'
       );
     };
+    mcpRoutes = await openOpenCodeMcpRoutes({
+      servers: mcpServers,
+      baseEnv,
+      cwd: request.cwd,
+      signal,
+      gate: check,
+    });
+    mcpServers = mcpRoutes.servers;
     const serverByUrl = new Map(
       mcpServers.flatMap((server) =>
         'url' in server ? [[server.url, server.name] as const] : [],
@@ -332,7 +353,7 @@ export async function prepareOpenCodePipelineCapabilities(
       dispose,
     };
   } catch (error) {
-    dispose();
+    await dispose();
     throw error;
   }
 }

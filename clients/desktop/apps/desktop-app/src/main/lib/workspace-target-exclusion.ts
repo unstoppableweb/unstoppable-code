@@ -1,5 +1,6 @@
 import { notifyScriptActionsTargetClosed } from '../services/script-actions-lifecycle';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 
 const teardownContext = new AsyncLocalStorage<string>();
 const activeTeardowns = new Set<string>();
@@ -103,14 +104,21 @@ export function reserveWorkspaceTargetRuntimeStarts(
     new Set(targets.map((target) => key(target.projectId, target.worktreeId))),
   );
   for (const targetKey of targetKeys) {
+    // The target's state changed under the caller; that is no defect.
     if (archiveDrains.has(targetKey) && !isOwnedTeardown(targetKey)) {
-      throw new Error(
-        'This worktree is being archived. Retry after archiving finishes.',
+      throw classifyError(
+        new Error(
+          'This worktree is being archived. Retry after archiving finishes.',
+        ),
+        'external.state_changed',
       );
     }
     if (autoArchiveLeases.has(targetKey) && !isOwnedTeardown(targetKey)) {
-      throw new Error(
-        'This workspace target is being automatically deleted. Retry after deletion finishes.',
+      throw classifyError(
+        new Error(
+          'This workspace target is being automatically deleted. Retry after deletion finishes.',
+        ),
+        'external.state_changed',
       );
     }
   }

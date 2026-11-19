@@ -55,16 +55,23 @@ export class ScriptedDaemon {
     void setTimeout(() => this.live.has(pid) && this.publish(pid), 10);
   /** Awaited before a port answers: never-settling, late, or failing ports. */
   readonly gates = new Map<ScriptedPort, () => Promise<unknown>>();
-  private readonly exits = new Map<number, () => void>();
+  private readonly exits = new Map<
+    number,
+    (code: number | null, signal: string | null) => void
+  >();
 
   publish(pid: number, major = 1): void {
     this.live.set(pid, `start-${pid}`);
     this.raw = descriptorFor(pid, major);
   }
 
-  exit(pid: number): void {
+  exit(
+    pid: number,
+    code: number | null = 1,
+    signal: string | null = null,
+  ): void {
     this.live.delete(pid);
-    this.exits.get(pid)?.();
+    this.exits.get(pid)?.(code, signal);
   }
 
   hang(port: ScriptedPort): void {
@@ -112,8 +119,11 @@ export class ScriptedDaemon {
         const pid = 900;
         this.spawns.push(command);
         this.live.set(pid, `start-${pid}`);
-        const exited = new Promise<{ code: number; signal: null }>((done) =>
-          this.exits.set(pid, () => done({ code: 1, signal: null })),
+        const exited = new Promise<{
+          code: number | null;
+          signal: string | null;
+        }>((done) =>
+          this.exits.set(pid, (code, signal) => done({ code, signal })),
         );
         this.child(pid);
         return { pid, exited };

@@ -316,28 +316,24 @@ export class CorePipelineRuns {
           : {}),
       });
     } catch (error) {
-      await operations
-        .finish(run.operationId, {
-          status: 'failed',
-          error: {
-            kind: 'internal',
-            message: 'This workflow run could not be dispatched.',
-            retry: { kind: 'never' },
-          },
-        })
-        .catch(() => undefined);
+      await operations.finishOrRecord(run.operationId, {
+        status: 'failed',
+        error: {
+          kind: 'internal',
+          message: 'This workflow run could not be dispatched.',
+          retry: { kind: 'never' },
+        },
+      });
       throw error;
     }
     const result = requestResult(run.operationId, dispatched);
     if (result.status !== 'completed') {
-      await operations
-        .finish(
-          run.operationId,
-          result.status === 'cancelled'
-            ? { status: 'cancelled' }
-            : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
-        )
-        .catch(() => undefined);
+      await operations.finishOrRecord(
+        run.operationId,
+        result.status === 'cancelled'
+          ? { status: 'cancelled' }
+          : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+      );
       return result;
     }
     this.runs.set(params.executionId, run.operationId);
@@ -396,7 +392,7 @@ export class CorePipelineRuns {
             parentOperationId: runId,
             receipt,
           });
-        const recorded = (await operations.ready()).lookupReceipt(
+        const recorded = await operations.lookupReceipt(
           CORE_PIPELINE_CONTROL_KIND,
           receipt,
         );
@@ -452,9 +448,7 @@ export class CorePipelineRuns {
     this.following.get(executionId)?.();
     this.paused.delete(executionId);
     this.idle.delete(runId);
-    void this.options.operations
-      .finish(runId, { status: 'cancelled' })
-      .catch(() => undefined);
+    void this.options.operations.finishOrRecord(runId, { status: 'cancelled' });
   }
 
   /**
@@ -478,9 +472,9 @@ export class CorePipelineRuns {
       .catch(() => null);
     if (run === null || this.runs.has(target)) {
       if (run !== null)
-        void this.options.operations
-          .finish(run.operation.operationId, { status: 'cancelled' })
-          .catch(() => undefined);
+        void this.options.operations.finishOrRecord(run.operation.operationId, {
+          status: 'cancelled',
+        });
       return;
     }
     this.runs.set(target, run.operation.operationId);
@@ -567,9 +561,10 @@ export class CorePipelineRuns {
       };
     } catch (error) {
       if (!replayed)
-        await operations
-          .finish(operationId, { status: 'failed', error: RECOVERY_FAILED })
-          .catch(() => undefined);
+        await operations.finishOrRecord(operationId, {
+          status: 'failed',
+          error: RECOVERY_FAILED,
+        });
       throw error;
     }
   }
@@ -596,16 +591,14 @@ export class CorePipelineRuns {
             error: toErrorPayload(child.error),
           };
     if (replayed) return result;
-    await this.options.operations
-      .finish(
-        operationId,
-        result.status === 'completed'
-          ? { status: 'completed', outcome: result.result }
-          : result.status === 'cancelled'
-            ? { status: 'cancelled' }
-            : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
-      )
-      .catch(() => undefined);
+    await this.options.operations.finishOrRecord(
+      operationId,
+      result.status === 'completed'
+        ? { status: 'completed', outcome: result.result }
+        : result.status === 'cancelled'
+          ? { status: 'cancelled' }
+          : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+    );
     return result;
   }
 
@@ -649,24 +642,19 @@ export class CorePipelineRuns {
           retry: { kind: 'never' as const },
         },
       };
-      if (!replayed)
-        void operations
-          .finish(controlId, dispatchFailed)
-          .catch(() => undefined);
+      if (!replayed) void operations.finishOrRecord(controlId, dispatchFailed);
       this.afterControl(runId, target, dispatchFailed);
       throw error;
     }
     if (!replayed)
-      void operations
-        .finish(
-          controlId,
-          result.status === 'completed'
-            ? { status: 'completed', outcome: { outcome: result.outcome } }
-            : result.status === 'cancelled'
-              ? { status: 'cancelled' }
-              : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
-        )
-        .catch(() => undefined);
+      void operations.finishOrRecord(
+        controlId,
+        result.status === 'completed'
+          ? { status: 'completed', outcome: { outcome: result.outcome } }
+          : result.status === 'cancelled'
+            ? { status: 'cancelled' }
+            : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+      );
     if (result.status === 'completed' && result.outcome === 'started') {
       this.idle.delete(runId);
       this.afterControl(runId, target, null);
@@ -728,7 +716,7 @@ export class CorePipelineRuns {
     if (terminal === null || !this.idle.has(runId)) return;
     this.idle.delete(runId);
     if (this.runs.get(target) === runId) this.runs.delete(target);
-    void this.options.operations.finish(runId, terminal).catch(() => undefined);
+    void this.options.operations.finishOrRecord(runId, terminal);
   }
 
   /**
@@ -797,16 +785,14 @@ export class CorePipelineRuns {
     this.following.get(executionId)?.();
     this.runs.delete(executionId);
     this.paused.delete(executionId);
-    void this.options.operations
-      .finish(
-        runId,
-        execution.status === 'success'
-          ? { status: 'completed' }
-          : execution.status === 'cancelled'
-            ? { status: 'cancelled' }
-            : { status: 'failed', error: RUN_FAILED },
-      )
-      .catch(() => undefined);
+    void this.options.operations.finishOrRecord(
+      runId,
+      execution.status === 'success'
+        ? { status: 'completed' }
+        : execution.status === 'cancelled'
+          ? { status: 'cancelled' }
+          : { status: 'failed', error: RUN_FAILED },
+    );
   }
 
   private async cancelSeparately(
@@ -830,21 +816,20 @@ export class CorePipelineRuns {
         requestedBy,
         mode,
       );
-      await operations
-        .finish(
-          parent.operationId,
-          result.status === 'completed'
-            ? { status: 'completed' }
-            : result.status === 'cancelled'
-              ? { status: 'cancelled' }
-              : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
-        )
-        .catch(() => undefined);
+      await operations.finishOrRecord(
+        parent.operationId,
+        result.status === 'completed'
+          ? { status: 'completed' }
+          : result.status === 'cancelled'
+            ? { status: 'cancelled' }
+            : { status: 'failed', error: result.error ?? OUTCOME_UNKNOWN },
+      );
       return result;
     } catch (error) {
-      await operations
-        .finish(parent.operationId, { status: 'failed', error: RUN_FAILED })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: RUN_FAILED,
+      });
       throw error;
     }
   }
@@ -902,9 +887,10 @@ export class CorePipelineRuns {
       if (pausedNow === this.paused.has(executionId)) return;
       if (pausedNow) this.paused.add(executionId);
       else this.paused.delete(executionId);
-      void operations
-        .transition(runId, pausedNow ? 'paused' : 'running')
-        .catch(() => undefined);
+      void operations.transitionOrRecord(
+        runId,
+        pausedNow ? 'paused' : 'running',
+      );
     };
     let observed = false;
     stop = worker.observe(executionId, {

@@ -170,6 +170,19 @@ test.describe('agent secret requests', () => {
       await expect(panel).not.toContainText(CANARY);
       await expect(panel).not.toContainText(SHORT_CANARY);
 
+      // The Secrets chip lists both by name only; Revoke takes one away.
+      const chip = window.getByTestId('chat-secrets-chip');
+      await expect(chip).toContainText('2 secrets');
+      await chip.click();
+      const popover = window.getByTestId('chat-secrets-popover');
+      await expect(popover).toContainText('STRIPE_SECRET_KEY');
+      await expect(popover).toContainText('SHORT_PIN');
+      await expect(popover).not.toContainText(CANARY);
+      await popover.getByTestId('chat-secrets-revoke-SHORT_PIN').click();
+      await expect(popover).not.toContainText('SHORT_PIN');
+      await window.keyboard.press('Escape');
+      await expect(chip).toContainText('1 secret');
+
       const activity = await fetch(
         `${DEFAULT_MOCK_BASE_URL}/__mock/activity/${encodeURIComponent(MARKER)}`,
       ).then((response) => response.json());
@@ -197,6 +210,573 @@ test.describe('agent secret requests', () => {
           expect(text.includes(form), `${form} in ${file}`).toBe(false);
       }
       expect(scanned).toBeGreaterThan(0);
+    } finally {
+      if (!closed) await closeCanopy(electronApp, userDataDir);
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  // Full access (U3): the secret reaches the agent's own Bash command
+  // directly, revoking it from the Secrets chip takes it away from the next
+  // command, and nothing on disk keeps it once revoked.
+  test("in Full access a Claude chat's own commands read a provided secret until it is revoked", async () => {
+    test.setTimeout(300_000);
+    const marker = 'Canopy-CSECRETAMBIENT';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-agent-secret-ambient-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorkspaceApprovals({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      defaultMode: 'full-access',
+    });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat' }],
+    });
+    // The command's own text never contains what it prints, so an observed
+    // `AMBIENT_SET_<length>` can only come from the command's environment.
+    const probe =
+      'echo "AMBIENT_$( [ -n "$STRIPE_SECRET_KEY" ] && echo SET || echo NONE )_${#STRIPE_SECRET_KEY}"';
+    const observers = [
+      ...CANARY_FORMS(CANARY).map((text, index) => ({
+        key: `canary-long-${index}`,
+        text,
+      })),
+      { key: 'ambient-set', text: `AMBIENT_SET_${CANARY.length}` },
+      { key: 'ambient-none', text: 'AMBIENT_NONE_0' },
+    ];
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        requestTextObservers: observers,
+        steps: [
+          {
+            toolCalls: [
+              {
+                name: 'mcp__canopy_ui__RequestSecrets',
+                input: {
+                  reason: 'Run the checkout integration tests.',
+                  secrets: [
+                    { name: 'STRIPE_SECRET_KEY', label: 'Stripe secret key' },
+                  ],
+                },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          {
+            toolCalls: [{ name: 'Bash', input: { command: probe } }],
+            stopReason: 'tool_use',
+          },
+          { text: 'The key is in my commands', stopReason: 'end_turn' },
+          {
+            toolCalls: [{ name: 'Bash', input: { command: probe } }],
+            stopReason: 'tool_use',
+          },
+          { text: 'The key is gone', stopReason: 'end_turn' },
+        ],
+      },
+    });
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({
+        userDataDir,
+        env: {
+          CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+            'canopy-shared-agent-secret-requests': true,
+          }),
+        },
+      }),
+    );
+    let closed = false;
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.click();
+      await composer.fill(`[${marker}] Run the checkout tests.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      const form = window.getByTestId('chat-secret-request-prompt');
+      await expect(form).toBeVisible({ timeout: 90_000 });
+      await expect(form).toContainText('Available to the agent');
+      await window
+        .getByTestId('chat-secret-request-input-STRIPE_SECRET_KEY')
+        .fill(CANARY);
+      await window.getByTestId('chat-secret-request-provide').click();
+      await expect(
+        panel.getByText('The key is in my commands').first(),
+      ).toBeVisible({
+        timeout: 120_000,
+      });
+
+      const chip = window.getByTestId('chat-secrets-chip');
+      await expect(chip).toContainText('1 secret');
+      await chip.click();
+      const popover = window.getByTestId('chat-secrets-popover');
+      await expect(popover).toContainText('STRIPE_SECRET_KEY');
+      await expect(window.getByTestId('chat-secrets-ambient')).toContainText(
+        "also set in the agent's own commands",
+      );
+      await popover
+        .getByTestId('chat-secrets-revoke-STRIPE_SECRET_KEY')
+        .click();
+      // The open list stays until closed; then the chip goes with the last
+      // secret.
+      await expect(popover).toContainText('No secrets.');
+      await window.keyboard.press('Escape');
+      await expect(chip).toBeHidden();
+
+      await composer.click();
+      await composer.fill('Check the key again.');
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect(panel.getByText('The key is gone').first()).toBeVisible({
+        timeout: 120_000,
+      });
+
+      const activity = await fetch(
+        `${DEFAULT_MOCK_BASE_URL}/__mock/activity/${encodeURIComponent(marker)}`,
+      ).then((response) => response.json());
+      const counters = activity.activity ?? {};
+      expect(counters['llmObserved:ambient-set']).toBeGreaterThan(0);
+      expect(counters['llmObserved:ambient-none']).toBeGreaterThan(0);
+      // Full access lets the agent print a value it reads; this probe prints
+      // only its length, so no form of the canary may reach the provider.
+      for (const observer of observers.filter((entry) =>
+        entry.key.startsWith('canary-'),
+      ))
+        expect(counters[`llmObserved:${observer.key}`] ?? 0).toBe(0);
+
+      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+      closed = true;
+      // Revoked, so no env file kept it; the launch directory went with the
+      // session.
+      for (const file of filesUnder(userDataDir)) {
+        if (statSync(file).size > 64 * 1024 * 1024) continue;
+        const text = readFileSync(file).toString('latin1');
+        for (const form of CANARY_FORMS(CANARY))
+          expect(text.includes(form), `${form} in ${file}`).toBe(false);
+      }
+    } finally {
+      if (!closed) await closeCanopy(electronApp, userDataDir);
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  // Codex fixes its commands' environment when its process starts: a secret
+  // provided mid-thread offers Restart to apply, which keeps the thread.
+  test('a Codex chat in Full access offers Restart to apply for a secret provided mid-thread', async () => {
+    test.setTimeout(300_000);
+    const marker = 'Canopy-CSECRETRESTART';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-agent-secret-restart-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorkspaceApprovals({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      defaultMode: 'full-access',
+    });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'codex',
+      tabs: [
+        {
+          id: 't1',
+          title: 'Chat',
+          providerType: 'codex',
+          model: 'gpt-5.5',
+          messages: [],
+        },
+      ],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [
+              {
+                name: 'canopy_request_secrets',
+                input: {
+                  reason: 'Run the checkout integration tests.',
+                  secrets: [
+                    { name: 'STRIPE_SECRET_KEY', label: 'Stripe secret key' },
+                  ],
+                },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          { text: 'Got the key name', stopReason: 'end_turn' },
+          { text: 'Running with the new environment', stopReason: 'end_turn' },
+        ],
+      },
+    });
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({
+        userDataDir,
+        env: {
+          CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+            'canopy-shared-agent-secret-requests': true,
+          }),
+        },
+      }),
+    );
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      const panel = window.getByTestId('panel-content-chat');
+      const composer = window.getByRole('textbox').first();
+      await composer.click();
+      await composer.fill(`[${marker}] Run the checkout tests.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect(
+        window.getByTestId('chat-secret-request-prompt'),
+      ).toBeVisible({
+        timeout: 120_000,
+      });
+      await window
+        .getByTestId('chat-secret-request-input-STRIPE_SECRET_KEY')
+        .fill(CANARY);
+      await window.getByTestId('chat-secret-request-provide').click();
+      await expect(panel.getByText('Got the key name').first()).toBeVisible({
+        timeout: 120_000,
+      });
+
+      const notice = window.getByTestId('chat-secrets-restart-notice');
+      await expect(notice).toBeVisible({ timeout: 30_000 });
+      await expect(notice).toContainText('Restart to apply');
+      await expect(window.getByTestId('chat-secrets')).toHaveAttribute(
+        'data-ambient',
+        'restart',
+      );
+      await window.getByTestId('chat-secrets-restart-notice-button').click();
+      await expect(notice).toBeHidden({ timeout: 30_000 });
+
+      // The next message respawns Codex in the same thread, with the key in
+      // its environment.
+      await composer.click();
+      await composer.fill('Carry on.');
+      await window.getByRole('button', { name: 'Send message' }).click();
+      await expect(
+        panel.getByText('Running with the new environment').first(),
+      ).toBeVisible({ timeout: 120_000 });
+      await expect(panel.getByText('Got the key name').first()).toBeVisible();
+      await expect(window.getByTestId('chat-secrets')).toHaveAttribute(
+        'data-ambient',
+        'live',
+      );
+      await expect(notice).toBeHidden();
+    } finally {
+      await closeCanopy(electronApp, userDataDir);
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RunWithSecrets and WriteSecretsFile (U2b-1, U2b-2). After the person
+// provides the canaries, the agent runs a command that echoes them raw and in
+// base64, then writes one to a .env file. In Ask mode each use shows the
+// secrets approval card first; in Full access there is none. Either way the
+// model gets only `[secret:NAME]`, and no form of a canary reaches a provider
+// request body or any file the app wrote, except the approved .env file.
+// ---------------------------------------------------------------------------
+
+const RUN_COMMAND =
+  'printf "%s\\n" "$STRIPE"; printf %s "$STRIPE" | base64; printf "pin:%s\\n" "$PIN"';
+const USE_DONE = 'The secrets were used by name';
+
+function requestStep() {
+  return {
+    toolCalls: [
+      {
+        name: 'mcp__canopy_ui__RequestSecrets',
+        input: {
+          reason: 'Run the checkout integration tests.',
+          secrets: [
+            { name: 'STRIPE_SECRET_KEY', label: 'Stripe secret key' },
+            { name: 'SHORT_PIN', label: 'PIN' },
+          ],
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+}
+
+function writeStep() {
+  return {
+    toolCalls: [
+      {
+        name: 'mcp__canopy__WriteSecretsFile',
+        input: {
+          path: '.env.local',
+          format: 'dotenv',
+          entries: { STRIPE_SECRET_KEY: 'STRIPE_SECRET_KEY' },
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+}
+
+function runStep() {
+  return {
+    toolCalls: [
+      {
+        name: 'mcp__canopy__RunWithSecrets',
+        input: {
+          command: RUN_COMMAND,
+          env: { STRIPE: 'STRIPE_SECRET_KEY', PIN: 'SHORT_PIN' },
+        },
+      },
+    ],
+    stopReason: 'tool_use',
+  };
+}
+
+async function startSecretChat({ marker, mode, steps, observers }) {
+  const userDataDir = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-agent-secret-use-'),
+  );
+  seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+  seedWorkspaceApprovals({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    defaultMode: mode,
+  });
+  seedWorktreeChat({
+    userDataDir,
+    workspaceId: WORKSPACE_ID,
+    worktreeId: WORKTREE_ID,
+    providerType: 'claude',
+    tabs: [{ id: 't1', title: 'Chat' }],
+  });
+  await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+    llm: { requestTextObservers: observers, steps },
+  });
+  const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+    launchCanopy({
+      userDataDir,
+      env: {
+        CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+          'canopy-shared-agent-secret-requests': true,
+        }),
+      },
+    }),
+  );
+  const window = await electronApp.firstWindow();
+  const app = new CanopyAppDriver(window);
+  await app.waitForShell({ timeout: 30_000 });
+  await app.openMainPage();
+  await app.selectWorktree(WORKTREE_BRANCH);
+  const composer = window.getByRole('textbox').first();
+  await composer.click();
+  await composer.fill(`[${marker}] Run the checkout tests.`);
+  await window.getByRole('button', { name: 'Send message' }).click();
+  const form = window.getByTestId('chat-secret-request-prompt');
+  await expect(form).toBeVisible({ timeout: 90_000 });
+  await window
+    .getByTestId('chat-secret-request-input-STRIPE_SECRET_KEY')
+    .fill(CANARY);
+  await window
+    .getByTestId('chat-secret-request-input-SHORT_PIN')
+    .fill(SHORT_CANARY);
+  await window.getByTestId('chat-secret-request-provide').click();
+  return { userDataDir, electronApp, window };
+}
+
+/** Opens the settled turn's collapsed steps, which hold the tool rows. */
+async function expandSteps(panel) {
+  // The summary counts RunWithSecrets as a command and WriteSecretsFile as
+  // an edit.
+  await panel
+    .getByRole('button', { name: /ran \d+ commands?/ })
+    .first()
+    .click();
+}
+
+async function mockCounters(marker) {
+  const activity = await fetch(
+    `${DEFAULT_MOCK_BASE_URL}/__mock/activity/${encodeURIComponent(marker)}`,
+  ).then((response) => response.json());
+  return activity.activity ?? {};
+}
+
+/**
+ * Scans every file the app wrote, the provider's own session history
+ * included (the model only ever saw names), except the approved secrets
+ * file, which it returns.
+ */
+function expectNoCanaryOnDisk(userDataDir) {
+  const forms = [...CANARY_FORMS(CANARY), ...CANARY_FORMS(SHORT_CANARY)];
+  let scanned = 0;
+  let secretsFile = null;
+  for (const file of filesUnder(userDataDir)) {
+    if (path.basename(file) === '.env.local') {
+      secretsFile = file;
+      continue;
+    }
+    if (statSync(file).size > 64 * 1024 * 1024) continue;
+    const text = readFileSync(file).toString('latin1');
+    scanned += 1;
+    for (const form of forms)
+      expect(text.includes(form), `${form} in ${file}`).toBe(false);
+  }
+  expect(scanned).toBeGreaterThan(0);
+  // The approved file holds the value, owner-only.
+  expect(secretsFile).not.toBeNull();
+  expect(statSync(secretsFile).mode & 0o777).toBe(0o600);
+  expect(readFileSync(secretsFile, 'utf8')).toBe(
+    `STRIPE_SECRET_KEY='${CANARY}'\n`,
+  );
+}
+
+test.describe('agent secret use', () => {
+  test('Ask mode approves each use, and the command output and file reach the model only as names', async () => {
+    test.setTimeout(300_000);
+    const marker = 'Canopy-CSECRETUSE-ASK';
+    const observers = [
+      ...CANARY_FORMS(CANARY).map((text, index) => ({
+        key: `canary-long-${index}`,
+        text,
+      })),
+      ...CANARY_FORMS(SHORT_CANARY).map((text, index) => ({
+        key: `canary-short-${index}`,
+        text,
+      })),
+      { key: 'run-advertised', scope: 'tools', text: 'RunWithSecrets' },
+      // The tool's own name: RequestSecrets' description mentions it.
+      {
+        key: 'write-advertised',
+        scope: 'tools',
+        text: 'mcp__canopy__WriteSecretsFile',
+      },
+      { key: 'run-redacted', text: '[secret:STRIPE_SECRET_KEY]' },
+      { key: 'pin-redacted', text: 'pin:[secret:SHORT_PIN]' },
+      { key: 'write-result', text: 'gitExcluded' },
+    ];
+    const { userDataDir, electronApp, window } = await startSecretChat({
+      marker,
+      mode: 'ask',
+      observers,
+      steps: [
+        requestStep(),
+        runStep(),
+        writeStep(),
+        { text: USE_DONE, stopReason: 'end_turn' },
+      ],
+    });
+    let closed = false;
+    try {
+      // The command asks first, naming the command or file and the secrets.
+      const card = window.getByTestId('tool-approval-card');
+      await expect(card).toBeVisible({ timeout: 90_000 });
+      await expect(card).toContainText('Run a command with secrets?');
+      const details = window.getByTestId('tool-approval-secret-use-details');
+      await expect(details).toContainText('STRIPE_SECRET_KEY');
+      await expect(details).toContainText('SHORT_PIN');
+      await expect(card).not.toContainText(CANARY);
+      // No rule can remember a use of secrets.
+      await expect(
+        window.getByRole('button', { name: 'More allow options' }),
+      ).toHaveCount(0);
+      await window.getByTestId('tool-approval-allow').click();
+      // Then the file, naming its path and the secret.
+      await expect(card).toContainText('Write a secrets file?', {
+        timeout: 90_000,
+      });
+      await expect(details).toContainText('.env.local');
+      await window.getByTestId('tool-approval-allow').click();
+
+      const panel = window.getByTestId('panel-content-chat');
+      await expect(panel.getByText(USE_DONE).first()).toBeVisible({
+        timeout: 90_000,
+      });
+      await expandSteps(panel);
+      await expect(
+        panel.getByTestId('run-with-secrets-status').first(),
+      ).toHaveText('exit 0 · 3 values redacted');
+      await expect(
+        panel.getByTestId('write-secrets-file-row').first(),
+      ).toContainText('0600 · git-excluded');
+      await expect(panel).not.toContainText(CANARY);
+      await expect(panel).not.toContainText(SHORT_CANARY);
+
+      const counters = await mockCounters(marker);
+      for (const key of [
+        'run-advertised',
+        'write-advertised',
+        'run-redacted',
+        'pin-redacted',
+        'write-result',
+      ])
+        expect(counters[`llmObserved:${key}`] ?? 0).toBeGreaterThan(0);
+      for (const observer of observers.filter((entry) =>
+        entry.key.startsWith('canary-'),
+      ))
+        expect(counters[`llmObserved:${observer.key}`] ?? 0).toBe(0);
+
+      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+      closed = true;
+      expectNoCanaryOnDisk(userDataDir);
+    } finally {
+      if (!closed) await closeCanopy(electronApp, userDataDir);
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  test('Full access runs the command and writes the file without a card, with nothing exposed', async () => {
+    test.setTimeout(300_000);
+    const marker = 'Canopy-CSECRETUSE-FULL';
+    const observers = [
+      { key: 'canary-long-raw', text: CANARY },
+      { key: 'run-redacted', text: '[secret:STRIPE_SECRET_KEY]' },
+    ];
+    const { userDataDir, electronApp, window } = await startSecretChat({
+      marker,
+      mode: 'full-access',
+      observers,
+      steps: [
+        requestStep(),
+        runStep(),
+        writeStep(),
+        { text: USE_DONE, stopReason: 'end_turn' },
+      ],
+    });
+    let closed = false;
+    try {
+      const panel = window.getByTestId('panel-content-chat');
+      await expect(panel.getByText(USE_DONE).first()).toBeVisible({
+        timeout: 120_000,
+      });
+      await expect(window.getByTestId('tool-approval-card')).toHaveCount(0);
+      await expandSteps(panel);
+      await expect(
+        panel.getByTestId('run-with-secrets-status').first(),
+      ).toHaveText('exit 0 · 3 values redacted');
+      await expect(panel).not.toContainText(CANARY);
+
+      const counters = await mockCounters(marker);
+      expect(counters['llmObserved:run-redacted'] ?? 0).toBeGreaterThan(0);
+      expect(counters['llmObserved:canary-long-raw'] ?? 0).toBe(0);
+
+      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+      closed = true;
+      expectNoCanaryOnDisk(userDataDir);
     } finally {
       if (!closed) await closeCanopy(electronApp, userDataDir);
       rmSync(userDataDir, { recursive: true, force: true });

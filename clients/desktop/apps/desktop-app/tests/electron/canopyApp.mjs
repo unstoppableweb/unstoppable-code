@@ -968,7 +968,7 @@ export class CanopyAppDriver {
   }
 
   async expectCanopyPortalModal() {
-    await expect(this.window.getByTestId('canopy-portal-modal')).toBeVisible();
+    await expect(this.window.getByTestId('remote-control-modal')).toBeVisible();
     await expect(
       this.window.getByRole('heading', {
         name: 'Remote Control',

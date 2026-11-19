@@ -11,6 +11,15 @@ export interface CodeGraphWorktreeLayout {
   readonly hasSourceRepo: boolean;
 }
 
+/** `ENOENT`, `ENOTDIR` and an over-long name mean the path is missing. */
+function isMissingPathError(error: unknown): boolean {
+  const code: unknown =
+    typeof error === 'object' && error !== null
+      ? Reflect.get(error, 'code')
+      : undefined;
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'ENAMETOOLONG';
+}
+
 /**
  * The repositories a worktree's graph covers, in order: a multi-repo
  * workspace's root checkout when it has a source or is itself a Git
@@ -32,8 +41,13 @@ export async function listCodeGraphWorktreeRepositories(
     });
   }
   const reposDir = join(worktreePath, 'repos');
+  // Only a missing `repos/` lists no repositories. An unreadable one rejects:
+  // an empty listing would reconcile away every repository's graph.
   const entries = await readdir(reposDir, { withFileTypes: true }).catch(
-    () => [],
+    (error: unknown) => {
+      if (isMissingPathError(error)) return [];
+      throw error;
+    },
   );
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;

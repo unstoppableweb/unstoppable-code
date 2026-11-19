@@ -35,6 +35,7 @@ import {
 } from '@canopy/execution-engine/pipelines/host-create-entry';
 import { emptySendAgentMessageOutputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import { emptyWaitForAgentReplyOutputs } from '@canopy/execution-engine/pipelines/host-wait-for-agent-reply';
+import { emptyPublishReviewOutputs } from '@canopy/execution-engine/pipelines/host-publish-review';
 import type {
   PipelineHostActionCaller,
   PipelineHostActionControls,
@@ -42,6 +43,7 @@ import type {
   PipelineHostActionResult,
   PipelineHostActions,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
+import type { PublishReviewHostDeps } from './host-publish-review';
 import { logMainProcessError } from '../lib/main-process-logging';
 import {
   sidebarItemGroupsService,
@@ -173,6 +175,8 @@ function emptyOutputsFor(
       return emptySendAgentMessageOutputs();
     case 'wait-for-agent-reply':
       return emptyWaitForAgentReplyOutputs();
+    case 'github-publish-review':
+      return emptyPublishReviewOutputs();
   }
 }
 
@@ -187,6 +191,8 @@ export function createDesktopPipelineHostActions(deps: {
   hasTranscriptMessage?: SendAgentMessageHostDeps['hasTranscriptMessage'];
   /** Injected in tests; production reads the owned pipeline's grant. */
   resolveNativeGrant?: SendAgentMessageHostDeps['resolveNativeGrant'];
+  /** Injected in tests; production opens main's web core connection. */
+  publishReview?: PublishReviewHostDeps;
 }): PipelineHostActions {
   const { assertTargetOwner } = deps;
   const entryDeps: CreateEntryHostDeps = {
@@ -266,6 +272,19 @@ export function createDesktopPipelineHostActions(deps: {
               { assertTargetOwner },
               signal,
               controls,
+            );
+          }
+          case 'github-publish-review': {
+            // Deferred so main's startup graph never loads the web core
+            // client through the pipeline host. No owner check here: the
+            // web core authorizes the publication itself.
+            const { runPublishReviewHostAction } =
+              await import('./host-publish-review');
+            return await runPublishReviewHostAction(
+              request.inputs,
+              caller,
+              deps.publishReview ?? {},
+              signal,
             );
           }
         }

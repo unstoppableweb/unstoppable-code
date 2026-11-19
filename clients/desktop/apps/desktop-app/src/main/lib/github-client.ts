@@ -5,6 +5,7 @@ import {
   type GitHubRawResponse,
 } from './github-broker';
 import type { GitHubHeaders } from './github-broker/rate-limit';
+import type { GitHubBrokerCredentialLease } from './github-broker/credential-port';
 
 type RateLimitCallback = (message: string, retryAfterSeconds: number) => void;
 
@@ -21,8 +22,8 @@ export interface GitHubClientEnqueueOptions<T = unknown> {
    * a `304` resolves with the cached result.
    */
   isCachedData?: (value: unknown) => value is T;
-  /** Pin this request to an already-resolved credential source. */
-  authenticationToken?: string;
+  /** Pin this request to a credential lease from the credential port. */
+  credential?: GitHubBrokerCredentialLease;
   /** Quota bucket: `core` (default) for REST, `graphql` for `octokit.graphql`. */
   resource?: GitHubBrokerRequestOptions['resource'];
   /** Spend-summary label for the broker. */
@@ -130,9 +131,7 @@ export function getGitHubClient(
           ...(options.isCachedData
             ? { isCachedData: options.isCachedData }
             : {}),
-          ...(options.authenticationToken
-            ? { authenticationToken: options.authenticationToken }
-            : {}),
+          ...(options.credential ? { credential: options.credential } : {}),
           ...(options.resource ? { resource: options.resource } : {}),
           ...(options.caller ? { caller: options.caller } : {}),
         },

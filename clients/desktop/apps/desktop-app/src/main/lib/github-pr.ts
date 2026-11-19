@@ -48,6 +48,7 @@ import {
 } from './github-broker/pull-requests';
 import { getCurrentBranch, getRemoteUrl } from './git';
 import { getGitHubBroker } from './github-broker';
+import type { GitHubBrokerCredentialLease } from './github-broker/credential-port';
 import { isGitHubRateLimitError } from './github-pr-sweep';
 import {
   getGitHubClient,
@@ -1331,14 +1332,14 @@ function withRequestPriority(
   client: GitHubClient,
   priority: 'high' | 'normal',
   caller?: string,
-  authenticationToken?: string,
+  credential?: GitHubBrokerCredentialLease,
 ): GitHubClient {
   return {
     enqueue: (fn, _priority, requestOptions) =>
       client.enqueue(fn, priority, {
         ...requestOptions,
         ...(caller ? { caller } : {}),
-        ...(authenticationToken ? { authenticationToken } : {}),
+        ...(credential ? { credential } : {}),
       }),
   };
 }
@@ -1355,8 +1356,8 @@ interface PrTrackingReadOptions {
    * behind every poll and sweep already waiting.
    */
   priority?: 'high' | 'normal';
-  /** Pin all reads to the credential sampled by the tracking owner. */
-  authenticationToken?: string;
+  /** Pin all reads to the credential lease sampled by the tracking owner. */
+  credential?: GitHubBrokerCredentialLease;
   /** Spend-summary label for the broker. */
   caller?: string;
 }
@@ -1406,7 +1407,7 @@ export async function fetchRepoPrTrackingDataForRemote(
     getGitHubClient(),
     options?.priority ?? 'normal',
     options?.caller,
-    options?.authenticationToken,
+    options?.credential,
   );
   const listPulls = (state: 'open' | 'all'): Promise<PullRequestListResponse> =>
     client.enqueue(
@@ -1495,7 +1496,7 @@ export async function fetchTrackedPullRequestData(args: {
     getGitHubClient(),
     args.options?.priority ?? 'normal',
     args.options?.caller,
-    args.options?.authenticationToken,
+    args.options?.credential,
   );
   return readTrackedPullRequest(
     client,
@@ -1631,10 +1632,7 @@ async function readTrackedPullRequest(
   const shouldFetchComments = options?.includeCommentCollections === true;
   // A 304 replays the cached response's headers, so read GitHub's latest
   // count from the broker rather than from the details response.
-  const quota = getGitHubBroker().currentQuota(
-    undefined,
-    options?.authenticationToken,
-  );
+  const quota = getGitHubBroker().currentQuota(undefined, options?.credential);
   const canFetchComments =
     shouldFetchComments &&
     (quota === undefined || quota.remaining > COMMENTS_FETCH_RATE_LIMIT_FLOOR);

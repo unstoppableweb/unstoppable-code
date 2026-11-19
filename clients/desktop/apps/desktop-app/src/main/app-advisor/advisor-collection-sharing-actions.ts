@@ -207,7 +207,12 @@ async function importShared(
     plugins: resolved.plugins,
     mcpServers: [],
   });
-  const failures = [...resolved.failures];
+  // The thrown errors stay out of the answer: it carries each member's text only.
+  const failures = resolved.failures.map(({ label, required, message }) => ({
+    label,
+    required,
+    message,
+  }));
   if (detail.package) {
     try {
       const packaged = await host.installPackage({

@@ -22,6 +22,7 @@ import {
 import { Button, buttonClassName, isAriaDisabled } from './Button';
 import { ReservedLabel } from './LoadingButton';
 import { LoadingSpinner } from './LoadingSpinner';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import {
   useNoticeErrorRecording,
   type NoticeErrorChokePoint,
@@ -565,6 +566,15 @@ export function Notice({
       : '',
     displayErrorCode,
   });
+  // A destructive notice's string is usually a caught message, which can
+  // quote paths and command output: replay and the exported error record
+  // skip it. Titles, actions and component children stay recorded.
+  const copy =
+    intent === 'destructive' && typeof children === 'string' ? (
+      <span className={REPLAY_BLOCK_CLASS}>{children}</span>
+    ) : (
+      children
+    );
   const resolvedIcon = icon === undefined ? defaultIcon(intent) : icon;
   const resolvedRole =
     role ??
@@ -669,7 +679,7 @@ export function Notice({
                   <div
                     className={`mt-0.5 ${toastShape ? 'fg-secondary' : 'fg-tertiary'}`}
                   >
-                    {children}
+                    {copy}
                   </div>
                 </div>
               ) : title !== undefined ? (
@@ -684,10 +694,10 @@ export function Notice({
                     {title}
                     {titleNeedsStop(title) && '.'}
                   </span>{' '}
-                  <span className="fg-tertiary">{children}</span>
+                  <span className="fg-tertiary">{copy}</span>
                 </div>
               ) : (
-                <div className="text-pretty">{children}</div>
+                <div className="text-pretty">{copy}</div>
               )}
               {detail !== undefined && (
                 // 2px of air between the line and its detail, so the detail

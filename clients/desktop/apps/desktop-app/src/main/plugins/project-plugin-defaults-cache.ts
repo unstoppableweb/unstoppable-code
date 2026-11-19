@@ -222,6 +222,20 @@ export function projectPluginLayerChanged(
   );
 }
 
+const configWrittenListeners = new Set<(workspaceId: string) => void>();
+
+/**
+ * Tells `listener` of every landed write or removal of a workspace config,
+ * whatever it changed, so another cache of a field of `workspace.json` (the
+ * workspace's owner, CAN-6237) drops it with this layer.
+ */
+export function subscribeWorkspaceConfigWritten(
+  listener: (workspaceId: string) => void,
+): () => void {
+  configWrittenListeners.add(listener);
+  return () => configWrittenListeners.delete(listener);
+}
+
 /**
  * Records a landed write or removal of the workspace config at `configPath`.
  * The cached layer is dropped, and when the layer changed the workspace's
@@ -234,6 +248,8 @@ export function projectPluginDefaultsWritten(write: {
   layerChanged: boolean;
 }): void {
   cache.delete(write.configPath);
+  for (const listener of Array.from(configWrittenListeners))
+    listener(write.workspaceId);
   if (!write.layerChanged) return;
   served.delete(write.configPath);
   advances.set(write.configPath, (advances.get(write.configPath) ?? 0) + 1);

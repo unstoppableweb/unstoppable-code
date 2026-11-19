@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CanopyClientError } from '../errors';
 import type { DaemonOwnerCredential } from './daemon-owner';
 import type { CanopyRuntimeDescriptorSource } from './daemon-ports';
+import { canopyLaunchDetails } from './daemon-refusal';
 import { canopyConnectError } from './endpoint';
 import type {
   CanopyDaemonBeforeSpawn,
@@ -344,9 +345,14 @@ export function createCanopyDaemonHostLaunch(
           ? options.migration.spawn(spawnRequest, migrationAuth, command.signal)
           : children.spawn(spawnRequest)
       ).catch((error: unknown) => {
+        // The closed native reason (not the child error's text) tells a missing addon from a blocked one.
+        const { nativeStage } = canopyLaunchDetails({
+          nativeStage: field(error, 'reason'),
+        });
+        const details = nativeStage ? { nativeStage } : undefined;
         if (field(error, 'code') === 'unavailable')
           throw Object.assign(
-            canopyConnectError('unavailable', 'Core cleanup failed.'),
+            canopyConnectError('unavailable', 'Core cleanup failed.', details),
             {
               cleanupUnconfirmed: true,
             },
@@ -355,8 +361,13 @@ export function createCanopyDaemonHostLaunch(
           ? canopyConnectError(
               'capability_unavailable',
               'Core child ownership is unavailable.',
+              details,
             )
-          : failure('Core executable could not be started.');
+          : canopyConnectError(
+              'failed_precondition',
+              'Core executable could not be started.',
+              details,
+            );
       });
       ownerCredential?.recordSpawn({ pid: child.pid });
       const daemon: CanopySpawnedDaemon = {

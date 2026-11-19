@@ -86,7 +86,7 @@ export async function reconcileExternalWorktreeSnapshot(
   // An external writer (the CLI) changed which worktrees exist, and with
   // them which per-worktree pipeline documents the cloud inventory should
   // hold (CAN-2830); the in-app write paths notify through
-  // schedulePortalStructuralSync, this is the watcher's counterpart.
+  // scheduleDesktopStructureChanged, this is the watcher's counterpart.
   notifyDesktopInventoryChanged(['pipelines']);
   publishWorktreeLifecycleChange('external-snapshot');
   const cleanups: Promise<void>[] = [];

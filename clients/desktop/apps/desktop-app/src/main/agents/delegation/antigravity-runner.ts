@@ -25,7 +25,7 @@ import {
 } from '@canopy/desktop-shared/node/antigravity/workspace-configuration';
 import { antigravityTokenUsage } from '@canopy/desktop-shared/node/antigravity/usage';
 import { ANTIGRAVITY_RUNTIME_VERSION } from '@canopy/desktop-shared/node/antigravity/runtime-metadata';
-import { CursorEventProjection } from '@canopy/desktop-shared/node/cursor/events';
+import { createAntigravityEventProjection } from '@canopy/desktop-shared/node/antigravity/event-projection';
 import { expandLeadingCursorCommand } from '@canopy/desktop-shared/lib/cursor-capabilities';
 import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
 import {
@@ -738,10 +738,9 @@ export function createAntigravityDelegationRunner(options: {
               truncated: transcript.truncated,
             });
         };
-        const eventProjection = new CursorEventProjection(
-          'Antigravity delegate output exceeded the local limit.',
-          { recognizeCursorErrors: false },
-        );
+        const eventProjection = createAntigravityEventProjection({
+          limitMessage: 'Antigravity delegate output exceeded the local limit.',
+        });
         // Provider updates are serialized so rows and previews keep their order.
         let updates: Promise<void> = Promise.resolve();
         const observe = async (

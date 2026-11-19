@@ -66,6 +66,8 @@ export const botsListActionSchema = z.strictObject({
     .min(1)
     .refine(uniqueValues, 'Filter values must be unique')
     .optional(),
+  pinnedToProjectId:
+    projectsListTaskChatsActionSchema.shape.projectId.optional(),
   sort: z.enum(['name']).default('name'),
   order: z.enum(['asc', 'desc']).default('asc'),
 });

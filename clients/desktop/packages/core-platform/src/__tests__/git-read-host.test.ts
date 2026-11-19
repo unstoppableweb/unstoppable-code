@@ -108,11 +108,12 @@ describe('createGitReadHost construction (R6 §2.5)', () => {
     expect(packageIndex.createGitReadHost).toBe(createGitReadHost);
   });
 
-  it.each<[string, Record<string, unknown>]>([
-    ['an unsupported OS', { os: 'aix' }],
-    ['a null environment', { environment: null }],
-    ['a non-string environment value', { environment: { PATH: 1 } }],
-    ['a relative probe directory', { probeDirectory: 'relative' }],
+  // CAN-7113: an unusable environment has its own code.
+  it.each<[string, Record<string, unknown>, string]>([
+    ['an unsupported OS', { os: 'aix' }, 'invalid_request'],
+    ['a null environment', { environment: null }, 'environment_invalid'],
+    ['a non-string environment value', { environment: { PATH: 1 } }, 'environment_invalid'], // prettier-ignore
+    ['a relative probe directory', { probeDirectory: 'relative' }, 'invalid_request'], // prettier-ignore
     [
       'an environment that throws when read',
       {
@@ -125,10 +126,11 @@ describe('createGitReadHost construction (R6 §2.5)', () => {
           },
         ),
       },
+      'environment_invalid',
     ],
   ])(
-    'never throws and does no I/O for %s; requests reject invalid_request',
-    async (_, overrides) => {
+    'never throws and does no I/O for %s; requests reject with its code',
+    async (_, overrides, code) => {
       const touched: string[] = [];
       const touch = (name: string) => (): never => {
         touched.push(name);
@@ -158,10 +160,10 @@ describe('createGitReadHost construction (R6 §2.5)', () => {
           }),
         ),
       );
-      expect(outcome).toMatchObject({ error: { code: 'invalid_request' } });
+      expect(outcome).toMatchObject({ error: { code } });
       expect(reads).toEqual([]);
       expect(() => host.prewarm()).not.toThrow();
-      expect(host.lastFailure()).toBe('invalid_request');
+      expect(host.lastFailure()).toBe(code);
       await expect(host.stop(neverAborted())).resolves.toEqual({ state: 'stopped' }); // prettier-ignore
       expect(touched).toEqual([]);
     },

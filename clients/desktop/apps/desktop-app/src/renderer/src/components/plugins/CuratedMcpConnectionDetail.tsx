@@ -31,6 +31,7 @@ import {
   type UnifiedEntryFoldedPlugin,
 } from '@canopy/ui-shared';
 import {
+  DetailFactError,
   DetailPageActions,
   PluginConfigurationButton,
   ErrorBanner,
@@ -43,6 +44,7 @@ import {
   MCP_WORKSPACE_SETTINGS_HINT,
   McpConnectActionButton,
   McpProviderOnlyGuidance,
+  McpServerConfigurationSection,
   curatedMcpAddTarget,
   mcpAppRouteDescription,
   mcpAppRouteTitle,
@@ -53,7 +55,9 @@ import {
   type CuratedMcpDeviceServer,
   type CuratedMcpReplacedDeviceServer,
   type McpConnectionCopyState,
+  type McpServerConfigurationSummary,
 } from '@canopy/ui-app/capability';
+import { formatDateOrEmpty } from '@canopy/ui-shared/lib/format-date';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { AccountMcpDetails } from '../mcp/AccountMcpControls';
 import {
@@ -82,7 +86,7 @@ import {
   stockCuratedServerData,
 } from './curatedStockServer';
 import {
-  addMcpServerToWorkspaceDefaults,
+  addMcpAccountToWorkspaceDefaults,
   removeMcpServerFromWorkspaceDefaults,
   useMcpWorkspaceDefaultChoices,
 } from '@/lib/workspaceDefaultMcp';
@@ -146,6 +150,11 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
   /** The installed item's Status, under the server's name. */
   statusContent?: ReactNode;
   /**
+   * The person's accounts of this connector (CAN-6226), under its header,
+   * given the facts about the account the card shows to draw inside its row.
+   */
+  renderAccounts?: (accountDetails: ReactNode) => ReactNode;
+  /**
    * Host-owned primary, such as the shared Try it / Install CTA (CAN-4359).
    * When present it replaces the internal Add/Connect primary; the move to
    * the account joins the secondary actions so nothing is lost.
@@ -157,6 +166,8 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
   onBusyChange?: (busy: boolean) => void;
   /** Leaves the detail after a confirmed deletion of its device server. */
   onDeleted?: () => void;
+  /** New Customize: the tile's logo and publisher for the page header. */
+  identity?: { logo: ReactNode; publisher: ReactNode; worksWith?: ReactNode };
 };
 
 export interface CuratedMcpPrimaryActionInput {
@@ -164,7 +175,7 @@ export interface CuratedMcpPrimaryActionInput {
   installation: 'pending' | 'installed' | 'not-installed';
   /** The detail's own Add/Connect/Reconnect flow. */
   onInstall: () => void;
-  installLabel: 'Install' | 'Connect' | 'Reconnect';
+  installLabel: 'Install' | 'Add' | 'Connect' | 'Reconnect';
   installBusy: boolean;
   /** The detail's own connect action, styled as a secondary. */
   secondaryInstallAction: ReactNode;
@@ -257,6 +268,7 @@ export function CuratedMcpConnectionDetail(
         installFoldedPluginRequest={props.installFoldedPluginRequest ?? 0}
         providerConnections={props.providerConnections}
         renderPrimaryAction={props.renderPrimaryAction}
+        identity={props.identity}
       />
     );
   }
@@ -275,7 +287,9 @@ function ProviderOnlyConnectionDetail({
   installFoldedPluginRequest,
   providerConnections,
   renderPrimaryAction,
+  identity,
 }: {
+  identity?: CuratedMcpConnectionDetailProps['identity'];
   entry: CuratedMcpServerEntry;
   statusContent: ReactNode;
   foldedPlugin: UnifiedEntryFoldedPlugin | undefined;
@@ -314,6 +328,7 @@ function ProviderOnlyConnectionDetail({
         entry={entry}
         installedServerId={null}
         statusContent={statusContent}
+        {...identity}
         routes={{
           others: (
             <>
@@ -374,6 +389,7 @@ function FoldedPluginStatus({
     return (
       <ErrorBanner
         errorSource="mcp-browse-detail-skills-error"
+        errorRecordingDisabled={pluginInstall.recorded === true}
         className=""
         error={pluginInstall.message}
         testId="mcp-browse-detail-skills-error"
@@ -401,6 +417,8 @@ function AppMcpConnectionDetail({
   onDeleted,
   onSignInBrowserChange,
   statusContent,
+  identity,
+  renderAccounts,
 }: CuratedMcpConnectionDetailProps): JSX.Element {
   // The cloud account never connects a desktop-only server (REG-3035), so an
   // account connection made before it was marked never backs this card: no
@@ -1251,8 +1269,11 @@ function AppMcpConnectionDetail({
             ? 'installed'
             : 'not-installed',
         onInstall: (): void => void connect(),
+        // New Customize: Add, the tile's word, until it is added.
         installLabel: !installed
-          ? 'Install'
+          ? discoveryEnabled
+            ? 'Add'
+            : 'Install'
           : copyState === 'account-reauth'
             ? 'Reconnect'
             : 'Connect',
@@ -1318,6 +1339,20 @@ function AppMcpConnectionDetail({
           }
           installedServerId={server?.definition.id ?? installedServerId}
           toolsRevision={toolsRevision}
+          {...(identity && {
+            ...identity,
+            ...(server
+              ? {
+                  updated: formatDateOrEmpty(server.definition.updatedAt),
+                  configuration: (
+                    <McpServerConfigurationSection
+                      summary={mcpConfigurationSummary(server.definition)}
+                      appAuthHandlerLabel={brandText.appName}
+                    />
+                  ),
+                }
+              : {}),
+          })}
           routes={
             providerConnections
               ? {
@@ -1330,6 +1365,10 @@ function AppMcpConnectionDetail({
               : undefined
           }
           statusContent={statusContent}
+          renderAccounts={renderAccounts}
+          // Where the server is installed describes the server, not the
+          // account, so it stays on the page under an accounts list.
+          availability={<PluginHarnessStatus installed={installed} />}
           renderManagement={
             server || accountConnection
               ? (): ReactNode => (
@@ -1386,7 +1425,6 @@ function AppMcpConnectionDetail({
                           ? connectedDescription
                           : notConnectedDescription
                 }
-                availability={<PluginHarnessStatus installed={installed} />}
               >
                 <FoldedPluginStatus
                   foldedPlugin={foldedPlugin}
@@ -1397,8 +1435,10 @@ function AppMcpConnectionDetail({
                   (workspaceChoices.length > 0 ? (
                     <McpWorkspaceDefaultsSection
                       workspaces={workspaceChoices}
+                      // An account replaces the connector's other accounts
+                      // in the project (CAN-6229).
                       onAdd={(workspaceId) =>
-                        addMcpServerToWorkspaceDefaults(
+                        addMcpAccountToWorkspaceDefaults(
                           workspaceId,
                           selectionRef,
                         )
@@ -1453,7 +1493,13 @@ function AppMcpConnectionDetail({
                 {!connectionError && guidance && (
                   <Notice intent="neutral">{guidance}</Notice>
                 )}
-                {showAccountActionError ? (
+                {showAccountActionError && discoveryEnabled ? (
+                  // New Customize: the failure on the Connection row.
+                  <DetailFactError
+                    error={accountActionError}
+                    testId="app-mcp-connection-detail-account-action-error"
+                  />
+                ) : showAccountActionError ? (
                   <ErrorBanner
                     errorSource="app-mcp-connection-detail-account-action"
                     error={accountActionError}
@@ -1593,4 +1639,45 @@ function AppMcpConnectionDetail({
       )}
     </>
   );
+}
+
+/** A definition's names and flags for the Configuration section; no values. */
+function mcpConfigurationSummary(
+  definition: McpServerDataView['definition'],
+): McpServerConfigurationSummary {
+  const oauth = definition.oauth;
+  return {
+    type: definition.type,
+    ...(definition.command !== undefined
+      ? { command: definition.command }
+      : {}),
+    ...(definition.args !== undefined
+      ? { argCount: definition.args.length }
+      : {}),
+    ...(definition.url !== undefined ? { url: definition.url } : {}),
+    ...(definition.headers !== undefined
+      ? { headerNames: Object.keys(definition.headers) }
+      : {}),
+    ...(definition.httpAuthHandler !== undefined
+      ? { httpAuthHandler: definition.httpAuthHandler }
+      : {}),
+    ...(oauth
+      ? {
+          oauth: {
+            hasClientId: Boolean(oauth.clientId),
+            hasClientSecret: Boolean(oauth.clientSecret),
+            ...(oauth.authorizationUrl !== undefined
+              ? { authorizationUrl: oauth.authorizationUrl }
+              : {}),
+            ...(oauth.tokenUrl !== undefined
+              ? { tokenUrl: oauth.tokenUrl }
+              : {}),
+            ...(oauth.scopes !== undefined ? { scopes: oauth.scopes } : {}),
+            ...(oauth.audience !== undefined
+              ? { audience: oauth.audience }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }

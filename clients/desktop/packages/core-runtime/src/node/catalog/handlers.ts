@@ -109,6 +109,17 @@ function fail(
   );
 }
 
+/**
+ * Kind `collection` on publish and unpublish is a contract only (CAN-4170
+ * 5a): refused before any catalog read, cloud request or operation record
+ * until 5b serves it.
+ */
+const collectionShareUnavailable = (): CanopyOperationError =>
+  fail(
+    'capability_unavailable',
+    'A collection cannot be shared from here yet.',
+  );
+
 const keyReusedConflict = (): CanopyOperationError =>
   fail('conflict', 'This idempotency key was used with other parameters.');
 
@@ -344,11 +355,12 @@ export function createCoreCatalogHandlers(options: {
         const scope = catalogSelectionScopeOf(params.scope, params.targetId);
         const read = await readSelection(host, scope);
         const snapshot = await readSnapshot(host);
-        const offered = new Set(
-          snapshot.entries
+        const offered = new Set([
+          ...snapshot.entries
             .filter((entry) => entry.availability === 'available')
             .map((entry) => entry.entryId),
-        );
+          ...selectionEntryIds(read.offered),
+        ]);
         const selectedItemIds = selectionEntryIds(read.selections);
         return {
           revision: read.revision,
@@ -795,8 +807,10 @@ export function createCoreCatalogHandlers(options: {
             };
           },
         }),
-      'core.catalog.entry.publish': async (params, context) =>
-        runs.run({
+      'core.catalog.entry.publish': async (params, context) => {
+        // CAN-4170 5a: before the run records anything.
+        if (params.kind === 'collection') throw collectionShareUnavailable();
+        return runs.run({
           kind: 'core.catalog.entry.publish',
           context,
           params,
@@ -948,6 +962,14 @@ export function createCoreCatalogHandlers(options: {
                         cause,
                       },
                     ),
+                  // CAN-7037: the wording is for the security reviewer to
+                  // confirm; it names the cause and what the person can do.
+                  'publish-audience-wider': (cause) =>
+                    fail(
+                      'failed_precondition',
+                      `This ${noun} is already in your cloud account and shared by link, with a team or with an organization, so a private cloud copy can't use it. Stop sharing it in the cloud, or change this ${noun}, then add it again.`,
+                      { code: 'core.catalog.audienceWider', cause },
+                    ),
                   'publish-package-stale': (cause) =>
                     fail(
                       'conflict',
@@ -973,9 +995,11 @@ export function createCoreCatalogHandlers(options: {
               );
             }
           },
-        }),
-      'core.catalog.entry.unpublish': async (params, context) =>
-        runs.run({
+        });
+      },
+      'core.catalog.entry.unpublish': async (params, context) => {
+        if (params.kind === 'collection') throw collectionShareUnavailable();
+        return runs.run({
           kind: 'core.catalog.entry.unpublish',
           context,
           params,
@@ -1037,7 +1061,8 @@ export function createCoreCatalogHandlers(options: {
             }
             return { publicationId: params.publicationId };
           },
-        }),
+        });
+      },
     },
   };
 }

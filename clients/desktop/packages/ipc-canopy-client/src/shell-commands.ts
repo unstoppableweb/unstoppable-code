@@ -828,6 +828,26 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         ? refusedReceipt(commandId, RUN_GONE)
         : acceptedReceipt(commandId, run);
     },
+    // Portal's archived list result, unchanged, so the overview's parser
+    // reads it as before (CAN-5986).
+    'workEntries.archived': async ({ payload }) => {
+      const commandId = randomId();
+      const listed = await channels.invoke(
+        C.workEntriesListArchived,
+        recordWithArray<{
+          readonly items: readonly unknown[];
+          readonly nextOffset: unknown;
+        }>('items'),
+        {
+          projectLocalId: payload.projectLocalId,
+          ...(payload.offset === undefined ? {} : { offset: payload.offset }),
+        },
+      );
+      return acceptedReceipt(commandId, {
+        items: listed.items,
+        nextOffset: listed.nextOffset,
+      });
+    },
   };
 
   const commands: ShellCommandHandlers = {

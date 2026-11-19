@@ -9,6 +9,7 @@ import {
   SettingsSelect,
   type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
+import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
 import { SettingsRow } from './SettingsLayout';
 
 const WAIT_OPTION: SettingsSelectOption = { value: 'off', label: 'Wait' };
@@ -82,7 +83,13 @@ export function UsageLimitRoutingRow({
               setFailed(false);
               const api: CanopyApi = window.api;
               void api.savePreferences({ aiCreditsRoutingMode: next }).then(
-                () => setSaving(false),
+                () => {
+                  setSaving(false);
+                  // Open chats read the mode from the usage cache; refresh it
+                  // so a chat follows this change now, not after the cache
+                  // expires (CAN-7062).
+                  invalidateAiCreditsUsageCache();
+                },
                 () => {
                   // Show the stored value again, never the one that failed.
                   setValue(previous);

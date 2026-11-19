@@ -29,6 +29,20 @@ import {
   findCloudModelItems,
 } from '@canopy/pipeline-interop/cloud-model-preflight';
 import { readFileSync } from 'node:fs';
+import { parsePipelineText } from '@canopy/pipeline-interop/parse-pipeline';
+import { BUNDLED_CLOUD_WORKFLOWS } from '@canopy/pipeline-interop/bundled-cloud-workflows.generated';
+import {
+  CLOUD_CHILD_WORKFLOWS_READ_MAX,
+  CloudChildWorkflowsTooLarge,
+  applyChildCloudModelChoices,
+  applyCloudRunModelChoices,
+  bundledChildWorkflow,
+  childCloudModelChoices,
+  cloudChildWorkflowResolver,
+  cloudModelWorkflowProjection,
+  findCloudRunModelItems,
+  runPipelineStepIndexes,
+} from '@canopy/pipeline-interop/cloud-child-workflows';
 import { BUILTIN_APP_SKILL_TEMPLATES } from '@canopy/pipeline-interop/builtin-skills';
 import { z } from 'zod';
 import { isPipelineHostActionId } from '@canopy/execution-engine/pipelines/host-actions';
@@ -159,6 +173,8 @@ function hostVerdict(pipeline: Pipeline): string {
       // on another worktree or the global scope to its owner (CAN-6868).
       childPipelines: 'host',
       delegatedChildren: 'owner',
+      // Preflight checked a matrix axis model's values (CAN-7018).
+      matrixModels: 'owner',
     },
   );
   return result.eligible ? 'portable' : result.reason;
@@ -745,9 +761,25 @@ describe('cloud model preflight', () => {
       reason: 'local_harness',
       harness: 'cursor',
     });
+    // The cloud runner can't start Codex steps yet (CAN-7235): only Claude
+    // models are offered, though the host runs both.
     expect(cursor?.alternatives.map((option) => option.harness)).toEqual([
       'claude',
-      'codex',
+    ]);
+    expect(
+      findCloudModelItems(
+        oneStep({
+          uses: 'builtin/agent-prompt',
+          with: { model: 'gpt-6-luna' },
+        }),
+        context,
+      ),
+    ).toMatchObject([
+      {
+        reason: 'action_harness',
+        harness: 'codex',
+        alternatives: [{ modelId: 'anthropic/claude-sonnet-5.5' }],
+      },
     ]);
     const [codex] = findCloudModelItems(
       oneStep({
@@ -764,7 +796,8 @@ describe('cloud model preflight', () => {
       ),
     ).toEqual([]);
     // A composite that fixes its model step's preset ignores the step's own;
-    // one that forwards it can't run Codex with `none`.
+    // one that forwards it can't run Codex with `none`. Until CAN-7235 the
+    // cloud runner starts no Codex step, so both are listed.
     const codexWithNone = (uses: string): Pipeline =>
       oneStep({
         uses,
@@ -772,7 +805,7 @@ describe('cloud model preflight', () => {
       });
     expect(
       findCloudModelItems(codexWithNone('builtin/planner'), context),
-    ).toEqual([]);
+    ).toMatchObject([{ reason: 'action_harness', harness: 'codex' }]);
     expect(
       findCloudModelItems(codexWithNone('builtin/coder'), context),
     ).toMatchObject([{ reason: 'action_harness', harness: 'codex' }]);
@@ -1138,5 +1171,515 @@ describe('a cloud run’s model registry (CAN-6747)', () => {
     expect(models.sonnet).toMatchObject({ harness: 'claude' });
     expect(models['opus[1m]']).toMatchObject({ harness: undefined });
     expect(models.opus).toMatchObject({ harness: undefined });
+  });
+});
+
+// CAN-7018: a step whose model is `${{ matrix.<axis> }}` runs the models its
+// job's matrix gives the axis. Preflight checks each value a written-out
+// matrix gives it as a fixed model, and has the person pick the model of a
+// matrix built while the run runs; the host admits the reference, and the
+// owner admits each model when its step asks for a route.
+describe('matrix models (CAN-7018)', () => {
+  const CATALOG = {
+    catalog: [
+      {
+        modelId: 'anthropic/claude-haiku-5.5',
+        harness: 'claude' as const,
+        label: 'Haiku',
+      },
+      {
+        modelId: 'openai/gpt-6.1-terra',
+        harness: 'codex' as const,
+        label: 'Terra',
+      },
+    ],
+    isBlocked: (): boolean => false,
+  };
+  // The cloud runner starts no Codex step yet (CAN-7235), so a replacement
+  // is a Claude model: these offer a second one.
+  const WITH_SONNET = {
+    ...CATALOG,
+    catalog: [
+      ...CATALOG.catalog,
+      {
+        modelId: 'anthropic/claude-sonnet-5.5',
+        harness: 'claude' as const,
+        label: 'Sonnet',
+      },
+    ],
+  };
+  const matrixJob = (
+    matrix: NonNullable<Pipeline['jobs'][string]['strategy']>['matrix'],
+    steps: Step[],
+  ): Pipeline => ({
+    name: 't',
+    scope: 'global',
+    on: 'dispatch',
+    jobs: { tracks: { strategy: { matrix }, steps } },
+  });
+  const review = (model = '${{ matrix.model }}'): Step => ({
+    uses: 'builtin/agent-prompt',
+    with: { prompt: 'x', model },
+  });
+
+  it.each<[string, Pipeline]>([
+    [
+      'a written-out matrix',
+      matrixJob({ model: ['haiku', '$sol'] }, [review()]),
+    ],
+    [
+      'a matrix built while the run runs',
+      matrixJob('${{ parseJson(inputs.tracks) }}', [review()]),
+    ],
+    [
+      'a composite step, whose model step reads it as its input',
+      matrixJob({ model: ['haiku'] }, [
+        { uses: 'builtin/coder', with: { model: '${{ matrix.model }}' } },
+      ]),
+    ],
+  ])(
+    'admits a matrix axis model in %s, as the host does',
+    (_name, pipeline) => {
+      expect(preflightVerdict(pipeline)).toBe('portable');
+      expect(hostVerdict(pipeline)).toBe('portable');
+    },
+  );
+
+  it('refuses an expression model outside a matrix job, and a matrix value written as one', () => {
+    expect(preflightVerdict(oneStep(review()))).toBe('dynamic_model');
+    expect(preflightVerdict(oneStep(review('${{ matrix.model }} ')))).toBe(
+      'dynamic_model',
+    );
+    expect(
+      preflightVerdict(
+        matrixJob({ model: ['${{ inputs.model }}'] }, [review()]),
+      ),
+    ).toBe('dynamic_model');
+    expect(
+      preflightVerdict(
+        matrixJob({ model: ['haiku'] }, [review('${{ matrix.model || 1 }}')]),
+      ),
+    ).toBe('dynamic_model');
+  });
+
+  it('lists each written-out value the cloud cannot run and replaces it in the matrix', () => {
+    const pipeline = matrixJob(
+      {
+        model: ['haiku', '$sol', 'cursor:auto'],
+        include: [{ model: '$sol', effort: 'high' }],
+        exclude: [{ model: 'cursor:auto' }],
+      },
+      [review(), review()],
+    );
+    const items = findCloudModelItems(pipeline, WITH_SONNET);
+    expect(
+      items.map(({ itemKey, reason, model, matrix }) => ({
+        itemKey,
+        reason,
+        model,
+        matrix,
+      })),
+    ).toEqual([
+      {
+        itemKey: 'tracks#matrix.model[1]',
+        reason: 'subscription_model',
+        model: '$sol',
+        matrix: { axis: 'model', value: '$sol' },
+      },
+    ]);
+    const outcome = applyCloudModelChoices(pipeline, items, [
+      {
+        itemKey: 'tracks#matrix.model[1]',
+        modelId: 'anthropic/claude-sonnet-5.5',
+      },
+    ]);
+    // Written out as the variants it runs, each with its own settings.
+    expect(outcome.ok && outcome.pipeline.jobs.tracks?.strategy).toEqual({
+      matrix: {
+        include: [
+          { model: 'haiku' },
+          { model: 'anthropic/claude-sonnet-5.5', effort: 'high' },
+        ],
+      },
+    });
+    // The excluded value runs nowhere, so it needs no replacement.
+    expect(
+      outcome.ok && findCloudModelItems(outcome.pipeline, WITH_SONNET),
+    ).toEqual([]);
+  });
+
+  it('keeps an inline alias a matrix value names, with the confirmed base model', () => {
+    const pipeline: Pipeline = {
+      ...matrixJob({ model: ['reviewer'] }, [review()]),
+      model_aliases: [
+        {
+          id: 'reviewer',
+          name: 'Reviewer',
+          defaults: { base: '$sol', instructions: 'Be strict.' },
+        },
+      ],
+    };
+    const items = findCloudModelItems(pipeline, CATALOG);
+    expect(items.map((item) => item.itemKey)).toEqual([
+      'tracks#matrix.model[0]',
+    ]);
+    const outcome = applyCloudModelChoices(pipeline, items, [
+      {
+        itemKey: 'tracks#matrix.model[0]',
+        modelId: 'anthropic/claude-haiku-5.5',
+      },
+    ]);
+    if (!outcome.ok) throw new Error('not applied');
+    expect(outcome.pipeline.jobs.tracks?.strategy?.matrix).toEqual({
+      include: [{ model: 'reviewer-cloud-1' }],
+    });
+    expect(outcome.pipeline.model_aliases).toContainEqual({
+      id: 'reviewer-cloud-1',
+      name: 'Reviewer',
+      defaults: {
+        base: 'anthropic/claude-haiku-5.5',
+        instructions: 'Be strict.',
+      },
+    });
+  });
+
+  it('keeps every variant and its settings, whatever model replaces a value', () => {
+    // One model for two values, a model another variant already runs, and
+    // one an exclude entry names: each variant keeps its place.
+    const pipeline = matrixJob(
+      {
+        model: ['anthropic/claude-haiku-5.5', '$sol', 'cursor:auto'],
+        os: ['a', 'b'],
+        include: [{ model: '$sol', effort: 'high' }],
+        exclude: [
+          { model: '$sol', os: 'a' },
+          { model: 'anthropic/claude-sonnet-5.5' },
+        ],
+      },
+      [review()],
+    );
+    const items = findCloudModelItems(pipeline, WITH_SONNET);
+    expect(items.map((item) => item.itemKey)).toEqual([
+      'tracks#matrix.model[1]',
+      'tracks#matrix.model[2]',
+    ]);
+    const variants = (modelId: string): unknown => {
+      const outcome = applyCloudModelChoices(
+        pipeline,
+        items,
+        items.map((item) => ({ itemKey: item.itemKey, modelId })),
+      );
+      return outcome.ok && outcome.pipeline.jobs.tracks?.strategy?.matrix;
+    };
+    expect(variants('anthropic/claude-haiku-5.5')).toEqual({
+      include: [
+        { model: 'anthropic/claude-haiku-5.5', os: 'a' },
+        { model: 'anthropic/claude-haiku-5.5', os: 'b' },
+        { model: 'anthropic/claude-haiku-5.5', os: 'b', effort: 'high' },
+        { model: 'anthropic/claude-haiku-5.5', os: 'a' },
+        { model: 'anthropic/claude-haiku-5.5', os: 'b' },
+      ],
+    });
+    expect(variants('anthropic/claude-sonnet-5.5')).toMatchObject({
+      include: [
+        { model: 'anthropic/claude-haiku-5.5', os: 'a' },
+        { model: 'anthropic/claude-haiku-5.5', os: 'b' },
+        { model: 'anthropic/claude-sonnet-5.5', os: 'b', effort: 'high' },
+        { model: 'anthropic/claude-sonnet-5.5', os: 'a' },
+        { model: 'anthropic/claude-sonnet-5.5', os: 'b' },
+      ],
+    });
+  });
+
+  it('offers no Codex model to a step whose preset is an expression, which may be none', () => {
+    const pipeline = matrixJob({ model: ['$sol'], preset: ['none'] }, [
+      {
+        uses: 'builtin/agent-prompt',
+        with: {
+          prompt: 'x',
+          model: '${{ matrix.model }}',
+          permission_preset: '${{ matrix.preset }}',
+        },
+      },
+    ]);
+    const [item] = findCloudModelItems(pipeline, CATALOG);
+    expect(item?.alternatives.map((option) => option.modelId)).toEqual([
+      'anthropic/claude-haiku-5.5',
+    ]);
+  });
+
+  it('keeps a model every step runs, however far down the catalog it is', () => {
+    const codex = Array.from({ length: 60 }, (_, index) => ({
+      modelId: `openai/codex-${String(index)}`,
+      harness: 'codex' as const,
+      label: `Codex ${String(index)}`,
+    }));
+    const pipeline = matrixJob({ model: ['$sol'] }, [
+      review(),
+      {
+        uses: 'builtin/agent-loop',
+        with: { prompt: 'x', model: '${{ matrix.model }}' },
+      },
+    ]);
+    const [item] = findCloudModelItems(pipeline, {
+      catalog: [...codex, ...CATALOG.catalog],
+      isBlocked: (): boolean => false,
+    });
+    expect(item?.alternatives.map((option) => option.modelId)).toEqual([
+      'anthropic/claude-haiku-5.5',
+    ]);
+  });
+
+  it('offers a matrix value only models every step that names the axis runs', () => {
+    const pipeline = matrixJob({ model: ['$sol'] }, [
+      review(),
+      {
+        uses: 'builtin/agent-loop',
+        with: { prompt: 'x', model: '${{ matrix.model }}' },
+      },
+    ]);
+    const [item] = findCloudModelItems(pipeline, CATALOG);
+    expect(item?.alternatives.map((option) => option.modelId)).toEqual([
+      'anthropic/claude-haiku-5.5',
+    ]);
+  });
+
+  it("lists a matrix built while the run runs once, and fixes its steps' model", () => {
+    const pipeline = matrixJob(
+      '${{ parseJson(needs.discover.outputs.matrix) }}',
+      [{ run: 'echo ${{ matrix.model }}' }, review(), review()],
+    );
+    const items = findCloudModelItems(pipeline, CATALOG);
+    expect(items).toEqual([
+      expect.objectContaining({
+        itemKey: 'tracks#matrix.model',
+        reason: 'run_time_model',
+        parityId: 'G4',
+        stepIndex: 1,
+        matrix: { axis: 'model' },
+        // Claude models only until CAN-7235.
+        alternatives: CATALOG.catalog.filter(
+          (option) => option.harness === 'claude',
+        ),
+      }),
+    ]);
+    expect(applyCloudModelChoices(pipeline, items, []).ok).toBe(false);
+    const outcome = applyCloudModelChoices(pipeline, items, [
+      { itemKey: 'tracks#matrix.model', modelId: 'anthropic/claude-haiku-5.5' },
+    ]);
+    if (!outcome.ok) throw new Error('not applied');
+    expect(
+      outcome.pipeline.jobs.tracks?.steps.map((step) => step.with?.model),
+    ).toEqual([
+      undefined,
+      'anthropic/claude-haiku-5.5',
+      'anthropic/claude-haiku-5.5',
+    ]);
+    expect(outcome.pipeline.jobs.tracks?.strategy).toEqual(
+      pipeline.jobs.tracks?.strategy,
+    );
+  });
+
+  it('starts the stock multi-provider review once its matrix model is chosen', () => {
+    const pipeline = parsePipelineText(
+      readFileSync(
+        resolve(
+          __dirname,
+          '../../../../resources/pipelines/code-review-multi-provider.yaml',
+        ),
+        'utf8',
+      ),
+    );
+    // The bundled text keeps its brand tokens until the brand renders them.
+    const refused = preflightCloudRun(pipeline, { scope: 'worktree' }).filter(
+      (refusal) => !refusal.uses?.includes('{{BRAND_'),
+    );
+    expect(refused).toEqual([]);
+    const items = findCloudModelItems(pipeline, CATALOG);
+    expect(items).toContainEqual(
+      expect.objectContaining({
+        itemKey: 'custom_review_tracks#matrix.model',
+        reason: 'run_time_model',
+      }),
+    );
+    const outcome = applyCloudModelChoices(
+      pipeline,
+      items,
+      items.map((item) => ({
+        itemKey: item.itemKey,
+        modelId: item.alternatives[0]?.modelId ?? '',
+      })),
+    );
+    expect(
+      outcome.ok && findCloudModelItems(outcome.pipeline, CATALOG),
+    ).toEqual([]);
+  });
+});
+
+// CAN-7044: the web core lists a bundled child workflow's model steps before
+// a cloud run starts, from what preflight reads of each bundled workflow;
+// the runner stages the files themselves. This fails when the two drift:
+// run `pnpm run cloud:bundled-workflows:generate` after changing one.
+describe('bundled child workflows (CAN-7044)', () => {
+  const CATALOG_FOR_CHILDREN = {
+    catalog: [
+      {
+        modelId: 'anthropic/claude-haiku-5.5',
+        harness: 'claude' as const,
+        label: 'Haiku',
+      },
+    ],
+    isBlocked: (): boolean => false,
+  };
+  const PIPELINES = resolve(__dirname, '../../../../resources/pipelines');
+  const index = z
+    .object({
+      pipelines: z.array(z.object({ id: z.string(), filename: z.string() })),
+    })
+    .parse(JSON.parse(readFileSync(resolve(PIPELINES, 'index.json'), 'utf8')));
+
+  it('reads each bundled workflow as its file says', () => {
+    expect(BUNDLED_CLOUD_WORKFLOWS).toEqual(
+      index.pipelines.map(({ id, filename }) => ({
+        id,
+        filename,
+        pipeline: cloudModelWorkflowProjection(
+          parsePipelineText(readFileSync(resolve(PIPELINES, filename), 'utf8')),
+        ),
+      })),
+    );
+  });
+
+  it('lists a child’s items as its full file would, under the step that starts it', () => {
+    const catalog = {
+      catalog: [
+        {
+          modelId: 'anthropic/claude-haiku-5.5',
+          harness: 'claude' as const,
+          label: 'Haiku',
+        },
+      ],
+      isBlocked: (): boolean => false,
+    };
+    const autopilot = parsePipelineText(
+      readFileSync(resolve(PIPELINES, 'implementation-autopilot.yaml'), 'utf8'),
+    );
+    const review = parsePipelineText(
+      readFileSync(
+        resolve(PIPELINES, 'code-review-multi-provider.yaml'),
+        'utf8',
+      ),
+    );
+    const items = findCloudRunModelItems(
+      autopilot,
+      catalog,
+      cloudChildWorkflowResolver(BUNDLED_CLOUD_WORKFLOWS),
+    );
+    const steps = runPipelineStepIndexes(autopilot);
+    expect(steps).toHaveLength(1);
+    const [jobId = '', , stepIndex = -1] = steps[0] ?? [];
+    const prefix = `${jobId}#${String(stepIndex)}/`;
+    const children = items.filter((item) => item.itemKey.startsWith(prefix));
+    expect(
+      children.map((item) => ({
+        ...item,
+        itemKey: item.itemKey.slice(prefix.length),
+        workflows: undefined,
+      })),
+    ).toEqual(
+      findCloudModelItems(review, catalog).map((item) => ({
+        ...item,
+        workflows: undefined,
+      })),
+    );
+    expect(children[0]?.workflows).toEqual([review.name]);
+    // Each child's choices reach it alone, by the step that starts it.
+    const choices = items.map((item) => ({
+      itemKey: item.itemKey,
+      modelId: 'anthropic/claude-haiku-5.5',
+    }));
+    const run = applyCloudRunModelChoices(autopilot, items, choices);
+    expect(run.ok).toBe(true);
+    const own = childCloudModelChoices(choices, jobId, stepIndex);
+    expect(own).toHaveLength(children.length);
+    const child = applyChildCloudModelChoices(review, catalog, own);
+    expect(child.ok && findCloudModelItems(child.pipeline, catalog)).toEqual(
+      [],
+    );
+    expect(applyChildCloudModelChoices(review, catalog, []).ok).toBe(false);
+  });
+
+  it('reads an inline child whose fields hold expressions, but not one that is an expression', () => {
+    const resolve = cloudChildWorkflowResolver(BUNDLED_CLOUD_WORKFLOWS);
+    const inline = (pipeline_yaml: string): Step => ({
+      uses: 'builtin/run-pipeline',
+      with: { pipeline_yaml },
+    });
+    const child = resolve(
+      inline(
+        [
+          'name: Fixer',
+          'on: workflow',
+          'jobs:',
+          '  fix:',
+          '    steps:',
+          '      - uses: builtin/agent-prompt',
+          "        with: { model: '$sol', prompt: 'Fix ${{ inputs.issue }}' }",
+        ].join('\n'),
+      ),
+    );
+    expect(child?.name).toBe('Fixer');
+    expect(
+      child &&
+        findCloudModelItems(child.pipeline, CATALOG_FOR_CHILDREN).map(
+          (item) => item.itemKey,
+        ),
+    ).toEqual(['fix#0']);
+    expect(resolve(inline('${{ steps.plan.outputs.yaml }}'))).toBeNull();
+  });
+
+  it('stops reading children once a start check would read too many', () => {
+    // Ten steps that each start a child of ten such steps, four deep: ten
+    // thousand reads without a budget.
+    const fanOut: Pipeline = {
+      name: 'Fan out',
+      on: 'dispatch',
+      jobs: {
+        j: {
+          steps: Array.from({ length: 10 }, () => ({
+            uses: 'builtin/run-pipeline',
+            with: { pipeline_yaml: 'x' },
+          })),
+        },
+      },
+    };
+    let reads = 0;
+    expect(() =>
+      findCloudRunModelItems(
+        fanOut,
+        { catalog: [], isBlocked: (): boolean => false },
+        () => {
+          reads += 1;
+          // A fresh copy each time, as a parsed inline child is.
+          return { name: 'Fan out', pipeline: structuredClone(fanOut) };
+        },
+      ),
+    ).toThrow(CloudChildWorkflowsTooLarge);
+    expect(reads).toBe(CLOUD_CHILD_WORKFLOWS_READ_MAX);
+  });
+
+  it('names a bundled workflow by its file, with or without its extension', () => {
+    for (const reference of [
+      'code-review-multi-provider.yaml',
+      'code-review-multi-provider',
+      ' code-review-multi-provider ',
+    ])
+      expect(
+        bundledChildWorkflow(BUNDLED_CLOUD_WORKFLOWS, reference)?.filename,
+      ).toBe('code-review-multi-provider.yaml');
+    for (const reference of ['bundled-code-review-multi-provider', 'x.yaml'])
+      expect(bundledChildWorkflow(BUNDLED_CLOUD_WORKFLOWS, reference)).toBe(
+        null,
+      );
   });
 });

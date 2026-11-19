@@ -876,8 +876,6 @@ export function normalizePreferences(
     rendererCodeCacheSchemeEnabled:
       data?.rendererCodeCacheSchemeEnabled === true,
     chatDetail: normalizeChatDetailPreference(data),
-    // On unless the user turned it off.
-    remoteControlEnabled: data?.remoteControlEnabled !== false,
     windowBounds: normalizeWindowBounds(data?.windowBounds),
     windowMaximized:
       typeof data?.windowMaximized === 'boolean'

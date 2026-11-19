@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { isDefaultCoworkWorkspaceId } from '@canopy/desktop-shared/types';
-import { isDefaultCoworkWorkspaceName } from '@/lib/defaultCoworkWorkspaceName';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
@@ -10,7 +9,17 @@ import {
   OPEN_WORKSPACE_PICKER_EVENT,
 } from '@/lib/composerShortcutRequests';
 import { WorkspaceDropdown } from '../shared/WorkspaceDropdown';
-import { shouldShowHomeWorkspacePicker, useHomeScope } from './homeScope';
+import {
+  getHomeScope,
+  shouldShowHomeWorkspacePicker,
+  useHomeScope,
+} from './homeScope';
+import {
+  homeSendTargetSessionKey,
+  waitForHomeDefaultChats,
+} from './homeSendTarget';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
+import { useCanopyOrgProjectsEnabled } from '@/hooks/useCanopyOrgProjectsEnabled';
 import { useHomeLinkProjectPreview } from './homeLinkProjectPreview';
 
 /**
@@ -46,7 +55,10 @@ export function HomeWorkspacePicker({
 }: HomeWorkspacePickerProps): JSX.Element | null {
   const allProjects = useProjectsStore((s) => s.projects);
   const scope = useHomeScope();
-  const { projects, defaultCoworkId, onlyDefaultChats } = scope;
+  const contextHydrated = useWorkspaceContextStore((state) => state.hydrated);
+  const orgProjectsEnabled = useCanopyOrgProjectsEnabled();
+  const contextReady = !orgProjectsEnabled || contextHydrated;
+  const { projects, defaultCoworkId } = scope;
   const { workspaceId, mode, selectWorkspace } = useHomeComposerStore(
     useShallow((s) => ({
       workspaceId: s.workspaceId,
@@ -69,17 +81,28 @@ export function HomeWorkspacePicker({
     [allProjects],
   );
 
-  // Shared predicate, so this cannot disagree with the sidebar section about
-  // what counts as a name the user chose.
-  const defaultCoworkRenamed = useMemo(() => {
-    const entry = projects.find((project) => project.id === defaultCoworkId);
-    return entry !== undefined && !isDefaultCoworkWorkspaceName(entry.name);
-  }, [projects, defaultCoworkId]);
-
   const sortedWorkspaces = useMemo(
     () => [...projects].sort((a, b) => a.order - b.order),
     [projects],
   );
+
+  // CAN-7038: "Chat without a project" picks the context's Chats. Personal's
+  // is set up first when missing, and only a registered one is selected, so
+  // the choice never lands on an id that would dispatch as a code project.
+  // An organization's uses its existing ensure-and-reload path. A late
+  // result is dropped once the context or the selection has moved on.
+  const [noProjectPending, setNoProjectPending] = useState(false);
+  const noProjectRequest = useRef(0);
+  const noProjectInProgress = useRef(false);
+  const session = homeSendTargetSessionKey();
+  useEffect(() => {
+    noProjectInProgress.current = false;
+    setNoProjectPending(false);
+    return (): void => {
+      noProjectRequest.current += 1;
+      noProjectInProgress.current = false;
+    };
+  }, [session]);
 
   // ⌥W opens the picker (ECW-7984 follow-up). The standalone and embedded
   // Home surfaces can coexist, so only the standalone page subscribes.
@@ -113,6 +136,77 @@ export function HomeWorkspacePicker({
     return null;
   }
 
+  function selectHomeWorkspace(id: string): void {
+    const current = useHomeComposerStore.getState();
+    const target = current.linkTarget;
+    if (
+      current.workspaceId === id &&
+      (target.status === 'idle' || target.status === 'inactive')
+    )
+      return;
+    if (
+      target.status !== 'idle' &&
+      target.status !== 'inactive' &&
+      current.workspaceId !== id &&
+      current.fileReferences.some(
+        (reference) =>
+          reference.kind === undefined ||
+          reference.kind === 'file' ||
+          reference.kind === 'folder' ||
+          reference.kind === 'prompt',
+      )
+    ) {
+      current.setSendError(
+        current.fileReferences.some((reference) => reference.kind === 'prompt')
+          ? 'Remove the saved prompt mentions before switching projects, or dismiss the link.'
+          : 'Remove the file mentions before switching projects, or dismiss the link.',
+      );
+      return;
+    }
+    selectWorkspace(id, {
+      explicit: true,
+      ...(target.status !== 'idle' && target.status !== 'inactive'
+        ? { preserveDraft: true }
+        : {}),
+    });
+  }
+
+  function chooseNoProject(): void {
+    if (noProjectInProgress.current || !contextReady) return;
+    const chatsId = defaultCoworkId;
+    noProjectInProgress.current = true;
+    const request = ++noProjectRequest.current;
+    const selectionAtStart =
+      useHomeComposerStore.getState().workspaceSelectionGeneration;
+    setNoProjectPending(true);
+    void waitForHomeDefaultChats(chatsId).then((outcome) => {
+      if (request !== noProjectRequest.current) return;
+      noProjectInProgress.current = false;
+      setNoProjectPending(false);
+      if (
+        homeSendTargetSessionKey() !== session ||
+        getHomeScope().defaultCoworkId !== chatsId ||
+        useHomeComposerStore.getState().workspaceSelectionGeneration !==
+          selectionAtStart
+      ) {
+        return;
+      }
+      if (outcome.status === 'ready') {
+        selectHomeWorkspace(chatsId);
+        return;
+      }
+      // The draft and the current selection stay as they were.
+      useHomeComposerStore
+        .getState()
+        .setSendError('Couldn’t set up Chats. Try again.');
+    });
+  }
+
+  // Offered while no code project is chosen: nothing selected, or the
+  // context's Chats. With a project chosen, its clear control does the same.
+  const noProjectOffered =
+    workspaceId === null || workspaceId === defaultCoworkId;
+
   return (
     <div data-testid="home-workspace-picker">
       <WorkspaceDropdown
@@ -121,26 +215,11 @@ export function HomeWorkspacePicker({
         // sidebar lists them; picking one starts a cloud chat (CAN-6757).
         cloudWorkspaces={scope.cloudProjects}
         unlistedWorkspaceIds={unlistedWorkspaceIds}
-        // The draft still points at the default cowork project — it is an
-        // ordinary project with a fixed id, and nothing internal changes. The
-        // trigger just declines to name it, because presenting the catch-all
-        // as a chosen project is what made people think their chat had been
-        // filed somewhere they could not find it.
-        //
-        // Unless the user renamed it: a name they chose is a deliberate
-        // signal, and withholding it puts this trigger back out of step with
-        // the sidebar section, which does render the stored name.
-        //
-        // With no project in scope the catch-all is the only destination, so
-        // the chip names it rather than reading as an empty picker.
+        // The default stays named Chats even beside discovered projects.
         selectedWorkspaceId={
           linkPreview?.kind === 'existing-project'
             ? linkPreview.workspaceId
-            : linkPreview?.kind === 'create-project' ||
-                workspaceId === null ||
-                (workspaceId === defaultCoworkId &&
-                  !defaultCoworkRenamed &&
-                  !onlyDefaultChats)
+            : linkPreview?.kind === 'create-project' || workspaceId === null
               ? ''
               : workspaceId
         }
@@ -151,44 +230,24 @@ export function HomeWorkspacePicker({
             : undefined
         }
         placeholder="Choose project"
-        onSelect={(id): void => {
-          const current = useHomeComposerStore.getState();
-          const target = current.linkTarget;
-          if (
-            target.status !== 'idle' &&
-            target.status !== 'inactive' &&
-            current.workspaceId !== id &&
-            current.fileReferences.some(
-              (reference) =>
-                reference.kind === undefined ||
-                reference.kind === 'file' ||
-                reference.kind === 'folder' ||
-                reference.kind === 'prompt',
-            )
-          ) {
-            current.setSendError(
-              current.fileReferences.some(
-                (reference) => reference.kind === 'prompt',
-              )
-                ? 'Remove the saved prompt mentions before switching projects, or dismiss the link.'
-                : 'Remove the file mentions before switching projects, or dismiss the link.',
-            );
-            return;
-          }
-          selectWorkspace(id, {
-            explicit: true,
-            ...(target.status !== 'idle' && target.status !== 'inactive'
-              ? { preserveDraft: true }
-              : {}),
-          });
-        }}
+        onSelect={selectHomeWorkspace}
+        {...(noProjectOffered
+          ? {
+              noProjectOption: {
+                label: 'Chat without a project',
+                selected: workspaceId === defaultCoworkId && !linkPreview,
+                pending: noProjectPending || !contextReady,
+                onSelect: chooseNoProject,
+              },
+            }
+          : {})}
         onClear={
           // Clearing the project means "this is just a chat" — which is the
           // default cowork workspace, not an absent one. It stays a real
           // project with its fixed id; only the presentation differs.
           workspaceId === defaultCoworkId || linkPreview
             ? undefined
-            : (): void => selectWorkspace(defaultCoworkId, { explicit: true })
+            : chooseNoProject
         }
         onAddWorkspace={openAddWorkspaceModal}
         testIdPrefix="home-workspace"

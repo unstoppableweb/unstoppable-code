@@ -87,6 +87,7 @@ import {
   type SettingsOperationRequest,
   type SettingsSignedUpload,
 } from './operation-definition';
+import { accountReviewApprovalOperations } from './github-review-approvals';
 import {
   accountLabsResponseSchema,
   labsExperimentChoiceRequestSchema,
@@ -790,6 +791,8 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
   /* Integrations tab: GitHub for cloud work                                  */
   /* ------------------------------------------------------------------------ */
 
+  /** Code review approval policy (shared with the other scope). */
+  ...accountReviewApprovalOperations(),
   'account.github.connection.read': defineSettingsRead({
     transport: 'backend',
     input: settingsEmptyInputSchema,

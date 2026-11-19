@@ -237,7 +237,6 @@ class RelayFailure extends Error {
 const NEVER: CanopyRetryDirective = { kind: 'never' };
 /** Proposal only; the core's replies set the actual renewal timing. */
 const LEASE_RENEWAL_MS = 30_000;
-const UNSUBSCRIBE = 'core.events.unsubscribe';
 const failure = (
   kind: CanopyErrorKind,
   message: string,
@@ -351,8 +350,6 @@ class RelaySession {
   lease: CanopyClientLease<CanopyClient> | null = null;
   calls = 0;
   openingStreams = 0;
-  /** The client sends `core.events.unsubscribe` when a stream is released. */
-  unsubscribes = false;
   readonly streams = new Map<string, RelayStream>();
 
   constructor(
@@ -385,10 +382,7 @@ class RelaySession {
   /** Forgets a stream whose end was delivered; the hook, when present, also frees a locally ended one. */
   endStream(id: string, stream: RelayStream): void {
     if (this.streams.get(id) === stream) this.streams.delete(id);
-    this.connection?.releaseStream?.(
-      stream.handle.openResult.subscriptionId,
-      'ended',
-    );
+    this.connection?.releaseStream?.(stream.handle.openResult.subscriptionId);
     stream.handle.close();
   }
 
@@ -402,10 +396,7 @@ class RelaySession {
     const { connection } = this;
     if (!this.closed && connection?.releaseStream) {
       try {
-        connection.releaseStream(
-          handle.openResult.subscriptionId,
-          this.unsubscribes ? 'unsubscribed' : 'cancelled',
-        );
+        connection.releaseStream(handle.openResult.subscriptionId);
       } catch {
         this.close();
       }
@@ -578,10 +569,6 @@ export function createRendererRelay(
       definitions: clientDefinitions(session.surface),
       signal,
     });
-    // The shared client's own rule: its definitions and the manifest list it.
-    session.unsubscribes =
-      hasOwn(clientDefinitions(session.surface).instructions, UNSUBSCRIBE) &&
-      client.manifest.has('operations', UNSUBSCRIBE);
     client.signal.addEventListener('abort', close, { once: true });
     signal.addEventListener(
       'abort',

@@ -174,7 +174,7 @@ describe('desktop approvals through the core broker', () => {
     resetDesktopChatWaitsForTest();
     setDesktopChatWaitPresence({
       getMainWindow: () => mainWindow,
-      portalAttached: () => false,
+      remoteControllerAttached: () => false,
     });
   });
 

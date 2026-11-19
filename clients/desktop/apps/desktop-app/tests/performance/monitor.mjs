@@ -566,7 +566,13 @@ async function installRendererCollector(
         let timeoutId = 0;
         try {
           const result = await Promise.race([
-            window.api.loadPreferences().then(
+            // CAN-6935: a build with the E2E liveness ping times a round
+            // trip that does no app work; an older build falls back to a
+            // preferences read, which is real work.
+            (typeof window.api.e2eLivenessPing === 'function'
+              ? window.api.e2eLivenessPing()
+              : window.api.loadPreferences()
+            ).then(
               () => ({ ok: true }),
               (error) => ({ error: String(error) }),
             ),

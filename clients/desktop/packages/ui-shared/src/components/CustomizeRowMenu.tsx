@@ -67,6 +67,13 @@ export function marketplaceShareMenuItems(
 
 export interface CustomizeRowMenuProps {
   readonly entryName: string;
+  /**
+   * The id of the element showing the entry's name, for a name session
+   * replay must not record (a person's account label, often an email). The
+   * trigger's accessible name then reads that element instead of carrying
+   * `entryName` in its own attribute.
+   */
+  readonly entryNameId?: string;
   /** Section-qualified, so repeated entries keep unique identifiers. */
   readonly idPrefix: string;
   readonly items: readonly CustomizeRowMenuItem[];
@@ -76,6 +83,7 @@ export interface CustomizeRowMenuProps {
 /** A row's secondary actions. Renders nothing when no action exists. */
 export function CustomizeRowMenu({
   entryName,
+  entryNameId,
   idPrefix,
   items,
   testId,
@@ -100,7 +108,12 @@ export function CustomizeRowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        aria-label={`More actions for ${entryName}`}
+        aria-label={
+          entryNameId ? 'More actions for' : `More actions for ${entryName}`
+        }
+        aria-labelledby={
+          entryNameId ? `${idPrefix}-menu-trigger ${entryNameId}` : undefined
+        }
         onPointerDown={(event) => {
           if (
             !open &&

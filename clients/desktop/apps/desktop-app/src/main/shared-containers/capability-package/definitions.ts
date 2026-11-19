@@ -46,6 +46,7 @@ import {
 } from '@canopy/protocol/hook-triggers';
 import {
   encodeSharedContainerDefinitionDocument,
+  parseSharedContainerDefinitionDocument,
   validateSharedContainerDefinitionDocument,
   type SharedContainerAutomationDefinitionUses,
   type SharedContainerDefinitionDocument,
@@ -70,6 +71,9 @@ import {
   type BuildSharedAutomationDocumentOptions,
 } from '@canopy/desktop-shared/lib/automation-sharing';
 import { sharedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
+import { extractInvocationTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
+import { convertibleChatAutomation } from '@canopy/desktop-shared/lib/chat-automation-conversion';
+import { convertSharedChatAutomation } from '@canopy/desktop-shared/lib/shared-chat-automation-conversion';
 import { readCodexSpeedRecord } from '@canopy/execution-engine/lib/codex-speed';
 import type {
   ChatTabPluginSelections,
@@ -443,6 +447,11 @@ export interface PipelineDefinitionSource {
   pipelineFileDir?: string;
   /** Checkout used to resolve project actions and child pipelines. */
   repoPath?: string;
+  /**
+   * Identity of a pipeline no store holds, such as the workflow a chat
+   * automation is published as (CAN-6455); by default its stored identity.
+   */
+  identity?: string;
 }
 
 function pipelineAgentIds(pipeline: Pipeline): string[] {
@@ -596,7 +605,9 @@ export async function buildPipelineDefinitionResource(
     resource: draft({
       kind: 'pipeline_definition',
       displayName: source.pipeline.name,
-      identity: pipelineDefinitionIdentity(pipelineSource, source.pipeline.id),
+      identity:
+        source.identity ??
+        pipelineDefinitionIdentity(pipelineSource, source.pipeline.id),
       document: finalized.bytes,
       promptTexts: mergePromptTexts(
         [...sources.promptSources, ...portable.promptSources].map((text) => ({
@@ -645,6 +656,13 @@ export interface AutomationDefinitionSource {
   /** Curated catalog key for a curated pipeline action. */
   curatedPipelineKey?: string;
   origin?: SharedContainerDefinitionOrigin;
+  /**
+   * Whether the container publishes automations in workflow form
+   * (`canopy-desktop-shared-automations-workflow-form`, CAN-6455). A Cowork
+   * container then also carries a workflow with a `global` target: a
+   * converted chat automation.
+   */
+  workflowForm?: boolean;
 }
 
 const CODE_CONTAINER_ACTIONS = new Set([
@@ -676,7 +694,11 @@ export async function buildAutomationDefinitionResource(
     source.containerType === 'code'
       ? CODE_CONTAINER_ACTIONS
       : COWORK_CONTAINER_ACTIONS;
-  if (!supported.has(action.type))
+  const globalWorkflow =
+    source.workflowForm === true &&
+    action.type === 'worktree_pipeline' &&
+    action.target?.kind === 'global';
+  if (!supported.has(action.type) && !globalWorkflow)
     return { resource: undefined, reason: 'not_container_targeted' };
 
   const options: BuildSharedAutomationDocumentOptions = {
@@ -825,6 +847,134 @@ export async function buildAutomationDefinitionResource(
       capabilityInventoryEntryIdsByKey: {},
     }),
     notices: sortedUnique([...built.notices, ...selected.warnings]),
+  };
+}
+
+/**
+ * Identity of the workflow a chat automation is published as (CAN-6455).
+ * No store holds it, so it is never resolved as a stored user pipeline.
+ */
+export function workflowFormPipelineIdentity(activityId: string): string {
+  return `pipeline:automation:${activityId}`;
+}
+
+export interface WorkflowFormAutomationDefinitionResources {
+  /** The automation, running {@link pipeline} with a `global` target. */
+  automation: SharedContainerDefinitionResourceDraft;
+  /** The workflow the chat automation converts to. */
+  pipeline: SharedContainerDefinitionResourceDraft;
+  notices: string[];
+}
+
+/**
+ * A chat automation in workflow form, as a container publishes it with the
+ * workflow-form flag on (CAN-6455): its workflow as its own
+ * `pipeline_definition`, and an `automation_definition` that runs it with a
+ * `global` target, names it in `uses.pipeline` and carries its input names.
+ *
+ * It converts `chat`, the chat-form definition the container would publish,
+ * the way a shared chat automation converts (`convertSharedChatAutomation`),
+ * so the workflow carries nothing the chat form leaves behind. In a code
+ * container the workflow sends into an existing worktree, as the chat form's
+ * fork does: the fork binds its `task_id` to its own worktree.
+ *
+ * Null keeps the chat form: an action other than the container's own new
+ * chat (a session send among them), an Agent route (the Agent travels as
+ * `uses.agent` only on a chat), an installed capability package, a chat the
+ * desktop keeps native, or one whose document the converter refuses. The
+ * chat-form capabilities stay with the automation, so the package still
+ * carries everything the chat form needed.
+ *
+ * A chat that carries packaged skills or plugins (selected, or invoked by
+ * its prompt) keeps the chat form too: a fork applies an automation's
+ * packaged skills only to a chat action, so its workflow would run without
+ * them.
+ */
+export async function buildWorkflowFormAutomationDefinitionResources(
+  source: AutomationDefinitionSource,
+  chat: SharedContainerDefinitionBuildResult,
+  deps: SharedContainerDefinitionBuilderDependencies = defaultDependencies,
+): Promise<WorkflowFormAutomationDefinitionResources | null> {
+  if (!chat.resource) return null;
+  if (
+    chat.resource.requestKeys.length > 0 ||
+    chat.resource.portableResources.length > 0
+  )
+    return null;
+  const activity = sharedAutomationActivity(source.activity);
+  const { action } = activity;
+  const containerChat =
+    source.containerType === 'code' ? 'worktree_prompt' : 'standalone_prompt';
+  if (action.type !== containerChat) return null;
+  if (action.model?.startsWith(AGENT_MODEL_PREFIX) === true) return null;
+  if (activity.installedFrom?.capabilityPackage !== undefined) return null;
+  if (!convertibleChatAutomation(activity).convertible) return null;
+  if (extractInvocationTokens(action.prompt).length > 0) return null;
+  const parsed = parseSharedContainerDefinitionDocument(chat.resource.document);
+  if (
+    !parsed.ok ||
+    parsed.value.kind !== 'automation_definition' ||
+    parsed.value.uses !== undefined
+  )
+    return null;
+  const converted = await convertSharedChatAutomation(parsed.value.automation, {
+    existingTask: source.containerType === 'code',
+  });
+  if (converted.status !== 'converted') return null;
+  const workflow = converted.document;
+  const workflowAction = workflow.action;
+  if (
+    workflowAction.type !== 'worktree_pipeline' ||
+    workflowAction.target.kind !== 'global' ||
+    workflowAction.pipeline.source !== 'inline'
+  )
+    return null;
+  const name = workflowAction.pipeline.name ?? activity.name;
+  const pipelineIdentity = workflowFormPipelineIdentity(activity.id);
+  const pipeline = await buildPipelineDefinitionResource(
+    {
+      pipeline: { id: activity.id, source: 'user', name },
+      rawYaml: workflowAction.pipeline.rawPipeline,
+      ...(source.origin ? { origin: source.origin } : {}),
+      identity: pipelineIdentity,
+    },
+    deps,
+  );
+  if (!pipeline.resource) return null;
+  const uses: SharedContainerAutomationDefinitionUses = {
+    pipeline: pipeline.resource.resourceId,
+  };
+  const provenance = provenanceFor(source.origin);
+  const finalized = finalizeDocument({
+    version: 1,
+    kind: 'automation_definition',
+    references: [pipeline.resource.resourceId],
+    ...(provenance ? { provenance } : {}),
+    automation: {
+      ...workflow,
+      action: { ...workflowAction, pipeline: { source: 'unresolved', name } },
+    },
+    target: { kind: 'source-container' },
+    uses,
+  });
+  if (!finalized.ok) return null;
+  const chatDraft = chat.resource;
+  return {
+    automation: draft({
+      kind: chatDraft.kind,
+      displayName: chatDraft.displayName,
+      identity: chatDraft.identity,
+      document: finalized.bytes,
+      promptTexts: chatDraft.promptTexts,
+      requestKeys: chatDraft.requestKeys,
+      dependsOnIdentities: [pipelineIdentity],
+      environmentRequirements: chatDraft.environmentRequirements,
+      portableResources: chatDraft.portableResources,
+      capabilityInventoryEntryIdsByKey:
+        chatDraft.capabilityInventoryEntryIdsByKey,
+    }),
+    pipeline: pipeline.resource,
+    notices: chat.notices,
   };
 }
 

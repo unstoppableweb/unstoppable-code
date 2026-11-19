@@ -10,6 +10,12 @@ import type {
   PipelineHostRequest,
   PipelineHostRequestMessage,
 } from '@canopy/core-runtime/node/pipeline/host';
+import {
+  pausedPipelineSurvivalAssessment,
+  pipelineHostErrorFacts,
+  unadmittedPipelineSetupFailure,
+} from '@canopy/core-runtime/node/pipeline/host';
+import { WorkerPipelineSurvivalAssessmentSchema } from '@canopy/protocol/canopy-core';
 import type {
   WorkerPipelineHostRequest,
   WorkerPipelineLaunchEvent,
@@ -45,6 +51,7 @@ import {
 import {
   cancelPipelineExecution,
   executePipeline,
+  PipelineExecutionNotFoundError,
   rerunPipelineExecution,
   resumePipeline,
   retryPipelineExecution,
@@ -67,6 +74,7 @@ import {
   type PipelineOwnerInspector,
 } from '@canopy/execution-engine/node/pipelines/executor/owner-fence';
 import type {
+  ChildPipelineAdmission,
   ChildPipelineAdmissionRequest,
   DelegatedChildPipelineRequest,
   ExecutionHandle,
@@ -99,6 +107,7 @@ import {
   createDaemonPipelinePlanPorts,
   createDaemonPrecommitReporter,
 } from './owner-ports';
+import { PipelineLedgerOwnerLifetime } from './ledger-owner-lifetime';
 import { createDaemonPipelineRuntime } from './runtime';
 import { codexServablePluginCollections } from './codex-plugin-mcp';
 import {
@@ -405,6 +414,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
   let hostSteps: DaemonHostStepPort | null = null;
   /** Owner requests of model steps (CAN-5095). */
   let ownerRequests: PipelineOwnerClientHost | null = null;
+  const ledgerOwner = new PipelineLedgerOwnerLifetime();
   /** A remote owner's lease TTL, the least a short owner request waits (CP-11). */
   let ownerRequestDeadlineMs: number | undefined;
   let codexMcpLauncher: PipelineHostLauncherCommand | null = null;
@@ -436,12 +446,32 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       execution: projectPipelineExecution(state),
     });
   };
-  const fail = (id: number, code: PipelineHostErrorCode): void => {
+  /**
+   * Refuses a request. Only the cause's allowlisted name and errno leave the
+   * host, never its message (CAN-7113).
+   */
+  const fail = (
+    id: number,
+    code: PipelineHostErrorCode,
+    cause?: unknown,
+  ): void => {
+    // Each field is read once, so the allowlist checks the value sent.
+    const facts =
+      cause instanceof Error
+        ? pipelineHostErrorFacts({
+            errorName: cause.name,
+            errno: Reflect.get(cause, 'code'),
+          })
+        : undefined;
     post({
       kind: 'response',
       id,
       ok: false,
-      error: { code, message: 'The pipeline host refused the request.' },
+      error: {
+        code,
+        message: 'The pipeline host refused the request.',
+        ...facts,
+      },
     });
   };
 
@@ -595,7 +625,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     // which records them; each is checked as it starts (CAN-6868).
     const runsChildren = isOwnerBound && remoteOwner;
     let childAdmission:
-      | ((request: ChildPipelineAdmissionRequest) => Promise<void>)
+      | ((
+          request: ChildPipelineAdmissionRequest,
+        ) => Promise<ChildPipelineAdmission>)
       | null = null;
     const launcher = codexMcpLauncher;
     const configuredRoot = dataRoot ?? path.dirname(dir);
@@ -619,6 +651,14 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         : undefined;
     if (pluginCollections === null) return fail(id, 'start_failed');
     const runtime = createDaemonPipelineRuntime({
+      ...(!remoteOwner &&
+        hostLaunch.survivalAssessment?.disposition === 'continues' && {
+          nativeModelPlan: Object.freeze(
+            hostLaunch.survivalAssessment.routes.map((route) =>
+              Object.freeze({ ...route }),
+            ),
+          ),
+        }),
       executionsDir: dir,
       bundledActionsDir: launch.bundledActionsDir,
       processEnvironment,
@@ -672,11 +712,11 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       ...(runsChildren && {
         admitChildPipeline: async (
           request: ChildPipelineAdmissionRequest,
-        ): Promise<void> => {
+        ): Promise<ChildPipelineAdmission> => {
           // Set once the launch is classified, before anything runs.
           if (childAdmission === null)
             throw new Error(CHILD_REFUSED_MESSAGE(request.pipelineId));
-          await childAdmission(request);
+          return childAdmission(request);
         },
       }),
       ...(worktree && { worktree }),
@@ -736,6 +776,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
             // with a lease fence or an owner deadline: its Feed tools run
             // here, over owner.ledger.operation.
             ...(remoteOwner && { remoteLedgerTools: true }),
+            ...(!remoteOwner && { ledgerOwner }),
             ...(launch.codexEnvironment && {
               codexEnvironment: launch.codexEnvironment,
             }),
@@ -753,10 +794,11 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     let pipeline: Pipeline;
     try {
       pipeline = parsePipelineText(JSON.stringify(launch.pipeline));
-    } catch {
-      return fail(id, 'start_failed');
+    } catch (error) {
+      return fail(id, 'start_failed', error);
     }
-    // Model steps resolve against their core's model registry; a later launch's wins.
+    // Model steps resolve against their core's model registry; a later launch's
+    // wins. Its supervisor revokes survival of runs admitted under another.
     if (
       isOwnerBound &&
       launch.modelCatalog &&
@@ -781,6 +823,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       // (CAN-6857), so a cloud runner takes `attachments`.
       hostAttachments: isOwnerBound && remoteOwner ? 'copy' : 'refuse',
       childPipelines: runsChildren ? 'host' : 'refuse',
+      // Cloud model preflight checked a matrix axis model's values, and the
+      // owner admits each model as its step asks for a route (CAN-7018).
+      matrixModels: runsChildren ? 'owner' : 'refuse',
       // Its owner runs a child on another target in a sandbox of its own
       // (CAN-6868 part 3).
       delegatedChildren: runsChildren && hostSteps ? 'owner' : 'refuse',
@@ -877,6 +922,40 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     const childIds = new Set<string>();
     let handle: ExecutionHandle | null = null;
     const executionOptions: ExecutionOptions = {
+      // Shell-only runs have no app-owned model or host-action dependency to
+      // assess. Preserve their existing records on every composition.
+      ...(!remoteOwner &&
+        isOwnerBound &&
+        (classification.modelSteps > 0 ||
+          (classification.hostSteps ?? 0) > 0) && {
+          survivalAssessment: hostLaunch.survivalAssessment
+            ? WorkerPipelineSurvivalAssessmentSchema.parse(
+                hostLaunch.survivalAssessment,
+              )
+            : pausedPipelineSurvivalAssessment({
+                identity: {
+                  executionId: params.executionId,
+                  owner: params.owner,
+                  runScope: params.runScope,
+                  workspaceId: params.workspaceId,
+                  worktreeId: params.worktreeId,
+                },
+                evidence: launch.nativeRouteEvidence,
+                setupFailure: unadmittedPipelineSetupFailure(launch),
+                blockers: [
+                  ...(launch.nativeRouteBlockers ?? []),
+                  ...((classification.hostSteps ?? 0) > 0
+                    ? ['host-step' as const]
+                    : []),
+                  ...(classification.modelHarnesses.includes('claude') ||
+                  launch.modelAliasResolutions !== undefined ||
+                  launch.pluginCollectionSnapshots !== undefined
+                    ? ['setup-lease' as const]
+                    : []),
+                  'configuration-unverified',
+                ],
+              }),
+        }),
       cwd: launch.cwd,
       pipelineId: params.pipelineId,
       scope: params.runScope,
@@ -990,13 +1069,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       handle = await run.begin(executed, executionOptions);
     } catch (error) {
       warn('The pipeline host could not start a workflow run.');
-      return fail(
-        id,
-        error instanceof Error &&
-          error.message === `Execution "${executionId}" not found`
-          ? 'not_found'
-          : run.refused,
-      );
+      return error instanceof PipelineExecutionNotFoundError
+        ? fail(id, 'not_found')
+        : fail(id, run.refused, error);
     }
     const started = handle;
     // The executor rejects completion only on its own failure; observe it so
@@ -1106,12 +1181,9 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       if (!live) publish(executionId, cancelled);
       return respond(id, projectPipelineExecution(cancelled));
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === `Execution "${executionId}" not found`
-      )
+      if (error instanceof PipelineExecutionNotFoundError)
         return fail(id, 'not_found');
-      return fail(id, 'cancel_failed');
+      return fail(id, 'cancel_failed', error);
     }
   };
 
@@ -1138,8 +1210,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     await shutdownDaemonPipelineCodexRuntime().catch(() =>
       warn('The pipeline host could not stop its Codex runtime.'),
     );
-    if (settled.some((result) => result.status === 'rejected'))
-      return fail(id, 'checkpoint_failed');
+    const rejected = settled.find((result) => result.status === 'rejected');
+    if (rejected) return fail(id, 'checkpoint_failed', rejected.reason);
     respond(id, { checkpointedCount: live.length });
   };
 
@@ -1166,6 +1238,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
    * host exits. A resume reruns the interrupted step.
    */
   const coreLost = async (): Promise<void> => {
+    ledgerOwner.setAvailable(false);
     coreLossStarted = true;
     const deadline = setTimeout(() => {
       killProcessGroups();
@@ -1224,8 +1297,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     });
     for (const run of live) run.ownerRequests?.abort();
     const settled = await Promise.allSettled(pausing);
-    if (settled.some((result) => result.status === 'rejected'))
-      return fail(id, 'checkpoint_failed');
+    const rejected = settled.find((result) => result.status === 'rejected');
+    if (rejected) return fail(id, 'checkpoint_failed', rejected.reason);
     respond(id, { pausedCount: live.length });
   };
 
@@ -1257,8 +1330,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     if (!paused) return fail(id, 'checkpoint_failed');
     try {
       return respond(id, projectPipelineExecution(await paused));
-    } catch {
-      return fail(id, 'checkpoint_failed');
+    } catch (error) {
+      return fail(id, 'checkpoint_failed', error);
     }
   };
 
@@ -1336,8 +1409,8 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         // none, as for a stored run.
         { secretEnv: { ...secretEnv } },
       );
-    } catch {
-      return fail(id, 'control_failed');
+    } catch (error) {
+      return fail(id, 'control_failed', error);
     }
     // The run as it is now, so an end posted before this answer shows in it.
     respond(id, controlStarted(live.getState()));
@@ -1486,6 +1559,7 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
     request: PipelineHostRequest,
   ): Promise<void> => {
     if (request.op === 'configure') {
+      ledgerOwner.setAvailable(request.ledgerOwnerAvailable ?? true);
       // The host never overrides its data root: it refuses another one.
       if (!(await isOwnDataRoot(request.dataRoot))) return fail(id, 'closed');
       executionsDir = path.join(request.dataRoot, 'pipeline-executions');
@@ -1597,6 +1671,12 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
       }
       case 'pause':
         return pause(id, request.executionIds, request.reason);
+      case 'invalidateSurvival': {
+        const live = runs.get(request.executionId)?.handle;
+        if (!live?.invalidateSurvival) return fail(id, 'not_found');
+        await live.invalidateSurvival(request.blocker);
+        return respond(id, null);
+      }
       case 'checkpointRun':
         return checkpointRun(id, dir, request.executionId, request.drainMs);
       case 'lease':
@@ -1608,6 +1688,11 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         ownerRequestDeadlineMs = positiveDeadline(
           request.ownerRequestDeadlineMs,
         );
+        return respond(id, null);
+      case 'ledgerOwnerAvailability':
+        if (leaseFence !== null || ownerRequestDeadlineMs !== undefined)
+          return fail(id, 'closed');
+        ledgerOwner.setAvailable(request.available);
         return respond(id, null);
       case 'exit':
         admissionOpen = false;

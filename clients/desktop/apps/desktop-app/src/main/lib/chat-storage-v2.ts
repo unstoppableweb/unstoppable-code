@@ -44,6 +44,8 @@ import {
   type DeltaJournalStorageManifest,
   type Format4CheckpointedManifest,
   type Format4StorageManifest,
+  type ChatStorageV2Manifest as StorageManifest,
+  isChatStorageV2Manifest as isStorageManifest,
   journalFileFor,
   parseChatStorageManifest,
   selectJournal,
@@ -262,28 +264,6 @@ function summarizeIndexes(indexes: {
       ...indexes.archive.archived.map((entry) => entry.tab.id),
     ]),
   };
-}
-
-interface StorageManifest {
-  version: 2;
-  scopeId: string;
-  migrationId: string;
-  sourceRevision: number;
-  sourceDigest: string;
-  cleanupComplete: boolean;
-}
-
-function isStorageManifest(value: unknown): value is StorageManifest {
-  return (
-    isRecord(value) &&
-    value.version === 2 &&
-    typeof value.scopeId === 'string' &&
-    typeof value.migrationId === 'string' &&
-    Number.isSafeInteger(value.sourceRevision) &&
-    typeof value.sourceDigest === 'string' &&
-    /^[a-f0-9]{64}$/.test(value.sourceDigest) &&
-    typeof value.cleanupComplete === 'boolean'
-  );
 }
 
 export interface ChatMigrationEntry {

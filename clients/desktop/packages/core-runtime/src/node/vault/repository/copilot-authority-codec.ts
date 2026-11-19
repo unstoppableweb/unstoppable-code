@@ -47,7 +47,7 @@ export interface CopilotRetirementControl {
     | 'completed';
 }
 export interface CopilotAuthorityBundle {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly vaultId: string;
   readonly authority: CopilotAuthorityRecord;
   readonly migrationEpoch: number;
@@ -102,9 +102,10 @@ export function copilotAuthorityBundle(
     'binding',
     'controls',
   ]);
-  if (input.version !== 1 || input.vaultId !== vaultId)
+  if ((input.version !== 1 && input.version !== 2) || input.vaultId !== vaultId)
     return corruptCopilotAuthority();
   const authority = CopilotAuthorityRecordSchema.parse(input.authority);
+  if (input.version !== authority.version) return corruptCopilotAuthority();
   // P4 validates DTO shape; this persistence boundary additionally rejects lossy text and foreign pins.
   function validateTree(value: unknown): void {
     if (typeof value === 'string' && !isWellFormedText(value))
@@ -118,6 +119,7 @@ export function copilotAuthorityBundle(
     authority.head?.pin,
     authority.mutation?.from,
     authority.mutation?.committed,
+    authority.setupLineage?.predecessor.pin,
   ])
     if (value) pin(value, vaultId);
   const migrationEpoch = uint(input.migrationEpoch);
@@ -262,7 +264,14 @@ export function copilotAuthorityBundle(
   });
   if (new Set(controls.map((c) => c.operationId)).size !== controls.length)
     return corruptCopilotAuthority();
-  return { version: 1, vaultId, authority, migrationEpoch, binding, controls };
+  return {
+    version: input.version,
+    vaultId,
+    authority,
+    migrationEpoch,
+    binding,
+    controls,
+  };
 }
 /** Sorted object keys, exact validated DTOs and well-formed text make the JSON injective. */
 export function canonicalCopilotJson(value: unknown): string {
@@ -279,10 +288,10 @@ export function canonicalCopilotJson(value: unknown): string {
   if (encoded === undefined) return corruptCopilotAuthority();
   return encoded;
 }
-function mac(keys: VaultSubkeys, payload: string): Buffer {
+function mac(keys: VaultSubkeys, payload: string, version: 1 | 2): Buffer {
   return withVaultSubkey(keys, 'receipt', (key) =>
     createHmac('sha256', key)
-      .update('canopy/vault/copilot-authority/v1\0')
+      .update(`canopy/vault/copilot-authority/v${version}\0`)
       .update(payload, 'utf8')
       .digest(),
   );
@@ -297,7 +306,7 @@ export function encodeCopilotAuthority(
   );
   const encoded = JSON.stringify({
     payload,
-    mac: mac(keys, payload).toString('hex'),
+    mac: mac(keys, payload, value.version).toString('hex'),
   });
   if (Buffer.byteLength(encoded) > MAX_BYTES) return corruptCopilotAuthority();
   return encoded;
@@ -309,12 +318,23 @@ export function decodeCopilotAuthority(
   try {
     if (Buffer.byteLength(stored) > MAX_BYTES) return corruptCopilotAuthority();
     const envelope = row(JSON.parse(stored), ['payload', 'mac']);
+    const payload: unknown =
+      typeof envelope.payload === 'string'
+        ? JSON.parse(envelope.payload)
+        : undefined;
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      !('version' in payload) ||
+      (payload.version !== 1 && payload.version !== 2)
+    )
+      return corruptCopilotAuthority();
     if (
       typeof envelope.payload !== 'string' ||
       typeof envelope.mac !== 'string' ||
       !/^[0-9a-f]{64}$/.test(envelope.mac) ||
       !timingSafeEqual(
-        mac(keys, envelope.payload),
+        mac(keys, envelope.payload, payload.version),
         Buffer.from(envelope.mac, 'hex'),
       )
     )
@@ -324,10 +344,7 @@ export function decodeCopilotAuthority(
       JSON.stringify({ payload: envelope.payload, mac: envelope.mac })
     )
       return corruptCopilotAuthority();
-    const parsed = copilotAuthorityBundle(
-      JSON.parse(envelope.payload),
-      keys.vaultId,
-    );
+    const parsed = copilotAuthorityBundle(payload, keys.vaultId);
     if (canonicalCopilotJson(parsed) !== envelope.payload)
       return corruptCopilotAuthority();
     return parsed;

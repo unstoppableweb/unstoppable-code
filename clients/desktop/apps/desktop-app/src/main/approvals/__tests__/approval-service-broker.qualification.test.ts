@@ -75,6 +75,11 @@ jest.mock('../../lib/main-process-logging', (): unknown => ({
   logMainProcessError: jest.fn(),
 }));
 
+import {
+  recordAccountMcpServerAccount,
+  forgetAccountMcpServerAccounts,
+} from '../../mcp/account-mcp-server-accounts';
+
 const mockRequestApprovalDecision = jest.mocked(requestApprovalDecision);
 const CHECK: ApprovalCheck = { kind: 'tool', toolName: 'NotebookEdit' };
 const DISPLAY = {
@@ -204,5 +209,56 @@ describe('approval session over the core broker', () => {
 
     release({ kind: 'revalidation_failed' });
     await expect(checked).resolves.toMatchObject({ decision: 'deny' });
+  });
+
+  it('names the account an MCP approval acts as, and still matches the raw server', async () => {
+    forgetAccountMcpServerAccounts();
+    recordAccountMcpServerAccount('appproxy-slack-globex--0123456789abcdef', {
+      connector: 'Slack',
+      account: 'globex',
+    });
+    const handle = openSession();
+    const mcp = (
+      server: string,
+    ): {
+      check: ApprovalCheck;
+      display: {
+        title: string;
+        details: { kind: 'mcp'; server: string; tool: string };
+        suggestedTarget: { kind: 'mcp'; server: string; tool: string };
+      };
+    } => ({
+      check: { kind: 'mcp', server, tool: 'send_message' },
+      display: {
+        title: 'Use Slack',
+        details: { kind: 'mcp', server, tool: 'send_message' },
+        suggestedTarget: { kind: 'mcp', server, tool: 'send_message' },
+      },
+    });
+    const several = mcp('appproxy-slack-globex--0123456789abcdef');
+    bridgeResolves({ kind: 'policy_denied' });
+    await handle.check(several.check, several.display);
+    expect(mockRequestApprovalDecision.mock.calls[0]?.[0].event).toMatchObject({
+      details: {
+        kind: 'mcp',
+        server: 'appproxy-slack-globex--0123456789abcdef',
+        tool: 'send_message',
+        connector: 'Slack',
+        account: 'globex',
+      },
+      // A remembered rule still names the raw server.
+      suggestedTarget: {
+        kind: 'mcp',
+        server: 'appproxy-slack-globex--0123456789abcdef',
+        tool: 'send_message',
+      },
+    });
+    // A server that is someone's only account reads as before.
+    const only = mcp('appproxy-linear--fedcba9876543210');
+    bridgeResolves({ kind: 'policy_denied' });
+    await handle.check(only.check, only.display);
+    expect(
+      mockRequestApprovalDecision.mock.calls[1]?.[0].event.details,
+    ).toEqual(only.display.details);
   });
 });

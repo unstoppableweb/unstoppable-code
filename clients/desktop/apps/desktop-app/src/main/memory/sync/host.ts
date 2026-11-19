@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import {
+  backgroundFailureCode,
+  reportBackgroundFailure,
+} from '../../observability/background-failure-reporter';
 import { hostname } from 'node:os';
 import { app, powerMonitor } from 'electron';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
@@ -30,7 +34,7 @@ import {
 } from '../../lib/main-process-logging';
 import { getMemoryReplicasRootDir } from '../../lib/paths';
 import { parseSseEvents } from '../../plans/plan-realtime-subscription';
-import { readPortalStateStore } from '../../portal/portal-state-store';
+import { getInstallId } from '../../lib/install-identity';
 import {
   broadcastLocalMemoryChanged,
   retargetLocalMemoryWatches,
@@ -104,7 +108,7 @@ function deviceLabel(): string {
 const sessionNonce = randomUUID();
 
 async function readDevice(): Promise<MemorySyncDevice> {
-  const deviceId = (await readPortalStateStore()).clientDeviceId.toLowerCase();
+  const deviceId = (await getInstallId()).toLowerCase();
   return {
     deviceId,
     installationGeneration: await readInstallationGeneration(deviceId),
@@ -319,6 +323,7 @@ function recordProblem(problem: MemorySyncProblem): void {
     code: problem.code,
   });
   emitMetric({ metric: 'replica_problem', kind: problem.kind });
+  reportBackgroundFailure(`memory-sync.${problem.kind}`, problem.code);
 }
 
 const USER_SCOPE: LocalMemoryScopeRequest = { scope: 'user' };
@@ -620,6 +625,10 @@ async function reconcileNow(): Promise<void> {
       logMainProcessWarn('Memory sync could not start', {
         error: error instanceof Error ? error.name : 'unknown',
       });
+      reportBackgroundFailure(
+        'memory-sync.start_failed',
+        backgroundFailureCode(error),
+      );
     });
   }
   notifyChange();

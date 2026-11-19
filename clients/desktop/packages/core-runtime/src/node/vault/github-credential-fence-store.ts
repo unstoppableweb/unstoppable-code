@@ -7,6 +7,10 @@ import type {
   GitHubCredentialFence,
   GitHubCredentialFenceStore,
 } from './github-credential-authority';
+import {
+  fenceReadFailureFromCode,
+  GitHubCredentialFenceReadError,
+} from './github-credential-authority';
 
 function decode(value: unknown): GitHubCredentialFence | null {
   if (
@@ -68,12 +72,16 @@ export function createGitHubCredentialFenceStore(options: {
         ? !stat.isFile() || stat.nlink !== 1
         : !stat.isDirectory())
     )
-      throw new Error('Invalid credential fence path.');
-    if (
-      (await files.permissions({ path, kind, mode: 'owner-only', action }))
-        .state !== 'private'
-    )
-      throw new Error('Credential fence is not private.');
+      throw new GitHubCredentialFenceReadError('privacy_check_failed');
+    try {
+      if (
+        (await files.permissions({ path, kind, mode: 'owner-only', action }))
+          .state !== 'private'
+      )
+        throw new GitHubCredentialFenceReadError('privacy_check_failed');
+    } catch {
+      throw new GitHubCredentialFenceReadError('privacy_check_failed');
+    }
   }
   return {
     async read() {
@@ -83,12 +91,28 @@ export function createGitHubCredentialFenceStore(options: {
         const file = await open(path, 'r');
         try {
           if ((await file.stat()).size > 16_384) return null;
-          return decode(JSON.parse(await file.readFile('utf8')));
+          const contents = await file.readFile('utf8');
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(contents);
+          } catch {
+            throw new GitHubCredentialFenceReadError('parse_failed');
+          }
+          return decode(parsed);
         } finally {
           await file.close();
         }
-      } catch {
-        return null;
+      } catch (error) {
+        if (error instanceof GitHubCredentialFenceReadError) throw error;
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? error.code
+            : undefined;
+        // Only a missing fence is unbound; other failures must not delete.
+        if (code === 'ENOENT') return null;
+        throw new GitHubCredentialFenceReadError(
+          fenceReadFailureFromCode(code),
+        );
       }
     },
     async write(fence) {

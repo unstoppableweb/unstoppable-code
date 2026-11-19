@@ -374,6 +374,9 @@ function MarketplaceSourceRow({
       {(error || warning) && (
         <Notice
           errorSource="marketplace-source-message"
+          errorRecordingDisabled={
+            error !== undefined && state.recordedErrors.has(error)
+          }
           intent={error ? 'destructive' : 'attention'}
           data-testid="marketplace-source-message"
         >

@@ -175,3 +175,74 @@ it('never turns a missing or unlisted pick into a choice', () => {
     { itemKey: 'work#1', modelId: HAIKU.modelId },
   ]);
 });
+
+// CAN-7018: a job's matrix model is one choice for the variants it reaches,
+// named by the job and the value, or by the job alone for a matrix built
+// while the run runs, which names no model yet.
+it('names the variants a matrix model choice reaches', () => {
+  const onConfirm = jest.fn();
+  render(
+    preflight([
+      item('tracks#matrix.model[1]', {
+        jobId: 'tracks',
+        stepIndex: 0,
+        reason: 'subscription_model',
+        model: '$sol',
+        matrix: { axis: 'model', value: '$sol' },
+      }),
+      item('tracks#matrix.model', {
+        jobId: 'tracks',
+        stepIndex: 0,
+        reason: 'run_time_model',
+        message: 'Choose the model these steps use in the cloud.',
+        model: '${{ matrix.model }}',
+        matrix: { axis: 'model' },
+      }),
+    ]),
+    onConfirm,
+  );
+  const [value, runTime] = byTestId(CLOUD_MODEL_DIALOG_TEST_IDS.item);
+  expect(value?.textContent).toContain('tracks, variants that use $sol');
+  expect(value?.textContent).toContain('Uses $sol.');
+  expect(runTime?.textContent).toContain('tracks, every variant');
+  expect(runTime?.textContent).not.toContain('${{');
+  choose(0, OPUS.modelId);
+  choose(1, HAIKU.modelId);
+  act(() => confirmButton().click());
+  expect(onConfirm).toHaveBeenCalledWith([
+    { itemKey: 'tracks#matrix.model[1]', modelId: OPUS.modelId },
+    { itemKey: 'tracks#matrix.model', modelId: HAIKU.modelId },
+  ]);
+});
+
+// CAN-7044: a child workflow's step names the workflows it runs in, so the
+// person can tell it from the run's own step of the same name.
+it('names the child workflows a step runs in', () => {
+  render(
+    preflight([
+      item('work#0', { stepName: 'Review' }),
+      item('work#2/review#0', {
+        jobId: 'review',
+        stepIndex: 0,
+        stepName: 'Review',
+        workflows: ['Code Review (Multi-Provider)'],
+      }),
+      item('work#2/tracks#matrix.model', {
+        jobId: 'tracks',
+        stepIndex: 0,
+        reason: 'run_time_model',
+        model: '${{ matrix.model }}',
+        matrix: { axis: 'model' },
+        workflows: ['Fixer', 'Code Review (Multi-Provider)'],
+      }),
+    ]),
+  );
+  const labels = byTestId(CLOUD_MODEL_DIALOG_TEST_IDS.item).map(
+    (element) => element.querySelector('label')?.textContent,
+  );
+  expect(labels).toEqual([
+    'Review',
+    'Code Review (Multi-Provider) › Review',
+    'Fixer › Code Review (Multi-Provider) › tracks, every variant',
+  ]);
+});

@@ -5,10 +5,12 @@ import {
   DetailActionBar,
   DetailActionSlotsProvider,
   DetailHeader,
+  DetailHeaderActionsProvider,
   DetailMoreItemsContributionProvider,
   DetailMoreItemsProvider,
   DetailMoreMenu,
   useDetailActionSlots,
+  useDetailHeaderActionsHost,
   useDetailMoreItemContributions,
   type DetailMoreMenuItem,
   Heading,
@@ -89,13 +91,34 @@ export function MarketplaceDetailPageShell({
   const hasActions = Boolean(
     headerActions || share || fallbackMore || slots.declared > 0,
   );
+  const shellBar = (
+    <DetailActionBar
+      more={fallbackMore}
+      secondary={headerActions}
+      share={share}
+      slots={slots}
+    />
+  );
+  // New Customize: a body's `CapabilityDetailLayout` draws this bar on its
+  // title row instead, so the Back row keeps only the breadcrumb.
+  const headerActionsHost = useDetailHeaderActionsHost(shellBar);
+  const barClaimed = headerActionsHost.claimed && !header;
+  // A claiming layout draws the page's one visible h1, so the shell keeps no
+  // heading of its own.
+  const ownsTitle = contentOwnsTitle || barClaimed;
   const body = (
     <DetailActionSlotsProvider slots={slots}>
       <DetailMoreItemsContributionProvider
         contribute={contributedMore.contribute}
       >
         <DetailMoreItemsProvider items={contributedMore.items}>
-          {children}
+          {header ? (
+            children
+          ) : (
+            <DetailHeaderActionsProvider host={headerActionsHost.host}>
+              {children}
+            </DetailHeaderActionsProvider>
+          )}
         </DetailMoreItemsProvider>
       </DetailMoreItemsContributionProvider>
     </DetailActionSlotsProvider>
@@ -156,10 +179,10 @@ export function MarketplaceDetailPageShell({
       className={sectionClassName}
       data-testid="plugins-entry-detail"
       aria-labelledby={
-        contentOwnsTitle ? 'plugin-detail-title' : 'plugins-entry-detail-title'
+        ownsTitle ? 'plugin-detail-title' : 'plugins-entry-detail-title'
       }
     >
-      {contentOwnsTitle ? (
+      {ownsTitle ? (
         <span id="plugins-entry-detail-title" className="sr-only">
           {privateTitle ? (
             <span className={REPLAY_MASK_CLASS}>{title}</span>
@@ -181,7 +204,9 @@ export function MarketplaceDetailPageShell({
           )}
         </Heading>
       )}
-      {(breadcrumbs !== undefined || onNavigateBack || hasActions) && (
+      {(breadcrumbs !== undefined ||
+        onNavigateBack ||
+        (hasActions && !barClaimed)) && (
         <div className="flex shrink-0 items-center justify-between gap-2 pb-6">
           {breadcrumbs !== undefined ? (
             breadcrumbs
@@ -199,14 +224,7 @@ export function MarketplaceDetailPageShell({
           ) : (
             <span />
           )}
-          {hasActions && (
-            <DetailActionBar
-              more={fallbackMore}
-              secondary={headerActions}
-              share={share}
-              slots={slots}
-            />
-          )}
+          {hasActions && !barClaimed && shellBar}
         </div>
       )}
       {body}

@@ -5,10 +5,10 @@ import { CODE_REVIEW_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 const visibleCodeReviewChatKeys = new Set<string>();
 
 /**
- * Maps a code-review scope key (the `projectId--worktreeId` composite the
- * sentinel scope uses as its worktreeId) to the real `(projectId, worktreeId)`
- * pair it belongs to. Worktree ids are only unique within a workspace, so the
- * composite is required to disambiguate. Populated when the review modal
+ * Maps a code-review scope key (the sentinel scope's worktreeId, see
+ * `buildCodeReviewScopeKey`) to the real `(projectId, worktreeId)` pair it
+ * belongs to. Worktree ids are only unique within a workspace, so the key
+ * encodes both. Populated when the review modal
  * registers its chat target, this survives the modal closing so a turn
  * finishing later can still resolve a toast/navigation target.
  */

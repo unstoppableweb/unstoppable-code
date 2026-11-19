@@ -59,9 +59,11 @@ export function WorktreeErrorNotice(): JSX.Element | null {
       ...(worktreeError.displayErrorCode === undefined
         ? {}
         : { displayErrorCode: worktreeError.displayErrorCode }),
-      ...(typeof worktreeError.error === 'string'
-        ? {}
-        : { reference: worktreeError.error }),
+      ...(worktreeError.recordedError === undefined
+        ? typeof worktreeError.error === 'string'
+          ? {}
+          : { reference: worktreeError.error }
+        : { reference: worktreeError.recordedError, referenceRecorded: true }),
       // Command output can name paths and branches.
       meta: {
         ...(title === undefined ? {} : { title }),

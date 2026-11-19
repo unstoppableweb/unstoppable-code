@@ -1,3 +1,8 @@
+import {
+  w5FailureDiagnostics,
+  type W5ErrorDiagnostics,
+} from '@canopy/core-runtime/node/w5/error-diagnostics';
+import { logMainProcessWarn } from './main-process-logging';
 import { CanopyClientError } from '@canopy/core-client';
 import { canopyDaemonRefusal } from '@canopy/core-client/node';
 import {
@@ -31,6 +36,7 @@ export interface W5RecoveryLaunchPorts {
     status: W5RecoveryStatus,
     diagnosis?: W5Diagnosis,
     results?: readonly W5MaintenanceDecisionResult[],
+    failureDiagnostics?: Pick<W5ErrorDiagnostics, 'errorName' | 'errorCode'>,
   ): Promise<void>;
   readonly allowReservationRelease: boolean;
 }
@@ -97,7 +103,7 @@ export function w5DiagnosisEntries(diagnosis: W5Diagnosis): W5RecoveryEntry[] {
       detail:
         diagnosis.destructiveJournalArtifactCount === null
           ? 'Journal inspection is unavailable. Keep the data folder intact and contact support.'
-          : `${diagnosis.destructiveJournalArtifactCount} journal files need support. No destructive recovery runs here.`,
+          : `${diagnosis.destructiveJournalArtifactCount} archive or deletion journal files need attention. No destructive recovery runs here.`,
     });
   for (const file of diagnosis.files)
     if (
@@ -205,6 +211,9 @@ function statusFor(
 export async function runW5RecoveryLaunch(
   ports: W5RecoveryLaunchPorts,
 ): Promise<W5RecoveryStatus> {
+  let failureDiagnostics:
+    | Pick<W5ErrorDiagnostics, 'errorName' | 'errorCode'>
+    | undefined;
   let diagnosis: W5Diagnosis | undefined;
   let status: W5RecoveryStatus;
   let results: readonly W5MaintenanceDecisionResult[] | undefined;
@@ -247,6 +256,8 @@ export async function runW5RecoveryLaunch(
       status = statusFor(diagnosis, ports.allowReservationRelease);
     }
   } catch (error) {
+    failureDiagnostics = w5FailureDiagnostics(error);
+    logMainProcessWarn('W5 offline recovery failed', failureDiagnostics);
     if (error instanceof W5MaintenanceDecisionError) {
       results = error.results;
       if (error.diagnosis) diagnosis = error.diagnosis;
@@ -259,9 +270,15 @@ export async function runW5RecoveryLaunch(
     };
   }
   try {
-    if (results) await ports.record(status, diagnosis, results);
+    if (failureDiagnostics)
+      await ports.record(status, diagnosis, results, failureDiagnostics);
+    else if (results) await ports.record(status, diagnosis, results);
     else await ports.record(status, diagnosis);
-  } catch {
+  } catch (error) {
+    logMainProcessWarn(
+      'W5 recovery result could not be recorded',
+      w5FailureDiagnostics(error),
+    );
     // Uncertain release must remain fatal even when the support record fails.
     if (
       status.reason !== 'release-uncertain' &&

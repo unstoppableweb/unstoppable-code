@@ -80,6 +80,8 @@ export function OrgProjectPlaceholderRow({
         .addToast(
           error instanceof Error ? error.message : 'Project setup failed',
           'error',
+          undefined,
+          { caught: error },
         );
     });
   };

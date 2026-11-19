@@ -1,5 +1,3 @@
-import { emitPortalWatcherProjection } from '../portal/adapters/watchers-adapter';
-import { logMainProcessError } from '../lib/main-process-logging';
 import {
   IPC_CHANNELS,
   type AppAdvisorWatcherChatFiringHoldRequest,
@@ -105,15 +103,7 @@ export function registerAppAdvisorWatcherHandlers(
       sendAppAdvisorWindowCommand: accessors.sendAppAdvisorWindowCommand,
       sendChatWindowCommand: accessors.sendChatWindowCommand,
       deliverWatcherMessage: deliverWatcherMessageToChat,
-      onChange: (
-        watchers: AppAdvisorWatcherSummary[],
-        completedGitHub: AppAdvisorWatcherSummary[] = [],
-      ) => {
-        try {
-          emitPortalWatcherProjection([...watchers, ...completedGitHub]);
-        } catch (error: unknown) {
-          logMainProcessError('Portal watcher projection failed', error);
-        }
+      onChange: (watchers: AppAdvisorWatcherSummary[]) => {
         sendToWindow(
           accessors.getMainWindow(),
           IPC_CHANNELS.appAdvisorWatchersChanged,

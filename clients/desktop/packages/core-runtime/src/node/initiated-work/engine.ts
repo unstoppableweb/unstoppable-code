@@ -52,10 +52,18 @@ import type {
 
 export const INITIATED_WORK_DOMAIN = 'core.initiatedWork';
 
+/**
+ * Why a gate skipped a run, when a source must tell the skip apart from its
+ * gate's usual one. Closed: only these codes leave a skip.
+ */
+export type InitiatedWorkSkipCode =
+  /** The worktree's pause state could not be read, so the hook did not run. */
+  'core.initiatedWork.gate.pauseUnknown';
+
 /** What an admission gate decided. Refusals carry the host's own error. */
 export type InitiatedWorkGateVerdict =
   | { decision: 'passed' }
-  | { decision: 'skipped'; message: string }
+  | { decision: 'skipped'; message: string; code?: InitiatedWorkSkipCode }
   | {
       decision: 'refused';
       /** Portable and user-facing: every reader of the record sees it. */
@@ -143,8 +151,11 @@ export type InitiatedWorkAcceptance =
   | { status: 'accepted'; operationId: string }
   /** The occurrence was accepted before; this is its recorded run. */
   | { status: 'duplicate'; operation: OperationRecord }
-  /** Recorded as skipped or refused at its gate. */
-  | { status: 'stopped'; operationId: string }
+  /**
+   * Recorded as skipped or refused at its gate. `code` is the skip's code,
+   * when its gate gave one.
+   */
+  | { status: 'stopped'; operationId: string; code?: InitiatedWorkSkipCode }
   /** The occurrence key was used before with other parameters. */
   | { status: 'keyReused' };
 
@@ -197,6 +208,7 @@ export type InitiatedWorkSubmission<T> =
       operationId: string;
       gate: InitiatedWorkGate;
       message: string;
+      code?: InitiatedWorkSkipCode;
     }
   | {
       disposition: 'refused';
@@ -486,7 +498,14 @@ export class InitiatedWorkEngine {
                 this.stoppedTerminal([], stopped.gate, stopped.verdict),
               ).event,
             );
-            return { status: 'stopped', operationId };
+            return {
+              status: 'stopped',
+              operationId,
+              ...(stopped.verdict.decision === 'skipped' &&
+              stopped.verdict.code !== undefined
+                ? { code: stopped.verdict.code }
+                : {}),
+            };
           });
           return { value, events };
         }),
@@ -655,10 +674,7 @@ export class InitiatedWorkEngine {
 
   /** The state a source last recorded for a subject. */
   async sourceHead(source: string, subject: string): Promise<string | null> {
-    return this.operations.write((ledger) => ({
-      value: ledger.sourceHead(source, subject),
-      events: [],
-    }));
+    return this.operations.sourceHead(source, subject);
   }
 
   /** Queued and running runs, oldest first. */
@@ -854,7 +870,13 @@ export class InitiatedWorkEngine {
     verdict: Exclude<InitiatedWorkGateVerdict, { decision: 'passed' }>,
   ): InitiatedWorkSubmission<T> {
     return verdict.decision === 'skipped'
-      ? { disposition: 'skipped', operationId, gate, message: verdict.message }
+      ? {
+          disposition: 'skipped',
+          operationId,
+          gate,
+          message: verdict.message,
+          ...(verdict.code !== undefined ? { code: verdict.code } : {}),
+        }
       : {
           disposition: 'refused',
           operationId,
@@ -1170,13 +1192,8 @@ export class InitiatedWorkEngine {
       | { status: 'started' }
       | { status: 'ended' }
     > => {
-      const { current, before } = await this.operations.write((ledger) => ({
-        value: {
-          current: ledger.get(operationId),
-          before: ledger.statusBeforeRestart(operationId),
-        },
-        events: [],
-      }));
+      const current = await this.operations.get(operationId);
+      const before = await this.operations.statusBeforeRestart(operationId);
       if (!current || isTerminalOperationStatus(current.status))
         return { status: 'ended' };
       // Only a run the ledger shows still queued is known not to have

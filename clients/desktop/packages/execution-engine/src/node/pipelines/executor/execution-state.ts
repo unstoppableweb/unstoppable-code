@@ -45,6 +45,7 @@ import type {
 import type {
   CancelMatrixVariantRequest,
   CuratedPipelineExecutionSource,
+  ExecutionPersistFailureCode,
   JobGroupResult,
   MaterializedJob,
   PipelineAgentChatAddress,
@@ -55,6 +56,12 @@ import type {
   RetryMatrixJobRequest,
 } from '@canopy/execution-engine/types/pipeline';
 import { isPipelineJsonValue } from '@canopy/execution-engine/pipelines/json-values';
+import {
+  EXECUTION_ERRNO_CODES,
+  isExecutionErrnoCode,
+  isExecutionFailureCode,
+  isExecutionFailureOrigin,
+} from './execution-failure';
 import { encodeMatrixIpcErrorMessage } from '@canopy/execution-engine/types/pipeline';
 import {
   refreshAllJobGroups,
@@ -113,6 +120,60 @@ export function isExecutionStateWriteRefusal(
 
 export const EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE =
   'Timed out waiting for another process to finish saving this workflow run.';
+
+const PERSIST_FAILURE_REFUSAL_CODES: Record<
+  ExecutionStateWriteRefusal,
+  ExecutionPersistFailureCode
+> = {
+  owned_by_other_process: 'write_refused_owned_by_other_process',
+  owner_fenced: 'write_refused_owner_fenced',
+  newer_version: 'write_refused_newer_version',
+  unreadable: 'write_refused_unreadable',
+  damaged_copy_failed: 'write_refused_damaged_copy_failed',
+};
+
+const PERSIST_FAILURE_CODE_SET: ReadonlySet<string> =
+  new Set<ExecutionPersistFailureCode>([
+    ...EXECUTION_ERRNO_CODES,
+    ...Object.values(PERSIST_FAILURE_REFUSAL_CODES),
+    'lock_timeout',
+    'unknown',
+  ]);
+
+function isExecutionPersistFailureCode(
+  value: unknown,
+): value is ExecutionPersistFailureCode {
+  return typeof value === 'string' && PERSIST_FAILURE_CODE_SET.has(value);
+}
+
+/**
+ * The closed code for a failed {@link saveExecutionState} (CAN-7095). Only
+ * allowlisted values leave: never the error's message, path or other text.
+ */
+export function executionPersistFailureCode(
+  error: unknown,
+): ExecutionPersistFailureCode {
+  if (error instanceof ExecutionStateWriteRefusedError)
+    return PERSIST_FAILURE_REFUSAL_CODES[error.reason];
+  if (!(error instanceof Error)) return 'unknown';
+  if (error.message === EXECUTION_STATE_LOCK_TIMEOUT_MESSAGE)
+    return 'lock_timeout';
+  const code: unknown = 'code' in error ? error.code : undefined;
+  return isExecutionErrnoCode(code) ? code : 'unknown';
+}
+
+/**
+ * Whether the store refused a save because the run is another owner's, or
+ * this process's lease on it ended (CAN-6198): that owner's saved state
+ * stands, and this process has nothing more to write or report for the run.
+ */
+export function isExecutionOwnerWriteRefusal(error: unknown): boolean {
+  return (
+    isExecutionStateWriteRefusal(error, 'owned_by_other_process') ||
+    isExecutionStateWriteRefusal(error, 'owner_fenced')
+  );
+}
+
 const EXECUTION_LOCK_DIRECTORY = '.locks';
 const EXECUTION_LOCK_MAX_WAIT_MS = 30_000;
 const INSTALLED_STATE_CACHE_LIMIT = 512;
@@ -1056,7 +1117,9 @@ function normalizeRecoveryCheckpoints(
           !Number.isInteger(step.recovery_count) ||
           step.recovery_count < 0
         ) {
-          step.recovery_count = step.agent_recovery?.recovery_count;
+          if (step.agent_recovery)
+            step.recovery_count = step.agent_recovery.recovery_count;
+          else delete step.recovery_count;
         }
       }
     }
@@ -1520,10 +1583,13 @@ function migrateExecutionStateToCurrent(state: ExecutionState): ExecutionState {
     const migrated = v10State;
     const normalized = normalizeAgentModelConfig(migrated.model_config);
     migrated.model_config = normalized;
+    if (migrated.model_config === undefined) delete migrated.model_config;
     migrated.model_alias_preferences = normalizeExecutionModelAliasPreferences(
       migrated.model_alias_preferences,
     );
-    migrated.codex_fast_mode_enabled = undefined;
+    if (migrated.model_alias_preferences === undefined)
+      delete migrated.model_alias_preferences;
+    delete migrated.codex_fast_mode_enabled;
     migrated.env = { ...migrated.env, ...modelConfigEnv(migrated) };
     normalizeStatusReasons(migrated, { allowEmptyPaused: true });
     return migrated;
@@ -2053,6 +2119,19 @@ export async function loadExecutionState(
 }
 
 /**
+ * The stored file's revision without reading it, as
+ * {@link loadExecutionStateRevision} reports it; null when nothing is stored.
+ */
+export function readExecutionStateRevision(
+  executionId: string,
+  executionsDir: string,
+): Promise<string | null> {
+  return readStateFileSignature(
+    getExecutionStatePath(executionId, executionsDir),
+  );
+}
+
+/**
  * The state with the revision of the file it was read from, for
  * {@link saveExecutionStateIfUnchanged}. Every install replaces the file, so a
  * later install changes the revision.
@@ -2137,17 +2216,35 @@ function parseExecutionStateDocument(
   parsed.inputs_persisted = parsed.inputs !== undefined;
   parsed.inputs = parsed.inputs ?? {};
   parsed.rerun_context = normalizeRerunContext(parsed.rerun_context);
+  if (parsed.rerun_context === undefined) delete parsed.rerun_context;
   parsed.shared_pipeline_source = normalizeSharedPipelineSource(
     parsed.shared_pipeline_source,
   );
+  if (parsed.shared_pipeline_source === undefined)
+    delete parsed.shared_pipeline_source;
   parsed.curated_pipeline_source = normalizeCuratedPipelineSource(
     parsed.curated_pipeline_source,
   );
+  if (parsed.curated_pipeline_source === undefined)
+    delete parsed.curated_pipeline_source;
   parsed.initiation_source = normalizeUsageInitiationSource(
     parsed.initiation_source,
   );
   parsed.initiator = normalizeExecutionInitiator(parsed.initiator);
   parsed.agent_origin = normalizeAgentChatAddress(parsed.agent_origin);
+  if (parsed.agent_origin === undefined) delete parsed.agent_origin;
+  // The stored value reaches telemetry (CAN-7095): only a closed code may.
+  if (!isExecutionPersistFailureCode(parsed.persist_failure_code))
+    delete parsed.persist_failure_code;
+  // So do the run's and its steps' failure codes (CAN-7118).
+  dropUnknownFailureFields(parsed);
+  if (!isExecutionFailureCode(parsed.plan_persist_failure_code))
+    delete parsed.plan_persist_failure_code;
+  if (isRecord(parsed.jobs))
+    for (const job of Object.values(parsed.jobs))
+      if (isRecord(job) && isRecord(job.steps))
+        for (const step of Object.values(job.steps))
+          if (isRecord(step)) dropUnknownFailureFields(step);
   const typedState = parsed as ExecutionState;
   if (typedState.version === 7) {
     validateForeachState(asLegacyV7State(typedState), executionsDir);
@@ -2160,6 +2257,16 @@ function parseExecutionStateDocument(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Drops a stored failure origin or code outside its closed set. */
+function dropUnknownFailureFields(record: {
+  failure_origin?: unknown;
+  failure_code?: unknown;
+}): void {
+  if (!isExecutionFailureOrigin(record.failure_origin))
+    delete record.failure_origin;
+  if (!isExecutionFailureCode(record.failure_code)) delete record.failure_code;
 }
 
 export function normalizeUsageInitiationSource(
@@ -3097,6 +3204,10 @@ export function prepareMatrixJobRetryState(
   retryState.completed_at = undefined;
   resetExecutionPauseClock(retryState);
   retryState.error = undefined;
+  // The failed run reported why it failed; the retry starts clean (CAN-7118).
+  delete retryState.failure_origin;
+  delete retryState.failure_code;
+  delete retryState.plan_persist_failure_code;
   retryState.report_outputs = undefined;
   retryState.pending_input = undefined;
   retryState.pending_pauses = [];
@@ -3165,6 +3276,8 @@ export function prepareMatrixVariantCancellation(
   state.completed_at = isExecutionTerminal(state)
     ? new Date().toISOString()
     : undefined;
+  if (state.status !== 'paused')
+    endExecutionPause(state, state.completed_at ?? completedAt);
   return state;
 }
 
@@ -3309,6 +3422,10 @@ export function prepareRetryState(state: ExecutionState): ExecutionState {
   retryState.completed_at = undefined;
   resetExecutionPauseClock(retryState);
   retryState.error = undefined;
+  // The failed run reported why it failed; the retry starts clean (CAN-7118).
+  delete retryState.failure_origin;
+  delete retryState.failure_code;
+  delete retryState.plan_persist_failure_code;
   retryState.report_outputs = undefined;
   retryState.plan_hash_before = undefined;
   retryState.plan_hash_after = undefined;

@@ -1,3 +1,9 @@
+import {
+  w5FailureDiagnostics,
+  sanitizeW5Diagnostics,
+  type W5ErrorDiagnostics,
+} from '@canopy/core-runtime/node/w5/error-diagnostics';
+import { logMainProcessWarn } from './main-process-logging';
 import { BrowserWindow, dialog } from 'electron';
 import { join } from 'node:path';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
@@ -142,12 +148,21 @@ async function record(
   status: W5RecoveryStatus,
   diagnosis?: W5Diagnosis,
   results?: readonly W5MaintenanceDecisionResult[],
+  failure?: Pick<W5ErrorDiagnostics, 'errorName' | 'errorCode'>,
 ): Promise<void> {
+  const { errorName, errorCode } = sanitizeW5Diagnostics(failure);
+  const failureDiagnostics =
+    errorName !== undefined || errorCode !== undefined
+      ? {
+          ...(errorName !== undefined && { errorName }),
+          ...(errorCode !== undefined && { errorCode }),
+        }
+      : undefined;
   await requirePrivateW5RecoveryRuntime(dataRoot);
   const finishedAt = Date.now();
   await writeFileAtomically(
     join(dataRoot, 'runtime/w5-recovery-diagnosis.json'),
-    `${JSON.stringify({ version: 1, finishedAt, status, diagnosis, results })}\n`,
+    `${JSON.stringify({ version: 1, finishedAt, status, diagnosis, results, ...(failureDiagnostics && { failureDiagnostics }) })}\n`,
     { durable: true, mode: 0o600 },
   );
   await writeFileAtomically(
@@ -214,17 +229,30 @@ export async function runDesktopW5RecoveryLaunch(
         ),
       choose: (diagnosis) =>
         cancelled ? Promise.resolve(null) : choose(window, diagnosis),
-      record: (status, diagnosis, results) =>
-        record(dataRoot, status, diagnosis, results),
+      record: (status, diagnosis, results, failureDiagnostics) =>
+        record(dataRoot, status, diagnosis, results, failureDiagnostics),
     });
   } catch (error) {
+    const failureDiagnostics = w5FailureDiagnostics(error);
+    logMainProcessWarn('W5 recovery launch failed', failureDiagnostics);
     status = {
       state: 'refused',
       canRecover: false,
       reason: w5RecoveryFailureReason(error),
       entries: [],
     };
-    await record(dataRoot, status).catch(() => undefined);
+    await record(
+      dataRoot,
+      status,
+      undefined,
+      undefined,
+      failureDiagnostics,
+    ).catch((recordError: unknown): void => {
+      logMainProcessWarn(
+        'W5 recovery fallback could not be recorded',
+        w5FailureDiagnostics(recordError),
+      );
+    });
   }
   try {
     const options: Electron.MessageBoxOptions = {

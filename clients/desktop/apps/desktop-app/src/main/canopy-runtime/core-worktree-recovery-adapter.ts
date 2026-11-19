@@ -63,9 +63,11 @@ export function createCoreWorktreeRecoveryAdapter(): DesktopDomainAdapter {
           });
         validateId(params.workspaceId, 'workspaceId');
         assertWritableScope(params.workspaceId);
+        const { describeWorktreeDiscard } =
+          await import('../lib/worktree-discard');
         return (
           await import('../lib/worktree-recovery-description')
-        ).listWorktreeRecovery(params);
+        ).listWorktreeRecovery(params, describeWorktreeDiscard);
       },
     },
   };

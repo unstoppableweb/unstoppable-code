@@ -181,13 +181,16 @@ export function CloudArchivedNavLink({
   const selected = useArchivedContainersStore(
     (s) => s.overview?.workspaceId === projectId,
   );
-  // Read each time the row mounts (the sidebar shows the project again, or
-  // the cloud reconnects): a list read earlier, empty or failed, may miss a
-  // task another client archived since, and an empty one hides the row. A
-  // read failing while mounted is not retried in a loop.
+  // Read each time the row mounts (the sidebar shows the project again) and
+  // each time the cloud comes back online, as a row kept offline stays
+  // mounted (CAN-6374): a list read earlier, empty or failed, may miss a task
+  // another client archived since, and an empty one hides the row. A read
+  // failing while mounted is not retried in a loop.
+  const online = useStore(cloudCoworkStore, (s) => s.status === 'online');
+  const generation = useStore(cloudCoworkStore, (s) => s.generation);
   useEffect(() => {
-    void load(projectId);
-  }, [load, projectId]);
+    if (online) void load(projectId);
+  }, [generation, load, online, projectId]);
   return (
     <MoreRow
       count={count}

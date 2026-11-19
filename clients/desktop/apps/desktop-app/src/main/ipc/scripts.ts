@@ -16,7 +16,6 @@ import {
   type ScriptStopRequest,
 } from '@canopy/desktop-shared/types';
 import {
-  cancelWorktreeSetup,
   loadWorktreeScriptRuns,
   readScriptRunTail,
   runScript,
@@ -32,6 +31,7 @@ import {
   saveWorkspaceScripts,
 } from '../lib/script-definition-saves';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { projectWorktreeSetupCancel } from '../canopy-runtime/core-worktree-setup-adapter';
 import {
   projectedWorkspaceMetadataCommands,
   type ProjectedWorkspaceMetadataCommands,
@@ -138,15 +138,20 @@ export function registerScriptHandlers(
       event,
       request: { projectId: string; worktreeId: string },
     ): Promise<void> =>
-      cancelWorktreeSetup(request, {
-        onRendererComplete: (complete) => {
+      projectWorktreeSetupCancel(
+        {
+          dispatcher: runtime.dispatcher,
+          caller: runtime.resolveCaller(event),
+        },
+        request,
+        (complete) => {
           sendToWebContents(
             event.sender,
             IPC_CHANNELS.scriptComplete,
             complete,
           );
         },
-      }),
+      ),
   );
 
   registerIpcHandler(

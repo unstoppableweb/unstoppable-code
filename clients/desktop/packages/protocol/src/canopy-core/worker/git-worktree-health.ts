@@ -11,8 +11,9 @@ import { WORKER_GIT_GRANTS } from './git';
 /**
  * Why a worktree or one of its repositories is broken: its directory is
  * missing, it has no `.git`, its Git metadata is incomplete or Git says it is
- * not a work tree, a configured repository's checkout is missing, or Git
- * could not run.
+ * not a work tree, a configured repository's checkout is missing, Git could
+ * not run, or the filesystem refused a read (permission or I/O error) so the
+ * state is unknown.
  */
 export const WORKER_GIT_WORKTREE_HEALTH_CODES = [
   'missing-worktree-path',
@@ -20,6 +21,7 @@ export const WORKER_GIT_WORKTREE_HEALTH_CODES = [
   'invalid-git-worktree',
   'missing-repository',
   'git-error',
+  'unreadable',
 ] as const;
 
 export type WorkerGitWorktreeHealthCode =

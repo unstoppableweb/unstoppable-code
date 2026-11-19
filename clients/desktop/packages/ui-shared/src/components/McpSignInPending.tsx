@@ -154,3 +154,74 @@ export function McpSignInPendingActions({
     </>
   );
 }
+
+interface McpSignInPendingLineProps {
+  /** The sign-in page; the link reopens it in a new tab. */
+  authorizationUrl: string;
+  serviceName?: string;
+  /** Stops waiting. */
+  onCancel?: () => void;
+  dataTestId?: string;
+}
+
+/**
+ * New Customize's row status for a sign-in waiting in another tab, in place
+ * of the status line: a small spinner, a "Signing in…" link that reopens the
+ * sign-in page, and a cancel icon. Nothing else sits beside the row's status
+ * control (Sergii's QA).
+ */
+export function McpSignInPendingLine({
+  authorizationUrl,
+  serviceName,
+  onCancel,
+  dataTestId,
+}: McpSignInPendingLineProps): JSX.Element {
+  return (
+    <span
+      role="status"
+      // The row subtitle is `pointer-events-none`, so the link and cancel icon
+      // opt back in.
+      className="pointer-events-auto flex min-w-0 items-center gap-1.5"
+      aria-label={
+        serviceName ? `Waiting for ${serviceName} sign-in` : undefined
+      }
+      data-testid={dataTestId}
+    >
+      <LoadingSpinner decorative />
+      <Tooltip label={MCP_SIGN_IN_REOPEN_LABEL}>
+        <TextLink
+          variant="mcp-action"
+          href={authorizationUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={
+            serviceName
+              ? `Reopen ${serviceName} sign-in`
+              : MCP_SIGN_IN_REOPEN_LABEL
+          }
+          data-testid={dataTestId && `${dataTestId}-reopen`}
+        >
+          Signing in…
+        </TextLink>
+      </Tooltip>
+      {onCancel !== undefined && (
+        <Tooltip label={MCP_SIGN_IN_CANCEL_LABEL}>
+          <Button
+            variant="ghost-quiet"
+            size="sm"
+            iconOnly
+            aria-label={
+              serviceName
+                ? `Cancel ${serviceName} sign-in`
+                : MCP_SIGN_IN_CANCEL_LABEL
+            }
+            onClick={onCancel}
+            data-testid={dataTestId && `${dataTestId}-cancel`}
+          >
+            <CloseIcon size={12} aria-hidden="true" />
+          </Button>
+        </Tooltip>
+      )}
+    </span>
+  );
+}

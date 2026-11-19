@@ -19,8 +19,9 @@ import {
   type CatalogSkillCloudShare,
   type CatalogSkillRow,
 } from '@canopy/protocol/canopy-core';
+import type { AppError } from '@canopy/protocol/app-errors';
 import type { InstalledSkillInfo } from '@canopy/protocol/skills';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type { IPCResultWithAppError } from '@canopy/execution-engine/types/pipeline';
 import { sanitizeName } from '../skills/installer';
 import type * as SkillContext from '../skills/skill-install-context';
 import type * as SkillService from '../skills/skill-service';
@@ -36,6 +37,12 @@ import { parseGitHubSource } from '../skills/source-parser';
 /** A skill service `{ success: false, error }` result kept as a refusal's cause (CAN-4124 D12). */
 export class SkillServiceResultError extends Error {
   override readonly name = 'SkillServiceResultError';
+  /** The failure main recorded for the result, so IPC callers link to it. */
+  readonly appError: AppError | undefined;
+  constructor(message: string, appError?: AppError) {
+    super(message);
+    this.appError = appError;
+  }
 }
 
 export type SkillCatalogOperation =
@@ -234,7 +241,7 @@ const refused = (
 
 /** A `{ success: false, error }` result as a refusal with its text kept as the cause. */
 function fail(
-  result: { error?: string },
+  result: Pick<IPCResultWithAppError<unknown>, 'error' | 'appError'>,
   operation: SkillCatalogOperation,
   customSave?: CatalogSkillCustomSaveRequest,
 ): CatalogSkillRefusedError {
@@ -246,7 +253,7 @@ function fail(
   return refused(
     classifySkillServiceMessage(error, operation, customSave) ??
       failureOf(operation),
-    new SkillServiceResultError(error || fallback),
+    new SkillServiceResultError(error || fallback, result.appError),
   );
 }
 
@@ -263,7 +270,7 @@ async function call<T>(
 }
 
 function succeeded<T>(
-  result: IPCResult<T>,
+  result: IPCResultWithAppError<T>,
   operation: SkillCatalogOperation,
   customSave?: CatalogSkillCustomSaveRequest,
 ): T | undefined {

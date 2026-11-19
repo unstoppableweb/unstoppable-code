@@ -18,6 +18,7 @@ import { paramsDeclareMeta } from './request-metadata';
 import {
   CanopyOperationError,
   canopyInvalidHandlerResultError,
+  canopyUnexpectedError,
   canopyUnavailableError,
 } from './errors';
 
@@ -97,14 +98,22 @@ export function capacityError(message: string): CanopyOperationError {
   });
 }
 
+/** An untyped failure keeps its diagnostic only under the call's definition. */
 export function errorResponse(
   id: CanopyJsonRpcId,
   error: unknown,
+  definition?: BoundOperation['definition'],
 ): CanopyJsonRpcMessage {
   const payload =
     error instanceof CanopyOperationError
       ? error.payload
-      : canopyInvalidHandlerResultError().payload;
+      : definition
+        ? canopyUnexpectedError(
+            error,
+            definition.error,
+            'The operation returned an invalid result.',
+          ).payload
+        : canopyInvalidHandlerResultError().payload;
   return { jsonrpc: '2.0', id, error: encodeCanopyError(payload) };
 }
 

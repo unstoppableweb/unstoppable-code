@@ -8,13 +8,13 @@
  */
 export const STATIC_MODEL_REFERENCE_ALIASES: Readonly<Record<string, string>> =
   {
-    '$default-codex': 'gpt-6.1-sol',
+    '$default-codex': 'gpt-6.2-sol',
     $fast: 'gpt-6-luna',
     $cheap: 'sonnet',
-    $sol: 'gpt-6.1-sol',
+    $sol: 'gpt-6.2-sol',
     $luna: 'gpt-6-luna',
     $opus: 'opus[1m]',
     $fable: 'claude-fable-5-1',
-    $astra: 'gpt-6-astra',
+    $astra: 'gpt-6.2-astra',
     $terra: 'gpt-6.1-terra',
   };

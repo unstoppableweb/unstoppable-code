@@ -161,7 +161,8 @@ function resolvePlanApprovalTarget(
       ? matchingPending.toolInput.source
       : tabInput?.source === 'codex' ||
           tabInput?.source === 'cursor' ||
-          tabInput?.source === 'opencode'
+          tabInput?.source === 'opencode' ||
+          tabInput?.source === 'antigravity'
         ? tabInput.source
         : 'claude');
 

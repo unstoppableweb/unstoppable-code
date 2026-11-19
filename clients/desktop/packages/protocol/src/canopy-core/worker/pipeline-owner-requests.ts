@@ -52,7 +52,9 @@ import {
  * child starts or resumes in its parent's host. The owner checks the
  * definition as the run's person under the run's owner, installs what the
  * collections need on the worker, and answers in the launch's shapes; the
- * host scopes them to that child. The child's first answer is the one every
+ * host scopes them to that child. The host asks for every child it starts
+ * (CAN-7044), and the answer carries the child's definition with the cloud
+ * models chosen for it when the run started, which the child then runs. The child's first answer is the one every
  * later request for it gets, so a resume on another worker runs what the
  * child started with.
  *
@@ -408,6 +410,8 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
   z.strictObject({
     action: z.literal('owner.ledger.operation'),
     attemptKey: id,
+    /** Local owners validate the tool's folder; remote owners never receive it. */
+    cwd: hostPath.optional(),
     operation: z.enum(WORKER_PIPELINE_OWNER_LEDGER_OPERATIONS),
     params: ledgerJson,
   }),
@@ -676,6 +680,17 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     pluginCollectionSnapshots:
       WorkerPipelinePluginCollectionSnapshotsSchema.optional(),
     modelAliasResolutions: WorkerPipelineModelAliasResolutionsSchema.optional(),
+    /**
+     * The child's definition as JSON with the cloud models its run's person
+     * chose for it when the run started (CAN-7044), which it runs instead of
+     * the one its step resolved; absent when no step's model changes. A
+     * resumed child runs its stored definition, which has them already.
+     */
+    document: z
+      .string()
+      .min(1)
+      .max(WORKER_PIPELINE_OWNER_CHILD_DOCUMENT_MAX)
+      .optional(),
   }),
   z.strictObject({
     kind: z.literal('isolatedJob.write'),
@@ -723,8 +738,12 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
 export type WorkerPipelineOwnerResult = z.output<
   typeof WorkerPipelineOwnerResultSchema
 >;
+export const WorkerPipelineOwnerRequestSchema = z.discriminatedUnion(
+  'action',
+  WORKER_PIPELINE_OWNER_REQUEST_MEMBERS,
+);
 export type WorkerPipelineOwnerRequest = z.output<
-  (typeof WORKER_PIPELINE_OWNER_REQUEST_MEMBERS)[number]
+  typeof WorkerPipelineOwnerRequestSchema
 >;
 
 /** The result kind each owner action is answered with. */

@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from 'node:child_process';
 import { readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
+import { uptime } from 'node:os';
 
 /** Host-only test seams; production composition uses NODE_SUPERVISION. */
 export interface SupervisionOperations {
@@ -16,6 +17,9 @@ export interface SupervisionOperations {
   readonly readLink?: (file: string) => Promise<string>;
   readonly systemRoot: () => string;
   readonly selfPid: number;
+  readonly now?: () => number;
+  readonly uptimeSeconds?: () => number;
+
   /** This process's real user ID; absent where there is none (Windows). */
   readonly selfUid?: number;
   readonly windowsProcess?: (
@@ -61,6 +65,9 @@ export const NODE_SUPERVISION: SupervisionOperations = {
   systemRoot: (): string =>
     process.env.SystemRoot ?? process.env.SYSTEMROOT ?? '',
   selfPid: process.pid,
+  now: Date.now,
+  uptimeSeconds: uptime,
+
   ...(typeof process.getuid === 'function' && { selfUid: process.getuid() }),
 };
 

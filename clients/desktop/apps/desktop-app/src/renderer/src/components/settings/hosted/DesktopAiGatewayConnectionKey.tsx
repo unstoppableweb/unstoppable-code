@@ -80,9 +80,10 @@ export function DesktopAiGatewayConnectionKey({
         notifyModelGatewayCredentialChanged();
         setChanges((count) => count + 1);
         return null;
-      } catch {
-        // Credential transport errors can include secret values.
-        reportClientAppError(new Error('Gateway credential save failed'), {
+      } catch (cause) {
+        // Preserve IPC linkage with the caught value. appErrorException emits only
+        // catalog summary/code and permitted native frames, never transport messages or secrets.
+        reportClientAppError(cause, {
           surface: 'inline',
         });
         return "Couldn't save your API key. Try again.";

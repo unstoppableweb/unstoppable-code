@@ -57,6 +57,7 @@ export type ProjectSettingsTab =
   | 'hooks'
   | 'plan-detection'
   | 'plugins'
+  | 'shared-setup'
   | 'environment'
   | 'code-graph'
   | 'start-page'
@@ -68,6 +69,7 @@ export type ProjectSettingsPageId =
   | 'scripts'
   | 'plans'
   | 'plugins'
+  | 'shared-setup'
   | 'environment'
   | 'start-page'
   | 'code-graph';
@@ -87,6 +89,8 @@ export function projectSettingsPageForTab(
       return 'plans';
     case 'plugins':
       return 'plugins';
+    case 'shared-setup':
+      return 'shared-setup';
     case 'environment':
       return 'environment';
     case 'code-graph':

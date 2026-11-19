@@ -4,6 +4,18 @@
  * daemon hosts are covered by pipelines.test.ts and pipeline-conformance.
  */
 const mockGet = jest.fn<Promise<{ client: unknown }>, [unknown, unknown]>();
+const mockNodeRuntime = jest.fn(() =>
+  Promise.resolve({
+    nodeProcess: { command: '/host-owned/node-runtime/node' },
+    tsxCli: '/host-owned/node-runtime/node_modules/tsx/dist/cli.mjs',
+  }),
+);
+jest.mock('../../lib/node-runtime', () => ({
+  getDesktopNodeRuntime: (): Promise<{
+    nodeProcess: { command: string };
+    tsxCli: string;
+  }> => mockNodeRuntime(),
+}));
 jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
   getElectronDaemonConnections: (): unknown => ({
     get: (caller: unknown, signal: unknown) => mockGet(caller, signal),
@@ -151,10 +163,40 @@ jest.mock('../../lib/main-process-logging', () => ({
   },
 }));
 
+// CAN-6996: start-time native admission, replaced only where a test sets it.
+type NativeAdmissionResult = ReturnType<
+  typeof StartSetupModule.prepareNativePipelineStartAdmission
+>;
+const mockNativeAdmission: {
+  current: typeof StartSetupModule.prepareNativePipelineStartAdmission | null;
+} = { current: null };
+jest.mock('../daemon-pipeline-start-setup', () => {
+  const actual = jest.requireActual<typeof StartSetupModule>(
+    '../daemon-pipeline-start-setup',
+  );
+  return {
+    ...actual,
+    prepareNativePipelineStartAdmission: (
+      ...args: Parameters<typeof actual.prepareNativePipelineStartAdmission>
+    ): ReturnType<typeof actual.prepareNativePipelineStartAdmission> =>
+      (
+        mockNativeAdmission.current ??
+        actual.prepareNativePipelineStartAdmission
+      )(...args),
+  };
+});
+
+import type * as StartSetupModule from '../daemon-pipeline-start-setup';
 import type * as CodexPluginMcpModule from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import {
   DAEMON_COMMIT_HOOK_SKIP_OUTPUTS_UNAVAILABLE,
   DaemonCommitHookFollower,
@@ -192,6 +234,10 @@ import type {
   Pipeline,
 } from '@canopy/execution-engine/types/pipeline';
 import type { UsageInitiationSource } from '@canopy/protocol/observability';
+import {
+  WorkerPipelineStartSetupSchema,
+  type WorkerPipelineStartSetup,
+} from '@canopy/protocol/canopy-core';
 import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
 import {
   createCoreOperationAdapter,
@@ -388,6 +434,40 @@ const CODEX_PIPELINE: Pipeline = {
   },
 };
 
+/** A schema-valid native setup with `facts` facts and `leases` Mod leases. */
+function nativeSetup(
+  facts: number,
+  leases: number,
+  pathLength = 24,
+): WorkerPipelineStartSetup {
+  const factList = Array.from({ length: facts }, (_, index) => {
+    const relativePath = `.claude/skills/${String(index).padStart(pathLength, 's')}`;
+    return {
+      id: `worktree:${relativePath}:content`,
+      root: 'worktree' as const,
+      relativePath,
+      projection: 'content' as const,
+      version: 'a'.repeat(64),
+    };
+  });
+  return WorkerPipelineStartSetupSchema.parse({
+    version: 1,
+    facts: factList,
+    leases: Array.from({ length: leases }, () => ({
+      jobId: '_run',
+      stepId: '_run',
+      request: {
+        action: 'owner.claude.modAdmission',
+        cwd: root,
+        settingSources: ['user', 'project', 'local'],
+        claudeConfigDir: join(root, '.claude'),
+      },
+      result: { kind: 'claude.modAdmission', context: null },
+      factIds: factList.map((fact) => fact.id),
+    })),
+  });
+}
+
 function readField(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null
     ? Reflect.get(value, key)
@@ -507,6 +587,11 @@ beforeEach(() => {
   });
   setDesktopCanopyRuntime(runtime);
   mockGet.mockReset();
+  mockNodeRuntime.mockReset();
+  mockNodeRuntime.mockResolvedValue({
+    nodeProcess: { command: '/host-owned/node-runtime/node' },
+    tsxCli: '/host-owned/node-runtime/node_modules/tsx/dist/cli.mjs',
+  });
   mockShowOsNotification.mockReset();
   mockExecutePipeline.mockReset();
   mockExecutePipeline.mockImplementation(
@@ -523,6 +608,7 @@ beforeEach(() => {
     run: () => Promise.reject(new Error('Not applied in this test.')),
   });
   storedWorktreeId = 'task';
+  mockNativeAdmission.current = null;
 });
 
 afterEach(async () => {
@@ -531,6 +617,124 @@ afterEach(async () => {
 });
 
 describe('daemon pipeline route (CAN-5086)', () => {
+  it.each(['node', 'tsx'] as const)(
+    'awaits private %s validation once before sending a daemon launch',
+    async (shell) => {
+      const daemon = fakeDaemon();
+      mockGet.mockResolvedValue({ client: daemon.client });
+      let release: () => void = () => undefined;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let requested: () => void = () => undefined;
+      const resolving = new Promise<void>((resolve) => {
+        requested = resolve;
+      });
+      mockNodeRuntime.mockImplementationOnce(async () => {
+        requested();
+        await blocked;
+        return {
+          nodeProcess: { command: '/host-owned/node-runtime/node' },
+          tsxCli: '/host-owned/node-runtime/node_modules/tsx/dist/cli.mjs',
+        };
+      });
+      const starting = routed({
+        name: 'Lazy interpreter',
+        on: 'dispatch',
+        jobs: { run: { steps: [{ shell, run: 'process.exit(0)' }] } },
+      });
+      try {
+        await resolving;
+        expect(daemon.instructions).toHaveLength(0);
+      } finally {
+        release();
+      }
+      await starting;
+      expect(mockNodeRuntime).toHaveBeenCalledTimes(1);
+      expect(sentLaunch(daemon)).toMatchObject({
+        nodeProcess: { command: '/host-owned/node-runtime/node' },
+        tsxRuntime: '/host-owned/node-runtime/node_modules/tsx/dist/cli.mjs',
+      });
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'routes shell-only work without private Node but refuses Node/TSX launches when it is missing (owner: %s)',
+    async (ownerPossible) => {
+      mockOwnerPossible.mockReturnValue(ownerPossible);
+      mockNodeRuntime.mockRejectedValue(
+        new Error('Bundled Node/TSX runtime is unavailable'),
+      );
+      const daemon = fakeDaemon();
+      mockGet.mockResolvedValue({ client: daemon.client });
+      await routed(SHELL_PIPELINE);
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+      expect(sentLaunch(daemon)).not.toHaveProperty('nodeProcess');
+      expect(sentLaunch(daemon)).not.toHaveProperty('tsxRuntime');
+      expect(mockNodeRuntime).not.toHaveBeenCalled();
+      // This fixture promises TSX availability; the desktop launch must still
+      // validate its own private payload, not trust a caller-supplied path.
+      executionRuntime.tsxCli = '/caller/tsx/cli.mjs';
+      for (const shell of ['node', 'tsx'] as const) {
+        const actionDir = join(root, `${shell}-action`);
+        const compositeDir = join(root, `${shell}-composite`);
+        mkdirSync(actionDir);
+        mkdirSync(compositeDir);
+        writeFileSync(
+          join(actionDir, 'action.yml'),
+          `name: Interpreter action\nruns:\n  using: ${shell}\n  main: main.js\n`,
+        );
+        writeFileSync(
+          join(actionDir, 'main.js'),
+          'throw new Error("must not run")',
+        );
+        writeFileSync(
+          join(compositeDir, 'action.yml'),
+          `name: Nested interpreter\nruns:\n  using: composite\n  steps:\n    - uses: project/${shell}-action\n`,
+        );
+        const base: Pipeline = {
+          name: 'Unavailable interpreter',
+          on: 'dispatch',
+          jobs: {
+            run: { steps: [{ run: 'throw new Error("must not run")' }] },
+          },
+        };
+        const pipelines: Pipeline[] = [
+          {
+            ...base,
+            defaults: { run: { shell } },
+          },
+          {
+            ...base,
+            jobs: { run: { ...base.jobs.run, defaults: { run: { shell } } } },
+          },
+          {
+            ...base,
+            jobs: {
+              run: {
+                steps: [{ shell, run: 'throw new Error("must not run")' }],
+              },
+            },
+          },
+          ...['action', 'composite'].map((kind) => ({
+            ...base,
+            jobs: { run: { steps: [{ uses: `project/${shell}-${kind}` }] } },
+          })),
+        ];
+        for (const pipeline of pipelines) {
+          mockNodeRuntime.mockClear();
+          await expect(routed(pipeline)).rejects.toThrow(
+            'Bundled Node/TSX runtime is unavailable',
+          );
+          expect(mockNodeRuntime).toHaveBeenCalled();
+        }
+      }
+      expect(daemon.instructions).toHaveLength(1);
+      expect(mockExecutePipeline).not.toHaveBeenCalled();
+    },
+  );
+
   it('admits only local windows on macOS, Linux and Windows (CAN-5091)', () => {
     const platforms: (PlatformOperatingSystem | null)[] = [
       'darwin',
@@ -987,6 +1191,8 @@ describe('daemon pipeline route (CAN-5086)', () => {
     expect(launch).toMatchObject({
       ownerBound: true,
       modelConfig: { thinkingLevel: 'high' },
+      nodeProcess: { command: '/host-owned/node-runtime/node' },
+      tsxRuntime: '/host-owned/node-runtime/node_modules/tsx/dist/cli.mjs',
     });
     expect(
       typeof readField(readField(launch, 'providerBinaries'), 'claude'),
@@ -1006,6 +1212,111 @@ describe('daemon pipeline route (CAN-5086)', () => {
       ),
     ).toBe('string');
     expect(launch).not.toHaveProperty('codexEnvironment');
+  });
+
+  it('a native setup larger than one JSON value but within its launch limit goes to the daemon (CAN-6996)', async () => {
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    const setup = nativeSetup(29, 20);
+    expect(JSON.stringify(setup).length).toBeGreaterThan(32_768);
+    mockNativeAdmission.current = (): NativeAdmissionResult =>
+      Promise.resolve({ setup, routes: { blockers: [] }, blockers: [] });
+    await routed(MODEL_PIPELINE);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    const launch = sentLaunch(daemon);
+    expect(readField(launch, 'nativeStartSetup')).toEqual(setup);
+    expect(launch).not.toHaveProperty('nativeSetupFailure');
+    expect(readField(launch, 'nativeRouteBlockers')).toEqual([]);
+  });
+
+  it('a native setup over its launch limit still starts, pausing on quit with the reason recorded (CAN-6996)', async () => {
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    const setup = nativeSetup(256, 48, 200);
+    expect(JSON.stringify(setup).length).toBeGreaterThan(2 * 1024 * 1024);
+    mockNativeAdmission.current = (): NativeAdmissionResult =>
+      Promise.resolve({ setup, routes: { blockers: [] }, blockers: [] });
+    await routed(MODEL_PIPELINE);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    const launch = sentLaunch(daemon);
+    expect(launch).toMatchObject({
+      ownerBound: true,
+      nativeSetupFailure: 'invalid-snapshot',
+      nativeRouteBlockers: ['setup-lease'],
+    });
+    expect(launch).not.toHaveProperty('nativeStartSetup');
+  });
+
+  it('a start-time native admission that throws still starts, pausing on quit with the reason recorded (CAN-6996)', async () => {
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    mockNativeAdmission.current = (): NativeAdmissionResult =>
+      Promise.reject(new Error('Setup inspection failed.'));
+    await routed(MODEL_PIPELINE);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    const launch = sentLaunch(daemon);
+    expect(launch).toMatchObject({
+      ownerBound: true,
+      nativeSetupFailure: 'setup-inspection',
+      nativeRouteBlockers: ['unknown', 'setup-lease'],
+    });
+    expect(launch).not.toHaveProperty('nativeStartSetup');
+    expect(launch).not.toHaveProperty('nativeRouteEvidence');
+  });
+
+  it('route evidence over its launch bound still starts, without the evidence or the setup (CAN-6996)', async () => {
+    const daemon = fakeDaemon();
+    mockGet.mockResolvedValue({ client: daemon.client });
+    mockOwnerPossible.mockReturnValue(true);
+    const route = {
+      harness: 'claude' as const,
+      selection: 'sonnet',
+      requestModel: 'sonnet',
+      runtimeModel: 'sonnet',
+      source: 'claude-managed' as const,
+      effectiveRoute: 'native' as const,
+      authentication: 'vendor-profile' as const,
+    };
+    const setup = nativeSetup(1, 1);
+    mockNativeAdmission.current = (): NativeAdmissionResult =>
+      Promise.resolve({
+        setup,
+        routes: {
+          evidence: {
+            version: 1,
+            identity: {
+              executionId: 'run',
+              owner: 'personal',
+              runScope: 'worktree',
+              workspaceId: null,
+              worktreeId: null,
+            },
+            configurationEpoch: 'epoch',
+            catalogFingerprint: 'catalog',
+            policy: 'account-independent-personal',
+            gateway: 'absent',
+            accountProxy: 'absent',
+            aiCredits: 'absent',
+            futureSelections: 'closed',
+            routes: Array.from({ length: 257 }, () => route),
+          },
+          blockers: [],
+        },
+        blockers: [],
+      });
+    await routed(MODEL_PIPELINE);
+    expect(mockExecutePipeline).not.toHaveBeenCalled();
+    const launch = sentLaunch(daemon);
+    expect(launch).toMatchObject({
+      ownerBound: true,
+      nativeSetupFailure: 'invalid-snapshot',
+      nativeRouteBlockers: ['unknown', 'setup-lease'],
+    });
+    expect(launch).not.toHaveProperty('nativeRouteEvidence');
+    expect(launch).not.toHaveProperty('nativeStartSetup');
   });
 
   it('git-commit-push goes to the daemon saying Electron main runs its hook (CAN-6012 D3)', async () => {

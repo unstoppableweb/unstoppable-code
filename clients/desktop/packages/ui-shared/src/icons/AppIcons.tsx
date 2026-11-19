@@ -612,6 +612,7 @@ export const MoreVerticalIcon = /* @__PURE__ */ createAppIcon(
 export const MultiRepoIcon = /* @__PURE__ */ createAppIcon(IconFolders);
 export const PencilIcon = /* @__PURE__ */ createAppIcon(IconPencil);
 export const PersonIcon = /* @__PURE__ */ createAppIcon(IconUser);
+export const UserGroupIcon = /* @__PURE__ */ createAppIcon(IconUserGroup);
 export const PipelineIcon = /* @__PURE__ */ createAppIcon(IconAgent);
 export const PinIcon = /* @__PURE__ */ createAppIcon(IconPin);
 export const PinFilledIcon = /* @__PURE__ */ createAppIcon(IconPinFilled);

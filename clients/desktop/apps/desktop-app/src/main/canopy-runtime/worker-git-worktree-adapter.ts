@@ -197,7 +197,10 @@ export function sourceChangeGit(
       captured.active = false;
     }
   };
-  const options = { caller: { ...caller, grants: [WORKER_GIT_GRANTS.write] } };
+  // Only this command's own calls hold the worktree grant (CAN-7197).
+  const options = {
+    caller: { ...caller, grants: [WORKER_GIT_GRANTS.worktreeWrite] },
+  };
   return {
     createWorktree: async (repoPath, worktreePath, branch) => {
       const scope = scopeFor(worktreePath);

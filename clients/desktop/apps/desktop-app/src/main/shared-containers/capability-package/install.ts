@@ -58,6 +58,8 @@ import { computePipelinePackageDigestSync } from '@canopy/desktop-shared/node';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { buildInstallAutomationRequest } from '@canopy/desktop-shared/lib/automation-install';
+import { sharedWorkflowInputKinds } from '@canopy/desktop-shared/lib/shared-workflow-inputs';
+import { forkWorkflowInputs } from './fork-workflow-inputs';
 import type {
   AutomationAction,
   AutomationCreateRequest,
@@ -1440,6 +1442,7 @@ async function buildAutomationRequest(input: {
 
   let pipelineId: string | undefined;
   let pipelineResolution: { status: 'resolved'; scopes: unknown } | undefined;
+  let rawPipeline: string | undefined;
   if (action.type === 'worktree_pipeline') {
     if (action.pipeline.source === 'unresolved') {
       const local = planned.pipelineResourceId
@@ -1447,6 +1450,7 @@ async function buildAutomationRequest(input: {
         : undefined;
       if (!local) return { ok: false, error: 'pipeline-unavailable' };
       pipelineId = local.id;
+      rawPipeline = local.rawPipeline;
       pipelineResolution = {
         status: 'resolved',
         scopes: parsePipelineText(local.rawPipeline).scope,
@@ -1461,6 +1465,22 @@ async function buildAutomationRequest(input: {
     } else {
       return { ok: false, error: 'pipeline-unavailable' };
     }
+  }
+
+  // CAN-6455: a workflow with a global target takes the fork's project and
+  // worktree as its inputs, which the portable document left empty.
+  let inputs: Record<string, string> | undefined;
+  if (action.type === 'worktree_pipeline' && action.target.kind === 'global') {
+    const bound = forkWorkflowInputs(
+      sharedWorkflowInputKinds(rawPipeline, action.inputKeys),
+      {
+        isCode,
+        projectId: response.projectId,
+        worktreeId: response.worktreeId,
+      },
+    );
+    if (!bound.ok) return { ok: false, error: 'incompatible-target' };
+    if (Object.keys(bound.inputs).length > 0) inputs = bound.inputs;
   }
 
   const config = 'modelConfig' in action ? action.modelConfig : undefined;
@@ -1517,6 +1537,7 @@ async function buildAutomationRequest(input: {
       ...(pipelineId !== undefined
         ? { pipelineId, pipelineSource: 'user' as const }
         : {}),
+      ...(inputs ? { inputs } : {}),
       ...(pluginSelections ? { pluginSelections } : {}),
     },
     input.deps.now().toISOString(),
@@ -1586,6 +1607,9 @@ function retargetAction(
         existingWorktreeId: response.worktreeId,
       };
     case 'worktree_pipeline':
+      // A global target has no worktree to point at; its inputs name the
+      // fork (CAN-6455), and a worktree here would fail validation.
+      if (action.target?.kind === 'global') return action;
       return {
         ...action,
         workspaceId: response.projectId,

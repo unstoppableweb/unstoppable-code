@@ -90,6 +90,8 @@ export const SHELL_QUERY_PORTAL_TYPES = {
   'pipeline.get': 'portal.pipeline.get',
   'pipeline.executions': 'portal.pipeline.execution_list',
   'pipeline.execution': 'portal.pipeline.execution.get',
+  /** A cowork project's archived and deleted Work Entries (CAN-5986). */
+  'workEntries.archived': 'portal.workspace.archived_work_entries.list',
 } as const satisfies Readonly<Record<string, PortalCommandType>>;
 
 export type ShellCommandName = keyof typeof SHELL_COMMAND_PORTAL_TYPES;

@@ -7,6 +7,7 @@ import { CanopyOperationError } from '../../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../../runtime/types';
 import {
   createWorkerAgentProviderHandlers,
+  createWorkerAgentUsageLimitsHandlers,
   type WorkerAgentProviderHandlers,
   type WorkerAgentProviderHost,
 } from '..';
@@ -23,6 +24,31 @@ const context: CanopyHandlerContext = {
   metadata: {},
   signal: new AbortController().signal,
 };
+
+it('usage reads distinguish an absent host from a failed source without exposing raw errors', async () => {
+  await expect(
+    createWorkerAgentUsageLimitsHandlers().queries[
+      'worker.agent.usageLimits.get'
+    ]({ scope: {} }, context),
+  ).rejects.toMatchObject({
+    payload: { kind: 'capability_unavailable', retry: { kind: 'never' } },
+  });
+  const get = jest.fn((): never => {
+    throw new Error('raw credential path /private/identity');
+  });
+  const handler = createWorkerAgentUsageLimitsHandlers({
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    get,
+  }).queries['worker.agent.usageLimits.get'];
+  await expect(handler({ scope: {} }, context)).rejects.toMatchObject({
+    payload: {
+      kind: 'internal',
+      message: 'Cached provider usage could not be read.',
+      retry: { kind: 'never' },
+    },
+  });
+});
 
 function provider(
   providerId: WorkerAgentProviderId,

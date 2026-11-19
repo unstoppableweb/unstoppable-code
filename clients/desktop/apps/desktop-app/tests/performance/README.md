@@ -51,6 +51,7 @@ pnpm run perf:desktop --profile baseline --scenarios browser-actions --browser-a
 pnpm run build && node --import tsx apps/desktop-app/tests/performance/run.mjs --release-like --profile baseline --scenarios browser-actions --browser-actions-iterations 50
 pnpm run perf:desktop --profile baseline --scenarios browser-agent-actions
 pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/to/unchanged --candidate-root . --profile baseline --scenarios code-review-registry-cleanup
+pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/to/unchanged --candidate-root . --profile baseline --scenarios owned-automations-list
 pnpm run perf:desktop --profile smoke --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store daemon-record-port
 pnpm run perf:desktop:compare:interleaved --baseline-root . --candidate-root . --profile baseline --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store-arms in-process,daemon-record-port
 ```

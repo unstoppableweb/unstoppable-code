@@ -1,5 +1,6 @@
 'use client';
 
+import { toggledAccountSelection } from '../../capability/accountMcpRows';
 import { Count } from '@canopy/ui-shared/components/Badge';
 import {
   memo,
@@ -904,6 +905,29 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
     setMarketplaceDialogOpen(false);
     setMarketplaceAdded(null);
   }, [setOpen]);
+  // Each account's selection key, to every account key of its connector, for
+  // a curated connector the person holds several accounts of (CAN-6229).
+  const accountSiblingKeys = useMemo(() => {
+    const byConnector = new Map<string, string[]>();
+    for (const server of catalog?.mcpServers ?? []) {
+      if (!server.connectionId || server.connectionKind !== 'CURATED') continue;
+      byConnector.set(server.serverId, [
+        ...(byConnector.get(server.serverId) ?? []),
+        mcpKey(server.serverId, server.configId),
+      ]);
+    }
+    const siblings = new Map<string, readonly string[]>();
+    for (const [serverId, keys] of byConnector) {
+      if (keys.length < 2) continue;
+      // A saved `default` ref with no account under that config reaches the
+      // default account, so it is one of the connector's accounts too, as in
+      // `withMcpServerAccount`.
+      const alias = mcpKey(serverId, 'default');
+      const group = keys.includes(alias) ? keys : [...keys, alias];
+      for (const key of keys) siblings.set(key, group);
+    }
+    return siblings;
+  }, [catalog]);
   const toggle = useCallback(
     (key: string): void => {
       if (savingRef.current) return;
@@ -912,13 +936,24 @@ const PortalPluginsPickerContent = memo(function PortalPluginsPickerContent({
       if (!setName || selectionKey === undefined) return;
       setDraft((current) => {
         if (!current) return current;
-        const nextSet = new Set(current[setName]);
-        if (nextSet.has(selectionKey)) nextSet.delete(selectionKey);
-        else nextSet.add(selectionKey);
+        // Picking an account of a connector unchecks its other accounts, so
+        // the chat acts as the one picked (CAN-6229).
+        const nextSet =
+          setName === 'mcpKeys'
+            ? toggledAccountSelection(
+                current.mcpKeys,
+                selectionKey,
+                accountSiblingKeys.get(selectionKey),
+              )
+            : new Set(current[setName]);
+        if (setName !== 'mcpKeys') {
+          if (nextSet.has(selectionKey)) nextSet.delete(selectionKey);
+          else nextSet.add(selectionKey);
+        }
         return { ...current, [setName]: nextSet };
       });
     },
-    [projection],
+    [accountSiblingKeys, projection],
   );
   const addLocal = useCallback(
     async (key: string): Promise<void> => {

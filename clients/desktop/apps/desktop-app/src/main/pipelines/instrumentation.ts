@@ -1,23 +1,43 @@
+import { parseShareFailure } from '@canopy/protocol/sharing';
 import { randomUUID } from 'node:crypto';
 import { createDesktopInstrumentationOperationKey } from '@canopy/desktop-instrumentation';
 import {
   failDesktopOperation,
+  reportMainAppError,
   startDesktopOperation,
   succeedDesktopOperation,
 } from '@canopy/desktop-instrumentation/electron/main';
+import { createAppError } from '@canopy/protocol/app-errors';
 import type {
   DesktopInstrumentationContext,
   DesktopInstrumentationFailureReason,
 } from '@canopy/desktop-instrumentation';
 import type {
+  ExecutionFailureCode,
   IPCResult,
   PipelineTriggerType,
+  StepResult,
 } from '@canopy/execution-engine/types/pipeline';
-import type { ExecutionState } from '@canopy/execution-engine/node/pipelines/executor/types';
+import type {
+  ExecutionState,
+  NormalizedStep,
+  PipelineEngineErrorSite,
+} from '@canopy/execution-engine/node/pipelines/executor/types';
 import { getExecutionRunDurationMs } from '@canopy/execution-engine/node/pipelines/executor';
+import {
+  isExecutionFailureCode,
+  isExecutionFailureOrigin,
+} from '@canopy/execution-engine/node/pipelines/executor/execution-failure';
+import {
+  PIPELINE_HOST_FAILURE_REASON_OUTPUT,
+  PIPELINE_HOST_FAILURE_REASONS,
+  type PipelineHostFailureReason,
+} from '@canopy/execution-engine/pipelines/host-actions';
 
 const PIPELINE_CRUD_OPERATION_NAME = 'canopy.pipeline_crud';
 const PIPELINE_EXECUTION_OPERATION_NAME = 'canopy.pipeline_execution';
+const PIPELINE_STATE_SAVE_ERROR_SOURCE = 'pipeline.execution_state_save';
+const PIPELINE_ENGINE_ERROR_SOURCE = 'pipeline.engine';
 
 export type PipelineCrudAction =
   | 'list'
@@ -105,6 +125,83 @@ function buildExecutionContext(
       state.completed_at !== undefined
         ? getExecutionRunDurationMs(state)
         : undefined,
+    // A closed code only, never the save error's text (CAN-7095).
+    persist_failure_code: state.persist_failure_code,
+    ...buildFailureContext(state),
+  };
+}
+
+const HOST_FAILURE_REASONS: ReadonlySet<string> = new Set(
+  PIPELINE_HOST_FAILURE_REASONS,
+);
+
+function isHostFailureReason(
+  value: unknown,
+): value is PipelineHostFailureReason {
+  return typeof value === 'string' && HOST_FAILURE_REASONS.has(value);
+}
+
+/** The run's earliest-ended failed step, with its definition when known. */
+function firstFailedStep(
+  state: ExecutionState,
+): { step: StepResult; definition: NormalizedStep | undefined } | undefined {
+  let first:
+    | { step: StepResult; definition: NormalizedStep | undefined }
+    | undefined;
+  for (const [jobId, job] of Object.entries(state.jobs)) {
+    for (const [stepId, step] of Object.entries(job.steps)) {
+      if (step.status !== 'failure') continue;
+      if (
+        first !== undefined &&
+        (step.completed_at === undefined ||
+          (first.step.completed_at !== undefined &&
+            first.step.completed_at <= step.completed_at))
+      )
+        continue;
+      const definition = (
+        state.job_definitions[jobId] ?? state.pipeline_snapshot.jobs[jobId]
+      )?.steps.find((candidate) => candidate.id === stepId);
+      first = { step, definition };
+    }
+  }
+  return first;
+}
+
+/** What kind of step failed, as a closed value. */
+function failedStepKind(
+  step: StepResult,
+  definition: NormalizedStep | undefined,
+): 'run' | 'agent' | 'pipeline' | 'builtin' | 'action' | undefined {
+  if (definition?.run !== undefined) return 'run';
+  if (step.agent_provider !== undefined) return 'agent';
+  const uses = definition?.uses;
+  if (uses === undefined) return undefined;
+  if (uses === 'builtin/run-pipeline') return 'pipeline';
+  return uses.startsWith('builtin/') ? 'builtin' : 'action';
+}
+
+/**
+ * Why the run failed, in closed values only (CAN-7118): the engine's own
+ * failure when it threw, else its first failed step's origin and code, that
+ * step's typed host failure reason and its kind. Never an error's text.
+ */
+function buildFailureContext(
+  state: ExecutionState,
+): DesktopInstrumentationContext {
+  const failed = firstFailedStep(state);
+  const engineFailed = state.failure_origin !== undefined;
+  const origin = engineFailed
+    ? state.failure_origin
+    : failed && (failed.step.failure_origin ?? 'step');
+  const code = engineFailed ? state.failure_code : failed?.step.failure_code;
+  const reason = failed?.step.outputs[PIPELINE_HOST_FAILURE_REASON_OUTPUT];
+  return {
+    failure_origin: isExecutionFailureOrigin(origin) ? origin : undefined,
+    failure_code: isExecutionFailureCode(code) ? code : undefined,
+    failed_step_failure_reason: isHostFailureReason(reason)
+      ? reason
+      : undefined,
+    failed_step_kind: failed && failedStepKind(failed.step, failed.definition),
   };
 }
 
@@ -154,6 +251,31 @@ function getResultCount(result: unknown): number | undefined {
   return undefined;
 }
 
+function shareFailureTelemetryContext(
+  result: unknown,
+): DesktopInstrumentationContext {
+  try {
+    if (
+      typeof result !== 'object' ||
+      result === null ||
+      !('success' in result) ||
+      result.success !== false ||
+      !('failure' in result)
+    )
+      return {};
+    const failure = parseShareFailure(result.failure);
+    return failure
+      ? {
+          share_failure_kind: failure.kind,
+          share_failure_stage: failure.stage,
+        }
+      : {};
+  } catch {
+    // Enrichment must not replace an operation's result with a telemetry error.
+    return {};
+  }
+}
+
 export async function withPipelineCrudTelemetry<T>(
   context: PipelineCrudTelemetryContext,
   operation: () => T | Promise<T>,
@@ -176,6 +298,7 @@ export async function withPipelineCrudTelemetry<T>(
       ...baseContext,
       status: failed ? 'failure' : 'success',
       result_count: getResultCount(result),
+      ...shareFailureTelemetryContext(result),
     };
     if (failed) {
       failDesktopOperation(PIPELINE_CRUD_OPERATION_NAME, 'error', {
@@ -218,6 +341,7 @@ export function withPipelineCrudTelemetrySync<T extends IPCResult<unknown>>(
       ...baseContext,
       status: result.success ? 'success' : 'failure',
       result_count: getResultCount(result),
+      ...shareFailureTelemetryContext(result),
     };
     if (result.success) {
       succeedDesktopOperation(PIPELINE_CRUD_OPERATION_NAME, {
@@ -270,4 +394,103 @@ export function finishPipelineExecutionTelemetry(state: ExecutionState): void {
       context,
     },
   );
+}
+
+/**
+ * Stands in for the save's own error, which is gone by the time its run
+ * settles. Its text is fixed, and only its V8 frames leave the app.
+ */
+class PipelineStateSaveError extends Error {
+  constructor() {
+    super("Couldn't save a pipeline run's state");
+    this.name = 'PipelineStateSaveError';
+  }
+}
+
+/**
+ * Reports a settled run whose state a save could not write (CAN-7095) as one
+ * app error. It carries the closed code only, as its source and status: the
+ * save's error is gone by now, and its text, the run's error and its paths
+ * never leave. The frames are this report's own, so the error is told apart
+ * from other unexpected failures. A run whose saves all landed reports
+ * nothing, and neither does one the store refused because another owner holds
+ * it or this runner's lease ended: that owner's saved state stands (CAN-6198).
+ */
+export function reportPipelinePersistFailure(state: ExecutionState): void {
+  const code = state.persist_failure_code;
+  if (
+    code === undefined ||
+    code === 'write_refused_owned_by_other_process' ||
+    code === 'write_refused_owner_fenced'
+  )
+    return;
+  try {
+    const nativeError = new PipelineStateSaveError();
+    reportMainAppError(
+      createAppError(
+        code === 'ENOSPC' || code === 'EDQUOT'
+          ? 'external.disk_full'
+          : 'app.unexpected',
+        {
+          source: `${PIPELINE_STATE_SAVE_ERROR_SOURCE}:${code}`,
+          detail: {
+            name: nativeError.name,
+            message: nativeError.message,
+            status: code,
+          },
+        },
+      ),
+      { nativeError },
+    );
+  } catch {
+    // Reporting never changes how the run settles.
+  }
+}
+
+/**
+ * Stands in for an engine or host-port error the run met (CAN-7118). Its
+ * text is fixed, and only its V8 frames leave the app.
+ */
+class PipelineEngineError extends Error {
+  constructor() {
+    super('A pipeline run met an internal error');
+    this.name = 'PipelineEngineError';
+  }
+}
+
+/**
+ * Reports an error the pipeline engine absorbed or failed a run with
+ * (CAN-7118) as one app error. It carries the closed site and code only, as
+ * its source and status: the error itself, its message and the run's paths
+ * never leave. The frames are this report's own, as for a failed save.
+ */
+export function reportPipelineEngineError(
+  _error: unknown,
+  context: {
+    readonly site: PipelineEngineErrorSite;
+    readonly code: ExecutionFailureCode;
+  },
+): void {
+  try {
+    const { site, code } = context;
+    const nativeError = new PipelineEngineError();
+    reportMainAppError(
+      createAppError(
+        code === 'ENOSPC' || code === 'EDQUOT'
+          ? 'external.disk_full'
+          : 'app.unexpected',
+        {
+          source: `${PIPELINE_ENGINE_ERROR_SOURCE}.${site}:${code}`,
+          detail: {
+            name: nativeError.name,
+            message: nativeError.message,
+            status: code,
+          },
+        },
+      ),
+      { nativeError },
+    );
+  } catch {
+    // Reporting never changes how the run goes.
+  }
 }

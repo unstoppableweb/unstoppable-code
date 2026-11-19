@@ -1,5 +1,6 @@
 import { relative, sep } from 'node:path';
 import type { RepoRulesScanRequest } from '@canopy/protocol/repo-rules';
+import { RepoRulesCheckoutsUnreadableError } from '@canopy/core-runtime/node/workspace/repo-rules';
 import {
   WORKSPACE_ROOT_REPO_ID,
   SINGLE_REPO_USAGE_REPO_ID,
@@ -24,6 +25,7 @@ export async function resolveRepoRuleCheckouts(
   const { config, authority } = await readWorkspaceConfigDetailed(
     request.workspaceId,
   );
+  if (authority === 'unreadable') throw new RepoRulesCheckoutsUnreadableError();
   if (authority !== 'ok' || config.type === 'cowork')
     throw new Error('The code workspace is unavailable.');
   if (request.worktreeId) {

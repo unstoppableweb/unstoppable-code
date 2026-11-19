@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { withGitRequestContextEnv } from '@canopy/desktop-shared/node/git-request-context';
 import {
   copyFile,
   access,
@@ -115,7 +116,9 @@ async function runGitCommand(args: {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(executable, args.gitArgs, {
       cwd: args.repoPath,
-      env: args.env,
+      // Whichever runtime is installed, launches carry the active Git
+      // request context for diagnostic attribution (CAN-4397).
+      env: withGitRequestContextEnv(args.env),
       detached: runtime.detached ?? false,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: process.platform === 'win32',
@@ -376,8 +379,11 @@ async function assertNoNestedGitRepositoriesInTrackedPaths(
       join(repoPath, relativePath, '.git'),
     );
     if (hasGitMetadata) {
-      throw new Error(
-        `Cannot archive an embedded Git repository containing outer-repository files: ${relativePath}`,
+      throw Object.assign(
+        new Error(
+          `Cannot archive an embedded Git repository containing outer-repository files: ${relativePath}`,
+        ),
+        { code: 'GIT_CAPTURE_NESTED_REPOSITORY' },
       );
     }
   }
@@ -458,7 +464,10 @@ export async function assertWorktreeSnapshotSupported(
     unmerged.length > 0 ||
     porcelainV2.split('\0').some((line) => line.startsWith('u '))
   ) {
-    throw new Error('Cannot archive a worktree with unresolved conflicts.');
+    throw Object.assign(
+      new Error('Cannot archive a worktree with unresolved conflicts.'),
+      { code: 'GIT_CAPTURE_CONFLICTS' },
+    );
   }
 
   const hasIntentToAddV1 = porcelainV1
@@ -468,8 +477,11 @@ export async function assertWorktreeSnapshotSupported(
     .split('\0')
     .some((line) => /^(?:1|2) \.A /.test(line));
   if (hasIntentToAddV1 || hasIntentToAddV2) {
-    throw new Error(
-      'Cannot archive files marked intent-to-add. Stage or unstage them first.',
+    throw Object.assign(
+      new Error(
+        'Cannot archive files marked intent-to-add. Stage or unstage them first.',
+      ),
+      { code: 'GIT_CAPTURE_INTENT_TO_ADD' },
     );
   }
 
@@ -482,7 +494,10 @@ export async function assertWorktreeSnapshotSupported(
     );
   });
   if (hasDirtySubmodule) {
-    throw new Error('Cannot archive a worktree with dirty nested submodules.');
+    throw Object.assign(
+      new Error('Cannot archive a worktree with dirty nested submodules.'),
+      { code: 'GIT_CAPTURE_DIRTY_SUBMODULE' },
+    );
   }
 
   for (const relativePath of untracked.split('\0').filter(Boolean)) {
@@ -493,8 +508,11 @@ export async function assertWorktreeSnapshotSupported(
     if (!isDirectory) continue;
     const hasGitMetadata = await gitMetadataExists(join(untrackedPath, '.git'));
     if (hasGitMetadata) {
-      throw new Error(
-        `Cannot archive an untracked nested Git repository: ${relativePath}`,
+      throw Object.assign(
+        new Error(
+          `Cannot archive an untracked nested Git repository: ${relativePath}`,
+        ),
+        { code: 'GIT_CAPTURE_NESTED_REPOSITORY' },
       );
     }
   }
@@ -844,7 +862,7 @@ export async function streamGitNulTokens(args: {
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(executable, args.gitArgs, {
       cwd: args.repoPath,
-      env: archiveGitEnv(),
+      env: withGitRequestContextEnv(archiveGitEnv()),
       detached: runtime.detached ?? false,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: process.platform === 'win32',

@@ -1,6 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import {
+  createPipelineLocalMetadataStore,
+  type PipelineLocalMetadataCodec,
+} from '@canopy/core-runtime/node/pipeline/store';
 import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
 import type {
   ChatPluginDefault,
@@ -98,13 +101,6 @@ export interface PipelineNativeGrant extends PipelineNativeGrantAuthority {
   automationId: string;
   pipelineRevision: number;
   contentHash: string;
-}
-
-interface PipelineLocalMetadataFile {
-  version: 1;
-  entries: Record<string, PipelineLocalMetadata>;
-  /** The file exists but can't be read; it is never overwritten. */
-  unreadable?: true;
 }
 
 function warn(message: string): void {
@@ -291,121 +287,6 @@ function normalizeNativeGrant(value: unknown): PipelineNativeGrant | undefined {
   };
 }
 
-/**
- * The last parsed file. Main is the only writer, and every write here
- * replaces the file atomically (a new inode) and refreshes this copy; the
- * stat key only lets a read notice a file replaced some other way.
- */
-let cachedFile:
-  | {
-      filePath: string;
-      key: string;
-      file: PipelineLocalMetadataFile;
-    }
-  | undefined;
-
-function statKey(stat: fs.Stats): string {
-  return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-}
-
-function copyOf(file: PipelineLocalMetadataFile): PipelineLocalMetadataFile {
-  return { ...file, entries: { ...file.entries } };
-}
-
-function rememberFile(filePath: string, file: PipelineLocalMetadataFile): void {
-  try {
-    cachedFile = {
-      filePath,
-      key: statKey(fs.statSync(filePath)),
-      file: copyOf(file),
-    };
-  } catch {
-    cachedFile = undefined;
-  }
-}
-
-function readMetadataFile(): PipelineLocalMetadataFile {
-  const filePath = getPipelineLocalMetadataFilePath();
-  try {
-    const key = statKey(fs.statSync(filePath));
-    if (cachedFile?.filePath === filePath && cachedFile.key === key)
-      return copyOf(cachedFile.file);
-  } catch {
-    // Missing or unreadable; parsing below reports which.
-  }
-  const file = parseMetadataFile(filePath);
-  // Only a parsed file is kept; a failed read is retried on the next call.
-  if (file.unreadable) cachedFile = undefined;
-  else rememberFile(filePath, file);
-  return file;
-}
-
-function parseMetadataFile(filePath: string): PipelineLocalMetadataFile {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch (error) {
-    const code =
-      typeof error === 'object' && error !== null && 'code' in error
-        ? error.code
-        : undefined;
-    if (code === 'ENOENT') return { version: 1, entries: {} };
-    warn('Failed to parse metadata file; using empty defaults.');
-    return { version: 1, entries: {}, unreadable: true };
-  }
-  if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.entries)) {
-    warn('Unsupported metadata file version or shape; using empty defaults.');
-    return { version: 1, entries: {}, unreadable: true };
-  }
-  const entries: Record<string, PipelineLocalMetadata> = {};
-  for (const [locatorKey, rawEntry] of Object.entries(parsed.entries)) {
-    const entry = normalizeEntry(rawEntry);
-    if (Object.keys(entry).length > 0) entries[locatorKey] = entry;
-  }
-  return { version: 1, entries };
-}
-
-function writeMetadataFile(file: PipelineLocalMetadataFile): void {
-  const filePath = getPipelineLocalMetadataFilePath();
-  // Rewriting a file that can't be read would drop every owner it holds.
-  if (file.unreadable) {
-    warn('Metadata file is unreadable; leaving it unchanged.');
-    return;
-  }
-  const entries: Record<string, PipelineLocalMetadata> = {};
-  for (const [locatorKey, entry] of Object.entries(file.entries)) {
-    if (Object.keys(entry).length > 0) entries[locatorKey] = entry;
-  }
-  // Metadata never fails the save or run that records it.
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    writeFileAtomicallySync(
-      filePath,
-      `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
-      {
-        encoding: 'utf8',
-        mode: 0o600,
-        durable: true,
-        admittedWriter: {
-          namespace: 'pipeline_local_metadata',
-          writer: 'electron_main',
-          module: 'main/pipelines/pipeline-local-metadata-store',
-        },
-      },
-    );
-    rememberFile(filePath, { version: 1, entries });
-  } catch (error) {
-    if (isStorageOutcomeUnknownError(error)) {
-      rememberFile(filePath, { version: 1, entries });
-      warn('Metadata file installed, but its folder flush failed.');
-      return;
-    }
-    warn(
-      `Failed to write metadata file: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
 function userPipelineKey(pipelineId: string): string {
   return serializePipelinePreferenceLocator({
     type: 'stored',
@@ -414,15 +295,52 @@ function userPipelineKey(pipelineId: string): string {
   });
 }
 
-/** Synchronous read-modify-write keeps writes ordered on the main event loop. */
+/**
+ * How Electron main reads a stored entry and names a user pipeline's, for a
+ * trusted composition of the same file over another host (CAN-7057).
+ */
+export const pipelineLocalMetadataCodec: PipelineLocalMetadataCodec<PipelineLocalMetadata> =
+  { normalizeEntry, userPipelineKey };
+
+/**
+ * The file over Electron main's data root (CAN-5092): the portable store
+ * keeps its read, write and recovery policy, and this module keeps its path
+ * and its atomic, durable write. Synchronous read-modify-write keeps writes
+ * ordered on the main event loop.
+ */
+const metadataStore = createPipelineLocalMetadataStore<PipelineLocalMetadata>(
+  {
+    location: () => getPipelineLocalMetadataFilePath(),
+    stat: () => fs.statSync(getPipelineLocalMetadataFilePath()),
+    readText: () => fs.readFileSync(getPipelineLocalMetadataFilePath(), 'utf8'),
+    install: (data) => {
+      const filePath = getPipelineLocalMetadataFilePath();
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileAtomicallySync(filePath, data, {
+        encoding: 'utf8',
+        mode: 0o600,
+        durable: true,
+        admittedWriter: {
+          namespace: 'pipeline_local_metadata',
+          writer: 'electron_main',
+          module: 'main/pipelines/pipeline-local-metadata-store',
+        },
+      });
+    },
+    warn,
+  },
+  pipelineLocalMetadataCodec,
+);
+
+function readMetadataFile(): ReturnType<typeof metadataStore.read> {
+  return metadataStore.read();
+}
+
 function updateUserPipelineEntry(
   pipelineId: string,
   update: (entry: PipelineLocalMetadata) => PipelineLocalMetadata,
 ): void {
-  const file = readMetadataFile();
-  const key = userPipelineKey(pipelineId);
-  file.entries[key] = update({ ...file.entries[key] });
-  writeMetadataFile(file);
+  metadataStore.updateUserPipeline(pipelineId, update);
 }
 
 /** Whether stored owners can be read; a missing file counts as readable. */
@@ -609,9 +527,5 @@ export function markUserPipelineAgentHidden(pipelineId: string): boolean {
 }
 
 export function deleteUserPipelineLocalMetadata(pipelineId: string): void {
-  const file = readMetadataFile();
-  const key = userPipelineKey(pipelineId);
-  if (!file.entries[key]) return;
-  delete file.entries[key];
-  writeMetadataFile(file);
+  metadataStore.deleteUserPipeline(pipelineId);
 }

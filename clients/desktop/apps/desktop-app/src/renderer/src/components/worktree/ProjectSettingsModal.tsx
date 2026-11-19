@@ -140,11 +140,16 @@ import {
   PlanModeIcon,
   PlusIcon,
   PluginsIcon,
+  SkillIcon,
   SettingsIcon,
   TerminalBorderedIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { WorkspaceEnvironmentTab } from './WorkspaceEnvironmentTab';
+import {
+  ProjectSharedSetupPage,
+  useShowsProjectSharedSetup,
+} from './ProjectSharedSetupPage';
 import { WorkspacePlanDetectionSection } from './WorkspacePlanDetectionSection';
 import { CodeGraphSummaryPanel } from './CodeGraphSummaryPanel';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -286,6 +291,11 @@ const PAGE_COPY: Record<
     description:
       'Plugins this project recommends, and the ones new chats start with.',
   },
+  'shared-setup': {
+    label: 'Shared setup',
+    description:
+      'Everything this project runs with, such as skills, plugins, scripts and hooks, and where each comes from.',
+  },
   environment: {
     label: 'Environment',
     description:
@@ -307,6 +317,7 @@ const PAGE_ICONS: Record<ProjectSettingsPageId, ReactNode> = {
   scripts: <TerminalBorderedIcon size="sm" />,
   plans: <PlanModeIcon size="sm" />,
   plugins: <PluginsIcon size="sm" />,
+  'shared-setup': <SkillIcon size="sm" />,
   environment: <CodeBracketsIcon size="sm" />,
   'start-page': <LayoutWindowIcon size="sm" />,
   'code-graph': <GraphIcon size="sm" />,
@@ -317,6 +328,7 @@ const PAGE_ORDER: readonly ProjectSettingsPageId[] = [
   'scripts',
   'plans',
   'plugins',
+  'shared-setup',
   'environment',
   'start-page',
   'code-graph',
@@ -502,18 +514,20 @@ export function ProjectSettingsModal({
   const privateMemory = usePrivateMemoryDraft(project);
   const resetPrivateMemory = privateMemory.reset;
 
+  const showsSharedSetup = useShowsProjectSharedSetup(project.owner);
   const visiblePages = useMemo(
     (): ProjectSettingsNavItem<ProjectSettingsPageId>[] =>
       PAGE_ORDER.filter(
         (page) =>
           (page !== 'start-page' || startPageEnabled) &&
-          (page !== 'code-graph' || codeGraphExperimentEnabled),
+          (page !== 'code-graph' || codeGraphExperimentEnabled) &&
+          (page !== 'shared-setup' || showsSharedSetup),
       ).map((page) => ({
         id: page,
         label: PAGE_COPY[page].label,
         icon: PAGE_ICONS[page],
       })),
-    [codeGraphExperimentEnabled, startPageEnabled],
+    [codeGraphExperimentEnabled, showsSharedSetup, startPageEnabled],
   );
 
   // A flag turned off at runtime moves the user off its page.
@@ -2660,6 +2674,9 @@ export function ProjectSettingsModal({
       />
     ),
     plugins: () => pluginsPage,
+    'shared-setup': () => (
+      <ProjectSharedSetupPage workspace={project} onClose={handleClose} />
+    ),
     environment: () => (
       <WorkspaceEnvironmentTab
         layout="settings"
@@ -2774,7 +2791,11 @@ export function ProjectSettingsModal({
           <SettingsSaveStatus
             state={saveState}
             idleLabel={
-              activePage === 'scripts' || activePage === 'start-page'
+              // Shared setup shows its own state: members get a read-only
+              // notice, so the page header claims no saving.
+              activePage === 'scripts' ||
+              activePage === 'start-page' ||
+              activePage === 'shared-setup'
                 ? null
                 : 'Changes save automatically'
             }

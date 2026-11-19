@@ -25,23 +25,19 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
-import { expect, test } from '../portal/fixtures.mjs';
+import { expect, test } from './harness/fixtures.mjs';
 import {
-  PORTAL_API_NAMESPACE,
   PORTAL_BETTER_AUTH_SECRET,
   PORTAL_WEB_ORIGIN,
   PORTAL_WEB_ORIGIN_LOOPBACK,
-} from '../portal/config.mjs';
+} from './harness/config.mjs';
 import {
   ensurePortalSchema,
   seededSessionCookie,
-  submitPortalPairingCode,
-  truncatePortalState,
-  waitForPortalState,
-} from '../portal/portalHarness.mjs';
-import { seedPortalWebUser } from '../portal/seedWebUser.mjs';
-import { withPortalDbClient } from '../portal/db.mjs';
-import { warmPortalRoutes } from '../portal/web-server.mjs';
+} from './harness/portalHarness.mjs';
+import { seedPortalWebUser } from './harness/seedWebUser.mjs';
+import { truncateWebTestState, withPortalDbClient } from './harness/db.mjs';
+import { warmPortalRoutes } from './harness/web-server.mjs';
 import {
   buildTrackedPlan,
   DEFAULT_MOCK_BASE_URL,
@@ -153,8 +149,6 @@ let desktop = null;
 let userA = null;
 let userB = null;
 let userC = null;
-let flagOverridesDir = null;
-let flagOverridesFile = null;
 /** The link-paired browser profile that most cases drive. */
 let primary = null;
 /** The code-paired browser profile, on its own session, signed out later. */
@@ -498,10 +492,6 @@ async function sendChat(page, text, reply) {
   await expect.poll(() => worktreeChatText(), POLL).toContain(reply);
 }
 
-function writeFlagOverrides(overrides) {
-  writeFileSync(flagOverridesFile, JSON.stringify(overrides), 'utf8');
-}
-
 const SCRIPT_CONTEXT = { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID };
 
 /** The demo worktree's script actions as the desktop itself lists them. */
@@ -550,16 +540,10 @@ test.beforeAll(async ({ portalServerManager }) => {
   // worker chunk can take minutes; the budget absorbs it here.
   test.setTimeout(900_000);
   await ensurePortalSchema();
-  await truncatePortalState();
-  flagOverridesDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-direct-web-'));
-  flagOverridesFile = path.join(flagOverridesDir, 'flags.json');
-  writeFlagOverrides({});
+  await truncateWebTestState();
   relay = await startDeviceRelay({ maxDevicesPerAccount: RELAY_DEVICE_CAP });
   webServer = await portalServerManager.acquire(
-    directWebServerOptions({
-      relay,
-      env: { CANOPY_PORTAL_E2E_FLAG_OVERRIDES_FILE: flagOverridesFile },
-    }),
+    directWebServerOptions({ relay }),
   );
   await warmPortalRoutes([
     { path: '/api/v1/device-relay/token', method: 'POST' },
@@ -619,8 +603,6 @@ test.afterAll(async () => {
   await desktop?.teardown();
   await webServer?.stop();
   await relay?.stop();
-  if (flagOverridesDir)
-    rmSync(flagOverridesDir, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -952,6 +934,7 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     hostDeviceId: desktop.deviceId,
     proofSecret: new Uint8Array(Buffer.from(secret, 'base64url')),
   });
+  let mainWindowClosed = false;
   try {
     const paired = (await browserControllers()).find(
       (entry) => entry.deviceId === controller.device.identity.deviceId,
@@ -1056,8 +1039,50 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     // Refusals leave the session usable.
     const after = await settle(transport.invoke('desktop:session-snapshot'));
     expect(after.ok, after.message).toBe(true);
+
+    // macOS keeps the host alive without a local window. The browser must
+    // still receive allowed pushes, not just successful invoke replies.
+    if (process.platform === 'darwin') {
+      const main = await desktop.electronApp.browserWindow(desktop.window);
+      const mainId = await main.evaluate((window) => window.id);
+      const closed = desktop.window.waitForEvent('close');
+      await main.evaluate((window) => window.close());
+      await closed;
+      mainWindowClosed = true;
+      // Playwright's page close can precede Electron's window destruction.
+      await expect
+        .poll(
+          () =>
+            desktop.electronApp.evaluate(
+              ({ BrowserWindow }, id) => BrowserWindow.fromId(id) === null,
+              mainId,
+            ),
+          POLL,
+        )
+        .toBe(true);
+      for (const noticesOnly of [false, true]) {
+        const read = await settle(
+          transport.invoke('desktop:session-snapshot', { noticesOnly }),
+        );
+        expect(read.ok, read.message).toBe(true);
+      }
+      const before = received.stale;
+      const invalidated = await settle(
+        transport.invoke('desktop:session-snapshot-invalidate'),
+      );
+      expect(invalidated.ok, invalidated.message).toBe(true);
+      await expect.poll(() => received.stale, POLL).toBeGreaterThan(before);
+      const refreshed = await settle(
+        transport.invoke('desktop:session-snapshot', { noticesOnly: false }),
+      );
+      expect(refreshed.ok, refreshed.message).toBe(true);
+      expect(received.preferences).toBe(0);
+      expect(received.terminal).toBe(0);
+      expect(received.found).toBe(0);
+    }
   } finally {
     controller.stop();
+    if (mainWindowClosed) await desktop.relaunch();
     await forgetController(controller.device.identity.deviceId);
   }
 });
@@ -1269,140 +1294,17 @@ test('owner: the relay’s device cap refuses another browser as too_many_device
 });
 
 // ---------------------------------------------------------------------------
-// Portal alongside direct, then Portal off
+// Synced desktop inventory and the Marketplace
 // ---------------------------------------------------------------------------
 
-test('Portal coexists with direct, and with Portal off its routes answer 410 while direct keeps working', async () => {
+test('inventory: the synced desktop inventory and the Marketplace serve over direct', async () => {
   test.setTimeout(600_000);
-  const portal = await openProfile(await seedSessionCookie(userA.userId));
+  const profile = await openProfile(await seedSessionCookie(userA.userId));
   try {
-    await desktop.window.evaluate(() => window.api.canopyPortal.start());
-    const pending = await waitForPortalState(
-      desktop.window,
-      (state) =>
-        state?.status === 'pending_auth' && Boolean(state?.pairingCode),
-    );
-    const page = await portal.open('/portal');
-    const connected = await submitPortalPairingCode(page, {
-      namespace: PORTAL_API_NAMESPACE,
-      code: pending.pairingCode,
-      isDesktopActivated: async () => {
-        try {
-          await waitForPortalState(
-            desktop.window,
-            (state) => state?.status === 'active',
-            3_000,
-          );
-          return true;
-        } catch {
-          return false;
-        }
-      },
-    });
-    expect(connected.status === 200 || connected.desktopActivated).toBe(true);
-    await waitForPortalState(
-      desktop.window,
-      (state) => state?.status === 'active',
-    );
-    await page.goto('/portal');
-    await expect(page.getByTestId('portal-shell')).toBeVisible({
-      timeout: 60_000,
-    });
-    await expect(page.getByText(PROJECT_NAME).first()).toBeVisible({
-      timeout: 60_000,
-    });
+    const page = await profile.open('/account/plugins');
 
-    // Direct keeps serving the paired profile alongside the Portal session:
-    // from the first request of a reload, through a whole chat turn, the
-    // page sends no Portal session traffic for its directly paired computer.
-    primary.portalRequests.length = 0;
-    await primary.page.reload();
-    await waitForOwnerState(
-      primary.page,
-      (state) =>
-        state.computers.some(
-          (computer) =>
-            computer.deviceId === desktop.deviceId &&
-            computer.session === 'open',
-        ),
-      'the direct session to reopen',
-    );
-    await expect(projectRow(primary.page)).toBeVisible({ timeout: 60_000 });
-    expect(primary.portalRequests).toEqual([]);
-    const alongside = await registerChatReply('ALONGSIDE');
-    await openWorktree(primary.page);
-    await openNewChat(primary.page);
-    await sendChat(primary.page, alongside.prompt, alongside.reply);
-    expect(primary.portalRequests).toEqual([]);
-
-    // Off /chat, the rail keeps the stored direct selection too: the Feed
-    // (a main-rail route that needs no paired computer) reads no Portal
-    // overview for the computer this browser controls directly, though a
-    // Portal session exists.
-    const sessionRead = primary.page.waitForResponse((response) =>
-      /\/portal\/browser\/session$/.test(new URL(response.url()).pathname),
-    );
-    await primary.page.goto('/portal/feed', { timeout: 300_000 });
-    await expect(
-      primary.page.getByTestId('sidebar-account-menu-trigger'),
-    ).toBeVisible({ timeout: 120_000 });
-    await sessionRead;
-    // Long enough for the baseline rail's overview read to have gone out.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-    expect(primary.portalRequests).toEqual([]);
-    await primary.page.goto('/chat', { timeout: 300_000 });
-    await expect(projectRow(primary.page)).toBeVisible({ timeout: 60_000 });
-
-    // Portal off: both Portal route families refuse before any side effect.
-    writeFlagOverrides({ 'canopy-portal-enabled': false });
-    const browserRoutes = await page.evaluate(async (namespace) => {
-      const session = await fetch(
-        `/api/v1/${namespace}/portal/browser/session`,
-      );
-      const connect = await fetch(
-        `/api/v1/${namespace}/portal/browser/connect`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code: '000000' }),
-        },
-      );
-      return [
-        { status: session.status, body: await session.json() },
-        { status: connect.status, body: await connect.json() },
-      ];
-    }, PORTAL_API_NAMESPACE);
-    for (const route of browserRoutes) {
-      expect(route).toEqual({ status: 410, body: { code: 'portal_retired' } });
-    }
-    const desktopRoute = await fetch(
-      `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/${PORTAL_API_NAMESPACE}/portal/sessions`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${userA.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: '{}',
-      },
-    );
-    expect(desktopRoute.status).toBe(410);
-    expect(await desktopRoute.json()).toEqual({ code: 'portal_retired' });
-
-    // Inventory sync and the Marketplace keep working with Portal off
-    // (CAN-6037): the Portal inventory alias retires, the account read serves
-    // the pushed documents including the installed-item snapshot, the
-    // Marketplace lists answer, and the desktop's manifest read is admitted.
-    const portalInventory = await page.evaluate(async (namespace) => {
-      const response = await fetch(
-        `/api/v1/${namespace}/portal/browser/inventory`,
-      );
-      return { status: response.status, body: await response.json() };
-    }, PORTAL_API_NAMESPACE);
-    expect(portalInventory).toEqual({
-      status: 410,
-      body: { code: 'portal_retired' },
-    });
+    // The account read serves the documents the desktop pushed, including the
+    // installed-item snapshot (CAN-6037).
     const readInventory = () =>
       page.evaluate(async () => {
         const response = await fetch('/api/account/desktop-inventory');
@@ -1433,6 +1335,9 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
       expect(typeof item.removable).toBe('boolean');
       expect(Array.isArray(item.notices)).toBe(true);
     }
+
+    // The Marketplace lists answer, and the desktop's manifest read is
+    // admitted.
     const catalogStatuses = await page.evaluate(async () =>
       Promise.all(
         [
@@ -1443,14 +1348,13 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
     );
     expect(catalogStatuses).toEqual([200, 200]);
     const manifest = await fetch(
-      `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/${PORTAL_API_NAMESPACE}/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`,
+      `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`,
       { headers: { Authorization: `Bearer ${userA.apiKey}` } },
     );
     expect(manifest.status).toBe(200);
 
-    // With no live session, Settings → Plugins counts the synced snapshot
-    // instead of asking to connect the desktop, and says when it was synced
-    // (CAN-6037).
+    // Settings → Plugins counts the synced snapshot instead of asking to
+    // connect the desktop, and says when it was synced (CAN-6037).
     await page.goto('/account/plugins');
     const activeItems = page.getByTestId('settings-plugins-active');
     await expect(
@@ -1462,30 +1366,10 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
       activeItems.getByTestId('active-items-summary-synced-at'),
     ).toHaveText(/^Updated (?:just now|\d+[smhd] ago)$/);
 
-    // Direct still works with Portal off: a fresh load lists the computer's
-    // rows and runs a chat turn there.
-    await primary.page.reload();
-    await expect(projectRow(primary.page)).toBeVisible({ timeout: 60_000 });
-    const turn = await registerChatReply('PORTALOFF');
-    await openWorktree(primary.page);
-    await openNewChat(primary.page);
-    await sendChat(primary.page, turn.prompt, turn.reply);
-    expect(primary.portalRequests).toEqual([]);
-
-    // The desktop's inventory sync gate opens on direct Remote Control alone
-    // (CAN-6037): with Portal off on the desktop too, the Labs Remote access
-    // switch (isRemoteControlEnabled) and the device and web-direct flags keep
-    // it pushing, so a relaunch re-sends the installed-item snapshot.
+    // The desktop's inventory sync gate opens on direct Remote Control
+    // (CAN-6037), so a relaunch re-sends the installed-item snapshot.
     const syncedBefore = installedItems.syncedAt;
-    await desktop.relaunch({
-      env: {
-        CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
-          'canopy-portal-enabled': false,
-          'canopy-device-remote-control': true,
-          'canopy-web-direct-remote-control': true,
-        }),
-      },
-    });
+    await desktop.relaunch();
     await expect
       .poll(
         async () => {
@@ -1498,16 +1382,99 @@ test('Portal coexists with direct, and with Portal off its routes answer 410 whi
         { timeout: 120_000 },
       )
       .toBe(true);
-    await desktop.relaunch();
+
+    // Opting out (CAN-5986). The documents DELETE needs an account and
+    // touches only that account's rows for the device: another account's
+    // delete of this device removes nothing.
+    const documentsUrl = `${PORTAL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(inventory.device.clientDeviceId)}`;
+    const ownDocumentCount = async () => {
+      const response = await fetch(documentsUrl, {
+        headers: { Authorization: `Bearer ${userA.apiKey}` },
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()).documents.length;
+    };
+    expect((await fetch(documentsUrl, { method: 'DELETE' })).status).toBe(401);
+    const otherAccountDelete = await fetch(documentsUrl, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${userB.apiKey}` },
+    });
+    expect(otherAccountDelete.status).toBe(200);
+    expect(await otherAccountDelete.json()).toEqual({ deleted: 0 });
+    expect(await ownDocumentCount()).toBeGreaterThan(0);
+
+    // Allow incoming off pauses uploads but never the opt-out. With no
+    // computers to control, the desktop also leaves the relay.
+    const allowOff = await desktop.window.evaluate(() =>
+      window.api.remoteControl.setAllowIncoming(false),
+    );
+    expect(allowOff.allowIncoming).toBe(false);
+    await relay.waitFor((ids) => !ids.has(desktop.deviceId), {
+      label: 'the desktop to leave the relay',
+    });
+
+    // Turning this computer's sync switch off deletes its documents on the
+    // web, and the settings row returns to idle once the delete lands.
+    const optedOut = await desktop.window.evaluate(() =>
+      window.api.remoteControl.setInventorySyncEnabled(false),
+    );
+    expect(optedOut.inventorySyncEnabled).toBe(false);
+    await expect.poll(ownDocumentCount, { ...POLL, timeout: 90_000 }).toBe(0);
+    await expect
+      .poll(
+        async () =>
+          (await readRemoteControlState(desktop.window)).inventoryDeleteStatus,
+        { ...POLL, timeout: 60_000 },
+      )
+      .toBe('idle');
+    expect(await readInventory()).toEqual({
+      status: 200,
+      body: { device: null, documents: [] },
+    });
+
+    // Turning it back on uploads nothing while Allow incoming is off (past
+    // the push debounce), and the lists upload again once it is on.
+    await desktop.window.evaluate(() =>
+      window.api.remoteControl.setInventorySyncEnabled(true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 6_000));
+    expect(await ownDocumentCount()).toBe(0);
+    await desktop.window.evaluate(() =>
+      window.api.remoteControl.setAllowIncoming(true),
+    );
+    await relay.waitFor((ids) => ids.has(desktop.deviceId), {
+      label: 'the desktop to rejoin the relay',
+    });
+    await expect
+      .poll(
+        async () =>
+          (await readInventory()).body.documents?.some(
+            (candidate) => candidate.kind === 'installed_items',
+          ) ?? false,
+        { timeout: 120_000 },
+      )
+      .toBe(true);
+    expect(await ownDocumentCount()).toBeGreaterThan(0);
+    // The paired browser the later cases drive reconnects on its own.
+    if (primary?.page) {
+      await waitForOwnerState(
+        primary.page,
+        (state) =>
+          state.computers.some(
+            (computer) =>
+              computer.deviceId === desktop.deviceId &&
+              computer.session === 'open',
+          ),
+        'the paired browser to reconnect',
+      );
+    }
   } finally {
-    await portal.close();
+    await profile.close();
   }
 });
 
-test('script review: a direct browser reviews detected scripts with Portal off, and the desktop sees the decision', async () => {
+test('script review: a direct browser reviews detected scripts, and the desktop sees the decision', async () => {
   test.setTimeout(300_000);
-  // Independent of the Portal-off test above, which leaves the flag off.
-  writeFlagOverrides({ 'canopy-portal-enabled': false });
   const page = primary.page;
   const packagePath = path.join(
     desktop.demo.workspaces[0].worktreePath,
@@ -1617,7 +1584,6 @@ test('script review: a direct browser reviews detected scripts with Portal off, 
   } finally {
     writeFileSync(packagePath, originalPackage, 'utf8');
     rmSync(repositoryRoot, { recursive: true, force: true });
-    writeFlagOverrides({});
   }
 });
 

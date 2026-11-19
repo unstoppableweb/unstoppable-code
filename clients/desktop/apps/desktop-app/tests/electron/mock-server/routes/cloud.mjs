@@ -42,7 +42,6 @@ const CLOUD_CAPABILITIES = [
   'account-v1',
   'organizations-v1',
   'teams-v1',
-  'portal-v1',
   'skills-crud-v1',
   'plugins-crud-v1',
   'agents-crud-v1',
@@ -166,8 +165,6 @@ function sharedContainersOrganization(scenarioKey) {
   };
 }
 
-const MOCK_SESSION_ID = 'portal-session-e2e';
-const MAX_LONG_POLL_TIMEOUT_MS = 25_000;
 const pipelinePackageUploads = new Map();
 const committedPipelinePackages = new Map();
 
@@ -1216,36 +1213,6 @@ function readBinaryBody(request) {
     request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
     request.on('end', () => resolve(Buffer.concat(chunks)));
     request.on('error', () => resolve(Buffer.alloc(0)));
-  });
-}
-
-function parseLongPollTimeout(url) {
-  const raw = url.searchParams.get('timeoutMs');
-  const parsed = raw == null ? 0 : Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-  return Math.min(Math.max(parsed, 0), MAX_LONG_POLL_TIMEOUT_MS);
-}
-
-function waitForLongPollTimeout(response, timeoutMs) {
-  if (timeoutMs <= 0 || response.destroyed || response.writableEnded) {
-    return Promise.resolve();
-  }
-
-  return new Promise((resolve) => {
-    let timer = null;
-    const finish = () => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      response.off('close', finish);
-      resolve();
-    };
-
-    timer = setTimeout(finish, timeoutMs);
-    response.once('close', finish);
   });
 }
 
@@ -3105,13 +3072,10 @@ export async function handleCloudRequest(request, response, url) {
         : {}),
       ...(bearer === SUBSCRIPTION_PILL_TRIAL_KEY
         ? {
-            // This dedicated fixture exposes every signed-in subscription
-            // upgrade surface: Remote Control lacks portal-v1. It also lacks
-            // data_sync_control (entitlements below), which no longer gates
-            // Privacy, so the pill spec asserts Privacy offers no upgrade.
-            capabilities: CLOUD_CAPABILITIES.filter(
-              (capability) => capability !== 'portal-v1',
-            ),
+            // This dedicated fixture lacks data_sync_control (entitlements
+            // below), which no longer gates Privacy, so the pill spec asserts
+            // Privacy offers no upgrade.
+            capabilities: CLOUD_CAPABILITIES,
           }
         : {}),
       // The scoped-links account shares to the organization its picker
@@ -3278,15 +3242,12 @@ export async function handleCloudRequest(request, response, url) {
             capabilities: [
               ...(bearer === MODEL_POLICY_CLOUD_API_KEY
                 ? [...CLOUD_CAPABILITIES, 'enforce_model_policy']
-                : bearer === SUBSCRIPTION_PILL_TRIAL_KEY
+                : bearer !== SUBSCRIPTION_PILL_TRIAL_KEY &&
+                    cloudScenario?.withholdOrgProjectsCapability === true
                   ? CLOUD_CAPABILITIES.filter(
-                      (capability) => capability !== 'portal-v1',
+                      (capability) => capability !== 'org-projects-v1',
                     )
-                  : cloudScenario?.withholdOrgProjectsCapability === true
-                    ? CLOUD_CAPABILITIES.filter(
-                        (capability) => capability !== 'org-projects-v1',
-                      )
-                    : CLOUD_CAPABILITIES),
+                  : CLOUD_CAPABILITIES),
               ...cloudScenario.extraCapabilities,
             ],
           }
@@ -5292,72 +5253,6 @@ export async function handleCloudRequest(request, response, url) {
       delete pipeline.package;
     }
     jsonResponse(response, 200, pipeline);
-    return true;
-  }
-
-  if (method === 'POST' && pathname === '/api/v1/canopy/portal/sessions') {
-    if (!hasValidAuth(request)) {
-      jsonResponse(response, 401, { error: 'Invalid API key.' });
-      return true;
-    }
-    jsonResponse(response, 201, {
-      sessionId: MOCK_SESSION_ID,
-      status: 'pending_auth',
-      pendingExpiresAt: new Date(Date.now() + 600_000).toISOString(),
-      commandCursor: 0,
-    });
-    return true;
-  }
-
-  if (
-    method === 'POST' &&
-    pathname === `/api/v1/canopy/portal/sessions/${MOCK_SESSION_ID}/commands`
-  ) {
-    await waitForLongPollTimeout(response, parseLongPollTimeout(url));
-    if (response.destroyed || response.writableEnded) {
-      return true;
-    }
-
-    jsonResponse(response, 200, {
-      session: {
-        id: MOCK_SESSION_ID,
-        status: 'pending_auth',
-        connectionStatus: 'pending',
-        activatedAt: null,
-        lastSeenAt: new Date().toISOString(),
-        endedAt: null,
-      },
-      commands: [],
-      nextCursor: 0,
-    });
-    return true;
-  }
-
-  if (
-    method === 'POST' &&
-    pathname === `/api/v1/canopy/portal/sessions/${MOCK_SESSION_ID}/heartbeat`
-  ) {
-    jsonResponse(response, 200, { ok: true, status: 'pending_auth' });
-    return true;
-  }
-
-  if (
-    method === 'POST' &&
-    pathname === `/api/v1/canopy/portal/sessions/${MOCK_SESSION_ID}/events`
-  ) {
-    jsonResponse(response, 200, {
-      accepted: 0,
-      duplicates: 0,
-      connectionStatus: 'pending',
-    });
-    return true;
-  }
-
-  if (
-    method === 'POST' &&
-    pathname === `/api/v1/canopy/portal/sessions/${MOCK_SESSION_ID}/end`
-  ) {
-    jsonResponse(response, 200, { ok: true });
     return true;
   }
 

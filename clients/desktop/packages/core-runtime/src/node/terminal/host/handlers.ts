@@ -21,7 +21,10 @@ import type {
   WorkerTerminalWriteResult,
 } from '@canopy/protocol/canopy-core';
 import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
-import { CanopyOperationError } from '../../../runtime/errors';
+import {
+  CanopyOperationError,
+  type SpawnFailureDetails,
+} from '../../../runtime/errors';
 import type {
   CanopyHandlerContext,
   CanopyStreamSink,
@@ -117,11 +120,13 @@ function terminalError(
   kind: CanopyErrorPayload['kind'],
   message: string,
   code?: 'worker.terminal.notFound' | 'worker.terminal.invalidState',
+  details?: SpawnFailureDetails,
 ): CanopyOperationError {
   return new CanopyOperationError({
     kind,
     ...(code && { code }),
     message,
+    ...(details && { details: { ...details } }),
     retry: { kind: 'never' },
   });
 }
@@ -152,7 +157,12 @@ function translate(error: unknown): unknown {
         'This worker has no room for another terminal or attachment.',
       );
     case 'unavailable':
-      return terminalError('unavailable', 'The terminal host is unavailable.');
+      return terminalError(
+        'unavailable',
+        'The terminal host is unavailable.',
+        undefined,
+        error.startFailure,
+      );
     case 'failed':
       return terminalError('internal', 'The terminal operation failed.');
   }

@@ -588,7 +588,14 @@ export function createDurableTerminalClient(
         ),
       );
     },
-    'terminal.worktreeState.save': ({ projectId, worktreeId, ...layout }) => {
+    'terminal.worktreeState.save': ({
+      projectId,
+      worktreeId,
+      forgetTerminalIds,
+      ...layout
+    }) => {
+      // terminal.kill drops a closed terminal's history; a layout save never does.
+      void forgetTerminalIds;
       layouts.set(`${projectId}/${worktreeId}`, layout);
       return Promise.resolve();
     },

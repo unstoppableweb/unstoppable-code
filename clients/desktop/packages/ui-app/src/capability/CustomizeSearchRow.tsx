@@ -14,8 +14,10 @@ import { customizeTabHasInstalledStatuses } from './customizeSections';
 import {
   CustomizeDiscoveryFilterMenu,
   type CustomizeDiscoveryFilterMenuProps,
+  type CustomizeWorkflowFilters,
 } from './CustomizeDiscoveryFilterMenu';
 import { useCustomizeDiscoveryEnabled } from './CustomizeDiscoveryProvider';
+import { CustomizeFilterPills } from './CustomizeFilterPills';
 
 export interface CustomizeSearchRowProps {
   readonly tab: MarketplaceTypeTabId;
@@ -39,6 +41,11 @@ export interface CustomizeSearchRowProps {
    * Installed status filter, whose statuses its Status filter covers.
    */
   readonly discovery?: CustomizeDiscoveryFilterMenuProps;
+  /**
+   * New Customize: the Workflows tab's Source, Scope and Trigger, which the
+   * filter menu shows on that tab alone.
+   */
+  readonly workflowFilters?: CustomizeWorkflowFilters;
   readonly className?: string;
 }
 
@@ -54,6 +61,7 @@ export function CustomizeSearchRow({
   onInstalledStatusFilterChange,
   updateFilterAvailable = false,
   discovery,
+  workflowFilters,
   className,
 }: CustomizeSearchRowProps): JSX.Element {
   const discoveryEnabled = useCustomizeDiscoveryEnabled();
@@ -61,7 +69,22 @@ export function CustomizeSearchRow({
     <PageSearchRow testId="customize-search-row" className={className}>
       {/* The search takes the row; the status filter follows it. */}
       <MarketplaceSearchField {...search} />
-      {discoveryEnabled && <CustomizeDiscoveryFilterMenu {...discovery} />}
+      {discoveryEnabled && (
+        <CustomizeFilterPills
+          tab={tab}
+          installedStatusFilter={installedStatusFilter ?? null}
+          onInstalledStatusFilterChange={onInstalledStatusFilterChange}
+        />
+      )}
+      {discoveryEnabled && (
+        <CustomizeDiscoveryFilterMenu
+          {...discovery}
+          tab={tab}
+          {...(tab === 'workflow' && workflowFilters
+            ? { workflowFilters }
+            : {})}
+        />
+      )}
       {!discoveryEnabled &&
         customizeTabHasInstalledStatuses(tab) &&
         onInstalledStatusFilterChange !== undefined && (

@@ -7,4 +7,8 @@ export type QueuedSubmission = {
   id: string;
   input: Array<UserInput>;
   clientUserMessageId: string;
+  /**
+   * Metadata retained with this input, including across reconnect and restoration.
+   */
+  responsesapiClientMetadata: { [key in string]?: string } | null;
 };

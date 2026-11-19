@@ -21,6 +21,7 @@ import { TeamSubscriptionPricingSection } from './team-subscription-pricing-sect
 import { useOrganizationSettingsSubtabSlots } from './organization-settings-subtab-slots';
 import { canManageOrganizationExternalAgents } from './external-agents-policy';
 import { TeamBillingSection } from '../../billing/team-billing-section';
+import { ProjectDefaultsSection } from './project-defaults-section';
 import { TeamDangerZone } from '../team-danger-zone';
 
 interface TeamSettingsSectionProps {
@@ -49,11 +50,16 @@ interface TeamSettingsSectionProps {
    * only the members requirement.
    */
   aiGatewayEnabled?: boolean;
+  /**
+   * Organization projects are on: the Project defaults page also lists the
+   * organization's Agents (CAN-6237, phase 10a).
+   */
+  projectsEnabled?: boolean;
 }
 
 /**
- * One organization Settings page (General, Policies, Integrations, Usage,
- * AI gateway or Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
+ * One organization Settings page (General, Policies, Project defaults,
+ * Integrations, Usage, AI gateway or Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
  * an admin lands on a short themed page instead of scrolling past unrelated
  * sections to reach the one they came for.
  */
@@ -66,6 +72,7 @@ export function TeamSettingsSection({
   onDeleted,
   externalAgentsEnabled = false,
   aiGatewayEnabled = false,
+  projectsEnabled = false,
 }: TeamSettingsSectionProps): JSX.Element {
   const { renderExternalAgentsPolicy } = useOrganizationSettingsSubtabSlots();
 
@@ -175,6 +182,13 @@ export function TeamSettingsSection({
               />
             )}
           </>
+        );
+      case 'project-defaults':
+        return (
+          <ProjectDefaultsSection
+            detail={detail}
+            agentsAndPipelinesEnabled={projectsEnabled}
+          />
         );
       case 'usage':
         return (

@@ -9,6 +9,7 @@ import type {
   MarketplaceInfo,
 } from '@canopy/execution-engine/types/plugins';
 import { parseGitHubRepo } from '@canopy/plugin-interop/github-repo';
+import { linkRecordedAppError } from '@canopy/ui-shared';
 import { toMarketplaceSource } from './marketplace-source-summary';
 
 const INVALID_REPO =
@@ -20,6 +21,8 @@ interface RegistrationLease {
    * no source appears, the reservation is released with this error.
    */
   rejected?: string;
+  /** Main recorded the rejection, so the banner showing it records nothing. */
+  rejectedRecorded?: true;
 }
 
 const reservations = new WeakMap<
@@ -89,7 +92,11 @@ export function createIpcMarketplaceSourceAddSession(
       ) {
         lease.uncertain = false;
         leases.delete(key);
-        publish({ phase: 'input', error: lease.rejected });
+        publish({
+          phase: 'input',
+          error: lease.rejected,
+          ...(lease.rejectedRecorded ? { recorded: true as const } : {}),
+        });
       } else
         publish({
           phase: 'uncertain',
@@ -168,9 +175,18 @@ export function createIpcMarketplaceSourceAddSession(
         }
         if (!source || !marketplace) {
           lease.uncertain = true;
-          if (!result.success)
+          if (!result.success) {
             lease.rejected =
               result.error?.trim() || 'Could not add this marketplace.';
+            // Main recorded it; the banner records nothing but links it to
+            // this session.
+            linkRecordedAppError(
+              result.appError,
+              'cloud-marketplace-add-error',
+            );
+            if (result.appError?.recordedBy !== undefined)
+              lease.rejectedRecorded = true;
+          }
           await reconcile();
           return;
         }

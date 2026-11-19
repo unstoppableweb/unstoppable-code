@@ -40,11 +40,8 @@ export type CodeBlockVariant =
   | 'document'
   | 'command'
   | 'output-preview'
-  | 'compact-document'
-  | 'file-document'
   | 'command-preview'
   | 'log-tail'
-  | 'activity-command'
   | 'catalog-source'
   | 'approval-document'
   | 'approval-preview'
@@ -92,11 +89,8 @@ const VARIANT_CLASS_NAMES: Record<CodeBlockVariant, string> = {
   document: 'p-3',
   command: 'px-2.5 py-1.5',
   'output-preview': 'rounded-lg bg-fg-primary/[0.06] px-3 py-2',
-  'compact-document': 'p-2',
-  'file-document': 'p-4',
   'command-preview': 'px-2 py-1',
   'log-tail': 'px-3 py-2 leading-5',
-  'activity-command': 'px-2 py-1.5',
   'catalog-source':
     'rounded-md ring-1 ring-inset ring-line-base bg-secondary p-3',
   'approval-document': 'rounded-md bg-fg-primary/[0.06] px-3 py-2.5',
@@ -136,10 +130,8 @@ const TONE_CLASS_NAMES: Record<CodeBlockTone, string> = {
   warning: 'fg-warning',
 };
 
-export interface PlainCodeBlockProps extends ComponentPropsWithRef<'pre'> {
+interface PlainCodeBlockContentProps extends ComponentPropsWithRef<'pre'> {
   format?: 'plain';
-  /** What the block is for (default: `panel`). */
-  variant?: CodeBlockVariant;
   /** Replaces the variant's type size. */
   size?: CodeBlockSize;
   /** A 20px line height, for long blocks people read line by line. */
@@ -161,6 +153,14 @@ export interface PlainCodeBlockProps extends ComponentPropsWithRef<'pre'> {
   /** Placement and height in the host. The surface is not the caller's. */
   className?: string;
 }
+
+/** The default plain block is a panel. Only documents and commands vary their inset. */
+export type PlainCodeBlockProps = PlainCodeBlockContentProps &
+  (
+    | { variant?: CodeBlockVariant; inset?: never }
+    | { variant: 'document'; inset: 'compact' | 'roomy' }
+    | { variant: 'command'; inset: 'compact' }
+  );
 
 export interface AnsiCodeBlockProps extends AnsiOutputProps {
   format: 'ansi';
@@ -196,7 +196,9 @@ const OVERFLOW_CLASS_NAMES: Record<
 };
 
 function PlainCodeBlock({
+  format,
   variant = 'panel',
+  inset,
   size = DEFAULT_SIZES[variant] ?? 'xs',
   relaxed = false,
   proseLeading = false,
@@ -208,12 +210,21 @@ function PlainCodeBlock({
   selectable = false,
   className = '',
   ...props
-}: Omit<PlainCodeBlockProps, 'format'>): JSX.Element {
+}: PlainCodeBlockProps): JSX.Element {
+  void format;
+  const variantClass =
+    variant === 'document' && inset === 'compact'
+      ? 'p-2'
+      : variant === 'document' && inset === 'roomy'
+        ? 'p-4'
+        : variant === 'command' && inset === 'compact'
+          ? 'px-2 py-1.5'
+          : VARIANT_CLASS_NAMES[variant];
   const classes = [
     replay === 'block' ? REPLAY_BLOCK_CLASS : '',
     OVERFLOW_CLASS_NAMES[overflow],
     font === 'mono' ? 'font-mono' : 'font-sans',
-    VARIANT_CLASS_NAMES[variant],
+    variantClass,
     SIZE_CLASS_NAMES[size],
     relaxed ? 'leading-5' : proseLeading ? 'leading-relaxed' : '',
     WRAP_CLASS_NAMES[wrap],
@@ -239,5 +250,5 @@ export function CodeBlock(props: CodeBlockProps): JSX.Element | null {
   if (props.format === 'markdown') {
     return <MarkdownCodeBlock {...withoutFormat(props)} />;
   }
-  return <PlainCodeBlock {...withoutFormat(props)} />;
+  return <PlainCodeBlock {...props} />;
 }

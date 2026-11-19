@@ -57,10 +57,8 @@ import {
 import { setInterfaceToolAudienceResolver } from '../agents/interface-tool-binding';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
-import {
-  readDurablePortalInstallId,
-  readPortalOptInForMigration,
-} from '../portal/portal-state-store';
+import { readDurableInstallId } from '../lib/install-identity';
+import { readLegacyPortalOptIn } from './legacy-portal-opt-in';
 import {
   redeliverPendingAppAdvisorAskUserRequests,
   setRemoteAppAdvisorWindowHostResolver,
@@ -96,15 +94,12 @@ import {
   uiZoomWebPreferences,
 } from '../lib/ui-zoom';
 import { validateId } from '../lib/validation';
-import { getMainWindowMaterialOptions } from '../lib/window-material';
+import {
+  getAppWindowBackgroundColor,
+  trackAppWindowBackground,
+} from '../lib/window-material';
 import { sendToAllWindows, sendToWindowDetailed } from '../lib/window-send';
 import { getObservabilityService } from '../observability';
-import {
-  describeRemoteControlAvailability,
-  isRemoteControlAvailable,
-  remoteControlFeatureState,
-  onRemoteControlAvailabilityChanged,
-} from './availability';
 import type { RemoteControlDiagnostic } from './diagnostics';
 import {
   RemoteAccountProxySignIns,
@@ -135,7 +130,7 @@ import { getInternalReleaseIndicatorForDisplay } from '../lib/internal-release-v
 import { RemoteAccessStore } from './remote-access-store';
 import {
   RemoteControlService,
-  type RemotePortalPort,
+  type RemoteInventorySyncChange,
   type RemoteRelay,
   type RemoteRelayFactoryOptions,
 } from './remote-control-service';
@@ -253,6 +248,70 @@ export interface RemoteControlRuntime {
 
 let runtime: RemoteControlRuntime | null = null;
 
+const stateListeners = new Set<(state: RemoteControlState) => void>();
+const inventorySyncListeners = new Set<
+  (change: RemoteInventorySyncChange) => void
+>();
+/** Replayed to late listeners, so registration order never loses a state. */
+let lastBroadcastState: RemoteControlState | null = null;
+let loadedInventorySyncChange: RemoteInventorySyncChange | null = null;
+
+function notifyRemoteControlStateListeners(state: RemoteControlState): void {
+  lastBroadcastState = state;
+  for (const listener of stateListeners) {
+    try {
+      listener(state);
+    } catch (error) {
+      logMainProcessError('Remote Control state listener failed', error);
+    }
+  }
+}
+
+function notifyInventorySyncListeners(change: RemoteInventorySyncChange): void {
+  if (change.cause === 'loaded') loadedInventorySyncChange = change;
+  for (const listener of inventorySyncListeners) {
+    try {
+      listener(change);
+    } catch (error) {
+      logMainProcessError(
+        'Remote Control inventory sync listener failed',
+        error,
+      );
+    }
+  }
+}
+
+/**
+ * Every Remote Control state this computer broadcasts to its windows, for
+ * main-process consumers (the inventory sync gate, the mobile-paired
+ * campaign latch). A listener registered after a broadcast is called once
+ * with the latest state. Returns the unsubscribe.
+ */
+export function onRemoteControlStateChanged(
+  listener: (state: RemoteControlState) => void,
+): () => void {
+  stateListeners.add(listener);
+  if (lastBroadcastState) listener(lastBroadcastState);
+  return (): void => {
+    stateListeners.delete(listener);
+  };
+}
+
+/**
+ * The inventory sync setting loaded (once, from the first settings read) or
+ * changed by the user (CAN-5986). A listener registered after the first
+ * read is called once with the `loaded` change.
+ */
+export function onRemoteInventorySyncSettingChanged(
+  listener: (change: RemoteInventorySyncChange) => void,
+): () => void {
+  inventorySyncListeners.add(listener);
+  if (loadedInventorySyncChange) listener(loadedInventorySyncChange);
+  return (): void => {
+    inventorySyncListeners.delete(listener);
+  };
+}
+
 export function getRemoteControlRuntime(): RemoteControlRuntime | null {
   return runtime;
 }
@@ -274,11 +333,6 @@ export function initializeRemoteControl(options: {
     request: AppAdvisorWindowOpenRequest | undefined,
     send: (command: AppAdvisorWindowCommand) => void,
   ) => Promise<unknown>;
-  /**
-   * Portal sessions the single Remote Control opt-in starts and ends,
-   * supplied by the composition root that owns Portal.
-   */
-  portal?: RemotePortalPort;
 }): RemoteControlRuntime {
   if (runtime) return runtime;
   const dataDir = getDataDir();
@@ -324,7 +378,9 @@ export function initializeRemoteControl(options: {
         ),
       }),
       autoHideMenuBar: true,
-      ...getMainWindowMaterialOptions(hostPlatformOperatingSystem()),
+      // Opaque, with no native material: start on the selected theme so first
+      // paint and a live resize never show white or a blurred backdrop.
+      backgroundColor: getAppWindowBackgroundColor(),
       webPreferences: { spellcheck: true, ...uiZoomWebPreferences(uiScale) },
     }),
     loadRenderer,
@@ -336,6 +392,10 @@ export function initializeRemoteControl(options: {
       service?.reportAppAdvisorWindowState(deviceId, state),
     keepHidden: (): boolean => !shouldShowUiAutomationWindow(),
     isQuitting: options.isAppQuitting,
+    // Each paired window follows the theme color its own renderer publishes,
+    // which is the paired computer's theme, not this computer's.
+    onWindowCreated: (window: BrowserWindow): void =>
+      trackAppWindowBackground(window),
   });
 
   service = new RemoteControlService({
@@ -351,11 +411,8 @@ export function initializeRemoteControl(options: {
         onDiagnostic: relayOptions.onDiagnostic,
       }),
     fetchToken: fetchRelayToken,
-    isFeatureEnabled: isRemoteControlAvailable,
-    featureState: remoteControlFeatureState,
     signedInAccountKeys,
     wakeLock: getWakeLockService(),
-    describeAvailability: describeRemoteControlAvailability,
     recordDiagnostic: recordRemoteControlDiagnostic,
     signedInAccount,
     deviceName,
@@ -434,12 +491,14 @@ export function initializeRemoteControl(options: {
         ports: accountProxySignInCallbackPorts(),
       }),
     windows,
-    broadcastState: (state: RemoteControlState): void =>
-      sendToAllWindows(IPC_CHANNELS.remoteControlStateChanged, state),
+    broadcastState: (state: RemoteControlState): void => {
+      sendToAllWindows(IPC_CHANNELS.remoteControlStateChanged, state);
+      notifyRemoteControlStateListeners(state);
+    },
+    onInventorySyncSettingChanged: notifyInventorySyncListeners,
     broadcastPairingEvent: (event: RemoteControlPairingEvent): void =>
       sendToAllWindows(IPC_CHANNELS.remoteControlPairingEvent, event),
-    readPortalOptIn: readPortalOptInForMigration,
-    ...(options.portal ? { portal: options.portal } : {}),
+    readLegacyPortalOptIn,
     webOrigin: (): string => new URL(getCanopyCloudBaseUrl()).origin,
     log: (message: string, context?: unknown): void =>
       logMainProcessInfo(message, context),
@@ -451,9 +510,6 @@ export function initializeRemoteControl(options: {
   };
   powerMonitor.on('resume', () => {
     activeService.handleSystemResume();
-  });
-  onRemoteControlAvailabilityChanged(() => {
-    void activeService.reconcile().catch(logReconcileError);
   });
   subscribeCanopyCloudAccountChanges(() => {
     void activeService.reconcile().catch(logReconcileError);
@@ -640,7 +696,7 @@ function registerRemoteControlIpc(
   registerIpcHandler(
     IPC_CHANNELS.remoteControlInstallId,
     async (): Promise<RemoteControlInstallIdResult> => ({
-      installId: await readDurablePortalInstallId(),
+      installId: await readDurableInstallId(),
     }),
   );
   registerIpcHandler(
@@ -655,6 +711,13 @@ function registerRemoteControlIpc(
     IPC_CHANNELS.remoteControlUpdateHost,
     (_event, request: unknown) =>
       service.updateHost(parseUpdateHostRequest(request)),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlSetInventorySyncEnabled,
+    (_event, enabled: unknown) => {
+      if (typeof enabled !== 'boolean') throw new Error('Expected a boolean.');
+      return service.setInventorySyncEnabled(enabled);
+    },
   );
   registerIpcHandler(
     IPC_CHANNELS.remoteControlSetAllowRemoteUpdates,

@@ -1,12 +1,29 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { CanopyAppDriver } from './canopyApp.mjs';
 import { writeAuthenticatedGhFixture } from './ghAuthFixture.mjs';
 import { closeCanopy, launchCanopy } from './launchCanopy.mjs';
-import { readChatStorageTabs } from './readChatStorage.mjs';
-import { externalProjectCandidateIdFor } from './seeders/seedExternalProjectImportFixture.mjs';
+import {
+  readChatStorageMessages,
+  readChatStorageTabs,
+} from './readChatStorage.mjs';
+import {
+  externalProjectCandidateIdFor,
+  seedExternalProjectImportFixture,
+} from './seeders/seedExternalProjectImportFixture.mjs';
+import {
+  DEFAULT_MOCK_BASE_URL,
+  registerScenario,
+} from './seeders/registerScenario.mjs';
 import {
   OPENCODE_FIXTURE_PROJECT,
   seedOpenCodeImportFixture,
@@ -20,15 +37,28 @@ import {
 import { seedWelcomeChecklist } from './seeders/seedWelcomeChecklist.mjs';
 
 // First run lands on the ordinary Home composer without the retired checklist.
-// Provider steps use the harness auth fixtures; no live agent sends are needed.
+// Providers and sends use isolated mock scenarios, never live accounts.
 
 test('fresh user reaches the ordinary Home composer after the first-run page', async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
 
   const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-electron-'));
   // The examples preview only queues behind a connected tool, so pin GitHub
   // as signed in instead of reading the host's own `gh` login.
-  const env = { GH_EXECUTABLE: writeAuthenticatedGhFixture(userDataDir) };
+  const fixture = seedExternalProjectImportFixture({ userDataDir });
+  writeFileSync(
+    path.join(userDataDir, 'preferences.json'),
+    JSON.stringify({ version: 1, preferences: { navigationMode: 'code' } }),
+  );
+  const mockKey = `can7038_${randomUUID()}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, mockKey, {
+    authUsage: { scenario: 'authed-low-usage' },
+  });
+  const env = {
+    ...fixture.env,
+    GH_EXECUTABLE: writeAuthenticatedGhFixture(userDataDir),
+    CANOPY_MOCK_API_KEY: mockKey,
+  };
   const { electronApp } = await launchCanopy({
     userDataDir,
     freshOnboarding: true,
@@ -42,6 +72,13 @@ test('fresh user reaches the ordinary Home composer after the first-run page', a
     // Fresh launch shows the blocking first-run legal gate before the shell.
     await app.acceptLegalConsent();
     await app.waitForShell();
+    for (const directory of [fixture.gitApp, fixture.notes]) {
+      await expect(
+        window.getByTestId(
+          `first-run-import-row-${externalProjectCandidateIdFor(directory)}`,
+        ),
+      ).toBeVisible();
+    }
     await app.skipFirstRunImport();
 
     await expect(
@@ -60,8 +97,96 @@ test('fresh user reaches the ordinary Home composer after the first-run page', a
     await expect(window.getByTestId('home-onboarding-suggestions')).toHaveCount(
       0,
     );
+
+    // CAN-7038: Skip finishes only once Personal's Chats exists, so Home can
+    // send without a project, and its picker offers a chat without one.
+    const index = JSON.parse(
+      readFileSync(path.join(userDataDir, 'workspaces', 'index.json'), 'utf8'),
+    );
+    expect(
+      index.workspaces.some((entry) => entry.id === 'cowork-default'),
+    ).toBe(true);
+    await window
+      .getByTestId('home-composer-editor')
+      .locator('visible=true')
+      .click();
+    await window.keyboard.type('What can you help me with?');
+    await expect(
+      window.getByTestId('home-send-button').locator('visible=true'),
+    ).toBeEnabled();
+    await window
+      .getByTestId('home-workspace-select')
+      .locator('visible=true')
+      .click();
+    await expect(
+      window.getByTestId('home-workspace-option-no-project'),
+    ).toHaveAttribute('aria-selected', 'true');
+    await window.keyboard.press('Escape');
+    const model = window
+      .getByTestId('chat-model-picker')
+      .locator('visible=true');
+    await expect(model).toBeEnabled();
+    await model.click();
+    await expect(window.getByTestId('chat-model-menu')).toBeVisible();
+    await window.keyboard.press('Escape');
+    const before = await window.evaluate(() =>
+      window.api.workEntries.list({ projectId: 'cowork-default' }),
+    );
+    const prompt = 'What can you help me with?';
+    await window
+      .getByTestId('home-composer-editor')
+      .locator('visible=true')
+      .press('Enter');
+    await expect
+      .poll(async () => {
+        const result = await window.evaluate(() =>
+          window.api.workEntries.list({ projectId: 'cowork-default' }),
+        );
+        return result.entries.filter(
+          (entry) =>
+            !before.entries.some((existing) => existing.id === entry.id),
+        ).length;
+      })
+      .toBe(1);
+    await expect(
+      window.getByText(prompt, { exact: true }).locator('visible=true').first(),
+    ).toBeVisible();
+    await expect(window.getByTestId('worktree-row')).toHaveCount(0);
+    await expect(window.getByRole('dialog')).toHaveCount(0);
+    const created = await window.evaluate(() =>
+      window.api.workEntries.list({ projectId: 'cowork-default' }),
+    );
+    expect(created.entries).toHaveLength(before.entries.length + 1);
+    const entry = created.entries.find(
+      (item) => !before.entries.some((prior) => prior.id === item.id),
+    );
+    expect(entry).toBeDefined();
+    const workspaceRoot = path.join(
+      userDataDir,
+      'workspaces',
+      'cowork-default',
+    );
+    await expect
+      .poll(() => {
+        const manifest = path.join(
+          workspaceRoot,
+          'chat-storage-manifests',
+          `${entry.id}.json`,
+        );
+        if (!existsSync(manifest)) return '';
+        return readChatStorageTabs(workspaceRoot, entry.id)
+          .tabs.map((tab) =>
+            JSON.stringify(
+              readChatStorageMessages(workspaceRoot, entry.id, tab.id),
+            ),
+          )
+          .join('\n');
+      })
+      .toContain(prompt);
+    expect(readChatStorageTabs(workspaceRoot, entry.id).tabs).toHaveLength(1);
   } finally {
     await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+    fixture.cleanup();
   }
 
   // Relaunch preserves individual dismissals and keeps the next suggestion visible.

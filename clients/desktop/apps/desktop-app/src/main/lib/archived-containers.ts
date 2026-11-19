@@ -80,7 +80,7 @@ import { isWorkspaceWorktreeCurrent } from './workspace-persistence';
 import { hasUnresolvedDestructiveRecovery } from './w5-destructive-recovery';
 import { readWorkEntriesFile } from './cowork-work-entries-file';
 import { isWorkEntryWorkspace } from './workspace-registry';
-import { scheduleDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
 
 const workspaceMutationLocks = new KeyedAsyncLock();
 const archivedWorkspaceOperationLocks = new KeyedAsyncLock();
@@ -872,7 +872,7 @@ export function broadcastArchivedContainersChanged(workspaceId: string): void {
   sendToAllWindows(IPC_CHANNELS.archivedContainersChanged, { workspaceId });
   // A retained container's count decides whether a temporary workspace still
   // lists; the shared rail reads that from the session snapshot.
-  scheduleDesktopSessionSnapshotInvalidation();
+  requestDesktopSessionSnapshotInvalidation('archived-containers');
 }
 
 const DAY_MS = 24 * 60 * 60 * 1_000;

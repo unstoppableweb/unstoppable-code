@@ -9,6 +9,7 @@ import {
   CORE_CATALOG_SOURCE_INSTRUCTION_DEFINITIONS,
   CORE_CATALOG_SOURCE_QUERY_DEFINITIONS,
   emptyCatalogSelectionRefs,
+  skillEntryId,
   type CanopyCallerDescriptor,
   type CatalogEntry,
   type CatalogSelectionRefs,
@@ -407,6 +408,28 @@ describe('core.catalog handlers (CAN-4123)', () => {
       unavailableItemIds: ['plugin:m/gone'],
       tombstonedItemIds: ['plugin:m/b'],
     });
+
+    // An item the host loads outside its snapshot (an organization's skill
+    // copy, CAN-6237) is offered; one it does not vouch for is not.
+    const orgSkill = { sourceId: 'org:o', skillName: 'review' };
+    const staleSkill = { sourceId: 'org:o', skillName: 'gone' };
+    host.chat = {
+      ...host.chat,
+      selections: {
+        ...host.chat.selections,
+        skillRefs: [orgSkill, staleSkill],
+      },
+      offered: { ...emptyCatalogSelectionRefs(), skillRefs: [orgSkill] },
+    };
+    const withOrganization = await dispatcher.query(
+      'core.catalog.selection.get',
+      { scope: { workspaceId: 'w', worktreeId: 't', chatId: 'c' } },
+      { caller: reader },
+    );
+    expect(withOrganization.unavailableItemIds).toEqual([
+      skillEntryId(staleSkill),
+      'plugin:m/gone',
+    ]);
     await expect(
       dispatcher.query(
         'core.catalog.selection.get',
@@ -1066,6 +1089,17 @@ describe('core.catalog handlers (CAN-4123)', () => {
           code: 'core.catalog.packageBlocked',
           message:
             "This skill has a file or dependency that can't be added to the cloud. Check its files again.",
+        },
+      ],
+      [
+        // CAN-7037: an identical skill shared more widely is named as such,
+        // never as a stale package.
+        'publish-audience-wider',
+        {
+          kind: 'failed_precondition',
+          code: 'core.catalog.audienceWider',
+          message:
+            "This skill is already in your cloud account and shared by link, with a team or with an organization, so a private cloud copy can't use it. Stop sharing it in the cloud, or change this skill, then add it again.",
         },
       ],
       [

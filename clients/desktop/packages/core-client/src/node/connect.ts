@@ -15,6 +15,7 @@ import { createCanopyClient } from '../client';
 import { CanopyDeliveryScope } from '../delivery';
 import { CanopyClientError, toCanopyClientError } from '../errors';
 import type { CanopyClient, CanopyClientOptions } from '../types';
+import { canopyLaunchDetails } from './daemon-refusal';
 import {
   canopyConnectError,
   MAX_CANOPY_CONNECT_TIMEOUT_MS,
@@ -51,13 +52,19 @@ function handshakeTimeoutMs(scope: CanopyDeliveryScope): number {
 
 /** Reads `code` structurally: Node errors may come from another realm (Jest). */
 function socketError(error: unknown): CanopyClientError {
-  const code =
-    typeof error === 'object' && error !== null && 'code' in error
-      ? error.code
-      : null;
-  return code === 'EACCES' || code === 'EPERM'
-    ? canopyConnectError('permission_denied', 'Core endpoint access denied.')
-    : canopyConnectError('unavailable', 'No core accepted the connection.');
+  const { errno } = canopyLaunchDetails(error);
+  const details = errno ? { errno } : undefined;
+  return errno === 'EACCES' || errno === 'EPERM'
+    ? canopyConnectError(
+        'permission_denied',
+        'Core endpoint access denied.',
+        details,
+      )
+    : canopyConnectError(
+        'unavailable',
+        'No core accepted the connection.',
+        details,
+      );
 }
 
 async function openFramed(

@@ -16,14 +16,14 @@ export async function reconcileTrackedPlans(
       .getState()
       .loadTrackedPlans(scope.projectId, scope.worktreeId);
     return true;
-  } catch {
+  } catch (error) {
     useGitHubStore.getState().addToast(
       "Couldn't refresh the plan's status. Select to retry.",
       'error',
       (): void => {
         void reconcileTrackedPlans(scope);
       },
-      scope,
+      { ...scope, caught: error },
     );
     return false;
   }

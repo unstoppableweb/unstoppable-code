@@ -1,10 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
-import {
-  readPluginCatalog,
-  readPluginCacheIndex,
-} from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import { readPluginCatalog } from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getBundledSkillDir } from '@canopy/execution-engine/pipelines/config-paths';
 import type {
@@ -199,15 +196,10 @@ function safeCodexPluginName(name: string): string | null {
 }
 
 function readPluginsCache(): PluginsCache | null {
-  const root = getCanopyDataDir();
-  const catalog = readPluginCatalog(path.join(root, 'plugins-cache.json'));
-  const index = readPluginCacheIndex(
-    path.join(root, 'plugin-cache-index.json'),
+  const catalog = readPluginCatalog(
+    path.join(getCanopyDataDir(), 'plugins-cache.json'),
   );
-  return catalog.state === 'valid' &&
-    (index.state === 'valid' || index.state === 'absent')
-    ? catalog.data
-    : null;
+  return catalog.state === 'valid' ? catalog.data : null;
 }
 
 function normalizeSelections(
@@ -1165,14 +1157,14 @@ export function resolvePlugins(
         safePlugins.push(plugin);
         continue;
       }
-      const projectedPath = projectClaudePluginForLaunch({
+      const projection = projectClaudePluginForLaunch({
         sourcePluginPath: plugin.path,
         projectionRootDir,
         removeModules: true,
         removeMcpServers: false,
       });
-      if (projectedPath) {
-        safePlugins.push({ type: 'local', path: projectedPath });
+      if (projection.ok) {
+        safePlugins.push({ type: 'local', path: projection.path });
         continue;
       }
       const selectedSkipped = decision.skippedMods.find(

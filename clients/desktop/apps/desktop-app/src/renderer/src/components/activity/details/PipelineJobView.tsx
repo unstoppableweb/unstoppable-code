@@ -33,7 +33,10 @@ import {
   canRetryMatrixJob,
   canRetryMatrixVariant,
 } from '@/lib/execution-actions';
-import { PipelineRunChildRow } from '@canopy/ui-app';
+import {
+  PipelineRunChildRow,
+  type PipelineStepBillingOwnerKind,
+} from '@canopy/ui-app';
 import { Button, ListRow } from '@canopy/ui-shared/components';
 
 function isSettledJobStatus(status: string): boolean {
@@ -64,6 +67,8 @@ interface PipelineJobViewProps {
   logsEnabled?: boolean;
   /** Step costs for the run shown in this job view. */
   stepCosts?: readonly PipelineRunStepCost[];
+  /** Personal or organization owner of the run, for the billing line. */
+  ownerKind?: PipelineStepBillingOwnerKind;
 }
 
 /**
@@ -91,6 +96,7 @@ function PipelineJobViewComponent({
   archivedSource,
   logsEnabled,
   stepCosts,
+  ownerKind,
 }: PipelineJobViewProps): JSX.Element {
   const costCurrency = useCostCurrency();
   const archived = archivedSource !== undefined;
@@ -443,6 +449,7 @@ function PipelineJobViewComponent({
                       onViewWorker={onViewWorker}
                       archivedSource={archivedSource}
                       logsEnabled={logsEnabled}
+                      ownerKind={ownerKind}
                       costAmount={
                         stepCost !== undefined && !stepIsRenderedInALaterAttempt
                           ? formatCostTotalIn(stepCost.totals, costCurrency)

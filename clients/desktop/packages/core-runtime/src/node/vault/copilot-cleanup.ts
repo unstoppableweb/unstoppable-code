@@ -25,7 +25,8 @@ export function createCopilotMigrationCleanup(options: {
     const attempt = journal.attempts.find((a) => a.id === context.attemptId);
     const b = state.read().binding;
     const retiring =
-      b?.phase === 'cancelling' &&
+      !!b &&
+      ['cancelling', 'retired'].includes(b.phase) &&
       attempt?.disposition === 'cancelled' &&
       journal.head.epoch > context.epoch &&
       journal.head.attemptId === null;

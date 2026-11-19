@@ -130,7 +130,7 @@ export function ShareSessionControl({
           undefined,
           { projectId, worktreeId },
         );
-      } catch {
+      } catch (error) {
         if (canonicalCleared && sharedRun) {
           try {
             await useChatStore
@@ -141,6 +141,7 @@ export function ShareSessionControl({
           }
         }
         addToast('Failed to unshare session.', 'error', undefined, {
+          caught: error,
           projectId,
           worktreeId,
         });

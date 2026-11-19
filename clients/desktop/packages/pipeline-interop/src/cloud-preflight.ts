@@ -1,5 +1,6 @@
 import { AGENT_MODEL_PREFIX } from '@canopy/protocol/agents';
-import type { Pipeline, ShellType, Step } from './document';
+import type { Job, Pipeline, ShellType, Step } from './document';
+import { expandStaticMatrix, normalizeMatrixStrategy } from './matrix';
 import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import { executionContextSatisfies, normalizePipelineScopes } from './scope';
@@ -94,6 +95,7 @@ export const CLOUD_RUN_BUNDLED_ACTIONS: Readonly<
   'github-create-pr': 'portable',
   'github-fetch-branch-pr': 'portable',
   'github-post-review-comment': 'portable',
+  'github-publish-review': 'portable',
   'greenfield-detection': 'portable',
   'hello-world-js': 'portable',
   'hello-world-py': 'portable',
@@ -228,6 +230,7 @@ export const CLOUD_RUN_HOST_ACTIONS: ReadonlySet<string> = new Set([
   'create-bot-entry',
   'create-project-entry',
   'create-worktree',
+  'github-publish-review',
   'move-to-group',
   'send-agent-message',
   'wait-for-agent-reply',
@@ -246,6 +249,7 @@ export const CLOUD_RUN_BUNDLED_ACTIONS_OUTSIDE_GLOBAL: ReadonlySet<string> =
     'github-create-pr',
     'github-fetch-branch-pr',
     'github-post-review-comment',
+    'github-publish-review',
   ]);
 
 /**
@@ -347,6 +351,55 @@ function isExpression(value: unknown): boolean {
   return typeof value === 'string' && value.includes('${{');
 }
 
+const MATRIX_MODEL_REFERENCE =
+  /^\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
+
+/**
+ * The matrix axis a model input names when it is exactly
+ * `${{ matrix.<axis> }}` (CAN-7018), or null for any other value.
+ */
+export function matrixModelAxisOf(value: string): string | null {
+  return MATRIX_MODEL_REFERENCE.exec(value.trim())?.[1] ?? null;
+}
+
+/**
+ * What a cloud run knows of the values a job's matrix gives `axis`
+ * (CAN-7018): the distinct values a written-out matrix gives it, in the
+ * order its variants list them (`static`; absent from a variant is the
+ * empty string, which runs the action's default), or that they come from
+ * the run (`run_time`, a matrix an expression builds). Null when the job
+ * has no matrix or its matrix is one normalization refuses.
+ */
+export type CloudMatrixAxisValues =
+  | { readonly kind: 'static'; readonly values: readonly string[] }
+  | { readonly kind: 'run_time' };
+
+export function cloudMatrixAxisValues(
+  jobId: string,
+  job: Pick<Job, 'strategy'>,
+  axis: string,
+): CloudMatrixAxisValues | null {
+  if (job.strategy === undefined) return null;
+  try {
+    const strategy = normalizeMatrixStrategy(jobId, job.strategy);
+    if (strategy === undefined) return null;
+    if (strategy.dynamic) return { kind: 'run_time' };
+    const values: string[] = [];
+    for (const variant of expandStaticMatrix(jobId, strategy)) {
+      const value = Object.prototype.hasOwnProperty.call(variant, axis)
+        ? variant[axis]
+        : '';
+      // A model is text; an object or list names none.
+      if (typeof value === 'object' && value !== null) return null;
+      const text = value === null ? '' : String(value).trim();
+      if (!values.includes(text)) values.push(text);
+    }
+    return { kind: 'static', values };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The bundled action a `builtin/` reference names, normalized as the
  * resolver normalizes it (`builtin/./run-pipeline` is `run-pipeline`), or
@@ -389,6 +442,11 @@ interface StepAt {
   readonly jobId: string;
   readonly stepIndex: number;
   readonly step: Step;
+}
+
+/** A step with the job that holds it, whose matrix its model may name. */
+interface JobStepAt extends StepAt {
+  readonly job: Pick<Job, 'strategy'>;
 }
 
 /** Where a refused item is: a step, a whole job, or the whole definition. */
@@ -483,7 +541,7 @@ const UNDECLARED_COLLECTION_MESSAGE =
  */
 function checkRepositoryModel(
   pipeline: Pipeline,
-  at: StepAt,
+  at: JobStepAt,
   refuse: Refuse,
   input: string,
 ): void {
@@ -491,14 +549,40 @@ function checkRepositoryModel(
   if (inputs.plugin_collection_id !== undefined)
     refuse('plugin_collections', 'CP-25', at, COLLECTION_ACTION_MESSAGE);
   const model = inputs[input] === undefined ? '' : String(inputs[input]);
-  if (isExpression(model)) {
-    refuse('dynamic_model', 'G4', at);
-    return;
+  for (const value of writtenModelsOf(at, model, refuse)) {
+    const alias = cloudModelAliasOf(pipeline, value);
+    if (alias === null) refuse('model_alias', 'CP-25', at);
+    else if (alias !== undefined)
+      refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
   }
-  const alias = cloudModelAliasOf(pipeline, model);
-  if (alias === null) refuse('model_alias', 'CP-25', at);
-  else if (alias !== undefined)
-    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
+}
+
+/**
+ * The written models a step's model input runs: the input itself, or each
+ * value a written-out matrix gives the axis it names (CAN-7018). An
+ * expression model is refused (G4), and so is a matrix value written as one;
+ * an axis whose values come from the run names none, since
+ * `cloud-model-preflight` lists its steps for the person to choose a model.
+ */
+function writtenModelsOf(
+  at: JobStepAt,
+  model: string,
+  refuse: Refuse,
+): readonly string[] {
+  if (!isExpression(model)) return [model];
+  const axis = matrixModelAxisOf(model);
+  const values =
+    axis === null ? null : cloudMatrixAxisValues(at.jobId, at.job, axis);
+  if (values === null) {
+    refuse('dynamic_model', 'G4', at);
+    return [];
+  }
+  if (values.kind === 'run_time') return [];
+  if (values.values.some(isExpression)) {
+    refuse('dynamic_model', 'G4', at);
+    return [];
+  }
+  return values.values;
 }
 
 /**
@@ -511,7 +595,7 @@ function checkRepositoryModel(
  */
 function checkModelAction(
   pipeline: Pipeline,
-  at: StepAt,
+  at: JobStepAt,
   refuse: Refuse,
   action: string,
   composite: boolean,
@@ -529,19 +613,17 @@ function checkModelAction(
     )
   )
     refuse('plugin_collections', 'CP-25', at, UNDECLARED_COLLECTION_MESSAGE);
-  if (isExpression(model)) {
-    refuse('dynamic_model', 'G4', at);
-    return;
+  for (const value of writtenModelsOf(at, model, refuse)) {
+    const alias = cloudModelAliasOf(pipeline, value);
+    if (alias === null) refuse('model_alias', 'CP-25', at);
+    else if (alias !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
+      refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
   }
-  const alias = cloudModelAliasOf(pipeline, model);
-  if (alias === null) refuse('model_alias', 'CP-25', at);
-  else if (alias !== undefined && !CLOUD_RUN_ALIAS_MODEL_ACTIONS.has(action))
-    refuse('model_alias', 'CP-25', at, ALIAS_ACTION_MESSAGE);
 }
 
 function checkStep(
   pipeline: Pipeline,
-  at: StepAt,
+  at: JobStepAt,
   inheritedShell: ShellType | undefined,
   scope: PipelineExecutionScope,
   refuse: Refuse,
@@ -711,7 +793,13 @@ export function preflightCloudRun(
     // Raw text is parsed, not normalized, so a job may lack its steps.
     if (!Array.isArray(job.steps)) continue;
     for (const [stepIndex, step] of job.steps.entries())
-      checkStep(pipeline, { jobId, stepIndex, step }, shell, scope, refuse);
+      checkStep(
+        pipeline,
+        { jobId, job, stepIndex, step },
+        shell,
+        scope,
+        refuse,
+      );
   }
   return refusals;
 }

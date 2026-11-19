@@ -1,5 +1,5 @@
 {
-  "$comment": "CAN-6969: the retained-worktrees-idle gate. Counts are judged by the work-counter ratchet (work-metrics.json, work-ceilings.json); this file holds the CPU side. cpuGate stays 'report' until 10+ develop runs show low spread after calibration. See docs/desktop-app-performance.md#retained-worktrees-gate.",
+  "$comment": "CAN-6969: the retained-worktrees-idle gate. Counts are judged by the work-counter ratchet (work-metrics.json, work-ceilings.json); cpuGate is the nightly CPU side and stays 'report' until 10+ develop runs show low spread after calibration. `matched` (CAN-7148) blocks workspace-state changes on a matched before/after run. See docs/desktop-app-performance.md#retained-worktrees-gate.",
   "version": 1,
   "scenario": "retained-worktrees-idle",
   "countRuns": 3,
@@ -10,5 +10,94 @@
   "calibration": {
     "normMs": null,
     "slowMarginPercent": 25
+  },
+  "flags": [
+    {
+      "metric": "focus.perEvent.recoveryListReads",
+      "above": 1,
+      "reason": "More than one archive recovery list read per focus reopens CAN-6934."
+    }
+  ],
+  "matched": {
+    "$comment": "CAN-7148, decision 2 approved by Mike on 2026-11-17: a change to a path in pathsFile passes only if a matched before/after run at the 170 tier is not REGRESSED in any signal. Inconclusive passes. gate 'report' is the rollback: it judges and never fails. The effect floors are first estimates; revisit them with the develop baseline.",
+    "gate": "block",
+    "pathsFile": ".github/filters/workspace-state.yml",
+    "profile": "stress",
+    "retainedWorktrees": 170,
+    "repeat": 5,
+    "warmup": 1,
+    "alpha": 0.05,
+    "minEffectPercent": 10,
+    "signals": [
+      {
+        "id": "mainCpuIdlePercent",
+        "label": "Main CPU at idle",
+        "unit": "% of one core",
+        "minEffectAbsolute": 1
+      },
+      {
+        "id": "w5MetadataReadsAndCapturesPerSecond",
+        "label": "W5 metadata reads and captures per second at idle",
+        "unit": "/s",
+        "minEffectAbsolute": 0.5
+      },
+      {
+        "id": "worktreeListCommitsPerMinute",
+        "label": "Worktree list commits per minute at idle",
+        "unit": "/min",
+        "minEffectAbsolute": 1
+      }
+    ],
+    "baseline": {
+      "recordedOn": "2026-11-17",
+      "measuredOn": "2026-11-17",
+      "commit": "685feee56b969178541bbb68ddac29d051c4bed1",
+      "side": "baseline",
+      "pairedCommit": "c21f572bb224a0c7f582ad9f494b0166bcffde7f",
+      "run": "44187923537",
+      "host": "darwin-arm64 Apple M2 Pro (Virtual)",
+      "note": "hosted macOS runner (macos-26), PR #9928's first matched run; local computer-A A/A runs were stopped by the memory guard",
+      "samplesPerSide": 5,
+      "verdict": "inconclusive",
+      "signals": {
+        "mainCpuIdlePercent": {
+          "baseline": {
+            "p50": 13.03,
+            "p75": 14.508,
+            "max": 14.627
+          },
+          "candidate": {
+            "p50": 10.105,
+            "p75": 12.234,
+            "max": 14.703
+          }
+        },
+        "w5MetadataReadsAndCapturesPerSecond": {
+          "baseline": {
+            "p50": 14.965,
+            "p75": 17.362,
+            "max": 18.961
+          },
+          "candidate": {
+            "p50": 5.531,
+            "p75": 14.297,
+            "max": 21.397
+          }
+        },
+        "worktreeListCommitsPerMinute": {
+          "baseline": {
+            "p50": 57.99,
+            "p75": 78.97,
+            "max": 83.98
+          },
+          "candidate": {
+            "p50": 4,
+            "p75": 67.99,
+            "max": 105.99
+          }
+        }
+      }
+    },
+    "acceptedRegressions": []
   }
 }

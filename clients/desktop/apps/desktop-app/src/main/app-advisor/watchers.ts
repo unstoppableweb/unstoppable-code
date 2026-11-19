@@ -61,7 +61,19 @@ import {
   type ChatWaitScope,
   type PurgedWorktreeRecorder,
 } from '../observability/chat-wait-diagnostics';
+import {
+  recordChatRowAccess,
+  recordWatcherList,
+  workAggregatesNow,
+  type WatcherListCaller,
+} from '../observability/work-aggregates';
 import { finalVisibleAssistantMessage } from '../project-discovery/reads/last-message';
+import { DiscoveryError } from '../project-discovery/errors';
+import { withProjectWorktreeReadMemo } from '../project-discovery/sources';
+import {
+  ensureBotRegistryLoaded,
+  requireBotWorkspace,
+} from '../project-discovery/bots/registry';
 
 /**
  * A watcher operation is scoped to the chat that owns it: the destination
@@ -289,6 +301,8 @@ import {
   createHookKey,
   getHookTriggerDisplayName,
   parseHookKey,
+  type HookScope,
+  type HookTriggerName,
 } from '@canopy/desktop-shared/hooks';
 import {
   getActiveSessionInfos,
@@ -1601,6 +1615,36 @@ function hasInvalidRecipient(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+async function requireBotWorkspaceForProjectId(
+  projectId: string,
+): Promise<void> {
+  const botId = botIdForProjectId(projectId);
+  if (botId) {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(botId);
+  }
+}
+
+async function requireBotWorkspaceForWatcherTarget(
+  target: unknown,
+): Promise<void> {
+  if (!isRecord(target) || Array.isArray(target)) return;
+  if (typeof target.botId === 'string') {
+    await ensureBotRegistryLoaded?.();
+    requireBotWorkspace(target.botId);
+    return;
+  }
+  if (typeof target.projectId === 'string')
+    await requireBotWorkspaceForProjectId(target.projectId);
+}
+
+function isBotWorkspaceUnavailable(error: unknown): error is DiscoveryError {
+  return (
+    error instanceof DiscoveryError &&
+    (error.code === 'unsupported_action' || error.code === 'unknown_bot')
+  );
 }
 
 function isIntegerInRange(
@@ -5772,13 +5816,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     { turnId: string; stamps: Set<string> }
   >();
   private stopObservingTurnState: (() => void) | undefined;
-  /**
-   * App Advisor destination chat ids observed at the last change
-   * notification, so a mutation that REMOVES a chat's final watcher still
-   * re-projects that chat's portal summary (CAN-2569).
-   */
-  private lastAppAdvisorDestinationChatIds = new Set<string>();
-
   private localDeliveriesInFlight = new Set<string>();
   private presenterHeldWatcherIds = new Set<string>();
   /** Pending deliveries waiting for a retained delegate recipient to load. */
@@ -5842,12 +5879,20 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     }
   }
 
-  private chatRowAccess(
+  private async chatRowAccess(
     watcher: ChatWatcherRecord,
   ): Promise<Awaited<ReturnType<typeof decideChatWatcherAccess>>> {
-    return withinChatWaitPhase('authorization', () =>
-      this.decideChatRowAccess(watcher),
-    );
+    const startedAt = workAggregatesNow();
+    try {
+      const access = await withinChatWaitPhase('authorization', () =>
+        this.decideChatRowAccess(watcher),
+      );
+      recordChatRowAccess(workAggregatesNow() - startedAt, access);
+      return access;
+    } catch (error) {
+      recordChatRowAccess(workAggregatesNow() - startedAt, 'threw');
+      throw error;
+    }
   }
 
   private async decideChatRowAccess(
@@ -5955,6 +6000,17 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   > {
     const destination = { ...input.destination };
     delete destination.delegationId;
+    try {
+      await requireBotWorkspaceForProjectId(destination.projectId);
+      await requireBotWorkspaceForWatcherTarget(input.target);
+    } catch (error) {
+      if (!isBotWorkspaceUnavailable(error)) throw error;
+      return {
+        ok: false,
+        code: 'target_not_ready',
+        error: error.message,
+      };
+    }
     const entries = z
       .array(newInlineWatcherSchema)
       .max(10)
@@ -6358,6 +6414,18 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         code: 'invalid_arguments',
         error: 'Invalid watcher recipient or batch.',
       };
+    try {
+      await requireBotWorkspaceForProjectId(destination.projectId);
+      for (const watcher of input.watchers)
+        await requireBotWorkspaceForWatcherTarget(watcher.target);
+    } catch (error) {
+      if (!isBotWorkspaceUnavailable(error)) throw error;
+      return {
+        ok: false,
+        code: 'runtime_unavailable',
+        error: 'Watcher target is unavailable.',
+      };
+    }
     const enqueue = this.enqueueChatMutation({
       name: 'watcher.setup_canonical_chat',
       scope: watcherOwnerScope(destination),
@@ -6837,15 +6905,17 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     if (recipient.recipient.kind === 'delegate')
       destination.delegationId = recipient.recipient.delegationId;
     else delete destination.delegationId;
-    return Promise.all(
-      (await this.readFile()).watchers
-        .filter(
-          (row) =>
-            isChatWatcher(row) &&
-            isVisibleWatcher(row) &&
-            isSameRecipient(row, destination),
-        )
-        .map((row) => this.canonicalProjection(row)),
+    return withProjectWorktreeReadMemo(async () =>
+      Promise.all(
+        (await this.readFile()).watchers
+          .filter(
+            (row) =>
+              isChatWatcher(row) &&
+              isVisibleWatcher(row) &&
+              isSameRecipient(row, destination),
+          )
+          .map((row) => this.canonicalProjection(row)),
+      ),
     );
   }
 
@@ -7590,9 +7660,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         ? [resolved.target.address.taskId]
         : await listDiscoverableTaskIds(projectId, resolved.target.projectType);
     } else {
-      const { requireBot } = await import('../project-discovery/bots/registry');
+      const { ensureBotRegistryLoaded, requireBot } =
+        await import('../project-discovery/bots/registry');
       const { readBotEntries, isBotTaskEligible } =
         await import('../project-discovery/bots/target');
+      await ensureBotRegistryLoaded?.();
       projectId = requireBot(resolved.target.address.botId).projectId;
       const entries = await readBotEntries(resolved.target.address.botId);
       taskIds = resolved.target.address.taskId
@@ -7986,7 +8058,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       clearTimeout(timer);
     this.delegateDeliveryRetryTimers.clear();
     this.presenterHeldWatcherIds.clear();
-    this.lastAppAdvisorDestinationChatIds = new Set();
     this.busyChatCompletions.clear();
     this.firedCompletions.clear();
     this.stopObservingIdleChats();
@@ -8019,10 +8090,54 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
       );
   }
 
+  /**
+   * Access checks share one worktree list per project for this call only.
+   * `caller` attributes the call in the CAN-7064 work aggregates only.
+   */
   async list(
     destination?: WatcherDestinationFilter,
+    caller: WatcherListCaller = 'other',
   ): Promise<AppAdvisorWatcherSummary[]> {
-    return this.visibleSummaries(await this.readSharedWatchers(), destination);
+    const startedAt = workAggregatesNow();
+    try {
+      return await withProjectWorktreeReadMemo(async () =>
+        this.visibleSummaries(await this.readSharedWatchers(), destination),
+      );
+    } finally {
+      recordWatcherList(caller, workAggregatesNow() - startedAt);
+    }
+  }
+
+  /**
+   * Whether a visible hook watcher in this worktree waits on one of
+   * `triggerNames` for `scope` and `repoId`; a watcher without a scope or
+   * repo matches any. Reads rows only, never {@link list}'s chat-access
+   * projection: a hook row needs no chat authorization, so unrelated chat
+   * watchers add no work to this check.
+   */
+  async hasActiveHookWatcher(query: {
+    projectId: string;
+    worktreeId: string;
+    triggerNames: ReadonlySet<HookTriggerName>;
+    scope: HookScope;
+    repoId: string | undefined;
+  }): Promise<boolean> {
+    return (await this.readSharedWatchers()).some((watcher) => {
+      if (
+        !isVisibleWatcher(watcher) ||
+        watcher.trigger !== 'worktree_hook_triggered' ||
+        watcher.target.kind !== 'worktree_hook'
+      )
+        return false;
+      const target = watcher.target;
+      return (
+        target.projectId === query.projectId &&
+        target.worktreeId === query.worktreeId &&
+        query.triggerNames.has(target.triggerName) &&
+        (!target.scope || target.scope === query.scope) &&
+        (!target.repoId || target.repoId === query.repoId)
+      );
+    });
   }
 
   /**
@@ -8239,6 +8354,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     executionScope?: LocalWatcherScope,
     context?: { signal?: AbortSignal },
   ): Promise<AppAdvisorWatcherSummary> {
+    await requireBotWorkspaceForProjectId(destination.projectId);
+    if (executionScope)
+      await requireBotWorkspaceForProjectId(executionScope.projectId);
     checkRegistrationSignal(context?.signal);
     if (hasInvalidRecipient(destination))
       throw new Error('Watcher recipient is unavailable.');
@@ -8934,6 +9052,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     destination: AppAdvisorWatcherDestination,
     context?: { toolUseId?: string; signal?: AbortSignal },
   ): Promise<SetupAppAdvisorWatchersResult> {
+    await requireBotWorkspaceForProjectId(destination.projectId);
+    for (const watcher of input.watchers)
+      await requireBotWorkspaceForWatcherTarget(watcher.target);
     checkRegistrationSignal(context?.signal);
     const wait = startChatWaitOperation({
       name: 'watcher.setup',
@@ -13742,60 +13863,6 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         publish(visible.map((watcher) => toSummary(watcher)));
       }
     }
-    this.projectAppAdvisorSummariesForWatcherChange(watchers);
-  }
-
-  /**
-   * Re-project `app_advisor_chat` portal summaries after any watcher
-   * mutation so a connected portal sees `armedWatcherCount` move when
-   * watchers are created, deleted, or fired (CAN-2569). The previous
-   * destination set is retained so deleting the LAST watcher for a chat
-   * still re-projects that chat back to zero. Best-effort and
-   * dynamic-imported, mirroring the ask-user projection hook in
-   * `ipc/app-advisor.ts`: the watcher service must stay loadable without the
-   * portal/service graph, and a projection failure must never affect the
-   * originating mutation.
-   */
-  private projectAppAdvisorSummariesForWatcherChange(
-    watchers: AppAdvisorWatcher[],
-  ): void {
-    const current = new Set<string>();
-    for (const watcher of watchers) {
-      // Default Bot only: Portal's app_advisor summary has no botId field.
-      if (watcher.destination.projectId === APP_ADVISOR_PROJECT_ID) {
-        current.add(watcher.destination.chatId);
-      }
-    }
-    const affected = new Set<string>(current);
-    this.lastAppAdvisorDestinationChatIds.forEach((chatId) => {
-      affected.add(chatId);
-    });
-    this.lastAppAdvisorDestinationChatIds = current;
-    if (affected.size === 0) {
-      return;
-    }
-    void (async (): Promise<void> => {
-      const { isCanopyPortalActive } =
-        await import('../portal/portal-event-bus');
-      if (!isCanopyPortalActive()) {
-        return;
-      }
-      const { projectAppAdvisorChatSummaries } =
-        await import('../services/chat-service');
-      const entryIds = new Set<string>();
-      for (const chatId of Array.from(affected)) {
-        const { entryId } = await resolveWorkEntryForChat(
-          APP_ADVISOR_PROJECT_ID,
-          chatId,
-        ).catch(() => ({ entryId: null }));
-        if (entryId) {
-          entryIds.add(entryId);
-        }
-      }
-      for (const entryId of Array.from(entryIds)) {
-        await projectAppAdvisorChatSummaries(entryId);
-      }
-    })().catch(() => undefined);
   }
 
   private normalizePersistedWatcher(

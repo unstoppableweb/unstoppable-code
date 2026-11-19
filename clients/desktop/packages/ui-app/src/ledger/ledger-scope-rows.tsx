@@ -15,6 +15,7 @@ import type {
   LedgerFilePicker,
   LedgerNavigator,
 } from '@canopy/app-core';
+import { ledgerThrownResult } from '@canopy/app-state';
 import type {
   LedgerViewChangeNotice,
   LedgerViewDetailState,
@@ -316,11 +317,7 @@ async function readEntry(
   try {
     return await client.getEntry({ scope: state.scope, entryId });
   } catch (error) {
-    return {
-      status: 'error',
-      reason: 'UNKNOWN',
-      message: error instanceof Error ? error.message : String(error),
-    };
+    return ledgerThrownResult(error);
   }
 }
 

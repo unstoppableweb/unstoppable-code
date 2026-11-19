@@ -69,6 +69,7 @@ import { useWorkspaceContext } from '@/stores/workspaceContextStore';
 import { DesktopDataSharingOptIn } from '../DesktopDataSharingOptIn';
 import { DesktopAiGatewayConnectionKey } from './DesktopAiGatewayConnectionKey';
 import { createDesktopOrgProjectSetupSlot } from './desktopOrgProjectSetupSlot';
+import { createDesktopProjectLocalSetupSlot } from '@/lib/projectLocalSetup';
 import {
   DesktopSettingsHostContext,
   activateHostedSettingsAnchor,
@@ -673,7 +674,8 @@ function DesktopSettingsPromotionDialogSlot(
  * promotion and data-sharing opt-ins run in place; paid-seat invites have no
  * seat charge slot, so they continue on the web. The Projects page's local
  * setup reads the org projects store, which lives in the client provider,
- * so it joins per store.
+ * so it joins per store. The project editor's scripts and hooks read the
+ * project's checkout on this computer (CAN-6239).
  */
 function useDesktopOrganizationSettingsSlots(): OrganizationSettingsSlots {
   const orgProjectsStore = useOrgProjectsStoreApi();
@@ -682,6 +684,7 @@ function useDesktopOrganizationSettingsSlots(): OrganizationSettingsSlots {
       PromotionDialog: DesktopSettingsPromotionDialogSlot,
       DataSharingOptIn: DesktopDataSharingOptIn,
       orgProjectLocalSetup: createDesktopOrgProjectSetupSlot(orgProjectsStore),
+      projectLocalSetup: createDesktopProjectLocalSetupSlot(),
     }),
     [orgProjectsStore],
   );

@@ -335,6 +335,9 @@ test('Cloud runs list, open and answer their controls over the web core', async 
       'running',
       { timeout: 30_000 },
     );
+    await expect(
+      dialog.getByTestId('pipeline-run-background-notice'),
+    ).toHaveCount(0);
 
     // Cancel it from the detail.
     await dialog.getByTestId('pipeline-run-detail-cancel').click();

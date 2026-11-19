@@ -123,15 +123,56 @@ export function safeLegacyErrorText(value: unknown): string {
 }
 
 /**
+ * The decoded carrier `appError` on a restored rejection: non-enumerable, so
+ * the error's message and enumerable shape stay the legacy ones. The value is
+ * unvalidated wire data; `toAppError` validates it on read.
+ */
+export const IPC_RESTORED_APP_ERROR = Symbol.for('canopy.ipcRestoredAppError');
+
+/**
+ * Keep the shape `resolve` returns on a rejected invoke's `Error` under
+ * {@link IPC_RESTORED_APP_ERROR}, for a host that resolves it out of band (the
+ * desktop renderer: Electron's context bridge drops custom Error properties).
+ * A no-op for a non-Error, an error that already carries one, or a missing
+ * value; a throwing resolver is ignored, so the original rejection always
+ * propagates.
+ */
+export function attachRestoredIpcAppError(
+  error: unknown,
+  resolve: () => unknown,
+): void {
+  if (!(error instanceof Error)) return;
+  if (safeErrorProperty(error, IPC_RESTORED_APP_ERROR) !== undefined) return;
+  try {
+    const appError = resolve();
+    if (appError === undefined) return;
+    Object.defineProperty(error, IPC_RESTORED_APP_ERROR, {
+      value: appError,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  } catch {
+    // Keeping the shape is best effort; the rejection still propagates.
+  }
+}
+
+/**
  * Restore an invoke rejection: a carrier becomes the legacy
  * `Error invoking remote method '<channel>': <legacy>` error the renderer has
- * always seen; anything else is rethrown unchanged. Idempotent, so a host that
- * already restored (the desktop preload) and a portable client compose.
+ * always seen, keeping the carrier's AppError under
+ * {@link IPC_RESTORED_APP_ERROR}; anything else is rethrown unchanged.
+ * Idempotent, so a host that already restored (the desktop preload) and a
+ * portable client compose.
  */
 export function restoreIpcRejection(error: unknown): never {
   const decoded = decodeIpcAppError(safeErrorProperty(error, 'message'));
   if (!decoded) throw error;
-  throw new Error(formatIpcLegacyError(decoded.channel, decoded.legacy));
+  const restored = new Error(
+    formatIpcLegacyError(decoded.channel, decoded.legacy),
+  );
+  attachRestoredIpcAppError(restored, () => decoded.appError);
+  throw restored;
 }
 
 const IPC_INVOKE_WRAPPER_REGEX = /^Error invoking remote method '[^']*':\s*/;

@@ -14,6 +14,10 @@ import {
   type InstalledItemStatus,
 } from '@canopy/protocol/installed-items';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type {
+  ForceMcpRemovalResult,
+  McpRemovalRecovery,
+} from '@canopy/protocol/mcp-removal';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 
 export type ParkedCodexPlugin = NonNullable<
@@ -53,9 +57,36 @@ export interface InstalledItemStatusPort {
   ): Promise<void>;
   remove(this: void, record: InstalledItemRecord): Promise<void>;
   removeDeviceServer(this: void, serverId: string): Promise<void>;
+  /** Receipt-bound device repair, never the combined device/account remover. */
+  resumeDeviceRemoval?(
+    this: void,
+    serverId: string,
+    recovery: McpRemovalRecovery,
+  ): Promise<ForceMcpRemovalResult>;
+  reconcileDeviceRemoval?<T>(
+    this: void,
+    serverId: string,
+    recovery: McpRemovalRecovery,
+    reconcile: () => Promise<T>,
+  ): Promise<T>;
   assertAbsent?(this: void, ref: InstalledItemRef): Promise<void>;
   prune(this: void, refs: InstalledItemRef[]): Promise<void>;
   publish(this: void, target: InstalledItemTarget): Promise<void>;
+  /** Records a provider step's underlying error; never throws. */
+  logError?(this: void, message: string, error: unknown): void;
+}
+
+type ProviderName = 'Claude' | 'Codex';
+
+/** A provider's error as one plain line: its first line, CLI marks dropped. */
+function providerReason(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const line =
+    raw
+      .split('\n')
+      .map((part) => part.replace(/^[\s✘✖×!-]+/u, '').trim())
+      .find((part) => part !== '') ?? 'Unknown error.';
+  return line.length > 240 ? `${line.slice(0, 239)}…` : line;
 }
 
 function selectionFor(
@@ -137,6 +168,11 @@ function selected(
 export function createInstalledItemStatusService(
   port: InstalledItemStatusPort,
 ): {
+  finishDeviceMcpRemoval(
+    this: void,
+    serverId: string,
+    recoveryId: string,
+  ): Promise<InstalledItemMutationResult>;
   listStatus(this: void): Promise<InstalledItemSnapshot>;
   setStatus(
     this: void,
@@ -425,12 +461,12 @@ export function createInstalledItemStatusService(
       await port.parkCodex(saved.pluginId);
       recovery = saved;
     }
-    const failures: unknown[] = [];
+    const failures: { provider: ProviderName; error: unknown }[] = [];
     for (const id of record.claudeIds ?? []) {
       try {
         await port.setClaudeEnabled(id, status !== 'disabled');
       } catch (error) {
-        failures.push(error);
+        failures.push({ provider: 'Claude', error });
       }
     }
     try {
@@ -475,10 +511,27 @@ export function createInstalledItemStatusService(
         }));
       }
     } catch (error) {
-      failures.push(error);
+      failures.push({ provider: 'Codex', error });
     }
-    if (failures.length)
-      throw new Error('Provider transition is incomplete. Retry to finish.');
+    if (failures.length) {
+      for (const failure of failures)
+        port.logError?.(
+          `[installed-items] ${failure.provider} step failed setting ${key} to ${status}`,
+          failure.error,
+        );
+      // One plain reason per provider: "Couldn't turn it on for Codex: …".
+      const verb = status === 'disabled' ? 'turn it off' : 'turn it on';
+      const reasons = new Map<ProviderName, string>();
+      for (const failure of failures)
+        if (!reasons.has(failure.provider))
+          reasons.set(failure.provider, providerReason(failure.error));
+      throw new Error(
+        Array.from(
+          reasons,
+          ([provider, reason]) => `Couldn't ${verb} for ${provider}: ${reason}`,
+        ).join(' '),
+      );
+    }
     if (status !== 'disabled') await updateSelections(record, status);
   }
 
@@ -542,6 +595,195 @@ export function createInstalledItemStatusService(
     };
   }
 
+  function uninstallWithinSerial(
+    request: UninstallInstalledItemRequest,
+    expectedRecoveryId?: string,
+  ): Promise<InstalledItemMutationResult> {
+    return port.serialize(async () => {
+      const deviceTarget = request.target;
+      if (
+        deviceTarget.kind === 'mcp-server' &&
+        /^[a-f0-9-]{1,256}$/.test(deviceTarget.serverId)
+      ) {
+        // Saved device intent is sufficient to resume. Catalog, plugin,
+        // skills, collection and account reads are not removal authority.
+        const saved = (
+          await port.readPreferences()
+        ).pendingInstalledItemUninstalls?.find(
+          (entry) =>
+            entry.target.kind === 'mcp-server' &&
+            entry.target.serverId === deviceTarget.serverId,
+        );
+        if (
+          expectedRecoveryId !== undefined &&
+          saved?.mcpRemoval?.recoveryId !== expectedRecoveryId
+        )
+          throw new Error('Saved device MCP uninstall identity changed.');
+        if (saved) {
+          const errors: InstalledItemMutationResult['errors'] = [];
+          const removed: InstalledItemTarget[] = [];
+          try {
+            if (
+              !saved.refs.every(
+                (ref) =>
+                  ref.kind === 'mcp-config' &&
+                  ref.serverId === deviceTarget.serverId,
+              )
+            )
+              throw new Error('Invalid device MCP uninstall references.');
+            if (saved.mcpRemoval) {
+              const outcome = await port.resumeDeviceRemoval?.(
+                deviceTarget.serverId,
+                saved.mcpRemoval,
+              );
+              if (
+                outcome?.status !== 'complete' ||
+                outcome.serverId !== deviceTarget.serverId ||
+                outcome.recoveryId !== saved.mcpRemoval.recoveryId ||
+                !outcome.custody ||
+                !outcome.credentials ||
+                outcome.index !== 'complete'
+              )
+                throw new Error('Device MCP removal is incomplete.');
+            } else {
+              // Legacy {target, refs} entries retain ordinary, non-escalating retry.
+              await port.removeDeviceServer(deviceTarget.serverId);
+            }
+            const reconcile = async (): Promise<void> => {
+              const pending = (
+                await port.readPreferences()
+              ).pendingInstalledItemUninstalls?.find(
+                (entry) =>
+                  entry.target.kind === 'mcp-server' &&
+                  entry.target.serverId === deviceTarget.serverId,
+              );
+              if (JSON.stringify(pending) !== JSON.stringify(saved))
+                throw new Error('Device MCP uninstall recovery changed.');
+              await port.prune(saved.refs);
+              await port.updatePreferences((current) => {
+                const entries = current.pendingInstalledItemUninstalls ?? [];
+                const matching = entries.filter(
+                  (entry) =>
+                    entry.target.kind === 'mcp-server' &&
+                    entry.target.serverId === deviceTarget.serverId,
+                );
+                if (
+                  matching.some(
+                    (entry) => JSON.stringify(entry) !== JSON.stringify(saved),
+                  )
+                )
+                  throw new Error('Device MCP uninstall recovery changed.');
+                return {
+                  pendingInstalledItemUninstalls: entries.filter(
+                    (entry) => !matching.includes(entry),
+                  ),
+                };
+              });
+            };
+            if (saved.mcpRemoval) {
+              if (!port.reconcileDeviceRemoval)
+                throw new Error(
+                  'Device MCP recovery reconciliation is unavailable.',
+                );
+              await port.reconcileDeviceRemoval(
+                deviceTarget.serverId,
+                saved.mcpRemoval,
+                reconcile,
+              );
+            } else await reconcile();
+            removed.push(deviceTarget);
+          } catch {
+            errors.push({
+              target: deviceTarget,
+              code: 'uninstall_incomplete',
+              message:
+                'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
+              retryable: true,
+            });
+          }
+          // Refresh can fail independently; `removed` still records confirmed
+          // completion and the result never re-creates a consumed intent.
+          return result(undefined, removed, errors, deviceTarget);
+        }
+      }
+      const inventory = await port.list();
+      await snapshot(inventory);
+      const target = UninstallInstalledItemRequestSchema.shape.target.parse(
+        request.target.kind === 'mcp-server'
+          ? request.target
+          : await port.canonical(request.target),
+      );
+      const records = inventory.filter((record) =>
+        target.kind === 'mcp-server'
+          ? record.ref.kind === 'mcp-config' &&
+            record.ref.serverId === target.serverId
+          : installedItemKey(record.ref) === installedItemKey(target),
+      );
+      const errors: InstalledItemMutationResult['errors'] = [];
+      const removed: InstalledItemTarget[] = [];
+      try {
+        const refused = records.find((record) => !record.removable);
+        if (refused)
+          throw new Error(
+            refused.reason ?? 'This installed item cannot be removed.',
+          );
+        const targetKey = JSON.stringify(target);
+        if (!records.length && target.kind !== 'mcp-server')
+          await port.assertAbsent?.(target);
+        const saved = (
+          await port.readPreferences()
+        ).pendingInstalledItemUninstalls?.find(
+          (entry) => JSON.stringify(entry.target) === targetKey,
+        );
+        const refs =
+          saved?.refs ??
+          (target.kind === 'mcp-server'
+            ? records.map((record) => record.ref)
+            : [target]);
+        // Custody recovery is device-only and must validate the receipt's
+        // original incarnation. Never downgrade it to ordinary delete, which
+        // could adopt a newly created server at the same ID.
+        if (saved?.mcpRemoval)
+          throw new Error(
+            'Resume device MCP removal through its repair operation.',
+          );
+        for (const record of records)
+          if (record.ref.kind === 'account-mcp' && record.selectionRef)
+            refs.push({ kind: 'mcp-config', ...record.selectionRef });
+        await port.updatePreferences((current) => ({
+          pendingInstalledItemUninstalls: [
+            ...(current.pendingInstalledItemUninstalls ?? []).filter(
+              (entry) => JSON.stringify(entry.target) !== targetKey,
+            ),
+            { target, refs },
+          ],
+        }));
+        if (target.kind === 'mcp-server') {
+          await port.removeDeviceServer(target.serverId);
+        } else for (const record of records) await port.remove(record);
+        // An absent target is an idempotent retry, including cleanup after a crash.
+        await port.prune(refs);
+        await port.updatePreferences((current) => ({
+          pendingInstalledItemUninstalls: (
+            current.pendingInstalledItemUninstalls ?? []
+          ).filter((entry) => JSON.stringify(entry.target) !== targetKey),
+        }));
+        removed.push(target);
+      } catch {
+        const refused = records.find((record) => !record.removable);
+        errors.push({
+          target,
+          code: refused ? 'not_removable' : 'uninstall_incomplete',
+          message:
+            refused?.reason ??
+            'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
+          retryable: !refused,
+        });
+      }
+      return result(undefined, removed, errors, target);
+    });
+  }
+
   return {
     listStatus: snapshot,
     setStatus(raw): Promise<InstalledItemMutationResult> {
@@ -600,77 +842,20 @@ export function createInstalledItemStatusService(
       });
     },
     uninstall(raw): Promise<InstalledItemMutationResult> {
-      const request = UninstallInstalledItemRequestSchema.parse(raw);
-      return port.serialize(async () => {
-        const inventory = await port.list();
-        await snapshot(inventory);
-        const target = UninstallInstalledItemRequestSchema.shape.target.parse(
-          request.target.kind === 'mcp-server'
-            ? request.target
-            : await port.canonical(request.target),
-        );
-        const records = inventory.filter((record) =>
-          target.kind === 'mcp-server'
-            ? record.ref.kind === 'mcp-config' &&
-              record.ref.serverId === target.serverId
-            : installedItemKey(record.ref) === installedItemKey(target),
-        );
-        const errors: InstalledItemMutationResult['errors'] = [];
-        const removed: InstalledItemTarget[] = [];
-        try {
-          const refused = records.find((record) => !record.removable);
-          if (refused)
-            throw new Error(
-              refused.reason ?? 'This installed item cannot be removed.',
-            );
-          const targetKey = JSON.stringify(target);
-          if (!records.length && target.kind !== 'mcp-server')
-            await port.assertAbsent?.(target);
-          const saved = (
-            await port.readPreferences()
-          ).pendingInstalledItemUninstalls?.find(
-            (entry) => JSON.stringify(entry.target) === targetKey,
-          );
-          const refs =
-            saved?.refs ??
-            (target.kind === 'mcp-server'
-              ? records.map((record) => record.ref)
-              : [target]);
-          for (const record of records)
-            if (record.ref.kind === 'account-mcp' && record.selectionRef)
-              refs.push({ kind: 'mcp-config', ...record.selectionRef });
-          await port.updatePreferences((current) => ({
-            pendingInstalledItemUninstalls: [
-              ...(current.pendingInstalledItemUninstalls ?? []).filter(
-                (entry) => JSON.stringify(entry.target) !== targetKey,
-              ),
-              { target, refs },
-            ],
-          }));
-          if (target.kind === 'mcp-server') {
-            await port.removeDeviceServer(target.serverId);
-          } else for (const record of records) await port.remove(record);
-          // An absent target is an idempotent retry, including cleanup after a crash.
-          await port.prune(refs);
-          await port.updatePreferences((current) => ({
-            pendingInstalledItemUninstalls: (
-              current.pendingInstalledItemUninstalls ?? []
-            ).filter((entry) => JSON.stringify(entry.target) !== targetKey),
-          }));
-          removed.push(target);
-        } catch {
-          const refused = records.find((record) => !record.removable);
-          errors.push({
-            target,
-            code: refused ? 'not_removable' : 'uninstall_incomplete',
-            message:
-              refused?.reason ??
-              'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
-            retryable: !refused,
-          });
-        }
-        return result(undefined, removed, errors, target);
-      });
+      return uninstallWithinSerial(
+        UninstallInstalledItemRequestSchema.parse(raw),
+      );
+    },
+    finishDeviceMcpRemoval(
+      serverId: string,
+      recoveryId: string,
+    ): Promise<InstalledItemMutationResult> {
+      return uninstallWithinSerial(
+        UninstallInstalledItemRequestSchema.parse({
+          target: { kind: 'mcp-server', serverId },
+        }),
+        recoveryId,
+      );
     },
   };
 }

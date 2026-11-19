@@ -85,8 +85,9 @@ export async function saveStartPageFromAction(
       },
     );
     return true;
-  } catch {
+  } catch (error) {
     toast(START_PAGE_SAVE_FAILED, 'error', undefined, {
+      caught: error,
       projectId,
       forceInApp: true,
       suppressOsNotification: true,

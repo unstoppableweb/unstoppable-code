@@ -999,7 +999,7 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
     expect(server.openedConnections).toBe(1);
   });
 
-  it('closing one stream on a web core without unsubscribe parks it and leaves a second stream delivering', async () => {
+  it('closing one stream on a web core whose manifest lacks unsubscribe still sends it, drops late items and leaves a second stream delivering (CAN-6194)', async () => {
     const server = new StubWebCore(false);
     const relay = webCoreRelay(server);
     relays.push(relay);
@@ -1014,6 +1014,8 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
     await expect(
       relay.invoke(event, { kind: 'closeStream', subscriptionId: first }),
     ).resolves.toEqual({ ok: true, value: null });
+    // Sent anyway; this older core answers method-not-found, which is ignored.
+    await waitFor(() => server.methods.includes('core.events.unsubscribe'));
     server.emit('sub-1', 3);
     server.emit('sub-2', 1);
     await expect(readItem(relay, event, second)).resolves.toMatchObject({
@@ -1027,8 +1029,11 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
         params: {},
       }),
     ).resolves.toMatchObject({ ok: true });
-    // The parked subscription is never acknowledged past what was delivered.
+    // Late items for the closed stream are dropped, never acknowledged.
     expect(server.subscription('sub-1')?.acked).toBe(1);
+    expect(
+      server.methods.filter((method) => method === 'core.events.unsubscribe'),
+    ).toHaveLength(1);
     expect(server.openedConnections).toBe(1);
   });
 });

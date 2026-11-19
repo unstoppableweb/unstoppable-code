@@ -32,6 +32,7 @@ import {
 import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-share/port';
 import { extractPipelineReferenceTokens } from '@canopy/desktop-shared/lib/invocation-tokens';
 import { sharedAutomationActivity } from '@canopy/desktop-shared/lib/stored-automation-activity';
+import { sharedWorkflowForm } from '@canopy/desktop-shared/lib/shared-chat-automation-conversion';
 import type {
   AppAdvisorAction,
   AppAdvisorActionResponse,
@@ -98,6 +99,12 @@ export interface AdvisorAutomationSharingHost extends Pick<
   deleteShared(request: DeleteSharedAutomationIpcRequest): Promise<void>;
   /** The signed-in account's server capabilities. */
   accountCapabilities(): Promise<readonly string[]>;
+  /**
+   * Whether a chat automation shares as a workflow when the shared converter
+   * accepts its document (`canopy-desktop-shared-automations-workflow-form`,
+   * CAN-6455). Absent means no.
+   */
+  sharesChatAsWorkflow?(): boolean;
   /** Reads the workflow an automation runs. */
   pipelines: PipelineReadPort;
 }
@@ -282,6 +289,18 @@ async function share(
       );
   }
   const built = buildSharedAutomationDocument(activity, buildOptions);
+  if (built.ok && host.sharesChatAsWorkflow?.() === true) {
+    // CAN-6455: behind the flag, a chat document shares as its workflow when
+    // the server takes the v6 documents the workflow's global target needs.
+    const workflow =
+      built.document.action.type !== 'worktree_pipeline' &&
+      (await host.accountCapabilities()).includes(
+        SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+      )
+        ? await sharedWorkflowForm(built.document)
+        : null;
+    if (workflow) built.document = workflow;
+  }
   if (!built.ok)
     return {
       ok: false,

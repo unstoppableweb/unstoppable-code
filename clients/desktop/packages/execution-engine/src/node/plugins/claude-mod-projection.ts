@@ -260,12 +260,9 @@ function stripTopLevelKey(filePath: string, keyToRemove: string): boolean {
   for (const [key, value] of Object.entries(parsed)) {
     if (key !== keyToRemove) next[key] = value;
   }
-  try {
-    writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
-    return true;
-  } catch {
-    return false;
-  }
+  // A write failure propagates, so the launch can report its errno.
+  writeFileSync(filePath, JSON.stringify(next, null, 2), 'utf8');
+  return true;
 }
 
 function manifestMcpReferences(
@@ -299,11 +296,7 @@ function removeMcpFiles(
   for (const relativePath of removePaths) {
     const destinationPath = path.resolve(projectedRoot, relativePath);
     if (!isPathInside(projectedRoot, destinationPath)) return false;
-    try {
-      rmSync(destinationPath, { recursive: true, force: true });
-    } catch {
-      return false;
-    }
+    rmSync(destinationPath, { recursive: true, force: true });
   }
   if (manifest) {
     const manifestPath = path.join(
@@ -334,38 +327,43 @@ function removeModDeclarations(
 /**
  * Return a plugin copy with only the requested top-level capabilities removed,
  * reusing the copy made for the same source state. A failed copy or validation
- * is deleted and never returns the installed source path.
+ * is deleted and never returns the installed source path. A failure carries
+ * the file-system or unexpected error behind it, for the host's error report;
+ * a refused source or copy has none. The error can name paths: never put it in
+ * a result that leaves the process.
  */
 export function projectClaudePluginForLaunch(
   options: ClaudePluginProjectionOptions,
-): string | null {
+): { ok: true; path: string } | { ok: false; error?: unknown } {
   let temporaryDirectory: string | undefined;
   try {
     const inspection = inspectClaudePluginHooks(options.sourcePluginPath);
-    if (!inspection.success) return null;
+    if (!inspection.success) return { ok: false };
     const sourceRoot = inspection.pluginRoot;
     const before = collectSnapshot(sourceRoot);
-    if (!before) return null;
+    if (!before) return { ok: false };
 
     const requestedProjectionRoot = path.resolve(options.projectionRootDir);
     if (
       requestedProjectionRoot === sourceRoot ||
       isPathInside(sourceRoot, requestedProjectionRoot)
     ) {
-      return null;
+      return { ok: false };
     }
     const projectionRoot = prepareProjectionRoot(
       requestedProjectionRoot,
       sourceRoot,
     );
-    if (!projectionRoot) return null;
+    if (!projectionRoot) return { ok: false };
     const baseName = path.basename(sourceRoot) || 'plugin';
     const finalParent = path.join(
       projectionRoot,
       `${safeSegment(baseName)}-${projectionKey(sourceRoot, before, options)}`,
     );
     const finalRoot = path.join(finalParent, baseName);
-    if (isValidProjection(finalRoot, options)) return finalRoot;
+    if (isValidProjection(finalRoot, options)) {
+      return { ok: true, path: finalRoot };
+    }
     temporaryDirectory = mkdtempSync(
       path.join(projectionRoot, 'claude-mod-projection-'),
     );
@@ -387,7 +385,7 @@ export function projectClaudePluginForLaunch(
       !sameTreeShape(before, projectedSnapshot)
     ) {
       cleanProjection(temporaryDirectory);
-      return null;
+      return { ok: false };
     }
 
     if (
@@ -395,19 +393,19 @@ export function projectClaudePluginForLaunch(
       !removeModDeclarations(sourceRoot, projectedRoot, inspection.hooksFiles)
     ) {
       cleanProjection(temporaryDirectory);
-      return null;
+      return { ok: false };
     }
     if (
       options.removeMcpServers === true &&
       !removeMcpFiles(sourceRoot, projectedRoot, inspection.manifest)
     ) {
       cleanProjection(temporaryDirectory);
-      return null;
+      return { ok: false };
     }
 
     if (!isValidProjection(projectedRoot, options)) {
       cleanProjection(temporaryDirectory);
-      return null;
+      return { ok: false };
     }
     // An invalid copy at the final path is replaced; a valid one written by a
     // concurrent launch wins and this launch's copy is dropped.
@@ -416,16 +414,20 @@ export function projectClaudePluginForLaunch(
     }
     try {
       renameSync(temporaryDirectory, finalParent);
-    } catch {
+    } catch (error) {
       cleanProjection(temporaryDirectory);
-      return isValidProjection(finalRoot, options) ? finalRoot : null;
+      return isValidProjection(finalRoot, options)
+        ? { ok: true, path: finalRoot }
+        : { ok: false, error };
     }
     temporaryDirectory = undefined;
-    return isValidProjection(finalRoot, options) ? finalRoot : null;
-  } catch {
+    return isValidProjection(finalRoot, options)
+      ? { ok: true, path: finalRoot }
+      : { ok: false };
+  } catch (error) {
     if (temporaryDirectory) {
       cleanProjection(temporaryDirectory);
     }
-    return null;
+    return { ok: false, error };
   }
 }

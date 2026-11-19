@@ -9,6 +9,7 @@ import { isGuestAccount } from '@/hooks/useIsGuestCredential';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
 import { useTelemetrySyncPausedReason } from '@/hooks/useTelemetrySyncPausedReason';
 import { brandText } from '@/lib/brand';
+import { useCloudAccountAvailable } from '@/lib/cloud-account';
 import { GUEST_SIGN_IN_CTA_LABEL } from '@/lib/guest-cta-copy';
 import { openAuthenticatedCloudPageReported } from '@/lib/openAuthenticatedCloudPage';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
@@ -204,6 +205,9 @@ export function SidebarAccountMenu({
   // the real account), and never expose sign-out/disconnect — destroying a
   // device-scoped guest token cannot be undone in the same state.
   const canSignOut = accountInfo != null && !isGuest;
+  // A host with no hosted account (the local-only build) offers neither Sign
+  // in nor Sign out; the row names the build instead of an action.
+  const cloudAccountAvailable = useCloudAccountAvailable();
   // CAN-3512: a quiet status row, not an alert, so a paused sync is visible
   // without opening Settings › Privacy, with its explanation on hover.
   // Signed-out and guest rows have no account to sync.
@@ -280,12 +284,14 @@ export function SidebarAccountMenu({
           addToast('Unable to complete sign-in.', 'error');
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Keep the row available for retry, but do not make an IPC/configuration
         // failure look like an inert button.
         addToast(
           'Unable to start sign-in. Check Cloud configuration.',
           'error',
+          undefined,
+          { caught: error },
         );
       })
       .finally(() => {
@@ -363,6 +369,8 @@ export function SidebarAccountMenu({
           signingIn,
         }}
         identityTone={accountIdentityTone}
+        // Not an action label here: nothing in this menu signs in.
+        signedOutLabel={cloudAccountAvailable ? undefined : 'Local-only build'}
         attention={accountAttention}
         rowAttributes={{ 'data-onboarding-anchor': 'sidebar-account-row' }}
         menuWidth="compact"
@@ -589,9 +597,13 @@ export function SidebarAccountMenu({
                   </span>
                 </>
               )}
-              <DropdownMenuDivider />
-              <AccountMenuComputersItem onClose={close} />
-              {signInOutRow}
+              {cloudAccountAvailable && (
+                <>
+                  <DropdownMenuDivider />
+                  <AccountMenuComputersItem onClose={close} />
+                  {signInOutRow}
+                </>
+              )}
             </ActionMenuRowStyle>
           );
         }}

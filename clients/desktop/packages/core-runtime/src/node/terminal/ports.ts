@@ -256,6 +256,14 @@ export type WorkerTerminalEventType = WorkerTerminalEvent['type'];
 export type WorkerTerminalEventListener = (event: WorkerTerminalEvent) => void;
 
 /**
+ * An app shutdown kills every terminal: their exits end no command, so none
+ * gets an idle `runningChanged`. Exit signals and persistence are unchanged.
+ */
+export interface TerminalKillAllOptions {
+  readonly reason: 'app-quit' | 'fatal-exit';
+}
+
+/**
  * The in-process `worker.terminal` port. Every terminal effect goes through
  * it; the engine behind it holds no host services of its own. Operations are
  * synchronous where today's callers are, and named after the
@@ -305,7 +313,7 @@ export interface WorkerTerminalPort {
   /** `worker.terminal.kill`: kill the process tree; exit follows. */
   kill(terminalId: string, options?: { signal?: string | null }): void;
   killWorktree(scope: TerminalWorktreeScope): void;
-  killAll(): void;
+  killAll(options?: TerminalKillAllOptions): void;
   /** `worker.terminal.release`: stop the process tree and wait until it is gone. */
   release(terminalId: string): Promise<void>;
   releaseWorktree(scope: TerminalWorktreeScope): Promise<void>;

@@ -566,6 +566,82 @@ describe('the runner event journal', () => {
     if (typeof stop === 'function') stop();
     journal.close();
   });
+
+  // CAN-6960 / CAN-7046: the web core opens its first stream without a
+  // cursor once the run already runs; what a step printed in its first
+  // moment, or a matrix shard that already ended, must still reach it.
+  it('starts its first stream from the run start, then later ones at a snapshot', async () => {
+    const { worker, journal } = await started('run-early');
+    trackRun(worker, journal, 'run-early');
+    await settle();
+    worker.output('run-early', '/vercel/sandbox/workspace\n');
+    worker.output('run-early', 'one\ntwo\nthree\n');
+    worker.output('run-early', 'no trailing newline');
+    const first = follow(journal, 'run-early', null);
+    expect(first.opened).toBe('opened');
+    expect(first.entries.map(({ event }) => event)).toMatchObject([
+      { kind: 'output', text: '/vercel/sandbox/workspace\n' },
+      { kind: 'output', text: 'one\ntwo\nthree\n' },
+      { kind: 'output', text: 'no trailing newline' },
+      { kind: 'execution', event: 'snapshot' },
+    ]);
+    const cursors = first.entries.map(({ cursor }) => cursor.sequence);
+    expect([...cursors].sort((a, b) => a - b)).toEqual(cursors);
+
+    // Another stream without a cursor starts at a fresh snapshot.
+    worker.output('run-early', 'later');
+    const second = follow(journal, 'run-early', null);
+    expect(second.entries.map(({ event }) => event)).toMatchObject([
+      { kind: 'execution', event: 'snapshot' },
+    ]);
+    journal.close();
+  });
+
+  it('sends a first stream each item from before it opened once, a kept notification included', async () => {
+    const { worker, journal } = await started('run-before');
+    const handlers = createWorkerPipelineHandlers(
+      withPipelineEventJournal(worker, journal),
+      { secrets: canarySecrets(), journal },
+    );
+    trackRun(worker, journal, 'run-before');
+    await settle();
+    worker.notify('run-before', 'early');
+    worker.output('run-before', 'shard 0 output\n');
+    worker.finish('run-before', 'success');
+    const items: WorkerPipelineExecutionEventsItem[] = [];
+    const ends: string[] = [];
+    const sink = {
+      buffered: (): number => 0,
+      emit: (): null => null,
+      emitAt: (
+        at: CanopyStreamCursor,
+        item: WorkerPipelineExecutionEventsItem,
+      ): CanopyStreamCursor => {
+        items.push(item);
+        return at;
+      },
+      endAt: (): void => undefined,
+      end: (outcome: string): void => {
+        ends.push(outcome);
+      },
+    };
+    const stop = await handlers.streams['worker.pipeline.execution.events'](
+      { executionId: 'run-before' },
+      {
+        signal: new AbortController().signal,
+      } as unknown as CanopyHandlerContext,
+      sink,
+    );
+    await settle();
+    expect(items).toMatchObject([
+      { kind: 'notification', title: 'early' },
+      { kind: 'output', text: 'shard 0 output\n' },
+      { kind: 'execution', execution: { status: 'success' } },
+    ]);
+    expect(ends).toEqual(['completed']);
+    if (typeof stop === 'function') stop();
+    journal.close();
+  });
 });
 
 describe('owner requests over a relay: the supervisor runner', () => {

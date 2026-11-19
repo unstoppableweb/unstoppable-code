@@ -17,7 +17,7 @@ import {
   diagnosticReplayOutcome,
   failedDiagnosticReplay,
 } from './diagnostic-replay.mjs';
-import { ensureMockServer } from './mock-server.mjs';
+import { ensureMockServer, PERFORMANCE_MOCK_BASE_URL } from './mock-server.mjs';
 import { frameAreaLines } from './monitor.mjs';
 import {
   WORK_RATCHET_PROFILE,
@@ -30,7 +30,10 @@ import { roundMetric } from './statistics.mjs';
 import { formatScalingRatioLines } from './scaling-ratios.mjs';
 import { failedPerformanceScenario } from './scenario-failure-diagnostics.mjs';
 import { shouldRunPerformanceDiagnostics } from './scenario-status.mjs';
-import { runPerformanceScenario } from './scenarios.mjs';
+import {
+  assertReleaseLikeCloudOrigin,
+  runPerformanceScenario,
+} from './scenarios.mjs';
 import { pruneSmokeDiagnosticArtifacts } from './smoke-artifact-retention.mjs';
 import { formatWorkRatchetVerdict, judgeWorkRatchet } from './work-ratchet.mjs';
 import { w5StoreCaveats, w5StoreTreatment } from './w5-store-arms.mjs';
@@ -333,6 +336,10 @@ async function main() {
   const releaseLikeRoot = options.releaseLike
     ? path.resolve(repoRoot, options.releaseLikeRoot || '.')
     : null;
+  // Before the mock server starts: the bundle must target the mock's origin.
+  if (releaseLikeRoot) {
+    assertReleaseLikeCloudOrigin(releaseLikeRoot, PERFORMANCE_MOCK_BASE_URL);
+  }
   const measuredBuild = releaseLikeRoot
     ? { root: releaseLikeRoot, workingDirectory: releaseLikeRoot }
     : options.e2eRoot

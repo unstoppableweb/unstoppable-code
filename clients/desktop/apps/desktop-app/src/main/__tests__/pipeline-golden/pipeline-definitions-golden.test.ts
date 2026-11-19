@@ -1,6 +1,6 @@
 // CAN-5061 golden: pipeline definition list, get and validate results and
 // error shapes for every source kind (bundled, user, project, shared and
-// curated), through desktop IPC, Portal commands and agent actions. Captured
+// curated), through desktop IPC and agent actions. Captured
 // on unchanged code before CAN-4139 moves definitions to core ownership.
 // Real data root, stores, Git checkout and cloud client; only IPC
 // registration and `fetch` are replaced (see ./world.ts). Re-record
@@ -29,6 +29,11 @@ import * as storeModule from '@canopy/execution-engine/pipelines/store';
 import * as pipelineInstallContext from '../../pipelines/pipeline-install-context';
 import * as resourceLanes from '../../pipelines/resource-lanes';
 import { PIPELINE_GRANTS } from '@canopy/protocol/canopy-core';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
+import type { ShareOperationResult } from '@canopy/protocol/sharing';
+import { computePipelinePackageDigestSync } from '@canopy/execution-engine/node/pipelines/package-contract';
+import { getFeatureFlagService } from '../../feature-flags';
 import { readPreferencesFile } from '../../lib/preferences-store';
 import {
   getTriggerInputDefs,
@@ -67,6 +72,7 @@ import { getPipelinePackageInstallStorePath } from '../../lib/paths';
 import * as advisorAccess from '../../lib/app-advisor-project-agent-access';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
+import { AGENT_PIPELINE_NEW_CHAT_PLUGINS_POLICY_ERROR } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -77,7 +83,6 @@ import {
   goldenWorktreeActionRuntime,
   invokeIpc,
   registerGoldenIpcHandler,
-  runPortalCommand,
   type GoldenIpcHandler,
 } from './harness';
 import {
@@ -121,7 +126,7 @@ let userData: jest.SpiedFunction<typeof app.getPath>;
 
 beforeAll(async () => {
   world = await createPipelineGoldenWorld();
-  // Write effects persist Portal state under userData, which the Electron
+  // Write effects persist state under userData, which the Electron
   // mock otherwise resolves to the checkout.
   userData = jest.spyOn(app, 'getPath').mockReturnValue(world.root);
   // Definition writes reach core through the desktop dispatcher.
@@ -274,60 +279,6 @@ describe('desktop IPC', () => {
   });
 });
 
-describe('Portal', () => {
-  it('lists and gets each source kind for a routed worktree', async () => {
-    const get = (
-      pipelineId: string,
-      extra: Record<string, unknown> = {},
-    ): Promise<unknown> =>
-      runPortalCommand('portal.pipeline.get', {
-        pipelineId,
-        projectId: GOLDEN_WORKSPACE_ID,
-        worktreeId: GOLDEN_WORKTREE_ID,
-        ...extra,
-      });
-    expect(
-      await captureAll({
-        list: () =>
-          runPortalCommand('portal.pipeline.list', {
-            projectId: GOLDEN_WORKSPACE_ID,
-            worktreeId: GOLDEN_WORKTREE_ID,
-          }),
-        listDefaultWorktree: () =>
-          runPortalCommand('portal.pipeline.list', {
-            projectId: GOLDEN_WORKSPACE_ID,
-          }),
-        listWithoutProject: () => runPortalCommand('portal.pipeline.list', {}),
-        listUnknownWorktree: () =>
-          runPortalCommand('portal.pipeline.list', {
-            projectId: GOLDEN_WORKSPACE_ID,
-            worktreeId: 'missing-wt',
-          }),
-        listInvalidWorktree: () =>
-          runPortalCommand('portal.pipeline.list', {
-            projectId: GOLDEN_WORKSPACE_ID,
-            worktreeId: '../escape',
-          }),
-        getUser: () => get(world.userPipelineId),
-        getBundled: () => get(GOLDEN_BUNDLED_PIPELINE_ID),
-        getProject: () => get(GOLDEN_PROJECT_PIPELINE_ID),
-        getShared: () => get(`shared:canopy-cloud:${GOLDEN_SHARED_REMOTE_ID}`),
-        getSharedDispatchOnly: () =>
-          get(`shared:canopy-cloud:${GOLDEN_SHARED_DISPATCH_REMOTE_ID}`),
-        getCurated: () => get(`curated:${GOLDEN_CURATED_KEY}`),
-        getMissing: () => get('missing-pipeline'),
-        getWithoutWorktree: () =>
-          runPortalCommand('portal.pipeline.get', {
-            pipelineId: world.userPipelineId,
-            projectId: GOLDEN_WORKSPACE_ID,
-          }),
-        getInvalidPayload: () =>
-          runPortalCommand('portal.pipeline.get', { pipelineId: 7 }),
-      }),
-    ).toMatchSnapshot();
-  });
-});
-
 describe('agent actions', () => {
   it('lists and gets each source kind and refuses invalid definitions', async () => {
     const runtime = goldenWorktreeActionRuntime(world.worktreePath);
@@ -396,6 +347,84 @@ describe('agent actions', () => {
           ),
       }),
     ).toMatchSnapshot();
+  });
+});
+
+// CAN-6065 follow-up: an agent's save of a step that starts a new chat with
+// plugins is refused, as its runs would be; a person's save is not.
+describe('agent saves of new-chat plugins', () => {
+  const newChatYaml = (plugins: string): string =>
+    [
+      'pipeline:',
+      '  name: Golden new chat plugins',
+      '  on:',
+      '    dispatch:',
+      '      inputs:',
+      '        project:',
+      '          required: false',
+      '  jobs:',
+      '    send:',
+      '      steps:',
+      '        - uses: builtin/send-agent-message',
+      '          with:',
+      '            project_id: ${{ inputs.project }}',
+      '            task_id: ${{ inputs.project }}',
+      '            text: Hello',
+      `            plugins: ${plugins}`,
+      '',
+    ].join('\n');
+  const literalPlugins = newChatYaml(
+    `'[{"marketplaceId":"golden","pluginName":"golden"}]'`,
+  );
+  const refusal = {
+    isError: true,
+    result: {
+      ok: false,
+      error: {
+        code: 'validation_failed',
+        message: AGENT_PIPELINE_NEW_CHAT_PLUGINS_POLICY_ERROR,
+      },
+    },
+  };
+
+  it('refuses literal plugins on agent writes, not on a person’s save', async () => {
+    const runtime = goldenWorktreeActionRuntime(world.worktreePath);
+    expect(
+      await dispatchAgentAction(
+        { type: 'pipeline.create', rawYaml: literalPlugins },
+        runtime,
+      ),
+    ).toMatchObject(refusal);
+    const saved = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+      name: 'Golden new chat plugins',
+      description: '',
+      icon: '',
+      content: parsePipelineText(literalPlugins),
+    })) as IPCResult<PipelineInfo>;
+    expect(saved).toMatchObject({ success: true });
+    const id = saved.data?.id ?? '';
+    for (const action of [
+      { type: 'pipeline.update', pipelineId: id, rawYaml: literalPlugins },
+      { type: 'pipeline.duplicate', pipelineId: id },
+    ] as const) {
+      expect(await dispatchAgentAction(action, runtime)).toMatchObject(refusal);
+    }
+    // An expression is left to the run; a rename sends no definition.
+    for (const action of [
+      {
+        type: 'pipeline.update',
+        pipelineId: id,
+        rawYaml: newChatYaml('${{ inputs.project }}'),
+      },
+      { type: 'pipeline.update', pipelineId: id, name: 'Agent rename' },
+    ] as const) {
+      expect(await dispatchAgentAction(action, runtime)).toMatchObject({
+        isError: false,
+      });
+    }
+    expect(await invokeIpc(PIPELINE_CHANNELS.DELETE, id)).toEqual({
+      success: true,
+    });
   });
 });
 
@@ -761,26 +790,6 @@ describe('installs from the curated catalog and shares', () => {
           }),
         ipcId,
       ),
-      portal: await capturedInstall(
-        () =>
-          runPortalCommand('portal.pipeline.install_curated', {
-            key: GOLDEN_CURATED_KEY,
-            expectedContentHash: curatedHash,
-          }),
-        (value) => {
-          const payload = (value as { payload?: { result?: unknown } }).payload;
-          const result = payload?.result as { pipelineId?: string } | undefined;
-          return result?.pipelineId;
-        },
-      ),
-      portalStale: await capturedInstall(
-        () =>
-          runPortalCommand('portal.pipeline.install_curated', {
-            key: GOLDEN_CURATED_KEY,
-            expectedContentHash: '0'.repeat(64),
-          }),
-        () => undefined,
-      ),
     }).toMatchSnapshot();
   });
 
@@ -1071,7 +1080,7 @@ describe('workflow trigger (CAN-5782)', () => {
     '',
   ].join('\n');
 
-  it('reads and lists a workflow pipeline and keeps it off the Portal', async () => {
+  it('reads and lists a workflow pipeline', async () => {
     const save = (yaml: string): Promise<unknown> => {
       const content = parsePipelineText(yaml);
       return invokeIpc(PIPELINE_CHANNELS.SAVE, {
@@ -1117,37 +1126,6 @@ describe('workflow trigger (CAN-5782)', () => {
           name: row.name,
           triggerTypes: row.triggerTypes,
         }));
-    };
-    // Only this test's rows, with the triggers the Portal reports for them.
-    const portalRows = async (): Promise<unknown> => {
-      const listed: unknown = await runPortalCommand('portal.pipeline.list', {
-        projectId: GOLDEN_WORKSPACE_ID,
-        worktreeId: GOLDEN_WORKTREE_ID,
-      });
-      const pipelines: unknown[] = [];
-      const collect = (value: unknown): void => {
-        if (Array.isArray(value)) value.forEach(collect);
-        else if (typeof value === 'object' && value !== null) {
-          if ('pipelineId' in value && 'name' in value) pipelines.push(value);
-          else Object.values(value).forEach(collect);
-        }
-      };
-      collect(listed);
-      return pipelines.flatMap((row) =>
-        typeof row === 'object' &&
-        row !== null &&
-        'pipelineId' in row &&
-        (row.pipelineId === workflowOnlyId || row.pipelineId === mixedId) &&
-        'name' in row
-          ? [
-              {
-                name: row.name,
-                triggerTypes:
-                  'triggerTypes' in row ? row.triggerTypes : undefined,
-              },
-            ]
-          : [],
-      );
     };
     // Warm the curated catalog cache, so the captured list makes the same
     // cloud requests whether this test runs alone or after the others.
@@ -1222,24 +1200,6 @@ describe('workflow trigger (CAN-5782)', () => {
             } finally {
               contexts.mockRestore();
             }
-          },
-          portalList: portalRows,
-          // A workflow-only pipeline reads as missing on the Portal; a mixed
-          // one is described by its portable triggers.
-          portalGetWorkflowOnly: () =>
-            runPortalCommand('portal.pipeline.get', {
-              pipelineId: workflowOnlyId,
-              projectId: GOLDEN_WORKSPACE_ID,
-              worktreeId: GOLDEN_WORKTREE_ID,
-            }),
-          portalGetMixedTriggers: async () => {
-            const got: unknown = await runPortalCommand('portal.pipeline.get', {
-              pipelineId: mixedId,
-              projectId: GOLDEN_WORKSPACE_ID,
-              worktreeId: GOLDEN_WORKTREE_ID,
-            });
-            // Only the trigger summary: the rest is the usual definition view.
-            return /"triggerSummary":"([^"]*)"/.exec(JSON.stringify(got))?.[1];
           },
           // The trigger setters keep the `workflow:` block and its inputs.
           setTriggerTypes: () => Promise.resolve(withDispatch),
@@ -1943,6 +1903,286 @@ describe('workflow schedules (CAN-5782)', () => {
     } finally {
       for (const id of [childId, pageId, plainId])
         if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+});
+
+describe('packaged installs shared as their workflow (CAN-6455)', () => {
+  const REMOTE_ID = 'public-golden-chat-package';
+  const PUBLIC_PREFIX = `/api/v1/public-shares/automations/${REMOTE_ID}/package`;
+  const UPLOADS = '/api/v1/pipeline-packages/uploads';
+  const hex = (text: string): string =>
+    createHash('sha256').update(text, 'utf8').digest('hex');
+  const blobs = new Map<string, Uint8Array>();
+  const blob = (text: string): { sha256: string; size: number } => {
+    const bytes = new TextEncoder().encode(text);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    blobs.set(sha256, bytes);
+    return { sha256, size: bytes.byteLength };
+  };
+  const skill = blob(
+    '---\nname: triage\ndescription: Triage issues\n---\nTriage the issues.\n',
+  );
+  // A chat automation's package: one skill its native prompt binds.
+  const installed: PipelinePackageManifestV1 = {
+    version: 1,
+    pipelineContentHash: 'a'.repeat(64),
+    resources: [
+      {
+        id: 'skill-triage',
+        kind: 'standalone_skill',
+        displayName: 'triage',
+        sourceLabel: 'Custom',
+        sourceVisibility: 'private',
+        invocationKeys: ['triage'],
+        dependencyResourceIds: [],
+        trees: [
+          {
+            provider: 'claude',
+            runtimeKind: 'standalone_skill',
+            rootName: 'triage',
+            entries: [{ path: 'SKILL.md', ...skill, mode: 'read' }],
+          },
+        ],
+      },
+    ],
+    bindings: [
+      { jobId: 'automation', stepId: 'action', resourceIds: ['skill-triage'] },
+    ],
+    environmentRequirements: [],
+    totalFiles: 1,
+    totalBytes: skill.size,
+  };
+  const installedDigest = computePipelinePackageDigestSync(installed);
+  /** What the golden cloud was asked to publish, in order. */
+  const prepared: PipelinePackageManifestV1[] = [];
+  const uploadedBlobs: Array<{ sha256: string; bytes: Uint8Array }> = [];
+  let restoreFetch: (() => void) | undefined;
+
+  beforeAll(async () => {
+    const { registerAutomationsHandlers } =
+      await import('../../ipc/automations');
+    registerAutomationsHandlers({
+      getMainWindow: () => null,
+      getAppAdvisorWindow: () => null,
+      openAppAdvisorWindow: () =>
+        Promise.reject(new Error('No window in this golden.')),
+      ensureAppAdvisorWindow: () =>
+        Promise.reject(new Error('No window in this golden.')),
+      sendAppAdvisorWindowCommand: () => undefined,
+    });
+    // The golden cloud also serves this public share's package and accepts
+    // package uploads, which no other case here reaches.
+    const goldenFetch = global.fetch;
+    const reply = (status: number, body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+    global.fetch = async (input, init): Promise<Response> => {
+      const url = new URL(
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url,
+      );
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const path = url.pathname;
+      if (method === 'GET' && path === PUBLIC_PREFIX)
+        return url.searchParams.get('expectedPackageDigest') === installedDigest
+          ? reply(200, { digest: installedDigest, manifest: installed })
+          : reply(404, { error: 'Not found' });
+      if (method === 'GET' && path.startsWith(`${PUBLIC_PREFIX}/blobs/`)) {
+        const bytes = blobs.get(path.slice(PUBLIC_PREFIX.length + 7));
+        return bytes
+          ? new Response(Buffer.from(bytes), { status: 200 })
+          : reply(404, { error: 'Not found' });
+      }
+      if (method === 'POST' && path === UPLOADS) {
+        const body = JSON.parse(
+          typeof init?.body === 'string' ? init.body : '{}',
+        ) as {
+          manifest: PipelinePackageManifestV1;
+        };
+        prepared.push(body.manifest);
+        // The cloud holds none of the files yet.
+        return reply(200, {
+          uploadId: `golden-upload-${prepared.length}`,
+          expiresAt: '2099-01-01T00:00:00.000Z',
+          missingBlobs: [
+            ...new Set(
+              body.manifest.resources.flatMap((resource) =>
+                resource.trees.flatMap((tree) =>
+                  tree.entries.map((entry) => entry.sha256),
+                ),
+              ),
+            ),
+          ],
+        });
+      }
+      const blobPut =
+        /^\/api\/v1\/pipeline-packages\/uploads\/[^/]+\/blobs\/([^/]+)$/.exec(
+          path,
+        );
+      if (method === 'PUT' && blobPut) {
+        const body = init?.body;
+        uploadedBlobs.push({
+          sha256: decodeURIComponent(blobPut[1] ?? ''),
+          bytes: new Uint8Array(body instanceof Uint8Array ? body : []),
+        });
+        return new Response(null, { status: 204 });
+      }
+      const commit =
+        /^\/api\/v1\/pipeline-packages\/uploads\/([^/]+)\/commit$/.exec(path);
+      if (method === 'POST' && commit) {
+        const manifest = prepared[prepared.length - 1];
+        // The cloud computes the digest from what it was given.
+        return manifest
+          ? reply(200, {
+              uploadId: decodeURIComponent(commit[1] ?? ''),
+              digest: computePipelinePackageDigestSync(manifest),
+              package: {},
+            })
+          : reply(409, { error: 'Nothing prepared' });
+      }
+      return goldenFetch(input, init);
+    };
+    restoreFetch = (): void => {
+      global.fetch = goldenFetch;
+    };
+  });
+
+  afterAll(() => restoreFetch?.());
+
+  it('shares a packaged install as its workflow through automations:capability-package:commit only with the flag on (CAN-6455)', async () => {
+    const flags = getFeatureFlagService();
+    const isEnabled = flags.isEnabled.bind(flags);
+    let workflowForm = false;
+    const flag = jest
+      .spyOn(flags, 'isEnabled')
+      .mockImplementation((key) =>
+        key ===
+        CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key
+          ? workflowForm
+          : isEnabled(key),
+      );
+    const packageRef = { version: 1 as const, digest: installedDigest };
+    let automationId = '';
+    let workflowId = '';
+    try {
+      // Installing a shared chat automation with a package, as the install
+      // dialog does: create it (it converts to a workflow it owns,
+      // CAN-5479), then install its package pinned to the chat it shows.
+      const created = (await invokeIpc(IPC_CHANNELS.automationsCreate, {
+        name: 'Golden packaged chat',
+        schedule: { kind: 'cron', expression: '0 * * * *', timezone: 'local' },
+        action: {
+          type: 'worktree_prompt',
+          workspaceId: GOLDEN_WORKSPACE_ID,
+          prompt: 'Run /triage on new issues',
+        },
+        enabled: false,
+        installedFrom: {
+          remoteId: REMOTE_ID,
+          contentHash: 'c'.repeat(64),
+          installedAt: '2026-11-13T00:00:00.000Z',
+          sourceKind: 'public',
+          capabilityPackage: packageRef,
+        },
+      })) as { ok: boolean; error?: string; activity?: ScheduledActivity };
+      expect(created.error).toBeUndefined();
+      const shown = created.activity;
+      automationId = shown?.id ?? '';
+      expect(shown?.action.type).toBe('worktree_prompt');
+      const chatHash = hex(
+        JSON.stringify({ name: shown?.name, action: shown?.action }),
+      );
+      await invokeIpc(IPC_CHANNELS.automationsCapabilityPackageInstall, {
+        remoteId: REMOTE_ID,
+        localAutomationId: automationId,
+        packageRef,
+        localContentHash: chatHash,
+        source: 'public',
+        publicShare: true,
+      });
+      const saved = (await getAutomationsService().allActivities()).find(
+        (activity) => activity.id === automationId,
+      );
+      expect(saved?.action.type).toBe('worktree_pipeline');
+      workflowId =
+        (saved === undefined ? undefined : scheduledUserPipelineId(saved)) ??
+        '';
+      const workflow = readFileSync(
+        getStoredPipelinePath(workflowId).data ?? '',
+        'utf8',
+      );
+
+      const commit = async (
+        request: Record<string, unknown>,
+      ): Promise<{
+        result: ShareOperationResult<unknown>;
+        uploads: number;
+      }> => {
+        prepared.length = 0;
+        uploadedBlobs.length = 0;
+        const result = (await invokeIpc(
+          IPC_CHANNELS.automationsCapabilityPackageCommit,
+          {
+            localAutomationId: automationId,
+            packageRef,
+            expectedPackageContentHash: chatHash,
+            ...request,
+          },
+        )) as ShareOperationResult<unknown>;
+        return { result, uploads: prepared.length };
+      };
+
+      // Flag off: no workflow share, and nothing reaches the cloud.
+      const off = await commit({ reboundWorkflow: workflow });
+      expect(off).toMatchObject({ result: { ok: false }, uploads: 0 });
+
+      workflowForm = true;
+      // Flag on: the installed files, bound to the workflow's send step and
+      // keyed to its YAML, published as a new package.
+      const on = await commit({ reboundWorkflow: workflow });
+      expect(on.result.ok).toBe(true);
+      expect(prepared).toHaveLength(1);
+      const rebound = prepared[0];
+      expect(rebound?.bindings).toEqual([
+        { jobId: 'chat', stepId: 'send', resourceIds: ['skill-triage'] },
+      ]);
+      expect(rebound?.resources).toEqual(installed.resources);
+      expect(rebound?.pipelineContentHash).toBe(hex(workflow));
+      // Its files came from the install's cache, byte for byte.
+      expect(uploadedBlobs).toEqual([
+        { sha256: skill.sha256, bytes: blobs.get(skill.sha256) },
+      ]);
+      const reboundDigest = on.result.ok
+        ? (on.result.value as { capabilityPackage: { digest: string } })
+            .capabilityPackage.digest
+        : '';
+      expect(reboundDigest).toBe(
+        rebound ? computePipelinePackageDigestSync(rebound) : '',
+      );
+      expect(reboundDigest).not.toBe(installedDigest);
+
+      // A workflow one character off the stored one is refused.
+      const edited = await commit({ reboundWorkflow: `${workflow} ` });
+      expect(edited).toMatchObject({ result: { ok: false }, uploads: 0 });
+
+      // Without a workflow, the install's own package is shared unchanged.
+      const chat = await commit({});
+      expect(chat.result).toMatchObject({
+        ok: true,
+        value: { capabilityPackage: packageRef },
+      });
+      expect(prepared).toEqual([installed]);
+    } finally {
+      flag.mockRestore();
+      if (automationId)
+        await invokeIpc(IPC_CHANNELS.automationsDelete, { id: automationId });
+      if (workflowId) deleteStoredPipeline(workflowId);
     }
   });
 });

@@ -1,4 +1,5 @@
 import type { useActivityStore as ActivityStoreHook } from '../../renderer/src/stores/activityStore';
+import type { useProjectsStore as ProjectsStoreHook } from '../../renderer/src/stores/projectsStore';
 // Real Git and registered activity IPC, through the production renderer refresh
 // entry points and store. Only IPC registration and unrelated host APIs are fake.
 jest.mock('@canopy/ui-shared/components/Skeleton', () => ({
@@ -23,10 +24,16 @@ import {
   clearWorktreeActivity,
 } from '../../renderer/src/stores/changedFilesRefreshRuntime';
 
+// Each test builds a git fixture before its 750ms readiness race; on a
+// loaded CI runner (a large shard of git-heavy goldens) the first one takes
+// over Jest's default 5s.
+jest.setTimeout(15_000);
+
 type Reader = (
   request: ActivityChangedFilesRequest,
 ) => Promise<ActivityChangedFilesResponse>;
 type ActivityStore = typeof ActivityStoreHook;
+type ProjectsStore = typeof ProjectsStoreHook;
 const mockHandlers = new Map<
   string,
   (
@@ -54,6 +61,14 @@ beforeAll(() => {
   fixture = createDiffGoldenFixture('can6090-reconciliation-');
   process.env.CANOPY_DATA_DIR = fixture.dataDir;
   registration = registerActivityGoldenHandlers();
+});
+// Cold store imports take seconds on a loaded runner; keep them out of the
+// first test's timeout.
+beforeAll(async () => {
+  installHost(() =>
+    Promise.reject(new Error('No changed-files reader is installed')),
+  );
+  await loadStores();
 });
 afterEach(() => clearWorktreeActivity(SINGLE_WS, WORKTREE));
 afterAll(async () => {
@@ -90,7 +105,7 @@ function holdFirstRead(failSecond = false): {
   };
 }
 
-async function installReader(read: Reader): Promise<ActivityStore> {
+function installHost(read: Reader): void {
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
     value: {
@@ -106,10 +121,22 @@ async function installReader(read: Reader): Promise<ActivityStore> {
     configurable: true,
     value: { visibilityState: 'visible', hasFocus: () => true },
   });
+}
+
+async function loadStores(): Promise<{
+  useProjectsStore: ProjectsStore;
+  useActivityStore: ActivityStore;
+}> {
   const { useProjectsStore } =
     await import('../../renderer/src/stores/projectsStore');
   const { useActivityStore } =
     await import('../../renderer/src/stores/activityStore');
+  return { useProjectsStore, useActivityStore };
+}
+
+async function installReader(read: Reader): Promise<ActivityStore> {
+  installHost(read);
+  const { useProjectsStore, useActivityStore } = await loadStores();
   useProjectsStore.setState({
     projects: [
       {
@@ -281,8 +308,7 @@ it('an explicit failure refuses the older response and permits a fresh retry', a
 it('a replacement lifecycle in the workspace list refuses an old sample', async () => {
   const held = holdFirstRead();
   const store = await installReader(held.read);
-  const { useProjectsStore } =
-    await import('../../renderer/src/stores/projectsStore');
+  const { useProjectsStore } = await loadStores();
   const old = requestChangedFilesRefresh(SINGLE_WS, WORKTREE, {
     kind: 'automatic',
   });

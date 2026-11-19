@@ -14,23 +14,23 @@ import {
 } from '../lib/pipeline-filter-values';
 import type { PipelineSourceBadgeKey } from '../lib/pipeline-source-badges';
 
-type FilterKey = keyof PipelineFilterValues;
+export type PipelineFilterKey = keyof PipelineFilterValues;
 
-interface FilterOption {
+export interface PipelineFilterOption {
   readonly value: string;
   readonly label: string;
 }
 
-interface FilterDimension {
-  readonly key: FilterKey;
+export interface PipelineFilterDimension {
+  readonly key: PipelineFilterKey;
   readonly title: string;
   readonly anyLabel: string;
-  readonly options: readonly FilterOption[];
+  readonly options: readonly PipelineFilterOption[];
 }
 
 function sourceDimension(
   sources: readonly PipelineSourceBadgeKey[],
-): FilterDimension {
+): PipelineFilterDimension {
   return {
     key: 'source',
     title: 'Source',
@@ -42,7 +42,7 @@ function sourceDimension(
   };
 }
 
-const SCOPE_AND_TRIGGER_DIMENSIONS: readonly FilterDimension[] = [
+const SCOPE_AND_TRIGGER_DIMENSIONS: readonly PipelineFilterDimension[] = [
   {
     key: 'scope',
     title: 'Scope',
@@ -63,9 +63,19 @@ const SCOPE_AND_TRIGGER_DIMENSIONS: readonly FilterDimension[] = [
   },
 ];
 
-function withValue(
+/**
+ * The Source, Scope and Trigger dimensions, in render order, for a host that
+ * lays the filters out itself (New Customize's filter menu).
+ */
+export function pipelineFilterDimensions(
+  sources: readonly PipelineSourceBadgeKey[] = PIPELINE_FILTER_SOURCES,
+): readonly PipelineFilterDimension[] {
+  return [sourceDimension(sources), ...SCOPE_AND_TRIGGER_DIMENSIONS];
+}
+
+export function withPipelineFilterValue(
   values: PipelineFilterValues,
-  key: FilterKey,
+  key: PipelineFilterKey,
   value: string,
 ): PipelineFilterValues {
   switch (key) {
@@ -126,7 +136,7 @@ export function PluginsPipelineFilters({
           dimension={dimension}
           value={values[dimension.key]}
           onSelect={(value) =>
-            onChange(withValue(values, dimension.key, value))
+            onChange(withPipelineFilterValue(values, dimension.key, value))
           }
         />
       ))}
@@ -135,7 +145,7 @@ export function PluginsPipelineFilters({
 }
 
 interface PipelineFilterPickerProps {
-  readonly dimension: FilterDimension;
+  readonly dimension: PipelineFilterDimension;
   readonly value: string;
   readonly onSelect: (value: string) => void;
 }
@@ -148,7 +158,7 @@ function PipelineFilterPicker({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const selected = dimension.options.find((option) => option.value === value);
-  const options: readonly FilterOption[] = [
+  const options: readonly PipelineFilterOption[] = [
     { value: 'all', label: dimension.anyLabel },
     ...dimension.options,
   ];

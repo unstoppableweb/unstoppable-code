@@ -11,6 +11,7 @@ import {
 import { CopilotProvider } from '../agents/copilot-session';
 import type { AgentSessionOptions } from '../agents/types';
 import { openManagedCopilotRuntime } from '../copilot/connection';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 jest.mock('../agents/copilot-session', () => ({
   CopilotProvider: jest
@@ -51,7 +52,11 @@ describe('Copilot worker runtime (CAN-4119)', () => {
   it('a Copilot session is constructed by the worker runtime inside a turn run', async () => {
     const provider = await runInAgentWorker(
       { kind: 'turn', runId: 'r1' },
-      async () => (await copilotRuntime()).providerFor('copilot', () => null),
+      async () =>
+        (await copilotRuntime()).providerFor(
+          'copilot',
+          windowAgentInterfacePort(() => null),
+        ),
     );
     expect(provider).toBe(jest.mocked(CopilotProvider).mock.results[0].value);
     expect(CopilotProvider).toHaveBeenCalledTimes(1);
@@ -60,14 +65,22 @@ describe('Copilot worker runtime (CAN-4119)', () => {
 
   it('a subagent run may construct the provider', async () => {
     await runInAgentWorker({ kind: 'subagent', runId: 's1' }, async () =>
-      (await copilotRuntime()).providerFor('copilot', () => null),
+      (await copilotRuntime()).providerFor(
+        'copilot',
+        windowAgentInterfacePort(() => null),
+      ),
     );
     expect(CopilotProvider).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a Copilot provider outside an agent run', async () => {
     const runtime = await copilotRuntime();
-    await expect(runtime.providerFor('copilot', () => null)).rejects.toThrow(
+    await expect(
+      runtime.providerFor(
+        'copilot',
+        windowAgentInterfacePort(() => null),
+      ),
+    ).rejects.toThrow(
       new AgentOutsideWorkerError('CopilotWorkerRuntime.providerFor'),
     );
     expect(CopilotProvider).not.toHaveBeenCalled();
@@ -148,7 +161,7 @@ describe('Copilot worker runtime (CAN-4119)', () => {
             chatId: 'c',
           } as AgentSessionOptions,
           () => undefined,
-          () => null,
+          windowAgentInterfacePort(() => null),
         );
       } catch (error) {
         refusal = error;

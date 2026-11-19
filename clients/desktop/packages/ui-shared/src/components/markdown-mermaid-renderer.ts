@@ -6,6 +6,7 @@ import {
   hasMermaidExternalCssResource,
   planMermaidRender,
 } from './markdown-mermaid-policy';
+import { resolveTokenHex } from '../lib/token-color';
 
 const MAX_SVG_LENGTH = 1_000_000;
 const MAX_PENDING_RENDERS = 40;
@@ -19,25 +20,11 @@ function tokenColor(
   token: string,
   background?: string,
 ): string {
-  const probe = document.createElement('span');
-  probe.style.color = `var(${token})`;
-  element.append(probe);
-  const color = getComputedStyle(probe).color;
-  probe.remove();
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 1;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  if (!context) throw new Error('Color conversion unavailable');
   // Border/foreground tokens may be translucent. Composite onto the semantic
   // surface before converting to hex, rather than accidentally making them opaque.
-  if (background) {
-    context.fillStyle = background;
-    context.fillRect(0, 0, 1, 1);
-  }
-  context.fillStyle = color;
-  context.fillRect(0, 0, 1, 1);
-  const pixel = context.getImageData(0, 0, 1, 1).data;
-  return `#${Array.from(pixel.subarray(0, 3), (value) => value.toString(16).padStart(2, '0')).join('')}`;
+  const color = resolveTokenHex(element, token, background);
+  if (color === null) throw new Error('Color conversion unavailable');
+  return color;
 }
 
 export function sanitizeMermaidSvg(svg: string): string {

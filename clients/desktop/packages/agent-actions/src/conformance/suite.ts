@@ -31,6 +31,10 @@ import {
   PULL_REQUEST_ACTION_TYPES,
   pullRequestActionCatalog,
 } from '../families/pull-request';
+import {
+  PULL_REQUEST_REVIEW_ACTION_TYPES,
+  pullRequestReviewActionCatalog,
+} from '../families/pull-request-review';
 import { PROJECT_ACTION_TYPES } from '../families/projects/actions';
 import { PROJECT_ACTION_CATALOG } from '../families/projects/catalog';
 import { PIPELINES_ACTION_TYPES } from '../families/pipelines/actions';
@@ -465,6 +469,11 @@ function expectedToolKeys(
     if (!capabilities.memoryWriteOnly)
       keys.push('search_memory', 'read_memory');
   }
+  if (
+    capabilities.chatHistory === true &&
+    capabilities.actionTypes.includes('chat.history.search')
+  )
+    keys.push('search_chats', 'read_chat_excerpt');
   if (capabilities.feed === true)
     keys.push(
       'add_ledger_entry',
@@ -558,6 +567,7 @@ function sharedActionOffer(
       (type) => aiGateway || !type.startsWith('settings.ai_gateway.'),
     ),
     ...PULL_REQUEST_ACTION_TYPES,
+    ...PULL_REQUEST_REVIEW_ACTION_TYPES,
     ...PROJECT_ACTION_TYPES,
     ...CHAT_CONTROL_ACTION_TYPES,
     ...PIPELINES_ACTION_TYPES,
@@ -572,6 +582,7 @@ function sharedActionOffer(
       ...settingsActionCatalog(),
       ...(aiGateway ? aiGatewayActionCatalog : []),
       ...pullRequestActionCatalog(),
+      ...pullRequestReviewActionCatalog(),
       ...PROJECT_ACTION_CATALOG,
       ...chatControlActionCatalog(),
       ...pipelinesActionCatalogFor(capabilities),
@@ -5098,6 +5109,56 @@ export function runAgentActionConformance<H>(
             { ok: true, result: { deduped: false } },
             'a wakeup that already arrived no longer dedupes a new one',
           );
+        },
+      );
+
+      t.it(
+        'searches earlier chat content and reads its bounded match through named tools',
+        async () => {
+          const current = await session();
+          if (
+            !expectedToolKeys(current.host.capabilities).includes(
+              'search_chats',
+            )
+          )
+            return;
+          const entry = world.chatHistory[0];
+          check(entry !== undefined, 'world has earlier history');
+          if (entry === undefined) return;
+          for (const alias of [false, true]) {
+            const query = entry.text.slice(0, 20);
+            const found = alias
+              ? (await current.dispatch({ type: 'chat.history.search', query }))
+                  .result
+              : await current.execute('search_chats', { query });
+            const hits = arrayAt(parseJson(found.text), 'result', 'hits');
+            const matchId = at(hits[0], 'matchId');
+            check(
+              typeof matchId === 'string',
+              `SearchChats finds earlier content: ${found.text}`,
+            );
+            const read = alias
+              ? (
+                  await current.dispatch({
+                    type: 'chat.history.excerpt',
+                    matchId,
+                  })
+                ).result
+              : await current.execute('read_chat_excerpt', { matchId });
+            check(
+              read.text.includes(entry.text.slice(0, 20)),
+              'ReadChatExcerpt reads the found fact',
+            );
+            check(
+              (
+                await current.execute('read_chat_excerpt', {
+                  matchId,
+                  cursor: 'forged',
+                })
+              ).isError === true,
+              'model cursors are refused',
+            );
+          }
         },
       );
 

@@ -1,9 +1,11 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { Buffer } from 'node:buffer';
 import { type WebContents, systemPreferences } from 'electron';
 import {
   UNSUPPORTED_VOICE_DICTATION_MESSAGE,
   UNSUPPORTED_VOICE_DICTATION_RESPONSE,
   isVoiceDictationPlatform,
+  isVoiceSystemAccessPlatform,
 } from '@canopy/desktop-shared/platform-capabilities';
 import {
   IPC_CHANNELS,
@@ -26,8 +28,8 @@ import { getVoiceService } from './service';
 /**
  * Single source of truth for the unsupported-voice user-facing message. The
  * renderer relies on this exact string to display the disabled-state copy on
- * non-`darwin` hosts; do not localize or paraphrase it without also updating
- * the renderer.
+ * hosts without dictation (Windows); do not localize or paraphrase it without
+ * also updating the renderer.
  */
 const UNSUPPORTED_VOICE_MESSAGE = UNSUPPORTED_VOICE_DICTATION_MESSAGE;
 const UNSUPPORTED_VOICE_RESPONSE: VoiceIsSupportedResponse =
@@ -37,7 +39,20 @@ const UNAVAILABLE_SYSTEM_ACCESS: VoiceSystemAccessResponse = {
   speechRecognition: 'unavailable',
 };
 
+/**
+ * Linux has no operating-system microphone permission: the app's permission
+ * handler grants audio-only capture, and getUserMedia reports a missing or
+ * busy device, which the renderer maps to its own errors.
+ */
+const LINUX_SYSTEM_ACCESS: VoiceSystemAccessResponse = {
+  microphone: 'granted',
+  speechRecognition: 'authorized',
+};
+
 function getMicrophoneAccess(): VoiceMicrophoneAccess {
+  if (!isVoiceSystemAccessPlatform(hostPlatformOperatingSystem())) {
+    return LINUX_SYSTEM_ACCESS.microphone;
+  }
   try {
     return systemPreferences.getMediaAccessStatus('microphone');
   } catch {
@@ -107,7 +122,9 @@ async function waitForE2eVoiceAccessDelay(): Promise<void> {
 
 export function registerVoiceHandlers(): void {
   const service = getVoiceService();
-  const voiceSupportedPlatform = isVoiceDictationPlatform(process.platform);
+  const voiceSupportedPlatform = isVoiceDictationPlatform(
+    hostPlatformOperatingSystem(),
+  );
   let e2eMicrophoneRequested = false;
 
   // A take belongs to the page that started it. If that page reloads,
@@ -237,6 +254,9 @@ export function registerVoiceHandlers(): void {
       }
       if (!voiceSupportedPlatform) {
         return UNAVAILABLE_SYSTEM_ACCESS;
+      }
+      if (!isVoiceSystemAccessPlatform(hostPlatformOperatingSystem())) {
+        return LINUX_SYSTEM_ACCESS;
       }
 
       const microphone = await requestMicrophoneAccess();

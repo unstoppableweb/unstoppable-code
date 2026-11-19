@@ -20,6 +20,7 @@ export type GitIgnoreHostFailureCode =
   | 'git_unavailable'
   | 'selection_rejected'
   | 'invalid_request'
+  | 'environment_invalid'
   | 'unsupported_command'
   | 'timeout'
   | 'deadline_exceeded'
@@ -35,6 +36,7 @@ const GIT_IGNORE_HOST_FAILURE_MESSAGES: Record<
   git_unavailable: 'Git is unavailable.',
   selection_rejected: 'The selected Git executable cannot be accessed.',
   invalid_request: 'The Git ignore request was rejected.',
+  environment_invalid: 'The Git host environment is invalid.',
   unsupported_command: 'The Git command is not supported.',
   timeout: 'Git timed out.',
   deadline_exceeded: 'The Git ignore request deadline was exceeded.',
@@ -172,8 +174,8 @@ export function createReadOnlyDirectoryInputs(
       );
       const readSavedExecutablePath = savedExecutablePath(signal, snapshot);
 
-      // The engine turns any port rejection into an empty ignore set, so this
-      // abort does not reach the listing caller. The host directory handler
+      // The engine turns any port rejection into the default ignore list, so
+      // this abort does not reach the listing caller. The host directory handler
       // must recheck its signal after listing (CAN-4304).
       const gitIgnore: GitIgnoreReadPort = {
         async checkIgnoredPaths(root, relativePaths) {
@@ -211,8 +213,8 @@ export function createReadOnlyDirectoryInputs(
                 matchPolicy,
               ),
         policy: matchPolicy,
-        // A rejection marks nothing ignored, so the host handler rechecks its
-        // signal after the search, as for directory reads.
+        // A rejection falls back to the default ignore list, so the host
+        // handler rechecks its signal after the search, as for directory reads.
         listIgnoredPathEntries: async (root): Promise<string[]> => {
           signal.throwIfAborted();
           let entries: string[];

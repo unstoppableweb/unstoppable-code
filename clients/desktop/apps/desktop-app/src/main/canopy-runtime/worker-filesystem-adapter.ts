@@ -173,6 +173,9 @@ export function createWorkerFilesystemAdapter(
             isSymlink: entry.isSymlink,
             hasChildren: entry.hasChildren,
           })),
+          ...(result.ignoreStateUnknown === true && {
+            ignoreStateUnknown: true,
+          }),
         };
       } catch (error) {
         throw translateFilesServiceError(error);

@@ -28,6 +28,8 @@ export const desktopCodexPipelinePromptPorts: CodexPipelinePromptPorts = {
         mcpStdioBroker: runtime,
         sessionId: routeSessionId,
         packageOverlay: request.packageOverlay,
+        // A workflow prompt has no one to pick an account (CAN-6232).
+        accountResolution: 'unattended',
       },
     ),
   mcpCapabilityAuthorityIds: (servers) =>

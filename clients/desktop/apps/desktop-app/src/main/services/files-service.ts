@@ -39,6 +39,11 @@ import { normalizeFileTreeRelativePath as normalizeRelativePath } from './file-t
 import { assertWritableScope } from '../lib/read-only-scope';
 import { PortalServiceError } from './portal-service-error';
 import {
+  secretSafeView,
+  secretViewFileHoldsSecrets,
+  SecretViewUnavailableError,
+} from '../agent-secrets/view-redaction';
+import {
   readSharedContainerViewerFile,
   resolveSharedContainerViewerFileForRead,
 } from '../shared-containers/read/viewer-root';
@@ -629,13 +634,36 @@ export async function listFileTreeDirectory(
   const preferences = await readPreferencesFile();
   const globMatcher = buildFileGlobMatcher(preferences.fileIndexing);
   const readBoundary = readBoundaryForRoot(root);
-  return {
-    entries: await listFilesystemDirectory(root, relativeDir, {
-      gitAware: root.gitAware,
-      globMatcher,
-      ...(readBoundary ? { readBoundary } : {}),
-    }),
-  };
+  const ignore = { unknown: false };
+  const entries = await listFilesystemDirectory(root, relativeDir, {
+    gitAware: root.gitAware,
+    globMatcher,
+    ...(readBoundary ? { readBoundary } : {}),
+    onIgnoreStateUnknown: () => {
+      ignore.unknown = true;
+    },
+  });
+  return { entries, ...(ignore.unknown && { ignoreStateUnknown: true }) };
+}
+
+/**
+ * A Portal preview's text as Canopy shows it: agent secret values redacted
+ * (`cut` when it is the file's start only), or a Portal error when it must
+ * be withheld.
+ */
+async function portalSafeText(
+  text: string,
+  cut: boolean,
+  path: string,
+): Promise<string> {
+  try {
+    return (await secretSafeView({ kind: 'text', text, cut, paths: [path] }))
+      .text;
+  } catch (error) {
+    if (error instanceof SecretViewUnavailableError)
+      throw new PortalServiceError('invalid_target', error.message);
+    throw error;
+  }
 }
 
 export async function readPortalFilePreview(
@@ -661,12 +689,18 @@ export async function readPortalFilePreview(
         'Binary files cannot be read.',
       );
     }
+    // A shared folder's file reads redacted like a local one.
+    const content = await portalSafeText(
+      slice.toString('utf8'),
+      opened.sizeBytes > MAX_PREVIEW_BYTES,
+      join(root.absolutePath, ...relativePath.split('/')),
+    );
     return {
       workspaceLocalId: request.projectId,
       worktreeLocalId: request.worktreeId,
       fileRootLocalId: root.repoId,
       path: relativePath,
-      content: slice.toString('utf8'),
+      content,
       language: languageForPath(relativePath),
       size: opened.sizeBytes,
       version: `${opened.sizeBytes}:${Math.round(opened.modifiedAtMs)}`,
@@ -704,12 +738,19 @@ export async function readPortalFilePreview(
         'Binary files cannot be read.',
       );
     }
+    // Agent secret values read redacted here too, as in the desktop's own
+    // views, whichever file holds them (agent secret requests).
+    const content = await portalSafeText(
+      slice.toString('utf8'),
+      stats.size > MAX_PREVIEW_BYTES,
+      targetReal,
+    );
     return {
       workspaceLocalId: request.projectId,
       worktreeLocalId: request.worktreeId,
       fileRootLocalId: root.repoId,
       path: relativePath,
-      content: slice.toString('utf8'),
+      content,
       language: languageForPath(relativePath),
       size: stats.size,
       version: versionFromStat(stats),
@@ -738,7 +779,6 @@ export async function savePortalFile(
     throw new PortalServiceError('invalid_target', 'Path is not a file.');
   }
   rejectUnsupportedText(relativePath, request.content);
-
   let writePath: string;
   let existingStats: Awaited<ReturnType<typeof stat>> | null = null;
   try {
@@ -761,6 +801,30 @@ export async function savePortalFile(
       joinedAbsolutePath,
       rootReal,
     );
+  }
+
+  // A file holding an agent secret value is shown redacted, so saving that
+  // view would write placeholders over the values; so would saving a view
+  // redacted by values since removed, whose markers the file doesn't hold.
+  // Scanned only once the target is known to be a regular file inside the
+  // root, and read from it.
+  if (existingStats) {
+    let redactedView: boolean;
+    try {
+      redactedView = await secretViewFileHoldsSecrets(
+        writePath,
+        request.content,
+      );
+    } catch (error) {
+      if (error instanceof SecretViewUnavailableError)
+        throw new PortalServiceError('invalid_target', error.message);
+      throw error;
+    }
+    if (redactedView)
+      throw new PortalServiceError(
+        'invalid_target',
+        'This file holds secrets an agent was given, so it can only be edited outside the app.',
+      );
   }
 
   if (
@@ -840,11 +904,17 @@ export async function readFilePreview(
         'Binary files cannot be read.',
       );
     }
+    // Agent secret values read redacted, as in every Canopy view.
+    const content = await portalSafeText(
+      slice.toString('utf8'),
+      stats.size > MAX_PREVIEW_BYTES,
+      request.absolutePath,
+    );
     return {
       workspaceLocalId: '',
       worktreeLocalId: '',
       path: request.absolutePath,
-      content: slice.toString('utf8'),
+      content,
       language: languageForPath(request.absolutePath),
       size: stats.size,
       version: versionFromStat(stats),

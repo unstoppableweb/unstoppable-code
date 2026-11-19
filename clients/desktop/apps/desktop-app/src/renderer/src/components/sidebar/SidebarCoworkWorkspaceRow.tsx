@@ -1655,11 +1655,18 @@ function SidebarCoworkWorkspaceRowImpl({
 
   const handleSetEntryPinned = useCallback(
     (entryId: string, pinned: boolean): void => {
-      void setWorkEntryPinned(entryId, pinned, item.id).catch(() => {
-        useGitHubStore
-          .getState()
-          .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
-      });
+      void setWorkEntryPinned(entryId, pinned, item.id).catch(
+        (error: unknown) => {
+          useGitHubStore
+            .getState()
+            .addToast(
+              pinned ? 'Failed to pin' : 'Failed to unpin',
+              'error',
+              undefined,
+              { caught: error },
+            );
+        },
+      );
     },
     [setWorkEntryPinned, item.id],
   );
@@ -1695,6 +1702,8 @@ function SidebarCoworkWorkspaceRowImpl({
           ? error.message
           : 'Group changes could not be saved. Try again.',
         'error',
+        undefined,
+        { caught: error },
       );
   const groupStore = useSidebarItemGroupsStore.getState();
   const groupCommands: CodeSidebarItemGroupCommands = {

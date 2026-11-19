@@ -258,6 +258,14 @@ beforeEach(() => {
         );
         return Promise.resolve();
       },
+      refreshOrganizationCapabilities: (organizationId) => {
+        log.push(`followUp refreshOrganizationCapabilities ${organizationId}`);
+        return Promise.resolve();
+      },
+      refreshProjectCapabilities: (projectId) => {
+        log.push(`followUp refreshProjectCapabilities ${projectId}`);
+        return Promise.resolve();
+      },
     }),
     randomId: () => 'request-0001',
   });

@@ -379,7 +379,9 @@ function openDesktopActivityChat(entry: SidebarActivityEntry): void {
       reportRendererConsoleError('Opening an Activity chat failed', { error });
       useGitHubStore
         .getState()
-        .addToast("Couldn't open the chat. Try again.", 'error');
+        .addToast("Couldn't open the chat. Try again.", 'error', undefined, {
+          caught: error,
+        });
     });
 }
 

@@ -3386,7 +3386,8 @@ export class AgentDelegationBroker {
     let record: StoredDelegation;
     try {
       record = await this.recordForRead(request.delegationId, retained);
-    } catch {
+    } catch (error) {
+      this.options.onError?.(error);
       return failure('runtime_error', 'The delegation output is unavailable.');
     }
     const prefix = legacyPrefixView(record);
@@ -3436,7 +3437,8 @@ export class AgentDelegationBroker {
       let read: Awaited<ReturnType<DelegationTranscriptPort['result']>>;
       try {
         read = await port.result(identity);
-      } catch {
+      } catch (error) {
+        this.options.onError?.(error);
         return projectRegistryDelegateOutput(
           { kind: 'lookup_failed', code: 'storage_failure', known },
           context,
@@ -3494,7 +3496,8 @@ export class AgentDelegationBroker {
               offset = value.nextOffset;
             }
           }
-        } catch {
+        } catch (error) {
+          this.options.onError?.(error);
           body = { kind: 'failed', code: 'storage_failure' };
         }
       }
@@ -3843,6 +3846,7 @@ export class AgentDelegationBroker {
         },
       },
       signal,
+      (error) => this.options.onError?.(error),
     );
   }
 

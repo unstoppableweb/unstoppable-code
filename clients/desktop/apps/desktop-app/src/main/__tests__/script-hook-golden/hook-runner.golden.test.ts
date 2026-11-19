@@ -20,9 +20,17 @@ jest.mock('../../canopy-runtime/desktop-runtime', () => ({
 
 // The core hook source reads the worktree's paused hooks and the project's
 // saved owner when a hook fires (CAN-4146).
-jest.mock('../../lib/workspace-persistence', () => ({
-  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
-}));
+jest.mock('../../lib/workspace-persistence', () => {
+  const readWorkspaceWorktrees = jest.fn(() => Promise.resolve([]));
+  return {
+    readWorkspaceWorktrees,
+    // The pause reader needs the list's authority (CAN-7094).
+    readWorkspaceWorktreesDetailed: jest.fn(async () => ({
+      worktrees: await readWorkspaceWorktrees(),
+      authority: 'ok',
+    })),
+  };
+});
 jest.mock('../../lib/project-owner', () => ({
   resolveProjectSavedOwner: jest.fn(() =>
     Promise.resolve({ kind: 'personal' }),

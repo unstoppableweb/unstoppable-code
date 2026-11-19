@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+import {
+  AppErrorClassSchema,
+  AppErrorErrnoSchema,
+} from '../app-errors/primitives';
+import { appErrorNativeFrames } from '../app-errors/native-frames';
 import { utf8ByteLength } from './core/ledger/text';
 import { CanopyOperationCodeSchema } from './names';
 
@@ -202,3 +207,67 @@ export const CanopyErrorPayloadSchema = z.strictObject({
 });
 
 export type CanopyErrorPayload = z.output<typeof CanopyErrorPayloadSchema>;
+
+export const CANOPY_ERROR_DIAGNOSTIC_MAX_FRAMES = 12;
+export const CANOPY_ERROR_DIAGNOSTIC_MAX_FRAME_LENGTH = 300;
+const CANOPY_ERROR_DIAGNOSTIC_FRAME = /^[ \t]*at [^\r\n]*$/;
+
+/**
+ * What an unexpected handler failure keeps of its original error:
+ * allowlisted class and system code, and V8 `at` frames. Never the message.
+ * Carried as `details.diagnostic` of the fixed-message `internal` error.
+ */
+export const CanopyErrorDiagnosticSchema = z.strictObject({
+  name: AppErrorClassSchema,
+  code: AppErrorErrnoSchema.optional(),
+  frames: z
+    .array(
+      z
+        .string()
+        .max(CANOPY_ERROR_DIAGNOSTIC_MAX_FRAME_LENGTH)
+        .regex(CANOPY_ERROR_DIAGNOSTIC_FRAME),
+    )
+    .max(CANOPY_ERROR_DIAGNOSTIC_MAX_FRAMES),
+});
+
+export type CanopyErrorDiagnostic = z.output<
+  typeof CanopyErrorDiagnosticSchema
+>;
+
+/** The diagnostic of an error payload; an invalid one is ignored whole. */
+export function readCanopyErrorDiagnostic(
+  details: unknown,
+): CanopyErrorDiagnostic | undefined {
+  if (typeof details !== 'object' || details === null) return undefined;
+  const parsed = CanopyErrorDiagnosticSchema.safeParse(
+    Reflect.get(details, 'diagnostic'),
+  );
+  return parsed.success ? parsed.data : undefined;
+}
+
+function readProperty(value: unknown, key: string): unknown {
+  try {
+    return typeof value === 'object' && value !== null
+      ? Reflect.get(value, key)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The allowlisted facts of an unexpected failure: class, system code and V8
+ * frames, never its message. Call it before anything reads `error.stack`.
+ */
+export function canopyErrorDiagnostic(error: unknown): CanopyErrorDiagnostic {
+  const name = AppErrorClassSchema.safeParse(readProperty(error, 'name'));
+  const code = AppErrorErrnoSchema.safeParse(readProperty(error, 'code'));
+  return {
+    name: name.success ? name.data : 'Error',
+    ...(code.success ? { code: code.data } : {}),
+    frames: appErrorNativeFrames(error)
+      .filter((line) => CANOPY_ERROR_DIAGNOSTIC_FRAME.test(line))
+      .slice(0, CANOPY_ERROR_DIAGNOSTIC_MAX_FRAMES)
+      .map((line) => line.slice(0, CANOPY_ERROR_DIAGNOSTIC_MAX_FRAME_LENGTH)),
+  };
+}

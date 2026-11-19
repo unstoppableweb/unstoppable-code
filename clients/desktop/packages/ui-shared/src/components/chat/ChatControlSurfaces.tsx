@@ -7,12 +7,16 @@ export function TerminalChatControls({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="pointer-events-auto flex items-center gap-1 rounded-lg bg-card/95 p-1 shadow-sm backdrop-blur pointer-coarse:gap-4">
+    <div className="pointer-events-auto flex items-center gap-1 rounded-lg bg-card p-1 shadow-sm pointer-coarse:gap-4">
       {children}
     </div>
   );
 }
 
+/**
+ * Floating over terminal output, the track recedes by dimming its contents at
+ * rest. Its own fill stays solid, so output never shows through the control.
+ */
 export function ChatModeControlTrack({
   floating,
   label,
@@ -27,7 +31,7 @@ export function ChatModeControlTrack({
       role="group"
       aria-label={label}
       data-testid="chat-interface-mode-toggle"
-      className={`electron-no-drag relative flex h-8 shrink-0 items-center gap-0 rounded-full p-0.5 ${floating ? 'bg-card/95 opacity-60 shadow-sm backdrop-blur hover:opacity-100 focus-within:opacity-100' : 'bg-muted'}`}
+      className={`electron-no-drag relative flex h-8 shrink-0 items-center gap-0 rounded-full p-0.5 ${floating ? 'bg-card shadow-sm *:opacity-60 hover:*:opacity-100 focus-within:*:opacity-100' : 'bg-muted'}`}
     >
       {children}
     </div>

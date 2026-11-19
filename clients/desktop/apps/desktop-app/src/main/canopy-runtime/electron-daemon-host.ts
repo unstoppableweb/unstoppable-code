@@ -13,6 +13,7 @@ import {
   type CanopyClientOptions,
 } from '@canopy/core-client';
 import {
+  canopyEndpointRepairRequiredError,
   connectCanopyClient,
   createCanopyDaemonHostLaunch,
   createDaemonOwnerCredential,
@@ -34,7 +35,10 @@ import {
   createCanopyStartupClaimPort,
   type CanopyStartupClaimPort,
 } from '@canopy/core-transport/node';
-import { recoverStaleCanopyDaemonEndpoint } from '@canopy/core-runtime/node';
+import {
+  CanopyEndpointRepairRequiredError,
+  recoverStaleCanopyDaemonEndpoint,
+} from '@canopy/core-runtime/node';
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
   CanopyRuntimeDescriptorSchema,
@@ -74,6 +78,7 @@ import {
   getBundledBinDir,
   getEnhancedEnv,
 } from '@canopy/desktop-shared/pipelines/config-paths';
+import { reportContainedFailure } from '../observability/contained-failure-reporter';
 import type {
   ElectronDaemonOwnerClient,
   ELECTRON_DAEMON_OWNER_DEFINITIONS,
@@ -258,6 +263,11 @@ export function selectWindowsProcessPath(
     : '';
 }
 
+/** A desktop consumer of a daemon stream or lease eviction threw (CAN-7116). */
+function reportDaemonListenerError(error: unknown): void {
+  reportContainedFailure('core_client.listener', error);
+}
+
 /** Uses the H1 shared launch policy and the staged opaque native ownership adapter. */
 export async function createElectronDaemonHost(
   inputs: ElectronDaemonHostInputs = {},
@@ -440,6 +450,12 @@ export async function createElectronDaemonHost(
                 },
               }),
             },
+          }).catch((error: unknown): never => {
+            // The daemon's own exit-69 refusal, so the notice names the repair
+            // command (CAN-7061); other failures stay generic.
+            if (error instanceof CanopyEndpointRepairRequiredError)
+              throw canopyEndpointRepairRequiredError();
+            throw error;
           });
           await protection.assertHeld();
           await beforeSpawn.run(signal, protection);
@@ -486,7 +502,11 @@ export async function createElectronDaemonHost(
     connect(options): Promise<ElectronDaemonClient> {
       return verifiedConnect(
         options.signal ?? new AbortController().signal,
-        () => connectCanopyClient(options),
+        () =>
+          connectCanopyClient({
+            onListenerError: reportDaemonListenerError,
+            ...options,
+          }),
       );
     },
     owner: {
@@ -519,6 +539,7 @@ export async function createElectronDaemonHost(
           options.signal ?? new AbortController().signal,
           () =>
             connectCanopyClient({
+              onListenerError: reportDaemonListenerError,
               ...options,
               ownerProof: (connectionId) =>
                 credential.prove(connectionId, launch.dataRootHash),

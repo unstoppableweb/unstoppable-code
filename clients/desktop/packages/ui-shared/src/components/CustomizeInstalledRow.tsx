@@ -1,5 +1,5 @@
 import { ListRowFrame } from './ListRow';
-import { ControlButton } from './Button';
+import { Button, ControlButton } from './Button';
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
 import {
   sourceLabelProvider,
@@ -10,6 +10,7 @@ import { mcpPlacementLabel, mcpRowHealthModel } from '../lib/mcp-row-health';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { ClaudeLogo, CodexLogo } from '../icons';
 import { PersonIcon, RefreshIcon, SkillIcon } from '../icons/AppIcons';
+import { curatedPluginLogo } from '../lib/curated-plugin-logos';
 import { curatedLogoKey } from '../lib/curated-logo-key';
 import {
   customizeHarnessInstallWarning,
@@ -29,6 +30,7 @@ import {
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
 import { EntrySurfaceIcon } from './EntrySurfaceIcon';
+import { ItemStateMark } from './ItemStateMark';
 import { McpRowAttention, McpRowHealth } from './McpRowHealth';
 import { McpServerLogo, type McpServerLogoProps } from './McpServerLogo';
 import {
@@ -67,6 +69,261 @@ export function customizePublisherLogoKey(
   if (!slug) return undefined;
   return [slug, slug.replace(PUBLISHER_SUFFIX, '')].find((key) =>
     Object.prototype.hasOwnProperty.call(MCP_BRAND_LOGOS, key),
+  );
+}
+
+/**
+ * New Customize's logo chain for an entry (tiles and detail pages alike): its
+ * curated mark, else the publisher's bundled mark when the catalog has no
+ * logo of its own (or only a guessed one), then the catalog logo.
+ */
+export function customizeEntryLogo(entry: UnifiedPluginEntry): {
+  readonly curatedKey: string | undefined;
+  readonly logoUrl: string | undefined;
+  readonly bundledLogo: string | undefined;
+  readonly brandMark: boolean | undefined;
+} {
+  return {
+    curatedKey:
+      curatedLogoKey(entry) ??
+      // A guessed avatar or favicon yields to the publisher's bundled mark.
+      ((!entry.logoUrl || entry.logoDerived === true) &&
+      entry.bundledLogo === undefined &&
+      entry.brandMark !== true
+        ? customizePublisherLogoKey(entry)
+        : undefined),
+    logoUrl: entry.logoUrl,
+    // Curated plugins carry the Unstoppable Code logos (item 8).
+    bundledLogo: curatedPluginLogo(entry) ?? entry.bundledLogo,
+    brandMark: entry.brandMark,
+  };
+}
+
+/** A detail page's 40px logo: the tile's chain, rounded square and plate. */
+export function CustomizeEntryLogo({
+  entry,
+  size = 40,
+  McpServerLogoComponent = McpServerLogo,
+}: {
+  readonly entry: UnifiedPluginEntry;
+  readonly size?: number;
+  readonly McpServerLogoComponent?: ComponentType<McpServerLogoProps>;
+}): JSX.Element {
+  return (
+    <McpServerLogoComponent
+      {...customizeEntryLogo(entry)}
+      name={entry.name}
+      size={size}
+      fallback="monogram"
+      shape="tile"
+      plate
+      fit="contain"
+    />
+  );
+}
+
+/**
+ * New Customize's publisher line on a detail page: the text a tile's line 2
+ * shows when no status takes its place (publisher, "Built-in", "You",
+ * "Shared by X"), never a version, category or "by".
+ */
+export function customizePublisherText(entry: UnifiedPluginEntry): string {
+  const source = compactMetadata(entry).source;
+  return (
+    (source ? entrySourceTextWithoutProvider(entry, source) : undefined) ||
+    discoveryFallbackSource(entry)
+  );
+}
+
+/**
+ * The session-replay class a row's line 2 takes, and so the detail page's
+ * publisher line: a share's attribution can name a person or a team.
+ */
+export function customizePublisherReplayClass(
+  entry: UnifiedPluginEntry,
+): string {
+  return entry.origin === 'shared' ||
+    entry.installedFrom ||
+    entry.sharedSource ||
+    entry.collectionProvenanceUnknown
+    ? REPLAY_BLOCK_CLASS
+    : entry.workflow?.sourceIsPerson
+      ? REPLAY_MASK_CLASS
+      : '';
+}
+
+/** A detail page's publisher line: the tile's text, with its replay class. */
+export function CustomizePublisher({
+  entry,
+}: {
+  readonly entry: UnifiedPluginEntry;
+}): JSX.Element {
+  const replayClass = customizePublisherReplayClass(entry);
+  return (
+    <span className={replayClass || undefined}>
+      {customizePublisherText(entry)}
+    </span>
+  );
+}
+
+/** Catalog source labels that are internal, never shown as a publisher. */
+const INTERNAL_SOURCE_LABELS = new Set([
+  'Curated',
+  'Local',
+  'Shared',
+  'Project',
+]);
+
+/**
+ * New Customize's last word on line 2 when nothing names a publisher: the
+ * marketplace it came from, its catalog, or that the publisher is unknown.
+ */
+function discoveryFallbackSource(entry: UnifiedPluginEntry): string {
+  // An MCP server added by hand, often on a private host, names no maker.
+  if (entry.kind === 'app' && !entry.marketplaceSourceName)
+    return 'Custom server';
+  const marketplace = entry.marketplaceSourceName?.trim();
+  if (marketplace) return marketplace;
+  const catalog = entry.sourceLabel?.trim();
+  if (catalog && !INTERNAL_SOURCE_LABELS.has(catalog)) return catalog;
+  return 'Unknown publisher';
+}
+
+/** A row's pending sign-in, said on its status line (New Customize). */
+export interface CustomizeRowSignIn {
+  readonly accessibleName: string;
+  readonly busy?: boolean;
+  readonly run: () => void;
+}
+
+/**
+ * A row's failed action (New Customize): a status change or Add that did not
+ * finish, said on the tile's status line instead of in a page banner.
+ */
+export interface CustomizeRowFailure {
+  /** Short and neutral: "Couldn't turn on". */
+  readonly label: string;
+  /** The full reason, shown in a tooltip. */
+  readonly reason: string;
+  /** Amber when a retry may work, red when it can't. */
+  readonly tone: 'attention' | 'destructive';
+  readonly retry?: () => void;
+}
+
+/** "⚠ Couldn't turn on · Try again", the reason in the tooltip. */
+export function CustomizeRowFailureStatus({
+  entryId,
+  name,
+  failure,
+}: {
+  readonly entryId: string;
+  /** The item's name, so each tile's Try again says what it retries. */
+  readonly name: string;
+  readonly failure: CustomizeRowFailure;
+}): JSX.Element {
+  return (
+    <span
+      data-testid={`customize-row-failure-${entryId}`}
+      className="pointer-events-auto inline-flex min-w-0 items-center gap-1"
+    >
+      <Tooltip label={failure.reason} clamp>
+        <span
+          className="inline-flex min-w-0 items-center gap-1"
+          tabIndex={0}
+          aria-label={`${failure.label}: ${failure.reason}`}
+        >
+          <ItemStateMark
+            tone={failure.tone === 'destructive' ? 'failed' : 'sign-in'}
+          />
+          <span className="truncate fg-secondary">{failure.label}</span>
+        </span>
+      </Tooltip>
+      {failure.retry !== undefined && (
+        <>
+          <span aria-hidden>·</span>
+          <ControlButton
+            presentation="customize-row-sign-in"
+            data-testid={`customize-row-failure-${entryId}-retry`}
+            aria-label={`Try again for ${name}`}
+            onClick={failure.retry}
+          >
+            Try again
+          </ControlButton>
+        </>
+      )}
+    </span>
+  );
+}
+
+/**
+ * A row's available update (New Customize): its third line. `run` is the
+ * existing update; omitted, the line says so without a CTA.
+ */
+export interface CustomizeRowUpdate {
+  readonly busy?: boolean;
+  readonly run?: () => void;
+}
+
+/** "⚠ Sign in": the status-line sign-in of New Customize (item 4). */
+export function CustomizeRowSignInStatus({
+  entryId,
+  signIn,
+}: {
+  readonly entryId: string;
+  readonly signIn: CustomizeRowSignIn;
+}): JSX.Element {
+  return (
+    <span
+      data-testid={`customize-row-sign-in-${entryId}`}
+      className="pointer-events-auto inline-flex shrink-0 items-center gap-1"
+    >
+      <ItemStateMark tone="sign-in" />
+      <ControlButton
+        presentation="customize-row-sign-in"
+        data-testid={`customize-row-sign-in-${entryId}-action`}
+        aria-label={signIn.accessibleName}
+        aria-busy={signIn.busy || undefined}
+        disabled={signIn.busy}
+        onClick={signIn.run}
+      >
+        {signIn.busy ? 'Signing in…' : 'Sign in'}
+      </ControlButton>
+    </span>
+  );
+}
+
+/** The reserved third line: "↻ Update available · Update" (item 5). */
+function UpdateLine({
+  entry,
+  update,
+}: {
+  readonly entry: UnifiedPluginEntry;
+  readonly update: CustomizeRowUpdate;
+}): JSX.Element {
+  return (
+    <span
+      data-testid={`customize-row-update-line-${entry.id}`}
+      className="pointer-events-none relative z-10 flex min-h-4 min-w-0 items-center gap-1 whitespace-nowrap text-xs fg-tertiary"
+    >
+      <ItemStateMark tone="update" />
+      <span>Update available</span>
+      {update.run !== undefined && (
+        <>
+          <span aria-hidden>·</span>
+          <Button
+            variant="link"
+            className="pointer-events-auto"
+            data-testid={`customize-update-${entry.id}`}
+            aria-label={`Update ${entry.name}`}
+            aria-busy={update.busy || undefined}
+            disabled={update.busy}
+            onClick={update.run}
+          >
+            {update.busy ? 'Updating…' : 'Update'}
+          </Button>
+        </>
+      )}
+    </span>
   );
 }
 
@@ -178,6 +435,9 @@ function CompactMetadata({
   updateBadge = false,
   worksWith = false,
   harnessWarning,
+  dimmed = false,
+  signIn,
+  failure,
 }: {
   entry: UnifiedPluginEntry;
   metadata: ReturnType<typeof compactMetadata>;
@@ -188,34 +448,93 @@ function CompactMetadata({
   worksWith?: boolean;
   /** New Customize (CAN-6815): harnesses one Add could not install for. */
   harnessWarning?: { readonly label: string; readonly instruction: string };
+  /** A Disabled item; New Customize then shows no health. */
+  dimmed?: boolean;
+  /** New Customize: a pending sign-in, said as "⚠ Sign in". */
+  signIn?: CustomizeRowSignIn;
+  /** New Customize: a failed status change or Add; it outranks the rest. */
+  failure?: CustomizeRowFailure;
 }): JSX.Element | null {
-  const { version, tooltip, visibleCounts, triggerSummary } = metadata;
-  const source = metadata.source
-    ? entrySourceTextWithoutProvider(entry, metadata.source)
-    : metadata.source;
+  const { tooltip, visibleCounts, triggerSummary } = metadata;
+  // New Customize's line 2 (Sergii's QA): status or publisher, then the
+  // harness logos. Tiles show no version; the detail view keeps it.
+  const version = worksWith ? null : metadata.version;
+  const failureShown = worksWith && failure !== undefined;
+  const signInShown = !failureShown && worksWith && signIn !== undefined;
   // An integration row's installed line names the harness instead (CAN-6811).
   const hasWorksWith =
-    worksWith && customizeWorksWithHarnesses(entry).length > 0;
+    worksWith &&
+    ((entry.harnessRows?.length ?? 0) > 0 ||
+      customizeWorksWithHarnesses(entry).length > 0);
   const hasHarnessIcons =
     !worksWith &&
     entry.integrationCopies?.installed === undefined &&
     (entry.installedHarnesses?.claude === true ||
       entry.installedHarnesses?.codex === true);
   const hasSourceMark =
+    !worksWith &&
     !entry.marketplaceProviders &&
     entry.kind === 'plugin' &&
     (entry.origin === 'marketplace'
       ? Boolean(sourceLabelProvider(entry.sourceLabel))
       : entry.origin === 'shared' && Boolean(entry.sharedSourceProvider));
   const healthConnection = entry.connection ?? entry.aggregateConnection;
-  const fallbackHealth =
+  const fallbackModel =
     !health &&
+    !signInShown &&
+    !failureShown &&
+    // New Customize: a disabled item shows no health line (item 1).
+    !(worksWith && (dimmed || healthConnection?.disabled === true)) &&
     healthConnection &&
     (healthConnection.status !== 'unknown' ||
       healthConnection.signIn ||
       healthConnection.disabled)
       ? mcpRowHealthModel(healthConnection)
       : undefined;
+  // New Customize names a connection only when the person must act or it
+  // failed (sign-in, Couldn't connect); otherwise the publisher shows.
+  const fallbackHealth =
+    worksWith &&
+    fallbackModel !== undefined &&
+    fallbackModel.tone !== 'attention' &&
+    fallbackModel.tone !== 'destructive'
+      ? undefined
+      : fallbackModel;
+  // An unreachable check and a pending sign-in can describe separate bindings.
+  const hasIndependentSignIn =
+    (entry.pendingSignIns ?? 0) > 0 &&
+    healthConnection?.status === 'unreachable' &&
+    !healthConnection.signIn &&
+    !healthConnection.disabled;
+  const warning =
+    !signInShown &&
+    !failureShown &&
+    (hasIndependentSignIn || (!health && !fallbackHealth))
+      ? attentionLabel
+      : undefined;
+  const statusShown =
+    failureShown ||
+    signInShown ||
+    Boolean(health) ||
+    fallbackHealth !== undefined ||
+    warning !== undefined ||
+    harnessWarning !== undefined;
+  const sourceText = metadata.source
+    ? entrySourceTextWithoutProvider(entry, metadata.source)
+    : metadata.source;
+  // A status takes the publisher's place on New Customize's line 2, which
+  // always says something in text, never only harness logos.
+  const source =
+    worksWith && statusShown
+      ? undefined
+      : worksWith &&
+          !sourceText &&
+          !entry.bundledBy &&
+          !triggerSummary &&
+          visibleCounts.length === 0
+        ? discoveryFallbackSource(entry)
+        : sourceText;
+  const providerBadges = worksWith ? undefined : entry.marketplaceProviders;
   const hasSubtitle = Boolean(
     hasHarnessIcons ||
     hasWorksWith ||
@@ -225,37 +544,30 @@ function CompactMetadata({
     triggerSummary ||
     entry.bundledBy ||
     hasSourceMark ||
-    entry.marketplaceProviders?.length ||
-    (entry.shareUpdateAvailable && !updateBadge),
+    providerBadges?.length ||
+    (entry.shareUpdateAvailable && !updateBadge && !worksWith),
   );
-  // An unreachable check and a pending sign-in can describe separate bindings.
-  const hasIndependentSignIn =
-    (entry.pendingSignIns ?? 0) > 0 &&
-    healthConnection?.status === 'unreachable' &&
-    !healthConnection.signIn &&
-    !healthConnection.disabled;
-  const warning =
-    hasIndependentSignIn || (!health && !fallbackHealth)
-      ? attentionLabel
-      : undefined;
   const warningTestId =
     attentionLabel === undefined
       ? `plugins-connection-status-${entry.id}`
       : `customize-row-sign-in-${entry.id}`;
-  if (
-    !hasSubtitle &&
-    !health &&
-    !fallbackHealth &&
-    warning === undefined &&
-    harnessWarning === undefined
-  )
-    return null;
+  if (!hasSubtitle && !statusShown) return null;
   return (
     <span
       data-testid={`customize-row-subtitle-${entry.id}`}
-      className={`pointer-events-none relative z-10 mt-0.5 flex min-h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${worksWith ? '@container/customize-row-subtitle ' : ''}${entry.origin === 'shared' || entry.installedFrom || entry.sharedSource || entry.collectionProvenanceUnknown ? REPLAY_BLOCK_CLASS : entry.workflow?.sourceIsPerson ? REPLAY_MASK_CLASS : ''}`}
+      className={`pointer-events-none relative z-10 mt-0.5 flex min-h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${worksWith ? '@container/customize-row-subtitle ' : ''}${customizePublisherReplayClass(entry)}`}
     >
-      {health}
+      {failureShown && failure !== undefined && (
+        <CustomizeRowFailureStatus
+          entryId={entry.id}
+          name={entry.name}
+          failure={failure}
+        />
+      )}
+      {signInShown && signIn !== undefined && (
+        <CustomizeRowSignInStatus entryId={entry.id} signIn={signIn} />
+      )}
+      {!signInShown && !failureShown && health}
       {fallbackHealth && (
         <McpRowHealth
           name={entry.name}
@@ -292,7 +604,7 @@ function CompactMetadata({
           testId={`customize-row-harness-install-failed-${entry.id}`}
         />
       )}
-      {entry.marketplaceProviders?.map((provider) => (
+      {providerBadges?.map((provider) => (
         <Tooltip
           key={provider}
           label={`Available from the ${provider} marketplace`}
@@ -300,8 +612,9 @@ function CompactMetadata({
           <Badge>{provider}</Badge>
         </Tooltip>
       ))}
-      {/* The name line's Update badge already says so. */}
-      {entry.shareUpdateAvailable === true && !updateBadge && (
+      {/* The name line's Update badge, or New Customize's update line,
+          already says so. */}
+      {entry.shareUpdateAvailable === true && !updateBadge && !worksWith && (
         <Badge
           tone="info"
           icon={RefreshIcon}
@@ -339,7 +652,7 @@ function CompactMetadata({
           </span>
         </Tooltip>
       )}
-      {!hasHarnessIcons && entry.origin === 'shared' && (
+      {!hasHarnessIcons && !worksWith && entry.origin === 'shared' && (
         <EntrySourceProviderMark entry={entry} />
       )}
       {source && version && <span>·</span>}
@@ -522,38 +835,51 @@ export interface CustomizeInstalledRowProps {
     entry: UnifiedPluginEntry,
     failure: UnifiedEntryHarnessInstalls['failed'][number],
   ) => void;
+  /**
+   * New Customize (Sergii's QA, item 4): a pending sign-in, said on the
+   * status line as "⚠ Sign in" instead of in the split control.
+   */
+  readonly signIn?: CustomizeRowSignIn;
+  /**
+   * New Customize (Sergii's QA, item 5): an available update, said on a
+   * third line that only exists while one is available.
+   */
+  readonly update?: CustomizeRowUpdate;
+  /**
+   * New Customize (Sergii's QA): this row's failed status change or Add, on
+   * its status line with Retry and the reason in a tooltip.
+   */
+  readonly failure?: CustomizeRowFailure;
   readonly McpServerLogoComponent?: ComponentType<McpServerLogoProps>;
 }
 
-/** The "Includes" line of the Customize search design (CAN-6812). */
+/**
+ * The "Includes" line of the Customize search design (CAN-6812), one line
+ * at most (Sergii's QA): the first matched skill, then "+N more".
+ */
 function SkillMatchLine({
   entryId,
   match,
 }: {
   entryId: string;
   match: CustomizeSkillMatch;
-}): JSX.Element {
-  // Inline text, not flex items: in a narrow grid column the names wrap
-  // like a sentence instead of each dropping onto its own line.
+}): JSX.Element | null {
+  const [first] = match.names;
+  if (first === undefined) return null;
+  const more = match.names.length - 1 + match.moreCount;
   return (
     <span
       data-testid={`customize-row-skill-match-${entryId}`}
-      className="pointer-events-none relative z-10 block min-w-0 text-xs leading-5 fg-secondary"
+      className="pointer-events-none relative z-10 flex min-w-0 max-w-full items-center gap-1 overflow-hidden whitespace-nowrap text-xs leading-5 fg-secondary"
     >
-      <span className="inline-flex align-text-bottom">
+      <span className="inline-flex shrink-0">
         <SkillIcon size="xs" ariaHidden />
-      </span>{' '}
-      Includes
-      {match.names.map((name) => (
-        <span key={name}>
-          {' '}
-          <mark className="box-decoration-clone rounded bg-accent-subtle px-1 font-medium fg-primary">
-            {name}
-          </mark>
-        </span>
-      ))}
-      {match.moreCount > 0 &&
-        ` +${match.moreCount} more ${match.moreCount === 1 ? 'skill' : 'skills'}`}
+      </span>
+      <span className="shrink-0">Includes</span>
+      <mark className="min-w-0 truncate rounded bg-accent-subtle px-1 font-medium fg-primary">
+        {first}
+      </mark>
+      {more > 0 && <span className="shrink-0">{`+${more} more`}</span>}
     </span>
   );
 }
@@ -646,6 +972,9 @@ export function CustomizeInstalledRow({
   discovery = false,
   splitAction,
   onRetryHarnessInstall,
+  signIn,
+  update,
+  failure,
   McpServerLogoComponent = McpServerLogo,
 }: CustomizeInstalledRowProps): JSX.Element {
   const domId = customizeRowDomId(sectionId, entry.id);
@@ -806,16 +1135,24 @@ export function CustomizeInstalledRow({
       updateBadge={updateBadge}
       worksWith={discovery}
       harnessWarning={harnessWarning}
+      dimmed={dimmed}
+      signIn={discovery ? signIn : undefined}
+      failure={discovery ? failure : undefined}
     />
   );
-  const logoKey =
-    curatedLogoKey(entry) ??
-    (discovery &&
-    !entry.logoUrl &&
-    entry.bundledLogo === undefined &&
-    entry.brandMark !== true
-      ? customizePublisherLogoKey(entry)
-      : undefined);
+  const updateLine =
+    discovery && update !== undefined ? (
+      <UpdateLine entry={entry} update={update} />
+    ) : undefined;
+  // New Customize replaces the "Installed for" line (item 7).
+  const installedLine = discovery ? undefined : (
+    <IntegrationInstalledLine entry={entry} />
+  );
+  // New Customize: the logo chain a detail page reads too.
+  const discoveryLogo = discovery ? customizeEntryLogo(entry) : undefined;
+  const logoKey = discoveryLogo
+    ? discoveryLogo.curatedKey
+    : curatedLogoKey(entry);
   // Opacity on the control itself would dim its focus ring, so the content
   // wrapper carries it.
   const content = (
@@ -831,12 +1168,14 @@ export function CustomizeInstalledRow({
         <McpServerLogoComponent
           curatedKey={logoKey}
           logoUrl={entry.logoUrl}
-          bundledLogo={entry.bundledLogo}
+          bundledLogo={discoveryLogo?.bundledLogo ?? entry.bundledLogo}
           brandMark={entry.brandMark}
           size={28}
           fallback="monogram"
           name={entry.name}
-          shape="circle"
+          // New Customize: every item is a rounded square; people stay round.
+          shape={discovery ? 'tile' : 'circle'}
+          plate={discovery}
           fit="contain"
         />
         {createdByViewer(entry) && !entry.installedFrom && (
@@ -863,13 +1202,19 @@ export function CustomizeInstalledRow({
             {title}
           </ControlButton>
         )}
-        {skillMatch || entry.integrationCopies?.installed ? (
-          <span className="flex min-w-0 flex-col gap-1">
+        {skillMatch ||
+        updateLine !== undefined ||
+        (installedLine !== undefined && entry.integrationCopies?.installed) ? (
+          <span
+            className={`flex min-w-0 flex-col ${discovery ? 'gap-0.5' : 'gap-1'}`}
+          >
             {metadataLine}
-            {skillMatch && (
+            {/* Line 3 holds one thing; an update wins over the search hint. */}
+            {skillMatch && updateLine === undefined && (
               <SkillMatchLine entryId={entry.id} match={skillMatch} />
             )}
-            <IntegrationInstalledLine entry={entry} />
+            {installedLine}
+            {updateLine}
           </span>
         ) : (
           metadataLine

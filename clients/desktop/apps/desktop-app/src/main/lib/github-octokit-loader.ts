@@ -1,8 +1,13 @@
 import { loadRequiredNodeModuleExport } from '@canopy/desktop-shared/node/lib/packaged-module-loader';
 import type { Octokit } from '@octokit/rest';
-import type { OctokitClientOptions } from './github-octokit-options';
+import type {
+  OctokitBrokerClientOptions,
+  OctokitClientOptions,
+} from './github-octokit-options';
 
-export type OctokitConstructor = new (options: OctokitClientOptions) => Octokit;
+export type OctokitConstructor = new (
+  options: OctokitClientOptions | OctokitBrokerClientOptions,
+) => Octokit;
 
 let octokitConstructor: OctokitConstructor | null = null;
 

@@ -46,6 +46,13 @@ export interface CanopyClientOptions<
   readonly ownerProof?: (connectionId: string) => string;
   /** Aborting closes the client and the connection. */
   readonly signal?: AbortSignal;
+  /**
+   * Observes an `onFrame` or `onLeaseEvicted` listener that threw. The
+   * failure stays contained either way: delivery to the other listeners and
+   * the receive loop go on. Receives the thrown value as is, so the host
+   * decides what of it may be recorded. Default: dropped.
+   */
+  readonly onListenerError?: (error: unknown) => void;
 }
 
 /** Authority, runtime, host, and epoch are independent; never derive one from another. */

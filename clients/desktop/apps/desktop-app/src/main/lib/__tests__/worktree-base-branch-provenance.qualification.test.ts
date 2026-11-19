@@ -2,8 +2,6 @@ import type { CanopyHandlerContext } from '@canopy/core-runtime';
 import type {
   McpQuestion,
   McpQuestionAnswer,
-  PortalCommandEnvelope,
-  PortalCommandPayloadMap,
   SidebarItem,
   WorktreeData,
 } from '@canopy/desktop-shared/types';
@@ -20,9 +18,6 @@ jest.mock('../../observability', () => ({
     observeSteeringInput: jest.fn(),
     recordUsageMetricEvent: jest.fn(),
   }),
-}));
-jest.mock('../../ipc/portal-composer-command', () => ({
-  requestPortalComposerCommand: jest.fn(),
 }));
 
 import {
@@ -42,8 +37,6 @@ import {
 import { createPendingRequest } from '../../mcp/pending-requests';
 import { setChatStateCommandPort } from '../../ipc/chat-state';
 import { createCoreChatQuestionAdapter } from '../../canopy-runtime/core-chat-question-adapter';
-import { handlePortalChatAnswerQuestion } from '../../portal/adapters/chat-adapter';
-import type { PortalAdapterContext } from '../../portal/adapters/types';
 import { setWorktreeBaseBranchForAgent } from '../../canopy-tools/set-base-branch-runtime';
 import {
   WORKTREE_BASE_BRANCH_TEXTS,
@@ -126,42 +119,6 @@ function coreRespond(
       },
       context,
     );
-  };
-}
-
-function portalRespond(
-  origin?: ExternalAgentSender,
-): (requestId: string) => Promise<void> {
-  return async (requestId) => {
-    const command: PortalCommandEnvelope<
-      PortalCommandPayloadMap['portal.chat.answer_question']
-    > = {
-      id: `portal-${requestId}`,
-      sequence: 1,
-      type: 'portal.chat.answer_question',
-      createdAt: '2026-11-06T00:00:00.000Z',
-      expiresAt: null,
-      payload: {
-        ...SCOPE,
-        chatId: 'chat-1',
-        requestId,
-        answers: [
-          {
-            question: '',
-            selectedOptions: [WORKTREE_BASE_BRANCH_TEXTS.updatePullRequest],
-          },
-        ],
-      },
-    };
-    const context: PortalAdapterContext = {
-      chatStatePort: fixture.service,
-      getWindow: () => null,
-      enqueueEvent: jest.fn(),
-      complete: jest.fn(),
-      fail: jest.fn(),
-      ...(origin ? { origin } : {}),
-    };
-    await handlePortalChatAnswerQuestion(command, context);
   };
 }
 
@@ -282,7 +239,6 @@ describe('a PR base update follows only a person (CAN-6024)', () => {
         }),
       ),
     ],
-    ['a Portal session of the signed-in user', portalRespond()],
   ])('%s answers as a person and the PR is updated', async (_label, answer) => {
     const { response, writes, prUpdates } = await changeWith(
       askAnsweredBy(answer),
@@ -334,7 +290,6 @@ describe('a PR base update follows only a person (CAN-6024)', () => {
       'the CLI',
       coreRespond(caller({ principalId: 'local-cli', interfaceKind: 'cli' })),
     ],
-    ['an external agent through the Portal', portalRespond(SENDER)],
     [
       'a host-internal answer (automation, hook or pipeline code in main)',
       (requestId: string, questions: McpQuestion[]): Promise<void> =>

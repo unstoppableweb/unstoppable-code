@@ -9,6 +9,7 @@ import type {
   CopilotSelectionRequest,
 } from '@canopy/core-runtime/node/vault';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
+import type { CopilotSetupLineage } from './setup-lineage';
 import {
   readPreferencesFileDetailed,
   updatePreferencesFile,
@@ -75,6 +76,7 @@ export function createCopilotSelectionReceipt(
     read: readCopilotSelectionPreferences,
     update: (updater) => updatePreferencesFile(updater),
   },
+  lineage?: CopilotSetupLineage,
 ): CopilotSelectionPort & {
   abandon(identity: CopilotSelectionIdentity): Promise<void>;
   prepare(
@@ -83,6 +85,19 @@ export function createCopilotSelectionReceipt(
   ): Promise<boolean>;
 } {
   return {
+    async setupPredecessor() {
+      // Only the qualification lineage composition opts into the v2 witness.
+      if (!lineage) return undefined;
+      const current = await repository.read();
+      const record = selection(current);
+      if (
+        current.copilotEnabled !== false ||
+        !record ||
+        !lineage.ownsPredecessor(record)
+      )
+        throw new Error('Copilot setup predecessor unavailable.');
+      return record;
+    },
     async abandon(identity) {
       await repository.update((current) => {
         const record = selection(current);
@@ -96,10 +111,32 @@ export function createCopilotSelectionReceipt(
           : null;
       });
     },
+    async cancelledReceipt(identity) {
+      // Only the qualification lineage composition commits the survivor to the v2 witness.
+      if (!lineage) return undefined;
+      const current = await repository.read();
+      const record = selection(current);
+      // P4 checks the identity and pin against its journal before committing it.
+      return record?.state === 'disabled' &&
+        current.copilotEnabled === false &&
+        record.identity.operationId === identity.operationId
+        ? record
+        : undefined;
+    },
     async prepare(identity, expectedGeneration) {
       const captured = structuredClone(identity);
       const pinGeneration = randomUUID();
+      function finished(record: CopilotHostSelection | undefined): boolean {
+        const accepted =
+          !!record &&
+          sameIdentity(record.identity, captured) &&
+          record.state === 'prepared';
+        const continuous = lineage?.prepared(captured, record) ?? true;
+        return accepted && continuous;
+      }
       try {
+        if (captured.origin === 'setup')
+          lineage?.preparing(captured, expectedGeneration);
         const saved = await repository.update((current) => {
           const previous = selection(current);
           if (previous && sameIdentity(previous.identity, captured))
@@ -124,22 +161,14 @@ export function createCopilotSelectionReceipt(
           };
         });
         const record = selection(saved);
-        return (
-          !!record &&
-          sameIdentity(record.identity, captured) &&
-          record.state === 'prepared'
-        );
+        return finished(record);
       } catch {
         // A durable read, not the rejected write acknowledgement, resolves uncertainty.
         try {
           const saved = selection(await repository.read());
-          return (
-            !!saved &&
-            sameIdentity(saved.identity, captured) &&
-            saved.state === 'prepared'
-          );
+          return finished(saved);
         } catch {
-          return false;
+          return finished(undefined);
         }
       }
     },
@@ -221,8 +250,11 @@ export function createCopilotSelectionReceipt(
           record.pinGeneration === expected.pinGeneration &&
           ownsSelection(record, expected)
         ) {
+          // Only the lineage composition retires the exact receipt into the v2 witness.
           if (record.state === 'disabled' && current.copilotEnabled === false)
-            return { kind: 'disabled' };
+            return lineage
+              ? { kind: 'disabled', receipt: record }
+              : { kind: 'disabled' };
           if (record.state === 'selected' && current.copilotEnabled === true)
             return { kind: 'failed' };
         }

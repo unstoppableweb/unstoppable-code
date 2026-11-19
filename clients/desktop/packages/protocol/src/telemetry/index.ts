@@ -675,6 +675,11 @@ export interface TelemetryWorktreePayload {
   clientLocalId: string;
   /** Unscoped producer id shared by every owner-scope fan-out replica. */
   sourceClientLocalId?: string;
+  /**
+   * Relay device id of the computer that uploaded this worktree. Absent when
+   * the uploader has never started its relay; the server keeps a stored id.
+   */
+  sourceRelayDeviceId?: string;
   branchName: string;
   status?: TelemetryWorktreeStatus;
   /** Latest summary pointer (plaintext search abstract). */

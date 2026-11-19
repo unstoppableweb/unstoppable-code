@@ -1,18 +1,25 @@
 /** @jest-environment jsdom */
-import { act } from 'react';
+import { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type {
   PortalAskUserQuestion,
   PortalChatMessage,
   PortalChatPart,
 } from '@canopy/protocol/portal';
+import { createSurfacedErrorRecorder } from '@canopy/protocol/app-errors';
 import {
   AskUserQuestionCard,
+  ConfirmDialog,
+  ErrorBanner,
+  ErrorState,
+  FieldError,
   FileAttachmentChip,
   FileDeliverableCard,
   MessageMediaTile,
+  Notice,
   WakeTurnBoundary,
 } from '@canopy/ui-shared/components';
+import { setSurfacedErrorRecorder } from '@canopy/ui-shared/lib';
 import {
   CHAT_PART_REPLAY_POLICY,
   ChatMessageView,
@@ -460,5 +467,86 @@ describe('Session replay records no desktop cloud chat content (CAN-5975)', () =
     expect(payload).not.toContain(SECRET);
     expect(payload).toContain('Open attached file');
     expect(payload).toContain('Download file');
+  });
+
+  // CAN-7102: a caught message can quote paths and command output, so the
+  // shared error primitives block it from replay and from the exported record.
+  describe('error text from a caught message', () => {
+    const reported: unknown[] = [];
+    let uninstall: () => void;
+
+    beforeEach(() => {
+      reported.length = 0;
+      const recorder = createSurfacedErrorRecorder({
+        recordsMessageText: true,
+        report: (error) => {
+          reported.push(error);
+          return undefined;
+        },
+      });
+      uninstall = setSurfacedErrorRecorder((input) => recorder.record(input));
+    });
+
+    afterEach(() => uninstall());
+
+    const noop = (): void => undefined;
+    // Each surface, and whether it exports a surfaced-error record at all.
+    const SURFACES: Record<string, [() => ReactElement, boolean]> = {
+      'a string ErrorBanner': [
+        () => (
+          <ErrorBanner
+            error={`Failed: /Users/x/${SECRET}.`}
+            errorSource="test"
+          />
+        ),
+        true,
+      ],
+      'a destructive Notice with a string child': [
+        () => (
+          <Notice intent="destructive" errorSource="test">
+            {`Failed: /Users/x/${SECRET}`}
+          </Notice>
+        ),
+        true,
+      ],
+      'a ConfirmDialog error': [
+        () => (
+          <ConfirmDialog
+            title="Remove"
+            message="Remove it?"
+            confirmLabel="Remove"
+            errorMessage={`Failed: /Users/x/${SECRET}`}
+            onConfirm={noop}
+            onCancel={noop}
+          />
+        ),
+        false,
+      ],
+      'a string ErrorState': [
+        () => <ErrorState message={`Failed: /Users/x/${SECRET}`} />,
+        false,
+      ],
+      'a string FieldError': [
+        () => (
+          <FieldError id="field">{`Failed: /Users/x/${SECRET}`}</FieldError>
+        ),
+        false,
+      ],
+    };
+
+    it.each(Object.keys(SURFACES))(
+      '%s is on screen, but in no replay and no exported record',
+      (name) => {
+        const entry = SURFACES[name];
+        if (entry === undefined) throw new Error('No surface');
+        const [surface, records] = entry;
+        act(() => root.render(surface()));
+        expect(document.body.textContent).toContain(SECRET);
+        expect(recording()).not.toContain(SECRET);
+        // The sighting is still exported, only without its text.
+        expect(reported.length > 0).toBe(records);
+        expect(JSON.stringify(reported)).not.toContain(SECRET);
+      },
+    );
   });
 });

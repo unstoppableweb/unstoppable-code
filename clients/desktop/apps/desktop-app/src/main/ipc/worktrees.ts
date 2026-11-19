@@ -1,3 +1,4 @@
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import { usesExactWorktreeBaseCatalogue } from '../remote-control/host/bridge-window';
 import { worktreeRemovalIntent } from '@canopy/protocol/portal/worktree-recovery';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
@@ -149,6 +150,24 @@ function validateWorktreeOrder(
 // serial so loading a large worktree fleet cannot synchronously spawn dozens
 // of children in one main-process turn and starve IPC heartbeats.
 const DIFF_STATS_BATCH_CONCURRENCY = 1;
+
+/**
+ * Diff stats poll every 30 seconds per visible worktree, and a broken one
+ * fails on every poll, so only the first failure in each window is reported.
+ */
+const DIFF_STATS_FAILURE_REPORT_INTERVAL_MS = 10 * 60_000;
+let lastDiffStatsFailureReportAt: number | undefined;
+
+function reportSampledDiffStatsFailure(error: unknown): void {
+  const now = Date.now();
+  if (
+    lastDiffStatsFailureReportAt !== undefined &&
+    now - lastDiffStatsFailureReportAt < DIFF_STATS_FAILURE_REPORT_INTERVAL_MS
+  )
+    return;
+  lastDiffStatsFailureReportAt = now;
+  reportMainAppError(error, { source: 'worktree.diff_stats' });
+}
 
 export function registerWorktreeHandlers(
   getWindow: () => BrowserWindow | null,
@@ -563,7 +582,8 @@ export function registerWorktreeHandlers(
               );
             }
             return stats;
-          } catch {
+          } catch (error) {
+            reportSampledDiffStatsFailure(error);
             return {
               projectId: worktree.projectId,
               worktreeId: worktree.worktreeId,

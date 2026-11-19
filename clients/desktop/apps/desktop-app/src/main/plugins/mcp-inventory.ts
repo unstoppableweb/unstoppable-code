@@ -211,7 +211,11 @@ async function buildStandaloneEntry(
   }
   if (!file) {
     const connection = accountMcpConnectionsEnabled()
-      ? accountMcpConnectionForRef(ref, (await accountConnections()) ?? [])
+      ? accountMcpConnectionForRef(
+          ref,
+          (await accountConnections()) ?? [],
+          'attended',
+        )
       : undefined;
     if (connection) return buildAccountEntry(ref, connection);
     if (!accountOnly)
@@ -420,7 +424,9 @@ async function buildCuratedPluginEntry(args: {
       );
       return unbound;
     }
-    const lookup = findCuratedAccountMcpConnection(connections, curatedKey);
+    const lookup = findCuratedAccountMcpConnection(connections, curatedKey, {
+      directRefs: args.selections.mcpServerRefs ?? [],
+    });
     if (lookup.kind === 'ambiguous') {
       args.warnings.push(
         `Account MCP server "${label}" skipped: ${CURATED_PLUGIN_MCP_AMBIGUOUS}`,

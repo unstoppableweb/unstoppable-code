@@ -13,6 +13,21 @@ import {
   resolveSessionInterfaceTools,
   setSessionInterfaceToolRegistry,
 } from '../interface-tool-binding';
+import { windowAgentInterfacePort } from '../agent-interface-port';
+import { sendToWindow } from '../../lib/window-send';
+import {
+  INGESTION_LAG_EVENT_TYPE,
+  IPC_CHANNELS,
+  PROMPT_SUGGESTION_EVENT_TYPE,
+  type ChatIngestionLagEventData,
+  type PlanExitRequestEvent,
+  type PromptSuggestionEventData,
+} from '@canopy/desktop-shared/types';
+
+jest.mock('../../lib/window-send', () => ({
+  ...jest.requireActual<Record<string, unknown>>('../../lib/window-send'),
+  sendToWindow: jest.fn(),
+}));
 
 jest.mock('../claude-session', () => ({
   ClaudeCodeProvider: class {
@@ -85,7 +100,7 @@ describe('session interface tool binding (CAN-4131)', () => {
       getOrCreateSession(
         options,
         () => undefined,
-        () => null,
+        windowAgentInterfacePort(() => null),
       ),
     );
     await expect(getSessionChangedOptions(options)).resolves.not.toContain(
@@ -95,5 +110,36 @@ describe('session interface tool binding (CAN-4131)', () => {
     await expect(getSessionChangedOptions(options)).resolves.toContain(
       'interfaceTools',
     );
+  });
+});
+
+describe('agent interface port over the main window (CAN-6995)', () => {
+  it('sends transient events on chat:event and the plan exit on plan:exit-request', () => {
+    const send = jest.mocked(sendToWindow);
+    send.mockClear();
+    const port = windowAgentInterfacePort(() => null);
+    const target = { projectId: 'ws', worktreeId: 'wt', chatId: 'chat' };
+    const suggestion: PromptSuggestionEventData = {
+      type: PROMPT_SUGGESTION_EVENT_TYPE,
+      text: 'Run the tests',
+      turnUserMessageId: 'user-1',
+    };
+    const lag: ChatIngestionLagEventData = {
+      type: INGESTION_LAG_EVENT_TYPE,
+      lag: null,
+    };
+    const planExit: PlanExitRequestEvent = {
+      requestId: 'plan-1',
+      ...target,
+      toolInput: {},
+    };
+    port.publishPromptSuggestion(target, suggestion);
+    port.publishIngestionLag(target, lag);
+    port.presentPlanExit(planExit);
+    expect(send.mock.calls).toEqual([
+      [null, IPC_CHANNELS.chatEvent, { ...target, data: suggestion }],
+      [null, IPC_CHANNELS.chatEvent, { ...target, data: lag }],
+      [null, IPC_CHANNELS.planExitRequest, planExit],
+    ]);
   });
 });

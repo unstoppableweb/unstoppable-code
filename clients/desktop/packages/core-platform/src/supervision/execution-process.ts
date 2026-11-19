@@ -6,6 +6,10 @@ import {
 import { statSync } from 'node:fs';
 import { connect as netConnect } from 'node:net';
 import type { Duplex, Readable, Writable } from 'node:stream';
+import {
+  spawnFailureDetails,
+  type SpawnFailureDetails,
+} from '@canopy/core-runtime';
 import type {
   PlatformExecutionInput,
   PlatformExecutionOutcome,
@@ -24,6 +28,7 @@ import {
   createJobLauncher,
   type ExitCustody,
   fullyQualified,
+  type JobLauncher,
   type LaunchedTree,
   OwnedChildError,
 } from './owned-child';
@@ -46,9 +51,17 @@ export class ExecutionProcessError extends Error {
   override readonly name = 'ExecutionProcessError';
   readonly code: ExecutionProcessErrorCode;
 
-  constructor(code: ExecutionProcessErrorCode, message: string) {
+  /** A failed spawn's allowlisted errno (CAN-7113). */
+  readonly details: SpawnFailureDetails | undefined;
+
+  constructor(
+    code: ExecutionProcessErrorCode,
+    message: string,
+    details?: SpawnFailureDetails,
+  ) {
     super(message);
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -63,15 +76,26 @@ const BUSY = 'Execution process output is already being read.';
 const fail = (
   code: ExecutionProcessErrorCode,
   message: string,
-): ExecutionProcessError => new ExecutionProcessError(code, message);
+  details?: SpawnFailureDetails,
+): ExecutionProcessError => new ExecutionProcessError(code, message, details);
 
 const DEFAULT_WINDOW_BYTES = 64 * 1024;
 const MAX_WINDOW_BYTES = 1024 * 1024;
 // Windows NTSTATUS error severity: an exception, not a chosen exit code.
 const NTSTATUS_ERROR = 0xc0000000;
 
-/** Host-only test seams; production composition uses the defaults. */
+export type ExecutionProcessRootExit = Pick<
+  PlatformExecutionOutcome,
+  'kind' | 'code' | 'signal'
+>;
+
+/** Host-only custody observation and test seams. */
 export interface ExecutionProcessOperations {
+  /** Root exit before output drains; false includes lost custody, not just live members. */
+  readonly onRootTreeEmpty?: (
+    empty: boolean,
+    exit: ExecutionProcessRootExit,
+  ) => void;
   /** darwin and linux children. */
   readonly spawn: (
     file: string,
@@ -582,6 +606,8 @@ export function createExecutionProcessServices(
     readonly os: PlatformOperatingSystem;
     /** win32 only: the owned-child addon, fully qualified. */
     readonly nativePath?: string;
+    /** win32 only: share a host's lazy addon load, not its per-child jobs. */
+    readonly windowsLauncher?: JobLauncher;
   },
   operations: Partial<ExecutionProcessOperations> = {},
 ): PlatformExecutionProcessServices {
@@ -595,12 +621,16 @@ export function createExecutionProcessServices(
   });
   const custody = createExitCustody();
   const launcher =
-    os === 'win32' && nativePath !== undefined
-      ? createJobLauncher({ os, nativePath })
+    os === 'win32'
+      ? (options.windowsLauncher ??
+        (nativePath !== undefined
+          ? createJobLauncher({ os, nativePath })
+          : undefined))
       : undefined;
   /** Trees whose custody has not ended, for shutdown. */
   const live = new Set<(mode: PlatformStopMode) => Promise<void>>();
   let closing = false;
+  let startupCleanupUnconfirmed = false;
 
   function begin(
     request: PlatformExecutionRequest,
@@ -617,15 +647,25 @@ export function createExecutionProcessServices(
         env: environment,
         stdio: [request.stdin === 'pipe' ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
-    } catch {
-      throw fail('failed_precondition', NOT_STARTED);
+    } catch (error) {
+      throw fail(
+        'failed_precondition',
+        NOT_STARTED,
+        spawnFailureDetails(error),
+      );
     }
     const { pid, stdout, stderr, stdin } = child;
     return new Promise((resolve, reject) => {
       if (pid === undefined || !stdout || !stderr) {
         // libuv reports the failure as 'error' on a later turn.
-        child.once('error', () =>
-          reject(fail('failed_precondition', NOT_STARTED)),
+        child.once('error', (error) =>
+          reject(
+            fail(
+              'failed_precondition',
+              NOT_STARTED,
+              spawnFailureDetails(error),
+            ),
+          ),
         );
         return;
       }
@@ -668,7 +708,10 @@ export function createExecutionProcessServices(
         stdin: request.stdin === 'pipe',
       });
     } catch (error) {
-      throw translated(error);
+      const failure = translated(error);
+      // No handle was delivered; the launcher retains native records until host exit.
+      if (failure.code === 'unavailable') startupCleanupUnconfirmed = true;
+      throw failure;
     }
     // Held by shutdown until the child is tracked or confirmed stopped.
     const pending = (): Promise<void> => launched.stop();
@@ -757,13 +800,14 @@ export function createExecutionProcessServices(
       survivors = undefined;
       retire();
     };
-    const settle = (): void => {
-      if (released) return;
+    const settle = (): boolean => {
+      if (released) return !tree.lapsed;
       try {
         if (tree.settle()) endCustody();
       } catch {
         // Ownership could not be observed; a stop request reports it.
       }
+      return released && !tree.lapsed;
     };
 
     function finish(result: PlatformExecutionOutcome): void {
@@ -789,7 +833,16 @@ export function createExecutionProcessServices(
     watch(
       (code, signal) => {
         exit = { code, signal };
-        settle();
+        const empty = settle();
+        try {
+          ops.onRootTreeEmpty?.(empty, {
+            kind: classify(os, cancelled, code, signal),
+            code,
+            signal,
+          });
+        } catch {
+          // Evidence observers do not change process custody or results.
+        }
         // Survivors of the root keep custody; check until they are gone.
         if (!released) {
           survivors = setInterval(settle, ops.survivorPollMs);
@@ -860,7 +913,10 @@ export function createExecutionProcessServices(
       const stops = Promise.allSettled(
         Array.from(live, (stop) => stop('force')),
       ).then((results) => {
-        if (results.some((result) => result.status === 'rejected'))
+        if (
+          startupCleanupUnconfirmed ||
+          results.some((result) => result.status === 'rejected')
+        )
           throw fail('unavailable', UNCONFIRMED);
       });
       await bounded(stops, options?.signal);

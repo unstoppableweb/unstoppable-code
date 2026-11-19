@@ -4,8 +4,13 @@ import {
   CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS,
   customizeWorksWithChipLabel,
   customizeWorksWithChips,
+  customizeWorksWithHarnesses,
   type CustomizeDiscoveryHarness,
 } from '../lib/customize-discovery';
+import {
+  customizeEntryHarnessRows,
+  type CustomizeHarnessRow,
+} from '../lib/customize-harness-rows';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
 import { GitHubIcon } from '../icons/AppIcons';
 import { ClaudeLogo } from '../icons/ClaudeLogo';
@@ -13,14 +18,15 @@ import { CodexLogo } from '../icons/CodexLogo';
 import { CursorLogo } from '../icons/CursorLogo';
 import { OpenCodeLogo } from '../icons/OpenCodeLogo';
 import { Tooltip } from './Tooltip';
+import {
+  PluginWorksWith,
+  type PluginWorksWithRow,
+} from './PluginHarnessConnections';
 
-/**
- * Names show once the row's subtitle (the `customize-row-subtitle` container
- * in `CustomizeInstalledRow`) is wide enough for three named chips.
- */
-const CHIP_LABEL_CLASS = 'hidden @[26rem]/customize-row-subtitle:inline';
+/** The most badges a tile shows; a third harness folds into a "+N" badge. */
+const MAX_CHIP_BADGES = 2;
 
-/** A chip's short harness name; the Works with filter keeps the full names. */
+/** A harness's short name; the Works with filter keeps the full names. */
 const CHIP_NAMES: Readonly<Record<CustomizeDiscoveryHarness, string>> = {
   claude: 'Claude',
   codex: 'Codex',
@@ -46,10 +52,14 @@ function nameList(harnesses: readonly CustomizeDiscoveryHarness[]): string {
 
 function HarnessMark({
   harness,
+  muted = false,
 }: {
   readonly harness: CustomizeDiscoveryHarness;
+  /** Not supported: the mark takes the muted text color. */
+  readonly muted?: boolean;
 }): JSX.Element {
-  const { className, px } = BADGE_ICON_BY_SIZE.regular;
+  const { px } = BADGE_ICON_BY_SIZE.regular;
+  const className = `${BADGE_ICON_BY_SIZE.regular.className}${muted ? ' fg-disabled' : ''}`;
   switch (harness) {
     case 'claude':
       return <ClaudeLogo width={px} height={px} className={className} />;
@@ -68,10 +78,84 @@ function HarnessMark({
 }
 
 /**
- * A Customize row's "Works with" chips (CAN-6813): up to three harness marks
- * with their names, then "+N more". Reads the CAN-6807 compatibility through
- * `customizeWorksWithChips`, which falls back to the published harness.
+ * A Customize row's "Works with" chips (CAN-6813): one logo chip per
+ * harness it works with, at most two badges, the second a "+N" counter past
+ * that; each tooltip names its harness. Reads the CAN-6807 compatibility
+ * through `customizeWorksWithChips`, which falls back to the published harness.
  */
+function isChipHarness(id: string): id is CustomizeDiscoveryHarness {
+  return Object.prototype.hasOwnProperty.call(CHIP_NAMES, id);
+}
+
+/**
+ * A plugin's chips from the one harness reading its page's Works with table
+ * also uses (`customizeHarnessRows`): every offered harness, in the table's
+ * order. A harness a copy found elsewhere serves looks like one this copy
+ * serves; one nothing serves is muted. Each tooltip says where it comes from.
+ */
+function HarnessRowChips({
+  entryId,
+  rows,
+}: {
+  readonly entryId: string;
+  readonly rows: readonly CustomizeHarnessRow[];
+}): JSX.Element | null {
+  const chipRows = rows.flatMap((row) =>
+    isChipHarness(row.id) ? [{ ...row, harness: row.id }] : [],
+  );
+  if (chipRows.length === 0) return null;
+  const chip = badgeClassName('neutral');
+  const working = chipRows.filter((row) => row.support !== 'none');
+  if (working.length === 0) return null;
+  // At most two badges, and only the harnesses it works in (Sergii's QA):
+  // past two, the second badge becomes a "+N" counter whose tooltip lists
+  // every harness the way the page's Works with table reads it.
+  const overflow = working.length > MAX_CHIP_BADGES;
+  const shownRows = overflow ? working.slice(0, MAX_CHIP_BADGES - 1) : working;
+  const hiddenRows = overflow ? working.slice(MAX_CHIP_BADGES - 1) : [];
+  return (
+    <span
+      data-testid={`customize-row-works-with-${entryId}`}
+      className="pointer-events-auto flex shrink-0 items-center gap-1"
+    >
+      <span className="sr-only">
+        {`Works with the ${nameList(working.map((row) => row.harness))} ${working.length === 1 ? 'harness' : 'harnesses'}`}
+      </span>
+      {shownRows.map((row) => (
+        <Tooltip key={row.harness} label={row.tooltip}>
+          <span
+            aria-hidden="true"
+            data-testid={`customize-row-works-with-${entryId}-${row.harness}`}
+            data-harness-support={row.support}
+            className={chip}
+          >
+            <HarnessMark harness={row.harness} />
+          </span>
+        </Tooltip>
+      ))}
+      {overflow && (
+        <Tooltip
+          label={
+            <span className="flex flex-col gap-0.5">
+              {chipRows.map((row) => (
+                <span key={row.harness}>{row.tooltip}</span>
+              ))}
+            </span>
+          }
+        >
+          <span
+            aria-hidden="true"
+            data-testid={`customize-row-works-with-${entryId}-more`}
+            className={chip}
+          >
+            {`+${hiddenRows.length}`}
+          </span>
+        </Tooltip>
+      )}
+    </span>
+  );
+}
+
 export function CustomizeWorksWithChips({
   entry,
 }: {
@@ -82,20 +166,30 @@ export function CustomizeWorksWithChips({
     | 'harnessCompatibility'
     | 'marketplaceListings'
     | 'chatGptAppStandIn'
+    | 'harnessRows'
+    | 'alsoAvailableFrom'
   >;
 }): JSX.Element | null {
-  const { shown, more } = customizeWorksWithChips(entry);
+  const rows = customizeEntryHarnessRows(entry);
+  if (rows !== undefined)
+    return <HarnessRowChips entryId={entry.id} rows={rows} />;
+  const chips = customizeWorksWithChips(entry);
+  // One chip per harness, never the same harness twice.
+  const shown = [...new Set([...chips.shown, ...chips.more])];
   if (shown.length === 0) return null;
   const chip = badgeClassName('neutral');
+  const overflow = shown.length > MAX_CHIP_BADGES;
+  const visible = overflow ? shown.slice(0, MAX_CHIP_BADGES - 1) : shown;
+  const hidden = overflow ? shown.slice(MAX_CHIP_BADGES - 1) : [];
   return (
     <span
       data-testid={`customize-row-works-with-${entry.id}`}
       className="pointer-events-auto flex shrink-0 items-center gap-1"
     >
       <span className="sr-only">
-        {`Works with the ${nameList([...shown, ...more])} ${shown.length + more.length === 1 ? 'harness' : 'harnesses'}`}
+        {`Works with the ${nameList(shown)} ${shown.length === 1 ? 'harness' : 'harnesses'}`}
       </span>
-      {shown.map((harness) => (
+      {visible.map((harness) => (
         <Tooltip
           key={harness}
           label={customizeWorksWithChipLabel(
@@ -110,24 +204,78 @@ export function CustomizeWorksWithChips({
             className={chip}
           >
             <HarnessMark harness={harness} />
-            {/* A narrow row keeps the marks and drops the names, so the
-                publisher stays readable; the tooltip still names it. */}
-            <span className={CHIP_LABEL_CLASS}>{CHIP_NAMES[harness]}</span>
           </span>
         </Tooltip>
       ))}
-      {more.length > 0 && (
-        <Tooltip label={`Also works with ${nameList(more)}`}>
+      {overflow && (
+        <Tooltip
+          label={
+            <span className="flex flex-col gap-0.5">
+              {CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS.map(({ value: harness }) => (
+                <span key={harness}>
+                  {shown.includes(harness)
+                    ? customizeWorksWithChipLabel(
+                        entry,
+                        harness,
+                        harnessFullName(harness),
+                      )
+                    : `${harnessFullName(harness)}: not supported`}
+                </span>
+              ))}
+            </span>
+          }
+        >
           <span
             aria-hidden="true"
             data-testid={`customize-row-works-with-${entry.id}-more`}
             className={chip}
           >
-            {`+${more.length}`}
-            <span className={CHIP_LABEL_CLASS}> more</span>
+            {`+${hidden.length}`}
           </span>
         </Tooltip>
       )}
     </span>
+  );
+}
+
+/**
+ * A detail page's Works with rows, from the same selector as the tile's
+ * chips: the entry's harness rows when it has them, else every harness with
+ * whether this item works there (installed items read Installed).
+ */
+export function customizeWorksWithRows(
+  entry: Parameters<typeof CustomizeWorksWithChips>[0]['entry'] &
+    Pick<UnifiedPluginEntry, 'state'>,
+): PluginWorksWithRow[] {
+  const rows = customizeEntryHarnessRows(entry);
+  if (rows !== undefined)
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      installation: row.installation,
+    }));
+  const supported = new Set(customizeWorksWithHarnesses(entry));
+  return CUSTOMIZE_DISCOVERY_HARNESS_OPTIONS.map(({ value }) => ({
+    id: value,
+    name: CHIP_NAMES[value],
+    installation: !supported.has(value)
+      ? 'Not supported'
+      : entry.state === 'available'
+        ? 'Not installed'
+        : 'Installed',
+  }));
+}
+
+/** The Works with table for an entry, as its tile's chips read it. */
+export function CustomizeEntryWorksWith({
+  entry,
+}: {
+  readonly entry: Parameters<typeof customizeWorksWithRows>[0];
+}): JSX.Element | null {
+  return (
+    <PluginWorksWith
+      rows={customizeWorksWithRows(entry)}
+      caption="Installation by harness"
+    />
   );
 }

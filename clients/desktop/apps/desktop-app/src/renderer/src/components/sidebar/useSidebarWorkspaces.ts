@@ -687,8 +687,12 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
 
   const onSetProjectSortMode = useCallback(
     (mode: SidebarSortMode): void => {
-      void setProjectSortMode(mode).catch(() => {
-        useGitHubStore.getState().addToast('Failed to change order', 'error');
+      void setProjectSortMode(mode).catch((error: unknown) => {
+        useGitHubStore
+          .getState()
+          .addToast('Failed to change order', 'error', undefined, {
+            caught: error,
+          });
       });
     },
     [setProjectSortMode],

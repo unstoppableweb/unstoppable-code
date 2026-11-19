@@ -67,7 +67,11 @@ import {
   type GitHubCloudSetupErrorReason,
 } from '@canopy/protocol/settings/github-cloud-setup-outcome';
 import { useSettingsClient } from '../host';
-import { useGitHubCloudHost, type GitHubCloudHost } from './github-cloud-host';
+import {
+  useGitHubCloudHost,
+  type GitHubCloudHost,
+  type GitHubCloudHostPorts,
+} from './github-cloud-host';
 import {
   disconnectGitHubCloud,
   fetchGitHubCloudConnection,
@@ -386,6 +390,171 @@ function linkCallbackPath(path: string, marker: GitHubCloudLinkMarker): string {
   const url = new URL(path, window.location.origin);
   writeGitHubCloudLinkMarker(url.searchParams, marker);
   return url.pathname + url.search;
+}
+
+// ---------------------------------------------------------------------------
+// Headless identity link (review approval calls to action, CAN-7162)
+//
+// "Link GitHub" outside Settings links the GitHub identity only (`identity`
+// intent: no App install step). It shares this module's marker and callback
+// slot with every mounted controller, so exactly one claimer continues a
+// callback whatever else is on the page.
+// ---------------------------------------------------------------------------
+
+/** True for a same-origin relative path (`/x`), never `//host` or a URL. */
+export function isSameOriginRelativePath(path: string): boolean {
+  return path.startsWith('/') && !path.startsWith('//') && !path.includes('\\');
+}
+
+export interface StartGitHubIdentityLinkInput {
+  readonly client: AccountOrganizationSettingsClient;
+  readonly linkGitHubAccount: GitHubCloudHostPorts['linkGitHubAccount'];
+  readonly userId: string;
+  /** Same-origin relative path GitHub returns to; anything else is refused. */
+  readonly returnTo: string;
+  /** Same-tab navigation to GitHub; `location.assign` by default. */
+  readonly navigate?: (url: string) => void;
+}
+
+/**
+ * Starts linking GitHub from a click. `linked`: the identity was already
+ * linked; `leaving`: this tab is going to GitHub. Rejects with fixed copy and
+ * leaves no marker behind.
+ */
+export async function startGitHubIdentityLink({
+  client,
+  linkGitHubAccount,
+  userId,
+  returnTo,
+  navigate = assignLocation,
+}: StartGitHubIdentityLinkInput): Promise<'linked' | 'leaving'> {
+  if (!isSameOriginRelativePath(returnTo)) {
+    throw new Error(GITHUB_CLOUD_LINK_FAILED_COPY);
+  }
+  const path = returnPath(returnTo);
+  let response: GitHubCloudConnectResponse;
+  try {
+    response = await startGitHubCloudConnect(client, {
+      returnTo: path,
+      intent: 'identity',
+    });
+  } catch {
+    throw new Error(GITHUB_CLOUD_LINK_FAILED_COPY);
+  }
+  if (response.next === 'done' || response.next === 'install') {
+    // `install` is never answered for `identity`; the identity is linked.
+    return 'linked';
+  }
+  writeLinkMarker(userId, 'identity', response.continuationGeneration);
+  try {
+    const result = await linkGitHubAccount({
+      callbackPath: linkCallbackPath(path, {
+        outcome: 'linked',
+        intent: 'identity',
+      }),
+      errorCallbackPath: linkCallbackPath(path, { outcome: 'link_error' }),
+    });
+    if (!result.ok || result.url === null) {
+      throw new Error(GITHUB_CLOUD_LINK_FAILED_COPY);
+    }
+    navigate(result.url);
+    return 'leaving';
+  } catch {
+    clearLinkMarker();
+    throw new Error(GITHUB_CLOUD_LINK_FAILED_COPY);
+  }
+}
+
+/** Reads this user's marker intent without taking it. */
+function peekLinkMarkerIntent(userId: string): GitHubCloudConnectIntent | null {
+  let raw: string | null;
+  try {
+    raw = window.sessionStorage.getItem(GITHUB_CLOUD_LINK_MARKER_KEY);
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const intent: unknown = Reflect.get(parsed, 'intent');
+    return Reflect.get(parsed, 'userId') === userId &&
+      isGitHubCloudConnectIntent(intent)
+      ? intent
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resumeIdentityLink(
+  client: AccountOrganizationSettingsClient,
+  userId: string,
+): Promise<'none' | 'linked' | 'failed'> {
+  // As the controller: Strict Mode's discarded run settles first.
+  await Promise.resolve();
+  if (peekLinkMarkerIntent(userId) !== 'identity') return 'none';
+  captureCallback(userId);
+  const pending = pendingCallback;
+  if (
+    pending === null ||
+    (pending.result.outcome !== 'linked' &&
+      pending.result.outcome !== 'link_error')
+  ) {
+    return 'none';
+  }
+  const owner = Symbol('github-identity-link');
+  const claim = claimCallback(userId, owner);
+  if (claim.kind !== 'claimed') return 'none';
+  if (claim.result.outcome !== 'linked') {
+    clearLinkMarker();
+    finishCallback(owner);
+    return 'failed';
+  }
+  const continuation = takeLinkMarker(userId);
+  if (continuation === null) {
+    finishCallback(owner);
+    return 'failed';
+  }
+  try {
+    // Never back to GitHub: a continuation that still needs sign-in fails.
+    const response = await startGitHubCloudConnect(client, {
+      returnTo: returnPath(undefined),
+      intent: continuation.intent,
+      continuationGeneration: continuation.continuationGeneration,
+    });
+    return response.next === 'done' || response.next === 'install'
+      ? 'linked'
+      : 'failed';
+  } catch {
+    return 'failed';
+  } finally {
+    finishCallback(owner);
+  }
+}
+
+let identityResume: {
+  readonly userId: string;
+  readonly promise: Promise<'none' | 'linked' | 'failed'>;
+} | null = null;
+
+/**
+ * Finishes an `identity` link whose GitHub round trip landed on this page.
+ * Acts only when this tab's marker names `identity`; any other marker or no
+ * callback resolves `none` and leaves everything for the page's controller.
+ * Single-flight per page load: every caller sees the same outcome.
+ */
+export function resumeGitHubIdentityLink({
+  client,
+  userId,
+}: {
+  readonly client: AccountOrganizationSettingsClient;
+  readonly userId: string;
+}): Promise<'none' | 'linked' | 'failed'> {
+  if (identityResume?.userId !== userId) {
+    identityResume = { userId, promise: resumeIdentityLink(client, userId) };
+  }
+  return identityResume.promise;
 }
 
 // ---------------------------------------------------------------------------

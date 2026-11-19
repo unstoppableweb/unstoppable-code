@@ -711,13 +711,11 @@ export class TerminalPersistenceStore {
       }
     }
 
-    // Legacy omission inference stays scoped to the request, including ungrouped history.
-    for (const terminalId of new Set(
-      cached.state.terminals.map((entry) => entry.session.id),
-    )) {
+    // A layout save never deletes history: omitted terminals stay ungrouped; only closes forget.
+    // A forget id the same request still groups is stale and must not wipe that terminal.
+    for (const terminalId of request.forgetTerminalIds ?? [])
       if (!referencedTerminalIds.has(terminalId))
         this.forgetCached(cached, terminalId);
-    }
 
     const nextGroups: TerminalGroup[] = [];
     for (const group of request.groups) {
@@ -768,10 +766,22 @@ export class TerminalPersistenceStore {
     }
 
     const groupIdSet = new Set(nextGroups.map((group) => group.id));
-    cached.state.terminalCustomNames = normalizeCustomNameMap(
-      request.terminalCustomNames,
-      referencedTerminalIds,
+    // Omitted, unforgotten terminals keep their cached names; listed ones take the request's.
+    const omittedTerminalIds = new Set(
+      Array.from(existingTerminalIds).filter(
+        (id) => !referencedTerminalIds.has(id),
+      ),
     );
+    cached.state.terminalCustomNames = {
+      ...normalizeCustomNameMap(
+        cached.state.terminalCustomNames,
+        omittedTerminalIds,
+      ),
+      ...normalizeCustomNameMap(
+        request.terminalCustomNames,
+        referencedTerminalIds,
+      ),
+    };
     cached.state.groupCustomNames = normalizeCustomNameMap(
       request.groupCustomNames,
       groupIdSet,

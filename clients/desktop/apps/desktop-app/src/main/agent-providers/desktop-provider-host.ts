@@ -148,7 +148,7 @@ const productionSources = {
   },
   async readUsage(): Promise<PortalProviderUsageProjection> {
     const { getObservabilityService } = await import('../observability');
-    const usage = await import('../portal/provider-usage-projection');
+    const usage = await import('./provider-usage-projection');
     return usage.projectPortalProviderUsage(
       getObservabilityService().getUsageOverview(),
       await usage.readPortalProviderUsageAccountProxySource(),

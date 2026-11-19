@@ -1,4 +1,9 @@
+import { WorkerPipelineSetupFailureSchema } from './pipeline-setup-failure';
 import { z } from 'zod';
+import {
+  PIPELINE_SURVIVAL_BLOCKER_CODES,
+  WorkerPipelineNativeRouteEvidenceSchema,
+} from './pipeline-native-routing';
 
 import {
   CanopyJsonValueSchema,
@@ -329,7 +334,18 @@ export const WorkerPipelineHostLaunchSchema = z.strictObject({
   agentOrigin: CanopyJsonValueSchema.optional(),
   /** The run needs its owner (host steps, CAN-5771; model steps, CAN-5095): it pauses when the owner is gone. */
   ownerBound: z.boolean().optional(),
-  /** How `node` steps and actions start (Electron's binary as Node). */
+  /** Trusted desktop effective-route inspection, not whole-run survival admission. */
+  nativeRouteEvidence: WorkerPipelineNativeRouteEvidenceSchema.optional(),
+  /** Non-secret diagnostics from the same effective-route inspection. */
+  nativeRouteBlockers: z
+    .array(z.enum(PIPELINE_SURVIVAL_BLOCKER_CODES))
+    .max(32)
+    .optional(),
+  /** Non-secret condition that prevented start-time resource admission. */
+  nativeSetupFailure: WorkerPipelineSetupFailureSchema.optional(),
+  /** Exact non-secret setup snapshots and projected content digests. */
+  nativeStartSetup: canopyJsonValueSchemaWithin(2 * 1024 * 1024).optional(),
+  /** The host-selected interpreter for `node` steps and actions. */
   nodeProcess: z
     .strictObject({
       command: HostPathSchema,

@@ -2,6 +2,8 @@
 
 import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
 import { useCallback, useId, useState, type JSX } from 'react';
+import { allowsAgentVisualRemoteAssets } from '@canopy/app-core';
+import { useCapabilities } from '@canopy/app-state';
 import {
   AgentVisualFrame,
   Button,
@@ -38,6 +40,7 @@ export function ChatVisualDialog({
   onClose,
 }: ChatVisualDialogProps): JSX.Element {
   const [tab, setTab] = useState(initialTab);
+  const remoteAssets = allowsAgentVisualRemoteAssets(useCapabilities());
   const ids = useId();
   const visualTabId = `${ids}-visual-tab`;
   const sourceTabId = `${ids}-source-tab`;
@@ -53,8 +56,9 @@ export function ChatVisualDialog({
         theme,
         title: owner.reference.title,
         ownerDocument,
+        remoteAssets,
       }),
-    [document, theme, owner.reference.title, ownerDocument],
+    [document, theme, owner.reference.title, ownerDocument, remoteAssets],
   );
   return (
     // Portalled out of the transcript and the Chat visuals panel, so their
@@ -123,6 +127,7 @@ export function ChatVisualDialog({
                 onOpenLink={onOpenLink}
                 variant="expanded"
                 frameUrl={host.frameUrl}
+                remoteAssets={remoteAssets}
                 testIds={CHAT_VISUAL_TEST_IDS}
               />
             ) : (

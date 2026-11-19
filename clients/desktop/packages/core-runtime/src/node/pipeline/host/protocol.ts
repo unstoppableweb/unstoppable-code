@@ -9,7 +9,9 @@ import {
   type WorkerPipelineHostRequest,
   type WorkerPipelineHostResult,
   type WorkerPipelineHostStepValues,
+  type WorkerPipelineSurvivalAssessment,
 } from '@canopy/protocol/canopy-core';
+import { isAllowlistedErrno } from '../../../runtime/errors';
 import type { PipelineOwnerSettlement } from '../execution/host-requests';
 import type { PipelineExecutionListQuery } from '../execution/worker-pipelines';
 
@@ -25,6 +27,8 @@ export interface PipelineHostLaunch {
   readonly launch: WorkerPipelineHostLaunch;
   /** The run's base environment (`_execution.childEnvironment`). */
   readonly processEnvironment: Readonly<Record<string, string>>;
+  /** Prepared by the supervisor's authority, not a caller's start params. */
+  readonly survivalAssessment?: WorkerPipelineSurvivalAssessment;
 }
 
 /**
@@ -124,6 +128,8 @@ export type PipelineHostRequest =
        * give the short deadline waits at least this long instead.
        */
       ownerRequestDeadlineMs?: number;
+      /** Local Ledger authority presence; unrelated to a remote delegation lease. */
+      ledgerOwnerAvailable?: boolean;
     }
   | { op: 'start'; start: PipelineHostLaunch }
   /** With `detail`, the host answers the summary and its detail (CAN-6117). */
@@ -152,6 +158,11 @@ export type PipelineHostRequest =
    * without it the pause records `app_shutdown`, as on desktop.
    */
   | { op: 'pause'; executionIds: string[]; reason?: 'owner_lost' }
+  | {
+      op: 'invalidateSurvival';
+      executionId: string;
+      blocker: WorkerPipelineSurvivalAssessment['blockers'][number];
+    }
   /**
    * Checkpoint one run so its host can roll over (CAN-6199): no new step
    * starts, running steps may finish within `drainMs`, then the rest pauses
@@ -170,6 +181,8 @@ export type PipelineHostRequest =
    * at configure.
    */
   | { op: 'ownerDeadline'; ownerRequestDeadlineMs: number }
+  /** Local Ledger forwarding stops immediately; this does not keep a run alive. */
+  | { op: 'ledgerOwnerAvailability'; available: boolean }
   | { op: 'exit' };
 
 export interface PipelineHostRequestMessage {
@@ -189,13 +202,57 @@ export type PipelineHostErrorCode =
   | 'control_failed'
   | 'closed';
 
+/**
+ * The error names a refusal may carry (CAN-7113); any other is dropped, so a
+ * name never carries a customer's or a path's text.
+ */
+const PIPELINE_HOST_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'Error',
+  'TypeError',
+  'RangeError',
+  'SyntaxError',
+  'AbortError',
+  'MatrixExecutorInactiveError',
+]);
+
+/** A refusal's value-free facts: an allowlisted error name and errno. */
+export interface PipelineHostErrorFacts {
+  errorName?: string;
+  errno?: string;
+}
+
+/**
+ * The allowlisted facts of a refusal, or undefined when it has none. A value
+ * off the allowlists is dropped, never the refusal, so drift between a host
+ * and its supervisor still answers the request.
+ */
+export function pipelineHostErrorFacts(
+  error: Readonly<Record<string, unknown>>,
+): PipelineHostErrorFacts | undefined {
+  const { errorName, errno } = error;
+  const facts: PipelineHostErrorFacts = {
+    ...(typeof errorName === 'string' &&
+      PIPELINE_HOST_ERROR_NAMES.has(errorName) && { errorName }),
+    ...(isAllowlistedErrno(errno) && { errno }),
+  };
+  return facts.errorName === undefined && facts.errno === undefined
+    ? undefined
+    : facts;
+}
+
 export type PipelineHostMessage =
   | { kind: 'response'; id: number; ok: true; value: unknown }
   | {
       kind: 'response';
       id: number;
       ok: false;
-      error: { code: PipelineHostErrorCode; message: string };
+      error: {
+        code: PipelineHostErrorCode;
+        message: string;
+        /** Read only through {@link pipelineHostErrorFacts}. */
+        errorName?: unknown;
+        errno?: unknown;
+      };
     }
   | {
       kind: 'execution';

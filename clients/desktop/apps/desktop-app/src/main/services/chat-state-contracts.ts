@@ -45,6 +45,11 @@ export interface ChatStateCommit {
     ChatStateChange,
     { type: 'delegation.card_state_updated' }
   >[];
+  /**
+   * The `chat.initiated` change of an initiated send this commit accepted
+   * (CAN-4174): published with the commit, never journaled.
+   */
+  initiatedChanges?: Extract<ChatStateChange, { type: 'chat.initiated' }>[];
   projectId: string;
   worktreeId: string;
   baseRevision: number;
@@ -86,6 +91,11 @@ export interface ChatMutationOptions {
    * with this reason instead of a patch or removal.
    */
   rewriteReason?: 'prompt_relocation';
+  /**
+   * An initiated send's `chat.initiated` change (CAN-4174), published with
+   * this commit when it applies; never journaled.
+   */
+  initiated?: Extract<ChatStateChange, { type: 'chat.initiated' }>;
   /** Async preparation performed after durable payload staging. */
   preparePublish?: () => Promise<void>;
   /** Synchronous guard immediately before durable publication starts. */

@@ -1,9 +1,4 @@
 import { createHmac } from 'node:crypto';
-import {
-  CLIENT_FEATURE_FLAGS,
-  getDefaultFeatureFlagSnapshot,
-  restoreOptionalRemoteControlFlag,
-} from '../../feature-flags';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import {
   DeviceRelayTokenClaimsSchema,
@@ -181,17 +176,4 @@ it('keeps pairing secrets in a canonical fragment and rejects ambiguous inputs',
     buildPairingLink('https://user@example.com', deviceId, key),
   ).toThrow();
   expect(() => buildPairingLink('http://example.com', deviceId, key)).toThrow();
-});
-
-it('accepts old protocol-17 flag snapshots without enabling the hosted rollout', () => {
-  const flags: Record<string, unknown> = {
-    ...getDefaultFeatureFlagSnapshot().values,
-  };
-  const key = CLIENT_FEATURE_FLAGS.canopyWebDirectRemoteControl.key;
-  delete flags[key];
-  restoreOptionalRemoteControlFlag(flags);
-  expect(flags[key]).toBe(false);
-  flags[key] = true;
-  restoreOptionalRemoteControlFlag(flags);
-  expect(flags[key]).toBe(true);
 });

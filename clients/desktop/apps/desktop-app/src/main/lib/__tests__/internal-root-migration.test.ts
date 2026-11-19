@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { readClaudeDeliveryHistory } from '../../agents/claude-delivery-history';
 import { copyInternalRootClaudeTranscripts } from '../../../../scripts/internal-root-claude-transcripts';
 import {
@@ -3044,6 +3045,88 @@ jobs:
         if (previousRoot === undefined) delete process.env.CANOPY_DATA_DIR;
         else process.env.CANOPY_DATA_DIR = previousRoot;
       }
+    },
+  );
+
+  test.each(['device', 'inode', 'birthtime', 'unverifiable', 'marker'])(
+    'projects saved lifecycle identities conservatively after %s drift',
+    async (change) => {
+      const { freezeInternalRootJournals, projectInternalRootJournal } =
+        await import('@canopy/desktop-shared/node/internal-root-migration/lifecycle-journals');
+      const history = await lifecycleFixture(
+        'completed',
+        'worktree-delete',
+        false,
+        true,
+      );
+      const mutate = (value: string): string => {
+        if (change === 'unverifiable') return `unverifiable:${value}`;
+        const fields = value.split(':');
+        if (change === 'marker') {
+          if (fields.length === 4)
+            fields[3] = '00000000-0000-4000-8000-000000000099';
+        } else {
+          const index = change === 'device' ? 0 : change === 'inode' ? 1 : 2;
+          fields[index] = String(Number(fields[index]) + 1);
+        }
+        return fields.join(':');
+      };
+      history.record.directoryIdentity = mutate(
+        history.record.directoryIdentity ?? '',
+      );
+      history.record.ownedPaths = history.record.ownedPaths.map((owned) => ({
+        ...owned,
+        identity: owned.identity === null ? null : mutate(owned.identity),
+      }));
+      const bytes = JSON.stringify(history.record);
+      await writeFile(history.path, bytes);
+      const evidence = await freezeInternalRootJournals(identity.source);
+      const entry = evidence.find(
+        (item) => item.name === basename(history.path),
+      );
+      if (!entry) throw new Error('Missing lifecycle evidence');
+      const destination = join(identity.destination, 'workspaces/fixture');
+      const metadata = join(
+        destination,
+        'worktree-data',
+        history.record.worktreeId ?? '',
+      );
+      await mkdir(metadata, { recursive: true });
+      await writeFile(
+        join(destination, '.w5-incarnation'),
+        '00000000-0000-4000-8000-000000000001',
+      );
+      const projected = await projectInternalRootJournal(
+        {
+          version: 1,
+          installationId: 'installation',
+          brandId: 'canopy',
+          from: { authorityId: 'source', canonicalDataRoot: identity.source },
+          to: {
+            authorityId: 'destination',
+            canonicalDataRoot: identity.destination,
+          },
+        },
+        identity.destination,
+        entry,
+      );
+      const accepted = change === 'device' && process.platform === 'darwin';
+      const copied = await lstat(destination);
+      expect(projected.directoryIdentity).toBe(
+        accepted
+          ? `${copied.dev}:${copied.ino}:${copied.birthtimeMs}:00000000-0000-4000-8000-000000000001`
+          : `unverifiable:${history.record.directoryIdentity}`,
+      );
+      const owned = projected.ownedPaths.find((item) => item.path === metadata);
+      const copiedMetadata = await lstat(metadata);
+      expect(owned?.identity).toBe(
+        accepted || change === 'marker'
+          ? `${copiedMetadata.dev}:${copiedMetadata.ino}:${copiedMetadata.birthtimeMs}`
+          : change === 'unverifiable'
+            ? history.record.ownedPaths[0]?.identity
+            : `unverifiable:${history.record.ownedPaths[0]?.identity}`,
+      );
+      expect(await readFile(history.path, 'utf8')).toBe(bytes);
     },
   );
 
@@ -6165,7 +6248,7 @@ jobs:
       identity = internalRootIdentity(home, brand);
       await source();
       const before = await worker.inventory(identity);
-      // The published entry uses the repository addon, not the isolated Linux build above.
+      // Keep a missing addon missing even if another suite builds the repository cache.
       const missingAddon =
         (windows || process.platform === 'linux') &&
         !existsSync(
@@ -6182,6 +6265,7 @@ jobs:
           ...process.env,
           HOME: environmentHome,
           USERPROFILE: environmentHome,
+          TSX_TSCONFIG_PATH: resolve('tsconfig.json'),
         };
         delete environment.NODE_OPTIONS;
         const execute = promisify(execFile);
@@ -6189,13 +6273,18 @@ jobs:
           process.execPath,
           [
             '--import',
-            'tsx',
+            pathToFileURL(require.resolve('tsx')).href,
             join(__dirname, '../../../../scripts/internal-root-migration.ts'),
             `--brand=${brand.id}`,
             '--inventory',
             ...(brand.id === 'unstoppable-code' ? ['--declare-internal'] : []),
           ],
-          { env: environment, timeout: 45_000, maxBuffer: 8 * 1024 * 1024 },
+          {
+            cwd: missingAddon ? temporaryHome : undefined,
+            env: environment,
+            timeout: 45_000,
+            maxBuffer: 8 * 1024 * 1024,
+          },
         );
         if (missingAddon) {
           const error: unknown = await execution.then(

@@ -77,8 +77,8 @@ const thrown = (run: () => unknown): unknown => {
 const git = '/opt/git';
 const AUDITED = 'git version 2.47.1.windows.2';
 
-type Row = [
-  GitReadCommand,
+type Row<Command extends GitReadCommand = GitReadCommand> = [
+  Command,
   file: string,
   args: string[],
   maxBuffer: number,
@@ -99,9 +99,11 @@ const OID256 = 'b'.repeat(64);
 /**
  * The worker.git repository reads: desktop's argv, its 8 MiB runGit buffer,
  * desktop-shared's 30 s default-branch timeout and the health check's 5 s
- * execFile bound. POSIX only (D10).
+ * execFile bound. Windows uses the same manifest under native job custody.
  */
-const REPOSITORY_ROWS: Row[] = [
+const REPOSITORY_ROWS: Row<
+  Extract<GitReadCommand, { readonly executable: string }>
+>[] = [
   [{ kind: 'git-branch-refs', executable: git }, git, [...GIT_BRANCH_LIST_REF_ARGS], 8 * MiB, undefined, 'graceful', NON_INTERACTIVE], // prettier-ignore
   [{ kind: 'git-common-dir', executable: git }, git, ['rev-parse', '--git-common-dir'], 8 * MiB, undefined, 'graceful', NON_INTERACTIVE], // prettier-ignore
   [{ kind: 'git-worktree-list', executable: git }, git, ['worktree', 'list', '--porcelain'], 8 * MiB, undefined, 'graceful', NON_INTERACTIVE], // prettier-ignore
@@ -139,6 +141,22 @@ const TABLE: Record<'darwin' | 'linux' | 'win32', Row[]> = {
     ...REPOSITORY_ROWS,
   ],
   win32: [
+    ...REPOSITORY_ROWS.map(
+      ([command, , args, maxBuffer, timeoutMs, killMode, env]): Row => [
+        { ...command, executable: 'git.exe' },
+        'git.exe',
+        args,
+        maxBuffer,
+        timeoutMs,
+        killMode,
+        windowsChildEnvironment({
+          ...WIN_ENV,
+          GIT_TERMINAL_PROMPT: '0',
+          GCM_INTERACTIVE: 'never',
+          ...(env.GIT_NO_LAZY_FETCH ? { GIT_NO_LAZY_FETCH: '1' } : {}),
+        }),
+      ],
+    ),
     [{ kind: 'git-version', executable: 'C:\\Git\\cmd\\git.exe' }, 'C:\\Git\\cmd\\git.exe', ['--version'], MiB, 5000, 'graceful', WIN_CHILD_ENV], // prettier-ignore
     // Fsmonitor off for an audited Git for Windows: no daemon outlives the request (C1 audit).
     [{ kind: 'git-check-ignore', executable: 'git.exe', input, version: AUDITED }, 'git.exe', ['-c', 'core.fsmonitor=false', 'check-ignore', '-z', '--stdin'], 8 * MiB, undefined, 'graceful', WIN_CHILD_ENV], // prettier-ignore
@@ -389,11 +407,19 @@ describe('repository reads', () => {
     expect(Reflect.get(command, 'range')).not.toBe(range);
   });
 
-  it('refuses every read on win32 before an executable is chosen (D10)', () => {
+  it('admits the exact repository manifest on win32 with unchanged argv and limits', () => {
     for (const read of READS)
-      expect(thrown(() => gitRepositoryCommandFor('win32', read))).toMatchObject({ code: 'unsupported_command' }); // prettier-ignore
-    for (const [command] of REPOSITORY_ROWS)
-      expect(thrown(() => planGitReadCommand('win32', command, WIN_ENV))).toMatchObject({ code: 'unsupported_command' }); // prettier-ignore
+      expect(gitRepositoryCommandFor('win32', read)('git.exe').kind).toBe(
+        gitRepositoryCommandFor('linux', read)('git').kind,
+      );
+    for (const [command, , args, maxBuffer, timeoutMs] of REPOSITORY_ROWS)
+      expect(
+        planGitReadCommand(
+          'win32',
+          { ...command, executable: 'git.exe' },
+          WIN_ENV,
+        ),
+      ).toMatchObject({ args, maxBuffer, timeoutMs });
   });
 
   it.each<[string, unknown]>([

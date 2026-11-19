@@ -227,27 +227,24 @@ export class CoreCatalogMaterializations {
         dispatched.result,
       );
       if (dispatched.operation.status === 'completed' && parsed.success) {
-        await operations
-          .finish(parent.operationId, {
-            status: 'completed',
-            outcome: parsed.data,
-          })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'completed',
+          outcome: parsed.data,
+        });
         return parsed.data;
       }
-      await operations
-        .finish(parent.operationId, {
-          status: 'failed',
-          error: dispatched.operation.error
-            ? toErrorPayload(dispatched.operation.error)
-            : NOT_REPORTED,
-        })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: dispatched.operation.error
+          ? toErrorPayload(dispatched.operation.error)
+          : NOT_REPORTED,
+      });
       return { released: false };
     } catch (error) {
-      await operations
-        .finish(parent.operationId, { status: 'failed', error: NOT_DISPATCHED })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: NOT_DISPATCHED,
+      });
       throw error;
     }
   }
@@ -350,17 +347,15 @@ export class CoreCatalogMaterializations {
         parsed.data.state === 'ready'
       ) {
         const diagnostics = [...parsed.data.diagnostics, ...warnings];
-        await operations
-          .finish(parent.operationId, {
-            status: 'completed',
-            outcome: {
-              materializationId,
-              fingerprint,
-              state: 'ready',
-              diagnosticsCount: diagnostics.length,
-            },
-          })
-          .catch(() => undefined);
+        await operations.finishOrRecord(parent.operationId, {
+          status: 'completed',
+          outcome: {
+            materializationId,
+            fingerprint,
+            state: 'ready',
+            diagnosticsCount: diagnostics.length,
+          },
+        });
         return {
           ...base,
           state: 'ready',
@@ -372,9 +367,10 @@ export class CoreCatalogMaterializations {
       const error = dispatched.operation.error
         ? toErrorPayload(dispatched.operation.error)
         : NOT_REPORTED;
-      await operations
-        .finish(parent.operationId, { status: 'failed', error })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error,
+      });
       return {
         ...base,
         state: 'failed',
@@ -383,9 +379,10 @@ export class CoreCatalogMaterializations {
         error,
       };
     } catch (error) {
-      await operations
-        .finish(parent.operationId, { status: 'failed', error: NOT_DISPATCHED })
-        .catch(() => undefined);
+      await operations.finishOrRecord(parent.operationId, {
+        status: 'failed',
+        error: NOT_DISPATCHED,
+      });
       throw error;
     }
   }

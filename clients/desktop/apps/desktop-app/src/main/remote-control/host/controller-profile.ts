@@ -73,7 +73,7 @@ export function controllerMayUseChannel(
  * arguments. The channel must be allowed; hosted controllers also pass the
  * argument policy of generic dispatch channels, so `chat:command` can start
  * chats and send messages but never answer approvals, archive or reset work.
- * Mobile file reads use the same scoped-read policy as hosted controllers.
+ * Browser and mobile file reads use the same scoped-read policy as hosted controllers.
  */
 export function controllerMayInvoke(
   kind: DeviceKind,
@@ -84,7 +84,10 @@ export function controllerMayInvoke(
   if (!controllerMayUseChannel(kind, channel, disposition)) return false;
   // Require a workspace scope and refuse allowedRoot overrides into the
   // desktop's generated-image reader, using the existing hosted policy.
-  if (kind === 'mobile' && channel === 'file:read-content')
+  if (
+    (kind === 'browser' || kind === 'mobile') &&
+    channel === 'file:read-content'
+  )
     return hostedInvocationAllowed(channel, args);
   return kind !== 'hosted' || hostedInvocationAllowed(channel, args);
 }

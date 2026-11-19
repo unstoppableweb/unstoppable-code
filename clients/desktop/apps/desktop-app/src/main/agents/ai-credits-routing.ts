@@ -65,7 +65,10 @@ import {
   loadCanopyCloudAccount,
   subscribeCanopyCloudAccountChanges,
 } from '../lib/canopy-cloud-account-store';
-import { readPreferencesFile } from '../lib/preferences-store';
+import {
+  readPreferencesFile,
+  readPreferencesFileDetailed,
+} from '../lib/preferences-store';
 import { loadNativeAiCreditsAvailability } from '../ipc/settings';
 import { readWorkspaceIndexEntry } from '../lib/sidebar-items';
 import {
@@ -88,7 +91,13 @@ import {
   checkModelGatewayRoute,
   getModelGatewayRequirementForOwner,
   readLocalModelGatewayProjection,
+  readLocalModelGatewayProjectionStatus,
 } from '../lib/model-gateway-state';
+import {
+  readModelPolicyDecision,
+  isOrgModelPolicyActiveForStoredAccount,
+  isStoredModelPolicyReadDegraded,
+} from '../lib/model-policy-state';
 import { effectivePersonalModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 import { getMockLlmOrigin } from '../lib/e2e-mock-control-plane';
 import { sendToAllWindows } from '../lib/window-send';
@@ -107,7 +116,53 @@ import {
   CODEX_BROKER_ALLOWED_PATHS,
   LOOPBACK_BROKER_AUTH_TOKEN,
 } from './gateway-broker-routes';
-import { resolveAccountProxySessionRoute } from '../account-proxy/routing';
+import {
+  resolveAccountProxySessionRoute,
+  previewAccountProxySessionRoute,
+} from '../account-proxy/routing';
+
+export type PipelineNativeRoutingInspection =
+  | { readonly kind: 'native' }
+  | {
+      readonly kind: 'app-dependent';
+      readonly reason:
+        | 'policy'
+        | 'gateway'
+        | 'account-proxy'
+        | 'ai-credits'
+        | 'unknown';
+    };
+
+/**
+ * Uses the effective resolver's decision path without registering a broker or
+ * acquiring a credential. Null overrides alone are not positive evidence: an
+ * unavailable paid route and an indeterminate auth probe also return null.
+ */
+export async function inspectPipelineNativeRouting(
+  model: string | undefined,
+  provider: 'claude' | 'codex',
+  options: ResolveAiCreditsRoutingOverrideOptions,
+): Promise<PipelineNativeRoutingInspection> {
+  let decision: PipelineNativeRoutingInspection = {
+    kind: 'app-dependent',
+    reason: 'unknown',
+  };
+  try {
+    await resolveRoutingOverride(
+      model,
+      provider,
+      undefined,
+      undefined,
+      options,
+      (value): void => {
+        decision = value;
+      },
+    );
+  } catch {
+    return { kind: 'app-dependent', reason: 'unknown' };
+  }
+  return decision;
+}
 
 /** Stable Codex provider id used for the AI Credits gateway provider block. */
 export const AI_CREDITS_CODEX_PROVIDER_ID = 'canopy_ai_credits';
@@ -749,7 +804,8 @@ function refreshRoutingModeInBackground(): void {
       const preferences = await readPreferencesFile();
       setAiCreditsRoutingModeCache(preferences.aiCreditsRoutingMode ?? 'off');
     } catch {
-      // Keep the prior cache; the reader falls back to `'off'` when cold.
+      // Keep the prior cache. The sync reader falls back to `'off'` when cold;
+      // the routing decision reads the file and treats a failure as unknown.
     } finally {
       routingModeRefreshInFlight = false;
     }
@@ -774,28 +830,41 @@ function getAiCreditsRoutingMode(): AiCreditsRoutingMode {
 }
 
 /**
- * Decide whether a session should route through AI Credits, honoring both the
- * per-session override and the global preference. This is the single decision
- * point consulted by every chat surface's spawn path.
- *
- * - Per-session `active` (from a chat surface that threaded per-tab state, e.g.
- *   a manual "just this time" activation) always wins and carries its optional
- *   `modelId` override.
- * - Global `aiCreditsRoutingMode === 'on'` routes every session from the start.
- * - Global `aiCreditsRoutingMode === 'on-quota'` routes once the given
- *   provider's native quota has been reached (fed from the common provider
- *   event streams via `ai-credits-quota-state`).
- *
- * Because this is the single decision point every surface's spawn path consults,
- * on/on-quota apply uniformly to worktree chat, standalone (cowork), App
- * Advisor, the pipeline editor, plan review, and any future surface without
- * per-surface wiring.
- *
- * Returns the effective model-id override (per-session `modelId` when set, else
- * undefined so the caller falls back to the session model), or `null` when
- * routing should not be attempted. Harness/credit-eligibility gating still
- * happens in the caller after this returns non-null.
+ * Whether a confirmed native sign-out routes through AI Credits under the
+ * current routing mode: every mode except `off` (CAN-7062). Synchronous and
+ * cache-backed, for cheap read sites such as the session routing signature;
+ * the authoritative async decision runs at spawn. Returns `null` while the
+ * mode has never been loaded, so callers degrade instead of guessing `'off'`.
  */
+export function signedOutRoutesToAiCredits(): boolean | null {
+  if (!cachedRoutingMode) {
+    refreshRoutingModeInBackground();
+    return null;
+  }
+  return getAiCreditsRoutingMode() !== 'off';
+}
+
+/**
+ * Like {@link getAiCreditsRoutingMode}, but reads the preferences file when the
+ * cache is cold instead of assuming `'off'`. The signed-out rule (CAN-7062)
+ * refuses a turn in `off` mode, so a cold cache must not refuse a turn for a
+ * user who chose `on-quota` or `on`. Returns `null` when the file cannot be
+ * read and no earlier value is cached: the mode is unknown, not `'off'`.
+ */
+async function readAiCreditsRoutingModeForDecision(): Promise<AiCreditsRoutingMode | null> {
+  if (cachedRoutingMode && cachedRoutingMode.expiresAt > Date.now()) {
+    return cachedRoutingMode.value;
+  }
+  try {
+    const preferences = await readPreferencesFile();
+    const mode = preferences.aiCreditsRoutingMode ?? 'off';
+    setAiCreditsRoutingModeCache(mode);
+    return mode;
+  } catch {
+    return cachedRoutingMode?.value ?? null;
+  }
+}
+
 /**
  * Emit the authoritative "is this session routing through AI Credits" status to
  * the renderer via the session event stream. Both providers call this once per
@@ -875,6 +944,28 @@ export function isAiCreditsChosenOverAccountProxy(
   });
 }
 
+/**
+ * Decide whether a session should route through AI Credits, honoring both the
+ * per-session override and the global preference. This is the single decision
+ * point consulted by every chat surface's spawn path and by workflow model
+ * steps.
+ *
+ * - Per-session `active` (from a chat surface that threaded per-tab state, e.g.
+ *   a manual "just this time" activation) always wins and carries its optional
+ *   `modelId` override.
+ * - Global `aiCreditsRoutingMode === 'on'` routes every session from the start.
+ * - Global `aiCreditsRoutingMode === 'on-quota'` routes once the given
+ *   provider's native quota has been reached, as recorded in
+ *   `ai-credits-quota-state`. Chats feed that latch from their session event
+ *   streams; workflow steps feed it from their native usage-limit status
+ *   reasons through `pipelines/pipeline-quota-latch.ts` (CAN-7256). A new
+ *   surface that can hit a native limit must feed it too.
+ *
+ * Returns the effective model-id override (per-session `modelId` when set, else
+ * undefined so the caller falls back to the session model), or `null` when
+ * routing should not be attempted. Harness/credit-eligibility gating still
+ * happens in the caller after this returns non-null.
+ */
 export function resolveAiCreditsRoutingActivation(
   storedAiCreditsRouting: AiCreditsRoutingState | undefined,
   provider: AgentProviderType,
@@ -903,10 +994,12 @@ export function resolveAiCreditsRoutingActivation(
  *   activation (carries its optional `modelId`).
  * - `mode` — the global `aiCreditsRoutingMode` (`on`, or `on-quota` after the
  *   provider's native quota is reached) triggered routing.
- * - `no-native-auth` — the user has no native login for the selected provider,
- *   so routing is enabled regardless of the global mode. `off` only suppresses
- *   *pre-emptive* routing for a user who still has a native session to bill
- *   (ECW-9091).
+ * - `no-native-auth` — the user has no native login for the selected provider
+ *   and the routing mode is not `off` (`on-quota` promises to route a
+ *   confirmed sign-out; `on` reaches this only on a cold mode cache). In `off`
+ *   mode a confirmed sign-out is a
+ *   {@link AiCreditsRoutingDecision} of kind `no-billing-source` instead
+ *   (CAN-7062), never this reason.
  */
 export interface AiCreditsRoutingAttempt {
   modelId?: string;
@@ -914,9 +1007,41 @@ export interface AiCreditsRoutingAttempt {
 }
 
 /**
+ * Outcome of {@link resolveAiCreditsRoutingDecision}.
+ *
+ * - `native` — attempt the provider's native login (or a non-gateway provider).
+ * - `route` — route through AI Credits for the attached reason.
+ * - `no-billing-source` — the provider is confirmed signed out, routing mode is
+ *   `off`, and the user made no explicit credits choice for this chat. Missing
+ *   native auth is not consent to spend credits (CAN-7062): interactive
+ *   sessions refuse the turn with the typed `no_billing_source` error, and
+ *   background callers go native and fail with the usual sign-in error. A
+ *   gateway-only model or an enforced organization gateway still routes,
+ *   because no native path exists for it.
+ *
+ * The tagged shape keeps a non-null value from being mistaken for a route.
+ * Read sites that only need "routed or not" use {@link routingAttemptOf}.
+ */
+export type AiCreditsRoutingDecision =
+  | { kind: 'native' }
+  | { kind: 'route'; attempt: AiCreditsRoutingAttempt }
+  | { kind: 'no-billing-source' };
+
+/**
+ * The credits route carried by a decision, or `null` when the decision does
+ * not route (`native` and `no-billing-source`). Callers that must refuse a
+ * `no-billing-source` turn branch on `decision.kind` as well.
+ */
+export function routingAttemptOf(
+  decision: AiCreditsRoutingDecision,
+): AiCreditsRoutingAttempt | null {
+  return decision.kind === 'route' ? decision.attempt : null;
+}
+
+/**
  * Async wrapper over {@link resolveAiCreditsRoutingActivation} that adds the
- * per-chat subscription override and the `no-native-auth` trigger. Precedence
- * is **subscription-override → session-override → mode → no-native-auth**:
+ * per-chat subscription override and the signed-out rule. Precedence is
+ * **subscription-override → session-override → mode → signed-out**:
  *
  * 1. `subscriptionBillingOverride` (the user explicitly picked "My
  *    subscription") forces a native attempt for Claude/Codex, even if a cached
@@ -927,29 +1052,33 @@ export interface AiCreditsRoutingAttempt {
  *    subscription choice.
  * 3. The global `aiCreditsRoutingMode` (`on`, or `on-quota` once native quota
  *    is reached) routes.
- * 4. Absent a native login for a gateway-routable provider, routing is enabled
- *    (`no-native-auth`) in **every** mode, including `off` (ECW-9091). A
- *    credits-only account has no subscription for `off` to protect, and
- *    stranding it produced a raw `Please run /login` on the first message. A
- *    real native login still short-circuits to the native path first, so `off`
- *    keeps meaning "don't pre-emptively spend my credits" for subscribers.
+ * 4. A confirmed sign-out from a gateway-routable provider routes
+ *    (`no-native-auth`) in any mode except `off` (`on-quota` promises it).
+ *    In `off` mode it returns `no-billing-source`: missing native auth is not
+ *    consent and must not auto-enable AI Credits (CAN-7062). Credits-only
+ *    accounts (ECW-9091) choose credits per chat, or turn on automatic routing.
+ *    Mode `on` reaches this rule only on a cold mode cache, and routes. A real
+ *    native login, an inconclusive probe, or an unreadable mode returns
+ *    `native`.
  *
  * Native auth is injected as a callback so this module does not need to import
  * `provider-auth-state.ts`; an explicit subscription attempt skips the probe.
  *
- * Returns `null` when routing should not be attempted. Harness/credit
- * eligibility gating still happens in the caller after this returns non-null.
+ * Harness/credit eligibility gating still happens in the caller after this
+ * returns a `route`.
  */
-export async function resolveAiCreditsRoutingAttempt(
+export async function resolveAiCreditsRoutingDecision(
   storedAiCreditsRouting: AiCreditsRoutingState | undefined,
   provider: AgentProviderType,
   isNativelyAuthenticated: () => Promise<boolean>,
   subscriptionBillingOverride?: boolean,
-): Promise<AiCreditsRoutingAttempt | null> {
+): Promise<AiCreditsRoutingDecision> {
   const isGatewayProvider = provider === 'claude' || provider === 'codex';
   // The actual model and organization gateway requirements are checked by the
   // callers after this choice: a gateway-only model still has no native route.
-  if (subscriptionBillingOverride && isGatewayProvider) return null;
+  if (subscriptionBillingOverride && isGatewayProvider) {
+    return { kind: 'native' };
+  }
 
   // Stale session routing (reset, account change or allowance restoration) falls
   // through to the rules below (CAN-4200).
@@ -960,10 +1089,13 @@ export async function resolveAiCreditsRoutingAttempt(
   // 2. Per-session "just this time" activation wins over automatic modes.
   if (aiCreditsRouting?.active) {
     return {
-      ...(aiCreditsRouting.modelId !== undefined
-        ? { modelId: aiCreditsRouting.modelId }
-        : {}),
-      reason: 'session-override',
+      kind: 'route',
+      attempt: {
+        ...(aiCreditsRouting.modelId !== undefined
+          ? { modelId: aiCreditsRouting.modelId }
+          : {}),
+        reason: 'session-override',
+      },
     };
   }
 
@@ -975,37 +1107,45 @@ export async function resolveAiCreditsRoutingAttempt(
   );
   if (activation) {
     return {
-      ...(activation.modelId !== undefined
-        ? { modelId: activation.modelId }
-        : {}),
-      reason: 'mode',
+      kind: 'route',
+      attempt: {
+        ...(activation.modelId !== undefined
+          ? { modelId: activation.modelId }
+          : {}),
+        reason: 'mode',
+      },
     };
   }
 
   // Ollama and any future local provider are never gateway-routable, so a
   // missing native login for them must not force credit routing.
   if (!isGatewayProvider) {
-    return null;
+    return { kind: 'native' };
   }
 
-  // 4. There is no native login to bill, so route through AI Credits regardless
-  //    of the global mode (ECW-9091). `off` still suppresses *pre-emptive*
-  //    routing for a user who has a native session to fall back on — that is
-  //    what the check below preserves. It previously short-circuited above this
-  //    point, stranding every credits-only account on a raw login error.
-  //
-  //    `isProviderNativelyAuthenticated` fails CLOSED toward the subscription:
-  //    every inconclusive answer is flagged `probeFailed` and returns `true`.
-  //    That covers a thrown probe (timeout, parse failure, missing
-  //    binary/ENOENT) AND a *successful* read that is merely indeterminate —
-  //    notably Codex `{ account: null, requiresOpenaiAuth: false }`, i.e. a
-  //    custom `model_provider` that does not use OpenAI auth. A `false` reaching
-  //    this line is therefore a CONFIRMED signed-out state, never a probe blip
-  //    and never an unknown, so no extra confidence plumbing is required.
+  // 4. Confirmed sign-out. `isProviderNativelyAuthenticated` fails CLOSED
+  //    toward the subscription: every inconclusive answer is flagged
+  //    `probeFailed` and returns `true`. That covers a thrown probe (timeout,
+  //    parse failure, missing binary/ENOENT) AND a *successful* read that is
+  //    merely indeterminate — notably Codex `{ account: null,
+  //    requiresOpenaiAuth: false }`, i.e. a custom `model_provider` that does
+  //    not use OpenAI auth. A `false` reaching the line below is therefore a
+  //    CONFIRMED signed-out state, never a probe blip and never an unknown.
   if (await isNativelyAuthenticated()) {
-    return null;
+    return { kind: 'native' };
   }
-  return { reason: 'no-native-auth' };
+  // `off` makes the user choose a billing source (CAN-7062); every other mode
+  // routes a confirmed sign-out. The cold-cache read goes to the preferences
+  // file so an `on-quota` or `on` user is never refused on a cold start, and an
+  // unreadable mode is inconclusive: go native rather than refuse or spend.
+  const mode = await readAiCreditsRoutingModeForDecision();
+  if (mode === null) {
+    return { kind: 'native' };
+  }
+  if (mode !== 'off') {
+    return { kind: 'route', attempt: { reason: 'no-native-auth' } };
+  }
+  return { kind: 'no-billing-source' };
 }
 
 /**
@@ -1054,14 +1194,19 @@ export interface ResolveAiCreditsRoutingOverrideOptions {
   /**
    * Whether an absent native login may route this call through AI Credits.
    *
-   * Defaults to `true`, matching the interactive session path: a credits-only
-   * user's turn should work rather than fail with a raw `Please run /login`.
+   * This only matters outside `off` mode: in `off` mode a confirmed sign-out
+   * is a `no-billing-source` decision, which never routes here regardless of
+   * this option (CAN-7062), so the call goes native and fails with the usual
+   * sign-in error.
+   *
+   * Defaults to `true`, matching the interactive session path: an `on-quota`
+   * user's helper turn should work rather than fail with a raw
+   * `Please run /login`.
    *
    * Unattended callers should pass `false`. This resolver is also the entry
-   * point for scheduled background work, and ECW-9091 removed the `off`-mode
-   * short-circuit that used to make those calls no-ops for a user with no
-   * native login. Without the opt-out, an automatic task can silently debit
-   * credits with no user action — for a guest whose only balance was a small free grant,
+   * point for scheduled background work. Without the opt-out, an automatic
+   * task in `on-quota` mode can silently debit credits with no user action —
+   * for a guest whose only balance was a small free grant,
    * the worktree-summary scheduler could consume the whole allowance before the
    * first message is sent, so the new no-billing-source backstop then fires on
    * the chat the user actually cares about. A background task that fails is
@@ -1222,6 +1367,23 @@ export async function resolveAiCreditsRoutingOverride(
   routeSessionId?: string,
   options: ResolveAiCreditsRoutingOverrideOptions = {},
 ): Promise<AiCreditsRoutingOverride | null> {
+  return resolveRoutingOverride(
+    model,
+    provider,
+    routingState,
+    routeSessionId,
+    options,
+  );
+}
+
+async function resolveRoutingOverride(
+  model: string | undefined,
+  provider: ModelHarness,
+  routingState: AiCreditsRoutingState | undefined,
+  routeSessionId: string | undefined,
+  options: ResolveAiCreditsRoutingOverrideOptions,
+  inspect?: (decision: PipelineNativeRoutingInspection) => void,
+): Promise<AiCreditsRoutingOverride | null> {
   if (provider !== 'claude' && provider !== 'codex') {
     return null;
   }
@@ -1232,6 +1394,42 @@ export async function resolveAiCreditsRoutingOverride(
     'resolveAiCreditsRoutingOverride',
   );
   const gatewayEnforced = gatewayRequirement.kind !== 'unrestricted';
+  if (inspect) {
+    // A cold mode cache defaults to off, and on-quota may be inactive now.
+    // Neither proves that future attempts are independent of AI Credits.
+    const preferences = await readPreferencesFileDetailed();
+    if (preferences.authority === 'unreadable') {
+      inspect({ kind: 'app-dependent', reason: 'unknown' });
+      return null;
+    }
+    if ((preferences.preferences.aiCreditsRoutingMode ?? 'off') !== 'off') {
+      inspect({ kind: 'app-dependent', reason: 'ai-credits' });
+      return null;
+    }
+    const policy = await readModelPolicyDecision(
+      model ?? '__pipeline_native_admission__',
+      attribution.workOwner,
+      'pipeline-native-admission',
+    );
+    if (
+      attribution.workOwner?.kind !== 'personal' ||
+      policy.degraded ||
+      policy.blocked ||
+      (await isOrgModelPolicyActiveForStoredAccount(attribution.workOwner)) ||
+      isStoredModelPolicyReadDegraded()
+    ) {
+      inspect({ kind: 'app-dependent', reason: 'policy' });
+      return null;
+    }
+    if (
+      gatewayEnforced ||
+      isCanopyCloudAccountReadDegraded() ||
+      !(await readLocalModelGatewayProjectionStatus()).ok
+    ) {
+      inspect({ kind: 'app-dependent', reason: 'gateway' });
+      return null;
+    }
+  }
   if (isUnavailableModelSelection(model, provider)) {
     throw new Error(
       'This model is no longer available. Pick another model to continue.',
@@ -1250,7 +1448,7 @@ export async function resolveAiCreditsRoutingOverride(
     );
   }
   if (!aiCreditsChosen) {
-    const proxyRoute = await resolveAccountProxySessionRoute({
+    const proxyOptions = {
       harness: provider,
       requiredConnectionId: options.requiredAccountProxyConnectionId,
       signal: options.signal,
@@ -1260,8 +1458,19 @@ export async function resolveAiCreditsRoutingOverride(
       ...(options.accountProxyParentSessionId
         ? { parentSessionId: options.accountProxyParentSessionId }
         : {}),
-      resolveWorkOwner: () => Promise.resolve(attribution.workOwner),
-    });
+      resolveWorkOwner: (): Promise<WorkOwner | undefined> =>
+        Promise.resolve(attribution.workOwner),
+    };
+    if (
+      inspect &&
+      (await previewAccountProxySessionRoute(proxyOptions, true))
+    ) {
+      inspect({ kind: 'app-dependent', reason: 'account-proxy' });
+      return null;
+    }
+    const proxyRoute = inspect
+      ? null
+      : await resolveAccountProxySessionRoute(proxyOptions);
     if (proxyRoute) {
       return {
         provider,
@@ -1286,11 +1495,16 @@ export async function resolveAiCreditsRoutingOverride(
       provider,
       'ai-credits-routing',
     ));
-  const resolvedAttempt = await resolveAiCreditsRoutingAttempt(
-    routingState,
-    provider,
-    checkNativeAuth,
-    options.subscriptionBillingOverride,
+  // A `no-billing-source` decision does not route: background work has no
+  // banner to ask for consent, so it goes native and fails with the usual
+  // sign-in error instead of spending credits (CAN-7062).
+  const resolvedAttempt = routingAttemptOf(
+    await resolveAiCreditsRoutingDecision(
+      routingState,
+      provider,
+      checkNativeAuth,
+      options.subscriptionBillingOverride,
+    ),
   );
   // Two independent reasons to drop a `no-native-auth` attempt here. Only that
   // reason is ever dropped — an explicit `on` / `on-quota` mode or a session
@@ -1343,6 +1557,23 @@ export async function resolveAiCreditsRoutingOverride(
   if (!routeCheck.ok) throw new Error(routeCheck.message);
   const gatewayOnly = entry?.gatewayOnly === true;
   const enforcedOrgRoute = gatewayEnforced && entry?.origin === 'org-gateway';
+  if (inspect) {
+    inspect(
+      attempt ||
+        gatewayOnly ||
+        enforcedOrgRoute ||
+        entry?.origin === 'org-gateway'
+        ? {
+            kind: 'app-dependent',
+            reason:
+              gatewayOnly || enforcedOrgRoute || entry?.origin === 'org-gateway'
+                ? 'gateway'
+                : 'ai-credits',
+          }
+        : { kind: 'native' },
+    );
+    return null;
+  }
   if (!attempt && !gatewayOnly && !enforcedOrgRoute) {
     return null;
   }

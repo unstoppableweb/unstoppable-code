@@ -5,6 +5,7 @@ import {
   readMcpJsonRpcMessage,
 } from '@canopy/mcp-oauth-core';
 import { resolveE2eMcpOAuthFixtureUrl } from './oauth-e2e-fixture';
+import { noteMcpEgressHost } from '../local-only/mcp-egress-hosts';
 
 export interface AuthorizationChallenge {
   resourceMetadataUrl?: string;
@@ -172,6 +173,7 @@ async function probeMcpHttpOAuthRequirementInternal(
   try {
     const requestUrl =
       resolveE2eMcpOAuthFixtureUrl(new URL(mcpUrl)) ?? new URL(mcpUrl);
+    noteMcpEgressHost(requestUrl);
     const response = await fetch(requestUrl, {
       method: 'POST',
       headers: {

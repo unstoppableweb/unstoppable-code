@@ -142,6 +142,8 @@ export const CoreApprovalRequestDetailsSchema: z.ZodType<ApprovalRequestDetails>
       server: text,
       tool: text,
       paramsDisplay: text.optional(),
+      connector: text.optional(),
+      account: text.optional(),
       ...reason,
     }),
     z.object({ kind: z.literal('network'), host: text, ...reason }),
@@ -166,6 +168,14 @@ export const CoreApprovalRequestDetailsSchema: z.ZodType<ApprovalRequestDetails>
       ...origins,
       purpose: text.optional(),
       multiple: z.boolean(),
+    }),
+    z.object({
+      kind: z.literal('agent-secret-use'),
+      tool: z.enum(['RunWithSecrets', 'WriteSecretsFile']),
+      command: text.optional(),
+      cwd: text.optional(),
+      path: text.optional(),
+      secretNames: z.array(text),
     }),
   ]);
 

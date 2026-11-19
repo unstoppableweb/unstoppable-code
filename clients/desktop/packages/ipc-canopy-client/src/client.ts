@@ -87,7 +87,10 @@ import {
   REMOTE_IPC_CHANNELS as C,
   type RemoteIpcChannel,
 } from '@canopy/protocol/remote-control/channels';
-import { WorktreeArchiveResultSchema } from '@canopy/protocol/portal/worktree-discard-schemas';
+import {
+  WorktreeArchiveResultSchema,
+  worktreeRemovalOutcome,
+} from '@canopy/protocol/portal/worktree-discard-schemas';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 import {
   isScriptActionsAddReceipt,
@@ -105,6 +108,7 @@ import {
 } from '@canopy/protocol/workspace-context';
 import {
   createChannelClient,
+  RemoteIpcMalformedReplyError,
   UnsupportedOperationError,
   type ChannelClient,
   type Decoder,
@@ -498,6 +502,15 @@ class PortableIpcCanopyClient implements CanopyClient {
 
   private log(message: string, error: unknown): void {
     this.ports.logError?.(message, { error });
+  }
+
+  /** Hands a contract mismatch to the host; a failing hook is contained. */
+  private contractMismatch(error: RemoteIpcMalformedReplyError): void {
+    try {
+      this.ports.onContractMismatch?.(error);
+    } catch {
+      // Observing a failure must not change the settled result.
+    }
   }
 
   private loadProjects(): Promise<WireProjectsFile> {
@@ -1665,9 +1678,12 @@ class PortableIpcCanopyClient implements CanopyClient {
         if (args.recovery) {
           if (this.capabilities.worktreeRecovery !== true)
             return { status: 'transport-failed' };
+          // Only the round trip settles as transport-failed. A reply that
+          // breaks its contract is reported apart (CAN-7116); a malformed
+          // answer to a sent archive stays unconfirmed, as it may have run.
+          let channel: RemoteIpcChannel;
+          let answer: unknown;
           try {
-            const { worktreeRemovalOutcome } =
-              await import('@canopy/protocol/portal/worktree-discard-schemas');
             const item = await this.loadWorkspace(args.workspaceId);
             if (item.type === 'cowork' || !args.recovery.expectedCreatedAt)
               return { status: 'transport-failed' };
@@ -1695,29 +1711,32 @@ class PortableIpcCanopyClient implements CanopyClient {
                   }
                 : {}),
             };
-            const answer =
+            channel =
               item.type === 'multi-repo'
-                ? await channels.invoke(
-                    C.workspaceArchiveWorktree,
-                    anyReply<unknown>(),
-                    { ...request, workspaceId: args.workspaceId },
-                  )
-                : await channels.invoke(
-                    C.worktreeArchive,
-                    anyReply<unknown>(),
-                    {
-                      ...request,
-                      projectId: args.workspaceId,
-                      repoPath: item.repoPath,
-                    },
-                  );
-            const outcome = worktreeRemovalOutcome(answer);
-            if (outcome.status === 'completed')
-              await this.invalidateSessionSnapshot().catch(() => undefined);
-            return outcome;
-          } catch {
+                ? C.workspaceArchiveWorktree
+                : C.worktreeArchive;
+            answer =
+              item.type === 'multi-repo'
+                ? await channels.invoke(channel, anyReply<unknown>(), {
+                    ...request,
+                    workspaceId: args.workspaceId,
+                  })
+                : await channels.invoke(channel, anyReply<unknown>(), {
+                    ...request,
+                    projectId: args.workspaceId,
+                    repoPath: item.repoPath,
+                  });
+          } catch (error) {
+            if (error instanceof RemoteIpcMalformedReplyError)
+              this.contractMismatch(error);
             return { status: 'transport-failed' };
           }
+          const outcome = worktreeRemovalOutcome(answer);
+          if (outcome.status === 'unconfirmed')
+            this.contractMismatch(new RemoteIpcMalformedReplyError(channel));
+          if (outcome.status === 'completed')
+            await this.invalidateSessionSnapshot().catch(() => undefined);
+          return outcome;
         }
         const item = await this.loadWorkspace(args.workspaceId);
         if (item.type === 'cowork') {

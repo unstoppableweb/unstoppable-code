@@ -29,7 +29,13 @@ export function panelKindsUnavailableFor(
     unavailable.push('plan', 'plan-diagram');
   }
   if (capabilities.chatVisuals !== true) unavailable.push('chat-visuals');
-  if (capabilities.delegationTranscriptReads !== true) {
+  // Their hosts read this computer's delegation service, so a cloud scope
+  // that reads its delegates' pages from the web core doesn't get them
+  // (CAN-7027; CAN-7133 moves them onto the web core).
+  if (
+    capabilities.delegationTranscriptReads !== true ||
+    capabilities.localExecution !== true
+  ) {
     unavailable.push('subagents', 'subagent-chat');
   }
   if (capabilities.ledger !== true) unavailable.push('ledger');

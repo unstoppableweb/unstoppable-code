@@ -21,6 +21,10 @@ import { RecommendedPluginsSettingsPanel } from '../worktree/RecommendedPluginsS
 import { mergeChatPluginSelections } from '@/lib/chatPluginSelections';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
 import { subtractPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
+import {
+  withSelectionOwnersRestored,
+  type OrganizationLayerView,
+} from '@canopy/desktop-shared/lib/organization-capabilities';
 import { Button } from '@canopy/ui-shared/components';
 
 interface ChatPluginsModalProps {
@@ -69,6 +73,11 @@ interface ChatPluginsModalProps {
   deferredToolsAllowed?: boolean;
   /** Document of a popped-out composer; defaults to the main window. */
   ownerDocument?: Document;
+  /**
+   * The workspace's organization layer (CAN-6237): its skills are listed,
+   * and a save keeps the owner of every organization item it holds.
+   */
+  organization?: OrganizationLayerView;
 }
 
 function mapEffectiveProviderToScope(
@@ -141,6 +150,7 @@ export function ChatPluginsModal({
   showDeferredToolsToggle = false,
   deferredToolsAllowed = true,
   ownerDocument,
+  organization,
 }: ChatPluginsModalProps): JSX.Element {
   const pickerInitial = lockedSelections
     ? mergeChatPluginSelections(
@@ -239,9 +249,17 @@ export function ChatPluginsModal({
               ) {
                 setSaving(true);
                 setSaveError(null);
-                const saved = withAcceptedAuthRoutes(
-                  sanitizedSelections ?? selections,
-                  initial,
+                // The picker keys rows by identity, so owners come back from
+                // what it showed and the organization layer (CAN-6235).
+                const saved = withSelectionOwnersRestored(
+                  withAcceptedAuthRoutes(
+                    sanitizedSelections ?? selections,
+                    initial,
+                  ),
+                  {
+                    previous: pickerInitial,
+                    ...(organization ? { organization } : {}),
+                  },
                 );
                 void Promise.resolve(
                   appliedProjectDefaults
@@ -315,6 +333,7 @@ export function ChatPluginsModal({
           lockedSkillRefs={lockedSkillRefs}
           lockedSelections={lockedSelections}
           inheritedDefaults={pickerInheritedDefaults}
+          {...(organization ? { organizationItems: organization.items } : {})}
         />
       </div>
 

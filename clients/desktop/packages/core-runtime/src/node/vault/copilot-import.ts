@@ -341,6 +341,8 @@ export function createCopilotImportControls(options: {
         binding: b,
         authority: {
           ...before.authority,
+          // As P4 import create: a new import lineage ends any retired setup witness.
+          ...(before.authority.version === 2 ? { setupLineage: null } : {}),
           mutation: {
             operationId: b.operationId,
             epoch: b.accountEpoch,

@@ -58,7 +58,7 @@ export type GitReadCommand =
   /** Windows: `where.exe`, resolved through the supplied PATH only. */
   | { readonly kind: 'where-git' }
   | { readonly kind: 'where-winget' }
-  /** POSIX repository reads for the `worker.git.*` queries (D10). */
+  /** Repository reads for the `worker.git.*` queries. */
   | { readonly kind: 'git-branch-refs'; readonly executable: string }
   | { readonly kind: 'git-common-dir'; readonly executable: string }
   | { readonly kind: 'git-worktree-list'; readonly executable: string }
@@ -74,7 +74,7 @@ export type GitReadCommand =
       readonly branch: GitConventionalDefaultBranch;
     }
   | { readonly kind: 'git-inside-work-tree'; readonly executable: string }
-  /** POSIX change-set reads for `worker.git.diff.get` (CAN-4103). */
+  /** Change-set reads for `worker.git.diff.get` (CAN-4103). */
   | {
       readonly kind: 'git-diff-name-status';
       readonly executable: string;
@@ -95,9 +95,11 @@ export type GitReadCommand =
 
 export type GitReadCommandKind = GitReadCommand['kind'];
 
-/** The POSIX repository reads' command kinds. */
-type RepositoryCommandKind =
-  | 'git-head-commit'
+/** Every repository read, including POSIX-only kinds outside the manifest. */
+type RepositoryCommandKind = RepositoryManifestKind | 'git-head-commit';
+
+/** The exact E1 repository command manifest Windows runs (CAN-5943). */
+type RepositoryManifestKind =
   | 'git-branch-refs'
   | 'git-common-dir'
   | 'git-worktree-list'
@@ -269,11 +271,55 @@ export function bareInitEnvironment(
   });
 }
 
-/**
- * The repository reads run only where their closure is audited: no Win32
- * fsmonitor or helper closure has been shown for them (D10, CAN-4732).
- */
+/** Repository reads added after the manifest await their own Windows qualification. */
 const POSIX: readonly PlatformOperatingSystem[] = ['darwin', 'linux'];
+
+const REPOSITORY_HOSTS: readonly PlatformOperatingSystem[] = [
+  'darwin',
+  'linux',
+  'win32',
+];
+
+/** Potential process creation, not just whether argv names a remote. */
+export const REPOSITORY_CLOSURE: Readonly<
+  Record<
+    RepositoryManifestKind,
+    {
+      readonly workingTree: boolean;
+      readonly helpers:
+        | 'none'
+        | 'transport'
+        | 'filters-or-lazy-fetch'
+        | 'lazy-fetch';
+    }
+  >
+> = Object.freeze({
+  'git-branch-refs': { workingTree: false, helpers: 'none' },
+  'git-common-dir': { workingTree: false, helpers: 'none' },
+  'git-worktree-list': { workingTree: false, helpers: 'none' },
+  'git-origin-url': { workingTree: false, helpers: 'none' },
+  'git-remote-names': { workingTree: false, helpers: 'none' },
+  'git-dir': { workingTree: false, helpers: 'none' },
+  'git-remote-head': { workingTree: false, helpers: 'transport' },
+  'git-origin-head': { workingTree: false, helpers: 'none' },
+  'git-origin-branch': { workingTree: false, helpers: 'none' },
+  'git-inside-work-tree': { workingTree: false, helpers: 'none' },
+  'git-diff-name-status': {
+    workingTree: true,
+    helpers: 'filters-or-lazy-fetch',
+  },
+  'git-diff-numstat': { workingTree: true, helpers: 'filters-or-lazy-fetch' },
+  'git-untracked-files': { workingTree: true, helpers: 'none' },
+  'git-unmerged-files': { workingTree: true, helpers: 'none' },
+  'git-object-exists': { workingTree: false, helpers: 'lazy-fetch' },
+});
+
+/** One of the manifest's kinds, which Windows runs in a native job. */
+export function isRepositoryCommand(
+  kind: GitReadCommandKind,
+): kind is RepositoryManifestKind {
+  return Object.prototype.hasOwnProperty.call(REPOSITORY_CLOSURE, kind);
+}
 
 const AVAILABLE: Readonly<
   Record<GitReadCommandKind, readonly PlatformOperatingSystem[]>
@@ -289,21 +335,21 @@ const AVAILABLE: Readonly<
   'getent-passwd': ['linux'],
   'where-git': ['win32'],
   'where-winget': ['win32'],
-  'git-branch-refs': POSIX,
-  'git-common-dir': POSIX,
-  'git-worktree-list': POSIX,
-  'git-origin-url': POSIX,
-  'git-remote-names': POSIX,
-  'git-dir': POSIX,
-  'git-remote-head': POSIX,
-  'git-origin-head': POSIX,
-  'git-origin-branch': POSIX,
-  'git-inside-work-tree': POSIX,
-  'git-diff-name-status': POSIX,
-  'git-diff-numstat': POSIX,
-  'git-untracked-files': POSIX,
-  'git-unmerged-files': POSIX,
-  'git-object-exists': POSIX,
+  'git-branch-refs': REPOSITORY_HOSTS,
+  'git-common-dir': REPOSITORY_HOSTS,
+  'git-worktree-list': REPOSITORY_HOSTS,
+  'git-origin-url': REPOSITORY_HOSTS,
+  'git-remote-names': REPOSITORY_HOSTS,
+  'git-dir': REPOSITORY_HOSTS,
+  'git-remote-head': REPOSITORY_HOSTS,
+  'git-origin-head': REPOSITORY_HOSTS,
+  'git-origin-branch': REPOSITORY_HOSTS,
+  'git-inside-work-tree': REPOSITORY_HOSTS,
+  'git-diff-name-status': REPOSITORY_HOSTS,
+  'git-diff-numstat': REPOSITORY_HOSTS,
+  'git-untracked-files': REPOSITORY_HOSTS,
+  'git-unmerged-files': REPOSITORY_HOSTS,
+  'git-object-exists': REPOSITORY_HOSTS,
 };
 
 /**
@@ -420,7 +466,11 @@ export function fsmonitorDischargeAudited(version: unknown): boolean {
 
 /** The commands that read the working tree, and so may start fsmonitor. */
 export function readsWorkingTree(kind: GitReadCommandKind): boolean {
-  return kind === 'git-check-ignore' || kind === 'git-ls-files-ignored';
+  return (
+    kind === 'git-check-ignore' ||
+    kind === 'git-ls-files-ignored' ||
+    (isRepositoryCommand(kind) && REPOSITORY_CLOSURE[kind].workingTree)
+  );
 }
 
 /** The plan's arguments start with the audited fsmonitor discharge. */

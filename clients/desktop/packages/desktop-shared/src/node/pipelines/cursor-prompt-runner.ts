@@ -37,7 +37,10 @@ import {
   verifyCursorRuntimeVersion,
   type CursorProviderProcess,
 } from '../cursor/runtime-process';
-import type { ProviderProcessSpawner } from '../provider-process/spawn';
+import type {
+  ProviderProcessError,
+  ProviderProcessSpawner,
+} from '../provider-process/spawn';
 import { runCursorTurn } from '../cursor/turn-driver';
 import {
   getPipelineExecutionCursorProfileDir,
@@ -497,6 +500,10 @@ export async function runCursorPromptWithDriver(
     }
   };
   let sessionId = request.resumeSessionId;
+  let launchError: ProviderProcessError | undefined;
+  // Read through a function: the turn's spawner assigns it from an event, which
+  // flow analysis at the read site cannot see.
+  const launchFailure = (): ProviderProcessError | undefined => launchError;
   let lastUsage: CursorReportedUsage | undefined;
   let hadActivity = false;
   const signal = request.signal ?? new AbortController().signal;
@@ -583,12 +590,24 @@ export async function runCursorPromptWithDriver(
         // pipeline-declared CURSOR_API_KEY never reaches the spawned child.
         ...sanitizeCursorSpawnEnvironment(request.environment),
         NO_OPEN_BROWSER: '1',
-        ELECTRON_RUN_AS_NODE: '1',
       }),
     );
     const providerProcess: CursorProviderProcess = {
       spawner: driver.spawner,
       owner: { kind: 'pipeline', id: request.executionId },
+    };
+    // The turn's own spawner remembers a launch failure, whose message can
+    // quote absolute paths: the step state keeps a fixed message and the
+    // errno code, and the raw text goes to the step transcript only.
+    const turnProcess: CursorProviderProcess = {
+      ...providerProcess,
+      spawner: (spawnRequest) => {
+        const child = driver.spawner(spawnRequest);
+        child.once('error', (error) => {
+          launchError ??= error;
+        });
+        return child;
+      },
     };
     // The probe's own child is stopped by the same boundary, not just
     // abandoned.
@@ -771,6 +790,7 @@ export async function runCursorPromptWithDriver(
         deadlineFired = true;
         attemptAbort.abort();
       }, remainingMs);
+      launchError = undefined;
       let outcome;
       try {
         // Exclusive per conversation profile: the turn writes this profile's
@@ -784,7 +804,7 @@ export async function runCursorPromptWithDriver(
                 cwd: request.cwd,
                 text: prompt,
                 launch: driver.launch,
-                providerProcess,
+                providerProcess: turnProcess,
                 env,
                 hookRuntime,
                 profileDir,
@@ -894,6 +914,22 @@ export async function runCursorPromptWithDriver(
             message: CURSOR_STEP_CANCELLED_MESSAGE,
           },
         };
+      }
+      const launchFailed = outcome.isError ? launchFailure() : undefined;
+      if (launchFailed) {
+        const { code } = launchFailed;
+        pushTranscriptLine(
+          JSON.stringify({
+            type: 'cursor_launch_error',
+            code: code ?? null,
+            message: launchFailed.message,
+          }),
+        );
+        throw new Error(
+          code
+            ? `Couldn't start Cursor (${code}). Try again.`
+            : "Couldn't start Cursor. Try again.",
+        );
       }
       if (outcome.isError)
         throw new Error(

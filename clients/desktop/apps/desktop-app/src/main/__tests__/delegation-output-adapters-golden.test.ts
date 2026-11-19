@@ -50,6 +50,7 @@ import type {
 } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import type { CopilotTurnOptions } from '@canopy/desktop-shared/node/copilot/turn-driver';
 import type { ManagedOpenCodeRuntime } from '../opencode/connection';
+import type * as OpenCodeMcpServers from '../opencode/mcp-servers';
 import type {
   OpenCodeTurnHost,
   OpenCodeTurnRequest,
@@ -94,6 +95,7 @@ interface ClaudeDefinition {
 }
 
 interface MockHttpProxyService {
+  setSessionToolCallGate: jest.Mock;
   registerCanopyWorktreeSessionRoute(
     route: CanopyWorktreeSessionRoute,
   ): Promise<string>;
@@ -194,6 +196,7 @@ jest.mock('../cursor/mcp-servers', () => ({
 }));
 jest.mock('../mcp/http-proxy-service', () => ({
   getMcpHttpProxyService: (): MockHttpProxyService => ({
+    setSessionToolCallGate: jest.fn(),
     registerCanopyWorktreeSessionRoute: (
       route: CanopyWorktreeSessionRoute,
     ): Promise<string> => mockRegisterRoute(route),
@@ -261,6 +264,7 @@ jest.mock('../opencode/capability-snapshot', () => ({
   snapshotOpenCodeMcpTools: (): Promise<[]> => Promise.resolve([]),
 }));
 jest.mock('../opencode/mcp-servers', () => ({
+  ...jest.requireActual<typeof OpenCodeMcpServers>('../opencode/mcp-servers'),
   buildOpenCodeMcpServers: (): [] => [],
   resolveOpenCodeMcpCall: (): undefined => undefined,
 }));

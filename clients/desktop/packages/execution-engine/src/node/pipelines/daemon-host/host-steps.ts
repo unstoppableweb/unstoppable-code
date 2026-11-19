@@ -10,6 +10,7 @@ import {
   PIPELINE_NEEDS_DESKTOP_MESSAGE,
 } from '@canopy/execution-engine/pipelines/host-actions';
 import type { PipelineChatSendRecord } from '@canopy/execution-engine/types/pipeline';
+import { PUBLISH_REVIEW_PAYLOAD_MAX_BYTES } from '@canopy/execution-engine/pipelines/host-publish-review';
 import { PIPELINE_SESSION_MAX_PLAINTEXT_BYTES } from '@canopy/protocol/pipeline-relay';
 import type {
   PipelineHostActionCaller,
@@ -34,7 +35,16 @@ import {
  * message's plaintext, less room for the request envelope and the session
  * frame around it.
  */
-const HOST_REQUEST_MAX_BYTES = PIPELINE_SESSION_MAX_PLAINTEXT_BYTES - 64 * 1024;
+export const HOST_REQUEST_MAX_BYTES =
+  PIPELINE_SESSION_MAX_PLAINTEXT_BYTES - 64 * 1024;
+
+// A fitted `github-publish-review` request must cross as one relay message,
+// with room left for its envelope and the request's other fields.
+if (PUBLISH_REVIEW_PAYLOAD_MAX_BYTES + 64 * 1024 > HOST_REQUEST_MAX_BYTES) {
+  throw new Error(
+    'The github-publish-review payload limit must stay below the daemon host request limit.',
+  );
+}
 
 /** How long a host step waits past its deadline for its owner's finalized answer. */
 export const DAEMON_HOST_STEP_FINALIZE_GRACE_MS = 5_000;

@@ -212,6 +212,9 @@ export function MarketplaceSkillDetailBody({
         {installError !== '' && (
           <ErrorBanner
             errorSource="marketplace-skill-detail-body-install"
+            errorRecordingDisabled={
+              landing.recordedInstallError === installError
+            }
             error={installError}
             className="mb-0"
           />

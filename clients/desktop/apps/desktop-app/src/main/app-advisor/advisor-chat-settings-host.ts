@@ -11,6 +11,7 @@ import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { getClaudeTerminalSessionService } from '../integration/claude-terminal-session-service';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { advisorChatCommandId } from './advisor-chat-command-id';
 import { mainAdvisorChatReadHost } from './advisor-chat-read-host';
 import type {
   AdvisorChatSettingAction,
@@ -49,16 +50,18 @@ export function mainAdvisorChatSettingsHost(options: {
     hasPresentationLease: options.hasPresentationLease,
     presentInMainWindow: options.presentInMainWindow,
     updateChat: async (request) => {
+      // The adapter requires the command id and both keys to match.
+      const commandId = advisorChatCommandId(request.idempotencyKey);
       const result = CoreChatLifecycleResultSchema.parse(
         await getActiveDesktopRuntime().instruction(
           'core.chat.update',
           CoreChatUpdateParamsSchema.parse({
             projectId: request.projectId,
             worktreeId: request.worktreeId,
-            commandId: request.idempotencyKey,
+            commandId,
             origin: 'desktop',
             action: request.action,
-            _meta: { idempotencyKey: request.idempotencyKey },
+            _meta: { idempotencyKey: commandId },
           }),
           {
             caller: {
@@ -68,7 +71,7 @@ export function mainAdvisorChatSettingsHost(options: {
               interfaceKind: 'mcp',
               grants: ['core.chat.write'],
             },
-            metadata: { idempotencyKey: request.idempotencyKey },
+            metadata: { idempotencyKey: commandId },
           },
         ),
       );

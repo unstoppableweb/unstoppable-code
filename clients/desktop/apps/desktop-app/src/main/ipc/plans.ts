@@ -1,6 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
 import { toShareOperationResult } from '../sharing/share-operation-result';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  PLAN_ERROR_CODES,
+  PLAN_GRANTS,
+  PLAN_SOURCES,
+  type CanopyCallerDescriptor,
+  type PlanRecord,
+  type PlanSource,
+} from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   type CreateTrackedPlanRequest,
@@ -19,21 +29,15 @@ import {
   type UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
 import {
-  createTrackedPlanData,
-  deleteTrackedPlanData,
-  listTrackedPlanData,
-  listTrackedPlanDataWithSkipped,
-  readTrackedPlanData,
   saveTrackedPlanCommentsData,
   shareTrackedPlanData,
-  syncTrackedPlansToPortal,
   unshareTrackedPlanData,
-  updateTrackedPlanData,
 } from '../services/plans-service';
-import {
-  addTrackedPlansWriteListener,
-  getTrackedPlan,
-} from '../lib/plan-persistence';
+import { getTrackedPlan, isTrackedPlanData } from '../lib/plan-persistence';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { withTrackedPlansIpcProjection } from '../canopy-runtime/plan-update-publisher';
+import { assertWritableScope } from '../lib/read-only-scope';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import {
   queueSharedPlanSync,
   refreshSharedPlanFromServer,
@@ -46,6 +50,203 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { sendToWindow } from '../lib/window-send';
 import { showOpenDialogForEvent } from '../lib/dialog-window';
 import { registerIpcHandler } from './register';
+
+type PlanDispatcher = Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
+
+const PLAN_SOURCE_NAMES: ReadonlySet<string> = new Set(PLAN_SOURCES);
+
+function planCaller(
+  caller: CanopyCallerDescriptor,
+  access: 'read' | 'write',
+): CanopyCallerDescriptor {
+  return { ...caller, grants: [PLAN_GRANTS[access]] };
+}
+
+function validateScope(request: TrackedPlanListRequest): {
+  projectId: string;
+  worktreeId: string;
+} {
+  validateId(request.projectId, 'projectId');
+  validateId(request.worktreeId, 'worktreeId');
+  return { projectId: request.projectId, worktreeId: request.worktreeId };
+}
+
+function isPlanSource(source: string): source is PlanSource {
+  return PLAN_SOURCE_NAMES.has(source);
+}
+
+/** Refused before dispatch with the engine's own message, as it always was. */
+function knownSource(source: string): PlanSource {
+  if (isPlanSource(source)) return source;
+  throw new CanopyOperationError({
+    kind: 'invalid_argument',
+    message: `Unknown plan source: ${source}`,
+    retry: { kind: 'never' },
+  });
+}
+
+/**
+ * The error these channels answered before they dispatched: a scope with no
+ * plans, or a failure the dispatcher reports as internal, keeps its original
+ * error; a typed refusal is answered as it is.
+ */
+function legacyError(error: unknown): unknown {
+  if (
+    error instanceof CanopyOperationError &&
+    error.runtimeCause instanceof Error &&
+    (error.payload.kind === 'internal' ||
+      error.payload.code === PLAN_ERROR_CODES.UNSUPPORTED_SCOPE)
+  )
+    return error.runtimeCause;
+  return error;
+}
+
+async function projected<Result>(call: () => Promise<Result>): Promise<Result> {
+  try {
+    return await withTrackedPlansIpcProjection(call);
+  } catch (error) {
+    throw legacyError(error);
+  }
+}
+
+function trackedPlan(record: PlanRecord | null): TrackedPlanData | null {
+  return record && isTrackedPlanData(record) ? record : null;
+}
+
+function writtenTrackedPlan(record: PlanRecord | null): TrackedPlanData {
+  const plan = trackedPlan(record);
+  if (!plan) throw new Error('The stored plan could not be read.');
+  return plan;
+}
+
+export async function listTrackedPlansForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: TrackedPlanListRequest,
+): Promise<TrackedPlanListWithSkippedResult> {
+  const scope = validateScope(request);
+  // Cowork workspaces have no tracked-plan storage (worktree-only feature);
+  // shared callers (e.g. the pipeline-runs subscription's plan-event reload)
+  // get an empty list instead of a refusal on the cowork surface.
+  if (isCoworkWorkspace(scope.projectId)) return { plans: [] };
+  return projected(async () => {
+    const listed = await dispatcher.query(
+      'core.plan.list',
+      { scope },
+      { caller: planCaller(caller, 'read') },
+    );
+    const plans: TrackedPlanData[] = [];
+    for (const record of listed.plans) {
+      const plan = trackedPlan(record);
+      if (plan) plans.push(plan);
+    }
+    const skipped = (listed.skipped ?? 0) + listed.plans.length - plans.length;
+    return skipped > 0 ? { plans, skipped } : { plans };
+  });
+}
+
+export async function getTrackedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: TrackedPlanGetRequest,
+): Promise<TrackedPlanData | null> {
+  const scope = validateScope(request);
+  validateId(request.planId, 'planId');
+  return projected(async () => {
+    const { plan } = await dispatcher.query(
+      'core.plan.get',
+      { scope, planId: request.planId },
+      { caller: planCaller(caller, 'read') },
+    );
+    return trackedPlan(plan);
+  });
+}
+
+export async function createTrackedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: CreateTrackedPlanRequest,
+): Promise<TrackedPlanData> {
+  const scope = validateScope(request);
+  assertWritableScope(scope.projectId);
+  const source = knownSource(request.source);
+  return projected(async () => {
+    const idempotencyKey = randomUUID();
+    const { plan } = await dispatcher.instruction(
+      'core.plan.create',
+      {
+        scope,
+        source,
+        content: request.content,
+        title: request.title,
+        planId: request.id,
+        proposalRequestId: request.proposalRequestId,
+        reviewStatus: request.reviewStatus,
+        linkedExecutionId: request.linkedExecutionId,
+        chatId: request.chatId,
+        sourceFilePath: request.sourceFilePath,
+        sourceRepoId: request.sourceRepoId,
+        initiationSource: request.initiationSource,
+      },
+      { caller: planCaller(caller, 'write'), metadata: { idempotencyKey } },
+    );
+    return writtenTrackedPlan(plan);
+  });
+}
+
+export async function updateTrackedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: UpdateTrackedPlanRequest,
+): Promise<TrackedPlanData | null> {
+  const scope = validateScope(request);
+  assertWritableScope(scope.projectId);
+  validateId(request.planId, 'planId');
+  const source =
+    request.source === undefined ? undefined : knownSource(request.source);
+  return projected(async () => {
+    const idempotencyKey = randomUUID();
+    const { plan } = await dispatcher.instruction(
+      'core.plan.update',
+      {
+        scope,
+        planId: request.planId,
+        proposalRequestId: request.proposalRequestId,
+        content: request.content,
+        title: request.title,
+        source,
+        reviewStatus: request.reviewStatus,
+        linkedExecutionId: request.linkedExecutionId,
+        approvedAt: request.approvedAt,
+        dismissedAt: request.dismissedAt,
+        hidden: request.hidden,
+        chatId: request.chatId,
+        lastEditSource: request.lastEditSource,
+        initiationSource: request.initiationSource,
+      },
+      { caller: planCaller(caller, 'write'), metadata: { idempotencyKey } },
+    );
+    return plan ? writtenTrackedPlan(plan) : null;
+  });
+}
+
+export async function deleteTrackedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: DeleteTrackedPlanRequest,
+): Promise<void> {
+  const scope = validateScope(request);
+  assertWritableScope(scope.projectId);
+  validateId(request.planId, 'planId');
+  await projected(async () => {
+    const idempotencyKey = randomUUID();
+    await dispatcher.instruction(
+      'core.plan.delete',
+      { scope, planId: request.planId },
+      { caller: planCaller(caller, 'write'), metadata: { idempotencyKey } },
+    );
+  });
+}
 
 export async function importTrackedPlanFromFile(
   request: ImportTrackedPlanRequest,
@@ -115,62 +316,45 @@ export async function unshareTrackedPlanForWindow(
 
 export function registerPlansHandlers(
   getWindow: () => BrowserWindow | null,
+  dispatcher: PlanDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
 ): void {
-  // Publish tracked plans to Remote Control from the persistence write hook
-  // rather than per-caller (CAN-3019). The mutators in `plans-service` emit
-  // their own events, but the agent's plan-mode path bypasses them entirely:
-  // `ExitPlanMode` writes through `lib/plan-persistence` directly, so an
-  // agent-authored plan — the ordinary way a plan gets made — never reached the
-  // portal and the web Plans card stayed empty. Every writer funnels through
-  // this single hook, so subscribing here covers imports, pipeline
-  // `plan_ready`, and deletes at the same time.
-  addTrackedPlansWriteListener((projectId, worktreeId, file) => {
-    syncTrackedPlansToPortal(projectId, worktreeId, file.plans);
-  });
   registerIpcHandler<[TrackedPlanListRequest], TrackedPlanData[]>(
     IPC_CHANNELS.trackedPlansList,
-    async (_event, request) => {
-      // Cowork workspaces have no tracked-plan storage (worktree-only
-      // feature); return an empty list instead of the resolve-worktree throw
-      // so shared callers (e.g. the pipeline-runs subscription's plan-event
-      // reload) stay safe on the cowork surface.
-      if (isCoworkWorkspace(request.projectId)) {
-        return [];
-      }
-      return listTrackedPlanData(request);
-    },
+    async (event, request) =>
+      (await listTrackedPlansForIpc(dispatcher, resolveCaller(event), request))
+        .plans,
   );
 
   registerIpcHandler<
     [TrackedPlanListRequest],
     TrackedPlanListWithSkippedResult
-  >(IPC_CHANNELS.trackedPlansListWithSkipped, async (_event, request) =>
-    // As tracked-plans:list: a cowork workspace has no tracked plans.
-    isCoworkWorkspace(request.projectId)
-      ? { plans: [] }
-      : listTrackedPlanDataWithSkipped(request),
+  >(IPC_CHANNELS.trackedPlansListWithSkipped, (event, request) =>
+    listTrackedPlansForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[TrackedPlanGetRequest], TrackedPlanData | null>(
     IPC_CHANNELS.trackedPlansGet,
-    async (_event, request) => readTrackedPlanData(request),
+    (event, request) =>
+      getTrackedPlanForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[CreateTrackedPlanRequest], TrackedPlanData>(
     IPC_CHANNELS.trackedPlansCreate,
-    async (_event, request) => createTrackedPlanData(request),
+    (event, request) =>
+      createTrackedPlanForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[UpdateTrackedPlanRequest], TrackedPlanData | null>(
     IPC_CHANNELS.trackedPlansUpdate,
-    async (_event, request) => updateTrackedPlanData(request),
+    (event, request) =>
+      updateTrackedPlanForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[DeleteTrackedPlanRequest], void>(
     IPC_CHANNELS.trackedPlansDelete,
-    async (_event, request) => {
-      await deleteTrackedPlanData(request);
-    },
+    (event, request) =>
+      deleteTrackedPlanForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[SaveTrackedPlanCommentsRequest], TrackedPlanData | null>(

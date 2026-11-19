@@ -1,8 +1,15 @@
 import {
   REQUEST_SECRETS_DESCRIPTION,
   REQUEST_SECRETS_JSON_SCHEMA,
+  RUN_WITH_SECRETS_DESCRIPTION,
+  RUN_WITH_SECRETS_JSON_SCHEMA,
+  WRITE_SECRETS_FILE_DESCRIPTION,
+  WRITE_SECRETS_FILE_JSON_SCHEMA,
 } from '@canopy/agent-actions';
-import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import {
+  isAgentSecretRequestsEnabled,
+  isRunWithSecretsSupported,
+} from '../agent-secrets/feature-gate';
 import {
   SHOW_CAPABILITIES_DESCRIPTION,
   showCapabilitiesJsonSchema,
@@ -18,6 +25,7 @@ import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS,
   getCanonicalCanopyToolKey,
+  isAgentSecretInjectedToolKey,
   isCodeGraphInjectedToolKey,
   isLedgerInjectedToolKey,
   type CanopyInjectedToolKey,
@@ -226,6 +234,14 @@ export const CLAUDE_TERMINAL_TOOL_DEFINITIONS: Readonly<
   request_secrets: {
     description: REQUEST_SECRETS_DESCRIPTION,
     inputSchema: REQUEST_SECRETS_JSON_SCHEMA,
+  },
+  run_with_secrets: {
+    description: RUN_WITH_SECRETS_DESCRIPTION,
+    inputSchema: RUN_WITH_SECRETS_JSON_SCHEMA,
+  },
+  write_secrets_file: {
+    description: WRITE_SECRETS_FILE_DESCRIPTION,
+    inputSchema: WRITE_SECRETS_FILE_JSON_SCHEMA,
   },
   get_script_output: {
     description: GET_SCRIPT_OUTPUT_DESCRIPTION,
@@ -839,10 +855,13 @@ export function getCanopyRouteTools(
         return false;
       const canonicalKey = getCanonicalCanopyToolKey(tool.name);
       // Only a root local chat that offers secret requests, while the flag
-      // is on.
+      // is on; RunWithSecrets not on Windows yet (isRunWithSecretsSupported).
       if (
-        canonicalKey === 'request_secrets' &&
-        (route.secretRequests !== true || !isAgentSecretRequestsEnabled())
+        canonicalKey !== null &&
+        isAgentSecretInjectedToolKey(canonicalKey) &&
+        (route.secretRequests !== true ||
+          !isAgentSecretRequestsEnabled() ||
+          (canonicalKey === 'run_with_secrets' && !isRunWithSecretsSupported()))
       )
         return false;
       if (

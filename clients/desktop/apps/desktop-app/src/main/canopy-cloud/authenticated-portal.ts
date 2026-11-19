@@ -1,7 +1,5 @@
 import { BRAND } from '@canopy/brand/current';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type { SettingsPaymentHandoffFailure } from '@canopy/protocol/settings';
-import { getFeatureFlagService } from '../feature-flags';
 import { getCanopyCloudCredentials } from '../lib/canopy-cloud-account-store';
 import { isRecord } from '../lib/type-guards';
 import { openExternalGuarded } from '../lib/open-external';
@@ -43,8 +41,7 @@ export interface OpenLegacyAuthenticatedPortalPageOptions extends OpenAuthentica
  * Why strict mode opened nothing. A subset of the payment handoff failures:
  * the membership check (`forbidden`) belongs to the caller.
  *
- * - `unavailable`: `canopy-portal-enabled` is off, or the captured credential
- *   names no account.
+ * - `unavailable`: the captured credential names no account.
  * - `identity_changed`: the captured account is no longer the signed-in one.
  * - `failed`: the link could not be minted or was not on the cloud's origin.
  * - `browser_failed`: the authenticated link was minted but did not open.
@@ -69,15 +66,15 @@ const AUTH_LINK_MINT_PATH = `/api/v1/${BRAND.web.apiNamespace}/auth-link`;
  * web session and redirects to `path`. The raw token never leaves the main
  * process; the renderer only ever passes a same-origin destination path.
  *
- * Gated behind `canopy-portal-enabled`. When the flag is off, there is no cloud
- * token, the app is offline, or the mint fails for any reason, we fall back to
- * opening the page UNAUTHENTICATED so the CTA still works. This never rejects on
+ * When there is no cloud token, the app is offline, or the mint fails for any
+ * reason, we fall back to opening the page UNAUTHENTICATED so the CTA still
+ * works. This never rejects on
  * a network/mint failure — only on a programming error (an invalid `path`).
  *
  * Resolves to whether a browser page was actually opened, authenticated or not.
  * That answer is load-bearing for callers that render a "finish this in your
- * browser" state: every realistic failure (flag off with an unconfigured base
- * URL, mint rejected, offline, a throwing `shell.openExternal`) degrades into
+ * browser" state: every realistic failure (an unconfigured base URL, mint
+ * rejected, offline, a throwing `shell.openExternal`) degrades into
  * `openUnauthenticated`, which SWALLOWS its own error. A caller inferring
  * success from "did not reject" would therefore always see success and could
  * strand the user waiting on a page that was never opened.
@@ -112,7 +109,6 @@ export async function mintAuthenticatedPortalUrl(
   credentialContext?: CanopyCloudCredentialContext,
 ): Promise<string | null> {
   const normalizedPath = normalizePortalPath(path);
-  if (!isPortalEnabled()) return null;
   try {
     const payload = await requestCanopyCloudJson<unknown>(AUTH_LINK_MINT_PATH, {
       method: 'POST',
@@ -182,7 +178,7 @@ export async function openStrictAuthenticatedPortalPage(
 ): Promise<StrictAuthenticatedPortalResult> {
   const normalizedPath = normalizePortalPath(path);
   const accountId = credentialContext.account?.id;
-  if (!accountId || !isPortalEnabled()) {
+  if (!accountId) {
     return { ok: false, reason: 'unavailable' };
   }
   if (!(await isCredentialStillCurrent(credentialContext, accountId))) {
@@ -219,26 +215,16 @@ export async function openStrictAuthenticatedPortalPage(
 }
 
 /**
- * Whether a strict payment handoff can open for `accountId`: the portal flag
- * is on and the stored credential belongs to that account. Never throws.
+ * Whether a strict payment handoff can open for `accountId`: the stored
+ * credential belongs to that account. Never throws.
  */
 export async function isPaymentHandoffAvailable(
   accountId: string,
 ): Promise<boolean> {
-  if (accountId.length === 0 || !isPortalEnabled()) return false;
+  if (accountId.length === 0) return false;
   try {
     const credentials = await getCanopyCloudCredentials();
     return credentials.account?.id === accountId;
-  } catch {
-    return false;
-  }
-}
-
-function isPortalEnabled(): boolean {
-  try {
-    return getFeatureFlagService().isEnabled(
-      CLIENT_FEATURE_FLAGS.canopyPortalEnabled.key,
-    );
   } catch {
     return false;
   }

@@ -354,7 +354,12 @@ export async function beginChatTurnRun(
   // unavailable) closes the staged run, so a waiting execute rejects.
   void run.settled.then((result) => {
     if (!settled) settleOnce(result.status);
-    if (!staged.closed) staged.close(new TurnWorkerUnavailableError());
+    if (!staged.closed)
+      staged.close(
+        result.status === 'failed'
+          ? new TurnWorkerUnavailableError({ cause: result.error })
+          : new TurnWorkerUnavailableError(),
+      );
     discardStagedAgentRun(turnRunId);
   });
 

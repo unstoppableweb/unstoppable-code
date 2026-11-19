@@ -187,7 +187,9 @@ function TryItLaunchView({
       .catch((error: unknown): void => {
         // A launch whose destination changed is dropped quietly.
         if (error instanceof TryItStageCancelledError) return;
-        useGitHubStore.getState().addToast(TRY_IT_START_ERROR, 'error');
+        useGitHubStore
+          .getState()
+          .addToast(TRY_IT_START_ERROR, 'error', undefined, { caught: error });
       })
       .finally((): void => {
         launchingRef.current = false;

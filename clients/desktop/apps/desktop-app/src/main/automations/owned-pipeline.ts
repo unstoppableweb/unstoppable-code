@@ -172,25 +172,30 @@ export async function agentHiddenOwnedPipelineIds(
   if (marked.size === 0 && flagged.length === 0) return new Set();
   const advisorOwned: string[] = [];
   if (marked.size > 0) {
-    const [{ getAutomationsService }, { projectOwnedChatAutomation }] =
-      await Promise.all([
-        import('./service'),
-        import('./owned-chat-projection'),
-      ]);
+    const [
+      { getAutomationsService },
+      { projectOwnedChatAutomation, withOwnedChatProjectionPass },
+    ] = await Promise.all([
+      import('./service'),
+      import('./owned-chat-projection'),
+    ]);
     // Every stored owner (CAN-6065): one the selected context leaves out
     // still hides its pipeline.
     const activities = await getAutomationsService().allActivities();
-    for (const activity of activities) {
-      const pipelineId = ownedPipelineId(activity);
-      if (
-        pipelineId !== undefined &&
-        marked.has(pipelineId) &&
-        (ownsOrchestratorPromptPipeline(activity) ||
-          projectOwnedChatAutomation(activity).action.type ===
-            'app_advisor_prompt')
-      )
-        advisorOwned.push(pipelineId);
-    }
+    // One synchronous pass: the owners share one index read (CAN-7087).
+    withOwnedChatProjectionPass(() => {
+      for (const activity of activities) {
+        const pipelineId = ownedPipelineId(activity);
+        if (
+          pipelineId !== undefined &&
+          marked.has(pipelineId) &&
+          (ownsOrchestratorPromptPipeline(activity) ||
+            projectOwnedChatAutomation(activity).action.type ===
+              'app_advisor_prompt')
+        )
+          advisorOwned.push(pipelineId);
+      }
+    });
   }
   const hidden = [...flagged, ...advisorOwned];
   if (hidden.length === 0) return new Set();

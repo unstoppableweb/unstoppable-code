@@ -10,7 +10,10 @@ import {
 } from '@canopy/desktop-shared/types';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 import { registerIpcHandler } from './register';
-import { UnsupportedModelHarnessOverridesVersionError } from '@canopy/desktop-shared/node/model-harnesses';
+import {
+  ModelHarnessOverridesUnreadableError,
+  UnsupportedModelHarnessOverridesVersionError,
+} from '@canopy/desktop-shared/node/model-harnesses';
 
 export type ModelHarnessAssignmentErrorCode =
   | 'INVALID_REQUEST'
@@ -143,7 +146,10 @@ async function withStableAssignmentError<T>(
               : 'INVALID_REQUEST';
       throw new ModelHarnessAssignmentIpcError(code, error.message);
     }
-    if (error instanceof UnsupportedModelHarnessOverridesVersionError) {
+    if (
+      error instanceof UnsupportedModelHarnessOverridesVersionError ||
+      error instanceof ModelHarnessOverridesUnreadableError
+    ) {
       throw new ModelHarnessAssignmentIpcError('UNAVAILABLE', error.message);
     }
     throw new ModelHarnessAssignmentIpcError(

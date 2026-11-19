@@ -1,3 +1,4 @@
+import { writeMcpToolsCache } from './tools-cache-disk';
 import { findAccountMcpConnection } from '../canopy-cloud/mcp-connections';
 import { getMcpHttpAuthDefault } from '@canopy/execution-engine/lib/mcp-http-auth';
 import {
@@ -5,12 +6,11 @@ import {
   withAccountMcpProxy,
 } from './account-routing';
 import { getMcpHttpProxyService } from './http-proxy-service';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import type { LookupAddress } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
-import { dirname } from 'node:path';
 import { DEFAULT_MCP_HTTP_AUTH_HANDLER } from '@canopy/desktop-shared/types';
 import type {
   McpHttpAuthHandler,
@@ -62,6 +62,7 @@ export {
   MCP_DISCOVERY_MAX_TOOLS_DURATION_MS,
   McpToolDiscoveryError,
 } from './tool-list';
+import { noteMcpEgressHost } from '../local-only/mcp-egress-hosts';
 
 export const MCP_TOOLS_MAX_AGE_MS = 24 * 60 * 60_000;
 export const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -142,18 +143,29 @@ export async function readMcpToolsCache(): Promise<McpServerToolsCacheFile> {
   }
 }
 
-async function writeMcpToolsCache(
-  cache: McpServerToolsCacheFile,
-): Promise<void> {
-  const filePath = getMcpServerToolsCacheFilePath();
-  const temporaryPath = `${filePath}.${String(process.pid)}.${randomUUID()}.tmp`;
-  await mkdir(dirname(filePath), { recursive: true });
+/**
+ * The cache as {@link readMcpToolsCache} reads it, except that a read that
+ * fails for any reason but a missing file throws, so a caller can tell an
+ * I/O failure from no cache. A malformed file still reads as empty.
+ */
+async function readMcpToolsCacheStrict(): Promise<McpServerToolsCacheFile> {
+  let text: string;
   try {
-    await writeFile(temporaryPath, JSON.stringify(cache, null, 2), 'utf8');
-    await rename(temporaryPath, filePath);
+    text = await readFile(getMcpServerToolsCacheFilePath(), 'utf8');
   } catch (error) {
-    await rm(temporaryPath, { force: true }).catch(() => undefined);
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    )
+      return { version: 1, entries: {} };
     throw error;
+  }
+  try {
+    return normalizeCache(JSON.parse(text));
+  } catch {
+    return { version: 1, entries: {} };
   }
 }
 
@@ -184,10 +196,13 @@ export async function getMcpToolsCacheEntry(
   serverId: string,
   configId: string,
   expectedSourceFingerprint?: string,
+  /** Throw on a cache read that fails, instead of reading it as empty. */
+  options?: { readonly strict?: boolean },
 ): Promise<McpServerToolsCacheEntry | null> {
-  const entry = (await readMcpToolsCache()).entries[
-    cacheKey(serverId, configId)
-  ];
+  const cache = options?.strict
+    ? await readMcpToolsCacheStrict()
+    : await readMcpToolsCache();
+  const entry = cache.entries[cacheKey(serverId, configId)];
   if (
     !entry ||
     (expectedSourceFingerprint !== undefined &&
@@ -513,6 +528,7 @@ export async function fetchWithSafeRedirects(
   let redirects = 0;
   const encodedBody = JSON.stringify(body);
   while (true) {
+    noteMcpEgressHost(requestUrl);
     const response = await fetchPinnedHttpResponse(
       requestUrl,
       target.addresses,

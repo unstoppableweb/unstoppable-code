@@ -1,6 +1,7 @@
 import { constants } from 'node:os';
 import * as path from 'node:path';
 import type {
+  SpawnFailureDetails,
   PlatformExecutionOutcome,
   PlatformExecutionOutput,
   PlatformExecutionProcess,
@@ -12,6 +13,7 @@ import {
   encodeExecutionHostFrame,
   ExecutionHostFrameReader,
 } from './channel';
+import { ExecutionProcessError } from '../supervision/execution-process';
 import { EXECUTION_HOST_ENTRY_PATTERN, executionHostShellArgs } from './shell';
 import {
   type ExecutionHostLaunchRequest,
@@ -125,6 +127,7 @@ class OwnedExecutionHost extends ReportedExecutionHost {
   private writing: Promise<void> = Promise.resolve();
   private inputClosed = false;
   private stopping = false;
+  startFailure: SpawnFailureDetails | undefined;
 
   constructor(
     started: Promise<PlatformExecutionProcess>,
@@ -133,8 +136,10 @@ class OwnedExecutionHost extends ReportedExecutionHost {
     super();
     started.then(
       (child) => this.attach(child),
-      () => {
+      (error: unknown) => {
         // Nothing started, so nothing is owned.
+        if (error instanceof ExecutionProcessError)
+          this.startFailure = error.details;
         this.reportExit(1);
       },
     );
@@ -182,6 +187,10 @@ class OwnedExecutionHost extends ReportedExecutionHost {
       (message) => this.reportMessage(message),
       (line) => this.diagnostics?.('stdout', line),
       // A host that breaks the channel's bound cannot be trusted to finish.
+      () => this.kill(),
+      undefined,
+      // A frame that does not decode loses a message a request may wait for;
+      // stopping the host settles that request through the host's exit.
       () => this.kill(),
     );
     const stdout = pump(child.stdout, (bytes) => reader.push(bytes)).finally(

@@ -4,6 +4,7 @@ import { link, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isRecord } from './commit-log/is-record';
+import type { PlatformOperatingSystem } from '../../platform/platform-services';
 import {
   relocationTransition,
   type RelocationTransition,
@@ -87,6 +88,21 @@ export function sameW5RootEvidenceScope(
     value.canonicalDataRoot === scope.canonicalDataRoot &&
     value.device === scope.device &&
     value.inode === scope.inode
+  );
+}
+
+/** Saved provenance only; live, same-startup checks must remain exact. */
+export function matchesSavedW5RootEvidenceScope(
+  value: unknown,
+  scope: W5RootEvidenceScope,
+  os: PlatformOperatingSystem,
+): boolean {
+  return (
+    isW5RootEvidenceScope(value) &&
+    value.canonicalDataRoot === scope.canonicalDataRoot &&
+    value.inode === scope.inode &&
+    // macOS and Linux can renumber a data volume's device across mounts.
+    (value.device === scope.device || os === 'darwin' || os === 'linux')
   );
 }
 
@@ -212,6 +228,7 @@ export async function publishW5RootEvidence(
 function validateHistory(
   value: unknown,
   scope: W5RootEvidenceScope,
+  os: PlatformOperatingSystem,
 ): asserts value is W5ServiceHistory {
   if (
     !isRecord(value) ||
@@ -224,7 +241,7 @@ function validateHistory(
     !Number.isFinite(Date.parse(value.firstServiceAt))
   )
     throw new W5ServiceHistoryError('invalid-evidence');
-  if (!sameW5RootEvidenceScope(value.scope, scope))
+  if (!matchesSavedW5RootEvidenceScope(value.scope, scope, os))
     throw new W5ServiceHistoryError('scope-mismatch');
 }
 
@@ -248,6 +265,7 @@ async function historyScope(
 
 function snapshotRelocation(
   relocation: W5ServiceHistoryRelocation | undefined,
+  os: PlatformOperatingSystem,
 ): W5ServiceHistoryRelocation | undefined {
   if (!relocation) return undefined;
   let sourceHistory: W5ServiceHistory | undefined;
@@ -255,7 +273,7 @@ function snapshotRelocation(
     const snapshot: unknown = JSON.parse(
       JSON.stringify(relocation.sourceHistory),
     );
-    validateHistory(snapshot, relocation.sourceHistory.scope);
+    validateHistory(snapshot, relocation.sourceHistory.scope, os);
     sourceHistory = snapshot;
   }
   return {
@@ -268,9 +286,10 @@ function snapshotRelocation(
 function validateRelocatedHistory(
   value: unknown,
   expectedScope: W5RootEvidenceScope,
+  os: PlatformOperatingSystem,
   relocation: W5ServiceHistoryRelocation | undefined,
 ): asserts value is W5ServiceHistory {
-  validateHistory(value, expectedScope);
+  validateHistory(value, expectedScope, os);
   if (
     relocation?.sourceHistory !== undefined &&
     !isDeepStrictEqual(value, relocation.sourceHistory)
@@ -280,9 +299,10 @@ function validateRelocatedHistory(
 
 export async function readW5ServiceHistory(
   dataRoot: string,
+  os: PlatformOperatingSystem,
   options?: W5ServiceHistoryRelocation,
 ): Promise<W5ServiceHistory | undefined> {
-  const relocation = snapshotRelocation(options);
+  const relocation = snapshotRelocation(options, os);
   const scope = Object.freeze(await w5RootEvidenceScope(dataRoot));
   const expectedScope = await historyScope(scope, relocation);
   const directory = join(scope.canonicalDataRoot, 'w5');
@@ -306,7 +326,7 @@ export async function readW5ServiceHistory(
       throw new W5ServiceHistoryError('invalid-evidence');
     return undefined;
   }
-  validateRelocatedHistory(value, expectedScope, relocation);
+  validateRelocatedHistory(value, expectedScope, os, relocation);
   await historyScope(scope, relocation);
   return value;
 }
@@ -315,10 +335,11 @@ export async function readW5ServiceHistory(
 export async function ensureW5ServiceHistory(
   canonicalDataRoot: string,
   syncDirectory: (path: string) => Promise<unknown>,
+  os: PlatformOperatingSystem,
   options?: W5ServiceHistoryRelocation,
 ): Promise<void> {
   try {
-    const relocation = snapshotRelocation(options);
+    const relocation = snapshotRelocation(options, os);
     const scope = Object.freeze(await w5RootEvidenceScope(canonicalDataRoot));
     if (scope.canonicalDataRoot !== resolve(canonicalDataRoot))
       throw new W5ServiceHistoryError('scope-mismatch');
@@ -328,7 +349,7 @@ export async function ensureW5ServiceHistory(
     if ((await realpath(directory)) !== directory)
       throw new W5ServiceHistoryError('scope-mismatch');
     if (relocation?.sourceHistory !== undefined)
-      await readW5ServiceHistory(canonicalDataRoot, relocation);
+      await readW5ServiceHistory(canonicalDataRoot, os, relocation);
     const history: W5ServiceHistory = relocation?.sourceHistory ?? {
       version: 1,
       scope,
@@ -339,7 +360,7 @@ export async function ensureW5ServiceHistory(
     const published = await publishW5RootEvidence(
       join(directory, 'daemon-service-history.json'),
       history,
-      (value) => validateRelocatedHistory(value, expectedScope, relocation),
+      (value) => validateRelocatedHistory(value, expectedScope, os, relocation),
       syncDirectory,
     );
     await syncDirectory(canonicalDataRoot);
@@ -347,7 +368,7 @@ export async function ensureW5ServiceHistory(
     await requireW5RootEvidenceScope(scope);
     if (
       !isDeepStrictEqual(
-        await readW5ServiceHistory(canonicalDataRoot, relocation),
+        await readW5ServiceHistory(canonicalDataRoot, os, relocation),
         published,
       )
     )

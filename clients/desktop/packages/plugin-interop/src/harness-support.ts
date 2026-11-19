@@ -3,6 +3,7 @@ import type {
   HarnessCompatibilityPart,
   ItemHarnessInstalls,
   ItemHarnessStandIn,
+  PluginInfo,
   PluginProviderSupport,
 } from '@canopy/protocol/plugins';
 import type { PluginHookMember } from './types';
@@ -336,4 +337,46 @@ export function pluginHarnessRows(
         );
     }
   }
+}
+
+/**
+ * A desktop catalog plugin's harness rows, read the way the desktop plugin
+ * page reads them. New Customize's tiles and Works with tables, on desktop
+ * and Portal, all start from these rows, so a tile's chips and its page's
+ * table can't disagree.
+ */
+export function pluginInfoHarnessRows(
+  plugin: Pick<
+    PluginInfo,
+    | 'providerSupport'
+    | 'codexCompatDisabled'
+    | 'facets'
+    | 'globalInstallStatus'
+    | 'harnessInstalls'
+  >,
+  harnesses: readonly PluginHarnessId[],
+  showHarnessInstalls: boolean,
+  /**
+   * Whether the plugin counts as installed when no provider status says so.
+   * A catalog listing not fetched yet passes false; the plugin page, which
+   * opens installed plugins, keeps the default.
+   */
+  installedWhenUnknown = true,
+): PluginHarnessRow[] {
+  return pluginHarnessRows({
+    harnesses,
+    // One Add for every harness (CAN-6816): New Customize only.
+    ...(showHarnessInstalls && plugin.harnessInstalls
+      ? { harnessInstalls: plugin.harnessInstalls }
+      : {}),
+    providerSupport: plugin.providerSupport,
+    codexCompatDisabled: plugin.codexCompatDisabled,
+    facets: plugin.facets,
+    installed: plugin.globalInstallStatus
+      ? {
+          claude: plugin.globalInstallStatus.claude?.installed ?? false,
+          codex: plugin.globalInstallStatus.codex?.installed ?? false,
+        }
+      : installedWhenUnknown,
+  });
 }

@@ -1,4 +1,5 @@
 import type { HarnessCompatibilityHarness } from '@canopy/protocol/plugins';
+import { withCopiesIdentity } from './customizeCopyIdentity';
 import {
   customizeDiscoveryNeedsAttention,
   type CustomizeDefaultHarness,
@@ -388,20 +389,23 @@ export function mergeCustomizeIntegrations(
     };
     // The row subsumes the marketplace package group, so it no longer offers
     // the grouped provider picker: install targets the representative.
-    const row: UnifiedPluginEntry = {
-      ...representative,
-      marketplaceGroup: undefined,
-      marketplaceListings: undefined,
-      ...(providers.length > 1 ? { marketplaceProviders: providers } : {}),
-      ...attention.fields,
-      ...(harnessInstalls !== undefined ? { harnessInstalls } : {}),
-      integrationCopies: {
-        ...copies,
-        ...(attention.copyId !== undefined
-          ? { attentionCopyId: attention.copyId }
-          : {}),
+    const row: UnifiedPluginEntry = withCopiesIdentity(
+      {
+        ...representative,
+        marketplaceGroup: undefined,
+        marketplaceListings: undefined,
+        ...(providers.length > 1 ? { marketplaceProviders: providers } : {}),
+        ...attention.fields,
+        ...(harnessInstalls !== undefined ? { harnessInstalls } : {}),
+        integrationCopies: {
+          ...copies,
+          ...(attention.copyId !== undefined
+            ? { attentionCopyId: attention.copyId }
+            : {}),
+        },
       },
-    };
+      members,
+    );
     merged.set(root, row);
     membersOf.set(row.id, ordered);
     for (const member of members) rowIdOf.set(member.id, row.id);

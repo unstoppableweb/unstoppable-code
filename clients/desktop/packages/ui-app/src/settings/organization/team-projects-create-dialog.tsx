@@ -1,34 +1,18 @@
 'use client';
 
-import { Dot } from '@canopy/ui-shared/components/Badge';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   Button,
-  DelayedLoadingPlaceholder,
   DialogModal,
-  FloatingPickerMenu,
   LoadingButton,
   Notice,
-  PickerMenuOption,
-  PickerMenuOptionCheck,
-  PickerMenuOptionContent,
-  PickerMenuOptionLabel,
-  PickerMenuSection,
-  PickerMenuSectionLabel,
   PrivateMemoryAdvancedOption,
-  RailIconButton,
-  Skeleton,
-  StatusPill,
   buttonClassName,
-  ChoiceList,
-  ChoiceListRow,
   DialogFormField,
-  SearchField,
   TextInput,
   CopyDetailsButton,
   Heading,
 } from '@canopy/ui-shared/components';
-import { FilterIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   ORG_PROJECT_LIMITS,
   organizationIntegrationsPath,
@@ -36,7 +20,6 @@ import {
   type OrgProjectDetail,
   type OrgProjectGrant,
 } from '@canopy/protocol/org-projects';
-import { GITHUB_REPOSITORY_QUERY_MAX_LENGTH } from '@canopy/protocol/settings/organization-repositories';
 import type { OrganizationDetail } from '@canopy/protocol/settings/organization';
 import { SettingsLink, useSettingsClient, useSettingsPrivacy } from '../host';
 import {
@@ -46,20 +29,16 @@ import {
 } from '../errors';
 import { GITHUB_PICKER_KNOWN_ERRORS } from '../github/github-organization-error-copy';
 import {
+  GitHubRepositoryMultiPicker,
+  type GitHubRepositoryMultiPickerItem,
+} from '../github/GitHubRepositoryMultiPicker';
+import {
   createOrganizationProjects,
   listOrganizationGitHubRepositories,
 } from './team-api';
 import { TeamProjectsGrantsEditor } from './team-projects-grants-editor';
 
-type RepositoryPage = Awaited<
-  ReturnType<typeof listOrganizationGitHubRepositories>
->;
-type Repository = RepositoryPage['repositories'][number];
-
-/** Class tokens joined without stray whitespace when one is empty. */
-function joinClasses(...classes: string[]): string {
-  return classes.filter(Boolean).join(' ');
-}
+type Repository = GitHubRepositoryMultiPickerItem;
 
 interface GitHubConnectionLinkProps {
   orgId: string;
@@ -239,11 +218,23 @@ export function TeamProjectsCreateDialog({
       <div className="flex flex-col gap-5">
         {error && <RequestNotice failure={error} orgId={detail.id} />}
         <div hidden={step !== 'repositories'}>
-          <RepositoryPicker
-            orgId={detail.id}
+          <GitHubRepositoryMultiPicker
+            listRepositories={(request) =>
+              listOrganizationGitHubRepositories(client, detail.id, request)
+            }
             selected={selected}
             onSelectionChange={setSelected}
             disabled={busy || growthDisabled}
+            maxSelected={ORG_PROJECT_LIMITS.repositoriesPerCreate}
+            errorScope={PROJECTS_ERROR_SCOPE}
+            knownErrors={GITHUB_PICKER_KNOWN_ERRORS}
+            renderError={(err, failure) => (
+              <RequestNotice
+                failure={requestFailure(err, failure)}
+                orgId={detail.id}
+              />
+            )}
+            testIdPrefix="team-projects-repo"
           />
         </div>
         {step === 'repositories' && (
@@ -379,477 +370,5 @@ export function TeamProjectsCreateDialog({
         )}
       </div>
     </DialogModal>
-  );
-}
-
-type VisibilityFilter = 'all' | 'public' | 'private';
-type StatusFilter = 'all' | 'active' | 'archived';
-interface RepositoryFilters {
-  visibility: VisibilityFilter;
-  status: StatusFilter;
-}
-const NO_FILTERS: RepositoryFilters = { visibility: 'all', status: 'all' };
-
-function matchesFilters(
-  repository: Repository,
-  filters: RepositoryFilters,
-): boolean {
-  if (filters.visibility === 'public' && repository.private) return false;
-  if (filters.visibility === 'private' && !repository.private) return false;
-  if (filters.status === 'active' && repository.archived) return false;
-  if (filters.status === 'archived' && !repository.archived) return false;
-  return true;
-}
-
-interface FilterOption<Value extends string> {
-  value: Value;
-  label: string;
-  testId: string;
-}
-const VISIBILITY_OPTIONS: ReadonlyArray<FilterOption<VisibilityFilter>> = [
-  { value: 'all', label: 'All', testId: 'any-visibility' },
-  { value: 'public', label: 'Public', testId: 'public' },
-  { value: 'private', label: 'Private', testId: 'private' },
-];
-const STATUS_OPTIONS: ReadonlyArray<FilterOption<StatusFilter>> = [
-  { value: 'all', label: 'All', testId: 'any-status' },
-  { value: 'active', label: 'Active', testId: 'active' },
-  { value: 'archived', label: 'Archived', testId: 'archived' },
-];
-
-interface RepositoryFilterMenuProps {
-  filters: RepositoryFilters;
-  onChange: (filters: RepositoryFilters) => void;
-  disabled: boolean;
-}
-
-/**
- * Private and Archived filters for the picker (CAN-3466), following the
- * shared filter-menu pattern: a filter icon with an active dot and a checked
- * menu that stays open while choosing.
- */
-function RepositoryFilterMenu({
-  filters,
-  onChange,
-  disabled,
-}: RepositoryFilterMenuProps): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const active =
-    filters.visibility !== NO_FILTERS.visibility ||
-    filters.status !== NO_FILTERS.status;
-  const title = 'Filter repositories';
-  const section = <Value extends string>(
-    heading: string,
-    options: ReadonlyArray<FilterOption<Value>>,
-    current: Value,
-    choose: (value: Value) => void,
-  ): JSX.Element => (
-    <div role="group" aria-label={heading}>
-      <PickerMenuSectionLabel>{heading}</PickerMenuSectionLabel>
-      {options.map((option) => {
-        const checked = option.value === current;
-        return (
-          <PickerMenuOption
-            key={option.value}
-            role="menuitemradio"
-            aria-checked={checked}
-            selected={checked}
-            data-testid={`team-projects-repo-filter-${option.testId}`}
-            onClick={(): void => choose(option.value)}
-          >
-            <PickerMenuOptionCheck selected={checked} reserveSpace />
-            <PickerMenuOptionContent>
-              <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
-            </PickerMenuOptionContent>
-          </PickerMenuOption>
-        );
-      })}
-    </div>
-  );
-  return (
-    <div className="relative shrink-0">
-      <RailIconButton
-        ref={triggerRef}
-        icon={FilterIcon}
-        iconSize={16}
-        size="row"
-        hoverSurface
-        disabled={disabled}
-        aria-label={title}
-        aria-haspopup="true"
-        aria-expanded={open}
-        title={title}
-        data-testid="team-projects-repo-filter-trigger"
-        data-active={active ? 'true' : 'false'}
-        onClick={(): void => setOpen((current) => !current)}
-      />
-      {active && (
-        <Dot
-          tone="filter"
-          className="pointer-events-none absolute right-0.5 top-0.5"
-        />
-      )}
-      <FloatingPickerMenu
-        open={open}
-        onOpenChange={setOpen}
-        anchorRef={triggerRef}
-        placement="bottom-right"
-        interaction="menu"
-        closeOnSelect={false}
-        aria-label={title}
-        data-testid="team-projects-repo-filter-menu"
-      >
-        {section(
-          'Visibility',
-          VISIBILITY_OPTIONS,
-          filters.visibility,
-          (visibility) => onChange({ ...filters, visibility }),
-        )}
-        <PickerMenuSection>
-          {section('Status', STATUS_OPTIONS, filters.status, (status) =>
-            onChange({ ...filters, status }),
-          )}
-        </PickerMenuSection>
-      </FloatingPickerMenu>
-    </div>
-  );
-}
-
-interface RepositoryChoiceProps {
-  repository: Repository;
-  /** The host's session-replay block token; '' when the host has none. */
-  blockClassName: string;
-  selected: boolean;
-  disabled: boolean;
-  onClick: () => void;
-}
-
-/** One repository in the picker: its name, default branch, and pills. */
-function RepositoryChoice({
-  repository,
-  blockClassName,
-  selected,
-  disabled,
-  onClick,
-}: RepositoryChoiceProps): JSX.Element {
-  return (
-    <ChoiceListRow
-      data-testid={`team-projects-repo-${repository.id}`}
-      selected={selected}
-      disabled={disabled}
-      onClick={onClick}
-      trailing={
-        repository.private || repository.archived ? (
-          <span className="flex items-center gap-2">
-            {repository.private && <StatusPill>Private</StatusPill>}
-            {repository.archived && <StatusPill>Archived</StatusPill>}
-          </span>
-        ) : undefined
-      }
-    >
-      <span
-        className={joinClasses('min-w-0 flex-1 break-words', blockClassName)}
-      >
-        {repository.fullName}
-        <span className="block fg-secondary">
-          Default branch: {repository.defaultBranch ?? 'Not set'}
-        </span>
-      </span>
-    </ChoiceListRow>
-  );
-}
-
-const noop = (): void => undefined;
-
-/** Sample repositories for the loading state: plain, of the loaded shape. */
-const SAMPLE_REPOSITORIES: readonly Repository[] = [
-  {
-    id: 1,
-    fullName: 'sample/repository',
-    owner: 'sample',
-    name: 'repository',
-    defaultBranch: 'main',
-    private: false,
-    archived: false,
-    htmlUrl: '',
-  },
-  {
-    id: 2,
-    fullName: 'sample/another',
-    owner: 'sample',
-    name: 'another',
-    defaultBranch: 'main',
-    private: false,
-    archived: false,
-    htmlUrl: '',
-  },
-];
-
-/**
- * The repository picker while it loads: the real choices with sample
- * repositories inside `Skeleton`, so skullet measures them into bars in place.
- */
-function RepositoryChoicesSkeleton(): JSX.Element {
-  return (
-    <Skeleton
-      loading
-      label="Loading repositories"
-      testId="settings-skeleton-list"
-      className="w-full"
-    >
-      <ChoiceList aria-label="Repositories">
-        {SAMPLE_REPOSITORIES.map((repository) => (
-          <RepositoryChoice
-            key={repository.id}
-            repository={repository}
-            blockClassName=""
-            selected={false}
-            disabled={false}
-            onClick={noop}
-          />
-        ))}
-      </ChoiceList>
-    </Skeleton>
-  );
-}
-
-interface RepositoryPickerProps {
-  orgId: string;
-  selected: Repository[];
-  onSelectionChange: (repositories: Repository[]) => void;
-  disabled: boolean;
-}
-function RepositoryPicker({
-  orgId,
-  selected,
-  onSelectionChange,
-  disabled,
-}: RepositoryPickerProps): JSX.Element {
-  const client = useSettingsClient();
-  const errorCopy = useSettingsErrorCopy(PROJECTS_ERROR_SCOPE);
-  const { blockClassName } = useSettingsPrivacy();
-  const [query, setQuery] = useState('');
-  const [page, setPage] = useState<RepositoryPage>({
-    repositories: [],
-    nextCursor: null,
-    repositorySelection: null,
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<RequestFailure | null>(null);
-  const [retry, setRetry] = useState(0);
-  const [filters, setFilters] = useState<RepositoryFilters>(NO_FILTERS);
-  const requestVersion = useRef(0);
-  const pending = useRef(false);
-  const searchEdited = useRef(false);
-
-  useEffect(() => {
-    const version = ++requestVersion.current;
-    pending.current = true;
-    const load = async (): Promise<void> => {
-      try {
-        const response = await listOrganizationGitHubRepositories(
-          client,
-          orgId,
-          {
-            query,
-          },
-        );
-        if (requestVersion.current === version) setPage(response);
-      } catch (err) {
-        if (requestVersion.current === version)
-          setError(
-            requestFailure(
-              err,
-              errorCopy.loadFailure(err, GITHUB_PICKER_KNOWN_ERRORS),
-            ),
-          );
-      } finally {
-        if (requestVersion.current === version) {
-          pending.current = false;
-          setLoading(false);
-        }
-      }
-    };
-    // The first page opens immediately; edits to the query wait for typing to settle.
-    const timer = searchEdited.current
-      ? setTimeout((): void => {
-          void load();
-        }, 300)
-      : undefined;
-    if (!searchEdited.current) void load();
-    return (): void => {
-      clearTimeout(timer);
-      requestVersion.current = version + 1;
-    };
-  }, [client, errorCopy, orgId, query, retry]);
-
-  const resetSearch = (): void => {
-    ++requestVersion.current;
-    pending.current = true;
-    setLoading(true);
-    setError(null);
-    setPage({ repositories: [], nextCursor: null, repositorySelection: null });
-  };
-
-  const loadMore = async (): Promise<void> => {
-    if (!page.nextCursor || pending.current || disabled) return;
-    const version = requestVersion.current;
-    pending.current = true;
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await listOrganizationGitHubRepositories(client, orgId, {
-        query,
-        cursor: page.nextCursor,
-      });
-      if (version === requestVersion.current)
-        setPage((current) => ({
-          ...response,
-          repositories: [
-            ...current.repositories,
-            ...response.repositories.filter(
-              (repository) =>
-                !current.repositories.some(
-                  (existing) => existing.id === repository.id,
-                ),
-            ),
-          ],
-        }));
-    } catch (err) {
-      if (version === requestVersion.current)
-        setError(
-          requestFailure(
-            err,
-            errorCopy.loadFailure(err, GITHUB_PICKER_KNOWN_ERRORS),
-          ),
-        );
-    } finally {
-      if (version === requestVersion.current) {
-        pending.current = false;
-        setLoading(false);
-      }
-    }
-  };
-  const capped = selected.length >= ORG_PROJECT_LIMITS.repositoriesPerCreate;
-  // Filters narrow what is shown, never the selection.
-  const filtered = page.repositories.filter((repository) =>
-    matchesFilters(repository, filters),
-  );
-  return (
-    <section
-      data-testid="team-projects-repo-picker"
-      className="flex flex-col gap-4"
-    >
-      <div className="flex items-end gap-2">
-        <SearchField
-          aria-label="Search repositories"
-          placeholder="Search repositories"
-          maxLength={GITHUB_REPOSITORY_QUERY_MAX_LENGTH}
-          value={query}
-          disabled={disabled}
-          className="min-w-0 flex-1"
-          onValueChange={(value): void => {
-            const nextQuery = value.slice(
-              0,
-              GITHUB_REPOSITORY_QUERY_MAX_LENGTH,
-            );
-            if (nextQuery !== query) {
-              resetSearch();
-              searchEdited.current = true;
-              setQuery(nextQuery);
-            }
-          }}
-        />
-        <RepositoryFilterMenu
-          filters={filters}
-          onChange={setFilters}
-          disabled={disabled}
-        />
-      </div>
-      {page.repositorySelection === 'selected' && (
-        <Notice>
-          Only repositories the installation was granted show here. Manage
-          access on GitHub to add more.
-        </Notice>
-      )}
-      {error && <RequestNotice failure={error} orgId={orgId} />}
-      {error && !page.nextCursor && (
-        <Button
-          variant="secondary"
-          size="compact"
-          className="self-start"
-          disabled={loading || disabled}
-          onClick={(): void => {
-            resetSearch();
-            setRetry((current) => current + 1);
-          }}
-        >
-          Try again
-        </Button>
-      )}
-      {loading && page.repositories.length === 0 && (
-        <DelayedLoadingPlaceholder>
-          <RepositoryChoicesSkeleton />
-        </DelayedLoadingPlaceholder>
-      )}
-      {!loading && !error && page.repositories.length === 0 && (
-        <Notice>
-          No repositories found. Try another search or manage access on GitHub.
-        </Notice>
-      )}
-      {page.repositories.length > 0 && filtered.length === 0 && (
-        <p className="text-s fg-secondary">
-          No repositories match these filters.
-        </p>
-      )}
-      {filtered.length > 0 && (
-        <ChoiceList aria-label="Repositories">
-          {filtered.map((repository) => {
-            const checked = selected.some(
-              (entry) => entry.id === repository.id,
-            );
-            return (
-              <RepositoryChoice
-                key={repository.id}
-                repository={repository}
-                blockClassName={blockClassName}
-                selected={checked}
-                disabled={disabled || (!checked && capped)}
-                onClick={(): void => {
-                  if (checked)
-                    onSelectionChange(
-                      selected.filter((entry) => entry.id !== repository.id),
-                    );
-                  else if (!capped)
-                    onSelectionChange([...selected, repository]);
-                }}
-              />
-            );
-          })}
-        </ChoiceList>
-      )}
-      <p aria-live="polite">{selected.length} selected</p>
-      {capped && (
-        <Notice>
-          Select up to {ORG_PROJECT_LIMITS.repositoriesPerCreate} repositories.
-        </Notice>
-      )}
-      {page.nextCursor && (
-        <LoadingButton
-          variant="secondary"
-          size="compact"
-          className="self-start"
-          data-testid="team-projects-repo-load-more"
-          loading={loading}
-          disabled={disabled}
-          onClick={(): void => {
-            void loadMore();
-          }}
-        >
-          Load more
-        </LoadingButton>
-      )}
-    </section>
   );
 }

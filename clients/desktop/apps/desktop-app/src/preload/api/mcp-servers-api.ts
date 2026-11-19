@@ -33,6 +33,12 @@ export type { McpServersAPI };
 
 export function createMcpServersAPI(): McpServersAPI {
   return {
+    removalCandidates: () =>
+      ipcRenderer.invoke(MCP_SERVER_CHANNELS.REMOVAL_CANDIDATES),
+    inspectRemoval: (request) =>
+      ipcRenderer.invoke(MCP_SERVER_CHANNELS.INSPECT_REMOVAL, request),
+    forceRemoval: (request) =>
+      ipcRenderer.invoke(MCP_SERVER_CHANNELS.FORCE_REMOVAL, request),
     listAccountConnections: (): Promise<AccountMcpConnectionSummary[]> =>
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.LIST_ACCOUNT_CONNECTIONS),
     startAccountConnection: (
@@ -59,8 +65,21 @@ export function createMcpServersAPI(): McpServersAPI {
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.UPDATE_ACCOUNT, id, request),
     removeAccountConnection: (
       id,
-    ): Promise<RemoveAccountMcpConnectionResponse> =>
-      ipcRenderer.invoke(MCP_SERVER_CHANNELS.REMOVE_ACCOUNT, id),
+      options,
+    ): Promise<RemoveAccountMcpConnectionResponse> => {
+      if (options === undefined)
+        return ipcRenderer.invoke(MCP_SERVER_CHANNELS.REMOVE_ACCOUNT, id);
+      // A paired host of an older build reads only the id and would remove a
+      // row the sign-in connected meanwhile, so a remote window never sends a
+      // sign-in's own cleanup; the person can still Remove the row.
+      if (options.unlessConnected && remoteWindowContext)
+        return Promise.resolve({ removed: false });
+      return ipcRenderer.invoke(
+        MCP_SERVER_CHANNELS.REMOVE_ACCOUNT,
+        id,
+        options,
+      );
+    },
     rewriteServerRefs: (request): Promise<RewriteMcpServerRefsResponse> =>
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.REWRITE_REFS, request),
     disconnectAccountConnection: (id): Promise<void> =>
@@ -143,8 +162,17 @@ export function createMcpServersAPI(): McpServersAPI {
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.LIST_CURATED),
     refreshCurated: (): Promise<CuratedMcpServerListResponse> =>
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.REFRESH_CURATED),
-    resolveRemoteImage: (url: string): Promise<string | null> =>
-      ipcRenderer.invoke(MCP_SERVER_CHANNELS.RESOLVE_REMOTE_IMAGE, url),
+    // `enhanced`: the caller shows New Customize; main still requires the
+    // experiment on before it uses that resolution. Older hosts ignore it.
+    resolveRemoteImage: (
+      url: string,
+      options?: { readonly enhanced?: boolean },
+    ): Promise<string | null> =>
+      ipcRenderer.invoke(
+        MCP_SERVER_CHANNELS.RESOLVE_REMOTE_IMAGE,
+        url,
+        options,
+      ),
     listStatus: (): Promise<McpServerStatusEntry[]> =>
       ipcRenderer.invoke(MCP_SERVER_CHANNELS.LIST_STATUS),
     getTools: (

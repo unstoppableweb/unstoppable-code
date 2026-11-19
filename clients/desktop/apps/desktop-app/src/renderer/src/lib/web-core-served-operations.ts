@@ -100,9 +100,45 @@ export function webCoreServesSessionBreakdown(): boolean {
   );
 }
 
+/**
+ * Whether the web core serves deleting a cloud task to the Trash
+ * (CAN-7052): `core.chat.delete`, which it lists as available only to a
+ * connection that may write chats.
+ */
+export function webCoreServesTaskDelete(): boolean {
+  return webCoreServes('core.chat.delete');
+}
+
 /** Re-renders when the manifest read lands. */
 export function useWebCoreServesCost(): boolean {
   return useSyncExternalStore(subscribe, webCoreServesCost, () => false);
+}
+
+/** Re-renders when the manifest read lands. */
+export function useWebCoreServesTaskDelete(): boolean {
+  return useSyncExternalStore(subscribe, webCoreServesTaskDelete, () => false);
+}
+
+/**
+ * Whether the web core serves a cloud chat's delegate pages (CAN-7027):
+ * `core.chat.transcript.page` must list detail `delegation`. A web core that
+ * lists none, an older one included, leaves the reads off.
+ */
+export function webCoreServesDelegationPages(): boolean {
+  return (
+    webCoreServes('core.chat.transcript.page') &&
+    (details.get('core.chat.transcript.page') ?? []).includes('delegation')
+  );
+}
+
+/** Whether the web core forks a cloud chat into a new task (CAN-7007). */
+export function webCoreServesChatFork(): boolean {
+  return webCoreServes('core.chat.fork');
+}
+
+/** Re-renders when the manifest read lands. */
+export function useWebCoreServesChatFork(): boolean {
+  return useSyncExternalStore(subscribe, webCoreServesChatFork, () => false);
 }
 
 /** Test seam: forget what was read. */

@@ -244,15 +244,24 @@ export function pipelineLedgerAttemptOutcome(
     : { kind: 'settled' };
 }
 
-/** Opens an attempt, treating a host failure as "not exposed". */
+/**
+ * Opens an attempt, treating a host failure as "not exposed"; `onFailure`
+ * hears of that failure (CAN-7118).
+ */
 export async function openPipelineLedgerAttempt(
   port: PipelineLedgerPort | undefined,
   request: PipelineLedgerAttemptRequest,
+  onFailure?: (error: unknown) => Promise<void>,
 ): Promise<PipelineLedgerAttempt | null> {
   if (port === undefined) return null;
   try {
     return await port.openAttempt(request);
-  } catch {
+  } catch (error) {
+    try {
+      await onFailure?.(error);
+    } catch {
+      // Hearing of the failure never stops the step.
+    }
     return null;
   }
 }

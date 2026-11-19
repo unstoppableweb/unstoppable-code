@@ -1,5 +1,4 @@
 import { isArchivedContainerManifest } from '@canopy/desktop-shared/lib/archived-container-contracts';
-import { isRecord } from '../type-guards';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import {
   startPolling,
@@ -12,7 +11,6 @@ import { installW5StoreSide } from './fixtures/w5-store-sides';
 import { installRoutedW5GoldenStore } from './fixtures/w5-routed-golden-store';
 import type * as WorkerTerminalModule from '../../terminal/worker-terminal';
 import type * as RoutedWorkerTerminalModule from '../../terminal/routed-worker-terminal';
-import type * as PortalEventBusModule from '../../portal/portal-event-bus';
 
 // Keep the real worker, PTY and cwd resolver; isolate host accounting and shell
 // configuration from the developer's environment.
@@ -64,14 +62,8 @@ jest.mock('../../observability', () => ({
     recordUsageMetricEvent: jest.fn(),
   })),
 }));
-jest.mock('../../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
-  createPortalEvent: jest.requireActual<typeof PortalEventBusModule>(
-    '../../portal/portal-event-bus',
-  ).createPortalEvent,
+jest.mock('../../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 jest.mock('../code-graph-eager-seed', () => ({
   eagerSeedNewWorktreeCodeGraph: jest.fn(() => Promise.resolve()),
@@ -87,13 +79,6 @@ import { realpathSync } from 'node:fs';
 import { canonicalizePossiblyMissingPath } from '../worktree-registration-removal';
 import { registerWorkspaceTypes } from '../workspace-registry';
 import { spawnTerminalForRenderer } from '../../services/terminal-service';
-import * as terminalService from '../../services/terminal-service';
-import { handlePortalTerminalOpen } from '../../portal/adapters/terminal-adapter';
-import type { PortalAdapterContext } from '../../portal/adapters/types';
-import {
-  beginWorktreeGitSetup,
-  endWorktreeGitSetup,
-} from '../worktree-git-setup';
 import {
   workerTerminal,
   desktopTerminalShells,
@@ -118,9 +103,6 @@ import {
   type WorktreeData,
   type WorkspaceConfigFile,
   type WorkspaceReadinessIssue,
-  type PortalCommandEnvelope,
-  type TerminalSession,
-  type TerminalSpawnRequest,
 } from '@canopy/desktop-shared/types';
 import {
   getSidebarItemGroupsFilePath,
@@ -160,45 +142,6 @@ import {
 const TEST_TIMEOUT_MS = 60_000;
 const SINGLE = 'single';
 const MULTI = 'multi';
-
-function terminalOpenCommand(
-  request: TerminalSpawnRequest,
-): PortalCommandEnvelope<TerminalSpawnRequest> {
-  return {
-    id: `open-${request.worktreeId}`,
-    sequence: 1,
-    type: 'portal.terminal.open',
-    createdAt: new Date().toISOString(),
-    expiresAt: null,
-    payload: request,
-  };
-}
-
-function spawnTerminalForPortal(
-  request: TerminalSpawnRequest,
-): Promise<TerminalSession> {
-  return new Promise((resolve, reject) => {
-    handlePortalTerminalOpen(terminalOpenCommand(request), {
-      getWindow: () => null,
-      canMutateResources: () => true,
-      enqueueEvent: () => {},
-      complete: () => {
-        const session = workerTerminal
-          .list()
-          .find(
-            (entry) =>
-              entry.projectId === request.projectId &&
-              entry.worktreeId === request.worktreeId,
-          );
-        if (session) resolve(session);
-        else reject(new Error('Portal completed without a terminal'));
-      },
-      fail: (_command, code, message) => {
-        reject(new Error(`${code}: ${message}`));
-      },
-    });
-  });
-}
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -376,155 +319,6 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
     if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = originalDataDir;
   });
-
-  async function portalArchiveFixture(count: number): Promise<{
-    projectId: string;
-    command: PortalCommandEnvelope<unknown>;
-    context: PortalAdapterContext;
-    complete: jest.Mock<void, [PortalCommandEnvelope<unknown>, unknown]>;
-    fail: jest.Mock<void, unknown[]>;
-  }> {
-    const { createCoworkWorkspace } = await import('../cowork-workspace-crud');
-    const { getWorkspaceChatHistoryMetaFilePath } = await import('../paths');
-    const project = await createCoworkWorkspace('Retained chats');
-    for (let i = 0; i < count; i++) {
-      const id = `legacy-${String(i).padStart(3, '0')}`;
-      await writeJson(getWorkspaceChatHistoryMetaFilePath(project.id, id), {
-        id,
-        title: id,
-        archived: true,
-        createdAt: '2026-11-01T00:00:00.000Z',
-        archivedAt: '2026-11-02T00:00:00.000Z',
-        description: '',
-      });
-    }
-    const complete = jest.fn<void, [PortalCommandEnvelope<unknown>, unknown]>();
-    const fail = jest.fn<void, unknown[]>();
-    return {
-      projectId: project.id,
-      command: {
-        id: 'archive-read',
-        sequence: 1,
-        type: 'portal.workspace.archived_work_entries.list',
-        target: { workspaceLocalId: project.id },
-        payload: { projectLocalId: project.id },
-        createdAt: '2026-11-01T00:00:00.000Z',
-        expiresAt: null,
-      },
-      context: {
-        sessionId: 'archive-read-session',
-        getWindow: () => null,
-        enqueueEvent: () => {},
-        canArchiveStandaloneChats: () => true,
-        complete,
-        fail,
-      },
-      complete,
-      fail,
-    };
-  }
-
-  it.each([false, true])(
-    'Portal archive reads leave every persisted workspace file unchanged (migrated=%s)',
-    async (migrated) => {
-      const { handlePortalArchivedWorkEntriesList } =
-        await import('../../portal/adapters/standalone-chat-adapter');
-      const fixture = await portalArchiveFixture(1);
-      const { workspacePersistenceTestExports } =
-        await import('../workspace-persistence');
-      // A stale row still exists on disk after removal, which an ordinary sidebar
-      // read would clean up. The archive query must leave it alone.
-      await writeJson(getWorkspaceWorktreesFilePath(SINGLE), {
-        version: 1,
-        worktrees: [
-          {
-            id: 'removed-row',
-            branchName: 'main',
-            createdAt: '2026-11-01T00:00:00.000Z',
-          },
-        ],
-      });
-      workspacePersistenceTestExports.markWorktreeRecentlyRemoved(
-        SINGLE,
-        'removed-row',
-        '2026-11-01T00:00:00.000Z',
-      );
-      async function snapshot(dir: string): Promise<Record<string, string>> {
-        const files: Record<string, string> = {};
-        for (const entry of await readdir(dir, { withFileTypes: true })) {
-          const file = path.join(dir, entry.name);
-          if (entry.isDirectory()) Object.assign(files, await snapshot(file));
-          else if (entry.isFile()) files[file] = await readFile(file, 'base64');
-        }
-        return files;
-      }
-      if (migrated) {
-        const { writeChatArchivesFile } = await import('../chat-archives');
-        await writeChatArchivesFile(fixture.projectId, 'home', {
-          version: 1,
-          archived: [
-            {
-              archivedAt: '2026-11-02T00:00:00.000Z',
-              turnCount: 0,
-              tab: {
-                id: 'canonical-archive',
-                title: 'Canonical archive',
-                createdAt: '2026-11-01T00:00:00.000Z',
-                messages: [],
-              },
-            },
-          ],
-        });
-      }
-      const before = await snapshot(process.env.CANOPY_DATA_DIR ?? '');
-      await handlePortalArchivedWorkEntriesList(
-        fixture.command,
-        fixture.context,
-      );
-      expect(fixture.fail).not.toHaveBeenCalled();
-      const result = fixture.complete.mock.calls[0]?.[1];
-      if (!isRecord(result)) throw new Error('Archive reply is missing');
-      expect(result.nextOffset).toBeNull();
-      expect(result.items).toContainEqual(
-        expect.objectContaining({ id: 'legacy-000', legacyChat: true }),
-      );
-      if (migrated)
-        expect(result.items).toContainEqual(
-          expect.objectContaining({ id: 'canonical-archive' }),
-        );
-      expect(await snapshot(process.env.CANOPY_DATA_DIR ?? '')).toEqual(before);
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    'Portal returns the entire bounded archive before a concurrent purge can shift pages',
-    async () => {
-      const { handlePortalArchivedWorkEntriesList } =
-        await import('../../portal/adapters/standalone-chat-adapter');
-      const { getWorkspaceChatHistoryDir } = await import('../paths');
-      const fixture = await portalArchiveFixture(65);
-      await handlePortalArchivedWorkEntriesList(
-        fixture.command,
-        fixture.context,
-      );
-      expect(fixture.fail).not.toHaveBeenCalled();
-      const result = fixture.complete.mock.calls[0]?.[1];
-      if (!isRecord(result)) throw new Error('Archive reply is missing');
-      expect(result?.items).toHaveLength(65);
-      expect(result?.nextOffset).toBeNull();
-      await rm(getWorkspaceChatHistoryDir(fixture.projectId, 'legacy-000'), {
-        recursive: true,
-      });
-      for (let i = 0; i < 65; i++)
-        expect(result.items).toContainEqual(
-          expect.objectContaining({
-            id: `legacy-${String(i).padStart(3, '0')}`,
-          }),
-        );
-    },
-    TEST_TIMEOUT_MS,
-  );
 
   it(
     'enrolls a newly created worktree in PR polling without a sidebar sync',
@@ -955,13 +749,11 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
   );
 
   (process.platform === 'win32' ? it.skip : it).each([
-    ['single-repo', SINGLE, undefined, 'renderer'],
-    ['multi-repo', MULTI, 'api', 'renderer'],
-    ['single-repo', SINGLE, undefined, 'Portal'],
-    ['multi-repo', MULTI, 'api', 'Portal'],
+    ['single-repo', SINGLE, undefined],
+    ['multi-repo', MULTI, 'api'],
   ] as const)(
-    'opens the first terminal in a completed %s checkout (%s, %s) through %s after deferred creation',
-    async (workspaceKind, workspaceId, selectedRepoId, entryPoint) => {
+    'opens the first terminal in a completed %s checkout (%s, %s) through renderer after deferred creation',
+    async (workspaceKind, workspaceId, selectedRepoId) => {
       // The sidebar normally populates this registry before opening a terminal.
       registerWorkspaceTypes(new Map([[workspaceId, workspaceKind]]));
       const createWorktree = worktreeGit.createWorktree;
@@ -1014,11 +806,7 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
         const { record } = outcome;
         expect(record.setupPhase).toBe('git-pending');
         await checkoutStarted;
-        const spawn =
-          entryPoint === 'Portal'
-            ? spawnTerminalForPortal
-            : spawnTerminalForRenderer;
-        const firstTerminal = spawn({
+        const firstTerminal = spawnTerminalForRenderer({
           projectId: workspaceId,
           selectedRepoId,
           worktreeId: record.worktreeId,
@@ -1063,121 +851,6 @@ describe('worktree creation boundary round trips (real git and fs)', () => {
         unsubscribe();
         shellSpy.mockRestore();
         gitSpy.mockRestore();
-      }
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it.each(['teardown', 'session replacement'] as const)(
-    'allows queued %s while a Portal terminal waits for worktree readiness',
-    async (nextCommand) => {
-      registerWorkspaceTypes(new Map([[SINGLE, 'single-repo']]));
-      const { record } = await createWorktreeFromSelection({
-        workspaceId: SINGLE,
-        workspaceKind: 'single-repo',
-        branch: { kind: 'default' },
-        base: { kind: 'repository-default' },
-      });
-      // A real checkout makes stale admission observable: if the old session
-      // is admitted after readiness, the real worker can create a PTY here.
-      const settleSetup = beginWorktreeGitSetup(SINGLE, record.worktreeId);
-      let sessionActive = true;
-      const complete = jest.fn();
-      const fail = jest.fn();
-      const enqueueEvent = jest.fn();
-      const context: PortalAdapterContext = {
-        sessionId: 'original-session',
-        getWindow: () => null,
-        canMutateResources: () => sessionActive,
-        // Match the processor's event sink: an ended session discards late
-        // deltas and receipts, even when its deferred operation has settled.
-        enqueueEvent: (event) => {
-          if (sessionActive) enqueueEvent(event);
-        },
-        complete: (open, result) => {
-          if (sessionActive) complete(open, result);
-        },
-        fail: (...args) => {
-          if (sessionActive) fail(...args);
-        },
-      };
-      const command = terminalOpenCommand({
-        projectId: SINGLE,
-        worktreeId: record.worktreeId,
-        cols: 80,
-        rows: 24,
-        terminalProfileId: 'bash',
-      });
-      const shellSpy = jest
-        .spyOn(desktopTerminalShells, 'profile')
-        .mockReturnValue({
-          shell: '/bin/sh',
-          args: ['-f'],
-          shellBasename: 'sh',
-        });
-      const createSpy = jest.spyOn(workerTerminal, 'create');
-      const spawn = terminalService.spawnTerminalAfterShellPrewarm;
-      let finishedOpening: () => void = () => {};
-      const openSettled = new Promise<void>((resolve) => {
-        finishedOpening = resolve;
-      });
-      // Observe completion without replacing readiness, admission or PTY
-      // execution; a stale adapter intentionally emits no receipt to await.
-      const spawnSpy = jest
-        .spyOn(terminalService, 'spawnTerminalAfterShellPrewarm')
-        .mockImplementation(async (...args) => {
-          try {
-            return await spawn(...args);
-          } finally {
-            finishedOpening();
-          }
-        });
-      let nextCommandRan = false;
-      // Match the Portal processor's serial await: detachment must happen
-      // inside the production adapter, not in this command queue.
-      const serial = Promise.resolve()
-        .then(() => handlePortalTerminalOpen(command, context))
-        .then(() => {
-          nextCommandRan = true;
-          if (nextCommand === 'teardown') {
-            endWorktreeGitSetup(SINGLE, record.worktreeId);
-          } else {
-            sessionActive = false;
-            settleSetup('ready');
-          }
-        });
-      try {
-        // An event-loop turn, not a timed sleep: an inline-awaiting adapter
-        // cannot run the queued command while the readiness barrier is held.
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(nextCommandRan).toBe(true);
-        await serial;
-        await openSettled;
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        expect(complete).not.toHaveBeenCalled();
-        expect(enqueueEvent).not.toHaveBeenCalled();
-        if (nextCommand === 'teardown') {
-          expect(fail).toHaveBeenCalledTimes(1);
-          expect(fail).toHaveBeenCalledWith(
-            command,
-            'invalid_target',
-            expect.stringContaining('cancelled'),
-            false,
-          );
-        } else {
-          expect(fail).not.toHaveBeenCalled();
-        }
-        expect(createSpy).not.toHaveBeenCalled();
-        expect(workerTerminal.list()).toEqual([]);
-      } finally {
-        endWorktreeGitSetup(SINGLE, record.worktreeId);
-        await serial;
-        await openSettled;
-        workerTerminal.killAll();
-        registerWorkspaceTypes(new Map());
-        spawnSpy.mockRestore();
-        createSpy.mockRestore();
-        shellSpy.mockRestore();
       }
     },
     TEST_TIMEOUT_MS,

@@ -6,7 +6,7 @@
  * without consent, or outlive a revocation.
  */
 import { sign } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -74,9 +74,9 @@ import {
   RemoteAccessStore,
   type RemoteControlFile,
 } from '../remote-access-store';
+import type { LegacyPortalOptInRead } from '../legacy-portal-opt-in';
 import {
   RemoteControlService,
-  type PortalOptInRead,
   type RemoteControlServiceDeps,
   type RemoteRelayFactoryOptions,
 } from '../remote-control-service';
@@ -257,8 +257,7 @@ interface HostOptions {
   signedInAccount?: string;
   invokeResult?: unknown;
   settings?: Partial<RemoteControlFile>;
-  portalReads?: PortalOptInRead[];
-  portalEnabled?: boolean;
+  portalReads?: LegacyPortalOptInRead[];
   pairingWindowMs?: number;
   dir?: string;
   /** This host's version; the current protocol by default. */
@@ -275,7 +274,7 @@ interface Host {
   bridge: FakeBridgeLog;
   hostedChat: HostedChatLog;
   mainPush: (channel: string, args: unknown[]) => void;
-  portal: { starts: number; stops: number; reads: number };
+  portal: { reads: number };
   readSettings: () => Promise<RemoteControlFile>;
 }
 
@@ -344,7 +343,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     },
   };
   const events: RemoteControlPairingEvent[] = [];
-  const portal = { starts: 0, stops: 0, reads: 0 };
+  const portal = { reads: 0 };
   const portalReads = [
     ...(options.portalReads ?? [{ reliable: true, active: false }]),
   ];
@@ -423,7 +422,6 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
         relayUrl: 'wss://relay.test',
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       }),
-    isFeatureEnabled: (): boolean => true,
     signedInAccount: (): string =>
       options.signedInAccount ?? `account:${ACCOUNT_USER_ID}`,
     ...(options.hostedChat === false ? {} : { dispatchHostedChatCommand }),
@@ -479,24 +477,13 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     broadcastPairingEvent: (event): void => {
       events.push(event);
     },
-    readPortalOptIn: (): Promise<PortalOptInRead> => {
+    readLegacyPortalOptIn: (): Promise<LegacyPortalOptInRead> => {
       portal.reads += 1;
       return Promise.resolve(
         portalReads.length > 1
           ? (portalReads.shift() ?? { reliable: false })
           : (portalReads[0] ?? { reliable: false }),
       );
-    },
-    portal: {
-      isEnabled: (): boolean => options.portalEnabled === true,
-      start: (): Promise<void> => {
-        portal.starts += 1;
-        return Promise.resolve();
-      },
-      stop: (): Promise<void> => {
-        portal.stops += 1;
-        return Promise.resolve();
-      },
     },
     webOrigin: (): string => 'https://app.example.test',
     migrationRetryMs: 60,
@@ -789,6 +776,25 @@ describe('controller profiles', () => {
     );
   });
 
+  it("keeps this computer's inventory sync switch out of every controller's reach (CAN-5986)", async () => {
+    // Turning the switch off deletes this computer's synced lists from the
+    // web, so only this computer's own user may change it.
+    const channel = IPC_CHANNELS.remoteControlSetInventorySyncEnabled;
+    expect(getRemoteChannelDisposition(channel)).toBe('local');
+    expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+    expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+    expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop)] },
+    });
+    const { rpc } = await control(host, desktop);
+    await hello(rpc);
+    expect(await invokeCode(rpc, channel)).toBe('remote_channel_unavailable');
+    expect(host.bridge.invokes).not.toContain(channel);
+  });
+
   it('narrows a legacy desktop pairing to the authenticated mobile kind, durably, before access', async () => {
     const hub = new Hub();
     const phone = addController(hub, 'mobile');
@@ -1079,7 +1085,42 @@ describe('browser controller channels', () => {
         'remote_channel_unavailable',
       );
     }
+
+    const absolutePath = '/workspace/report.md';
+    const workspaceRead = {
+      absolutePath,
+      workspaceTarget: { projectId: 'project', worktreeId: 'worktree' },
+    };
+    const catalogRead = {
+      ...workspaceRead,
+      file: { fileRootId: 'repo', relativePath: 'report.md' },
+    };
+    const channel = IPC_CHANNELS.fileReadContent;
+    for (const request of [
+      { absolutePath },
+      { absolutePath, workspaceTarget: { projectId: 'project' } },
+      { ...workspaceRead, allowedRoot: 'codex-generated-images' },
+    ]) {
+      await expect(
+        fromBrowser.rpc.request(REMOTE_METHODS.invoke, {
+          channel,
+          args: [request],
+        }),
+      ).rejects.toMatchObject({ code: 'remote_channel_unavailable' });
+    }
     expect(host.bridge.invokes).toEqual(Object.values(added));
+    for (const request of [workspaceRead, catalogRead]) {
+      expect(
+        await fromBrowser.rpc.request(REMOTE_METHODS.invoke, {
+          channel,
+          args: [request],
+        }),
+      ).toBe('ok');
+    }
+    expect(host.bridge.invokeArgs.slice(Object.keys(added).length)).toEqual([
+      [workspaceRead],
+      [catalogRead],
+    ]);
   });
 
   it('serves script review to browsers only, and never the found push or a terminal', async () => {
@@ -1139,6 +1180,46 @@ describe('browser controller channels', () => {
       );
     }
     expect(host.bridge.invokes).toEqual(invoked);
+  });
+
+  it('serves the archived Work Entry list to browsers and refuses controllers without it', async () => {
+    // The archive overview Portal's paired session read (CAN-5986). Portal
+    // allowed it only to its own active pairing; over Remote Control the
+    // controller profile is that authorization, so mobile and hosted
+    // controllers are refused before the desktop handler runs.
+    const channel = IPC_CHANNELS.workEntriesListArchived;
+    expect(channel).toBe('work-entries:list-archived');
+    expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+    expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+    expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+    expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(host.bridge.invokes).toEqual([]);
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+    expect(host.bridge.invokes).toEqual([channel]);
   });
 });
 
@@ -1838,9 +1919,27 @@ describe('hosted delegation', () => {
     }
   });
 
+  it('admits only the empty provider-usage read through a hosted session', async () => {
+    const { host, invoke } = await delegatedSession();
+    const channel = HOSTED_IPC_CHANNELS.providerUsageLimitsGet;
+    expect(await invoke(channel, [{}])).toBe('ok');
+    const admitted = host.bridge.invokes.length;
+    for (const args of [
+      [],
+      [null],
+      [{ refresh: true }],
+      [{ projectId: 'p' }],
+      [{}, {}],
+    ]) {
+      expect(await invoke(channel, args)).toBe('remote_channel_unavailable');
+    }
+    expect(host.bridge.invokes).toHaveLength(admitted);
+  });
+
   it('tunnels every hosted channel, including the read channels added for hosted agents', () => {
     expect({
       githubGetPrState: IPC_CHANNELS.githubGetPrState,
+      providerUsageLimitsGet: IPC_CHANNELS.providerUsageLimitsGet,
       pipelinesListForWorktree: PIPELINE_CHANNELS.LIST_FOR_WORKTREE,
       pipelinesListWorktreeExecutions:
         PIPELINE_CHANNELS.LIST_WORKTREE_EXECUTIONS,
@@ -2037,7 +2136,22 @@ describe('opt-in', () => {
     expect((await state(restarted)).allowIncoming).toBe(true);
   });
 
-  it('turning off ends sessions, the pairing window and Portal but keeps pins; turning on starts Portal only when its flag is on', async () => {
+  it('never re-applies a stale Portal opt-in once the migration has run', async () => {
+    // The user turned incoming off after migrating; portal-state.json still
+    // records an active session.
+    const host = await createHost(new Hub(), {
+      settings: { allowIncoming: false, migratedOptIn: true },
+      portalReads: [{ reliable: true, active: true }],
+    });
+    expect(host.portal.reads).toBe(0);
+    expect((await state(host)).allowIncoming).toBe(false);
+    expect(await host.readSettings()).toMatchObject({
+      allowIncoming: false,
+      migratedOptIn: true,
+    });
+  });
+
+  it('turning off ends sessions and the pairing window but keeps pins', async () => {
     const hub = new Hub();
     const desktop = addController(hub, 'desktop');
     const host = await createHost(hub, {
@@ -2049,7 +2163,6 @@ describe('opt-in', () => {
     const closed = new Promise<void>((resolve) => rpc.onClose(() => resolve()));
     await host.service.setAllowIncoming(false);
     await closed;
-    expect(host.portal.stops).toBe(1);
     expect(host.events).toContainEqual({
       type: 'window-closed',
       reason: 'disabled',
@@ -2057,15 +2170,6 @@ describe('opt-in', () => {
     await expect(host.service.openPairingWindow()).rejects.toThrow();
     await expect(control(host, desktop)).rejects.toThrow();
     expect((await host.readSettings()).pairedControllers).toHaveLength(1);
-    await host.service.setAllowIncoming(true);
-    expect(host.portal.starts).toBe(0);
-
-    const flagged = await createHost(new Hub(), {
-      settings: { allowIncoming: false },
-      portalEnabled: true,
-    });
-    await flagged.service.setAllowIncoming(true);
-    expect(flagged.portal.starts).toBe(1);
   });
 });
 
@@ -2074,36 +2178,143 @@ describe('opt-in', () => {
 // ---------------------------------------------------------------------------
 
 describe('install identifier (remote-control:install-id)', () => {
-  it('initializes through the Portal state store and stays stable across restarts', async () => {
+  const tempDir = async (): Promise<string> => {
     const dir = await mkdtemp(join(tmpdir(), 'rc-install-'));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
-    // Each read loads the store afresh, as after a restart.
-    const read = async (): Promise<{
-      installId: string;
-      optIn: PortalOptInRead;
-    }> => {
-      let result: { installId: string; optIn: PortalOptInRead } | null = null;
-      await jest.isolateModulesAsync(async () => {
-        const electron = await import('electron');
-        jest.spyOn(electron.app, 'getPath').mockReturnValue(dir);
-        const portal = await import('../../portal/portal-state-store');
-        result = {
-          installId: await portal.readDurablePortalInstallId(),
-          optIn: await portal.readPortalOptInForMigration(),
-        };
-      });
-      if (!result) throw new Error('No result.');
-      return result;
-    };
-    const first = await read();
-    const onDisk: unknown = JSON.parse(
-      await readFile(join(dir, 'portal-state.json'), 'utf8'),
+    return dir;
+  };
+  // Each read loads the modules afresh, as after a restart.
+  const read = async (
+    dir: string,
+  ): Promise<{ installId: string; optIn: LegacyPortalOptInRead }> => {
+    let result: { installId: string; optIn: LegacyPortalOptInRead } | null =
+      null;
+    await jest.isolateModulesAsync(async () => {
+      const electron = await import('electron');
+      jest.spyOn(electron.app, 'getPath').mockReturnValue(dir);
+      const identity = await import('../../lib/install-identity');
+      const legacy = await import('../legacy-portal-opt-in');
+      result = {
+        installId: await identity.readDurableInstallId(),
+        optIn: await legacy.readLegacyPortalOptIn(),
+      };
+    });
+    if (!result) throw new Error('No result.');
+    return result;
+  };
+  const onDiskInstallId = async (dir: string): Promise<unknown> =>
+    (
+      JSON.parse(
+        await readFile(join(dir, 'install-identity.json'), 'utf8'),
+      ) as { installId?: unknown }
+    ).installId;
+  const legacyState = (input: {
+    clientDeviceId: string;
+    active?: boolean;
+    lastStopReason?: string;
+  }): string =>
+    JSON.stringify({
+      version: 1,
+      clientDeviceId: input.clientDeviceId,
+      ...(input.active
+        ? {
+            activeSession: {
+              serverId: 'server',
+              sessionId: 'session',
+              commandCursor: 0,
+              activatedAt: '2026-01-01T00:00:00.000Z',
+              lastSeenAt: null,
+            },
+          }
+        : {}),
+      ...(input.lastStopReason ? { lastStopReason: input.lastStopReason } : {}),
+    });
+
+  it('adopts the identifier from portal-state.json and keeps it after that file is gone', async () => {
+    const dir = await tempDir();
+    await writeFile(
+      join(dir, 'portal-state.json'),
+      legacyState({ clientDeviceId: 'legacy-install-id', active: true }),
     );
-    expect(onDisk).toMatchObject({ clientDeviceId: first.installId });
+    const first = await read(dir);
+    expect(first.installId).toBe('legacy-install-id');
+    expect(first.optIn).toEqual({ reliable: true, active: true });
+    expect(await onDiskInstallId(dir)).toBe('legacy-install-id');
+    // The legacy file is left in place for older builds, unchanged.
+    expect(
+      JSON.parse(await readFile(join(dir, 'portal-state.json'), 'utf8')),
+    ).toMatchObject({ clientDeviceId: 'legacy-install-id' });
+
+    await rm(join(dir, 'portal-state.json'));
+    const restarted = await read(dir);
+    expect(restarted.installId).toBe('legacy-install-id');
+    expect(restarted.optIn).toEqual({ reliable: true, active: false });
+  });
+
+  it('mints an identifier when neither file exists and keeps it across restarts', async () => {
+    const dir = await tempDir();
+    const first = await read(dir);
+    expect(first.installId).toMatch(/^[0-9a-f-]{36}$/);
     expect(first.optIn).toEqual({ reliable: true, active: false });
-    expect((await read()).installId).toBe(first.installId);
-    // An unreadable store is not evidence about the Portal opt-in.
+    expect(await onDiskInstallId(dir)).toBe(first.installId);
+    expect((await read(dir)).installId).toBe(first.installId);
+  });
+
+  it('adopts the legacy identifier when install-identity.json is corrupt', async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, 'install-identity.json'), '{not json');
+    await writeFile(
+      join(dir, 'portal-state.json'),
+      legacyState({ clientDeviceId: 'legacy-install-id' }),
+    );
+    expect((await read(dir)).installId).toBe('legacy-install-id');
+    expect(await onDiskInstallId(dir)).toBe('legacy-install-id');
+  });
+
+  it('refuses to mint or adopt while either file is unreadable, then recovers', async () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    for (const blocked of ['install-identity.json', 'portal-state.json']) {
+      const dir = await tempDir();
+      await writeFile(
+        join(dir, 'install-identity.json'),
+        JSON.stringify({ version: 1, installId: 'saved-install-id' }),
+      );
+      await writeFile(
+        join(dir, 'portal-state.json'),
+        legacyState({ clientDeviceId: 'legacy-install-id' }),
+      );
+      if (blocked === 'portal-state.json') {
+        await rm(join(dir, 'install-identity.json'));
+      }
+      await chmod(join(dir, blocked), 0o000);
+      await expect(read(dir)).rejects.toMatchObject({ code: 'EACCES' });
+      await chmod(join(dir, blocked), 0o600);
+      expect((await read(dir)).installId).toBe(
+        blocked === 'install-identity.json'
+          ? 'saved-install-id'
+          : 'legacy-install-id',
+      );
+    }
+  });
+
+  it('reads the legacy opt-in without writing, and treats a corrupt file as not active', async () => {
+    const dir = await tempDir();
+    await writeFile(
+      join(dir, 'portal-state.json'),
+      legacyState({
+        clientDeviceId: 'legacy-install-id',
+        active: true,
+        lastStopReason: 'local_disconnect',
+      }),
+    );
+    // Stopped on purpose: not an opt-in.
+    expect((await read(dir)).optIn).toEqual({ reliable: true, active: false });
     await writeFile(join(dir, 'portal-state.json'), '{not json');
-    expect((await read()).optIn).toEqual({ reliable: false });
+    // The old store replaced an unparseable file with fresh state, so a
+    // read-only reader reads it as not active instead of retrying forever.
+    expect((await read(dir)).optIn).toEqual({ reliable: true, active: false });
+    expect(await readFile(join(dir, 'portal-state.json'), 'utf8')).toBe(
+      '{not json',
+    );
   });
 });

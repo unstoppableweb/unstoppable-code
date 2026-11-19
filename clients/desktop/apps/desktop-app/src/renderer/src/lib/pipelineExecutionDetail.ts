@@ -1,6 +1,7 @@
 import type { DisplayMessage } from '@/components/chat/types';
 import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
 import type { StepResult } from '@canopy/execution-engine/types/pipeline';
+import { STEP_BILLING_ROUTE_OUTPUT_KEYS } from '@canopy/execution-engine/pipelines/step-billing-route';
 
 export type PipelineLogViewMode = 'plain' | 'rich';
 
@@ -80,11 +81,14 @@ export function getDisplayablePipelineStepOutputs(
   values: Record<string, unknown> | undefined,
   stepResult: StepResult | undefined,
 ): Record<string, unknown> | undefined {
+  // The route keys show as the billing line instead (CAN-7256), for every
+  // step: model actions that are not agent-formatted set them too.
+  const visible = omitKeys(values, STEP_BILLING_ROUTE_OUTPUT_KEYS);
   if (stepResult?.log_format_hint !== 'agent') {
-    return values;
+    return visible;
   }
 
-  return omitKeys(values, AGENT_HIDDEN_OUTPUT_KEYS);
+  return omitKeys(visible, AGENT_HIDDEN_OUTPUT_KEYS);
 }
 
 export function formatPipelineReportContent(

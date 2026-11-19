@@ -28,11 +28,17 @@ import type { ChatStateStorageDiagnostic } from '../chat-state-contracts';
 import {
   CHAT_FORMAT4_DURATION_BUCKETS,
   CHAT_FORMAT4_EVENTS,
+  CHAT_FORMAT4_PAUSE_REASONS,
   CHAT_FORMAT4_REASONS,
+  CHAT_FORMAT4_REMAINING_BUCKETS,
   chatFormat4Labels,
   recordChatFormat4Outcome,
   type ChatFormat4Outcome,
 } from '../chat-format4-telemetry';
+import {
+  ChatFormat4Sweep,
+  repositoryChatFormat4SweepTarget,
+} from '../chat-format4-sweep';
 import {
   message,
   scopeSource,
@@ -47,6 +53,8 @@ const FIELDS = [
   'format4_reason',
   'format4_attempt',
   'format4_duration_bucket',
+  'format4_remaining_bucket',
+  'format4_pause_reason',
 ];
 
 const settle = (): Promise<void> =>
@@ -70,6 +78,12 @@ function expectOnlyDeclaredFields(context: unknown): void {
   expect(CHAT_FORMAT4_EVENTS).toContain(event);
   expect(CHAT_FORMAT4_REASONS).toContain(reason);
   expect(CHAT_FORMAT4_DURATION_BUCKETS).toContain(bucket);
+  expect(CHAT_FORMAT4_REMAINING_BUCKETS).toContain(
+    Reflect.get(context, 'format4_remaining_bucket'),
+  );
+  expect(CHAT_FORMAT4_PAUSE_REASONS).toContain(
+    Reflect.get(context, 'format4_pause_reason'),
+  );
   expect(Number.isInteger(attempt)).toBe(true);
   expect(attempt).toBeGreaterThanOrEqual(0);
   expect(attempt).toBeLessThanOrEqual(6);
@@ -81,7 +95,7 @@ beforeEach(() => {
 });
 
 describe('format 4 telemetry payloads', () => {
-  it('declares exactly the four content-free keys', () => {
+  it('declares exactly the six content-free keys', () => {
     expect(DESKTOP_OPERATIONS['canopy.chat_storage_format4']).toEqual({
       kind: 'product',
       posthogEvent: 'chat:storage_format4_update',
@@ -102,6 +116,9 @@ describe('format 4 telemetry payloads', () => {
       { event: 'retries_exhausted', attempt: 6 },
       { event: 'newer_format_refused' },
       { event: 'slow_checkpoint', durationMs: 7_500 },
+      { event: 'sweep_pass_completed', remaining: 12 },
+      { event: 'sweep_paused', reason: 'battery' },
+      { event: 'sweep_scope_backed_off', reason: 'integrity' },
     ];
     for (const outcome of outcomes) recordChatFormat4Outcome(outcome);
     expect(succeedDesktopOperation).not.toHaveBeenCalled();
@@ -112,30 +129,64 @@ describe('format 4 telemetry payloads', () => {
         format4_reason: 'none',
         format4_attempt: 1,
         format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       },
       {
         format4_event: 'promotion_failed',
         format4_reason: 'disk_full',
         format4_attempt: 2,
         format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       },
       {
         format4_event: 'retries_exhausted',
         format4_reason: 'none',
         format4_attempt: 6,
         format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       },
       {
         format4_event: 'newer_format_refused',
         format4_reason: 'none',
         format4_attempt: 0,
         format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       },
       {
         format4_event: 'slow_checkpoint',
         format4_reason: 'none',
         format4_attempt: 0,
         format4_duration_bucket: '5s_30s',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
+      },
+      {
+        format4_event: 'sweep_pass_completed',
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: '6_20',
+        format4_pause_reason: 'none',
+      },
+      {
+        format4_event: 'sweep_paused',
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'battery',
+      },
+      {
+        format4_event: 'sweep_scope_backed_off',
+        format4_reason: 'integrity',
+        format4_attempt: 0,
+        format4_duration_bucket: 'none',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
       },
     ]);
     for (const context of sentContexts()) expectOnlyDeclaredFields(context);
@@ -394,6 +445,8 @@ describe('format 4 outcomes from the repository', () => {
       format4_reason: 'disk_full',
       format4_attempt: 1,
       format4_duration_bucket: 'none',
+      format4_remaining_bucket: 'none',
+      format4_pause_reason: 'none',
     });
     expect(outcomes).toContainEqual({ event: 'retries_exhausted', attempt: 1 });
     expect(kinds).toEqual(
@@ -442,5 +495,116 @@ describe('format 4 outcomes from the repository', () => {
     expect(checkpoints.length).toBeGreaterThan(0);
     for (const outcome of checkpoints)
       expect(chatFormat4Labels(outcome).format4_event).toBe('slow_checkpoint');
+  });
+});
+
+describe('format 4 sweep telemetry from a real failing load (SWAN, 17 Nov)', () => {
+  const scope = { projectId: 'project-x', worktreeId: 'secret-scope-7' };
+  let root: string;
+  const previousDataDir = process.env.CANOPY_DATA_DIR;
+
+  const pathsFor = (): { tabs: string; archives: string; journal: string } => {
+    const workspace = join(root, 'workspaces', scope.projectId);
+    return {
+      tabs: join(workspace, 'chats', `${scope.worktreeId}.json`),
+      archives: join(workspace, 'chat-archives', `${scope.worktreeId}.json`),
+      journal: join(workspace, 'chat-journals', `${scope.worktreeId}.jsonl`),
+    };
+  };
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'format4-sweep-telemetry-'));
+    process.env.CANOPY_DATA_DIR = root;
+    resetResolvedCanopyDataDirForTests();
+    const store = ChatStorageV2.fromLegacyPaths(pathsFor());
+    await store.migrate(
+      scopeSource([
+        { id: 'chat', messages: [message('initial', 'Initial', 'user')] },
+      ]),
+    );
+    const backend = new ChatStateV2Backend(store, {
+      enableFormat4: true,
+      deltaJournal: {},
+    });
+    await backend.promoteToDeltaJournal();
+    backend.releaseJournal();
+  });
+
+  afterEach(async () => {
+    await drainOpenRepositories();
+    if (previousDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
+    else process.env.CANOPY_DATA_DIR = previousDataDir;
+    resetResolvedCanopyDataDirForTests();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('sends a fixed reason code only: no message, errno text, path or scope id', async () => {
+    const leaked = join(root, 'chat-storage-v2', scope.worktreeId, 'journal');
+    const promote = jest
+      .spyOn(ChatStateV2Backend.prototype, 'promoteToFormat4')
+      .mockRejectedValue(
+        Object.assign(
+          new Error(
+            `ENOSPC: no space left on device, open '${leaked}' for ${scope.worktreeId}`,
+          ),
+          { code: 'ENOSPC', path: leaked, syscall: 'open' },
+        ),
+      );
+    const target = drainAfterTest(
+      new ChatStateV2Repository({
+        resolvePaths: pathsFor,
+        enableFormat4: true,
+        deltaJournalIdleCheckpointMs: 60_000,
+        idleScopeUnloadMs: 0,
+      }),
+    );
+    let now = 0;
+    const sweep = new ChatFormat4Sweep({
+      dataDir: root,
+      target: repositoryChatFormat4SweepTarget(target, () => true),
+      resolveStore: (): ChatStorageV2 =>
+        ChatStorageV2.fromLegacyPaths(pathsFor()),
+      report: recordChatFormat4Outcome,
+      conditions: {
+        turnInFlight: (): boolean => false,
+        idleMs: (): number => Number.MAX_SAFE_INTEGER,
+        onBattery: (): boolean => false,
+        freeBytes: (): Promise<number | undefined> =>
+          Promise.resolve(1024 ** 4),
+      },
+      clock: {
+        now: (): number => now,
+        sleep: (): Promise<void> => Promise.resolve(),
+      },
+    });
+    try {
+      await sweep.beginLaunch();
+      for (let pass = 0; pass < 8; pass += 1) {
+        now += 3_600_000;
+        await sweep.runPass();
+      }
+    } finally {
+      promote.mockRestore();
+    }
+    await settle();
+    const contexts = sentContexts();
+    expect(contexts).toContainEqual(
+      expect.objectContaining({
+        format4_event: 'sweep_scope_backed_off',
+        format4_reason: 'disk_full',
+      }),
+    );
+    for (const context of contexts) expectOnlyDeclaredFields(context);
+    const sent = JSON.stringify(contexts);
+    for (const secret of [
+      root,
+      leaked,
+      scope.worktreeId,
+      scope.projectId,
+      'ENOSPC',
+      'no space left',
+      'open',
+    ])
+      expect(sent).not.toContain(secret);
   });
 });

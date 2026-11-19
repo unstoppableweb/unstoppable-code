@@ -14,6 +14,15 @@ import type {
 /** The mirror accepts and serves global Agent Ledger scopes. */
 export const LEDGER_GLOBAL_CAPABILITY = 'ledger-global-v1';
 
+/**
+ * A shared skill create honours `expectedAudience` (CAN-7037): it refuses,
+ * before any change, to return or relink an identical skill that reaches
+ * anyone else. A client that must not reach an older server, which would
+ * relink a public skill's package, checks for it first.
+ */
+export const SKILL_CREATE_EXPECTED_AUDIENCE_CAPABILITY =
+  'skill-create-expected-audience-v1';
+
 export const CANOPY_SERVER_CAPABILITIES = [
   'account-v1',
   'resource-context-v1',
@@ -22,6 +31,8 @@ export const CANOPY_SERVER_CAPABILITIES = [
   'teams-v1',
   'portal-v1',
   'skills-crud-v1',
+  // Optional: an older server ignores a create's expectedAudience (CAN-7037).
+  SKILL_CREATE_EXPECTED_AUDIENCE_CAPABILITY,
   'plugins-crud-v1',
   'agents-crud-v1',
   'collections-crud-v1',

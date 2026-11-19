@@ -22,6 +22,7 @@ export async function runDesktopOpenCodePipelinePrompt(
         generation: number;
         approval: ApprovalSessionHandle;
         signal: AbortSignal;
+        env: NodeJS.ProcessEnv;
       }
     | undefined;
   const attributionOptions = {
@@ -80,6 +81,7 @@ export async function runDesktopOpenCodePipelinePrompt(
         const context = {
           generation: runtime.generation,
           approval,
+          env: runtime.env,
           signal: runtimeSignal,
         };
         active = context;
@@ -128,6 +130,7 @@ export async function runDesktopOpenCodePipelinePrompt(
         profile,
         capabilitySignal,
         currentApproval,
+        context.env,
       );
     },
     authorize: async (input, signal) => {

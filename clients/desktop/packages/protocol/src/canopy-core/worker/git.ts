@@ -10,7 +10,21 @@ import {
 export const WORKER_GIT_GRANTS = {
   read: 'worker.git.read',
   write: 'worker.git.write',
+  /**
+   * `worker.git.worktree.{add,remove,prune}` only, apart from `write` so that
+   * granting `write` never admits them (CAN-7197). No standing principal holds
+   * it: desktop source-change apply adds it one call at a time.
+   */
+  worktreeWrite: 'worker.git.worktree.write',
 } as const;
+
+/**
+ * Grants only a command adds, to its own calls. A caller whose grants are
+ * derived from the definitions it reaches must leave these out (CAN-7197).
+ */
+export const WORKER_GIT_COMMAND_ONLY_GRANTS: ReadonlySet<string> = new Set([
+  WORKER_GIT_GRANTS.worktreeWrite,
+]);
 
 /**
  * Which fact selected `defaultBranch`: the host's recorded remote default

@@ -105,6 +105,7 @@ import {
   cloudAttachmentPreview,
 } from '@/cloud-chats/cloud-chat-attachments';
 import { trackSelectionSave } from '../selection-saves';
+import { WebCoreSendRefusedError } from '../send-refusal';
 import {
   clearWebCoreModelCatalog,
   useWebCoreModelCatalogStore,
@@ -246,6 +247,10 @@ const core = {
   archiveRefusal: null as string | null,
   /** Set to lose every send reply with a retryable failure. */
   sendFailure: false,
+  /** How many next sends the web core refuses while the worktree rebuilds. */
+  sendsDuringRebuild: 0,
+  /** The Retry-After those refusals carry. */
+  rebuildRetryMs: 1,
   /** Every live chat's unanswered questions, as the task's snapshot carries them. */
   questions: [] as Record<string, unknown>[],
   /** Chats whose questions the snapshot could not read. */
@@ -649,6 +654,26 @@ function side(): Side {
               };
               return (core.sendGate ?? Promise.resolve()).then(() => lost);
             }
+            if (core.sendsDuringRebuild > 0) {
+              core.sendsDuringRebuild -= 1;
+              // As the web core answers a send its admission refused.
+              return Promise.resolve({
+                ok: false,
+                error: {
+                  kind: 'unavailable',
+                  message:
+                    'This worktree is being rebuilt. Check again in a moment.',
+                  retry: {
+                    kind: 'same_idempotency_key',
+                    delayMs: core.rebuildRetryMs,
+                  },
+                  details: {
+                    reason: 'cloud_refused',
+                    cloudCode: 'cloud-worktree-recovery-in-progress',
+                  },
+                },
+              });
+            }
             const sent = SENDS[String(params.text)];
             if (sent === undefined) throw new Error('unexpected send');
             const reply = ok({
@@ -792,6 +817,8 @@ const closers: (() => void)[] = [];
 afterEach(() => {
   for (const close of closers.splice(0)) close();
   core.updateGate = null;
+  core.sendsDuringRebuild = 0;
+  core.rebuildRetryMs = 1;
   core.setModelRefusal = null;
   core.model = undefined;
   core.harness = undefined;
@@ -2282,6 +2309,140 @@ it('the desktop store refuses a cloud plan request and stops a starting turn by 
   ).rejects.toThrow('The reply was lost.');
   core.sendFailure = false;
   expect(sends()).toBe(before + 1);
+});
+
+it('holds a send made during a worktree rebuild and resends it under its command, never refused (REG-3119)', async () => {
+  const io = side();
+  const desktop = desktopPath(io);
+  await settle();
+  // Refused at admission, before any Core post: the same command is safe.
+  core.sendsDuringRebuild = 2;
+  const result = await desktop.backend.sendMessage({
+    ...SCOPE,
+    chatId: CHAT_KEY,
+    userMessageId: 'desktop-rebuild',
+    text: 'next',
+  });
+  expect(result).toBeDefined();
+  const sends = io.calls.filter(
+    (call) => call.method === 'core.chat.message.send',
+  );
+  expect(sends).toHaveLength(3);
+  expect(new Set(sends.map((call) => call.params.commandId)).size).toBe(1);
+  // Never treated as a lost send: no receipt read.
+  expect(
+    io.calls.filter((call) => call.method === 'core.chat.send.receipt'),
+  ).toEqual([]);
+
+  // The connection ends while the send waits: the send fails unsent, and the
+  // connection that replaces it never posts it outside its claim.
+  core.sendsDuringRebuild = 1;
+  core.rebuildRetryMs = 60_000;
+  const held = desktop.backend.sendMessage({
+    ...SCOPE,
+    chatId: CHAT_KEY,
+    userMessageId: 'desktop-rebuild-closed',
+    text: 'next',
+  });
+  await settle();
+  const sentBeforeClose = io.calls.filter(
+    (call) => call.method === 'core.chat.message.send',
+  ).length;
+  desktop.backend.closeAll();
+  await expect(held).rejects.toMatchObject({ code: 'capability_unavailable' });
+  expect(
+    io.calls.filter((call) => call.method === 'core.chat.message.send'),
+  ).toHaveLength(sentBeforeClose);
+});
+
+it('drops a send whose worktree rebuild outlasts the wait unsent, never posting it after the deadline (REG-3119)', async () => {
+  const io = side();
+  const desktop = desktopPath(io);
+  await settle();
+  const sends = (): number =>
+    io.calls.filter((call) => call.method === 'core.chat.message.send').length;
+  const before = sends();
+  // Posts at 0, 4 and 8 minutes; the last wait ends at the 10-minute
+  // deadline, not at the Retry-After's 12.
+  core.sendsDuringRebuild = 100;
+  core.rebuildRetryMs = 4 * 60_000;
+  jest.useFakeTimers();
+  try {
+    let settled = false;
+    const outcome = desktop.backend
+      .sendMessage({
+        ...SCOPE,
+        chatId: CHAT_KEY,
+        userMessageId: 'desktop-rebuild-expired',
+        text: 'next',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      )
+      .finally(() => {
+        settled = true;
+      });
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    expect(settled).toBe(true);
+    expect(sends()).toBe(before + 3);
+    await jest.advanceTimersByTimeAsync(3 * 60_000);
+    const error = await outcome;
+    expect(sends()).toBe(before + 3);
+    // Refused before any post: the composer takes it back, with no receipt
+    // read as for a send that may have landed.
+    expect(error).toBeInstanceOf(WebCoreSendRefusedError);
+    expect(
+      io.calls.filter((call) => call.method === 'core.chat.send.receipt'),
+    ).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('drops a send stopped while a worktree rebuild holds it unsent, never posting it again (REG-3119)', async () => {
+  const io = side();
+  const desktop = desktopPath(io);
+  await settle();
+  const sends = (): number =>
+    io.calls.filter((call) => call.method === 'core.chat.message.send').length;
+  const before = sends();
+  core.sendsDuringRebuild = 100;
+  core.rebuildRetryMs = 60_000;
+  jest.useFakeTimers();
+  try {
+    const outcome = desktop.backend
+      .sendMessage({
+        ...SCOPE,
+        chatId: CHAT_KEY,
+        userMessageId: 'desktop-rebuild-stopped',
+        text: 'next',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    await jest.advanceTimersByTimeAsync(1_000);
+    expect(sends()).toBe(before + 1);
+    // Stop during the Retry-After wait ends it: nothing more is posted.
+    const stopped = desktop.backend.cancel({ ...SCOPE, chatId: CHAT_KEY });
+    await jest.advanceTimersByTimeAsync(5 * 60_000);
+    expect(sends()).toBe(before + 1);
+    const error = await outcome;
+    // Never posted past the refusal: the composer takes it back, with no
+    // receipt read and no turn to cancel.
+    expect(error).toBeInstanceOf(WebCoreSendRefusedError);
+    await expect(stopped).resolves.toEqual({ outcome: 'turn_not_active' });
+    expect(
+      io.calls.filter(
+        (call) =>
+          call.method === 'core.chat.send.receipt' ||
+          call.method === 'core.chat.turn.cancel',
+      ),
+    ).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 it('the live follower expires a stopped reply by its turn and stops retrying a chat it no longer follows', async () => {

@@ -12,6 +12,7 @@ import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CursorApprovalCheck } from './CursorApprovalCheck';
 import { type JSX, type ReactNode, useMemo } from 'react';
 import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
+import { useCloudAccountAvailable } from '@/lib/cloud-account';
 import { CanopyCloudAccountSection } from './CanopyCloudAccountSection';
 import { ModelGatewayCredentialSection } from './ModelGatewayCredentialSection';
 import {
@@ -124,6 +125,8 @@ function LlmProviderSection({
 export function AccountTab(): JSX.Element {
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const hostedSettingsAvailable = useHostedSettingsAvailable();
+  // No hosted account to sign in to in a local-only build.
+  const cloudAccountAvailable = useCloudAccountAvailable();
 
   if (hostedSettingsAvailable) {
     return (
@@ -136,11 +139,13 @@ export function AccountTab(): JSX.Element {
 
   return (
     <SettingsPage title="Accounts" dataTestId="settings-tab-account">
-      <SettingsSection>
-        <SettingsGroup>
-          <CanopyCloudAccountSection />
-        </SettingsGroup>
-      </SettingsSection>
+      {cloudAccountAvailable && (
+        <SettingsSection>
+          <SettingsGroup>
+            <CanopyCloudAccountSection />
+          </SettingsGroup>
+        </SettingsSection>
+      )}
 
       <LlmProviderSection cursorReleased={cursorReleased} />
 

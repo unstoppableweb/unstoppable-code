@@ -3,7 +3,7 @@ import type {
   PortalSessionShellState,
 } from '@canopy/protocol/portal';
 import type { SplitPrProgressEvent } from '@canopy/desktop-shared/types/github';
-import { scheduleDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
+import { requestDesktopSessionSnapshotInvalidation } from './desktop-session-snapshot-invalidation';
 
 type SplitPrProjection = Pick<
   PortalSessionShellState['worktrees'][number],
@@ -32,7 +32,7 @@ export function setSplitPrRuntimeProjection(
     splitPrStatus: status,
     splitPrStatusMessage: message,
   });
-  scheduleDesktopSessionSnapshotInvalidation();
+  requestDesktopSessionSnapshotInvalidation('split-pr.set');
 }
 
 export function clearSplitPrRuntimeProjection(
@@ -40,7 +40,7 @@ export function clearSplitPrRuntimeProjection(
   worktreeId: string,
 ): void {
   if (runtimeByWorktree.delete(key(workspaceId, worktreeId))) {
-    scheduleDesktopSessionSnapshotInvalidation();
+    requestDesktopSessionSnapshotInvalidation('split-pr.clear');
   }
 }
 

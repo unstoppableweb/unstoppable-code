@@ -150,6 +150,27 @@ const REQUESTS: readonly {
     },
   },
   {
+    label: 'MCP tool call as one of several accounts',
+    request: {
+      requestId: 'mcp-account',
+      title: 'Use a connected tool',
+      details: {
+        kind: 'mcp',
+        server: 'appproxy-slack-globex--0123456789abcdef',
+        tool: 'send_message',
+        connector: 'Slack',
+        account: 'globex',
+        paramsDisplay:
+          '{\n  "channel": "#launch",\n  "text": "Shipping today"\n}',
+      },
+      suggestedTarget: {
+        kind: 'mcp',
+        server: 'appproxy-slack-globex--0123456789abcdef',
+        tool: 'send_message',
+      },
+    },
+  },
+  {
     label: 'Network access',
     request: {
       requestId: 'network',

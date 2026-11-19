@@ -1,6 +1,7 @@
 import { readMcpActivationRecord } from '@canopy/protocol/mcp-servers';
 import {
   CANOPY_STREAM_DEFINITIONS,
+  CORE_CHAT_EVENTS_INITIATED_REVISION,
   type CanopyErrorPayload,
   type CanopyStreamCursor,
   type CanopyStreamItem,
@@ -111,7 +112,40 @@ function projectMessage(
   };
 }
 
-function projectEvent(event: ChatStateChangedEvent): object {
+type ChatStateChange = ChatStateChangedEvent['changes'][number];
+
+// Revision 4's `chat.initiated` (CAN-4174). A subscription that didn't ask for
+// revision 4 gets the change that stands in for it, as revision 3 does for
+// `sandbox.changed`: an empty patch that changes nothing and keeps the batch,
+// and its revision, whole.
+function initiatedStandIn(
+  change: Extract<ChatStateChange, { type: 'chat.initiated' }>,
+): Extract<ChatStateChange, { type: 'tab.metadata_patched' }> {
+  return { type: 'tab.metadata_patched', tabId: change.chatId, patch: {} };
+}
+
+/**
+ * The event for the legacy `chat:state-changed` push, which remote
+ * controllers also receive, with the revision 4 stand-in in place of every
+ * `chat.initiated`. An event without one is returned as is.
+ */
+export function legacyChatStateEvent(
+  event: ChatStateChangedEvent,
+): ChatStateChangedEvent {
+  if (!event.changes.some((change) => change.type === 'chat.initiated'))
+    return event;
+  return {
+    ...event,
+    changes: event.changes.map((change) =>
+      change.type === 'chat.initiated' ? initiatedStandIn(change) : change,
+    ),
+  };
+}
+
+function projectEvent(
+  event: ChatStateChangedEvent,
+  initiated: boolean,
+): object {
   return {
     ...event,
     changes: event.changes.map((change) => {
@@ -138,6 +172,8 @@ function projectEvent(event: ChatStateChangedEvent): object {
           ...change,
           messages: change.messages.map(projectMessage),
         };
+      if (change.type === 'chat.initiated')
+        return initiated ? change : initiatedStandIn(change);
       if (change.type === 'runtime.patched') {
         const runtime = projectChatRuntime(change.runtime);
         delete runtime.queuedMessages;
@@ -186,17 +222,27 @@ export function createCoreChatEventsAdapter(
   let legacyStrandedUnsubscribe: (() => void) | undefined;
   let legacyClosed = false;
   const legacyBacklog: ChatStateChangedEvent[] = [];
-  const portable = new WeakMap<
-    ChatStateChangedEvent,
-    CanopyStreamItem<'core.chat.events'> | null
-  >();
+  const portableMemos = {
+    standIn: new WeakMap<
+      ChatStateChangedEvent,
+      CanopyStreamItem<'core.chat.events'> | null
+    >(),
+    initiated: new WeakMap<
+      ChatStateChangedEvent,
+      CanopyStreamItem<'core.chat.events'> | null
+    >(),
+  };
   const portableItem = (
     event: ChatStateChangedEvent,
+    initiated: boolean,
   ): CanopyStreamItem<'core.chat.events'> | null => {
+    const portable = initiated
+      ? portableMemos.initiated
+      : portableMemos.standIn;
     const memo = portable.get(event);
     if (memo !== undefined) return memo;
     const parsed = CANOPY_STREAM_DEFINITIONS['core.chat.events'].item.safeParse(
-      projectEvent(event),
+      projectEvent(event, initiated),
     );
     const item = parsed.success ? parsed.data : null;
     portable.set(event, item);
@@ -205,6 +251,7 @@ export function createCoreChatEventsAdapter(
   const openScoped = (
     scope: { projectId: string; worktreeId: string },
     cursor: CanopyStreamCursor | null,
+    initiated: boolean,
     sink: Parameters<EventsHandler['core.chat.events']>[2],
   ): Promise<() => void> => {
     if (!replay.attach()) throw new Error('Chat state service is unavailable.');
@@ -227,7 +274,7 @@ export function createCoreChatEventsAdapter(
       if (ended) return;
       if (position !== null && event.revision <= position) return;
       if (position !== null && event.baseRevision > position) return endLost();
-      const item = portableItem(event);
+      const item = portableItem(event, initiated);
       if (!item) return endLost();
       // Before emitting: onFrame runs synchronously and may publish the next batch.
       position = event.revision;
@@ -272,11 +319,23 @@ export function createCoreChatEventsAdapter(
     },
     handlers: {
       'core.chat.events': (params, context, sink): Promise<() => void> => {
-        // A cloud chat's meters (CAN-6509); desktop advertises no revision.
-        if (params.revision !== undefined)
+        // Revision 4 only (CAN-4174), served but not advertised. Revisions 2,
+        // 3 and 5 carry a cloud chat's meters, sandbox and agent work
+        // (CAN-6746), which desktop lacks.
+        if (
+          params.revision !== undefined &&
+          params.revision !== CORE_CHAT_EVENTS_INITIATED_REVISION
+        )
           return Promise.reject(unservedRevision());
+        const initiated =
+          params.revision === CORE_CHAT_EVENTS_INITIATED_REVISION;
         if (params.scope !== 'all')
-          return openScoped(params.scope, params.cursor ?? null, sink);
+          return openScoped(
+            params.scope,
+            params.cursor ?? null,
+            initiated,
+            sink,
+          );
         const port = getPort();
         if (!port) throw new Error('Chat state service is unavailable.');
         const legacy =
@@ -293,7 +352,7 @@ export function createCoreChatEventsAdapter(
           event: ChatStateChangedEvent,
         ): CanopyStreamCursor | null => {
           const item = CANOPY_STREAM_DEFINITIONS['core.chat.events'].item.parse(
-            projectEvent(event),
+            projectEvent(event, initiated),
           );
           const settleCapture = captureEvent(event, context);
           const cursor = sink.emit(item, (assignedCursor) => {

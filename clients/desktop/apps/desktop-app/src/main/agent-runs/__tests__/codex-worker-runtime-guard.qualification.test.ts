@@ -11,6 +11,7 @@ import {
 } from '../codex-worker-runtime';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { runInHelperWorker } from '../../helper-runs/helper-worker-context';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 
 // The worker runtime's pool owns every Codex app-server spawn; its factory is faked here.
 interface AttachRequest {
@@ -201,11 +202,17 @@ it('a context continued from a run still admits', async () => {
 
 it('the worker runtime constructs Codex providers only inside a run', async () => {
   await expect(
-    getCodexWorkerRuntime().providerFor('codex', () => null),
+    getCodexWorkerRuntime().providerFor(
+      'codex',
+      windowAgentInterfacePort(() => null),
+    ),
   ).rejects.toBeInstanceOf(AgentOutsideWorkerError);
 
   await runInAgentWorker({ kind: 'turn', runId: 't' }, () =>
-    getCodexWorkerRuntime().providerFor('codex', () => null),
+    getCodexWorkerRuntime().providerFor(
+      'codex',
+      windowAgentInterfacePort(() => null),
+    ),
   );
   expect(mockProviders).toHaveLength(1);
   expect(mockProviders[0]?.emitIngestionLag).toEqual(expect.any(Function));
@@ -221,7 +228,10 @@ it('the worker runtime constructs Codex providers only inside a run', async () =
 
 it('Ollama on the Codex harness keeps its invocation', async () => {
   await runInAgentWorker({ kind: 'turn', runId: 't' }, () =>
-    getCodexWorkerRuntime().providerFor('ollama', () => null),
+    getCodexWorkerRuntime().providerFor(
+      'ollama',
+      windowAgentInterfacePort(() => null),
+    ),
   );
   const provider = mockProviders[0];
   expect(provider?.providerType).toBe('ollama');

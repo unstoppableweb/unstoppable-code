@@ -35,10 +35,8 @@ function observeRollout(): void {
     invalidateAntigravityModels();
     // Hydrated Portal catalogs need an explicit push; renderer registry
     // broadcasts alone do not refresh their chat-summary projections.
-    void import('../portal/portal-event-bus')
-      .then(({ notifyPortalModelCatalogChanged }) =>
-        notifyPortalModelCatalogChanged(),
-      )
+    void import('../remote-projection/agent-catalog-compatibility')
+      .then(({ notifyModelCatalogChanged }) => notifyModelCatalogChanged())
       .catch(() => undefined);
   });
 }

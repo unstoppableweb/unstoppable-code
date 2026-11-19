@@ -422,6 +422,11 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
 
     if (!recovering) recordWorktreeChatTouch(key);
     const source = event.source ?? getPendingPlanExitSource(event.toolInput);
+    // Read before the plan exit marks the tab pending, so a proposal after a
+    // dismissed Antigravity plan creates a new plan instead of reopening it.
+    const priorReviewStatus = get().worktreeChats[key]?.tabs.find(
+      (tab) => tab.id === event.chatId,
+    )?.trackedPlanReviewStatus;
     let unreadToast: UnreadChatToastOptions | null = null;
     let osPlanPing: UnreadChatToastOptions | null = null;
 
@@ -504,7 +509,9 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
     }
 
     const proposalSource =
-      source === 'codex' || source === 'cursor' ? source : undefined;
+      source === 'codex' || source === 'cursor' || source === 'antigravity'
+        ? source
+        : undefined;
     if (
       proposalSource &&
       isPlanProposal({
@@ -519,9 +526,13 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
       const existingTab = get().worktreeChats[key]?.tabs.find(
         (tab) => tab.id === event.chatId,
       );
+      const reuseReviewStatus =
+        proposalSource === 'antigravity'
+          ? priorReviewStatus
+          : existingTab?.trackedPlanReviewStatus;
       const existingPlanId =
         existingTab?.trackedPlanSource === proposalSource &&
-        existingTab.trackedPlanReviewStatus !== 'dismissed'
+        reuseReviewStatus !== 'dismissed'
           ? existingTab.trackedPlanId
           : undefined;
 

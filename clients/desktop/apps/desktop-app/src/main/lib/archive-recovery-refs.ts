@@ -1,3 +1,5 @@
+import { matchesRecordedRepositoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { isConfirmedPendingArchiveRecovery } from './archive-recovery-confirmation-scope';
 import { realpath, lstat } from 'node:fs/promises';
 import { getCanopyDataDir } from '@canopy/desktop-shared/canopy-paths';
@@ -86,8 +88,11 @@ export async function isArchiveRecoveryRefHeld(
   for (const repository of relevant) {
     const heldCommonDir = await realpath(repository.commonDir);
     if (
-      (await archiveRecoveryRepositoryIdentity(heldCommonDir)) !==
-      repository.identity
+      !matchesRecordedRepositoryIdentity(
+        repository.identity,
+        await archiveRecoveryRepositoryIdentity(heldCommonDir),
+        hostOperatingSystem(),
+      )
     )
       throw new ArchiveRecoveryRefusedError(
         'Retained recovery repository identity changed.',

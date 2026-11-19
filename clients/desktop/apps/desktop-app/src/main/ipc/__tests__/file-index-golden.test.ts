@@ -601,8 +601,8 @@ describe('multi-repository worktree', () => {
     await put(join(api, '.gitignore'), 'dist/\n');
     await put(join(api, 'dist', 'bundle.js'));
     await put(join(api, 'server.ts'));
-    // A Git-aware root that is not a repository: the listing fails and marks
-    // nothing.
+    // A Git-aware root that is not a repository: the listing fails, so the
+    // default ignore list marks dist/ and the walk visits it last (CAN-7114).
     await put(join(web, 'dist', 'bundle.js'));
     await put(join(web, 'app.tsx'));
     await put(join(attachments, 'shot.png'));
@@ -631,7 +631,10 @@ describe('multi-repository worktree', () => {
           file(api, 'server.ts'),
           file(api, 'dist/bundle.js', true),
         ]),
-        repo(webRoot, [file(web, 'dist/bundle.js'), file(web, 'app.tsx')]),
+        repo(webRoot, [
+          file(web, 'app.tsx'),
+          file(web, 'dist/bundle.js', true),
+        ]),
         repo(attachmentsRoot, [file(attachments, 'shot.png')]),
       ],
     };

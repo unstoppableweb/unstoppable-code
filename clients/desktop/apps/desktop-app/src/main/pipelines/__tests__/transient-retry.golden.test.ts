@@ -4,7 +4,9 @@
 // execution see: which pauses are retried, after how long, with which status
 // reasons, how many times, what the countdown shows, and what stops a retry.
 // It deliberately leaves out what CAN-4175 changes on purpose: the retry's
-// origin and what happens across a restart.
+// origin and what happens across a restart. Since the scheduler records each
+// retry as initiated work, it runs over a real engine and operation ledger.
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -23,6 +25,10 @@ import type {
   PipelineStatusReasonKind,
   PipelineTransientRetryState,
 } from '@canopy/execution-engine/types/pipeline';
+import { InitiatedWorkEngine } from '@canopy/core-runtime/node/initiated-work';
+import { OperationService } from '@canopy/core-runtime/node/operations';
+import { OperationLedger } from '@canopy/core-runtime/node/operations/ledger';
+import { INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE } from '@canopy/protocol/canopy-core';
 import {
   cancelPendingTransientRetryTimer,
   initTransientErrorRetryScheduler,
@@ -60,6 +66,9 @@ interface Harness {
 
 let harness: Harness;
 let reasonCounter = 0;
+let ledgerDir: string;
+let operations: OperationService;
+let engine: InitiatedWorkEngine;
 
 function reasonId(): string {
   reasonCounter += 1;
@@ -146,10 +155,25 @@ function lastShown(): PipelineTransientRetryState | undefined {
   return harness.shown.at(-1);
 }
 
-beforeEach(() => {
-  jest.useFakeTimers({ now: START });
+beforeEach(async () => {
+  jest.useFakeTimers({ now: START, doNotFake: ['nextTick', 'setImmediate'] });
   reasonCounter = 0;
   resetTransientErrorRetrySchedulerForTests();
+  ledgerDir = mkdtempSync(join(tmpdir(), 'canopy-transient-retry-'));
+  operations = new OperationService({
+    openLedger: (): OperationLedger =>
+      OperationLedger.open(join(ledgerDir, 'operations.sqlite')),
+  });
+  engine = new InitiatedWorkEngine({
+    operations,
+    recoverableOrigins: [
+      {
+        kind: 'system',
+        sourceId: INITIATED_WORK_PIPELINE_TRANSIENT_RETRY_SOURCE,
+      },
+    ],
+  });
+  await operations.ready();
   harness = {
     resumes: [],
     shown: [],
@@ -157,6 +181,19 @@ beforeEach(() => {
     resumeAnswer: 'started',
   };
   initTransientErrorRetryScheduler({
+    engine,
+    listRetryRuns: (executionId) =>
+      operations
+        .list({
+          scope: { executionId },
+          kinds: ['core.initiatedWork.run'],
+          limit: 50,
+        })
+        .then((page) => page.items),
+    readExecution: () => Promise.resolve(null),
+    listPausedExecutions: () => Promise.resolve([]),
+    listExecutionControls: () => Promise.resolve([]),
+    getWindow: () => null,
     emitEvent: (sent) => harness.shown.push(sent.state.transient_retry),
     readPreferences: () => Promise.resolve({ ...harness.preferences }),
     resume: (request) => {
@@ -177,7 +214,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  engine.stopStarting();
   resetTransientErrorRetrySchedulerForTests();
+  operations.close();
+  rmSync(ledgerDir, { recursive: true, force: true });
   jest.useRealTimers();
 });
 

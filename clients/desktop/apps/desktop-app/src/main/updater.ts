@@ -1,6 +1,7 @@
 import { load } from 'js-yaml';
 import { app } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
 import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { restoreStartupEnvironmentForRelaunch } from '@canopy/execution-engine/pipelines/config-paths';
 import {
@@ -21,6 +22,7 @@ import electronUpdater from 'electron-updater';
 import {
   cleanupWindowsUpdateTempFiles,
   createWindowsUpdateVerifier,
+  windowsUpdateErrorCode,
   windowsUpdateErrorMessage,
 } from './updater/windows-update';
 import { logMainProcessError } from './lib/main-process-logging';
@@ -50,6 +52,7 @@ import {
 } from './updater/brand-github-provider';
 import { sendToWindow, type SendableBrowserWindow } from './lib/window-send';
 import { getCanopyReleaseFlavor } from './lib/app-identity';
+import { isLocalOnlyBuild } from './local-only/profile';
 import {
   getInternalReleaseIndicatorForDisplay,
   toInternalReleaseIndicator,
@@ -76,6 +79,9 @@ const STABLE_UPDATE_ERROR = `${BRAND.displayName} updates are temporarily unavai
 const STABLE_FEED_UNCONFIGURED_ERROR = `${BRAND.displayName} updates are not configured for this build.`;
 const UNPACKAGED_BUILD_ERROR = `App updates are only available in packaged ${BRAND.displayName} builds.`;
 const SOURCE_BUILD_UPDATE_ERROR = `App updates are disabled in source-built ${BRAND.displayName}. Rebuild from source to update.`;
+// Local-only builds (docs/local-only-build.md) are source builds with every
+// hosted service off, including the update feed.
+const LOCAL_ONLY_BUILD_UPDATE_ERROR = `App updates are off in a local-only ${BRAND.displayName} build. Rebuild from source to update.`;
 // The distribution identity is bundled at compile time. A runtime environment
 // variable must never turn a source installation into an official updater client.
 const IS_SOURCE_BUILD =
@@ -425,8 +431,9 @@ function maybeRunDeferredInstall(): void {
     if (!isDeferredInstallReady()) {
       return;
     }
-    void runInstallUpdate().catch(() => {
+    void runInstallUpdate().catch((error: unknown) => {
       // The updater state/event already captures the failure.
+      reportUpdaterFailure('install_deferred', error);
     });
   }, DEFERRED_INSTALL_IDLE_DEBOUNCE_MS);
 }
@@ -478,6 +485,39 @@ function shouldMaskStableBackendError(resolvedMessage: string): boolean {
   );
 }
 
+type UpdaterFailureStage =
+  | 'check_initial'
+  | 'check_periodic'
+  | 'install_deferred'
+  | 'download_background'
+  | 'event_error';
+
+const reportedUpdaterFailures = new Set<string>();
+/** electron-updater emits `error` and rejects with the same error object, so
+ * one failure is reported under the first stage that sees it. */
+const reportedUpdaterErrors = new WeakSet<object>();
+
+/** Report a background updater failure once per session per stage and closed
+ * Windows code. Only the fixed source and frames leave, never the message. */
+function reportUpdaterFailure(
+  stage: UpdaterFailureStage,
+  error: unknown,
+): void {
+  if (typeof error === 'object' && error !== null) {
+    if (reportedUpdaterErrors.has(error)) return;
+    reportedUpdaterErrors.add(error);
+  }
+  const code = windowsUpdateErrorCode(error);
+  const source = code === null ? `update.${stage}` : `update.${stage}.${code}`;
+  if (reportedUpdaterFailures.has(source)) return;
+  reportedUpdaterFailures.add(source);
+  try {
+    reportMainAppError(error, { source });
+  } catch {
+    // Reporting must never change updater behavior.
+  }
+}
+
 function handleUpdaterError(
   error: unknown,
   options: { maskStableBackendError?: boolean } = {},
@@ -508,6 +548,8 @@ function handleUpdaterError(
 }
 
 function ensureDistributionAllowsUpdates(): void {
+  if (isLocalOnlyBuild())
+    throw handleUpdaterError(new Error(LOCAL_ONLY_BUILD_UPDATE_ERROR));
   if (IS_SOURCE_BUILD)
     throw handleUpdaterError(new Error(SOURCE_BUILD_UPDATE_ERROR));
 }
@@ -1005,8 +1047,9 @@ async function maybeStartBackgroundDownload(): Promise<void> {
   }
   try {
     await downloadUpdate();
-  } catch {
+  } catch (error) {
     // Errors are surfaced through the updater state stream.
+    reportUpdaterFailure('download_background', error);
   }
 }
 
@@ -1099,6 +1142,7 @@ function ensureListenersRegistered(): void {
   autoUpdater.on('error', (error: unknown) => {
     if (hostPlatformOperatingSystem() === 'linux') return;
     handleUpdaterError(error, { maskStableBackendError: true });
+    reportUpdaterFailure('event_error', error);
   });
 
   listenersRegistered = true;
@@ -1111,8 +1155,9 @@ function scheduleInitialCheck(): void {
 
   startupTimer = setTimeout(() => {
     startupTimer = null;
-    void runAutomaticCheck().catch(() => {
+    void runAutomaticCheck().catch((error: unknown) => {
       // The service state/event already captures the failure.
+      reportUpdaterFailure('check_initial', error);
     });
   }, INITIAL_CHECK_DELAY_MS);
 }
@@ -1134,8 +1179,9 @@ function scheduleAutomaticChecks(): void {
   }
 
   periodicTimer = setInterval(() => {
-    void runAutomaticCheck().catch(() => {
+    void runAutomaticCheck().catch((error: unknown) => {
       // The service state/event already captures the failure.
+      reportUpdaterFailure('check_periodic', error);
     });
   }, PERIODIC_CHECK_INTERVAL_MS);
 }
@@ -1148,7 +1194,8 @@ export function startUpdater(
   // Do not even construct electron-updater for source builds: doing so can
   // register its apply-on-quit hook independently of our manual install path.
   // Keep only the window reference so manual actions can explain the policy.
-  if (IS_SOURCE_BUILD) return;
+  // Local-only builds never schedule an update check either.
+  if (IS_SOURCE_BUILD || isLocalOnlyBuild()) return;
   beforeInstallUpdate = beforeInstall ?? null;
   if (
     hostPlatformOperatingSystem() !== 'linux' &&
@@ -1373,6 +1420,12 @@ export function isRendererBusy(): boolean {
 export function getUpdateInstallSupport():
   | { supported: true }
   | { supported: false; reason: string; message: string } {
+  if (isLocalOnlyBuild())
+    return {
+      supported: false,
+      reason: 'local_only_build',
+      message: LOCAL_ONLY_BUILD_UPDATE_ERROR,
+    };
   if (IS_SOURCE_BUILD)
     return {
       supported: false,

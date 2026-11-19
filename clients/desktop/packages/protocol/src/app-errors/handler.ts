@@ -1,4 +1,15 @@
 import { z } from 'zod';
+import {
+  AppErrorOperationFailureSchema,
+  normalizeAppErrorOperationFailure,
+  type AppErrorOperationFailure,
+} from './operation-failure';
+import {
+  appErrorNativeFrames,
+  hasNativeErrorBrand,
+  rememberAppErrorNativeFrames,
+  rememberedAppErrorNativeFrames,
+} from './native-frames';
 import { toAppError, type ToAppErrorOptions } from './create';
 import {
   AppErrorIdentifierSchema,
@@ -10,6 +21,7 @@ import type { ErrorRandomBytes } from './reference-id';
 import { AppErrorSchema, type AppError } from './types';
 
 export interface AppErrorRecord {
+  operationFailure?: AppErrorOperationFailure;
   error: AppError;
   disposition: 'recorded' | 'counted';
   occurrenceCount: number;
@@ -40,19 +52,6 @@ export type AppErrorThrownType =
   | 'symbol'
   | 'function'
   | 'object';
-
-/** V8 can attach a native stack accessor to objects without the Error brand. */
-function hasNativeErrorBrand(value: unknown): value is Error {
-  try {
-    const isError: unknown = Reflect.get(Error, 'isError');
-    return (
-      typeof isError === 'function' &&
-      Reflect.apply(isError, Error, [value]) === true
-    );
-  } catch {
-    return false;
-  }
-}
 
 /** Classify the original throw before an adapter supplies a safe error value. */
 export function getAppErrorThrownType(
@@ -105,6 +104,10 @@ export type AppErrorReportOptions = Pick<ToAppErrorOptions, 'signal'> & {
   source?: string;
   surface?: AppErrorSurface;
   retryFixed?: boolean;
+  operationFailure?: AppErrorOperationFailure;
+  /** V8 `at` frames a daemon sent for the failure it wrapped; they replace the
+   * local wrap-site frames in the diagnostic sink. The caller validates them. */
+  frames?: readonly string[];
 };
 
 export interface AppErrorHandler {
@@ -142,6 +145,7 @@ const ReportOptionsSchema = z
     source: AppErrorIdentifierSchema.optional(),
     surface: AppErrorSurfaceSchema.optional(),
     retryFixed: z.boolean().optional(),
+    operationFailure: AppErrorOperationFailureSchema.optional(),
   })
   .strict();
 
@@ -163,64 +167,17 @@ function errorKey(error: AppError): string {
   ]);
 }
 
-const nativeFrames = new WeakMap<object, readonly string[]>();
-const STACK_FORMATTER = 'prepareStackTrace';
-
-function ownStackGetter(error: Error): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(error, 'stack');
-  return descriptor && Reflect.get(descriptor, 'get');
+function cloneRecord(record: AppErrorRecord): AppErrorRecord {
+  return {
+    ...record,
+    error: AppErrorSchema.parse(record.error),
+    ...(record.operationFailure === undefined
+      ? {}
+      : { operationFailure: { ...record.operationFailure } }),
+  };
 }
 
-const readV8Stack = ownStackGetter(new Error());
-
-/** Remember only frames supplied by V8 before it caches the formatted stack. */
-export function rememberAppErrorNativeFrames(error: unknown): void {
-  try {
-    if (!hasNativeErrorBrand(error) || nativeFrames.has(error)) return;
-    nativeFrames.set(error, []);
-    if (
-      typeof readV8Stack !== 'function' ||
-      typeof ownStackGetter(error) !== 'function'
-    )
-      return;
-    const previous = Object.getOwnPropertyDescriptor(Error, STACK_FORMATTER);
-    if (previous && !('value' in previous)) return;
-    const format: unknown = Reflect.get(Error, STACK_FORMATTER);
-    const capture = (
-      target: Error,
-      sites: readonly { toString(): string }[],
-    ): unknown => {
-      const lines = sites.map((site) => `    at ${site.toString()}`);
-      if (target === error) {
-        nativeFrames.set(
-          error,
-          lines.filter((line) => !/[\r\n]/.test(line)),
-        );
-      }
-      return typeof format === 'function'
-        ? Reflect.apply(format, Error, [target, sites])
-        : [Error.prototype.toString.call(target), ...lines].join('\n');
-    };
-    if (
-      !Reflect.defineProperty(Error, STACK_FORMATTER, {
-        ...previous,
-        value: capture,
-        configurable: true,
-      })
-    )
-      return;
-    try {
-      // Use our intrinsic even when the Error comes from another V8 realm.
-      // Only V8 calling the formatter for this object proves its frames.
-      Reflect.apply(readV8Stack, error, []);
-    } finally {
-      if (previous) Object.defineProperty(Error, STACK_FORMATTER, previous);
-      else Reflect.deleteProperty(Error, STACK_FORMATTER);
-    }
-  } catch {
-    // Hostile or unavailable stack access must not prevent recording.
-  }
-}
+export { appErrorNativeFrames, rememberAppErrorNativeFrames };
 
 const defaultScheduler: AppErrorScheduler = {
   schedule(callback, delayMs): () => void {
@@ -276,17 +233,13 @@ export function createAppErrorHandler(
       for (const sink of sinks) {
         try {
           // Isolate mutation as well as exceptions between sinks.
-          sink({ ...record, error: AppErrorSchema.parse(record.error) });
+          sink(cloneRecord(record));
         } catch {
           // Routing is best effort; recording markers never acknowledge delivery.
         }
       }
       try {
-        diagnosticSink?.(
-          { ...record, error: AppErrorSchema.parse(record.error) },
-          frames,
-          thrownType,
-        );
+        diagnosticSink?.(cloneRecord(record), frames, thrownType);
       } catch {
         // The diagnostic adapter cannot prevent the report from being returned.
       }
@@ -312,7 +265,34 @@ export function createAppErrorHandler(
     value: unknown,
     reportOptions: AppErrorReportOptions = {},
   ): AppErrorReport | undefined {
-    const { signal, nativeError, thrownType, ...metadata } = reportOptions;
+    const { signal, nativeError, thrownType } = reportOptions;
+    // Normalize only the optional operation field; preserve strict validation
+    // of all other keys. A hostile metadata accessor cannot break recording.
+    let operationFailure: AppErrorOperationFailure | undefined;
+    try {
+      operationFailure = normalizeAppErrorOperationFailure(
+        reportOptions.operationFailure,
+      );
+    } catch {
+      // Treat unreadable optional metadata as absent.
+    }
+    const metadata = {
+      ...Object.fromEntries(
+        Object.keys(reportOptions)
+          .filter(
+            (key) =>
+              ![
+                'signal',
+                'nativeError',
+                'thrownType',
+                'operationFailure',
+                'frames',
+              ].includes(key),
+          )
+          .map((key) => [key, Reflect.get(reportOptions, key)]),
+      ),
+      operationFailure,
+    };
     const original =
       thrownType === undefined ? (nativeError ?? value) : undefined;
     if (diagnosticSink && !disposed && !dispatching)
@@ -341,7 +321,14 @@ export function createAppErrorHandler(
     }
     // A sink may dispose the handler while an expired summary is dispatched.
     if (disposed) return { error, disposition: 'none' };
-    const key = errorKey(error);
+    // Supplied frames come from the failure the caller's error only wraps.
+    const suppliedFrame = reportOptions.frames?.[0];
+    const key = JSON.stringify([
+      errorKey(error),
+      presentation.operationFailure?.status ?? null,
+      presentation.operationFailure?.code ?? null,
+      ...(typeof suppliedFrame === 'string' ? [suppliedFrame] : []),
+    ]);
     const existing = buckets.get(key);
     const disposition = error.kind === 'defect' ? 'recorded' : 'counted';
     if (existing) {
@@ -362,9 +349,10 @@ export function createAppErrorHandler(
     }
     if (disposed) return { error, disposition: 'none' };
     const frames =
-      diagnosticSink && original !== null && typeof original === 'object'
-        ? (nativeFrames.get(original) ?? [])
-        : [];
+      reportOptions.frames ??
+      (diagnosticSink && original !== null && typeof original === 'object'
+        ? (rememberedAppErrorNativeFrames(original) ?? [])
+        : []);
     const marked = { ...error, recordedBy: config.host };
     const bucket: Bucket = {
       key,
@@ -381,6 +369,9 @@ export function createAppErrorHandler(
         ...(presentation.surface === undefined
           ? {}
           : { surface: presentation.surface }),
+        ...(presentation.operationFailure === undefined
+          ? {}
+          : { operationFailure: { ...presentation.operationFailure } }),
         appVersion: config.appVersion,
       },
     };

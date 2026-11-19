@@ -9,9 +9,18 @@ import {
 import {
   CLOUD_RUN_COMPOSITE_MODEL_ACTIONS,
   CLOUD_RUN_REPOSITORY_MODEL_INPUTS,
+  cloudMatrixAxisValues,
   cloudModelAliasOf,
+  matrixModelAxisOf,
 } from './cloud-preflight';
-import type { Pipeline, Step } from './document';
+import type {
+  Job,
+  Pipeline,
+  PipelineJsonValue,
+  PipelineMatrixCombination,
+  Step,
+} from './document';
+import { expandStaticMatrix, normalizeMatrixStrategy } from './matrix';
 import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases';
 
 /*
@@ -32,6 +41,13 @@ import { STATIC_MODEL_REFERENCE_ALIASES } from './static-model-reference-aliases
  * judged by the alias's base model (CAN-6439). A step that loads a plugin
  * collection, its own or its alias's, runs only Claude models: the host
  * loads plugins in Claude steps only (CAN-6012).
+ *
+ * A step whose model is `${{ matrix.<axis> }}` is judged by its job's
+ * matrix (CAN-7018). A written-out matrix gives each value its own item,
+ * judged as a fixed model on every step that names the axis, and its
+ * replacement replaces that value in the matrix. A matrix built while the
+ * run runs gives the axis one item, since its values can't be checked
+ * first: the person picks the model those steps run in the cloud.
  */
 
 /**
@@ -78,6 +94,8 @@ const MESSAGES: Readonly<Record<CloudModelPreflightReason, string>> = {
     "Ollama models run on your computer and can't be reached from the cloud.",
   blocked_model: "Your organization's model policy doesn't allow this model.",
   action_harness: 'In cloud runs, this step only runs Claude models.',
+  run_time_model:
+    "This job's matrix picks its models while the run runs, so cloud runs can't check them first. Choose the model these steps use in the cloud.",
 };
 
 /** Why a step that loads a plugin collection needs a Claude model (CAN-6012). */
@@ -96,6 +114,7 @@ const PARITY_IDS: Readonly<Record<CloudModelPreflightReason, string>> = {
   local_model: 'R3',
   blocked_model: 'CP-68',
   action_harness: 'CP-24',
+  run_time_model: 'G4',
 };
 
 const BUILTIN_PREFIX = 'builtin/';
@@ -103,6 +122,20 @@ const BUILTIN_PREFIX = 'builtin/';
 /** `<jobId>#<stepIndex>`: the step an item and its choice belong to. */
 export function cloudModelItemKey(jobId: string, stepIndex: number): string {
   return `${jobId}#${stepIndex}`;
+}
+
+/**
+ * `<jobId>#matrix.<axis>`, or `<jobId>#matrix.<axis>[<n>]` for the `n`th
+ * distinct value a written-out matrix gives the axis (CAN-7018).
+ */
+export function cloudModelMatrixItemKey(
+  jobId: string,
+  axis: string,
+  valueIndex?: number,
+): string {
+  return valueIndex === undefined
+    ? `${jobId}#matrix.${axis}`
+    : `${jobId}#matrix.${axis}[${String(valueIndex)}]`;
 }
 
 /** The bundled model action a step's model runs on. */
@@ -193,24 +226,41 @@ function loadedCollectionOf(
 }
 
 /**
- * The harnesses `step` runs on in the cloud: its action's, without Codex
- * when the model step runs with `permission_preset: none`, which the step
- * runner refuses on the Codex harness because Codex can't disable its native
- * tools, or when it loads a plugin collection, whose plugins the host loads
- * in Claude steps only (CAN-6012). A composite that fixes its model step's
- * preset ignores the step's.
+ * Harnesses the host runs that the cloud runner can't start yet (CAN-7235).
+ * The runner gives its host no Codex environment or MCP launcher, so a Codex
+ * step fails to start and the run ends `host_lost` partway through. Until it
+ * can, preflight lists every Codex step for a replacement before the run
+ * starts. `CLOUD_MODEL_ACTION_HARNESSES` stays equal to the host's table.
+ */
+const CLOUD_RUNNER_UNSTARTED_HARNESSES: ReadonlySet<CloudModelHarness> =
+  new Set<CloudModelHarness>(['codex']);
+
+/**
+ * The harnesses `step` runs on in the cloud: its action's, without the ones
+ * the cloud runner can't start yet (`CLOUD_RUNNER_UNSTARTED_HARNESSES`), and
+ * without Codex when the model step runs with `permission_preset: none`,
+ * which the step runner refuses on the Codex harness because Codex can't
+ * disable its native tools, or when it loads a plugin collection, whose
+ * plugins the host loads in Claude steps only (CAN-6012). A composite that
+ * fixes its model step's preset ignores the step's.
  */
 function harnessesFor(
   step: Step,
   runs: StepModelAction,
   loadsCollection: boolean,
 ): readonly CloudModelHarness[] {
-  const harnesses = CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? [];
+  const harnesses = (CLOUD_MODEL_ACTION_HARNESSES[runs.action] ?? []).filter(
+    (harness) => !CLOUD_RUNNER_UNSTARTED_HARNESSES.has(harness),
+  );
   const preset = runs.ownPermissionPreset
     ? step.with?.permission_preset
     : undefined;
-  return loadsCollection ||
-    (preset !== undefined && String(preset).trim() === 'none')
+  // A preset written as an expression (a matrix variant's, for one) may
+  // be `none` when the step runs, so it runs Claude models only.
+  const maybeNone =
+    preset !== undefined &&
+    (String(preset).trim() === 'none' || String(preset).includes('${{'));
+  return loadsCollection || maybeNone
     ? harnesses.filter((harness) => harness !== 'codex')
     : harnesses;
 }
@@ -256,26 +306,41 @@ function alternativesFor(
     .sort(
       (a, b) =>
         Number(b.harness === preferred) - Number(a.harness === preferred),
-    )
-    .slice(0, CLOUD_MODEL_ALTERNATIVES_MAX);
+    );
 }
 
-/** The step's item, or null when it isn't a model step that needs one. */
-function itemFor(
+/** A model step of a job, with what its model input says. */
+interface ModelStepAt {
+  readonly jobId: string;
+  readonly stepIndex: number;
+  readonly step: Step;
+  readonly runs: StepModelAction;
+  /** The model input as written, trimmed; empty for the action's default. */
+  readonly written: string;
+}
+
+/** Why a step running `written` needs a replacement, and its options. */
+interface StepJudgement {
+  readonly reason: CloudModelPreflightReason;
+  readonly parityId: string;
+  readonly message: string;
+  readonly harness: CloudModelPreflightItem['harness'];
+  readonly alternatives: CloudModelOption[];
+}
+
+/**
+ * How a step judges `written`, its model or one value of its matrix:
+ * null when it runs in the cloud as written, or when `preflightCloudRun`
+ * refuses it outright.
+ */
+function judgeStep(
   pipeline: Pipeline,
-  at: {
-    readonly jobId: string;
-    readonly stepIndex: number;
-    readonly step: Step;
-  },
+  at: ModelStepAt,
+  written: string,
   context: CloudModelContext,
   byId: ReadonlyMap<string, CloudModelOption>,
-): CloudModelPreflightItem | null {
-  const { jobId, stepIndex, step } = at;
-  const runs = modelActionOf(step);
-  if (runs === null) return null;
-  const value = step.with?.[runs.input];
-  const written = value === undefined ? '' : String(value).trim();
+): StepJudgement | null {
+  const { step, runs } = at;
   if (refusedOutright(pipeline, written)) return null;
   // A repository action takes no alias at all; preflight refuses one.
   if (
@@ -299,10 +364,7 @@ function itemFor(
   };
   const reason = reasonFor(judged, context);
   if (reason === null) return null;
-  const harness = local ?? judged.cloud?.harness;
-  const stepName = step.name ?? step.id;
   return {
-    itemKey: cloudModelItemKey(jobId, stepIndex),
     reason,
     parityId:
       loadsCollection && reason === 'action_harness'
@@ -317,18 +379,171 @@ function itemFor(
             '{harness}',
             local !== null && local !== 'ollama' ? HARNESS_NAMES[local] : '',
           ),
-    jobId,
-    stepIndex,
-    ...(stepName === undefined ? {} : { stepName }),
-    uses: step.uses ?? '',
-    model: written,
-    ...(harness === undefined ? {} : { harness }),
+    harness: local ?? judged.cloud?.harness,
     alternatives: alternativesFor(judged, context),
   };
 }
 
+/** The item fields every item of a step shares. */
+function stepFields(at: ModelStepAt): {
+  readonly jobId: string;
+  readonly stepIndex: number;
+  readonly stepName?: string;
+  readonly uses: string;
+} {
+  const stepName = at.step.name ?? at.step.id;
+  return {
+    jobId: at.jobId,
+    stepIndex: at.stepIndex,
+    ...(stepName === undefined ? {} : { stepName }),
+    uses: at.step.uses ?? '',
+  };
+}
+
+/** The step's item, or null when it runs as written. */
+function itemFor(
+  pipeline: Pipeline,
+  at: ModelStepAt,
+  context: CloudModelContext,
+  byId: ReadonlyMap<string, CloudModelOption>,
+): CloudModelPreflightItem | null {
+  const judged = judgeStep(pipeline, at, at.written, context, byId);
+  if (judged === null) return null;
+  return {
+    itemKey: cloudModelItemKey(at.jobId, at.stepIndex),
+    reason: judged.reason,
+    parityId: judged.parityId,
+    message: judged.message,
+    ...stepFields(at),
+    model: at.written,
+    ...(judged.harness === undefined ? {} : { harness: judged.harness }),
+    alternatives: judged.alternatives.slice(0, CLOUD_MODEL_ALTERNATIVES_MAX),
+  };
+}
+
+/**
+ * Options every step can take, in the first's order: a replacement for a
+ * matrix model reaches each step that names the axis.
+ */
+function commonAlternatives(
+  lists: readonly (readonly CloudModelOption[])[],
+): CloudModelOption[] {
+  const [first = [], ...rest] = lists;
+  // Every list whole, so a model each step runs is never cut from one first.
+  return first
+    .filter((option) =>
+      rest.every((list) =>
+        list.some((other) => other.modelId === option.modelId),
+      ),
+    )
+    .slice(0, CLOUD_MODEL_ALTERNATIVES_MAX);
+}
+
+/** Every catalog model a step's action runs and the policy allows. */
+function anyAlternatives(
+  at: ModelStepAt,
+  context: CloudModelContext,
+): CloudModelOption[] {
+  const loadsCollection =
+    loadedCollectionOf(at.step, at.runs.composite, undefined) !== undefined;
+  return alternativesFor(
+    {
+      local: null,
+      cloud: undefined,
+      runs: harnessesFor(at.step, at.runs, loadsCollection),
+    },
+    context,
+  );
+}
+
+/**
+ * The items of one job's matrix axis (CAN-7018), for the model steps of the
+ * job that name it.
+ */
+function matrixItemsFor(
+  pipeline: Pipeline,
+  job: Pick<Job, 'strategy'>,
+  axis: string,
+  steps: readonly ModelStepAt[],
+  context: CloudModelContext,
+  byId: ReadonlyMap<string, CloudModelOption>,
+): CloudModelPreflightItem[] {
+  const [first] = steps;
+  if (first === undefined) return [];
+  const values = cloudMatrixAxisValues(first.jobId, job, axis);
+  // `preflightCloudRun` refuses a matrix it can't read.
+  if (values === null) return [];
+  if (values.kind === 'run_time') {
+    const alternatives = commonAlternatives(
+      steps.map((at) => anyAlternatives(at, context)),
+    );
+    return [
+      {
+        itemKey: cloudModelMatrixItemKey(first.jobId, axis),
+        reason: 'run_time_model',
+        parityId: PARITY_IDS.run_time_model,
+        message: MESSAGES.run_time_model,
+        ...stepFields(first),
+        model: first.written,
+        alternatives,
+        matrix: { axis },
+      },
+    ];
+  }
+  const items: CloudModelPreflightItem[] = [];
+  for (const [valueIndex, value] of values.values.entries()) {
+    // A variant without the axis runs the action's default, which only a
+    // step can name: the route check at step time is its gate. A value too
+    // long for a model id names none.
+    if (value === '' || value.length > 512) continue;
+    const judged = steps.map((at) =>
+      judgeStep(pipeline, at, value, context, byId),
+    );
+    const needs = judged.findIndex((judgement) => judgement !== null);
+    const reasonOf = judged[needs];
+    const at = steps[needs];
+    if (reasonOf === null || reasonOf === undefined || at === undefined)
+      continue;
+    items.push({
+      itemKey: cloudModelMatrixItemKey(first.jobId, axis, valueIndex),
+      reason: reasonOf.reason,
+      parityId: reasonOf.parityId,
+      message: reasonOf.message,
+      ...stepFields(at),
+      model: value,
+      ...(reasonOf.harness === undefined ? {} : { harness: reasonOf.harness }),
+      alternatives: commonAlternatives(
+        steps.map(
+          (step, index) =>
+            judged[index]?.alternatives ??
+            // A step that runs the value as written must run its
+            // replacement too.
+            anyAlternatives(step, context),
+        ),
+      ),
+      matrix: { axis, value },
+    });
+  }
+  return items;
+}
+
+/** The model steps of a job, with what their model inputs say. */
+function modelStepsOf(jobId: string, job: Job): ModelStepAt[] {
+  // Raw text is parsed, not normalized, so a job may lack its steps.
+  if (!Array.isArray(job.steps)) return [];
+  const steps: ModelStepAt[] = [];
+  for (const [stepIndex, step] of job.steps.entries()) {
+    const runs = modelActionOf(step);
+    if (runs === null) continue;
+    const value = step.with?.[runs.input];
+    const written = value === undefined ? '' : String(value).trim();
+    steps.push({ jobId, stepIndex, step, runs, written });
+  }
+  return steps;
+}
+
 /** Whether any step runs a bundled model action, so models need a check. */
-export function hasCloudModelSteps(pipeline: Pipeline): boolean {
+export function hasCloudModelSteps(pipeline: Pick<Pipeline, 'jobs'>): boolean {
   return Object.values(pipeline.jobs).some(
     (job) =>
       Array.isArray(job.steps) &&
@@ -348,12 +563,26 @@ export function findCloudModelItems(
   const byId = new Map(context.catalog.map((model) => [model.modelId, model]));
   const items: CloudModelPreflightItem[] = [];
   for (const [jobId, job] of Object.entries(pipeline.jobs)) {
-    // Raw text is parsed, not normalized, so a job may lack its steps.
-    if (!Array.isArray(job.steps)) continue;
-    for (const [stepIndex, step] of job.steps.entries()) {
-      const item = itemFor(pipeline, { jobId, stepIndex, step }, context, byId);
-      if (item !== null) items.push(item);
+    // A job's matrix axes, listed where the first step names them.
+    const axes = new Map<string, ModelStepAt[]>();
+    for (const at of modelStepsOf(jobId, job)) {
+      const axis =
+        job.strategy === undefined ? null : matrixModelAxisOf(at.written);
+      if (axis === null) {
+        const item = itemFor(pipeline, at, context, byId);
+        if (item !== null) items.push(item);
+        continue;
+      }
+      const named = axes.get(axis);
+      if (named !== undefined) {
+        named.push(at);
+        continue;
+      }
+      axes.set(axis, [at]);
     }
+    // A job's matrix items follow its steps' own.
+    for (const [axis, group] of axes)
+      items.push(...matrixItemsFor(pipeline, job, axis, group, context, byId));
   }
   return items;
 }
@@ -478,6 +707,13 @@ export function applyCloudModelChoices(
   pipeline: Pipeline,
   items: readonly CloudModelPreflightItem[],
   choices: readonly CloudModelChoice[],
+  options: {
+    /**
+     * Check the choices only, and answer them as applied with `pipeline`
+     * unchanged: a child's items are replaced when it starts (CAN-7044).
+     */
+    readonly checkOnly?: boolean;
+  } = {},
 ): CloudModelChoicesOutcome {
   const chosen = new Map<string, string[]>();
   for (const choice of choices)
@@ -500,6 +736,16 @@ export function applyCloudModelChoices(
   if (unconfirmed.length > 0 || unknown.length > 0)
     return { ok: false, unconfirmed, unknown };
   if (items.length === 0) return { ok: true, pipeline, applied: [] };
+  if (options.checkOnly === true)
+    return {
+      ok: true,
+      pipeline,
+      applied: items.map((item) => ({
+        itemKey: item.itemKey,
+        modelId: chosen.get(item.itemKey)?.[0] ?? '',
+        from: item.model,
+      })),
+    };
 
   const jobs: Pipeline['jobs'] = { ...pipeline.jobs };
   const aliases = [...(pipeline.model_aliases ?? [])];
@@ -507,13 +753,12 @@ export function applyCloudModelChoices(
   for (const item of items) {
     const modelId = chosen.get(item.itemKey)?.[0];
     const job = jobs[item.jobId];
-    const step = job?.steps[item.stepIndex];
-    if (modelId === undefined || job === undefined || step === undefined)
+    if (modelId === undefined || job === undefined)
       return { ok: false, unconfirmed: [item.itemKey], unknown: [] };
-    // A replaced inline alias keeps everything but its base model: the step
-    // runs a copy of the alias with the confirmed model, which the executor
-    // resolves as it resolves the original, inside a composite too
-    // (CAN-6439).
+    // A replaced inline alias keeps everything but its base model: the step,
+    // or the matrix value, runs a copy of the alias with the confirmed
+    // model, which the executor resolves as it resolves the original,
+    // inside a composite too (CAN-6439).
     const alias = pipeline.model_aliases?.find(
       (candidate) => candidate.id.trim() === item.model.trim(),
     );
@@ -530,6 +775,17 @@ export function applyCloudModelChoices(
         defaults: { ...alias.defaults, base: modelId },
       });
     }
+    if (item.matrix !== undefined) {
+      const replaced = withMatrixModel(item.jobId, job, item.matrix, model);
+      if (replaced === null)
+        return { ok: false, unconfirmed: [item.itemKey], unknown: [] };
+      jobs[item.jobId] = replaced;
+      applied.push({ itemKey: item.itemKey, modelId, from: item.model });
+      continue;
+    }
+    const step = job.steps[item.stepIndex];
+    if (step === undefined)
+      return { ok: false, unconfirmed: [item.itemKey], unknown: [] };
     const steps = [...job.steps];
     steps[item.stepIndex] = {
       ...step,
@@ -547,6 +803,62 @@ export function applyCloudModelChoices(
     },
     applied,
   };
+}
+
+/** A matrix value as `cloudMatrixAxisValues` reads it; null for a list or object. */
+function matrixValueText(value: PipelineJsonValue): string | null {
+  if (typeof value === 'object' && value !== null) return null;
+  return value === null ? '' : String(value).trim();
+}
+
+/**
+ * `job` with a matrix item's replacement (CAN-7018). A written-out matrix
+ * is written out as the variants it runs, `include` alone, with `modelId`
+ * in each variant that gave the axis `value`: every variant keeps its own
+ * settings and its place, whatever other variants use, and `include` and
+ * `exclude` entries can't match a replaced value again. For a matrix built
+ * while the run runs, `modelId` becomes the model of every model step that
+ * names the axis. Null when the job no longer has what the item names.
+ */
+function withMatrixModel(
+  jobId: string,
+  job: Job,
+  matrix: NonNullable<CloudModelPreflightItem['matrix']>,
+  modelId: string,
+): Job | null {
+  const { axis, value } = matrix;
+  if (value === undefined) {
+    let replaced = 0;
+    const steps = job.steps.map((step) => {
+      const runs = modelActionOf(step);
+      const written = runs === null ? undefined : step.with?.[runs.input];
+      if (
+        runs === null ||
+        written === undefined ||
+        matrixModelAxisOf(String(written)) !== axis
+      )
+        return step;
+      replaced += 1;
+      return { ...step, with: { ...step.with, [runs.input]: modelId } };
+    });
+    return replaced === 0 ? null : { ...job, steps };
+  }
+  let variants: PipelineMatrixCombination[];
+  try {
+    const strategy = normalizeMatrixStrategy(jobId, job.strategy);
+    if (strategy === undefined || strategy.dynamic) return null;
+    variants = expandStaticMatrix(jobId, strategy);
+  } catch {
+    return null;
+  }
+  let replaced = 0;
+  const include = variants.map((variant) => {
+    if (matrixValueText(variant[axis] ?? '') !== value) return variant;
+    replaced += 1;
+    return { ...variant, [axis]: modelId };
+  });
+  if (replaced === 0 || job.strategy === undefined) return null;
+  return { ...job, strategy: { ...job.strategy, matrix: { include } } };
 }
 
 /** The input a step names its model in: `model`, or a repository action's own. */

@@ -372,7 +372,7 @@ describe('CAN-5788 one-shot Git recipient lease', () => {
     });
     expect(await port.mint(request)).toEqual({
       kind: 'refused',
-      reason: 'unavailable',
+      reason: 'source_failed',
     });
   });
 });

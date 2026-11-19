@@ -130,11 +130,8 @@ jest.mock('../observability', () => ({
     recordUsageMetricEvent: jest.fn(),
   })),
 }));
-jest.mock('../portal/portal-structural-sync', () => ({
-  schedulePortalStructuralSync: jest.fn(),
-}));
-jest.mock('../portal/portal-event-bus', () => ({
-  notifyPortalStructureChanged: jest.fn(),
+jest.mock('../services/desktop-structure-signal', () => ({
+  scheduleDesktopStructureChanged: jest.fn(),
 }));
 
 import { execFileSync } from 'node:child_process';

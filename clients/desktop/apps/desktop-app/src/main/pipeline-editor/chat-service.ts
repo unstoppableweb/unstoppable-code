@@ -6,6 +6,7 @@ import {
   getTurnRootAcceptance,
   isOwnedDelegationEvent,
 } from '../agents/session-event-router';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   beginChatTurnRun,
   deferredReloadEventNamespace,
@@ -709,7 +710,7 @@ export async function dispatchPipelineEditorChatMessage(
             return providerEventCommitTail;
           },
         ),
-        options.getMainWindow,
+        windowAgentInterfacePort(options.getMainWindow),
         {
           turnUserMessageId: executionUserMessageId,
           acceptTurnRoot: async (turnUserMessageId) => {

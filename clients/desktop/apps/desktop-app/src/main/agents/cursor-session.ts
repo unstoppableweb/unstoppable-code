@@ -1,4 +1,5 @@
 import { getAttentionTracker } from '../services/attention-tracker';
+import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
 import {
   PIPELINE_EDITOR_TOOL_REGISTRY,
   type PipelineEditorToolKey,
@@ -7,11 +8,9 @@ import { CURSOR_PLAN_MODE_STEERING } from '@canopy/desktop-shared/node/cursor/he
 import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
-  IPC_CHANNELS,
   type PlanExitRequestEvent,
 } from '@canopy/desktop-shared/types';
 import { commitPendingPlanExit } from '../services/chat-state-plan-exit';
-import { sendToWindow } from '../lib/window-send';
 import { chatVisualsPromptEligible } from '../lib/chat-visuals-feature-flag';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +22,7 @@ import {
   isCursorModel,
 } from '@canopy/execution-engine/lib/cursor-models';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import {
@@ -210,9 +210,10 @@ export class CursorProvider implements AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (data: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession {
     assertAgentWorkerContext('CursorProvider.createSession');
+    const getWindow = (): BrowserWindow | null => interfacePort.legacyWindow();
     const key = buildSessionKey(opts.projectId, opts.worktreeId, opts.chatId);
     const lifecycleScope = {
       projectId: opts.projectId,
@@ -544,7 +545,6 @@ export class CursorProvider implements AgentProvider {
         const env = {
           ...managed.env,
           NO_OPEN_BROWSER: '1',
-          ELECTRON_RUN_AS_NODE: '1',
         };
         // Packaged Electron disables RunAsNode. The managed archive's verified
         // Node executable runs approval hooks without starting another app.
@@ -682,6 +682,9 @@ export class CursorProvider implements AgentProvider {
                   : {}),
                 ...(opts.packageOverlay
                   ? { packageOverlay: opts.packageOverlay }
+                  : {}),
+                ...(opts.accountResolution
+                  ? { accountResolution: opts.accountResolution }
                   : {}),
                 ...(pluginContext.preferences
                   ? { preferences: pluginContext.preferences }
@@ -892,6 +895,18 @@ export class CursorProvider implements AgentProvider {
                     : {}),
                   sdkSessionId: sessionId ?? key,
                   providerType: 'cursor',
+                  // RequestSecrets on the `_ui` server: interactive root chats
+                  // only, while the flag is on (re-checked per call). Tools
+                  // only: this provider has no live environment for ambient
+                  // secrets (agent-secrets/ambient-env.ts).
+                  ...(serverMode === 'default' &&
+                  opts.executionContext === undefined &&
+                  isAgentSecretRequestsEnabled()
+                    ? {
+                        secretRequests: true,
+                        getApprovalMode: (): ApprovalMode => approvalMode,
+                      }
+                    : {}),
                   pluginSelections: pluginContext.selections,
                   deferredToolsAllowed: false,
                   authToken,
@@ -1000,7 +1015,10 @@ export class CursorProvider implements AgentProvider {
                     if (gates.signal.aborted) return false;
                     const names = cursorCanopyMcpServerNames(serverMode);
                     const server =
-                      toolKey === 'ask_user_question' ? names.ui : names.main;
+                      toolKey === 'ask_user_question' ||
+                      toolKey === 'request_secrets'
+                        ? names.ui
+                        : names.main;
                     const tool =
                       serverMode === 'app-advisor'
                         ? isAppAdvisorToolKey(toolKey)
@@ -1350,7 +1368,7 @@ export class CursorProvider implements AgentProvider {
           };
           await commitPendingPlanExit(event);
           if (!abort.signal.aborted) {
-            sendToWindow(getWindow(), IPC_CHANNELS.planExitRequest, event);
+            interfacePort.presentPlanExit(event);
             getAttentionTracker().mark({
               projectId: opts.projectId,
               worktreeId: opts.worktreeId,

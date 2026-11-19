@@ -27,6 +27,11 @@ interface McpOAuthBrowserProps {
   visible?: boolean;
   /** Offers Open in browser for this URL. Defaults to true. */
   allowExternalOpen?: boolean;
+  /**
+   * What Open in browser does instead of opening `url`, for a page whose
+   * link only works once, such as one the pane has already redeemed.
+   */
+  onOpenExternal?: () => void;
   /** Runs once when the native browser can't be created. */
   onError?: () => void;
   /** Moves focus into the pane on open and closes it on Escape. */
@@ -42,6 +47,7 @@ export function McpOAuthBrowser({
   title = 'Sign in to connect',
   visible = true,
   allowExternalOpen = true,
+  onOpenExternal,
   onError,
   focusOnOpen = false,
   testId = 'plugin-oauth-browser',
@@ -137,7 +143,11 @@ export function McpOAuthBrowser({
           {allowExternalOpen && (
             <Button
               variant="secondary"
-              onClick={() => void window.api.browser.openExternal({ url })}
+              data-testid={`${testId}-open-external`}
+              onClick={() => {
+                if (onOpenExternal) onOpenExternal();
+                else void window.api.browser.openExternal({ url });
+              }}
             >
               Open in browser
             </Button>

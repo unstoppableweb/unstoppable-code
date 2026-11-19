@@ -146,6 +146,7 @@ const SESSION_PATH_PREFIXES = [
   '/api/account/',
   '/api/auth/',
   '/api/cloud/github/',
+  '/api/v1/github/',
 ];
 /**
  * Payment routes the table deliberately omits (setup intents, card mutation,
@@ -331,6 +332,24 @@ function initialState(config, scenario) {
     mints: [],
     consumes: [],
     signOuts: 0,
+    // Code review approval policies by owner key (`personal` or
+    // `organization:<id>`), and the operations whose next request fails once.
+    reviewApprovals: {
+      available: config.reviewApprovals?.available !== false,
+      policies: clone(config.reviewApprovals?.policies ?? {}),
+      repositories: clone(
+        config.reviewApprovals?.repositories ?? REVIEW_APPROVAL_REPOSITORIES,
+      ),
+      // The viewer's approval readiness, whatever the run owner and
+      // repository. `off` by default, so existing specs render no notice.
+      readiness: clone(
+        config.reviewApprovals?.readiness ?? {
+          state: 'off',
+          organizationName: null,
+        },
+      ),
+    },
+    failNext: new Set(),
   };
 }
 
@@ -1763,9 +1782,233 @@ const OPERATION_ROUTES = [
 ];
 
 /** Operation names this mock serves, for specs and tests. */
-export const HOSTED_SETTINGS_MOCK_OPERATIONS = Object.freeze(
-  OPERATION_ROUTES.map((route) => route.operation),
-);
+export const HOSTED_SETTINGS_MOCK_OPERATIONS = Object.freeze([
+  ...OPERATION_ROUTES.map((route) => route.operation),
+  'account.github.reviewApprovals.read',
+  'account.github.reviewApprovals.update',
+  'account.github.reviewApprovals.repositories',
+  'organization.github.reviewApprovals.read',
+  'organization.github.reviewApprovals.update',
+  'organization.github.reviewApprovals.repositories',
+  'account.github.reviewApprovals.readiness',
+]);
+
+/* -------------------------------------------------------------------------- */
+/* Code review approval policy                                                 */
+/* -------------------------------------------------------------------------- */
+
+const REVIEW_APPROVAL_PATH = /^\/api\/v1\/github\/review-approval-policy$/;
+const REVIEW_APPROVAL_REPOSITORIES_PATH =
+  /^\/api\/v1\/github\/review-approval-policy\/repositories$/;
+const REVIEW_APPROVAL_READINESS_PATH =
+  /^\/api\/v1\/github\/review-approval-readiness$/;
+const REVIEW_APPROVAL_RUN_OWNER =
+  /^(?:personal|org:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+const REVIEW_APPROVAL_GITHUB_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+
+const REVIEW_APPROVAL_REPOSITORIES = [
+  { id: 4101, owner: 'canopy-e2e', name: 'web' },
+  { id: 4102, owner: 'canopy-e2e', name: 'desktop' },
+  { id: 4103, owner: 'canopy-e2e', name: 'docs' },
+];
+
+const DEFAULT_REVIEW_APPROVAL_POLICY = Object.freeze({
+  enabled: false,
+  minScore: 8,
+  repoScope: 'all',
+  repositories: [],
+});
+
+function reviewApprovalPickerItem(repository) {
+  const fullName = `${repository.owner}/${repository.name}`;
+  return {
+    id: repository.id,
+    fullName,
+    owner: repository.owner,
+    name: repository.name,
+    defaultBranch: 'main',
+    private: true,
+    archived: false,
+    htmlUrl: `https://github.com/${fullName}`,
+  };
+}
+
+/**
+ * The owner a request names (query for GET, body for PATCH), its state key,
+ * and whether the viewer may change it; answers 400/403/404 itself.
+ */
+function reviewApprovalOwner(ctx, owner, write) {
+  if (isRecord(owner) && owner.kind === 'personal') {
+    return { key: 'personal', scopeLabel: 'canopy-e2e-user' };
+  }
+  if (
+    isRecord(owner) &&
+    owner.kind === 'organization' &&
+    typeof owner.organizationId === 'string'
+  ) {
+    const org = (write ? editableOrgFor : orgFor)(ctx, [
+      '',
+      owner.organizationId,
+    ]);
+    if (org === null) return null;
+    return { key: `organization:${org.id}`, scopeLabel: 'canopy-e2e' };
+  }
+  respond(ctx, 400, { error: 'Choose an owner.' });
+  return null;
+}
+
+function queryOwner(ctx) {
+  const params = ctx.url.searchParams;
+  return params.get('owner') === 'organization'
+    ? { kind: 'organization', organizationId: params.get('organizationId') }
+    : params.get('owner') === 'personal'
+      ? { kind: 'personal' }
+      : null;
+}
+
+function reviewApprovalRead(state, owner) {
+  const approvals = state.reviewApprovals;
+  return {
+    available: approvals.available,
+    policy: approvals.available
+      ? clone(approvals.policies[owner.key] ?? DEFAULT_REVIEW_APPROVAL_POLICY)
+      : clone(DEFAULT_REVIEW_APPROVAL_POLICY),
+    scopeLabel: approvals.available ? owner.scopeLabel : null,
+  };
+}
+
+/** Consume a one-shot failure scripted through the control route. */
+function failedOnce(ctx, operation) {
+  if (!ctx.state.failNext.has(operation)) return false;
+  ctx.state.failNext.delete(operation);
+  respond(ctx, 500, { error: 'Scripted failure' });
+  return true;
+}
+
+const REVIEW_APPROVAL_ROUTES = [
+  {
+    // Both scopes share the route; the owner is in the query.
+    operation: 'github.reviewApprovals.read',
+    method: 'GET',
+    path: REVIEW_APPROVAL_PATH,
+    handle(ctx) {
+      const owner = reviewApprovalOwner(ctx, queryOwner(ctx), false);
+      if (owner === null) return;
+      recordOperation(ctx, `${ownerScope(owner)}.github.reviewApprovals.read`);
+      respond(ctx, 200, reviewApprovalRead(ctx.state, owner));
+    },
+  },
+  {
+    operation: 'github.reviewApprovals.update',
+    method: 'PATCH',
+    path: REVIEW_APPROVAL_PATH,
+    handle(ctx) {
+      const body = isRecord(ctx.body) ? ctx.body : {};
+      const owner = reviewApprovalOwner(ctx, body?.owner, true);
+      if (owner === null) return;
+      const operation = `${ownerScope(owner)}.github.reviewApprovals.update`;
+      recordOperation(ctx, operation);
+      if (!ctx.state.reviewApprovals.available) {
+        respond(ctx, 409, { error: 'Unavailable', code: 'unavailable' });
+        return;
+      }
+      if (failedOnce(ctx, operation)) return;
+      const known = new Map(
+        ctx.state.reviewApprovals.repositories.map((repository) => [
+          String(repository.id),
+          repository,
+        ]),
+      );
+      const stored = new Map(
+        (ctx.state.reviewApprovals.policies[owner.key]?.repositories ?? []).map(
+          (repository) => [repository.id, repository],
+        ),
+      );
+      const repositories = [];
+      for (const id of Array.isArray(body.repositoryIds)
+        ? body.repositoryIds
+        : []) {
+        const repository =
+          stored.get(id) ??
+          (known.has(id)
+            ? { id, fullName: reviewApprovalPickerItem(known.get(id)).fullName }
+            : undefined);
+        if (repository === undefined) {
+          respond(ctx, 400, {
+            error: "Couldn't use one of the selected repositories.",
+            code: 'invalid_repository',
+          });
+          return;
+        }
+        repositories.push(repository);
+      }
+      ctx.state.reviewApprovals.policies[owner.key] = {
+        enabled: body.enabled === true,
+        minScore: body.minScore,
+        repoScope: body.repoScope === 'selected' ? 'selected' : 'all',
+        repositories,
+      };
+      respond(ctx, 200, reviewApprovalRead(ctx.state, owner));
+    },
+  },
+  {
+    operation: 'github.reviewApprovals.repositories',
+    method: 'GET',
+    path: REVIEW_APPROVAL_REPOSITORIES_PATH,
+    handle(ctx) {
+      const owner = reviewApprovalOwner(ctx, queryOwner(ctx), true);
+      if (owner === null) return;
+      recordOperation(
+        ctx,
+        `${ownerScope(owner)}.github.reviewApprovals.repositories`,
+      );
+      if (!ctx.state.reviewApprovals.available) {
+        respond(ctx, 409, { error: 'Unavailable', code: 'unavailable' });
+        return;
+      }
+      const needle = (ctx.url.searchParams.get('q') ?? '').toLowerCase();
+      respond(ctx, 200, {
+        repositories: ctx.state.reviewApprovals.repositories
+          .map(reviewApprovalPickerItem)
+          .filter((repository) =>
+            repository.fullName.toLowerCase().includes(needle),
+          ),
+        repositorySelection: 'all',
+        nextCursor: null,
+      });
+    },
+  },
+  {
+    operation: 'account.github.reviewApprovals.readiness',
+    method: 'GET',
+    path: REVIEW_APPROVAL_READINESS_PATH,
+    handle(ctx) {
+      const params = ctx.url.searchParams;
+      if (
+        !REVIEW_APPROVAL_RUN_OWNER.test(params.get('runOwner') ?? '') ||
+        !REVIEW_APPROVAL_GITHUB_NAME.test(params.get('repoOwner') ?? '') ||
+        !REVIEW_APPROVAL_GITHUB_NAME.test(params.get('repoName') ?? '')
+      ) {
+        respond(ctx, 400, { error: 'Bad request' });
+        return;
+      }
+      recordOperation(ctx, 'account.github.reviewApprovals.readiness');
+      if (failedOnce(ctx, 'account.github.reviewApprovals.readiness')) return;
+      const readiness = ctx.state.reviewApprovals.readiness;
+      respond(
+        ctx,
+        200,
+        params.get('runOwner') === 'personal'
+          ? { state: 'off', organizationName: null }
+          : clone(readiness),
+      );
+    },
+  },
+];
+
+function ownerScope(owner) {
+  return owner.key === 'personal' ? 'account' : 'organization';
+}
 
 /* -------------------------------------------------------------------------- */
 /* Feed stream                                                                 */
@@ -1933,6 +2176,12 @@ async function handleSessionRequest(request, response, url) {
     return;
   }
 
+  for (const route of REVIEW_APPROVAL_ROUTES) {
+    if (route.method !== request.method || !route.path.test(pathname)) continue;
+    await route.handle(ctx);
+    return;
+  }
+
   for (const route of OPERATION_ROUTES) {
     if (route.method !== request.method) continue;
     const match = route.path.exec(pathname);
@@ -2035,6 +2284,18 @@ async function handleControl(request, response, match) {
   const body = parsed === undefined ? {} : parsed;
   if (!isRecord(body)) {
     controlJson(response, 400, { error: 'Expected a JSON object body.' });
+    return;
+  }
+
+  if (subpath === '/fail-next') {
+    // Fail the next request of one operation (for example
+    // `organization.github.reviewApprovals.update`) once, with a 500.
+    if (typeof body.operation !== 'string') {
+      controlJson(response, 400, { error: 'Expected operation: string.' });
+      return;
+    }
+    state.failNext.add(body.operation);
+    controlJson(response, 200, { ok: true });
     return;
   }
 

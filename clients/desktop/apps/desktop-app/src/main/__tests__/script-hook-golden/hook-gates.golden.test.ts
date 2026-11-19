@@ -49,10 +49,19 @@ jest.mock('../../lib/script-runner', () => ({
 jest.mock('../../lib/workspace-registry', () => ({
   isMultiRepoWorkspace: jest.fn(() => false),
 }));
-jest.mock('../../lib/workspace-persistence', () => ({
-  readWorkspaceConfig: jest.fn(),
-  readWorkspaceWorktrees: jest.fn(() => Promise.resolve([])),
-}));
+jest.mock('../../lib/workspace-persistence', () => {
+  const readWorkspaceWorktrees = jest.fn(() => Promise.resolve([]));
+  return {
+    readWorkspaceConfig: jest.fn(),
+    readWorkspaceWorktrees,
+    // The pause reader needs the list's authority (CAN-7094); a test's rows
+    // come from `readWorkspaceWorktrees`, read as a complete list.
+    readWorkspaceWorktreesDetailed: jest.fn(async () => ({
+      worktrees: await readWorkspaceWorktrees(),
+      authority: 'ok',
+    })),
+  };
+});
 jest.mock('../../lib/sidebar-items', () => ({
   readAllSidebarItems: jest.fn(),
 }));
@@ -127,6 +136,7 @@ jest.mock('../../lib/github-pr-hook-state', () => ({
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { HOOK_PAUSE_UNKNOWN_MESSAGE } from '@canopy/core-runtime/node/initiated-work';
 import {
   getHookTriggerDisplayName,
   type HookAction,
@@ -154,6 +164,7 @@ import { sendToWindow } from '../../lib/window-send';
 import {
   readWorkspaceConfig,
   readWorkspaceWorktrees,
+  readWorkspaceWorktreesDetailed,
 } from '../../lib/workspace-persistence';
 import { triggerWorktreePrecommitFailureHook } from '../../lib/worktree-precommit-failure-hook';
 import { runHookCommand } from '../../services/hooks-service';
@@ -169,6 +180,9 @@ import {
 
 const mockedReadWorkspaceConfig = jest.mocked(readWorkspaceConfig);
 const mockedReadWorkspaceWorktrees = jest.mocked(readWorkspaceWorktrees);
+const mockedReadWorkspaceWorktreesDetailed = jest.mocked(
+  readWorkspaceWorktreesDetailed,
+);
 const mockedRunShellScript = jest.mocked(runShellScript);
 const mockedSendToWindow = jest.mocked(sendToWindow);
 const mockedFireWatchers = jest.mocked(fireHookTriggeredWatchers);
@@ -332,18 +346,64 @@ describe('CAN-5062 golden: automatic hook paused gate', () => {
     );
   });
 
-  it('treats an unreadable worktree list as nothing paused', async () => {
+  // CAN-7094: a pause state that can't be read fails closed. The firing is
+  // recorded as skipped, nothing runs, and the renderer isn't told the hook
+  // is paused, since it isn't known to be.
+  it('skips the hook when the worktree list read fails', async () => {
     mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
     mockedReadWorkspaceWorktrees.mockRejectedValue(new Error('corrupt'));
     mockedRunHook.mockImplementationOnce(actualRunHook);
 
     await trigger();
-    await mockedRunHook.mock.results[0]?.value;
+    const response: unknown = await mockedRunHook.mock.results[0]?.value;
 
     expect(mockedRunHook).toHaveBeenCalledTimes(1);
-    expect(mockedRunShellScript).toHaveBeenCalledWith(
-      expect.objectContaining({ script: 'notify', cwd: '/repo' }),
-    );
+    expect(mockedRunShellScript).not.toHaveBeenCalled();
+    expect(response).toMatchObject({
+      success: false,
+      stopped: true,
+      output: HOOK_PAUSE_UNKNOWN_MESSAGE,
+    });
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+  });
+
+  it('skips the hook when the worktree list is unreadable', async () => {
+    mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
+    mockedReadWorkspaceWorktreesDetailed.mockResolvedValueOnce({
+      worktrees: [],
+      authority: 'unreadable',
+    });
+    mockedRunHook.mockImplementationOnce(actualRunHook);
+
+    await trigger();
+    const response: unknown = await mockedRunHook.mock.results[0]?.value;
+
+    expect(mockedRunShellScript).not.toHaveBeenCalled();
+    expect(response).toMatchObject({
+      stopped: true,
+      output: HOOK_PAUSE_UNKNOWN_MESSAGE,
+    });
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
+  });
+
+  // Rows are stored as they were read: paused keys that are not a list of
+  // strings must not read as nothing paused.
+  it('skips the hook when the stored paused hooks are not a list of keys', async () => {
+    mockedReadWorkspaceConfig.mockResolvedValue(config({ [TRIGGER]: ACTIONS }));
+    mockedReadWorkspaceWorktrees.mockResolvedValue([
+      { id: 'w-1', pausedHookKeys: 'project:worktree:precommit:failure' },
+    ] as unknown as Awaited<ReturnType<typeof readWorkspaceWorktrees>>);
+    mockedRunHook.mockImplementationOnce(actualRunHook);
+
+    await trigger();
+    const response: unknown = await mockedRunHook.mock.results[0]?.value;
+
+    expect(mockedRunShellScript).not.toHaveBeenCalled();
+    expect(response).toMatchObject({
+      stopped: true,
+      output: HOOK_PAUSE_UNKNOWN_MESSAGE,
+    });
+    expect(mockedSendToWindow).not.toHaveBeenCalled();
   });
 });
 

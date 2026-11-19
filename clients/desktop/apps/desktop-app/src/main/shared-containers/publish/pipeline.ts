@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { reportBackgroundFailure } from '../../observability/background-failure-reporter';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -705,6 +706,10 @@ async function runPublishSharedContainerRevision<TInventory>(
               ? '[shared-containers] capability package upload failed; keeping the parent package'
               : '[shared-containers] capability package upload omitted',
           );
+          reportBackgroundFailure(
+            'shared-container-publish.package_upload',
+            getSharedContainerPublishErrorReason(error) ?? 'unclassified',
+          );
         }
       }
     }
@@ -960,6 +965,10 @@ async function runPublishSharedContainerRevision<TInventory>(
               (previous?.packageRecoveryAttempts ?? 0) + 1;
             logMainProcessWarn(
               '[shared-containers] capability package stage omitted',
+            );
+            reportBackgroundFailure(
+              'shared-container-publish.package_stage',
+              'omitted',
             );
             if (publishedRecord && publishedArtifactsUnchanged) {
               return setForCurrentTarget({

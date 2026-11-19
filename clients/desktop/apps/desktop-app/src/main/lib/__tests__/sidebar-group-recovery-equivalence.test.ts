@@ -863,11 +863,8 @@ test.each(disagreementModes)(
       expect(settled.receipt).toBe(false);
       expect(atFault.signals).toEqual({ group: 0, lifecycle: 0, entry: 0 });
       expect(atFault.portalSync).toBe(0);
-      expect(atFault.portalStructure).toBe(0);
       expect(settled.portalSync).toBe(!entries && cleanup ? 1 : 0);
       expect(noop.portalSync).toBe(settled.portalSync);
-      expect(noop.portalStructure).toBe(settled.portalStructure);
-      expect(settled.portalStructure).toBe(!entries && cleanup ? 1 : 0);
       expect(settled.signals).toEqual({
         group: 0,
         lifecycle: 0,
@@ -1027,9 +1024,7 @@ test.each(disagreementModes)(
       );
       expect(repaired.repairWrites).toBe(!second && !future ? 1 : 0);
       expect(repaired.portalSync).toBe(!entries && !future ? 1 : 0);
-      expect(repaired.portalStructure).toBe(!entries && !future ? 1 : 0);
       expect(repeat.points[1]?.portalSync).toBe(repaired.portalSync);
-      expect(repeat.points[1]?.portalStructure).toBe(repaired.portalStructure);
       if (second || future)
         expect(repaired.snapshot.sidecar).toBe(settled.snapshot.sidecar);
       expect(repaired.signals).toEqual({

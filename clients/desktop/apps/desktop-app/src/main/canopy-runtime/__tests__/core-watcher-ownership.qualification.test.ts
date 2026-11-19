@@ -117,9 +117,6 @@ jest.mock('../../automations/service', () => ({
       Promise.resolve({ runs: [], nextCursor: null }),
   }),
 }));
-jest.mock('../../portal/portal-event-bus', () => ({
-  isCanopyPortalActive: (): boolean => false,
-}));
 jest.mock('../../services/chat-service', () => ({}));
 
 import { createCoreWatcherAdapter } from '../core-watcher-adapter';

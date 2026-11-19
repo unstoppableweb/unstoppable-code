@@ -333,6 +333,8 @@ export interface LoadWorktreeTerminalStateResponse extends WorktreeTerminalLayou
 export interface SaveWorktreeTerminalStateRequest extends WorktreeTerminalLayoutState {
   projectId: string;
   worktreeId: string;
+  /** Closed terminals whose history to delete; omission from `groups` keeps it. */
+  forgetTerminalIds?: string[];
 }
 
 // ---------------------------------------------------------------------------

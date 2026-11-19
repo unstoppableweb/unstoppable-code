@@ -216,51 +216,9 @@ import type {
 } from './startup-stream-repair';
 import { StartupStreamRepairAdmissions } from './startup-stream-repair-admission';
 
-/** Live delegate snapshots reach the renderer and Portal at most this often. */
+/** Live delegate snapshots reach the renderer at most this often. */
 const DELEGATION_LIVE_CARD_INTERVAL_MS = 100;
 
-/**
- * Portal delivery for live delegate snapshots, loaded on first use: the
- * Portal event bus subscribes to account changes when it loads, which must
- * not happen merely by loading this service.
- */
-let portalLiveDelivery:
-  | Promise<{
-      active: () => boolean;
-      deliver: (
-        target: ManagedDelegationChatTarget,
-        data: Record<string, unknown>,
-      ) => void;
-    }>
-  | undefined;
-function loadPortalLiveDelivery(): NonNullable<typeof portalLiveDelivery> {
-  portalLiveDelivery ??= Promise.all([
-    import('../../portal/portal-event-bus'),
-    import('@canopy/desktop-shared/portal/runtime-chat-projection'),
-  ]).then(([bus, projection]) => ({
-    active: bus.isCanopyPortalActive,
-    deliver: (target, data): void => {
-      const message = projection.runtimeChatEventToPortalMessage({
-        scope: 'worktree',
-        workspaceLocalId: target.projectId,
-        worktreeLocalId: target.worktreeId,
-        chatId: target.chatId,
-        data,
-      });
-      if (!message) return;
-      bus.enqueuePortalEvent(
-        bus.createPortalEvent('portal.chat.event', {
-          scope: 'worktree',
-          workspaceLocalId: target.projectId,
-          worktreeLocalId: target.worktreeId,
-          chatId: target.chatId,
-          message,
-        }),
-      );
-    },
-  }));
-  return portalLiveDelivery;
-}
 import { DelegationLogWriter } from './log-writer';
 import {
   DELEGATION_SETTLED_STATUSES,
@@ -2231,13 +2189,12 @@ class ManagedDelegationChatRoot {
   }
 
   /**
-   * Delivers a snapshot to the renderer and Portal without committing it.
-   * The renderer merges patches of changed items into the card it holds;
-   * Portal replaces whole messages, so it keeps receiving whole transcripts.
+   * Delivers a snapshot to the renderer without committing it. The renderer
+   * merges patches of changed items into the card it holds.
    */
   private publishLive(
     transcript: AgentDelegationTranscript,
-    options?: { readonly keyframe?: true; readonly portal?: false },
+    options?: { readonly keyframe?: true },
   ): void {
     if (shuttingDown) return;
     const key = delegationRunKey(transcript);
@@ -2272,13 +2229,6 @@ class ManagedDelegationChatRoot {
         liveClass,
       },
     });
-    if (options?.portal === false) return;
-    // Loads resolve in order, so Portal sees snapshots in publication order.
-    void loadPortalLiveDelivery()
-      .then((portal) => {
-        if (portal.active()) portal.deliver(this.target, event(transcript));
-      })
-      .catch(reportError);
   }
 
   /** Replays one retained live run to a newly interested chat window. */
@@ -2292,7 +2242,7 @@ class ManagedDelegationChatRoot {
       DELEGATION_SETTLED_STATUSES.has(transcript.snapshot.status)
     )
       return;
-    this.publishLive(transcript, { keyframe: true, portal: false });
+    this.publishLive(transcript, { keyframe: true });
   }
 
   /** Retry only on a new envelope, an attachment change or a committed event. */

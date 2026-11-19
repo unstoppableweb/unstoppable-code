@@ -14,7 +14,7 @@ import {
 } from '@canopy/protocol/desktop-inventory';
 import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
 import { logMainProcessError } from '../lib/main-process-logging';
-import { fitPipelineListResult } from '../portal/adapters/pipelines-adapter';
+import { fitPipelineListResult } from '../remote-projection/pipeline-list-budget';
 import {
   listPipelinesStrict,
   pipelineListTargetFor,

@@ -1,11 +1,17 @@
 import {
+  customizeDiscoveryIdentity,
+  withCopiesIdentity,
+} from './customizeCopyIdentity';
+import {
   alwaysAvailableReason,
   BUNDLED_SKILL_FOOTNOTE,
   customizeDiscoveryEntryMatches,
+  customizeDiscoveryFiltersForTab,
   customizeDiscoveryNeedsAttention,
   customizeEntryIsCopyOfSharedWithViewer,
   customizeEntrySharedWithViewer,
   customizeSkillMatch,
+  customizeSkillMatchHint,
   type CustomizeDefaultHarness,
   type CustomizeDiscoveryFilters,
   type CustomizeSkillMatch,
@@ -17,6 +23,7 @@ import {
   marketplaceEntryInTab,
   pipelineFiltersActive,
   rankCustomizeByRelevance,
+  rankCustomizeSearch,
   type MarketplaceCatalogTabId,
   type MarketplaceTypeTabId,
   type PipelineFilterValues,
@@ -589,10 +596,14 @@ export function buildCustomizeTabModel(
   // Searching MCP servers reaches plugin-provided servers too, each linking to
   // its plugin; every other view keeps listing them as the plugin (CAN-3653).
   const keepPluginProvided = searchActive && input.tab === 'app';
-  const candidates = unique(input.entries);
   // New Customize's filter menu (CAN-6809); every entry passes while it is off.
   const discoveryFilters = input.discoveryFilters;
   const discovery = discoveryFilters !== undefined;
+  // New Customize's publisher and logo rule (Sergii's QA); off, every entry
+  // keeps the projection's own.
+  const candidates = unique(
+    discovery ? input.entries.map(customizeDiscoveryIdentity) : input.entries,
+  );
   // New Customize lists each integration once (CAN-6811): the copies that
   // share an integration key collapse into one row on every tab and in
   // search. Tabs, filters and search read every copy the row stands for.
@@ -683,12 +694,15 @@ export function buildCustomizeTabModel(
   const hasUpdate = (entry: UnifiedPluginEntry): boolean =>
     entryHasUpdate(entry, input.supportedUpdateKinds);
   const sharedWithMeOnly = discovery && input.sharedWithMeOnly === true;
-  // Shared with me lists every kind it counts, so a shared collection or
-  // agent shows without Also show.
+  // Shared includes uninstalled agents, but still intersects the explicit
+  // Only collections filter, just like Status, Marketplace and Works with.
+  const tabDiscoveryFilters =
+    discoveryFilters &&
+    customizeDiscoveryFiltersForTab(discoveryFilters, input.tab);
   const appliedDiscoveryFilters =
-    discoveryFilters && sharedWithMeOnly
-      ? { ...discoveryFilters, collections: true, agents: true }
-      : discoveryFilters;
+    tabDiscoveryFilters && sharedWithMeOnly
+      ? { ...tabDiscoveryFilters, agents: true }
+      : tabDiscoveryFilters;
   // A share's installed copy stays its Installed row under Shared with me:
   // that copy carries the install's status and update, not its share alias.
   const sharedWithMeInstallIds = new Set(
@@ -810,7 +824,15 @@ export function buildCustomizeTabModel(
       id,
       domId: `customize-section-${id}`,
       title,
-      entries: rows,
+      // A provider-grouped row reads its publisher and logo from every
+      // listing on New Customize (logo step 2).
+      entries: discovery
+        ? rows.map((row) =>
+            row.marketplaceListings?.length
+              ? withCopiesIdentity(row, row.marketplaceListings)
+              : row,
+          )
+        : rows,
       count: rows.length,
       // Only All mixes kinds; single-kind tabs already name the kind in the
       // tab, so their rows drop the type chip (CAN-4840).
@@ -853,8 +875,21 @@ export function buildCustomizeTabModel(
       input.installedStatusSnapshot,
       input.supportedUpdateKinds,
     );
+  // New Customize keeps the Workflows tab's Source, Scope and Trigger in
+  // the page's one filter menu, so they narrow installed workflows too.
+  const installedWorkflowFilters =
+    discovery && input.tab === 'workflow' && input.pipelineFilters !== undefined
+      ? input.pipelineFilters
+      : undefined;
   const groupedInstalled = groupMarketplaceListings(
-    allInstalled.filter(matchesStatus),
+    allInstalled
+      .filter(matchesStatus)
+      .filter(
+        (entry) =>
+          installedWorkflowFilters === undefined ||
+          entry.kind !== 'pipeline' ||
+          pipelineMatchesFilters(entry, installedWorkflowFilters),
+      ),
     entries,
   );
   // New Customize lists what needs the person first (CAN-6810): an update,
@@ -862,19 +897,30 @@ export function buildCustomizeTabModel(
   // rest keep today's order. Membership never changes.
   const needsAttention = (entry: UnifiedPluginEntry): boolean =>
     hasUpdate(entry) || customizeDiscoveryNeedsAttention(entry);
-  const installed = discovery
-    ? [
-        ...groupedInstalled.filter(needsAttention),
-        ...groupedInstalled.filter((entry) => !needsAttention(entry)),
-      ]
-    : groupedInstalled;
+  // With a query, relevance beats needs-attention-first (Sergii's QA); the
+  // attention order applies only with no query.
+  const installed = !discovery
+    ? groupedInstalled
+    : searchActive
+      ? rankCustomizeSearch(groupedInstalled, query, skillNamesOf, {
+          keepOrder: true,
+        })
+      : [
+          ...groupedInstalled.filter(needsAttention),
+          ...groupedInstalled.filter((entry) => !needsAttention(entry)),
+        ];
   const updates = installed.filter((entry) =>
     surfacedUpdate(entry, input.supportedUpdateKinds),
   );
   // New Customize shows an update as a badge on its Installed row instead.
   if (updates.length && !discovery) section('updates', 'Updates', updates);
+  // Not installed lists only what can still be added, so Installed has
+  // nothing to say, not even its empty line.
+  const notInstalledOnly =
+    discovery && appliedDiscoveryFilters?.status === 'available';
   if (
     input.tab !== 'blueprint' &&
+    !notInstalledOnly &&
     (installed.length ||
       input.installedInventory !== 'ready' ||
       input.keepInstalledVisible ||
@@ -1036,7 +1082,9 @@ export function buildCustomizeTabModel(
   const skillMatches = new Map<string, CustomizeSkillMatch>();
   for (const row of sections.flatMap((section) => section.entries)) {
     const match = skillMatchOf(row);
-    if (match) skillMatches.set(row.id, match);
+    // The visible hint only where the row itself does not explain the match.
+    const hint = match && customizeSkillMatchHint(row, match, query);
+    if (hint) skillMatches.set(row.id, hint);
   }
   return {
     sections,

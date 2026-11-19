@@ -30,7 +30,7 @@ import {
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../desktop-runtime-identity';
 import { closeChatSearchService } from '../../chat-search/service';
 import { disposeElectronDaemonConnections } from '../electron-daemon-access';
-import { cancelPortalStructuralSync } from '../../portal/portal-structural-sync';
+import { cancelDesktopStructureChanged } from '../../services/desktop-structure-signal';
 import { cancelDesktopSessionSnapshotInvalidation } from '../../services/desktop-session-snapshot-invalidation';
 import { peekObservabilityService } from '../../observability';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -239,7 +239,7 @@ afterEach(async () => {
 afterAll(async () => {
   // The real sidecar tail drains daemon Code Graph jobs through the app singleton.
   await disposeElectronDaemonConnections();
-  cancelPortalStructuralSync();
+  cancelDesktopStructureChanged();
   cancelDesktopSessionSnapshotInvalidation();
   for (const directory of fixtureRoots)
     rmSync(directory, { recursive: true, force: true });
@@ -1817,9 +1817,22 @@ persistenceIt(
   },
 );
 
-it.each(['failed', 'pending'] as const)(
-  'repairs every multi-repo turn-diff obligation (%s) only with matching files-only evidence',
-  (secondStepState) =>
+it.each(
+  (['failed', 'pending'] as const).flatMap((secondStepState) =>
+    (
+      [
+        'exact',
+        'device',
+        'inode',
+        'birthtime',
+        'device-and-inode',
+        'device-and-birthtime',
+      ] as const
+    ).map((identityChange) => ({ secondStepState, identityChange })),
+  ),
+)(
+  'repairs every multi-repo turn-diff obligation ($secondStepState, $identityChange) only with matching files-only evidence',
+  ({ secondStepState, identityChange }) =>
     runPersistenceFixture(async () => {
       const { mkdtemp, mkdir, lstat, readFile, realpath } =
         await import('node:fs/promises');
@@ -2058,7 +2071,26 @@ it.each(['failed', 'pending'] as const)(
           cleanupRequired: true,
         });
         expect(JSON.parse(await readFile(stagedPath, 'utf8'))).toEqual(staged);
-        const matched = { ...staged, recovery };
+        let matched = {
+          ...staged,
+          recovery,
+          repositories: staged.repositories.map((repository, index) => ({
+            ...repository,
+            // Vary only the last repository: no earlier ref may be removed on refusal.
+            repositoryIdentity: {
+              ...repository.repositoryIdentity,
+              dev:
+                repository.repositoryIdentity.dev +
+                (index === 1 && identityChange.startsWith('device') ? 1 : 0),
+              ino:
+                repository.repositoryIdentity.ino +
+                (index === 1 && identityChange.endsWith('inode') ? 1 : 0),
+              birthtimeMs:
+                repository.repositoryIdentity.birthtimeMs +
+                (index === 1 && identityChange.endsWith('birthtime') ? 1 : 0),
+            },
+          })),
+        };
         await writeFixtureFile(stagedPath, JSON.stringify(matched));
         // Current project settings are not authority for this historical repair.
         await writeFixtureFile(
@@ -2086,17 +2118,56 @@ it.each(['failed', 'pending'] as const)(
           retry.entries[0] &&
             worktreeRecoveryResolutionAction(retry.entries[0]),
         ).toBe('finish');
-        expect(
-          await runtime.instruction(
-            'core.worktree.recovery.finish',
-            {
-              workspaceId,
-              operationId,
-              revision: retry.entries[0]?.diagnosis?.revision ?? '',
-            },
+        const finished = await runtime.instruction(
+          'core.worktree.recovery.finish',
+          {
+            workspaceId,
+            operationId,
+            revision: retry.entries[0]?.diagnosis?.revision ?? '',
+          },
+          { caller: user },
+        );
+        const accepted =
+          identityChange === 'exact' ||
+          (identityChange === 'device' && process.platform === 'darwin');
+        if (accepted) {
+          expect(finished).toMatchObject({
+            status: 'finished',
+            cleanupRequired: false,
+          });
+        } else {
+          expect(finished).toMatchObject({
+            status: 'interrupted',
+            check: 'turn-diff-repository-replaced',
+          });
+          for (const { repo, turnRef, tree } of repositories)
+            expect(git(repo, 'show-ref', '--hash', turnRef)).toBe(tree);
+          expect(await readDestructiveJournal(journal)).toMatchObject({
+            state: 'recovery-required',
+            cleanupRequired: true,
+          });
+          expect(JSON.parse(await readFile(stagedPath, 'utf8'))).toEqual(
+            matched,
+          );
+          matched = { ...matched, repositories: staged.repositories };
+          await writeFixtureFile(stagedPath, JSON.stringify(matched));
+          const requalified = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId, operationId },
             { caller: user },
-          ),
-        ).toMatchObject({ status: 'finished', cleanupRequired: false });
+          );
+          expect(
+            await runtime.instruction(
+              'core.worktree.recovery.finish',
+              {
+                workspaceId,
+                operationId,
+                revision: requalified.entries[0]?.diagnosis?.revision ?? '',
+              },
+              { caller: user },
+            ),
+          ).toMatchObject({ status: 'finished', cleanupRequired: false });
+        }
         for (const { repo, turnRef } of repositories)
           expect(
             git(repo, 'for-each-ref', '--format=%(refname)', turnRef),
@@ -2247,10 +2318,10 @@ persistenceIt(
         expect(scan).toHaveBeenCalledTimes(2);
       } finally {
         await drainFixtureServices();
-        const portal = await import('../../portal/portal-structural-sync');
+        const portal = await import('../../services/desktop-structure-signal');
         const snapshots =
           await import('../../services/desktop-session-snapshot-invalidation');
-        portal.cancelPortalStructuralSync();
+        portal.cancelDesktopStructureChanged();
         snapshots.cancelDesktopSessionSnapshotInvalidation();
         scan.mockRestore();
         status.mockRestore();

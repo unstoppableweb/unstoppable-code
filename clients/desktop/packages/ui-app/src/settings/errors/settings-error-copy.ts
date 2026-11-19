@@ -1,3 +1,4 @@
+import { toAppError, type AppError } from '@canopy/protocol/app-errors';
 import { SettingsOperationError } from '@canopy/protocol/settings/errors';
 import {
   GitHubCloudApiError,
@@ -263,6 +264,12 @@ export function settingsErrorDetail(error: unknown): string | undefined {
 export interface SettingsFailure {
   readonly copy: string;
   readonly details?: string;
+  /**
+   * The caught error as an AppError, for recording the failure; never
+   * rendered. A restored IPC rejection keeps the shape main recorded, so a
+   * report links to its reference. Absent for a cancellation.
+   */
+  readonly appError?: AppError;
 }
 
 /**
@@ -280,10 +287,25 @@ export function settingsFailureDetails(
   return detail;
 }
 
+/** Recording is best effort: it never stops the failure's copy from showing,
+ * for example when a host has no Web Crypto for a fresh reference. */
+function settingsAppError(error: unknown): AppError | undefined {
+  try {
+    return toAppError(error);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Builds a {@link SettingsFailure} from a caught error and its copy. */
 export function settingsFailure(error: unknown, copy: string): SettingsFailure {
   const details = settingsFailureDetails(error, copy);
-  return details === undefined ? { copy } : { copy, details };
+  const appError = settingsAppError(error);
+  return {
+    copy,
+    ...(details === undefined ? {} : { details }),
+    ...(appError === undefined ? {} : { appError }),
+  };
 }
 
 function truncateDetail(detail: string): string {

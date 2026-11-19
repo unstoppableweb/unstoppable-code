@@ -90,7 +90,6 @@ import { getRendererCodeCacheSchemeStatus } from '../renderer-origin/renderer-co
 import { syncGlobalFocusShortcutFromPreferences } from './global-focus-shortcut';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import { applyUiZoomToAllWindows, uiScaleToZoomFactor } from '../lib/ui-zoom';
-import { setRemoteControlEnabled } from '../lib/remote-control-preference';
 import { updateSuggestionsPreferences } from '../lib/suggestions-preferences';
 import {
   getCodeGraphPreferencesSnapshot,
@@ -116,7 +115,6 @@ import { broadcastModelRegistryUpdated } from '../models/model-registry';
 // `__CANOPY_CURSOR_CLI__` build constant it reads) internally, matching
 // `ipc/cursor-connection.ts`. A static import here is safe.
 import { refreshCursorRuntimeAvailability } from '../cursor/runtime-availability';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
 import { getDefaultBrowserRegistrationService } from '../browser/default-browser-registration';
 import {
   detachedWorkCallback,
@@ -702,7 +700,6 @@ export async function savePreferencesPatch(
     // immediate.
     applyUiZoomToAllWindows(uiScaleToZoomFactor(normalized.uiScale));
   }
-  setRemoteControlEnabled(normalized.remoteControlEnabled === true);
   if (
     committedPrevious.copilotEnabled !== normalized.copilotEnabled ||
     JSON.stringify(committedPrevious.copilotAccount) !==
@@ -711,7 +708,6 @@ export async function savePreferencesPatch(
     const { revokeCopilotRuntimes } = await import('../copilot/connection');
     await revokeCopilotRuntimes();
     broadcastModelRegistryUpdated();
-    notifyPortalStructureChanged();
   }
   if (
     committedPrevious.accountProxyEnabled !== normalized.accountProxyEnabled ||
@@ -732,7 +728,6 @@ export async function savePreferencesPatch(
     const { revokeOpenCodeRuntimes } = await import('../opencode/connection');
     await revokeOpenCodeRuntimes();
     broadcastModelRegistryUpdated();
-    notifyPortalStructureChanged();
   }
   if (committedPrevious.cursorEnabled !== normalized.cursorEnabled) {
     // Preferences can be changed without using the Connect/Disconnect UI
@@ -752,12 +747,6 @@ export async function savePreferencesPatch(
     // re-project a stale hint in either direction.
     await refreshCursorRuntimeAvailability();
     broadcastModelRegistryUpdated();
-    // `broadcastModelRegistryUpdated` above only reaches desktop
-    // renderer windows. An already-open Portal session projects
-    // `providerAvailability.cursor` from the same cached preflight, so
-    // it needs this separate push too, matching the Connect/Disconnect
-    // handlers in `ipc/cursor-connection.ts`.
-    notifyPortalStructureChanged();
   }
   if (
     'globalPluginSelections' in rendererPatch &&
@@ -788,9 +777,10 @@ export async function savePreferencesPatch(
     console.warn('Failed to sync onboarding profile to the cloud:', error);
   }
   // Apply the persisted native appearance before any asynchronous
-  // reconciliation or renderer broadcast. This keeps macOS window
-  // materials and renderer `prefers-color-scheme` updates pinned to an
-  // explicit Light/Dark choice throughout the save.
+  // reconciliation or renderer broadcast. This keeps renderer
+  // `prefers-color-scheme` updates pinned to an explicit Light/Dark choice
+  // throughout the save. Native window backgrounds follow each renderer's
+  // published theme color instead (see trackAppWindowBackground).
   nativeTheme.themeSource = getNativeThemeSource(normalized.colorMode);
   setCodeGraphPreferences(normalized.codeGraph);
   if (

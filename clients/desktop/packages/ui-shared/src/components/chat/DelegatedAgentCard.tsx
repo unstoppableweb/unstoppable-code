@@ -10,6 +10,7 @@ import {
 } from 'react';
 import type {
   AgentDelegationSnapshot,
+  AgentDelegationUsage,
   DelegationWorkspaceChanges,
 } from '@canopy/protocol/delegation';
 import { visibleDelegationPrompt } from '../../lib/delegation-display';
@@ -215,6 +216,27 @@ export function delegatedAgentUnroutedLabel(
   return snapshot.status === 'pending' ? 'Preparing' : 'Not reported';
 }
 
+/**
+ * A delegate's Usage line (CAN-7043): its token counts once reported, then
+ * its cost. A cost with no counts yet says so rather than showing zeros.
+ * Undefined when nothing is known, so the line is hidden.
+ */
+export function delegatedAgentUsageText(
+  usage: AgentDelegationUsage | undefined,
+): string | undefined {
+  if (usage === undefined) return undefined;
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined)
+    parts.push(`${String(usage.inputTokens)} input`);
+  if (usage.outputTokens !== undefined)
+    parts.push(`${String(usage.outputTokens)} output`);
+  if (usage.costUsd !== undefined) {
+    if (parts.length === 0) parts.push('Tokens not reported yet');
+    parts.push(`$${usage.costUsd.toFixed(4)}`);
+  }
+  return parts.length === 0 ? undefined : parts.join(' · ');
+}
+
 /** Shared desktop and Portal presentation; native actions are explicitly supplied by the host. */
 export const DelegatedAgentCard = memo(function DelegatedAgentCard({
   snapshot,
@@ -256,6 +278,7 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
   const queueDetail = delegatedAgentQueueDetail(snapshot.queue);
   const { selected, selectedId, runtime, runtimeId } =
     delegatedAgentRouteMetadata(snapshot);
+  const usageText = delegatedAgentUsageText(snapshot.usage);
   const sameModel = selected === runtime && selectedId === runtimeId;
   // A direct child of this chat gains nothing from "Depth 1 · Parent: This
   // chat"; lineage is shown only for nested delegates.
@@ -431,14 +454,8 @@ export const DelegatedAgentCard = memo(function DelegatedAgentCard({
               <Fact label={sameThinking ? 'Thinking' : 'Effective thinking'}>
                 {route?.effectiveThinkingLevel ?? 'Not reported'}
               </Fact>
-              {snapshot.usage && (
-                <Fact label="Usage">
-                  {snapshot.usage.inputTokens ?? 0} input ·{' '}
-                  {snapshot.usage.outputTokens ?? 0} output
-                  {snapshot.usage.costUsd !== undefined
-                    ? ` · $${snapshot.usage.costUsd.toFixed(4)}`
-                    : ''}
-                </Fact>
+              {usageText !== undefined && (
+                <Fact label="Usage">{usageText}</Fact>
               )}
             </FactList>
             {snapshot.isolatedWorkspace &&

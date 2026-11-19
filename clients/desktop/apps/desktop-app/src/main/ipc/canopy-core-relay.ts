@@ -4,11 +4,13 @@ import { CANOPY_DEFAULT_MAX_FRAME_BYTES } from '@canopy/core-transport';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import {
   CORE_ARCHIVE_CONTAINER_LIST_SCHEMA_REVISION,
+  CORE_ARTIFACT_LIST_VERSION_REVISION,
   CORE_CATALOG_SNAPSHOT_GET_DESKTOP_UPLOADS_REVISION,
   CORE_CHAT_EVENTS_SANDBOX_REVISION,
   CORE_CHAT_EVENTS_SCHEMA_REVISION,
   CORE_CHAT_LIVE_EVENTS_SCHEMA_REVISION,
   CORE_CHAT_TRANSCRIPT_PAGE_SCHEMA_REVISION,
+  WORKER_GIT_COMMAND_ONLY_GRANTS,
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import type {
@@ -72,7 +74,7 @@ export const RENDERER_RELAY_GRANTS: readonly CanopyCallerDescriptor['grants'][nu
         ...Object.values(RELAY_DEFINITIONS.streams),
       ].flatMap((definition) => definition.requiredGrants),
     ),
-  );
+  ).filter((grant) => !WORKER_GIT_COMMAND_ONLY_GRANTS.has(grant));
 
 /**
  * The web-core authority's relay: cloud chat and cloud workflow run
@@ -138,6 +140,12 @@ export function createWebCoreRendererRelay({
       // `revision`: its revision 1 takes none.
       'core.chat.transcript.page': {
         revision: CORE_CHAT_TRANSCRIPT_PAGE_SCHEMA_REVISION,
+        whenAbsent: 'raise',
+      },
+      // Each workspace file's current version, which a replacement names as
+      // its expected version (CAN-7008).
+      'core.artifact.list': {
+        revision: CORE_ARTIFACT_LIST_VERSION_REVISION,
         whenAbsent: 'raise',
       },
     },

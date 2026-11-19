@@ -169,7 +169,11 @@ import {
   type PluginsCache,
   type PluginsCacheV1,
 } from '@canopy/execution-engine/types/plugins';
-import type { IPCResult } from '@canopy/execution-engine/types/pipeline';
+import type {
+  IPCResult,
+  IPCResultWithAppError,
+} from '@canopy/execution-engine/types/pipeline';
+import { reportInstallFailure } from '../lib/install-failure-reporting';
 import type { PluginMarketplaceEntry } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginMarketplaceEntry';
 import type { PluginSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSummary';
 import {
@@ -430,15 +434,46 @@ export function readClaudeInstalledItemState(
   return { ids, enabled: ids.every((id) => flags[id] !== false) };
 }
 
+/** The user-scope enabledPlugins flag for one Claude plugin id, if set. */
+async function readClaudeEnabledFlag(id: string): Promise<boolean | undefined> {
+  try {
+    const settings: unknown = JSON.parse(
+      await fs.promises.readFile(getClaudeSettingsPath(), 'utf8'),
+    );
+    const flag =
+      isRecord(settings) && isRecord(settings.enabledPlugins)
+        ? settings.enabledPlugins[id]
+        : undefined;
+    return typeof flag === 'boolean' ? flag : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Turn one Claude plugin on or off. The Claude CLI refuses a plugin that is
+ * already in the requested state ("is already enabled at user scope", exit
+ * 1), so an unchanged plugin is a no-op rather than a failed status change.
+ */
 async function setClaudeInstalledItemEnabledUnlocked(
   id: string,
   enabled: boolean,
 ): Promise<void> {
-  await execPluginCli(
-    getBundledClaudeBinaryPath(),
-    ['plugin', enabled ? 'enable' : 'disable', id, '--scope', 'user'],
-    getEnhancedEnv(),
-  );
+  if ((await readClaudeEnabledFlag(id)) === enabled) return;
+  try {
+    await execPluginCli(
+      getBundledClaudeBinaryPath(),
+      ['plugin', enabled ? 'enable' : 'disable', id, '--scope', 'user'],
+      getEnhancedEnv(),
+    );
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      /\bis already (enabled|disabled)\b/i.test(error.message)
+    )
+      return;
+    throw error;
+  }
 }
 
 async function uninstallClaudeInstalledItemUnlocked(id: string): Promise<void> {
@@ -620,12 +655,9 @@ setPluginCatalogChangeListener(() => {
   afterPluginMutationSettled(scheduleCatalogConsumerRefresh);
 });
 
-// Strict internal read: callers must translate failure, never treat it as absence.
 function readCache(): AnyPluginsCache | null {
   const result = readPluginCatalogHealth();
-  if (result.state === 'absent') return null;
-  if (result.state === 'valid' || result.state === 'legacy') return result.data;
-  throw catalogReadError(result.state);
+  return result.state === 'absent' ? null : result.data;
 }
 
 function validateCachePayload(cache: PluginsCache): PluginsCache {
@@ -672,9 +704,43 @@ interface MarketplaceRefreshSource {
 
 function readCacheIndex(): PluginCacheIndex {
   const result = readPluginIndexHealth();
-  if (result.state === 'valid') return result.data;
   if (result.state === 'absent') return { version: 1, entries: {} };
-  throw catalogReadError(result.state);
+  if (!result.recovered) return result.data;
+  // A recovered index is refilled from the catalog's install facets, so the
+  // next scan keeps installed plugins bound. The next index write persists it.
+  const cache = readCache();
+  const entries = { ...result.data.entries };
+  for (const marketplace of cache?.version === 2 ? cache.marketplaces : []) {
+    const manifest = safeReadJson<MarketplaceManifest>(
+      path.join(
+        marketplace.installLocation,
+        '.claude-plugin',
+        'marketplace.json',
+      ),
+    );
+    const marketplacePlugins = Array.isArray(manifest?.plugins)
+      ? manifest.plugins
+      : [];
+    for (const plugin of marketplace.plugins) {
+      const facet = plugin.facets.claude;
+      const sourceUrl = facet?.externalSource?.url;
+      if (facet?.cachePath && sourceUrl) {
+        // The index uses the marketplace entry name, not the installed manifest name.
+        const entry = marketplacePlugins.find(
+          (candidate) =>
+            typeof candidate?.name === 'string' &&
+            isRecord(candidate.source) &&
+            candidate.source.url === sourceUrl,
+        );
+        entries[cacheKey(marketplace.id, entry?.name ?? plugin.name)] ??= {
+          cachePath: facet.cachePath,
+          sourceUrl,
+          cachedAt: facet.cachedAt ?? '',
+        };
+      }
+    }
+  }
+  return { version: 1, entries };
 }
 
 function validateCacheIndexPayload(index: PluginCacheIndex): PluginCacheIndex {
@@ -1331,6 +1397,7 @@ function scanClaudeMarketplace(input: {
   status: MarketplaceProviderStatus;
   name?: string;
   description?: string;
+  ownerName?: string;
   sourceUrl?: string;
   installLocation?: string;
   lastUpdated?: string;
@@ -1395,6 +1462,7 @@ function scanClaudeMarketplace(input: {
     }),
     name: manifestText(manifest.name) || id,
     description: manifestText(manifest.description) || '',
+    ownerName: manifestText(manifest.owner?.name)?.trim() || undefined,
     sourceUrl: knownMarketplaceSourceUrl(entry),
     installLocation: entry.installLocation,
     lastUpdated: manifestText(entry.lastUpdated),
@@ -2648,6 +2716,7 @@ async function assembleMarketplace(input: {
     id: input.id,
     name: claude.name ?? codex.name ?? input.id,
     description: claude.description ?? codex.description ?? '',
+    ...(claude.ownerName ? { ownerName: claude.ownerName } : {}),
     sourceType:
       input.sourceType ??
       knownMarketplaceSourceType(input.knownEntry) ??
@@ -3674,14 +3743,18 @@ export async function addMarketplace(
     assertCatalogHealth();
     return result;
   } catch (error) {
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.marketplace.add'),
+    };
   }
 }
 
 async function addMarketplaceUnlocked(
   repo: string,
   progress?: MarketplaceProgressReporter,
-): Promise<IPCResult<MarketplaceRegistrationResult>> {
+): Promise<IPCResultWithAppError<MarketplaceRegistrationResult>> {
   const id = normalizeMarketplaceId(repo);
   const sourceUrl = normalizeMarketplaceSourceUrl(repo);
   reportMarketplaceProgress(progress, 'add', {
@@ -3780,7 +3853,7 @@ async function addMarketplaceUnlocked(
 async function updateMarketplaceUnlocked(
   id: string,
   progress?: MarketplaceProgressReporter,
-): Promise<IPCResult<MarketplaceInfo>> {
+): Promise<IPCResultWithAppError<MarketplaceInfo>> {
   try {
     assertCatalogHealth();
     if (isCuratedPluginMarketplaceId(id)) {
@@ -4010,14 +4083,18 @@ async function updateMarketplaceUnlocked(
       marketplaceId: id,
       message: errorMessage(error),
     });
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.marketplace.update'),
+    };
   }
 }
 
 export async function updateMarketplace(
   id: string,
   progress?: MarketplaceProgressReporter,
-): Promise<IPCResult<MarketplaceInfo>> {
+): Promise<IPCResultWithAppError<MarketplaceInfo>> {
   try {
     const result = await runSerializedPluginMutation(() =>
       withMarketplaceRefreshLock(() => updateMarketplaceUnlocked(id, progress)),
@@ -4030,7 +4107,11 @@ export async function updateMarketplace(
       marketplaceId: id,
       message: errorMessage(error),
     });
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.marketplace.update'),
+    };
   }
 }
 
@@ -4609,7 +4690,11 @@ export async function removeMarketplace(
     assertCatalogHealth();
     return result;
   } catch (error) {
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.marketplace.remove'),
+    };
   }
 }
 
@@ -4621,7 +4706,7 @@ async function removeMarketplaceUnlocked(
     fanOutRequestId?: string;
   },
   progress?: MarketplaceProgressReporter,
-): Promise<IPCResult<MarketplaceRemovalResult>> {
+): Promise<IPCResultWithAppError<MarketplaceRemovalResult>> {
   if (id === BUILTIN_PLUGIN_MARKETPLACE_ID) {
     return {
       success: false,
@@ -5449,7 +5534,7 @@ async function installCodexLocalManagedPlugin(input: {
 async function installBuiltInPluginUnlocked(
   request: InstallBuiltInPluginRequest,
   progress?: MarketplaceProgressReporter,
-): Promise<IPCResult<InstallBuiltInPluginResult>> {
+): Promise<IPCResultWithAppError<InstallBuiltInPluginResult>> {
   const marketplaceId =
     isRecord(request) && typeof request.marketplaceId === 'string'
       ? request.marketplaceId
@@ -5597,7 +5682,11 @@ async function installBuiltInPluginUnlocked(
       ...(marketplaceId ? { marketplaceId } : {}),
       message: errorMessage(error),
     });
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.install_built_in'),
+    };
   }
 }
 
@@ -5664,7 +5753,7 @@ async function installPluginUnlocked(
      */
     skipRefresh?: boolean;
   },
-): Promise<IPCResult<PluginInfo>> {
+): Promise<IPCResultWithAppError<PluginInfo>> {
   try {
     assertCatalogHealth();
     if (!marketplaceId || !pluginName || !sourceUrl) {
@@ -5811,7 +5900,11 @@ async function installPluginUnlocked(
     };
     return { success: true, data: presentedPlugin };
   } catch (error) {
-    return { success: false, error: errorMessage(error) };
+    return {
+      success: false,
+      error: errorMessage(error),
+      ...reportInstallFailure(error, 'plugin.install'),
+    };
   }
 }
 
@@ -5836,7 +5929,11 @@ export function installPlugin(
       assertCatalogHealth();
       return result;
     } catch (error) {
-      return { success: false, error: errorMessage(error) };
+      return {
+        success: false,
+        error: errorMessage(error),
+        ...reportInstallFailure(error, 'plugin.install'),
+      };
     }
   });
 }
@@ -5862,7 +5959,11 @@ export function installBuiltInPlugin(
       assertCatalogHealth();
       return result;
     } catch (error) {
-      return { success: false, error: errorMessage(error) };
+      return {
+        success: false,
+        error: errorMessage(error),
+        ...reportInstallFailure(error, 'plugin.install_built_in'),
+      };
     }
   });
 }

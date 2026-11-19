@@ -7,8 +7,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hasAnySelections } from '../../types';
-import { CursorEventProjection } from '../cursor/events';
 import type { AcpPermissionRequest } from '../acp';
+import { createAntigravityEventProjection } from '../antigravity/event-projection';
 import { antigravityNativeOperation } from '../antigravity/tool-approval';
 import {
   antigravityTokenUsage,
@@ -407,10 +407,10 @@ export async function runAntigravityPipelinePrompt(
         throw new Error(CAPABILITIES_CHANGED);
       current = captured;
     }
-    const projection = new CursorEventProjection(
-      'Google workflow output exceeded the local limit.',
-      { recognizeCursorErrors: false, secretValues: secrets },
-    );
+    const projection = createAntigravityEventProjection({
+      limitMessage: 'Google workflow output exceeded the local limit.',
+      secretValues: secrets,
+    });
     let deniedPermission = false;
     const deny = (): 'deny' => {
       deniedPermission = true;

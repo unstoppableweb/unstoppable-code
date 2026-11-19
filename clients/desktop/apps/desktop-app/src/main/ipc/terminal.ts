@@ -31,7 +31,7 @@ import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import type { WindowAccessors } from './index';
 import { sendToWindow } from '../lib/window-send';
 import { addRendererDeliveryBarrier } from '../lib/web-contents-send';
-import { validateId } from '../lib/validation';
+import { IdentifierValidationError, validateId } from '../lib/validation';
 import {
   closeTerminal,
   listTerminalProfiles,
@@ -372,6 +372,15 @@ export function registerTerminalHandlers(
     (_event, request): void => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
+      const forgetTerminalIds: unknown = request.forgetTerminalIds;
+      if (forgetTerminalIds !== undefined) {
+        if (!Array.isArray(forgetTerminalIds))
+          throw new IdentifierValidationError(
+            'Invalid forgetTerminalIds: must be an array',
+          );
+        for (const terminalId of forgetTerminalIds)
+          validateId(terminalId, 'forgetTerminalIds');
+      }
       terminalPersistenceStore.saveWorktreeState(request);
     },
   );

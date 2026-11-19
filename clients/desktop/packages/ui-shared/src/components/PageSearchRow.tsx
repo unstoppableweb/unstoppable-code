@@ -113,6 +113,10 @@ export interface PageDropdownTriggerProps extends Omit<
    * 32px capsule of a toolbar (the Schedule calendar's).
    */
   readonly size?: 'default' | 'page';
+  /** A leading glyph, so the trigger names the filter before it is set. */
+  readonly icon?: ReactNode;
+  /** Selected, the trigger takes the accent tint (Customize's filter pills). */
+  readonly pill?: boolean;
 }
 
 /**
@@ -123,7 +127,7 @@ export const PageDropdownTrigger = forwardRef<
   HTMLButtonElement,
   PageDropdownTriggerProps
 >(function PageDropdownTrigger(
-  { label, open, active = false, size = 'page', ...props },
+  { label, open, active = false, size = 'page', icon, pill = false, ...props },
   ref,
 ): JSX.Element {
   return (
@@ -133,14 +137,19 @@ export const PageDropdownTrigger = forwardRef<
       variant="capsule"
       size={size}
       labelOnly
-      tone={active ? 'default' : 'secondary'}
+      tone={pill && active ? 'selected' : active ? 'default' : 'secondary'}
       aria-expanded={open}
       aria-haspopup="menu"
       data-active={active ? 'true' : 'false'}
       className="shrink-0"
     >
+      {icon ? (
+        <span aria-hidden="true" className="flex shrink-0 items-center">
+          {icon}
+        </span>
+      ) : null}
       <span
-        className={`whitespace-nowrap ${active ? 'fg-primary' : ''}`.trim()}
+        className={`whitespace-nowrap ${active && !pill ? 'fg-primary' : ''}`.trim()}
       >
         {label}
       </span>
@@ -246,6 +255,10 @@ export interface FilterDropdownProps<T extends string> {
   readonly testId: string;
   /** `page` in a page search row; `default` in a toolbar. */
   readonly size?: 'default' | 'page';
+  /** A leading glyph on the trigger. */
+  readonly icon?: ReactNode;
+  /** The trigger takes the accent tint while a value is picked. */
+  readonly pill?: boolean;
   /**
    * Blocks the picked value and each option's label from session replay,
    * for values such as people's names; the accessible name then carries
@@ -269,6 +282,8 @@ export function FilterDropdown<T extends string>({
   multiple = false,
   testId,
   size = 'page',
+  icon,
+  pill = false,
   replayPrivacy,
 }: FilterDropdownProps<T>): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -279,6 +294,8 @@ export function FilterDropdown<T extends string>({
       <PageDropdownTrigger
         ref={anchorRef}
         size={size}
+        icon={icon}
+        pill={pill}
         label={
           active && replayPrivacy ? (
             <span className={replayPrivacy.blockClassName}>{label}</span>
@@ -316,6 +333,60 @@ export function FilterDropdown<T extends string>({
         </DropdownMenuRowStyleProvider>
       </FloatingMenu>
     </>
+  );
+}
+
+export interface PageToggleFilterProps {
+  readonly label: string;
+  readonly icon?: ReactNode;
+  readonly pressed: boolean;
+  readonly onPressedChange: (pressed: boolean) => void;
+  /** A small counter after the label, such as new shares. */
+  readonly count?: number;
+  readonly testId: string;
+  readonly countTestId?: string;
+}
+
+/**
+ * One on/off filter as a quiet pill in a page search row: icon and label,
+ * the accent tint while it is on, pressed again to clear it.
+ */
+export function PageToggleFilter({
+  label,
+  icon,
+  pressed,
+  onPressedChange,
+  count,
+  testId,
+  countTestId,
+}: PageToggleFilterProps): JSX.Element {
+  return (
+    <PickerTrigger
+      variant="capsule"
+      size="page"
+      labelOnly
+      tone={pressed ? 'selected' : 'secondary'}
+      aria-pressed={pressed}
+      data-testid={testId}
+      data-active={pressed ? 'true' : 'false'}
+      className="shrink-0"
+      onClick={(): void => onPressedChange(!pressed)}
+    >
+      {icon ? (
+        <span aria-hidden="true" className="flex shrink-0 items-center">
+          {icon}
+        </span>
+      ) : null}
+      <span className="whitespace-nowrap">{label}</span>
+      {count !== undefined && count > 0 ? (
+        <span
+          data-testid={countTestId}
+          className="text-xs tabular-nums fg-tertiary"
+        >
+          {count}
+        </span>
+      ) : null}
+    </PickerTrigger>
   );
 }
 

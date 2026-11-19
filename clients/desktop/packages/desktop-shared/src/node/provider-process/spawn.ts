@@ -2,12 +2,21 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import type { PlatformSupervisionServices } from '@canopy/core-runtime';
 import {
   killProcessGroupByPid,
   signalExitedProcessGroup,
 } from '@canopy/execution-engine/node/lib/process-kill';
-import { delay, reapDescendantGroups, traceWithin } from './descendant-groups';
-import type { DescendantCleanup, DescendantGroups } from './descendant-groups';
+import {
+  delay,
+  reapDescendantGroupsWithReason,
+  traceWithin,
+} from './descendant-groups';
+import type {
+  DescendantCleanup,
+  DescendantGroups,
+  DescendantReapReason,
+} from './descendant-groups';
 
 /** The least time between two descendant records of one child. */
 const RECORD_INTERVAL_MS = 1_000;
@@ -123,10 +132,34 @@ export interface ProviderProcess {
    * task never implies `reaped`.
    */
   stopCleanup?(): Promise<ProviderProcessCleanup | undefined>;
+  /**
+   * Why `stopCleanup` is `unverified`, once the stop finishes; undefined for
+   * any other outcome (CAN-7026). See `ProviderProcessCleanupReason`.
+   */
+  stopCleanupReason?(): Promise<ProviderProcessCleanupReason | undefined>;
 }
 
 /** See `ProviderProcess.stopCleanup`. */
 export type ProviderProcessCleanup = DescendantCleanup;
+
+/**
+ * The first reason a stop's cleanup is `unverified`:
+ * - `record-dropped`: a requested record was never traced, because the stop
+ *   came first or a forced stop did not wait for it;
+ * - `record-incomplete`: a record's trace failed or missed its budget, so the
+ *   recorded set may miss descendants;
+ * - `stop-trace-incomplete`: the child outlived its grace, and the trace at
+ *   the stop failed or missed its budget;
+ * - `proof-inconclusive`: a group's proof before a signal did not settle;
+ * - `verify-deadline`: a killed group was not proven gone in time;
+ * - `reap-failed`: the reap itself threw.
+ */
+export type ProviderProcessCleanupReason =
+  | 'record-dropped'
+  | 'record-incomplete'
+  | 'stop-trace-incomplete'
+  | 'reap-failed'
+  | DescendantReapReason;
 
 export type ProviderProcessSpawner = (
   request: ProviderProcessRequest,
@@ -216,6 +249,8 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
   private stopping: Promise<void> | undefined;
   /** Set when descendants that left the group are reaped on stop. */
   private readonly reapsDescendants: boolean;
+  /** The descendant reads; the host's own unless a test supplies them. */
+  private readonly supervision: PlatformSupervisionServices | undefined;
   /** Descendants recorded while the child runs, reaped at stop. */
   private readonly recorded: DescendantGroups = new Map();
   /** The record in flight, so at most one runs at a time. */
@@ -225,6 +260,9 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
    * recorded set may miss descendants: the cleanup can only be `unverified`.
    */
   private recordingIncomplete = false;
+  /** The first reason the recorded set became incomplete. */
+  private incompleteReason: ProviderProcessCleanupReason | undefined;
+  private cleanupReason: ProviderProcessCleanupReason | undefined;
   /** Whether the record in flight answers a caller (see `record`). */
   private recordingRequested = false;
   /** Ends a record's throttle wait once the stop begins. */
@@ -235,8 +273,12 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
   private lastRecordAt = Number.NEGATIVE_INFINITY;
   private cleanupOutcome: ProviderProcessCleanup | undefined;
 
-  constructor(request: ProviderProcessRequest) {
+  constructor(
+    request: ProviderProcessRequest,
+    supervision?: PlatformSupervisionServices,
+  ) {
     super();
+    this.supervision = supervision;
     this.closed = new Promise<void>((resolve) => {
       this.markClosed = resolve;
     });
@@ -341,22 +383,30 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
       .then(async () => {
         if (this.stopping || this.childExited) {
           // Requested before the stop, never traced: a gap.
-          if (requested) this.recordingIncomplete = true;
+          if (requested) this.markIncomplete('record-dropped');
           return;
         }
         this.lastRecordAt = performance.now();
-        if (!(await traceWithin(pid, this.recorded)) && requested)
-          this.recordingIncomplete = true;
+        if (
+          !(await traceWithin(
+            pid,
+            this.recorded,
+            undefined,
+            this.supervision,
+          )) &&
+          requested
+        )
+          this.markIncomplete('record-incomplete');
       })
       .catch(() => {
-        if (requested) this.recordingIncomplete = true;
+        if (requested) this.markIncomplete('record-incomplete');
       })
       .finally(() => {
         this.recording = undefined;
         if (this.recordQueued) {
           this.recordQueued = false;
           if (this.canRecord()) this.record(true);
-          else this.recordingIncomplete = true;
+          else this.markIncomplete('record-dropped');
           return;
         }
         if (this.trailingRecord && this.canRecord()) {
@@ -370,6 +420,17 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
     if (!this.reapsDescendants || !this.stopping)
       return Promise.resolve(undefined);
     return this.stopping.then(() => this.cleanupOutcome);
+  }
+
+  stopCleanupReason(): Promise<ProviderProcessCleanupReason | undefined> {
+    if (!this.reapsDescendants || !this.stopping)
+      return Promise.resolve(undefined);
+    return this.stopping.then(() => this.cleanupReason);
+  }
+
+  private markIncomplete(reason: ProviderProcessCleanupReason): void {
+    this.recordingIncomplete = true;
+    this.incompleteReason ??= reason;
   }
 
   stop(options: ProviderProcessStopOptions = {}): Promise<void> {
@@ -409,9 +470,9 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
         this.reapsDescendants &&
         graceMs > 0 &&
         !this.childExited &&
-        !(await traceWithin(pid, groups, 1_000))
+        !(await traceWithin(pid, groups, 1_000, this.supervision))
       )
-        this.recordingIncomplete = true;
+        this.markIncomplete('stop-trace-incomplete');
     } finally {
       if (timer) clearTimeout(timer);
       // Parent closure does not imply group closure: terminate surviving
@@ -425,12 +486,26 @@ class DirectProviderProcess extends EventEmitter implements ProviderProcess {
       // shutdown, and its cleanup can then only be unverified.
       if (graceMs > 0) await this.recording;
       else if (this.recording && (this.recordingRequested || this.recordQueued))
-        this.recordingIncomplete = true;
-      const reaped = await reapDescendantGroups(groups, pid, graceMs).catch(
-        (): ProviderProcessCleanup => 'unverified',
+        this.markIncomplete('record-dropped');
+      const reaped = await reapDescendantGroupsWithReason(
+        groups,
+        pid,
+        graceMs,
+        this.supervision,
+      ).catch(
+        (): { cleanup: ProviderProcessCleanup; reason: 'reap-failed' } => ({
+          cleanup: 'unverified',
+          reason: 'reap-failed',
+        }),
       );
       // Incomplete coverage outranks an empty or fully reaped recorded set.
-      this.cleanupOutcome = this.recordingIncomplete ? 'unverified' : reaped;
+      if (this.recordingIncomplete) {
+        this.cleanupOutcome = 'unverified';
+        this.cleanupReason = this.incompleteReason;
+      } else {
+        this.cleanupOutcome = reaped.cleanup;
+        this.cleanupReason = reaped.reason;
+      }
     }
     await this.closed;
   }
@@ -481,6 +556,14 @@ function placeholderStreams(
   return [stdin, stdout, stderr];
 }
 
-/** Plain node spawn. Never use it in Electron main outside the host (check:provider-process-host CU1). */
-export const spawnProviderProcessDirect: ProviderProcessSpawner = (request) =>
-  new DirectProviderProcess(request);
+/**
+ * Plain node spawn. Never use it in Electron main outside the host
+ * (check:provider-process-host CU1). `supervision` replaces the host's
+ * descendant reads, for tests that drive them deterministically.
+ */
+export function spawnProviderProcessDirect(
+  request: ProviderProcessRequest,
+  supervision?: PlatformSupervisionServices,
+): ProviderProcess {
+  return new DirectProviderProcess(request, supervision);
+}

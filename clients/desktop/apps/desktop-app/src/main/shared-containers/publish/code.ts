@@ -11,7 +11,7 @@ import {
   uploadSharedContainerArtifact,
 } from '../canopy-server-client';
 import { readSharedContainerFileScope } from '../file-scope-store';
-import { readPortalStateStore } from '../../portal/portal-state-store';
+import { getInstallId } from '../../lib/install-identity';
 import { readWorkspaceWorktrees } from '../../lib/workspace-persistence';
 import type { SharedContainerPublicationRecord } from '../publication-state';
 import { buildCoworkRevisionArtifacts } from './cowork';
@@ -241,7 +241,7 @@ const DEFAULT_DEPENDENCIES: PublishCodeRevisionDependencies = {
   upload: uploadSharedContainerArtifact,
   commit: commitSharedContainerRevision,
   fetchRevision: fetchSharedContainerRevision,
-  readDeviceId: async () => (await readPortalStateStore()).clientDeviceId,
+  readDeviceId: getInstallId,
   beforeStage: assertCodePublishInventoryHeadsStable,
   disposeInventory: disposeCodePublishInventory,
   resolveTitles: async ({ projectId, worktreeId }) => {

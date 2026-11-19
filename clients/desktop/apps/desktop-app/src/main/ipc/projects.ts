@@ -47,7 +47,14 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { getSidebarItemsPreserveWorkspaceIds } from '../lib/sidebar-items-preservation';
 import { syncTrackedWorktrees as syncTrackedGitHubWorktrees } from '../lib/github-poller';
 import { repairExistingWorkspaceRootWorktrees } from '../lib/workspace-source-control';
-import { publishWorktreeLifecycleChange } from '../lib/worktree-lifecycle-signals';
+import {
+  publishWorktreeLifecycleChange,
+  worktreeLifecycleSequence,
+} from '../lib/worktree-lifecycle-signals';
+import {
+  offerLoadedProjection,
+  type LoadedProjectionOffer,
+} from '../lib/worktree-branch-watcher';
 import { syncWorktreesFileWatchers } from '../lib/worktrees-file-watcher';
 import { reconcileExternalWorktreeSnapshot } from '../lib/worktree-registry-reconciliation';
 import {
@@ -72,6 +79,7 @@ import { serializeChatProjectOperation } from '../lib/chat-project-operation-que
 import { deleteWorkspace } from '../lib/workspace-deletion';
 import { saveDefaultPluginsAndVisibility } from '../lib/workspace-default-plugins-save';
 import {
+  detachedWorkCallback,
   settleAll,
   trackDetachedWork,
 } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -88,6 +96,74 @@ function getFailedWorkspaceIds(
   sidebarItems: Pick<SidebarItemsFile, 'warnings' | 'preservedWorkspaceIds'>,
 ): ReadonlySet<string> {
   return new Set(getSidebarItemsPreserveWorkspaceIds(sidebarItems));
+}
+
+function rootRepairWorkspaceIds(items: readonly SidebarItem[]): string[] {
+  return items.flatMap((item) =>
+    item.type === 'multi-repo' && item.sourceRepoPath ? [item.id] : [],
+  );
+}
+
+interface RootRepairBatch {
+  workspaceIds: readonly string[];
+  /** The newest load's read; older batches it replaced publish none. */
+  offer: LoadedProjectionOffer;
+  settled: Array<() => void>;
+}
+
+/**
+ * Repairs source-backed workspace roots off the `projects:load` response
+ * path, then publishes `projects-loaded`, so the branch observer syncs only
+ * after repair, as when loads awaited it. Single-flight: a load during a
+ * batch replaces the queued one, and each batch publishes when it settles.
+ * The returned promise settles once a batch at least as new has published.
+ */
+function createRootRepairQueue(): (
+  workspaceIds: readonly string[],
+  offer: LoadedProjectionOffer,
+) => Promise<void> {
+  let queued: RootRepairBatch | undefined;
+  let running = false;
+  const publishLoaded = (offer: LoadedProjectionOffer): void => {
+    offerLoadedProjection(offer);
+    publishWorktreeLifecycleChange('projects-loaded');
+  };
+  const drain = async (): Promise<void> => {
+    try {
+      for (let batch = queued; batch; batch = queued) {
+        queued = undefined;
+        try {
+          await settleAll(
+            batch.workspaceIds.map((workspaceId) =>
+              repairExistingWorkspaceRootWorktrees(workspaceId).catch(() => {}),
+            ),
+          );
+          publishLoaded(batch.offer);
+        } finally {
+          batch.settled.forEach((settle) => settle());
+        }
+      }
+    } finally {
+      running = false;
+    }
+  };
+  return (workspaceIds, offer) =>
+    new Promise<void>((resolve) => {
+      if (!running && workspaceIds.length === 0) {
+        publishLoaded(offer);
+        resolve();
+        return;
+      }
+      queued = {
+        workspaceIds,
+        offer,
+        settled: [...(queued?.settled ?? []), resolve],
+      };
+      if (running) return;
+      running = true;
+      // The drain serves later loads too, so it holds no load's admission.
+      detachedWorkCallback(drain)();
+    });
 }
 
 const FIRST_PROJECTS_LOAD_MAIN_OBSERVER_KEY =
@@ -414,6 +490,7 @@ export function registerProjectHandlers(
   let startupRecoveryWork: Promise<void> = Promise.resolve();
   let startupBadgeWork: Promise<void> = Promise.resolve();
   let startupRecoverySequence = getElectronDaemonHealth().getRecoverySequence();
+  const repairRootsThenPublish = createRootRepairQueue();
   const reconcileExternalSnapshot = (
     workspaceId: string,
     worktrees: Parameters<typeof reconcileExternalWorktreeSnapshot>[1],
@@ -457,46 +534,15 @@ export function registerProjectHandlers(
           }),
         );
       try {
-        const initial = (
+        // Authenticated once, before any await: `senderFrame` is null once the
+        // page navigates, so a late re-check refuses a request sent while trusted.
+        const caller = resolveCaller(event);
+        const sequence = worktreeLifecycleSequence();
+        const { legacyResult: refreshed, legacyAuthority } =
           await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
-            dispatcher.queryWorkspaceListForLegacyIpc(
-              {},
-              { caller: resolveCaller(event) },
-            ),
-          )
-        ).legacyResult;
+            dispatcher.queryWorkspaceListForLegacyIpc({}, { caller }),
+          );
         // A stale projection may only be delivered, never reconciled or remembered.
-        if (initial.stale) {
-          markNeedsReload(event, generation);
-          return {
-            ...initial,
-            items: initial.items.filter(isVisibleSidebarItem),
-          };
-        }
-        const initialItems = initial.items.filter(isVisibleSidebarItem);
-        const initialFailedWorkspaceIds = getFailedWorkspaceIds(initial);
-        syncTrackedGitHubWorktrees(initialItems, initialFailedWorkspaceIds);
-        syncTrackedWorkspaces(initialItems, initialFailedWorkspaceIds);
-        syncCodeGraphBaseRepositories(initialItems, initialFailedWorkspaceIds);
-        await settleAll(
-          initialItems.map(async (item) => {
-            if (item.type !== 'multi-repo' || !item.sourceRepoPath) {
-              return;
-            }
-
-            await repairExistingWorkspaceRootWorktrees(item.id).catch(() => {});
-          }),
-        );
-        const refreshed = (
-          await withW5ProjectionOnlyRead(W5_PROJECTION_ONLY_READ, () =>
-            dispatcher.queryWorktreeListForLegacyIpc(
-              {},
-              { caller: resolveCaller(event) },
-            ),
-          )
-        ).legacyResult;
-        if (Array.isArray(refreshed))
-          throw new Error('Unscoped worktree projection was not captured.');
         if (refreshed.stale) {
           markNeedsReload(event, generation);
           return {
@@ -504,6 +550,25 @@ export function registerProjectHandlers(
             items: refreshed.items.filter(isVisibleSidebarItem),
           };
         }
+        const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
+        const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
+        syncTrackedGitHubWorktrees(refreshedItems, refreshedFailedWorkspaceIds);
+        syncTrackedWorkspaces(refreshedItems, refreshedFailedWorkspaceIds);
+        syncCodeGraphBaseRepositories(
+          refreshedItems,
+          refreshedFailedWorkspaceIds,
+        );
+        // Repair writes only checkouts, which the projection does not read.
+        // Main's branch observer lists from this read after repair unless a
+        // list write or membership signal landed after the read began.
+        const rootsRepaired = repairRootsThenPublish(
+          rootRepairWorkspaceIds(refreshedItems),
+          {
+            sequence,
+            file: refreshed,
+            ...(legacyAuthority ? { authority: legacyAuthority } : {}),
+          },
+        );
         if (!didReconcileGitPendingWorktrees) {
           didReconcileGitPendingWorktrees = true;
           // Recovery may copy an interrupted archive for minutes. It owns its
@@ -511,8 +576,10 @@ export function registerProjectHandlers(
           // loading the project inventory must not wait for that maintenance.
           const previous = startupRecoveryWork;
           trackDetachedWork(() => {
-            // A recovery reload must not overlap an archive still being copied.
+            // A recovery reload must not overlap an archive still being copied
+            // or the root repair this load started.
             startupRecoveryWork = previous
+              .then(() => rootsRepaired)
               .then(() => reconcileGitPendingWorktrees(getWindow))
               .catch((error: unknown): void => {
                 const message =
@@ -524,22 +591,21 @@ export function registerProjectHandlers(
             return startupRecoveryWork;
           });
         }
-        const refreshedItems = refreshed.items.filter(isVisibleSidebarItem);
-        const refreshedFailedWorkspaceIds = getFailedWorkspaceIds(refreshed);
-        syncTrackedGitHubWorktrees(refreshedItems, refreshedFailedWorkspaceIds);
-        syncTrackedWorkspaces(refreshedItems, refreshedFailedWorkspaceIds);
-        syncCodeGraphBaseRepositories(
-          refreshedItems,
-          refreshedFailedWorkspaceIds,
-        );
-        // Main's branch observer reads membership itself; the first load
-        // starts its enrollment and later loads reread it.
-        publishWorktreeLifecycleChange('projects-loaded');
+        // Watcher events go to the main window, so only the rows it applies
+        // (its current load, not a remote bridge's) are known to it.
+        const mainWindow = getWindow();
+        const deliveredToWindow =
+          event?.sender !== undefined &&
+          mainWindow !== null &&
+          !mainWindow.isDestroyed() &&
+          mainWindow.webContents === event.sender &&
+          projectsLoadGenerations.get(event.sender) === generation;
         syncWorktreesFileWatchers(
           refreshedItems,
           getWindow,
           refreshedFailedWorkspaceIds,
           reconcileExternalSnapshot,
+          deliveredToWindow,
         );
         if (!didScheduleChatBadgeBackfill) {
           didScheduleChatBadgeBackfill = true;

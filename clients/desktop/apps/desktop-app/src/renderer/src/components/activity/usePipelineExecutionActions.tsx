@@ -28,6 +28,7 @@ import {
 } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
+import type { ToastMeta } from '@/stores/toastStore';
 import {
   usePipelineExecutionActionsStore,
   withInFlightId,
@@ -110,10 +111,11 @@ export interface UsePipelineExecutionActionsOptions {
 function addPipelineToast(
   message: string,
   type: 'error' | 'info' | 'success',
+  caught?: Pick<ToastMeta, 'caught'>,
 ): void {
   useGitHubStore
     .getState()
-    .addToast(message, type, undefined, { category: 'Pipeline' });
+    .addToast(message, type, undefined, { category: 'Pipeline', ...caught });
 }
 
 function getExecutionPlanPath(state: ExecutionState): string | undefined {
@@ -285,6 +287,7 @@ async function sendExecutionFollowUp(
     addPipelineToast(
       error instanceof Error ? error.message : 'Failed to start chat follow-up',
       'error',
+      { caught: error },
     );
   } finally {
     usePipelineExecutionActionsStore.setState({
@@ -373,7 +376,9 @@ export function usePipelineExecutionActions(
           );
         }
       } catch (error: unknown) {
-        addPipelineToast(extractIpcErrorMessage(error), 'error');
+        addPipelineToast(extractIpcErrorMessage(error), 'error', {
+          caught: error,
+        });
       } finally {
         usePipelineExecutionActionsStore.setState((state) =>
           state.resumingId === executionId ? { resumingId: null } : state,
@@ -412,7 +417,9 @@ export function usePipelineExecutionActions(
         addPipelineToast(result.error ?? 'Failed to retry execution', 'error');
       }
     } catch (error: unknown) {
-      addPipelineToast(extractIpcErrorMessage(error), 'error');
+      addPipelineToast(extractIpcErrorMessage(error), 'error', {
+        caught: error,
+      });
     } finally {
       usePipelineExecutionActionsStore.setState((state) => ({
         retryingIds: withInFlightId(state.retryingIds, executionId, false),
@@ -457,7 +464,9 @@ export function usePipelineExecutionActions(
         addPipelineToast(result.error ?? 'Failed to rerun execution', 'error');
       }
     } catch (error: unknown) {
-      addPipelineToast(extractIpcErrorMessage(error), 'error');
+      addPipelineToast(extractIpcErrorMessage(error), 'error', {
+        caught: error,
+      });
     } finally {
       usePipelineExecutionActionsStore.setState((state) => ({
         rerunningIds: withInFlightId(state.rerunningIds, executionId, false),
@@ -503,6 +512,7 @@ export function usePipelineExecutionActions(
             ? error.message
             : `Failed to open ${ORCHESTRATOR_LABEL} for workflow debug`,
           'error',
+          { caught: error },
         );
         return false;
       } finally {

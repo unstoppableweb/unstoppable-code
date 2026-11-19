@@ -1,5 +1,12 @@
 import { WorkflowReportRegion } from '@canopy/ui-shared/components';
 import {
+  gitHubRepositoryOfReviewUrl,
+  isReviewApprovalLinkState,
+  reviewApprovalReadinessInput,
+  useReviewApprovalLink,
+  useReviewApprovalReadiness,
+} from '@canopy/ui-app/review-approval-link';
+import {
   useCallback,
   useEffect,
   useId,
@@ -24,9 +31,15 @@ import type {
   ExecutionSummary,
 } from '@canopy/execution-engine/types/pipeline';
 import type { AppAdvisorJson } from '@canopy/desktop-shared/types';
+import { executionOwnerKind } from '@canopy/execution-engine/pipelines/step-billing-route';
 import type { CostNavigator } from '@canopy/app-core';
 import { toPipelineRunDefinitionViewModel } from '@canopy/desktop-shared/pipelines/pipeline-read-detail-adapter';
-import { PipelineRunDefinitionUsed } from '@canopy/ui-app';
+import {
+  GitHubReviewOutcome,
+  PipelineRunBackgroundNotice,
+  PipelineRunDefinitionUsed,
+  githubReviewOutcomeFromJobOutputs,
+} from '@canopy/ui-app';
 import {
   formatCostTotalIn,
   useCostCurrency,
@@ -665,6 +678,38 @@ export function PipelineExecutionDetail({
     () => Object.keys(state?.pipeline_snapshot.jobs ?? {}),
     [state],
   );
+  // The code review presets' posting job names where the review landed.
+  const githubReview = useMemo(
+    () =>
+      state
+        ? githubReviewOutcomeFromJobOutputs(
+            jobOrder.map((jobId) => state.jobs[jobId]?.outputs),
+          )
+        : null,
+    [jobOrder, state],
+  );
+  // "Link GitHub" beside a not-linked badge, only while the viewer (who ran
+  // this local review) still needs to link for the run's owner and repository.
+  const executionContext = state?.execution_context;
+  // Who the step billing line names (CAN-7256); unknown without a state.
+  const ownerKind = state ? executionOwnerKind(executionContext) : undefined;
+  const reviewApprovalInput = useMemo(
+    () =>
+      githubReview?.approvalReason === 'requester_not_connected' &&
+      githubReview.reviewUrl !== undefined
+        ? reviewApprovalReadinessInput(
+            executionContext ?? 'personal',
+            gitHubRepositoryOfReviewUrl(githubReview.reviewUrl),
+          )
+        : null,
+    [executionContext, githubReview],
+  );
+  const reviewApprovalReadiness =
+    useReviewApprovalReadiness(reviewApprovalInput);
+  const reviewApprovalLink = useReviewApprovalLink();
+  const reviewNeedsLink =
+    reviewApprovalReadiness !== null &&
+    isReviewApprovalLinkState(reviewApprovalReadiness.state);
   // Definition used: the snapshot the run started with, converted only while
   // the entry is shown (the conversion dumps the canonical YAML).
   const definitionSelected = isPipelineDetailsDefinitionSelection(selectedJob);
@@ -895,6 +940,12 @@ export function PipelineExecutionDetail({
               }
             />
           )}
+          <PipelineRunBackgroundNotice
+            appDependencyApplicable
+            assessment={state.survival_assessment}
+            status={state.status}
+            pausedAt={state.paused_at}
+          />
           <div
             // `relative isolate`: the job-list preview overlays the body
             // within this row only, never the panel's tab bar or a sibling.
@@ -975,6 +1026,21 @@ export function PipelineExecutionDetail({
                       advisorStartError={advisorStartError}
                       onSelectJob={(jobId): void => selectJob({ jobId })}
                       hideAdvisor={archived}
+                      githubReviewSlot={
+                        githubReview ? (
+                          <div data-testid="pipeline-summary-github-review">
+                            <GitHubReviewOutcome
+                              {...githubReview}
+                              {...(reviewNeedsLink
+                                ? {
+                                    onLinkGitHub: reviewApprovalLink.link,
+                                    linkBusy: reviewApprovalLink.busy,
+                                  }
+                                : {})}
+                            />
+                          </div>
+                        ) : null
+                      }
                       costPreviewSlot={
                         hasCost &&
                         costView !== null &&
@@ -1054,6 +1120,7 @@ export function PipelineExecutionDetail({
                       onSelectMatrixVariant={selectMatrixVariant}
                       archivedSource={archivedSource}
                       logsEnabled={detailEnabled}
+                      ownerKind={ownerKind}
                       stepCosts={
                         hasCost ? (costView?.steps ?? undefined) : undefined
                       }

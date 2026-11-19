@@ -13,6 +13,7 @@ import {
   REQUEST_SECRETS_USAGE_TEXT,
   type RequestSecretsInput,
 } from '@canopy/agent-actions';
+import { openClaudeAmbientSecretEnv } from '../ambient-env';
 import {
   IPC_CHANNELS,
   type McpQuestion,
@@ -23,6 +24,12 @@ import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/c
 
 jest.mock('../feature-gate', () => ({
   isAgentSecretRequestsEnabled: jest.fn(() => true),
+  isRunWithSecretsSupported: jest.fn(() => true),
+}));
+let ambientDir = '';
+jest.mock('../../lib/paths', () => ({
+  ...jest.requireActual<object>('../../lib/paths'),
+  getAgentSecretAmbientEnvDir: (): string => ambientDir,
 }));
 jest.mock('../../canopy-tools/session-runtime', () => ({
   requestAnswersFromRenderer: jest.fn(),
@@ -296,7 +303,9 @@ describe('ChatSecretStore', () => {
     expect(await store.listNames(elsewhere)).toEqual(['C_KEY']);
 
     // A deletion the disk refuses still takes effect at once, and the next
-    // write (the hourly sweep at the latest) takes it off the disk.
+    // write (the hourly sweep at the latest) takes it off the disk. A chat
+    // that ends deletes everything; a revocation keeps the value for
+    // redaction only (CONTRACTS.md §4a), covered with RunWithSecrets.
     let refuse = false;
     const blocker = join(dir, 'blocker');
     writeFileSync(blocker, '');
@@ -311,7 +320,7 @@ describe('ChatSecretStore', () => {
     const flaky = flakyStore();
     await flaky.put(scope, { D_KEY: CANARY });
     refuse = true;
-    await expect(flaky.remove(scope)).rejects.toThrow();
+    await expect(flaky.endChat(scope)).rejects.toThrow();
     expect(await flaky.listNames(scope)).toEqual([]);
     await expect(redeem(flaky, { D: 'D_KEY' })).rejects.toThrow(
       'no longer available',
@@ -655,6 +664,44 @@ describe('secretRequest.submit and decline', () => {
     });
     expectNoCanary(everything());
   });
+
+  // Windows has no ambient values file (tools only).
+  const itPosix = process.platform === 'win32' ? it.skip : it;
+  itPosix(
+    "settles only once a Full-access chat's own commands can read the new values",
+    async () => {
+      const store = newStore();
+      setChatSecretStoreForTests(store);
+      ambientDir = mkdtempSync(
+        join(process.env.TMPDIR ?? tmpdir(), 'agent-secrets-ambient-'),
+      );
+      const ambient = await openClaudeAmbientSecretEnv({
+        scope,
+        getApprovalMode: () => 'full-access',
+      });
+      if (!ambient) throw new Error('no ambient env');
+      try {
+        let fileAtSettle = '';
+        jest.mocked(respondToChatQuestion).mockImplementation((request) => {
+          fileAtSettle = existsSync(ambient.valuesPath)
+            ? readFileSync(ambient.valuesPath, 'utf8')
+            : '';
+          answerWait(request.questionId);
+          return Promise.resolve({ status: 'applied', result: {} as never });
+        });
+        const response = await submitSecretRequest({
+          requestId,
+          values: { STRIPE_SECRET_KEY: CANARY },
+          useHeld: [],
+        });
+        expect(response).toEqual({ accepted: true });
+        expect(fileAtSettle).toContain('export STRIPE_SECRET_KEY=');
+      } finally {
+        await ambient.dispose();
+        rmSync(ambientDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('drops the values when the wait expires before the answer commits', async () => {
     const store = newStore();

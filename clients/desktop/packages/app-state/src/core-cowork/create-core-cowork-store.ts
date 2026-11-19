@@ -24,6 +24,25 @@ import {
 
 export type CoreCoworkStatus = 'disabled' | 'offline' | 'online';
 
+/**
+ * What a project save may change (CAN-6099, CAN-7053): its name and colour,
+ * and its sandbox's egress hosts, host mode and declared ports.
+ */
+export interface CoreCoworkProjectPatch {
+  readonly name?: string;
+  readonly color?: string;
+  readonly hostModeEnabled?: boolean;
+  readonly hostPorts?: readonly number[];
+  readonly egressAllowedHosts?: readonly string[];
+}
+
+/** A project save that landed: its warnings and the revision it left. */
+export interface CoreCoworkProjectSaved {
+  readonly warnings: readonly string[];
+  /** The project's revision after the save, when the web core answers it. */
+  readonly revision: number | undefined;
+}
+
 export interface CoreCoworkProject {
   key: string;
   workspaceId: string;
@@ -34,6 +53,11 @@ export interface CoreCoworkProject {
   ownerOrganizationId: string | null;
   /** The listing's revision, which a delete must name. */
   revision?: number;
+  /**
+   * How many days a deleted task stays in the Trash, as the web's Delete
+   * confirmation says it (CAN-7052). Absent when the listing doesn't carry it.
+   */
+  deletionRetentionDays?: number;
 }
 
 /**
@@ -87,6 +111,22 @@ export interface CoreCoworkState {
   generation: number;
   projects: readonly CoreCoworkProject[];
   tasksByProject: Readonly<Record<string, readonly CoreCoworkTask[]>>;
+  /**
+   * The error kind the core answered when the store went offline by itself,
+   * such as `unauthenticated` for a revoked key; null otherwise (CAN-6374).
+   */
+  offlineReason: CanopyErrorPayload['kind'] | null;
+  /**
+   * What the last successful list reads returned, without this window's own
+   * rows; cleared with the rest. Only the desktop sidebar reads it, to keep
+   * it while offline (CAN-6374).
+   */
+  listed: {
+    readonly projects: readonly CoreCoworkProject[];
+    readonly tasksByProject: Readonly<
+      Record<string, readonly CoreCoworkTask[]>
+    >;
+  };
   connect(invoker: CoreCoworkInvoker): Promise<void>;
   /** Clears every project and task; nothing is kept for later display. */
   disconnect(reason: 'disabled' | 'offline'): void;
@@ -120,6 +160,11 @@ export interface CoreCoworkState {
   ): Promise<CoreCoworkTask> | undefined;
   archiveTask(workspaceId: string, worktreeId: string): Promise<void>;
   /**
+   * `core.chat.delete` of a task's own chat in discard mode: the task goes to
+   * the Trash with its tabs, restorable until its retention ends (CAN-7052).
+   */
+  deleteTask(workspaceId: string, worktreeId: string): Promise<void>;
+  /**
    * `core.archive.container.list` for the project: its archived and deleted
    * tasks, newest first (CAN-6511).
    */
@@ -143,11 +188,18 @@ export interface CoreCoworkState {
     overWorkspaceId: string,
     visibleWorkspaceIds: readonly string[],
   ): Promise<void>;
-  /** `core.workspace.update` of the name or colour, then re-lists. */
+  /**
+   * `core.workspace.update` of the name, colour or sandbox settings, guarded
+   * by `expectedRevision` when the caller read one (a settings dialog pins
+   * the revision of its own read), otherwise by the listed revision, then
+   * re-lists. Answers the save's warnings, such as host ports that didn't
+   * reach a live sandbox, and the revision the save left.
+   */
   updateProject(
     workspaceId: string,
-    patch: { readonly name?: string; readonly color?: string },
-  ): Promise<void>;
+    patch: CoreCoworkProjectPatch,
+    options?: { readonly expectedRevision?: number },
+  ): Promise<CoreCoworkProjectSaved>;
   /** `core.workspace.delete`: the project moves to the trash, then re-lists. */
   deleteProject(workspaceId: string): Promise<void>;
 }
@@ -296,7 +348,12 @@ function withLocalTasks(
 const EMPTY = {
   projects: [],
   tasksByProject: {},
-} satisfies Pick<CoreCoworkState, 'projects' | 'tasksByProject'>;
+  offlineReason: null,
+  listed: { projects: [], tasksByProject: {} },
+} satisfies Pick<
+  CoreCoworkState,
+  'projects' | 'tasksByProject' | 'offlineReason' | 'listed'
+>;
 
 /**
  * Cloud cowork projects and their tasks from one core, read through
@@ -410,6 +467,9 @@ export function createCoreCoworkStore(
             ...(workspace.revision === undefined
               ? {}
               : { revision: workspace.revision }),
+            ...(workspace.deletionRetentionDays === undefined
+              ? {}
+              : { deletionRetentionDays: workspace.deletionRetentionDays }),
           });
         }
         cursor = page.nextCursor;
@@ -432,13 +492,19 @@ export function createCoreCoworkStore(
       );
       assertCurrent(generation);
       const tasksByProject: Record<string, readonly CoreCoworkTask[]> = {};
+      const listedTasks: Record<string, readonly CoreCoworkTask[]> = {};
       projects.forEach((project, index) => {
+        listedTasks[project.key] = lists[index] ?? [];
         tasksByProject[project.key] = withLocalTasks(
           lists[index] ?? [],
           get().tasksByProject[project.key],
         );
       });
-      set({ projects, tasksByProject });
+      set({
+        projects,
+        tasksByProject,
+        listed: { projects, tasksByProject: listedTasks },
+      });
     };
 
     const rereadProject = async (
@@ -448,12 +514,63 @@ export function createCoreCoworkStore(
       const tasks = await listTasks(generation, workspaceId);
       const key = projectKey(workspaceId);
       if (!get().projects.some((project) => project.key === key)) return;
+      const { listed } = get();
       set({
         tasksByProject: {
           ...get().tasksByProject,
           [key]: withLocalTasks(tasks, get().tasksByProject[key]),
         },
+        listed: {
+          ...listed,
+          tasksByProject: { ...listed.tasksByProject, [key]: tasks },
+        },
       });
+    };
+
+    /**
+     * Archives or deletes a task through its own chat, keyed by one command
+     * id. The change stands once the web core applied it: its row leaves now,
+     * and a re-read that fails only waits for the next one.
+     */
+    const retireTask = async (
+      workspaceId: string,
+      worktreeId: string,
+      change: {
+        readonly method: 'core.chat.archive' | 'core.chat.delete';
+        readonly action: Record<string, unknown>;
+        readonly failure: string;
+      },
+    ): Promise<void> => {
+      const generation = get().generation;
+      if (get().status !== 'online')
+        throw new Error('Cloud chats are offline.');
+      const commandId = globalThis.crypto.randomUUID();
+      const value = await call(generation, change.method, {
+        projectId: workspaceId,
+        worktreeId,
+        commandId,
+        _meta: { idempotencyKey: commandId },
+        action: change.action,
+      });
+      const result = CoreChatLifecycleResultSchema.parse(value);
+      if (
+        result.outcome !== 'applied' &&
+        result.outcome !== 'already_applied' &&
+        result.outcome !== 'not_found'
+      )
+        throw new Error(result.reason ?? change.failure);
+      const key = projectKey(workspaceId);
+      const tasks = get().tasksByProject[key];
+      if (tasks !== undefined)
+        set({
+          tasksByProject: {
+            ...get().tasksByProject,
+            [key]: tasks.filter((task) => task.worktreeId !== worktreeId),
+          },
+        });
+      await serialized(() => rereadProject(generation, workspaceId)).catch(
+        () => undefined,
+      );
     };
 
     /** Replaces a task row this window is creating, if it is still shown. */
@@ -564,9 +681,11 @@ export function createCoreCoworkStore(
       return run;
     };
 
-    const goOffline = (generation: number): void => {
+    const goOffline = (generation: number, error: unknown): void => {
       if (get().generation !== generation) return;
       get().disconnect('offline');
+      if (error instanceof CoreCoworkRequestError)
+        set({ offlineReason: error.payload.kind });
       scheduleReconnect(get().generation);
     };
 
@@ -624,7 +743,7 @@ export function createCoreCoworkStore(
             );
             return;
           }
-          goOffline(generation);
+          goOffline(generation, error);
         },
       );
     };
@@ -746,11 +865,12 @@ export function createCoreCoworkStore(
           set({ status: 'online' });
         } catch (error) {
           if (error instanceof StaleGenerationError) return;
-          goOffline(generation);
+          goOffline(generation, error);
           return;
         }
         void pump(generation, true).catch((error: unknown) => {
-          if (!(error instanceof StaleGenerationError)) goOffline(generation);
+          if (!(error instanceof StaleGenerationError))
+            goOffline(generation, error);
         });
       },
 
@@ -877,40 +997,23 @@ export function createCoreCoworkStore(
       ): Promise<CoreCoworkTask> | undefined =>
         creations.get(taskKey(workspaceId, worktreeId)),
 
-      archiveTask: async (workspaceId, worktreeId): Promise<void> => {
-        const generation = get().generation;
-        if (get().status !== 'online')
-          throw new Error('Cloud chats are offline.');
-        const commandId = globalThis.crypto.randomUUID();
-        const value = await call(generation, 'core.chat.archive', {
-          projectId: workspaceId,
-          worktreeId,
-          commandId,
-          _meta: { idempotencyKey: commandId },
+      archiveTask: (workspaceId, worktreeId): Promise<void> =>
+        retireTask(workspaceId, worktreeId, {
+          method: 'core.chat.archive',
           action: { type: 'chat.archive_tab', tabId: worktreeId },
-        });
-        const result = CoreChatLifecycleResultSchema.parse(value);
-        if (
-          result.outcome !== 'applied' &&
-          result.outcome !== 'already_applied' &&
-          result.outcome !== 'not_found'
-        )
-          throw new Error(result.reason ?? 'The cloud chat was not archived.');
-        // The archive stands once the web core applied it: its row leaves
-        // now, and a re-read that fails only waits for the next one.
-        const key = projectKey(workspaceId);
-        const tasks = get().tasksByProject[key];
-        if (tasks !== undefined)
-          set({
-            tasksByProject: {
-              ...get().tasksByProject,
-              [key]: tasks.filter((task) => task.worktreeId !== worktreeId),
-            },
-          });
-        await serialized(() => rereadProject(generation, workspaceId)).catch(
-          () => undefined,
-        );
-      },
+          failure: 'The cloud chat was not archived.',
+        }),
+
+      deleteTask: (workspaceId, worktreeId): Promise<void> =>
+        retireTask(workspaceId, worktreeId, {
+          method: 'core.chat.delete',
+          action: {
+            type: 'chat.close_tab',
+            tabId: worktreeId,
+            mode: 'discard',
+          },
+          failure: 'The cloud task was not deleted.',
+        }),
 
       listArchivedTasks: async (
         workspaceId,
@@ -1012,7 +1115,11 @@ export function createCoreCoworkStore(
         }
       },
 
-      updateProject: async (workspaceId, patch): Promise<void> => {
+      updateProject: async (
+        workspaceId,
+        patch,
+        options,
+      ): Promise<CoreCoworkProjectSaved> => {
         const generation = get().generation;
         if (get().status !== 'online')
           throw new Error('Cloud chats are offline.');
@@ -1021,20 +1128,29 @@ export function createCoreCoworkStore(
         );
         if (!project) throw new Error('The cloud project is not listed.');
         const key = globalThis.crypto.randomUUID();
+        const expectedRevision = options?.expectedRevision ?? project.revision;
         try {
-          CoreWorkspaceUpdateResultSchema.parse(
+          const saved = CoreWorkspaceUpdateResultSchema.parse(
             await call(generation, 'core.workspace.update', {
               workspaceId,
-              ...(project.revision === undefined
-                ? {}
-                : { expectedRevision: project.revision }),
+              ...(expectedRevision === undefined ? {} : { expectedRevision }),
               patch: {
                 ...(patch.name === undefined ? {} : { name: patch.name }),
                 ...(patch.color === undefined ? {} : { color: patch.color }),
+                ...(patch.hostModeEnabled === undefined
+                  ? {}
+                  : { hostModeEnabled: patch.hostModeEnabled }),
+                ...(patch.hostPorts === undefined
+                  ? {}
+                  : { hostPorts: [...patch.hostPorts] }),
+                ...(patch.egressAllowedHosts === undefined
+                  ? {}
+                  : { egressAllowedHosts: [...patch.egressAllowedHosts] }),
               },
               _meta: { idempotencyKey: key },
             }),
           );
+          return { warnings: saved.warnings ?? [], revision: saved.revision };
         } finally {
           // A refused write may mean a stale revision; the next one reads anew.
           await serialized(() => relistAll(generation)).catch(() => undefined);

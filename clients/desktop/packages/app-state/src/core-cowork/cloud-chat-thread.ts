@@ -8,6 +8,7 @@ import {
   CoreChatTranscriptPageResultSchema,
   type CanopyErrorPayload,
   type CanopyStreamCursor,
+  type CoreChatBackgroundWork,
   type CoreChatLatestCompaction,
   type CoreChatMessageMeter,
   type CoreChatQueueEntry,
@@ -139,6 +140,25 @@ export interface CloudChatSendInput {
   readonly attachments?: readonly { readonly attachmentId: string }[];
 }
 
+/** A chat's paused wake turns and background work, as `agent_work.changed` carries them. */
+export interface CloudChatAgentWork {
+  readonly wakeParked: {
+    readonly reason: string;
+    readonly since: string;
+  } | null;
+  readonly backgroundWork: CoreChatBackgroundWork | null;
+}
+
+/** What one batch, or a snapshot read, told a thread about its chat's agent state (CAN-6746). */
+export interface CloudChatAgentUpdate {
+  /** Its agent tasks changed. */
+  readonly tasksChanged: boolean;
+  /** Its agent work, when the batch carries it. */
+  readonly work?: CloudChatAgentWork;
+  /** A snapshot read opened the stream: read the agent work again. */
+  readonly reread: boolean;
+}
+
 export interface CloudChatThread {
   readonly target: CloudChatThreadTarget;
   /**
@@ -159,7 +179,14 @@ export interface CloudChatThread {
   subscribeQuestions(listener: () => void): () => void;
   /** The chat's agent tasks (subagents and background work), as they stand. */
   getAgentTasks(): readonly AgentTaskRow[];
-  subscribeAgentTasks(listener: () => void): () => void;
+  /**
+   * Calls `listener` at most once per batch that changes the chat's agent
+   * tasks, carries its agent work or must have it read again, and when a
+   * snapshot read changes its tasks (CAN-6746).
+   */
+  subscribeAgentWork(
+    listener: (update: CloudChatAgentUpdate) => void,
+  ): () => void;
   /** The ids of the messages its transcript holds; the host retires accepted sends by them. */
   getMessageIds(): ReadonlySet<string>;
   subscribeMessageIds(listener: () => void): () => void;
@@ -235,6 +262,12 @@ export interface BindCloudChatThreadOptions {
    * not serve it leaves it out, and the host reads it its own way.
    */
   readonly readConversation?: () => boolean;
+  /**
+   * Whether the chat's events carry `agent_work.changed`: the connection
+   * negotiated `core.chat.events` revision 5 (CAN-6746). Without it, each
+   * task list counts as a change, its only sign a wake parked or resumed.
+   */
+  readonly agentWorkEvents?: () => boolean;
   readonly chatStore: { getState(): ChatStoreState };
   readonly project: ProjectCloudChatMessages;
   readonly newId?: () => string;
@@ -573,7 +606,7 @@ export function bindCloudChatThread(
   let questions: readonly PortalAskUserQuestionState[] = [];
   const questionListeners = new Set<() => void>();
   let agentTasks: readonly AgentTaskRow[] = [];
-  const agentTaskListeners = new Set<() => void>();
+  const agentListeners = new Set<(update: CloudChatAgentUpdate) => void>();
   /** The transcript's message ids, for the host's outbox (CAN-6509). */
   let messageIds: ReadonlySet<string> = new Set();
   const messageIdListeners = new Set<() => void>();
@@ -1381,10 +1414,52 @@ export function bindCloudChatThread(
     for (const listener of turnSettledListeners) listener(turn);
   }
 
-  function setAgentTasks(next: readonly AgentTaskRow[]): void {
-    if (next.length === 0 && agentTasks.length === 0) return;
+  function reportAgent(update: CloudChatAgentUpdate): void {
+    if (update.tasksChanged || update.reread || update.work !== undefined)
+      for (const listener of agentListeners) listener(update);
+  }
+
+  /**
+   * Applies a batch's agent tasks and work, for one report once the batch is
+   * applied. They were read from Core when it was served, so they stand even
+   * on a batch the thread already holds, which may carry the only copy of a
+   * change.
+   */
+  function applyAgentChanges(
+    changes: ReturnType<
+      (typeof CANOPY_STREAM_DEFINITIONS)['core.chat.events']['item']['parse']
+    >['changes'],
+  ): CloudChatAgentUpdate {
+    let tasksChanged = false;
+    /** A list arrived and it, or the one held, has tasks. */
+    let listed = false;
+    let work: CloudChatAgentWork | undefined;
+    for (const change of changes)
+      if (!('chatId' in change) || change.chatId !== target.chatId) continue;
+      else if (change.type === 'agent_tasks.replaced') {
+        const rows = parseAgentTaskRows(change.tasks);
+        listed ||= rows.length > 0 || agentTasks.length > 0;
+        tasksChanged = setAgentTasks(rows) || tasksChanged;
+      } else if (change.type === 'agent_work.changed')
+        work = {
+          wakeParked: change.wakeParked,
+          backgroundWork: change.backgroundWork,
+        };
+    if (listed && options.agentWorkEvents?.() !== true) tasksChanged = true;
+    return {
+      tasksChanged,
+      reread: false,
+      ...(work === undefined ? {} : { work }),
+    };
+  }
+
+  /** Whether the list changed: a stream sends it whole with each batch. */
+  function setAgentTasks(next: readonly AgentTaskRow[]): boolean {
+    // shortcut: new tasks past the 256-row cap show up at the next snapshot read; upgrade to a count/digest in the stream if this matters
+    // shortcut: a queued prompt edited in another tab keeps its message ID, so this tab shows the new text at its next snapshot read or queue change; upgrade with a queue-edit signal in the stream (CAN-7276)
+    if (JSON.stringify(next) === JSON.stringify(agentTasks)) return false;
     agentTasks = next;
-    for (const listener of agentTaskListeners) listener();
+    return true;
   }
 
   function toQuestionState(question: {
@@ -1549,9 +1624,17 @@ export function bindCloudChatThread(
     const batch =
       CANOPY_STREAM_DEFINITIONS['core.chat.events'].item.safeParse(item);
     if (!batch.success) throw invalid('chat event');
+    const agent = applyAgentChanges(batch.data.changes);
     // A cursorless open replays the batch that ends at the held revision.
-    if (batch.data.revision <= appliedRevision) return true;
-    if (batch.data.baseRevision !== appliedRevision) return false;
+    if (batch.data.revision <= appliedRevision) {
+      if (agent.tasksChanged) publish(false);
+      reportAgent(agent);
+      return true;
+    }
+    if (batch.data.baseRevision !== appliedRevision) {
+      reportAgent(agent);
+      return false;
+    }
     let replace = false;
     for (const change of batch.data.changes) {
       if (change.type === 'pending_question.upserted') {
@@ -1571,11 +1654,11 @@ export function bindCloudChatThread(
           );
         continue;
       }
-      if (change.type === 'agent_tasks.replaced') {
-        if (change.chatId === target.chatId)
-          setAgentTasks(parseAgentTaskRows(change.tasks));
+      if (
+        change.type === 'agent_tasks.replaced' ||
+        change.type === 'agent_work.changed'
+      )
         continue;
-      }
       if (!('chatId' in change) || change.chatId !== target.chatId) continue;
       switch (change.type) {
         case 'message.upserted': {
@@ -1640,6 +1723,9 @@ export function bindCloudChatThread(
     if (current !== epoch) return true;
     appliedRevision = batch.data.revision;
     publish(replace);
+    // After the batch's runtime change, whose read the host compares the
+    // agent work with once it lands (CAN-6746).
+    reportAgent(agent);
     return true;
   }
 
@@ -1721,9 +1807,15 @@ export function bindCloudChatThread(
           .filter((question) => question.chatId === target.chatId)
           .map(toQuestionState),
       );
-      setAgentTasks(parseAgentTaskRows(snapshot.data.tasks ?? []));
+      const tasksChanged = setAgentTasks(
+        parseAgentTaskRows(snapshot.data.tasks ?? []),
+      );
       failed = false;
       publish(true);
+      // After the session it names, as a batch reports after its runtime
+      // change: a park made while the stream was down may ride no batch the
+      // new stream sends, or none may come before the next commit (CAN-6746).
+      reportAgent({ tasksChanged, reread: true });
       const cursor: CanopyStreamCursor | null =
         snapshot.data.eventsCursor ?? null;
       const opened = await invoker.openStream('core.chat.events', {
@@ -2001,7 +2093,7 @@ export function bindCloudChatThread(
     if (following !== null) void following.close();
     liveReplies.clear();
     setAgentTasks([]);
-    agentTaskListeners.clear();
+    agentListeners.clear();
     messageIdListeners.clear();
     queueListeners.clear();
     turnSettledListeners.clear();
@@ -2053,10 +2145,10 @@ export function bindCloudChatThread(
       };
     },
     getAgentTasks: () => agentTasks,
-    subscribeAgentTasks: (listener) => {
-      agentTaskListeners.add(listener);
+    subscribeAgentWork: (listener) => {
+      agentListeners.add(listener);
       return () => {
-        agentTaskListeners.delete(listener);
+        agentListeners.delete(listener);
       };
     },
     subscribeTurnSettled: (listener) => {

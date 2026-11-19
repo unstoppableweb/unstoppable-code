@@ -40,6 +40,8 @@ import {
   clearPhysicalJobBlockers,
   CURRENT_EXECUTION_STATE_VERSION,
   clearExecutionCancellation,
+  executionPersistFailureCode,
+  isExecutionOwnerWriteRefusal,
   isExecutionStateWriteRefusal,
   findResumePoint,
   isExecutionCancellationRequested,
@@ -52,6 +54,16 @@ import {
   recoverInterruptedState,
   saveExecutionState,
 } from './execution-state';
+import {
+  forgetUnsavedSettledState,
+  saveSettledStateLater,
+} from './unsaved-settled-state';
+import {
+  executionFailureCode,
+  isRunStateSaveError,
+  markRunStateSaveError,
+  reportExecutionEngineError,
+} from './execution-failure';
 import { runJob, type RunJobOptions } from './job-runner';
 import { runIsolatedJob, runIsolatedJobAsVariant } from './isolated-jobs';
 import {
@@ -110,6 +122,7 @@ import type {
   StepOutputEvent,
 } from './types';
 import type {
+  ExecutionFailureCode,
   PipelineExecutionScope,
   PipelineModelAliasPreference,
   PipelineStatusReason,
@@ -121,6 +134,13 @@ import type {
   RetryMatrixJobRequest,
   ResolvedPipelineExecutionTarget,
 } from '@canopy/execution-engine/types/pipeline';
+
+/** The run the executor was asked to act on is not in the store. */
+export class PipelineExecutionNotFoundError extends Error {
+  constructor(executionId: string) {
+    super(`Execution "${executionId}" not found`);
+  }
+}
 
 export class MatrixExecutorInactiveError extends Error {
   constructor(executionId: string) {
@@ -832,15 +852,27 @@ async function readExecutionPlanArtifact(
 async function resolvePlanIdForExecution(
   executionId: string,
   options: ExecutionOptions,
+  /** A run owner's plan write that failed; the run still starts (CAN-7118). */
+  onPlanPersistFailure: (error: unknown) => void,
 ): Promise<string | undefined> {
   if (options.planId) {
-    await linkExecutionToExistingPlan(executionId, options.planId, options);
+    await linkExecutionToExistingPlan(
+      executionId,
+      options.planId,
+      options,
+      onPlanPersistFailure,
+    );
     return options.planId;
   }
 
   const inheritedPlanId = options.eventData?.plan_ready?.planId;
   if (inheritedPlanId) {
-    await linkExecutionToExistingPlan(executionId, inheritedPlanId, options);
+    await linkExecutionToExistingPlan(
+      executionId,
+      inheritedPlanId,
+      options,
+      onPlanPersistFailure,
+    );
     return inheritedPlanId;
   }
 
@@ -861,7 +893,12 @@ async function resolvePlanIdForExecution(
   // keeps the plan it wrote (keepRunPlanFromExecution).
   if (runPlans) {
     return (
-      await runPlans.createPlan({ content, starting: true }).catch(() => null)
+      await runPlans
+        .createPlan({ content, starting: true })
+        .catch((error: unknown) => {
+          onPlanPersistFailure(error);
+          return null;
+        })
     )?.id;
   }
   if (!options.projectId || !options.worktreeId) {
@@ -890,6 +927,7 @@ async function linkExecutionToExistingPlan(
   executionId: string,
   planId: string,
   options: ExecutionOptions,
+  onPlanPersistFailure: (error: unknown) => void,
 ): Promise<void> {
   const runPlans = options.runtime.runPlanPersistence;
   if (runPlans) {
@@ -897,7 +935,7 @@ async function linkExecutionToExistingPlan(
     // tracked plan that no longer exists doesn't.
     await runPlans
       .updatePlan({ planId, approve: false, starting: true })
-      .catch(() => undefined);
+      .catch(onPlanPersistFailure);
     return;
   }
   if (!options.projectId || !options.worktreeId) {
@@ -954,6 +992,19 @@ async function keepRunPlanFromExecution(
     ...(planWasModified && artifact ? { content: artifact.content } : {}),
     approve: true,
   });
+}
+
+/**
+ * A plan write that failed stays non-fatal (CAN-7118): the run keeps the
+ * first failure's closed code and tells its host.
+ */
+function notePlanPersistFailure(
+  state: ExecutionState,
+  runtime: ExecutionRuntime,
+  error: unknown,
+): void {
+  const code = reportExecutionEngineError(runtime, error, 'plan_persist');
+  state.plan_persist_failure_code ??= code;
 }
 
 /**
@@ -1130,6 +1181,8 @@ export function cancelRecoveredExecutionState(
   state: ExecutionState,
 ): ExecutionState {
   const cancelledState = recoverInterruptedState(state);
+  // The incarnation that recorded a save failure reported it (CAN-7095).
+  delete cancelledState.persist_failure_code;
   markRemainingJobsCancelled(cancelledState);
   refreshAllJobGroups(cancelledState);
   cancelledState.report_outputs = collectReportOutputs(cancelledState);
@@ -1177,6 +1230,27 @@ export function groupJobsByTier(
   return tiers;
 }
 
+/**
+ * Background admission belongs to one live attempt. A pause releases it and
+ * no resume or retry re-admits it, whatever paused or ended the attempt
+ * (including crash recovery, which never passes through the run loop).
+ */
+function revokeReplayedSurvival(state: ExecutionState): void {
+  const assessment = state.survival_assessment;
+  if (assessment?.disposition !== 'continues') return;
+  state.survival_assessment = {
+    ...assessment,
+    disposition: 'pauses',
+    blockers: [
+      {
+        code: 'configuration-unverified',
+        explanation:
+          'After a pause or retry, this run needs the app open until it finishes.',
+      },
+    ],
+  };
+}
+
 export function createInitialState(
   normalizedPipeline: NormalizedPipeline,
   options: ExecutionOptions,
@@ -1197,6 +1271,9 @@ export function createInitialState(
     id: executionId,
     pipeline_id: options.pipelineId,
     pipeline_snapshot: normalizedPipeline,
+    ...(options.survivalAssessment && {
+      survival_assessment: structuredClone(options.survivalAssessment),
+    }),
     status: 'pending',
     status_reasons: [],
     jobs: materializedJobs.jobs,
@@ -1354,19 +1431,41 @@ function executeState(
    */
   const ownerFence = pipelineOwnerFence().fenced;
   let fenced = false;
+  // A failure an earlier incarnation recorded was reported when it settled,
+  // and this incarnation's saves replace the state that one could not save.
+  delete currentState.persist_failure_code;
+  forgetUnsavedSettledState(currentState.id, options.runtime.executionsDir);
+  /** Settles once every queued save has; it never rejects (CAN-7095). */
   let persistQueue = Promise.resolve();
   const persistState = (
     type: ExecutionEvent['type'] = 'execution.updated',
     mutator?: () => void,
   ): Promise<void> => {
-    persistQueue = persistQueue.then(async () => {
+    const save = persistQueue.then(async () => {
       mutator?.();
+      // A settled pause releases the supervisor's setup authority; revoke
+      // readiness in the same durable pause image.
+      if (type === 'execution.paused') revokeReplayedSurvival(currentState);
       const snapshot = cloneState(currentState);
-      await saveExecutionState(snapshot, options.runtime.executionsDir);
+      try {
+        await saveExecutionState(snapshot, options.runtime.executionsDir);
+      } catch (error) {
+        // The first failure is kept: later saves carry it, and the run's
+        // settle reports it. A fenced incarnation records nothing.
+        if (!fenced)
+          currentState.persist_failure_code ??=
+            executionPersistFailureCode(error);
+        // The settle reports a failed save; the executor's catch must not
+        // report it again as an engine failure (CAN-7118).
+        markRunStateSaveError(error);
+        throw error;
+      }
       // A save admitted before the fence closed reports nothing (CAN-6198).
       if (!fenced) emitEvent(type, snapshot);
     });
-    return persistQueue;
+    // Its caller sees this save's failure; the next save still runs.
+    persistQueue = save.catch(() => undefined);
+    return save;
   };
   const stateWriter = {
     persist: (
@@ -1997,6 +2096,16 @@ function executeState(
         stopAtCheckpoint();
       return completionPromise;
     },
+    invalidateSurvival: (blocker) =>
+      persistState('execution.updated', () => {
+        const assessment = currentState.survival_assessment;
+        if (assessment)
+          currentState.survival_assessment = {
+            ...assessment,
+            disposition: 'pauses',
+            blockers: [blocker],
+          };
+      }),
     getState: () => cloneState(currentState),
     cancelMatrixVariant: async (jobId, variantJobId) => {
       if (!acceptingLiveResumes || abortController.signal.aborted) {
@@ -2238,6 +2347,16 @@ function executeState(
           group.conclusion = 'failure';
           group.error = error instanceof Error ? error.message : String(error);
           group.completed_at = new Date().toISOString();
+          // A matrix that names too many variants or a bad expression fails
+          // with a plain `Error`; any other class is the engine's (CAN-7118).
+          if (executionFailureCode(error) !== 'Error') {
+            currentState.failure_origin = 'engine';
+            currentState.failure_code = reportExecutionEngineError(
+              options.runtime,
+              error,
+              'job_expansion',
+            );
+          }
         }
         await persistState();
       };
@@ -2661,7 +2780,9 @@ function executeState(
         await upsertTrackedPlanFromExecution(
           currentState,
           options.runtime,
-        ).catch(() => {});
+        ).catch((error: unknown) => {
+          notePlanPersistFailure(currentState, options.runtime, error);
+        });
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'cancelled';
         currentState.completed_at = new Date().toISOString();
@@ -2708,7 +2829,9 @@ function executeState(
         await upsertTrackedPlanFromExecution(
           currentState,
           options.runtime,
-        ).catch(() => {});
+        ).catch((error: unknown) => {
+          notePlanPersistFailure(currentState, options.runtime, error);
+        });
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'failure';
         currentState.completed_at = new Date().toISOString();
@@ -2732,7 +2855,9 @@ function executeState(
         await upsertTrackedPlanFromExecution(
           currentState,
           options.runtime,
-        ).catch(() => {});
+        ).catch((error: unknown) => {
+          notePlanPersistFailure(currentState, options.runtime, error);
+        });
         currentState.report_outputs = collectReportOutputs(currentState);
         currentState.status = 'cancelled';
         currentState.completed_at = new Date().toISOString();
@@ -2749,7 +2874,9 @@ function executeState(
       }
 
       await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
-        () => {},
+        (error: unknown) => {
+          notePlanPersistFailure(currentState, options.runtime, error);
+        },
       );
       currentState.report_outputs = collectReportOutputs(currentState);
       currentState.status = 'success';
@@ -2772,17 +2899,52 @@ function executeState(
         () => undefined,
       );
       await upsertTrackedPlanFromExecution(currentState, options.runtime).catch(
-        () => {},
+        (error: unknown) => {
+          notePlanPersistFailure(currentState, options.runtime, error);
+        },
       );
       currentState.report_outputs = collectReportOutputs(currentState);
       currentState.error =
         error instanceof Error ? error.message : String(error);
+      // The engine failed the run, not a step: kept and told by closed
+      // code only, never the error's text (CAN-7118). A plain `Error` is one
+      // of the engine's own refusals (a `continue_on_error` that is not a
+      // boolean, say): neither reported nor labelled engine, as in a step.
+      if (
+        !isRunStateSaveError(error) &&
+        executionFailureCode(error) !== 'Error'
+      ) {
+        currentState.failure_code = reportExecutionEngineError(
+          options.runtime,
+          error,
+          'execution',
+        );
+        currentState.failure_origin = 'engine';
+      }
       currentState.status = 'failure';
       currentState.completed_at = new Date().toISOString();
       endExecutionPause(currentState, currentState.completed_at);
       currentState.pending_input = undefined;
       currentState.status_reasons = [];
-      await persistState('execution.failed').catch(() => {});
+      const unsaved = await persistState('execution.failed').then(
+        () => null,
+        (reason: unknown) => ({ reason }),
+      );
+      // Its state could not be saved, so its event was not sent (CAN-7095):
+      // the run's hosts still learn that it failed, and why it was not
+      // saved, rather than keep showing it running, and the store is
+      // corrected once it can be written. A run that is another owner's, or
+      // fenced, is neither reported nor written from here.
+      if (unsaved && !fenced && !isExecutionOwnerWriteRefusal(unsaved.reason)) {
+        const failedState = cloneState(currentState);
+        emitEvent('execution.failed', failedState);
+        saveSettledStateLater({
+          state: failedState,
+          executionsDir: options.runtime.executionsDir,
+          // This run stops listening to the fence once it settles.
+          abandoned: () => fenced || ownerFence.aborted,
+        });
+      }
       await clearExecutionCancellation(
         currentState.id,
         options.runtime.executionsDir,
@@ -2799,7 +2961,7 @@ function executeState(
       // lifecycle and its temporary files.
       if (!fenced)
         options.runtime.lifecycle?.onExecutionSettled?.(currentState);
-      await stateWriter.flush().catch(() => {});
+      await stateWriter.flush();
       if (!fenced && currentState.status !== 'paused') {
         await cleanupExecutionTempDir(currentState, options.runtime);
       }
@@ -2868,7 +3030,19 @@ export async function executePipeline(
     getNormalizedTriggerInputDefs(normalizedPipeline, activeEventName),
     executionOptions.inputs,
   );
-  const planId = await resolvePlanIdForExecution(executionId, executionOptions);
+  let planPersistFailureCode: ExecutionFailureCode | undefined;
+  const planId = await resolvePlanIdForExecution(
+    executionId,
+    executionOptions,
+    (error) => {
+      const code = reportExecutionEngineError(
+        executionOptions.runtime,
+        error,
+        'plan_persist',
+      );
+      planPersistFailureCode ??= code;
+    },
+  );
   const rerunContext = await buildRerunContext(executionOptions.eventData);
   const materializedEventData = await materializeEventData(
     executionOptions.eventData
@@ -2908,6 +3082,8 @@ export async function executePipeline(
     rerunContext,
   );
   state.resolved_plugin_collections = pluginCollectionState?.snapshots;
+  if (planPersistFailureCode !== undefined)
+    state.plan_persist_failure_code = planPersistFailureCode;
   if (executionOptions.pipelinePackage) {
     state.pipeline_package_snapshot = await snapshotPipelinePackageForExecution(
       {
@@ -2946,7 +3122,7 @@ export async function resumePipeline(
     ? await resolveReplayLocation(storedState, options.runtime)
     : null;
   if (!loadedState) {
-    throw new Error(`Execution "${executionId}" not found`);
+    throw new PipelineExecutionNotFoundError(executionId);
   }
 
   if (['success', 'failure', 'cancelled'].includes(loadedState.status)) {
@@ -3150,6 +3326,7 @@ export async function resumePipeline(
       options.childPipelineAuthorizations;
   }
   recordPortalCommandReceipt(recoveredState, options.portalCommandId);
+  revokeReplayedSurvival(recoveredState);
   await saveExecutionState(recoveredState, options.runtime.executionsDir, {
     cancellation: 'clear_before',
   });
@@ -3197,7 +3374,7 @@ export async function retryPipelineExecution(
     ? await resolveReplayLocation(storedState, options.runtime)
     : null;
   if (!loadedState) {
-    throw new Error(`Execution "${executionId}" not found`);
+    throw new PipelineExecutionNotFoundError(executionId);
   }
 
   let retrySourceState = loadedState;
@@ -3267,6 +3444,7 @@ export async function retryPipelineExecution(
   if (options.childPipelineAuthorizations !== undefined)
     retryState.child_pipeline_authorizations =
       options.childPipelineAuthorizations;
+  revokeReplayedSurvival(retryState);
   await saveExecutionState(retryState, options.runtime.executionsDir, {
     cancellation: 'clear_before',
   });
@@ -3304,7 +3482,7 @@ export async function retryMatrixJobExecution(
     ? await resolveReplayLocation(storedState, options.runtime)
     : null;
   if (!loadedState) {
-    throw new Error(`Execution "${request.executionId}" not found`);
+    throw new PipelineExecutionNotFoundError(request.executionId);
   }
   const replayTarget = await resolveReplayScopeAndTarget(loadedState, options, {
     executionId: request.executionId,
@@ -3340,6 +3518,7 @@ export async function retryMatrixJobExecution(
   if (options.childPipelineAuthorizations !== undefined)
     retryState.child_pipeline_authorizations =
       options.childPipelineAuthorizations;
+  revokeReplayedSurvival(retryState);
   await saveExecutionState(retryState, options.runtime.executionsDir, {
     cancellation: 'clear_before',
   });
@@ -3456,7 +3635,7 @@ export async function rerunPipelineExecution(
     ? await resolveReplayLocation(storedState, options.runtime)
     : null;
   if (!sourceState) {
-    throw new Error(`Execution "${sourceExecutionId}" not found`);
+    throw new PipelineExecutionNotFoundError(sourceExecutionId);
   }
 
   assertRerunnableExecution(sourceState);
@@ -3680,7 +3859,7 @@ export async function cancelPipelineExecution(
     runtime.executionsDir,
   );
   if (!loadedState) {
-    throw new Error(`Execution "${executionId}" not found`);
+    throw new PipelineExecutionNotFoundError(executionId);
   }
 
   if (loadedState.status === 'cancelled') {
@@ -3695,6 +3874,8 @@ export async function cancelPipelineExecution(
 
   if (loadedState.status === 'paused' || loadedState.status === 'pending') {
     const cancelledState = cloneState(loadedState);
+    // The incarnation that recorded a save failure reported it (CAN-7095).
+    delete cancelledState.persist_failure_code;
     markPendingInputStepsCancelled(cancelledState);
     markRemainingJobsCancelled(cancelledState);
     refreshAllJobGroups(cancelledState);
@@ -3730,7 +3911,7 @@ export async function cancelPipelineExecution(
       runtime.executionsDir,
     );
     if (!currentState) {
-      throw new Error(`Execution "${executionId}" not found`);
+      throw new PipelineExecutionNotFoundError(executionId);
     }
     if (
       currentState.status === 'cancelled' ||
@@ -3747,7 +3928,7 @@ export async function cancelPipelineExecution(
     runtime.executionsDir,
   );
   if (!latestState) {
-    throw new Error(`Execution "${executionId}" not found`);
+    throw new PipelineExecutionNotFoundError(executionId);
   }
 
   if (latestState.status === 'running' || latestState.status === 'pending') {

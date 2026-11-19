@@ -79,7 +79,7 @@ Example output with follow-up automation:
 
    ```bash
    gh api --paginate "repos/$OWNER/$REPO/pulls/$PR_NUMBER/comments" \
-     --jq '.[] | {id, path, line, body, user: .user.login}'
+     --jq '.[] | {id, path, line, body, user: .user.login, userType: .user.type}'
    ```
 
    The `id` field here is the **numeric database ID** (e.g., `2737789739`) required for the reply endpoint.
@@ -129,6 +129,7 @@ Example output with follow-up automation:
                      line
                      body
                      author {
+                       __typename
                        login
                      }
                      pullRequestReview {
@@ -176,6 +177,7 @@ Example output with follow-up automation:
                  line
                  body
                  author {
+                   __typename
                    login
                  }
                  pullRequestReview {
@@ -204,12 +206,14 @@ Example output with follow-up automation:
 
    The thread `id` field here is the **GraphQL node ID** (e.g., `PRRT_kwDOQ82ISc5rfaZ6`) required for resolving.
    The `pullRequestReview.body` field contains the parent review's summary comment (submitted when the reviewer clicked "Submit review"). This is used to detect AI-generated reviews — only the summary comment will contain markers like "AI Code Review", not the individual inline comments.
+   `author.__typename` is `Bot` for a GitHub App. GraphQL returns an App's login **without** the `[bot]` suffix (REST `user.login` keeps it, and REST `user.type` is `Bot`), so check the type rather than the suffix in GraphQL results.
 
 4. **Correlate the two responses** by matching `path` + `line` + `body` to link database IDs with thread IDs
 5. **Skip comments from dismissed review threads**: Exclude any comments where `pullRequestReview.state` is `DISMISSED`
 6. **Detect AI-generated reviews**: An inline comment is considered AI-generated if **either** of the following is true:
    - The comment's author is `copilot-pull-request-reviewer[bot]` (Copilot bot account)
-   - The comment's **parent review summary** (`pullRequestReview.body`) contains the substring "AI Code Review" (case-insensitive). This catches AI code review tools that post through human user accounts — the "AI Code Review" marker appears only in the overall review summary, not in individual inline comments, so all inline comments belonging to that review are tagged as AI-generated.
+   - The comment's **parent review summary** (`pullRequestReview.body`) contains the substring "AI Code Review" (case-insensitive) or the `[//]: # (ud-ai-review)` marker, whoever wrote it. This catches AI code review tools that post through human user accounts and packaged code reviews posted as the code review GitHub App — the marker appears only in the overall review summary, not in individual inline comments, so all inline comments belonging to that review are tagged as AI-generated.
+   - The comment's author is a Bot: `author.__typename` is `Bot` in GraphQL, or the login has a `[bot]` suffix (or `user.type` is `Bot`) in REST. Packaged code reviews post as a GitHub App, so their comments arrive from a Bot author.
 
    Tag each comment with an `aiReview` flag (true/false) based on these rules. This flag is used for display in the Step 3 Author column and for evaluating AI-generated review comments later: append `" (AI)"` to the author name only when `aiReview` is true **and** the author is **not** `copilot-pull-request-reviewer[bot]` (Copilot bot reviews are already identified by their author name).
 
@@ -407,7 +411,7 @@ Note: If the thread is already resolved, this mutation will succeed without erro
 After all comment threads have been replied to and resolved, re-request a review from each human reviewer whose comments were processed:
 
 1. **Collect reviewers**: Gather the unique `author.login` values from all comments that were handled in Step 4.
-2. **Exclude bot accounts and PR author**: Remove any account with a `[bot]` suffix (e.g., `copilot-pull-request-reviewer[bot]`). Also remove the PR author (obtainable via `gh pr view --json author`), since GitHub's API will fail if you try to request a review from the PR author.
+2. **Exclude bot accounts and PR author**: Remove every Bot account: any login with a `[bot]` suffix (e.g., `copilot-pull-request-reviewer[bot]`) and any author whose GraphQL `author.__typename` is `Bot`, including the code review GitHub App (its GraphQL login has no `[bot]` suffix). Never re-request a review from a Bot. Also remove the PR author (obtainable via `gh pr view --json author`), since GitHub's API will fail if you try to request a review from the PR author.
 3. **Skip if no human reviewers remain**: If the list is empty after exclusions, skip the API call and output:
    > No human reviewers to re-request.
 4. **Re-request reviews** (only if at least one human reviewer remains):

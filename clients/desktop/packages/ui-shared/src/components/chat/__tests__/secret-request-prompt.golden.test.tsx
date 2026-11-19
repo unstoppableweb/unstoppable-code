@@ -15,7 +15,11 @@ import {
   requestSecretsStatusLabel,
 } from '../request-secrets-display';
 import { stepKindOfToolCall } from '../step-words';
-import { ChatSecretsChip } from '../ChatSecretsChip';
+import {
+  ChatSecretsChip,
+  ChatSecretsRestartNotice,
+  chatSecretsAmbientLine,
+} from '../ChatSecretsChip';
 
 /*
  * The secret request form and its transcript row. Values exist only in the
@@ -155,12 +159,41 @@ describe('SecretRequestPrompt', () => {
     expect(submitted).toEqual([]);
     expect(pageTextWithoutFields()).toContain('Enter Stripe secret key.');
     type(input('STRIPE_SECRET_KEY'), SHORT);
-    expect(pageTextWithoutFields()).toContain('Usually starts with sk_test_');
+    expect(
+      harness.byTestId('chat-secret-request-field-STRIPE_SECRET_KEY-error')
+        .textContent,
+    ).toBe(
+      "This doesn't look like the value asked for. It usually starts with sk_test_. Never enter an account sign-in password here.",
+    );
     type(input('SENTRY_DSN'), SHORT);
     expect(pageTextWithoutFields()).toContain(
       'Short values may not be redacted',
     );
     expect(pageTextWithoutFields()).not.toContain(SHORT);
+  });
+
+  it('asks before sending a value that misses its prefix, and sends once on Send anyway', () => {
+    render();
+    const wrong = `not-a-stripe-key-${CANARY}`;
+    type(input('STRIPE_SECRET_KEY'), wrong);
+    const provide = harness.byTestId('chat-secret-request-provide');
+    expect(provide.textContent).toBe('Send anyway…');
+    harness.click(provide);
+    expect(submitted).toEqual([]);
+    expect(
+      harness.byTestId('chat-secret-request-mismatch-dialog').textContent,
+    ).not.toContain(CANARY);
+    harness.click(harness.byTestId('chat-secret-request-mismatch-cancel'));
+    expect(harness.queryTestId('chat-secret-request-mismatch-dialog')).toBe(
+      null,
+    );
+    expect(input('STRIPE_SECRET_KEY').value).toBe(wrong);
+    harness.click(harness.byTestId('chat-secret-request-provide'));
+    harness.click(harness.byTestId('chat-secret-request-mismatch-confirm'));
+    expect(submitted).toEqual([
+      { values: { STRIPE_SECRET_KEY: wrong }, useHeld: ['DATABASE_URL'] },
+    ]);
+    expect(fieldValues().some((value) => value.includes(CANARY))).toBe(false);
   });
 
   it('enforces the hint minimum length', () => {
@@ -409,5 +442,71 @@ describe('RequestSecrets transcript row', () => {
         JSON.stringify({ status: 'declined', secrets: [] }),
       ),
     ).toEqual({ status: 'declined', secrets: [] });
+  });
+  it("says what the agent's own commands get and offers Codex's Restart to apply", () => {
+    let restarts = 0;
+    harness.render(
+      <ChatSecretsChip
+        secrets={[{ name: 'API_KEY', lastUsedAt: null }]}
+        ambient="restart"
+        agentName="Codex"
+        placement="top-right"
+        onRevoke={(): void => undefined}
+        onRestart={(): void => {
+          restarts += 1;
+        }}
+      />,
+    );
+    expect(harness.byTestId('chat-secrets').getAttribute('data-ambient')).toBe(
+      'restart',
+    );
+    harness.click(harness.byTestId('chat-secrets-chip'));
+    expect(harness.byTestId('chat-secrets-ambient').textContent).toBe(
+      'Codex started before some of these. Restart to apply them to its own commands.',
+    );
+    harness.click(harness.byTestId('chat-secrets-restart'));
+    expect(restarts).toBe(1);
+    expect(chatSecretsAmbientLine('live', 'Claude')).toContain(
+      "also set in the agent's own commands",
+    );
+    expect(chatSecretsAmbientLine('none', 'Claude')).toBe(
+      'The agent uses these by name in commands. It never sees the values.',
+    );
+    expect(chatSecretsAmbientLine('restart-pending', 'Codex')).toBe(
+      "Codex restarts when it's idle, or at your next message.",
+    );
+  });
+
+  it('shows Restart to apply above the composer, then what happens once asked', () => {
+    let restarts = 0;
+    harness.render(
+      <ChatSecretsRestartNotice
+        agentName="Codex"
+        pending={false}
+        onRestart={(): void => {
+          restarts += 1;
+        }}
+      />,
+    );
+    expect(
+      harness.byTestId('chat-secrets-restart-notice').textContent,
+    ).toContain(
+      "Codex's own commands get them after a restart. The conversation is kept.",
+    );
+    harness.click(harness.byTestId('chat-secrets-restart-notice-button'));
+    expect(restarts).toBe(1);
+    harness.render(
+      <ChatSecretsRestartNotice
+        agentName="Codex"
+        pending
+        onRestart={(): void => undefined}
+      />,
+    );
+    expect(
+      harness.queryTestId('chat-secrets-restart-notice-button'),
+    ).toBeNull();
+    expect(
+      harness.byTestId('chat-secrets-restart-notice').textContent,
+    ).toContain('Codex will restart');
   });
 });

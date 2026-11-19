@@ -11,6 +11,7 @@ import { cursorProcessForWorkerRun } from '../agent-runs/cursor-worker-runtime';
 import { spawnProviderProcess } from '../agent-runs/provider-process-host';
 import { workerProviderRuntimeFor } from '../agent-runs/worker-provider-runtimes';
 import { CursorProvider } from '../agents/cursor-session';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 jest.mock('../agents/cursor-session', () => ({
   CursorProvider: jest
@@ -41,7 +42,11 @@ describe('the worker-owned Cursor runtime', () => {
   it('a Cursor session is constructed by the worker runtime inside a turn run', async () => {
     const provider = await runInAgentWorker(
       { kind: 'turn', runId: 'r1' },
-      async () => (await cursorRuntime())?.providerFor('cursor', () => null),
+      async () =>
+        (await cursorRuntime())?.providerFor(
+          'cursor',
+          windowAgentInterfacePort(() => null),
+        ),
     );
     expect(provider).toBe(jest.mocked(CursorProvider).mock.results[0]?.value);
     expect(CursorProvider).toHaveBeenCalledTimes(1);
@@ -49,14 +54,22 @@ describe('the worker-owned Cursor runtime', () => {
 
   it('a subagent run may construct the provider', async () => {
     await runInAgentWorker({ kind: 'subagent', runId: 's1' }, async () =>
-      (await cursorRuntime())?.providerFor('cursor', () => null),
+      (await cursorRuntime())?.providerFor(
+        'cursor',
+        windowAgentInterfacePort(() => null),
+      ),
     );
     expect(CursorProvider).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a Cursor provider outside an agent run', async () => {
     const runtime = await cursorRuntime();
-    await expect(runtime?.providerFor('cursor', () => null)).rejects.toThrow(
+    await expect(
+      runtime?.providerFor(
+        'cursor',
+        windowAgentInterfacePort(() => null),
+      ),
+    ).rejects.toThrow(
       new AgentOutsideWorkerError('CursorWorkerRuntime.providerFor'),
     );
     expect(CursorProvider).not.toHaveBeenCalled();
@@ -122,7 +135,7 @@ describe('the real Cursor session', () => {
       provider.createSession(
         SESSION,
         () => undefined,
-        () => null,
+        windowAgentInterfacePort(() => null),
       ),
     ).toThrow(
       new context.AgentOutsideWorkerError('CursorProvider.createSession'),
@@ -141,7 +154,7 @@ describe('the real Cursor session', () => {
         provider.createSession(
           SESSION,
           () => held,
-          () => null,
+          windowAgentInterfacePort(() => null),
         ),
     );
     context.runInAgentWorkerSync({ kind: 'turn', runId: 'r3' }, () =>

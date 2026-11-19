@@ -9,6 +9,7 @@ import {
   type AppErrorThrownType,
 } from '@canopy/protocol/app-errors';
 import {
+  APP_ERROR_CAP_POSTHOG_EVENT,
   APP_ERROR_POSTHOG_EVENT,
   APP_ERROR_VIEW_POSTHOG_EVENT,
   appErrorException,
@@ -203,7 +204,8 @@ function isPostHogErrorEvent(event: string): boolean {
   return (
     event === '$exception' ||
     event === APP_ERROR_POSTHOG_EVENT ||
-    event === APP_ERROR_VIEW_POSTHOG_EVENT
+    event === APP_ERROR_VIEW_POSTHOG_EVENT ||
+    event === APP_ERROR_CAP_POSTHOG_EVENT
   );
 }
 
@@ -335,11 +337,16 @@ function clearPendingPostHogExceptions(): void {
   pendingPostHogExceptions.instrumentation.length = 0;
   pendingPostHogExceptions.handled.length = 0;
 }
-/** Per-process cap, so a crash loop (a `child_process_gone` storm, for
- * example) cannot flood PostHog. Drops past it are only counted locally. */
-const MAX_POSTHOG_EXCEPTIONS_PER_PROCESS = 100;
+/** Per-window cap, so a crash loop (a `child_process_gone` storm, for
+ * example) cannot flood PostHog. Drops past it are counted locally, and the
+ * first one in a window sends `app:error_cap_reach`. */
+const MAX_POSTHOG_EXCEPTIONS_PER_WINDOW = 100;
 let posthogExceptionsSent = 0;
 let posthogExceptionsDroppedOverCap = 0;
+/** Both caps reset in one fixed window so a long session never goes dark. */
+const POSTHOG_CAP_WINDOW_MS = 60 * 60 * 1000;
+let posthogCapWindowStartedAt = 0;
+const posthogCapsReportedInWindow = new Set<'exception' | 'app_error'>();
 
 interface MainCrashDelivery {
   status: 'pending' | 'acknowledged' | 'receipt-failed';
@@ -637,6 +644,8 @@ async function initializePostHogMainClient(
       provider: 'posthog',
       reason: 'shutdown',
     };
+  let failureReason: DesktopInstrumentationInitResult['reason'] =
+    'sdk_init_failed';
   try {
     posthogAccount = createPostHogAccountTracker(
       accountSource,
@@ -649,6 +658,7 @@ async function initializePostHogMainClient(
         id,
       )
     ) {
+      failureReason = 'anonymous_id_unavailable';
       throw new Error('PostHog anonymous identity is unavailable');
     }
     // Install facts describe the launch, so only its first client reads them.
@@ -772,12 +782,9 @@ async function initializePostHogMainClient(
     }
     drainPendingPostHogExceptions();
     return { enabled: true, provider: 'posthog' };
-  } catch (error) {
-    return {
-      enabled: false,
-      provider: 'posthog',
-      reason: error instanceof Error ? error.message : String(error),
-    };
+  } catch {
+    // Never the error's message: it can quote paths or received values.
+    return { enabled: false, provider: 'posthog', reason: failureReason };
   }
 }
 
@@ -910,6 +917,36 @@ function drainPendingPostHogExceptions(): void {
   }
 }
 
+function rollPostHogCapWindow(): void {
+  const now = Date.now();
+  // A clock moved backwards starts a new window instead of extending this one.
+  const elapsed = now - posthogCapWindowStartedAt;
+  if (elapsed >= 0 && elapsed < POSTHOG_CAP_WINDOW_MS) return;
+  posthogCapWindowStartedAt = now;
+  posthogCapsReportedInWindow.clear();
+  posthogExceptionsSent = 0;
+  posthogExceptionsDroppedOverCap = 0;
+  mainAppErrorAdmissions = 0;
+  mainAppErrorsDroppedOverCap = 0;
+}
+
+/** One fixed event per cap and window, outside both caps. Only enums and
+ * counts. */
+function reportPostHogCapReached(cap: 'exception' | 'app_error'): void {
+  if (posthogCapsReportedInWindow.has(cap)) return;
+  posthogCapsReportedInWindow.add(cap);
+  forwardGatedPostHogEvent({
+    event: APP_ERROR_CAP_POSTHOG_EVENT,
+    properties: {
+      cap_name: cap,
+      dropped_exception_count: posthogExceptionsDroppedOverCap,
+      dropped_app_error_count: mainAppErrorsDroppedOverCap,
+      cap_window_ms: POSTHOG_CAP_WINDOW_MS,
+      app_version: getDesktopInstrumentationConfig().appVersion,
+    },
+  });
+}
+
 function sendDesktopPostHogException(
   error: unknown,
   context: DesktopInstrumentationContext | undefined,
@@ -920,8 +957,10 @@ function sendDesktopPostHogException(
   // Handled records have their own admission cap. Native dumps share the
   // instrumentation quota and stay pending when this process hits that cap.
   if (kind === 'instrumentation') {
-    if (posthogExceptionsSent >= MAX_POSTHOG_EXCEPTIONS_PER_PROCESS) {
+    rollPostHogCapWindow();
+    if (posthogExceptionsSent >= MAX_POSTHOG_EXCEPTIONS_PER_WINDOW) {
       posthogExceptionsDroppedOverCap += 1;
+      reportPostHogCapReached('exception');
       return false;
     }
     posthogExceptionsSent += 1;
@@ -1038,7 +1077,7 @@ export function suspendPostHogMain(): Promise<void> {
 
 let mainAppErrorHandler: AppErrorHandler | undefined;
 let mainAppErrorHandlerDisposed = false;
-const MAX_MAIN_APP_ERROR_ADMISSIONS = 100;
+const MAX_MAIN_APP_ERROR_ADMISSIONS_PER_WINDOW = 100;
 let mainAppErrorAdmissions = 0;
 let mainAppErrorsDroppedOverCap = 0;
 
@@ -1054,8 +1093,10 @@ function captureMainAppError(
     posthogShutdown
   )
     return;
-  if (mainAppErrorAdmissions >= MAX_MAIN_APP_ERROR_ADMISSIONS) {
+  rollPostHogCapWindow();
+  if (mainAppErrorAdmissions >= MAX_MAIN_APP_ERROR_ADMISSIONS_PER_WINDOW) {
     mainAppErrorsDroppedOverCap++;
+    reportPostHogCapReached('app_error');
     return;
   }
   // Admission includes closing summaries and precedes queueing. Ownership is

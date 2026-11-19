@@ -174,8 +174,9 @@ async function importGitHubMarketplacePlugin(
     // Adding counts even if the plugin was installed under another marketplace.
     installed = addResult.success;
     if (!addResult.success && !isAlreadyAddedError(addResult.error)) {
-      throw new Error(
-        addResult.error ?? `Failed to add marketplace "${repo}".`,
+      throw Object.assign(
+        new Error(addResult.error ?? `Failed to add marketplace "${repo}".`),
+        { appError: addResult.appError },
       );
     }
     const refreshed = await port.plugins.refreshMarketplaces();
@@ -220,8 +221,11 @@ async function importGitHubMarketplacePlugin(
       plugin.externalSource.url,
     );
     if (!installResult.success) {
-      throw new Error(
-        installResult.error ?? `Failed to install plugin "${plugin.name}".`,
+      throw Object.assign(
+        new Error(
+          installResult.error ?? `Failed to install plugin "${plugin.name}".`,
+        ),
+        { appError: installResult.appError },
       );
     }
     installed = true;

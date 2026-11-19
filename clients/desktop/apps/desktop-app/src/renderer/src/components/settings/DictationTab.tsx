@@ -12,6 +12,8 @@ import {
 } from '@/lib/voice/voice-error';
 import { requestRendererMicrophoneAccess } from '@/lib/voice/renderer-microphone-access';
 import { notifyVoiceDictationEnabledChanged } from '@/lib/voice/voice-dictation-pref';
+import { isVoiceSystemAccessPlatform } from '@canopy/desktop-shared/platform-capabilities';
+import { localPlatform } from '@/lib/local-platform';
 import { brandText } from '@/lib/brand';
 import {
   Button,
@@ -24,6 +26,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from './SettingsLayout';
+import { SpeechModelSection } from './SpeechModelSection';
 
 const ENABLE_TOGGLE_ID = 'settings-dictation-enabled-toggle';
 
@@ -44,7 +47,17 @@ function savePreference(patch: Partial<PreferencesData>): void {
   void window.api.savePreferences(patch);
 }
 
+/**
+ * Dictation needs the operating system's microphone and Speech Recognition
+ * permissions on macOS only. Linux has none to ask for; there the tab
+ * explains microphone problems instead.
+ */
+function needsSystemAccess(): boolean {
+  return isVoiceSystemAccessPlatform(localPlatform());
+}
+
 export function DictationTab(): JSX.Element {
+  const systemAccess = needsSystemAccess();
   const [enabled, setEnabled] = useState(DEFAULT_VOICE_DICTATION_ENABLED);
   const [support, setSupport] = useState<SupportState>({ status: 'checking' });
   const [mic, setMic] = useState<MicState>({ status: 'checking' });
@@ -109,6 +122,10 @@ export function DictationTab(): JSX.Element {
     setRechecking(false);
   }, [loadMicAccess]);
 
+  const handleModelInstalledChange = useCallback((): void => {
+    void handleRecheck();
+  }, [handleRecheck]);
+
   const handleRequestAccess = useCallback(async (): Promise<void> => {
     setRequestingAccess(true);
     setMic({ status: 'checking' });
@@ -159,7 +176,11 @@ export function DictationTab(): JSX.Element {
           <SettingsRow
             label="Enable dictation"
             htmlFor={ENABLE_TOGGLE_ID}
-            description="Adds a microphone button to the chat input. Requires macOS 26 or later for on-device speech recognition."
+            description={
+              systemAccess
+                ? 'Adds a microphone button to the chat input. Requires macOS 26 or later for on-device speech recognition.'
+                : 'Adds a microphone button to the chat input. Speech is recognized on this computer, with a speech model you download once.'
+            }
             control={
               <ToggleSwitch
                 id={ENABLE_TOGGLE_ID}
@@ -172,6 +193,8 @@ export function DictationTab(): JSX.Element {
           />
         </SettingsGroup>
       </SettingsSection>
+
+      <SpeechModelSection onInstalledChange={handleModelInstalledChange} />
 
       <SettingsSection title="Compatibility">
         <SettingsGroup>
@@ -197,40 +220,51 @@ export function DictationTab(): JSX.Element {
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection
-        title="System access"
-        description={
-          <>
-            {brandText.appName} needs microphone and Speech Recognition access
-            for on-device transcription.
-          </>
-        }
-      >
-        <SettingsGroup>
-          {/* The section's one action is a row of its own, so no control
-              floats beside the heading. */}
-          <SettingsRow
-            label="Permissions"
-            description="Shows the macOS prompts for access not requested yet."
-            control={
-              <Button
-                size="compact"
-                variant="secondary"
-                onClick={(): void => void handleRequestAccess()}
-                disabled={requestingAccess}
-                data-testid="dictation-request-access"
-              >
-                {requestingAccess ? 'Requesting…' : 'Request access'}
-              </Button>
-            }
-          />
-          <MicrophoneRow state={mic} onOpenSettings={handleOpenMicSettings} />
-          <SpeechRecognitionRow
-            state={speech}
-            onOpenSettings={handleOpenSpeechSettings}
-          />
-        </SettingsGroup>
-      </SettingsSection>
+      {systemAccess ? (
+        <SettingsSection
+          title="System access"
+          description={
+            <>
+              {brandText.appName} needs microphone and Speech Recognition access
+              for on-device transcription.
+            </>
+          }
+        >
+          <SettingsGroup>
+            {/* The section's one action is a row of its own, so no control
+                floats beside the heading. */}
+            <SettingsRow
+              label="Permissions"
+              description="Shows the macOS prompts for access not requested yet."
+              control={
+                <Button
+                  size="compact"
+                  variant="secondary"
+                  onClick={(): void => void handleRequestAccess()}
+                  disabled={requestingAccess}
+                  data-testid="dictation-request-access"
+                >
+                  {requestingAccess ? 'Requesting…' : 'Request access'}
+                </Button>
+              }
+            />
+            <MicrophoneRow state={mic} onOpenSettings={handleOpenMicSettings} />
+            <SpeechRecognitionRow
+              state={speech}
+              onOpenSettings={handleOpenSpeechSettings}
+            />
+          </SettingsGroup>
+        </SettingsSection>
+      ) : (
+        <SettingsSection title="Microphone">
+          <SettingsGroup>
+            <SettingsRow
+              label="If dictation can't hear you"
+              description="Dictation uses your default input device. Check that a microphone is connected and chosen as the input in your system's sound settings, and that no other app is using it."
+            />
+          </SettingsGroup>
+        </SettingsSection>
+      )}
     </SettingsPage>
   );
 }

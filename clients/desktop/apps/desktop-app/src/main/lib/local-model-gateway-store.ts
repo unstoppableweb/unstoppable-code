@@ -356,6 +356,29 @@ export async function recordLocalModelGatewayConflictNotice(
   });
 }
 
+/**
+ * Hosts of the device gateway's configured URL and of endpoints it holds a
+ * key for, from the in-memory store only (empty before the first read).
+ * Synchronous for the local-only egress guard (docs/local-only-build.md),
+ * which treats a gateway the user configured as an allowed host.
+ */
+export function getCachedLocalModelGatewayHosts(): string[] {
+  if (!cache) return [];
+  const hosts: string[] = [];
+  for (const value of [
+    cache.config?.baseUrl ?? null,
+    ...Object.keys(cache.credentials),
+  ]) {
+    if (!value) continue;
+    try {
+      hosts.push(new URL(value).hostname);
+    } catch {
+      // Not a URL; nothing to allow.
+    }
+  }
+  return hosts;
+}
+
 export function subscribeLocalModelGatewayChanges(
   listener: (config: PersonalAiGatewayConfig | null) => void,
 ): () => void {

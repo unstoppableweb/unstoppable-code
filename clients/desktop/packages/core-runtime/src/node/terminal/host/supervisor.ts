@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WORKER_TERMINAL_LOST_SIGNAL } from '@canopy/protocol/canopy-core';
+import type { SpawnFailureDetails } from '../../../runtime/errors';
 import {
   isTerminalHostMessage,
   type TerminalHostMessage,
@@ -14,6 +15,8 @@ import {
 
 /** A launched terminal host, as the execution host port reports it. */
 export interface TerminalHostProcess {
+  /** Why the host never started, set before its `exit` (CAN-7113). */
+  readonly startFailure?: SpawnFailureDetails | undefined;
   postMessage(message: TerminalHostRequestMessage): void;
   kill(): boolean;
   on(event: 'message', listener: (message: unknown) => void): unknown;
@@ -50,7 +53,11 @@ export interface TerminalHostSupervisorOptions {
 
 /** A host request that failed, typed by the host or by its supervisor. */
 export class TerminalHostRequestError extends Error {
-  public constructor(public readonly error: TerminalHostError) {
+  public constructor(
+    public readonly error: TerminalHostError,
+    /** The host's spawn failure, when it never started (CAN-7113). */
+    public readonly startFailure?: SpawnFailureDetails,
+  ) {
     super(error.message);
     this.name = 'TerminalHostRequestError';
   }
@@ -492,10 +499,13 @@ export class TerminalHostSupervisor {
     for (const pending of host.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(
-        new TerminalHostRequestError({
-          code: 'unavailable',
-          message: 'The terminal host stopped.',
-        }),
+        new TerminalHostRequestError(
+          {
+            code: 'unavailable',
+            message: 'The terminal host stopped.',
+          },
+          host.process.startFailure,
+        ),
       );
     }
     host.pending.clear();

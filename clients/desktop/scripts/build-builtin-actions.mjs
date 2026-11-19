@@ -1,12 +1,22 @@
 #!/usr/bin/env node
 
 import { context, build } from 'esbuild';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 import { loadBrand } from './brand/load-brand.mjs';
 import { prepareBrand } from './brand/prepare-brand.mjs';
+import { readLocalOnlyBuildEnv } from './lib/local-only-build-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
@@ -34,6 +44,10 @@ const resourcesRoot = join(
   'actions',
 );
 const brandPrepareLockDir = join(root, '.cache', 'brand', '.prepare.lock');
+// Outside the rendered resources, which are packaged, embedded and re-rendered
+// by enumeration, but on the same file system so a rename replaces atomically.
+// Brand preparation leaves dot-entries of the brand cache alone.
+const outputWritesDir = join(root, '.cache', 'brand', '.builtin-action-writes');
 const OUTPUT_HEALTH_CHECK_INTERVAL_MS = 2_000;
 let buildInProgress = false;
 
@@ -129,6 +143,56 @@ function trackBuildActivityPlugin() {
   };
 }
 
+// Pipeline steps, dev processes and concurrent test suites run these bundles
+// while another build rewrites them. esbuild writes an output in place
+// (truncate, then write), so a step could load an empty or partial bundle and
+// fail with a SyntaxError. Each output goes to a temporary file and is renamed
+// over the target, so a reader opens either the old bundle or the new one,
+// whole (CAN-7241).
+function writeOutputFileAtomically(file) {
+  mkdirSync(dirname(file.path), { recursive: true });
+  mkdirSync(outputWritesDir, { recursive: true });
+  const temporary = join(
+    outputWritesDir,
+    `${process.pid}-${randomBytes(4).toString('hex')}-${basename(file.path)}`,
+  );
+  try {
+    writeFileSync(temporary, file.contents);
+    renameSync(temporary, file.path);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+/** Writes the build's outputs, unless an earlier plugin or esbuild failed it. */
+function writeOutputsAtomicallyPlugin() {
+  return {
+    name: 'write-outputs-atomically',
+    setup(buildContext) {
+      buildContext.onEnd((result) => {
+        if (result.errors.length > 0 || !result.outputFiles) {
+          return undefined;
+        }
+        try {
+          for (const file of result.outputFiles) {
+            writeOutputFileAtomically(file);
+          }
+        } catch (error) {
+          return {
+            errors: [
+              {
+                text: `Could not write a builtin action output: ${formatError(error)}`,
+              },
+            ],
+          };
+        }
+        return undefined;
+      });
+    },
+  };
+}
+
 function forbidMainProcessImportsInBuiltinActionsPlugin() {
   const forbiddenAppRoots = [
     join(root, 'apps', 'desktop-app', 'src', 'main') + sep,
@@ -204,6 +268,8 @@ function getBuildOptions(entryPoints) {
     format: 'cjs',
     sourcemap: true,
     metafile: true,
+    // writeOutputsAtomicallyPlugin writes the outputs.
+    write: false,
     alias: {
       '@canopy/protocol': join(root, 'packages', 'protocol', 'src'),
       '@canopy/agent-actions': join(root, 'packages', 'agent-actions', 'src'),
@@ -246,6 +312,9 @@ function getBuildOptions(entryPoints) {
       // from builtin-action subprocess bundles; only `CANOPY_E2E_BUILD=1` sets
       // it true. See docs/ui-automation-coverage/11-build-time-gating-principle.md.
       __CANOPY_E2E__: JSON.stringify(process.env.CANOPY_E2E_BUILD === '1'),
+      // The local-only build profile, parsed by the same helper as
+      // electron.vite.config.ts so action bundles match the desktop.
+      __CANOPY_LOCAL_ONLY__: JSON.stringify(readLocalOnlyBuildEnv(process.env)),
       __CANOPY_MOCK_LLM_BASE_URL__:
         process.env.CANOPY_E2E_BUILD === '1'
           ? (JSON.stringify(process.env.CANOPY_MOCK_LLM_BASE_URL) ??
@@ -261,9 +330,12 @@ function getBuildOptions(entryPoints) {
       js: "var __canopyBundleImportMetaUrl = require('node:url').pathToFileURL(__filename).href;",
     },
     logLevel: 'info',
+    // End callbacks run in this order: the import check's errors stop the
+    // write, and a watch build counts as in progress until its outputs land.
     plugins: [
-      trackBuildActivityPlugin(),
       forbidMainProcessImportsInBuiltinActionsPlugin(),
+      writeOutputsAtomicallyPlugin(),
+      trackBuildActivityPlugin(),
     ],
   };
 }

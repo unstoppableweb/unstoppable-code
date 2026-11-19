@@ -1421,6 +1421,9 @@ async function leasedKernel(): Promise<LeasedKernel> {
           instructions: {},
           queries: {
             ...input.runtimeHandlers.queries,
+            'worker.agent.usageLimits.get': (): never => {
+              throw new Error('Not exercised.');
+            },
             'worker.agent.provider.list': (): never => {
               throw new Error('Not exercised.');
             },

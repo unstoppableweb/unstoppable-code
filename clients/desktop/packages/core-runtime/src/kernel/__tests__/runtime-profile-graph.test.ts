@@ -74,6 +74,9 @@ const files = (): RuntimeModule =>
     handlers: {
       ...none,
       queries: {
+        'worker.agent.usageLimits.get': (): never => {
+          throw new Error('Not exercised.');
+        },
         'worker.agent.provider.list': (): never => {
           throw new Error('Not exercised.');
         },

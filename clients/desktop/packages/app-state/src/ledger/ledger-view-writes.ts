@@ -20,6 +20,7 @@ import type {
 } from '@canopy/protocol/ledger-view';
 import type { LedgerViewSelectOptions } from './create-ledger-view-store';
 import { readLedgerOpenDescendants } from './ledger-open-descendants';
+import { keepCause, thrownResult } from './ledger-view-results';
 
 /*
  * The person's writes from a Ledger view: a new-entry draft, independent
@@ -385,16 +386,7 @@ function problemOf(
 ): LedgerViewWriteProblem {
   return result.status === 'unavailable'
     ? { reason: result.reason, message: '' }
-    : { reason: result.reason, message: result.message };
-}
-
-/** A transport failure the client did not turn into a result. */
-function thrown(error: unknown): LedgerViewResult<never> {
-  return {
-    status: 'error',
-    reason: 'UNKNOWN',
-    message: error instanceof Error ? error.message : String(error),
-  };
+    : keepCause({ reason: result.reason, message: result.message }, result);
 }
 
 /** The add params of a draft; empty optional fields are left out. */
@@ -570,7 +562,7 @@ export function createLedgerViewWriteSlice(
           ...(cursor === undefined ? {} : { cursor }),
         });
       } catch (error) {
-        result = thrown(error);
+        result = thrownResult(error);
       }
       if (generation !== ownersGeneration || view !== viewGeneration) return;
       if (result.status !== 'ok') {
@@ -679,7 +671,7 @@ export function createLedgerViewWriteSlice(
         },
       });
     } catch (error) {
-      result = thrown(error);
+      result = thrownResult(error);
     }
     if (view !== viewGeneration) return;
     await finishChange(request, result);
@@ -825,7 +817,7 @@ export function createLedgerViewWriteSlice(
         params: ledgerDraftAddParams(draft),
       });
     } catch (error) {
-      result = thrown(error);
+      result = thrownResult(error);
     }
     if (view !== viewGeneration) return null;
     if (result.status === 'ok') {

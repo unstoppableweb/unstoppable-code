@@ -1,8 +1,19 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkspaceConfigUnreadableError } from '../../file-store';
 import { W5_LAUNCH_HEAL_OPERATIONS } from '../apply-evidence';
-import { recoverW5CommitLog, type W5DurabilityPort } from '../apply';
+import {
+  recoverW5CommitLog,
+  type W5DurabilityPort,
+  type W5ProcessFileLock,
+} from '../apply';
 import { W5CommitLog, type W5CommitRequest } from '../commit-log';
 import { fingerprintW5File } from '../fingerprint';
 import { createNodeW5Durability } from '../node-durability';
@@ -26,7 +37,7 @@ interface Harness {
   readonly durability: W5DurabilityPort;
   /** The next durable write fails as a full disk does, before touching the file. */
   failNextWrite(): void;
-  handler(): W5CommitLogRequestHandler;
+  handler(processLock?: W5ProcessFileLock): W5CommitLogRequestHandler;
   close(): void;
 }
 
@@ -59,13 +70,15 @@ function harness(): Harness {
     failNextWrite: () => {
       fail = true;
     },
-    handler: () =>
+    handler: (processLock) =>
       new W5CommitLogRequestHandler(
         log,
         { dbPath: join(root, 'commit-log.sqlite'), root },
         { applied: [], recoveryRequired: [], interruptedReservations: 0 },
         durability,
         process.platform,
+        undefined,
+        processLock,
       ),
     close: () => {
       log.close();
@@ -114,6 +127,47 @@ describe('A transient disk failure does not wedge the worktree list (CAN-5680)',
   });
 
   afterEach(() => h.close());
+
+  it('refuses an unreadable execution-owner preimage without advancing its receipt', async () => {
+    const request = listWrite(h, a, b, {
+      receipt: {
+        caller: 'can-7071',
+        operation: OPERATION,
+        idempotencyKey: 'unreadable',
+        fingerprint: 'same',
+      },
+    });
+    rmSync(h.list);
+    mkdirSync(h.list);
+    await expect(
+      h
+        .handler((_paths, work) => work())
+        .run({ id: ++requestId, method: 'commit', args: [request] }),
+    ).rejects.toBeInstanceOf(WorkspaceConfigUnreadableError);
+    expect(
+      h.log.lookupReceipt(
+        {
+          caller: 'can-7071',
+          operation: OPERATION,
+          idempotencyKey: 'unreadable',
+        },
+        'same',
+      ),
+    ).toMatchObject({ status: 'none' });
+    expect(h.log.listPendingCommits()).toEqual([]);
+    rmSync(h.list, { recursive: true });
+    writeFileSync(h.list, a);
+    expect(await commit(h, request)).toMatchObject({ status: 'applied' });
+    expect(readFileSync(h.list, 'utf8')).toBe(b);
+    rmSync(h.list);
+    mkdirSync(h.list);
+    // An already-decided worker receipt still precedes its read fence.
+    expect(
+      await h
+        .handler((_paths, work) => work())
+        .run({ id: ++requestId, method: 'commit', args: [request] }),
+    ).toMatchObject({ status: 'replayed' });
+  });
 
   it('a list write that hits ENOSPC before writing stays pending, and the next write applies it first', async () => {
     h.failNextWrite();

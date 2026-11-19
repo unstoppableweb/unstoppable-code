@@ -574,6 +574,16 @@ export {
 } from './families/pull-request';
 
 export {
+  createPullRequestReviewActionFamily,
+  pullRequestReviewActionCatalog,
+  pullRequestReviewActionSchema,
+  pullRequestReviewDispatchJsonSchema,
+  PULL_REQUEST_REVIEW_ACTION_TYPES,
+  type AgentPullRequestReviewPort,
+  type AgentReviewPublishRequest,
+} from './families/pull-request-review';
+
+export {
   CAPABILITY_PACKAGE_ACTION_TYPES,
   capabilityPackageAnalyzeSchema,
   capabilityPackageActionCatalog,

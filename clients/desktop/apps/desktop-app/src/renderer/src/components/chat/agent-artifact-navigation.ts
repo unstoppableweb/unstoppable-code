@@ -131,6 +131,8 @@ export async function openAgentArtifactNavigation(
       .addToast(
         cause instanceof Error ? cause.message : 'Unable to open artifact.',
         'error',
+        undefined,
+        { caught: cause },
       );
   }
 }

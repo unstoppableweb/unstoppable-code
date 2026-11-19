@@ -1,3 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import {
+  getGitRequestContext,
+  runWithGitRequestContext,
+} from '@canopy/desktop-shared/node/git-request-context';
 import type {
   ChangedFileInfo,
   TurnDiffData,
@@ -14,11 +19,65 @@ import {
 } from './git-tree-snapshot';
 import { persistTurnRefThroughWorker } from '../canopy-runtime/worker-git-local-mutations-dispatch';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
+import { mapWithConcurrency } from './concurrency';
+
+/**
+ * Repos captured at once per turn start or end. Local to this module: a
+ * process-wide Git limit belongs in the daemon once CAN-6803 lands.
+ */
+const REPO_CAPTURE_CONCURRENCY = 4;
+
+/**
+ * Maps repos in input order with the capture limit. After a repo fails, no
+ * other repo starts, and the failure surfaces only once in-flight repos
+ * settle, so a failed capture's Git never overlaps the session's next one.
+ */
+async function mapReposBounded<T, R>(
+  repos: readonly T[],
+  mapper: (repo: T) => Promise<R>,
+): Promise<R[]> {
+  const state: { failure?: { reason: unknown } } = {};
+  const outcomes = await mapWithConcurrency(
+    repos,
+    REPO_CAPTURE_CONCURRENCY,
+    async (repo): Promise<{ value: R } | undefined> => {
+      if (state.failure) {
+        return undefined;
+      }
+      try {
+        return { value: await mapper(repo) };
+      } catch (reason: unknown) {
+        state.failure ??= { reason };
+        return undefined;
+      }
+    },
+  );
+  if (state.failure) {
+    throw state.failure.reason;
+  }
+  return outcomes.map((outcome): R => {
+    if (!outcome) {
+      throw new Error('repo capture skipped without a failure');
+    }
+    return outcome.value;
+  });
+}
 
 setGitTreeSnapshotRuntime({
   resolveExecutable: () => getResolvedGitExecutableForSpawn(process.env),
   environment: () => process.env,
 });
+
+/** Tags a capture's Git launches for diagnostic attribution (CAN-4397). */
+function withTurnDiffGitRequest<T>(callback: () => Promise<T>): Promise<T> {
+  return runWithGitRequestContext(
+    {
+      source: 'turn-diff-capture',
+      requestId: getGitRequestContext()?.requestId ?? randomUUID(),
+    },
+    callback,
+  );
+}
 
 interface RepoTreeSnapshot {
   repoPath: string;
@@ -94,7 +153,17 @@ async function captureRepoSnapshot(
   };
 }
 
-export async function captureTurnStart(
+export function captureTurnStart(
+  sessionKey: string,
+  projectId: string,
+  worktreeId: string,
+): Promise<void> {
+  return withTurnDiffGitRequest(() =>
+    captureTurnStartInContext(sessionKey, projectId, worktreeId),
+  );
+}
+
+async function captureTurnStartInContext(
   sessionKey: string,
   projectId: string,
   worktreeId: string,
@@ -121,8 +190,9 @@ export async function captureTurnStart(
       projectId,
       worktreePath,
     );
-    const repos = await Promise.all(
-      repoEntries.map(async (entry): Promise<RepoTreeSnapshot> => {
+    const repos = await mapReposBounded(
+      repoEntries,
+      async (entry): Promise<RepoTreeSnapshot> => {
         const snapshot = await captureRepoSnapshot(
           entry.repoPath,
           projectId,
@@ -134,7 +204,7 @@ export async function captureTurnStart(
           repoName: entry.repoName,
           ...snapshot,
         };
-      }),
+      },
     );
 
     turnStartSnapshots.set(sessionKey, {
@@ -191,7 +261,11 @@ export function captureTurnEndAndDiffs(
   const startSnapshot = turnStartSnapshots.get(sessionKey);
   const previous = endCaptureTails.get(sessionKey) ?? Promise.resolve(null);
   const capture = previous.then(() =>
-    startSnapshot ? diffAgainstTurnStart(startSnapshot, endedTurn) : null,
+    startSnapshot
+      ? withTurnDiffGitRequest(() =>
+          diffAgainstTurnStart(startSnapshot, endedTurn),
+        )
+      : null,
   );
   endCaptureTails.set(sessionKey, capture);
   void capture.then(() => {
@@ -214,59 +288,58 @@ async function diffAgainstTurnStart(
 ): Promise<TurnEndDiffs | null> {
   const previousEnds = lastEndTrees.get(startSnapshot);
   try {
-    const results = await Promise.all(
-      startSnapshot.repos.map(
-        async (
-          repo,
-        ): Promise<{
-          files: ChangedFileInfo[];
-          treeRef: TurnDiffTreeRef;
-          since?: { files: ChangedFileInfo[]; treeRef: TurnDiffTreeRef };
-        }> => {
-          const endTree = await captureRepoTree(
-            repo.repoPath,
-            startSnapshot.projectId,
-            startSnapshot.worktreeId,
-          );
-          const label = (file: ChangedFileInfo): ChangedFileInfo => ({
-            ...file,
-            ...(repo.repoId ? { repoId: repo.repoId } : {}),
-            ...(repo.repoName ? { repoName: repo.repoName } : {}),
-          });
-          const treeRef: TurnDiffTreeRef = {
-            startTree: repo.treeSha,
-            endTree,
-            ...(repo.repoId ? { repoId: repo.repoId } : {}),
-            ...(repo.headCommitSha
-              ? { startHeadCommitSha: repo.headCommitSha }
-              : {}),
-          };
-          const files = await diffTreeObjects(
-            repo.repoPath,
-            repo.treeSha,
-            endTree,
-          );
-          const previousEnd = previousEnds?.get(repo.repoPath);
-          const since =
-            previousEnd === undefined
-              ? undefined
-              : {
-                  files: (
-                    await diffTreeObjects(repo.repoPath, previousEnd, endTree)
-                  ).map(label),
-                  treeRef: {
-                    startTree: previousEnd,
-                    endTree,
-                    ...(repo.repoId ? { repoId: repo.repoId } : {}),
-                  },
-                };
-          return {
-            files: files.map(label),
-            treeRef,
-            ...(since === undefined ? {} : { since }),
-          };
-        },
-      ),
+    const results = await mapReposBounded(
+      startSnapshot.repos,
+      async (
+        repo,
+      ): Promise<{
+        files: ChangedFileInfo[];
+        treeRef: TurnDiffTreeRef;
+        since?: { files: ChangedFileInfo[]; treeRef: TurnDiffTreeRef };
+      }> => {
+        const endTree = await captureRepoTree(
+          repo.repoPath,
+          startSnapshot.projectId,
+          startSnapshot.worktreeId,
+        );
+        const label = (file: ChangedFileInfo): ChangedFileInfo => ({
+          ...file,
+          ...(repo.repoId ? { repoId: repo.repoId } : {}),
+          ...(repo.repoName ? { repoName: repo.repoName } : {}),
+        });
+        const treeRef: TurnDiffTreeRef = {
+          startTree: repo.treeSha,
+          endTree,
+          ...(repo.repoId ? { repoId: repo.repoId } : {}),
+          ...(repo.headCommitSha
+            ? { startHeadCommitSha: repo.headCommitSha }
+            : {}),
+        };
+        const files = await diffTreeObjects(
+          repo.repoPath,
+          repo.treeSha,
+          endTree,
+        );
+        const previousEnd = previousEnds?.get(repo.repoPath);
+        const since =
+          previousEnd === undefined
+            ? undefined
+            : {
+                files: (
+                  await diffTreeObjects(repo.repoPath, previousEnd, endTree)
+                ).map(label),
+                treeRef: {
+                  startTree: previousEnd,
+                  endTree,
+                  ...(repo.repoId ? { repoId: repo.repoId } : {}),
+                },
+              };
+        return {
+          files: files.map(label),
+          treeRef,
+          ...(since === undefined ? {} : { since }),
+        };
+      },
     );
 
     lastEndTrees.set(

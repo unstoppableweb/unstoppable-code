@@ -153,9 +153,10 @@ async function resolveCloudCredentials(
   } catch (error) {
     if (error instanceof CanopyCloudConfigError) {
       throw new CanopyCloudClientError(
-        error.code === 'base-url-not-configured'
-          ? 'cloud-not-configured'
-          : 'missing-api-key',
+        // A local-only build reads as "not configured": the cloud is off.
+        error.code === 'api-key-required'
+          ? 'missing-api-key'
+          : 'cloud-not-configured',
         error.message,
       );
     }

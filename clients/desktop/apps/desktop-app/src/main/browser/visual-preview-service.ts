@@ -250,7 +250,10 @@ async function measureHeight(
 
 function pinZoom(window: BrowserWindow): void {
   window.webContents.setZoomFactor(1);
-  void window.webContents.setVisualZoomLevelLimits(1, 1);
+  // Electron 45 rejects while the main frame's renderer is not live yet (as
+  // right after window creation); the limits are already saved in the
+  // window's preferences, so later loads still get them.
+  window.webContents.setVisualZoomLevelLimits(1, 1).catch(() => undefined);
 }
 
 async function loadDocument(
@@ -513,7 +516,13 @@ class PreviewRenderer implements VisualPreviewService {
       // frame. The shell and anything else in the window are not page output.
       // The slot, not only a live document: a blocked navigation is reported
       // after the agent frame has left about:srcdoc.
-      const agent = findAgentSlot(window);
+      let agent: WebFrameMain | null;
+      try {
+        agent = findAgentSlot(window);
+      } catch {
+        // A disposed frame throws on access; a throw here would be uncaught.
+        return;
+      }
       const source = details.frame?.frameTreeNodeId;
       if (
         !agent ||

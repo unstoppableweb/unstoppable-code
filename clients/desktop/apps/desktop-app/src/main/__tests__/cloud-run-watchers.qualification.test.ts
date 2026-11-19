@@ -129,9 +129,6 @@ jest.mock('../automations/service', () => ({
       Promise.resolve({ runs: [], nextCursor: null }),
   }),
 }));
-jest.mock('../portal/portal-event-bus', () => ({
-  isCanopyPortalActive: (): boolean => false,
-}));
 let mockRunOwner: { owner: string } | { refusal: string } = {
   owner: 'personal',
 };

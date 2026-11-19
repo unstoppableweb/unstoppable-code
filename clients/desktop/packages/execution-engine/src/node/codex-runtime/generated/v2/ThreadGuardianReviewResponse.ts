@@ -6,7 +6,7 @@ import type { ThreadGuardianAssessment } from './ThreadGuardianAssessment';
 export type ThreadGuardianReviewResponse = {
   callId: string;
   /**
-   * Null when exec policy skips approval.
+   * Null when current policy or a remembered approval skips review.
    */
   assessment: ThreadGuardianAssessment | null;
 };

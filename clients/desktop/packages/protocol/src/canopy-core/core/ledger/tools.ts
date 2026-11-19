@@ -235,6 +235,7 @@ export type LedgerToolsUnavailableReason =
   | 'agent_recording_off'
   | 'no_ledger_scope'
   | 'ledger_runtime_unavailable'
+  | 'mutation_outcome_unknown'
   | 'session_ended';
 
 /** What the agent is told for each unavailable reason. */
@@ -247,6 +248,8 @@ export const LEDGER_TOOLS_UNAVAILABLE_MESSAGES: {
   no_ledger_scope: 'This chat has no Feed. Continue without recording.',
   ledger_runtime_unavailable:
     'The Feed is not available right now. Continue without recording.',
+  mutation_outcome_unknown:
+    'The Feed is not available right now. The last change may or may not have been saved. Do not repeat it automatically. Check the Feed when it is available. Continue without recording.',
   session_ended:
     'The Feed is not available right now. Continue without recording.',
 };

@@ -31,6 +31,7 @@ import {
   emitChatTurnWait,
   type BeginChatTurnRunRequest,
 } from '../turn-runs';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 
 jest.mock('../../canopy-runtime/chat-turn-stop', () => ({
   stopChatTurnExactly: jest.fn(() => Promise.resolve(null)),
@@ -235,11 +236,12 @@ it('a refused dispatch rejects the waiting execute', async () => {
     .mockRejectedValueOnce(new Error('refused'));
   const run = await beginChatTurnRun(request);
   const fn = jest.fn();
-  await expect(run.execute(fn)).rejects.toBeInstanceOf(
-    TurnWorkerUnavailableError,
-  );
+  const execution = run.execute(fn);
+  await expect(execution).rejects.toBeInstanceOf(TurnWorkerUnavailableError);
+  const parent = (await settledRecords()).parent;
+  await expect(execution).rejects.toMatchObject({ cause: parent?.error });
   expect(fn).not.toHaveBeenCalled();
-  expect((await settledRecords()).parent).toMatchObject({ status: 'failed' });
+  expect(parent).toMatchObject({ status: 'failed' });
 });
 
 it('abandon after accepted is a no-op', async () => {
@@ -477,11 +479,14 @@ describe('replayed dispatch of an acknowledged Claude turn', () => {
     const construct = async (): Promise<void> => {
       const runtime = await workerProviderRuntimeFor('claude');
       if (!runtime) throw new Error('Missing the Claude runtime');
-      const provider = await runtime.providerFor('claude', () => null);
+      const provider = await runtime.providerFor(
+        'claude',
+        windowAgentInterfacePort(() => null),
+      );
       provider.createSession(
         options,
         () => undefined,
-        () => null,
+        windowAgentInterfacePort(() => null),
       );
     };
     const run = await beginChatTurnRun(request);
@@ -524,11 +529,14 @@ describe('Copilot sessions on a replayed dispatch (CAN-4119)', () => {
     await run.execute(async () => {
       const runtime = await workerProviderRuntimeFor('copilot');
       if (!runtime) throw new Error('No Copilot worker runtime is registered.');
-      const copilot = await runtime.providerFor('copilot', () => null);
+      const copilot = await runtime.providerFor(
+        'copilot',
+        windowAgentInterfacePort(() => null),
+      );
       return copilot.createSession(
         opts,
         () => undefined,
-        () => null,
+        windowAgentInterfacePort(() => null),
       );
     });
     run.accepted();

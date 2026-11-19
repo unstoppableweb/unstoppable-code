@@ -124,7 +124,7 @@ describe('client lease registry', () => {
     expect(leases.holder(lease.leaseId)).toBe('b');
     expect(
       thrown(() => leases.acquire('b', { ...request, label: 'Changed' })),
-    ).toMatchObject({ kind: 'invalid_argument' });
+    ).toMatchObject({ kind: 'invalid_argument', retry: { kind: 'never' } });
     expect(leases.release('b')).toBe(true);
     expect(leases.release('b')).toBe(false);
     expect(thrown(() => leases.acquire('c', request))).toMatchObject({

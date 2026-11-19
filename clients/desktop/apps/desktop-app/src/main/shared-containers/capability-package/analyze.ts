@@ -68,7 +68,9 @@ import {
   buildAgentDefinitionResource,
   buildAutomationDefinitionResource,
   buildPipelineDefinitionResource,
+  buildWorkflowFormAutomationDefinitionResources,
   toCapabilityPackageDefinitionResourceInput,
+  type AutomationDefinitionSource,
   type SharedContainerDefinitionBuildResult,
   type SharedContainerDefinitionBuilderDependencies,
   type SharedContainerDefinitionResourceDraft,
@@ -109,6 +111,12 @@ export interface AnalyzeSharedContainerCapabilityPackageInput {
    * snapshot carries are left to the code.
    */
   repositories?: readonly SharedContainerCapabilityPackageRepository[];
+  /**
+   * Publish automations in workflow form
+   * (`canopy-desktop-shared-automations-workflow-form`, CAN-6455). Callers
+   * set it from the flag; absent publishes as before.
+   */
+  workflowForm?: boolean;
   signal?: AbortSignal;
 }
 
@@ -884,13 +892,17 @@ async function agentUnit(
   );
 }
 
-async function automationUnit(
+/**
+ * The automation's definition, and with the workflow-form flag on, the
+ * workflow a chat automation is published as (CAN-6455).
+ */
+async function automationUnits(
   context: ResolutionContext,
   reference: Extract<
     SharedContainerCapabilityReference,
     { kind: 'automation' }
   >,
-): Promise<PackageUnit | undefined> {
+): Promise<PackageUnit[]> {
   context.automations ??= context.deps.listAutomations();
   const automations = context.automations;
   const activity = (
@@ -902,7 +914,7 @@ async function automationUnit(
   )?.value.find((candidate) => candidate.id === reference.automationId);
   if (!activity) {
     context.diagnostics.definitionsOmitted += 1;
-    return undefined;
+    return [];
   }
   const sharedActivity = sharedAutomationActivity(activity);
   const action = sharedActivity.action;
@@ -925,21 +937,42 @@ async function automationUnit(
       )?.value;
     }
   }
-  return definitionUnit(
-    context,
-    await buildAutomationDefinitionResource(
-      {
-        activity: sharedActivity,
-        containerType:
-          context.input.containerType === 'CODE_WORKTREE' ? 'code' : 'cowork',
-        ...(pipelineYaml !== undefined ? { pipelineYaml } : {}),
-        ...(curatedPipelineKey ? { curatedPipelineKey } : {}),
-        origin: 'current',
-      },
-      context.deps.definitionBuilders,
-    ),
-    reference.priority,
+  const workflowForm = context.input.workflowForm === true;
+  const source: AutomationDefinitionSource = {
+    activity: sharedActivity,
+    containerType:
+      context.input.containerType === 'CODE_WORKTREE' ? 'code' : 'cowork',
+    ...(pipelineYaml !== undefined ? { pipelineYaml } : {}),
+    ...(curatedPipelineKey ? { curatedPipelineKey } : {}),
+    origin: 'current',
+    ...(workflowForm ? { workflowForm } : {}),
+  };
+  const chat = await buildAutomationDefinitionResource(
+    source,
+    context.deps.definitionBuilders,
   );
+  const converted = workflowForm
+    ? await buildWorkflowFormAutomationDefinitionResources(
+        source,
+        chat,
+        context.deps.definitionBuilders,
+      )
+    : null;
+  const units = converted
+    ? [
+        definitionUnit(
+          context,
+          { resource: converted.pipeline, notices: [] },
+          reference.priority,
+        ),
+        definitionUnit(
+          context,
+          { resource: converted.automation, notices: converted.notices },
+          reference.priority,
+        ),
+      ]
+    : [definitionUnit(context, chat, reference.priority)];
+  return units.flatMap((unit) => (unit ? [unit] : []));
 }
 
 /** A definition another definition needs that usage did not report. */
@@ -1473,7 +1506,7 @@ async function resolveUnits(
         add(await pipelineUnit(context, reference));
         break;
       case 'automation':
-        add(await automationUnit(context, reference));
+        for (const unit of await automationUnits(context, reference)) add(unit);
         break;
       case 'hook':
         // No installer can guarantee a hook starts paused in every future
@@ -1580,6 +1613,7 @@ export async function analyzeSharedContainerCapabilityPackage(
       ...(input.containerType === 'CODE_WORKTREE' && input.snapshotPaths
         ? { snapshotPaths: input.snapshotPaths }
         : {}),
+      ...(input.workflowForm === true ? { workflowForm: true } : {}),
       ...(signal ? { signal } : {}),
     });
     signal?.throwIfAborted();

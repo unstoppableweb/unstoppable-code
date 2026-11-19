@@ -77,6 +77,10 @@ import {
   type ProviderConnections,
 } from '@/lib/projectImportTelemetry';
 import { useProjectsStore } from '@/stores/projectsStore';
+import {
+  FIRST_RUN_DEFAULT_CHATS_WAIT_MS,
+  waitForPersonalDefaultChats,
+} from '@/components/home/homeSendTarget';
 
 /**
  * Prototype first-run page (v0): import projects from the tools found on this
@@ -556,6 +560,13 @@ export function FirstRunImportPage({
   const [error, setError] = useState<string | null>(null);
   const [scanFailed, setScanFailed] = useState(false);
   const importing = useRef(false);
+  const finishing = useRef(false);
+  const completedImport = useRef<{
+    submission: ProjectImportSubmission;
+    workspaceId: string;
+  } | null>(null);
+  // Skip is setting up the default Chats workspace before Home opens.
+  const [settingUp, setSettingUp] = useState(false);
   const mounted = useRef(false);
   // Latest pick wins: a slower earlier scan never replaces a newer one.
   const pickRequest = useRef(0);
@@ -652,15 +663,56 @@ export function FirstRunImportPage({
     submission: ProjectImportSubmission;
     workspaceId: string;
   }): Promise<void> => {
-    if (mounted.current)
-      visit.complete(latest.current.scanState, latest.current.connections);
+    // One completion: a second Skip press (or Skip during an import's own
+    // completion) would mark first run done twice.
+    if (finishing.current) return;
+    finishing.current = true;
+    if (imported) completedImport.current = imported;
+    if (!imported) setSettingUp(true);
+    // CAN-7038: Home's no-project target, Personal's Chats, is created here,
+    // before first run is marked done, so Skip and Continue both land on a
+    // Home that can send. The wait is capped: a slower setup keeps running and
+    // Home finishes it (showing progress, then Try again), as it does on every
+    // later launch until the workspace exists. An imported project stays the
+    // selection; this only provisions.
+    const provisioned = await waitForPersonalDefaultChats(
+      FIRST_RUN_DEFAULT_CHATS_WAIT_MS,
+    );
+    if (!mounted.current) return;
+    if (
+      provisioned.status === 'failed' ||
+      provisioned.status === 'unsupported'
+    ) {
+      setError('Couldn’t set up Chats. Try again.');
+      finishing.current = false;
+      setSettingUp(false);
+      setBusy(false);
+      return;
+    }
+    if (provisioned.status === 'timeout') {
+      reportClientAppError(
+        new Error(
+          'First run finished before the Chats workspace was set up (CAN-7038)',
+        ),
+      );
+    }
+    visit.complete(latest.current.scanState, latest.current.connections);
     await markFirstRunDone().catch((): void => {});
     onDone();
-    if (imported)
-      await openImportedProject(imported.submission, imported.workspaceId);
+    const destination = completedImport.current;
+    if (destination)
+      await openImportedProject(
+        destination.submission,
+        destination.workspaceId,
+      );
   };
 
   const runImport = async (): Promise<void> => {
+    if (completedImport.current) {
+      setBusy(true);
+      await finish(completedImport.current);
+      return;
+    }
     if (!scan || selected.size === 0 || importing.current) return;
     if (
       !isCurrentSelection(
@@ -842,21 +894,23 @@ export function FirstRunImportPage({
                   data-testid="first-run-import-skip"
                   size="compact"
                   variant="ghost"
-                  disabled={busy}
+                  disabled={busy || settingUp}
                   onClick={(): void => {
                     void finish();
                   }}
                 >
-                  {nothingToImport
-                    ? 'Continue without a project'
-                    : 'Skip for now'}
+                  {settingUp
+                    ? 'Setting up…'
+                    : nothingToImport
+                      ? 'Continue without a project'
+                      : 'Skip for now'}
                 </Button>
                 {foundAny && (
                   <Button
                     data-testid="first-run-import-submit"
                     size="compact"
                     variant="primary"
-                    disabled={busy || selected.size === 0}
+                    disabled={busy || settingUp || selected.size === 0}
                     onClick={(): void => {
                       void runImport();
                     }}

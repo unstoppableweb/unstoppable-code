@@ -107,6 +107,18 @@ export type ApprovalCheck =
       /** Origin of the page, shown as context. */
       topOrigin: string;
       multiple: boolean;
+    }
+  | {
+      /**
+       * RunWithSecrets or WriteSecretsFile about to hand chat secrets to a
+       * command or file. Full Access allows it; every other mode prompts, and
+       * no rule answers it, so an "always allow" never covers a use of
+       * secrets (agent secret requests, v1).
+       */
+      kind: 'agent-secret-use';
+      tool: 'RunWithSecrets' | 'WriteSecretsFile';
+      /** The secret names the command or file receives; never values. */
+      secretNames: string[];
     };
 
 export interface ApprovalRuleSets {

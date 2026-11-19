@@ -49,15 +49,48 @@ export async function agentBaseBranchPorts(
   );
 }
 
+/** A chat's approval scope: the chat whose access an agent acts with. */
+export interface BaseBranchApprovalChat {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}
+
+/**
+ * CAN-7222: whether `chat` has Full access as of now. Its live mode must be
+ * Full access, and neither a pending switch nor the mode its live session
+ * applied (an admitted agent send's cap) may be stricter. An unknown mode is
+ * not Full access.
+ */
+export async function chatHasFullAccessReader(
+  chat: BaseBranchApprovalChat,
+): Promise<() => boolean> {
+  const { callerBoundingApprovalMode, getLiveApprovalMode } =
+    await import('../approvals/live-approval-modes');
+  return () =>
+    getLiveApprovalMode(chat.projectId, chat.worktreeId, chat.chatId) ===
+      'full-access' &&
+    callerBoundingApprovalMode(
+      chat.projectId,
+      chat.worktreeId,
+      chat.chatId,
+      'full-access',
+    ) === 'full-access';
+}
+
 /**
  * CAN-6024: change a worktree's base branch in main, for the tool's trusted
  * target (tool input never selects another worktree). An open pull request's
  * "update it too" choice is asked through AskUserQuestion; with nobody to ask
- * the change is refused before any write.
+ * the change is refused before any write. CAN-7222: a pull request already on
+ * the new base is never asked about, and a chat with Full access updates the
+ * pull request without asking.
  */
 export async function setWorktreeBaseBranchForAgent(input: {
   target: { projectId: string; worktreeId: string };
   chatId: string;
+  /** The chat whose access applies; defaults to `chatId` in `target`. */
+  approvalChat?: BaseBranchApprovalChat;
   baseBranch: string;
   repoId?: string;
   requestUserAnswers: BaseBranchQuestionAsker;
@@ -83,6 +116,13 @@ export async function setWorktreeBaseBranchForAgent(input: {
         'base-branch',
       ),
       confirm: askUserBaseBranchConfirmation(input.requestUserAnswers),
+      hasFullAccess: await chatHasFullAccessReader(
+        input.approvalChat ?? {
+          projectId: input.target.projectId,
+          worktreeId: input.target.worktreeId,
+          chatId: input.chatId,
+        },
+      ),
       ...(input.signal ? { signal: input.signal } : {}),
     },
     requestId,
@@ -98,6 +138,11 @@ export async function setCurrentWorktreeBaseBranch(
   return setWorktreeBaseBranchForAgent({
     target: { projectId: runtime.projectId, worktreeId: runtime.worktreeId },
     chatId: runtime.chatId,
+    approvalChat: runtime.approvalChat ?? {
+      projectId: runtime.projectId,
+      worktreeId: runtime.worktreeId,
+      chatId: runtime.chatId,
+    },
     baseBranch: input.baseBranch,
     ...(input.repoId ? { repoId: input.repoId } : {}),
     requestUserAnswers,

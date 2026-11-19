@@ -73,6 +73,8 @@ export const HOSTED_IDENTITY_CHANNEL = 'remote-control:install-id';
 export const HOSTED_IPC_CHANNELS = {
   /** One worktree's pull request status (`portal.pr` state refresh). */
   githubGetPrState: 'github:get-pr-state',
+  /** Cached provider-usage limits; accepts only one empty object. */
+  providerUsageLimitsGet: 'provider-usage:limits-get',
   /** One worktree's pipelines (`portal.pipeline.list`). */
   pipelinesListForWorktree: 'pipelines:list-for-worktree',
   /** One worktree's pipeline runs (`portal.pipeline.execution_list`). */
@@ -97,6 +99,7 @@ export const HOSTED_FILE_READ_CHANNEL = 'file:read-content';
  * - `activity:changed-files`: read a worktree's changed files (`task_diff_get`).
  * - `tracked-plans:list`: read a worktree's plans (`plan_list`).
  * - {@link HOSTED_IPC_CHANNELS}: read pull request status, pipelines and runs.
+ * - `provider-usage:limits-get`: read the cached provider limits snapshot.
  * - `chat:cancel`: stop one exact turn the agent names, never another
  *   (`task_cancel`); argument checked on the host.
  * - `work-entries:create`: add an empty work entry for a no-repository task,
@@ -106,6 +109,7 @@ export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   'activity:changed-files',
   HOSTED_CHAT_CANCEL_CHANNEL,
   HOSTED_IPC_CHANNELS.githubGetPrState,
+  HOSTED_IPC_CHANNELS.providerUsageLimitsGet,
   HOSTED_IPC_CHANNELS.pipelinesGetWorktreeExecution,
   HOSTED_IPC_CHANNELS.pipelinesListForWorktree,
   HOSTED_IPC_CHANNELS.pipelinesListWorktreeExecutions,
@@ -327,6 +331,12 @@ export function hostedInvocationAllowed(
   args: readonly unknown[],
 ): boolean {
   switch (channel) {
+    case HOSTED_IPC_CHANNELS.providerUsageLimitsGet:
+      return (
+        args.length === 1 &&
+        isPlainRecord(args[0]) &&
+        Object.keys(args[0]).length === 0
+      );
     case HOSTED_CHAT_COMMAND_CHANNEL:
       return args.length === 1 && hostedChatCommandAllowed(args[0]);
     case HOSTED_CHAT_CANCEL_CHANNEL:

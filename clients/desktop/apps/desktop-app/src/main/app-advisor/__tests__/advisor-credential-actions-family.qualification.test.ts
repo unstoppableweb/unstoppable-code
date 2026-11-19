@@ -99,8 +99,8 @@ let root: string;
 let operations: OperationService;
 let runs: AdvisorActionRuns;
 let calls: Array<[string, unknown]>;
-let portalEnabled: boolean;
 let allowIncoming: boolean;
+let remoteRefusal: Error | null;
 let ollamaReady: boolean;
 
 function remoteState(): RemoteControlState {
@@ -160,19 +160,11 @@ function recordingHost(): AdvisorCredentialActionHost {
       record('disconnectCloudAccount');
       return Promise.resolve({ connected: false });
     },
-    portalEnabled: () => portalEnabled,
-    startPortal: () => {
-      record('startPortal');
-      return Promise.resolve({});
-    },
-    stopPortal: () => {
-      record('stopPortal');
-      return Promise.resolve({});
-    },
     remoteControl: () => ({
       getState: () => Promise.resolve(remoteState()),
       setAllowIncoming: (allow) => {
         record('setAllowIncoming', allow);
+        if (remoteRefusal) return Promise.reject(remoteRefusal);
         allowIncoming = allow;
         return Promise.resolve(remoteState());
       },
@@ -298,8 +290,8 @@ beforeEach(() => {
   });
   runs = new AdvisorActionRuns({ operations });
   calls = [];
-  portalEnabled = true;
   allowIncoming = false;
+  remoteRefusal = null;
   ollamaReady = true;
   mockBoundTools = [];
   mockHost = recordingHost();
@@ -447,7 +439,11 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     });
     await expect(
       h.route({ type: 'canopy_portal.start' }, bound('b')),
-    ).resolves.toEqual({ requestId: 'b', ok: true });
+    ).resolves.toEqual({
+      requestId: 'b',
+      ok: true,
+      result: { allowIncoming: true },
+    });
     await expect(
       h.route({ type: 'remote_control.get_state' }, bound('c')),
     ).resolves.toEqual({
@@ -456,7 +452,7 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
       result: {
         signedIn: true,
         relayStatus: 'connected',
-        allowIncoming: false,
+        allowIncoming: true,
         hosts: [
           {
             deviceId: 'dev-2',
@@ -507,7 +503,7 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     });
     expect(calls).toEqual([
       ['loadCloudAccount', undefined],
-      ['startPortal', undefined],
+      ['setAllowIncoming', true],
       ['setAllowIncoming', true],
       ['openCode', ['connect', true]],
       ['revealOllamaSettings', undefined],
@@ -516,24 +512,39 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     expect(windowRequest).not.toHaveBeenCalled();
   });
 
-  it('a disabled Portal is skipped, and a failed Ollama install is refused with its error', async () => {
-    portalEnabled = false;
+  it("Portal stop turns Allow incoming off, a Remote Control refusal is the action's error, and a failed Ollama install is refused with its error", async () => {
+    allowIncoming = true;
     ollamaReady = false;
     const h = setup();
+    await expect(
+      h.route({ type: 'canopy_portal.stop' }, bound('s')),
+    ).resolves.toEqual({
+      requestId: 's',
+      ok: true,
+      result: { allowIncoming: false },
+    });
+    remoteRefusal = new Error('Sign in before allowing incoming control.');
     await expect(
       h.route({ type: 'canopy_portal.start' }, bound('p')),
     ).resolves.toEqual({
       requestId: 'p',
-      ok: true,
-      result: { skipped: true, reason: 'canopy-portal-disabled' },
+      ok: false,
+      error: {
+        code: 'execution_failed',
+        message: 'Sign in before allowing incoming control.',
+      },
     });
+    expect(allowIncoming).toBe(false);
     await expect(
       h.route({ type: 'ollama.install' }, bound('o')),
     ).resolves.toMatchObject({
       ok: false,
       error: { code: 'execution_failed', message: 'Download failed.' },
     });
-    expect(calls.map(([name]) => name)).not.toContain('startPortal');
+    expect(calls.slice(0, 2)).toEqual([
+      ['setAllowIncoming', false],
+      ['setAllowIncoming', true],
+    ]);
   });
 
   it('no API key appears in any result, error, log line or ledger record', async () => {
@@ -667,7 +678,7 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     ).toEqual([
       'saveCloudApiKey',
       'startCloudOAuthLogin',
-      'startPortal',
+      'setAllowIncoming',
       'setAllowIncoming',
       'installOllama',
     ]);

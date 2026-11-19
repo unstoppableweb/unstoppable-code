@@ -1,8 +1,12 @@
 import { resolveReplayLocation } from '@canopy/execution-engine/node/pipelines/executor/replay-location';
+import { assertOrganizationPipelineAllowed } from '../organization-capabilities/pipeline-gate';
 import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-share/port';
 import type { PipelineRunLocationRequest } from '@canopy/desktop-shared/types/pipeline-cloud-runs';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
-import type { RedeemedExecutionSecrets } from '@canopy/core-runtime/node/execution-secrets';
+import {
+  executionSecretUnavailableError,
+  type RedeemedExecutionSecrets,
+} from '@canopy/core-runtime/node/execution-secrets';
 import type { ShareFailure } from '@canopy/protocol/sharing';
 import { runClassifiedShare } from '../sharing/share-operation-result';
 import { isDeepStrictEqual } from 'node:util';
@@ -261,7 +265,6 @@ import {
   tryReserveExecution,
 } from './pipeline-execution-registry';
 import { getResourceMonitorService } from '../resource-monitor';
-import { createPipelineRunObservers } from './pipeline-run-observers';
 import { getPipelineAdvisorService } from './pipeline-advisor';
 import {
   listPipelineAdvisorSnapshots,
@@ -383,7 +386,9 @@ async function resolvePipelineRuntimeEnv(workspaceId?: string): Promise<{
       env: resolved.publicApplied,
     };
   } catch {
-    return { env: {} };
+    // Refuse like the secret bindings do instead of running without the
+    // user's environment.
+    throw executionSecretUnavailableError();
   }
 }
 
@@ -416,42 +421,6 @@ function createMonitoredElectronExecutionRuntime(
   return runtime;
 }
 
-const OBSERVER_TERMINAL_STATUSES: ReadonlySet<ExecutionState['status']> =
-  new Set<ExecutionState['status']>(['success', 'failure', 'cancelled']);
-
-/**
- * Give a started execution its browser projection.
- *
- * The renderer has always had an ambient channel (`emitExecutionEvent` fires
- * for every execution regardless of its source); this is the browser's
- * equivalent. Attached here rather than at each call site because this helper
- * is the one seam every start, retry, and replay already passes through.
- *
- * Observers attach after the handle exists, so the earliest events can predate
- * them — `prime` republishes the current state to cover that edge.
- */
-function attachPipelineRunObservers(handle: ExecutionHandle): void {
-  if (!handle.addObservers) return;
-  const observers = createPipelineRunObservers(handle.id);
-  if (!observers) return;
-  let dispose: (() => void) | undefined;
-  const onEvent: NonNullable<ExecutionOptions['onEvent']> = (event) => {
-    try {
-      observers.onEvent(event);
-    } finally {
-      if (OBSERVER_TERMINAL_STATUSES.has(event.state.status)) {
-        dispose?.();
-        dispose = undefined;
-      }
-    }
-  };
-  dispose = handle.addObservers({
-    onEvent,
-    onStepOutput: observers.onStepOutput,
-  });
-  observers.prime?.(handle.getState());
-}
-
 function trackExecutionWithAdvisor(
   handle: ExecutionHandle,
   runtime: ExecutionRuntime,
@@ -465,7 +434,6 @@ function trackExecutionWithAdvisor(
     releaseExecutionReservation(reservationId);
     followExecutionHandle(handle);
     getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
-    attachPipelineRunObservers(handle);
     void handle.waitForCompletion().then(
       () => onSettled?.(),
       () => onSettled?.(),
@@ -477,7 +445,6 @@ function trackExecutionWithAdvisor(
   // follow its handle.
   followExecutionHandle(handle);
   getPipelineAdvisorService().watchExecution({ handle, runtime, getWindow });
-  attachPipelineRunObservers(handle);
 }
 
 type MainProcessExecutePipelineRequestOptions =
@@ -701,6 +668,11 @@ async function cacheSharedPipelineForExecution(args: {
   pipelinePackage?: ExecutionOptions['pipelinePackage'];
 }> {
   const { serverId, remoteId, installPin, runtime, executionId } = args;
+  // Every run of a shared pipeline starts here (the Workflows page, the
+  // Portal, automations, hooks and agent tools): a default the target
+  // project switched off is refused before it is fetched or cached
+  // (CAN-6237, phase 10b).
+  await assertOrganizationPipelineAllowed(args.projectId, remoteId);
   let detail: SharedPipelineDetail;
   try {
     detail = await (args.executionContext !== undefined
@@ -1604,26 +1576,35 @@ export function registerPipelineHandlers(): void {
       | { success: true; data: SharedPipelineDetail }
       | { success: false; error: string; failure: ShareFailure }
     > => {
-      const outcome = await runClassifiedShare(async () => {
-        const created = await createPackagedSharedPipeline(request, () =>
-          BrowserWindow.fromWebContents(event.sender),
-        );
-        const linked = persistPipelineRemoteMetadata(request, created);
-        if (linked && !linked.success) {
-          if (!request.remoteId) await deleteSharedPipeline(created.id);
-          throw new Error(
-            linked.error ?? 'Failed to store workflow share link.',
-          );
-        }
-        return hydrateSharedPipelineDetailScopes(created);
-      });
-      return outcome.ok
-        ? { success: true, data: outcome.value }
-        : {
-            success: false,
-            error: toErrorMessage(outcome.error),
-            failure: outcome.failure,
-          };
+      return withPipelineCrudTelemetry(
+        {
+          action: 'shared_create',
+          source: 'shared',
+          shareScope: request.shareScope,
+        },
+        async () => {
+          const outcome = await runClassifiedShare(async () => {
+            const created = await createPackagedSharedPipeline(request, () =>
+              BrowserWindow.fromWebContents(event.sender),
+            );
+            const linked = persistPipelineRemoteMetadata(request, created);
+            if (linked && !linked.success) {
+              if (!request.remoteId) await deleteSharedPipeline(created.id);
+              throw new Error(
+                linked.error ?? 'Failed to store workflow share link.',
+              );
+            }
+            return hydrateSharedPipelineDetailScopes(created);
+          });
+          return outcome.ok
+            ? { success: true, data: outcome.value }
+            : {
+                success: false,
+                error: toErrorMessage(outcome.error),
+                failure: outcome.failure,
+              };
+        },
+      );
     },
   );
   registerIpcHandler(

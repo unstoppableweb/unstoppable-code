@@ -1,3 +1,8 @@
+import {
+  matchesRecordedDirectoryIdentity,
+  matchesRecordedRepositoryIdentity,
+} from '@canopy/core-runtime/node/w5/recorded-directory-identity';
+import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
 import { join, relative } from 'node:path';
@@ -15,6 +20,7 @@ import {
   archiveRecoveryInventorySchema,
   archiveRecoveryReceiptSchema,
   inventoryArchiveRecoveryTree,
+  matchesRecordedArchiveRecoveryInventory,
   type ArchiveRecoveryReceipt,
 } from '../archive-recovery-store';
 import type { InternalRootLifecycleJournalEvidence } from '@canopy/core-runtime/node/internal-root-repairs';
@@ -92,7 +98,11 @@ async function checkPayload(
   } else if (classification.payloadRule === 'subset') {
     if (
       payload &&
-      (payload.identity !== receipt.staging?.identity ||
+      (!matchesRecordedDirectoryIdentity(
+        receipt.staging?.identity,
+        payload.identity,
+        hostOperatingSystem(),
+      ) ||
         payload.entries.some(
           (entry) =>
             !receipt.staging?.entries.some((original) =>
@@ -101,7 +111,7 @@ async function checkPayload(
         ))
     )
       refuse(`changed partially deleted payload ${receipt.operationId}`);
-  } else if (!isDeepStrictEqual(payload, receipt.staging))
+  } else if (!matchesRecordedArchiveRecoveryInventory(receipt.staging, payload))
     refuse(`missing or replaced retained payload ${receipt.operationId}`);
 }
 
@@ -155,8 +165,11 @@ export async function freezeInternalRootArchiveRecovery(
                 repo.refs.length > 0,
             ))
               if (
-                `${repo.commonDir}:${await canonicalDirectory(repo.commonDir)}` !==
-                repo.identity
+                !matchesRecordedRepositoryIdentity(
+                  repo.identity,
+                  `${repo.commonDir}:${await canonicalDirectory(repo.commonDir)}`,
+                  hostOperatingSystem(),
+                )
               )
                 refuse(
                   `repository identity changed for ${receipt.operationId}/${repo.repoId}`,
@@ -351,7 +364,14 @@ export async function relocateInternalRootArchiveRecovery(
                     relative(transition.to.canonicalDataRoot, path),
                   );
             const identity = `${path}:${await canonicalDirectory(physical)}`;
-            if (path === repo.commonDir && identity !== repo.identity)
+            if (
+              path === repo.commonDir &&
+              !matchesRecordedRepositoryIdentity(
+                repo.identity,
+                identity,
+                hostOperatingSystem(),
+              )
+            )
               refuse(
                 `external repository identity changed for ${original.operationId}`,
               );

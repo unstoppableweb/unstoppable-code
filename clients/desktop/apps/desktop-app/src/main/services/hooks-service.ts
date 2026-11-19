@@ -78,7 +78,6 @@ import {
   listLatestHookRunLogTails,
   readHookRunLogTail,
 } from '../lib/hook-log-store';
-import { emitPortalFeatureUpsert } from './portal-feature-event-service';
 import {
   settleAll,
   trackDetachedWork,
@@ -482,6 +481,8 @@ function resolvedHookRunOptions(args: {
     finishedAt?: string,
     activeActionIndex?: number,
   ): Promise<void> => {
+    const onRunUpdate = args.onRunUpdate;
+    if (!onRunUpdate) return;
     const { lines } = await readHookRunLogTail({
       projectId: args.projectId,
       worktreeId: args.worktreeId,
@@ -498,8 +499,7 @@ function resolvedHookRunOptions(args: {
       finishedAt,
       activeActionIndex,
     });
-    args.onRunUpdate?.(run);
-    emitHookRun(run, args.portalCommandId);
+    onRunUpdate(run);
   };
   return {
     projectId: args.projectId,
@@ -549,29 +549,14 @@ function resolvedHookRunOptions(args: {
 
 export async function cancelHook(
   request: HookStopRequest,
-  options: { portalCommandId?: string } = {},
 ): Promise<HookRunResponse | null> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
-  const result = await stopRunningHook({
+  return stopRunningHook({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
     hookKey: request.hookKey,
   });
-  if (result) {
-    const tail = await readLatestHookRunTail({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      hookKey: request.hookKey,
-    }).catch(() => null);
-    if (tail?.run) {
-      emitHookRun(
-        { ...tail.run, status: 'cancelled' },
-        options.portalCommandId,
-      );
-    }
-  }
-  return result;
 }
 
 export async function readLatestHookRunTail(request: {
@@ -699,22 +684,6 @@ function buildPortalHookRun(input: {
     outputTail: input.outputTail,
     activeActionIndex: input.activeActionIndex,
   };
-}
-
-function emitHookRun(run: PortalHookRun, commandId?: string): void {
-  emitPortalFeatureUpsert({
-    type: 'portal.hook.event',
-    commandId,
-    entity: {
-      entityType: 'hook_run',
-      localId: run.localId,
-      parentLocalId: worktreeScopedParentLocalId(
-        run.workspaceLocalId,
-        run.worktreeLocalId,
-      ),
-      payload: run,
-    },
-  });
 }
 
 function trimUtf8Tail(value: string, maxBytes: number): string {

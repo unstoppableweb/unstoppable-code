@@ -3258,9 +3258,18 @@ export async function createWorktreeFromStartPoint(
   worktreePath: string,
   branchName: string,
   startPoint: string,
-  options: { backgroundPriority?: boolean; trackingRef?: string } = {},
+  options: {
+    backgroundPriority?: boolean;
+    trackingRef?: string;
+    /** Create exactly `branchName`; a taken name fails instead of taking a suffix. */
+    exactBranchName?: boolean;
+    /** Pass `--track` so the upstream does not depend on `branch.autoSetupMerge`. */
+    forceTracking?: boolean;
+  } = {},
 ): Promise<string> {
-  const resolvedName = await safeBranchName(repoPath, branchName);
+  const resolvedName = options.exactBranchName
+    ? branchName
+    : await safeBranchName(repoPath, branchName);
   const trackingRef = options.trackingRef;
   const add = (): Promise<void> =>
     runWorktreeAdd(
@@ -3270,6 +3279,7 @@ export async function createWorktreeFromStartPoint(
           : []),
         'worktree',
         'add',
+        ...(options.forceTracking ? ['--track'] : []),
         '-b',
         resolvedName,
         worktreePath,
@@ -3378,20 +3388,67 @@ export async function createWorktreeForExistingBranch(
   repoPath: string,
   worktreePath: string,
   branchName: string,
-  options: { backgroundPriority?: boolean } = {},
+  options: {
+    backgroundPriority?: boolean;
+    /** Use only this exact namespace. Omitted keeps the local-then-origin lookup. */
+    namespace?: 'local' | 'origin';
+  } = {},
 ): Promise<string> {
+  const { namespace } = options;
   await fetchOrigin(repoPath, {
     backgroundPriority: options.backgroundPriority,
   });
+  if (namespace === 'origin') {
+    const ref = `refs/remotes/origin/${branchName}`;
+    const commit = await readGitCatalogBranch(repoPath, ref);
+    if (commit === undefined || !GIT_OBJECT_ID_RE.test(commit))
+      throw new Error(`Branch "${branchName}" was not found`);
+    // A local branch of the same name is a different identity; never attach it.
+    if (await doesLocalBranchExist(repoPath, branchName))
+      throw new Error(`Branch "${branchName}" exists locally`);
+    return createWorktreeFromStartPoint(
+      repoPath,
+      worktreePath,
+      branchName,
+      `${commit}^{commit}`,
+      {
+        ...options,
+        trackingRef: ref,
+        exactBranchName: true,
+        forceTracking: true,
+      },
+    );
+  }
   if (await doesLocalBranchExist(repoPath, branchName)) {
     await runGit(
-      disableGitHooks(['worktree', 'add', worktreePath, branchName]),
+      disableGitHooks([
+        'worktree',
+        'add',
+        ...(namespace === 'local' ? ['--no-guess-remote'] : []),
+        worktreePath,
+        branchName,
+      ]),
       repoPath,
       { backgroundPriority: options.backgroundPriority },
     );
+    if (
+      namespace === 'local' &&
+      (await readGitSymbolicHead(worktreePath, options)) !==
+        `refs/heads/${branchName}`
+    ) {
+      await runGit(
+        ['worktree', 'remove', '--force', worktreePath],
+        repoPath,
+        options,
+      );
+      throw new Error(`Branch "${branchName}" could not be checked out`);
+    }
     return branchName;
   }
-  if (await doesRemoteBranchExist(repoPath, branchName)) {
+  if (
+    namespace !== 'local' &&
+    (await doesRemoteBranchExist(repoPath, branchName))
+  ) {
     await runGit(
       disableGitHooks([
         ...GIT_EXACT_CATALOGUE_REF_ARGS,

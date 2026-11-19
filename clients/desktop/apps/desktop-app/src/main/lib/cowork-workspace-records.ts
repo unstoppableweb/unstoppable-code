@@ -31,8 +31,7 @@ import {
   getWorkspaceManifestRepository,
   WorkspaceConfigUnreadableError,
 } from './workspace-persistence';
-import { notifyPortalStructureChanged } from '../portal/portal-event-bus';
-import { schedulePortalStructuralSync } from '../portal/portal-structural-sync';
+import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import {
   MAX_ARCHIVE_RETENTION_DAYS,
   resolveAutoArchiveDays,
@@ -121,8 +120,7 @@ async function indexWork<T>(
 async function afterCommit(): Promise<void> {
   await afterW5Commit(async (): Promise<void> => {
     await readAllSidebarItems();
-    schedulePortalStructuralSync();
-    notifyPortalStructureChanged();
+    scheduleDesktopStructureChanged('structural.cowork-workspace-records');
   });
 }
 

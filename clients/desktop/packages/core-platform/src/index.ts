@@ -1,5 +1,6 @@
 export * from './platform-services';
 export * from './endpoints';
+export { createChildServices } from './supervision/child';
 export {
   deriveLocalAuthorityIdentity,
   observeLocalAuthorityRelocation,

@@ -67,7 +67,15 @@ import type {
 } from '@canopy/agent-transcript/types';
 import type { TranscriptPage } from '@canopy/agent-transcript/transcript-storage';
 import { ChatStorageV2 } from '../lib/chat-storage-v2';
-import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  CODE_REVIEW_CHAT_PROJECT_ID,
+  SHARED_CONTAINER_VIEWER_PROJECT_ID,
+} from '@canopy/desktop-shared/types';
+import {
+  type CodeReviewNamespaceEffect,
+  ensureCodeReviewNamespaceQualification,
+  noteCodeReviewNamespaceEffect,
+} from '../lib/code-review-storage-admission';
 import {
   type DeltaJournalDiagnostic,
   type ChatDeltaJournalWriterOptions,
@@ -143,6 +151,16 @@ import {
 } from './chat-state-contracts';
 import type { ChatWaitOperation } from '../observability/chat-wait-diagnostics';
 import type { ChatFormat4Outcome } from './chat-format4-telemetry';
+import type { ChatStorageFailure } from './chat-storage-failure-telemetry';
+
+/** Code Review namespace guardrail: reports, never refuses (q-34). */
+function noteReviewNamespaceEffect(
+  scope: ChatScopeKey,
+  effect: CodeReviewNamespaceEffect,
+): void {
+  if (scope.projectId === CODE_REVIEW_CHAT_PROJECT_ID)
+    noteCodeReviewNamespaceEffect(effect);
+}
 
 /** Options of one repository transaction. */
 export type ChatStateTransactionOptions = V2MutationOptions & {
@@ -185,6 +203,8 @@ export interface ChatStateV2RepositoryOptions extends Omit<
    * checkpoint durations. Never changes the storage work.
    */
   format4Telemetry?: (outcome: ChatFormat4Outcome) => void;
+  /** Host diagnostics only; a reporter failure never changes storage. */
+  storageFailure?: (failure: ChatStorageFailure) => void;
   /** Records estimated above this take the version 2 path (tests). */
   deltaJournalLargeRecordBytes?: number;
   /** First retry delay of a failed promotion (doubles); default 30 s. */
@@ -766,6 +786,14 @@ export class ChatStateV2Repository {
     this.sendFormat4Telemetry(outcome);
   }
 
+  private reportStorageFailure(failure: ChatStorageFailure): void {
+    try {
+      this.options.storageFailure?.(failure);
+    } catch {
+      // Host diagnostics must not change storage results or cleanup.
+    }
+  }
+
   private sendFormat4Telemetry(outcome: ChatFormat4Outcome): void {
     try {
       this.options.format4Telemetry?.(outcome);
@@ -841,19 +869,21 @@ export class ChatStateV2Repository {
     // so it never waits on the option.
     if (!entry.backend.isDeltaJournal()) {
       try {
+        noteReviewNamespaceEffect(entry.scope, 'promotion');
         if (await entry.backend.promoteToDeltaJournal())
           this.recordDeltaJournalLifecycle(
             entry,
             entry.scope,
             'delta_journal_promoted',
           );
-      } catch {
+      } catch (error) {
         // Version 2 remains selected; later activity may trigger a bounded retry.
         this.recordDeltaJournalLifecycle(
           entry,
           entry.scope,
           'delta_journal_promotion_failed',
         );
+        this.reportStorageFailure({ kind: 'promotion', error });
       }
     }
     if (
@@ -864,6 +894,7 @@ export class ChatStateV2Repository {
       // False is a recovered promotion fault; a failed reopen must escape
       // and become a repository load/storage error, never a ready scope.
       // The backend reports the outcome, under the format 4 kinds.
+      noteReviewNamespaceEffect(entry.scope, 'promotion');
       await entry.backend.promoteToFormat4();
     }
   }
@@ -880,6 +911,18 @@ export class ChatStateV2Repository {
       // selected authority. Failed reopen/recovery is a load error, including
       // when reconciliation was queued after an acknowledged commit.
       entry.lifecycle = 'recovery_error';
+      if (cause instanceof ChatStorageNewerFormatError) {
+        try {
+          await this.recordNewerFormat(entry, entry.scope);
+        } catch {
+          // Refusal diagnostics must not replace the load failure.
+        }
+      }
+      this.reportStorageFailure({
+        kind: 'load',
+        error: cause,
+        newerFormat: cause instanceof ChatStorageNewerFormatError,
+      });
       const error = new ChatStateRepositoryLoadError(
         `Unable to load chat scope ${entry.scope.projectId}/${entry.scope.worktreeId}: ${cause instanceof Error ? cause.message : String(cause)}`,
         { cause },
@@ -1135,10 +1178,12 @@ export class ChatStateV2Repository {
         return;
       if (await entry.backend.checkpointPendingJournal('timer'))
         await this.requestDirtyArtifactMaintenance(entry);
-    }).catch(() => {
+    }).catch((error) => {
       // A failed checkpoint leaves the records journaled; the next commit
       // re-arms the triggers and a reload recovers the writer.
       entry.journalCheckpointQueued = false;
+      // The queued task also includes maintenance after a successful write.
+      this.reportStorageFailure({ kind: 'checkpoint', error });
     });
   }
 
@@ -1727,6 +1772,12 @@ export class ChatStateV2Repository {
       entry.loading = (async (): Promise<void> => {
         let transient = false;
         try {
+          if (scope.projectId === CODE_REVIEW_CHAT_PROJECT_ID) {
+            // Cold review loads wait for an in-flight reconciliation, then
+            // proceed even if it failed.
+            await ensureCodeReviewNamespaceQualification();
+            noteCodeReviewNamespaceEffect('cold_load');
+          }
           // A visual staging sweep of this directory finishes first.
           await this.sweepLocks
             .get(entry.store.directory)
@@ -1813,8 +1864,18 @@ export class ChatStateV2Repository {
         } catch (cause) {
           entry.visualStaging = undefined;
           entry.lifecycle = 'recovery_error';
-          if (cause instanceof ChatStorageNewerFormatError)
-            await this.recordNewerFormat(entry, scope);
+          if (cause instanceof ChatStorageNewerFormatError) {
+            try {
+              await this.recordNewerFormat(entry, scope);
+            } catch {
+              // Refusal diagnostics must not replace the load failure.
+            }
+          }
+          this.reportStorageFailure({
+            kind: 'load',
+            error: cause,
+            newerFormat: cause instanceof ChatStorageNewerFormatError,
+          });
           const error = new ChatStateRepositoryLoadError(
             `Unable to load chat scope ${scope.projectId}/${scope.worktreeId}: ${cause instanceof Error ? cause.message : String(cause)}`,
             { cause },
@@ -1944,6 +2005,7 @@ export class ChatStateV2Repository {
     entry: ScopeEntry,
     allowDuringScopeDeletion = false,
   ): void {
+    noteReviewNamespaceEffect(entry.scope, 'mutation');
     if (
       !this.accepting ||
       entry.lifecycle === 'draining' ||
@@ -2214,7 +2276,15 @@ export class ChatStateV2Repository {
         // avoids rediscovery after a bounded maintenance slot was evicted.
         await this.requestDirtyArtifactMaintenance(entry);
       }
-      const commit = { ...result, ...scope };
+      const commit: typeof result &
+        ChatScopeKey &
+        Pick<ChatStateCommit, 'initiatedChanges'> = {
+        ...result,
+        ...scope,
+        ...(result.applied && options.initiated
+          ? { initiatedChanges: [options.initiated] }
+          : {}),
+      };
       // Prepared-write proof is backend-internal, not a new broadcast field.
       delete commit.appendOnlyChatIds;
       const deletedChatIds = result.applied
@@ -3860,6 +3930,7 @@ export class ChatStateV2Repository {
     scope: ChatScopeKey,
     operation: () => Promise<T>,
   ): Promise<T> {
+    noteReviewNamespaceEffect(scope, 'cleanup');
     const entry = this.entry(scope);
     this.clearIdleUnloadTimer(entry);
     entry.deleting++;
@@ -3887,6 +3958,7 @@ export class ChatStateV2Repository {
     }
   }
   public async deleteEmptyScope(scope: ChatScopeKey): Promise<void> {
+    noteReviewNamespaceEffect(scope, 'cleanup');
     const entry = this.entry(scope);
     this.clearIdleUnloadTimer(entry);
     await this.serialized(entry, async () => {
@@ -4042,6 +4114,107 @@ export class ChatStateV2Repository {
         ChatStorageV2.fromLegacyPaths(this.resolve(scope)).directory,
       )?.lifecycle ?? 'unloaded'
     );
+  }
+  /**
+   * The background format 4 sweep's admission (CAN-7178). It never waits
+   * behind another holder: a scope another window, turn or operation holds
+   * or has queued is `held`, decided in the same synchronous step that takes
+   * the lease, so nothing can attach between the check and the admission.
+   * Once admitted it loads the scope exactly as any open does, which runs
+   * legacy migration and promotion. It then lets the cleanup that load
+   * queued finish and unloads the scope only as the idle unload would: a
+   * window, turn or operation that attached meanwhile keeps it loaded.
+   */
+  public async sweepFormat4(
+    scope: ChatScopeKey,
+  ): Promise<
+    | { readonly outcome: 'promoted' }
+    | { readonly outcome: 'already_format4' }
+    | { readonly outcome: 'held' }
+    | { readonly outcome: 'withheld' }
+    | { readonly outcome: 'failed'; readonly cause?: unknown }
+  > {
+    const held = { outcome: 'held' } as const;
+    if (!this.accepting || !this.promotable(scope)) return held;
+    const directory = ChatStorageV2.fromLegacyPaths(
+      this.resolve(scope),
+    ).directory;
+    const existing = this.scopes.get(directory);
+    const quiet =
+      existing !== undefined &&
+      existing.inFlightTurns === 0 &&
+      existing.deleting === 0 &&
+      existing.loading === undefined;
+    // A load that already failed with a cached error fails again, so the
+    // sweep counts it and backs off; residency doesn't make it held.
+    if (quiet && existing.lifecycle === 'recovery_error' && existing.loadError)
+      return { outcome: 'failed', cause: existing.loadError } as const;
+    if (
+      existing &&
+      !(
+        quiet &&
+        ((existing.lifecycle === 'unloaded' && !existing.backendResident) ||
+          existing.lifecycle === 'recovery_error')
+      )
+    )
+      return held;
+    const entry = this.entry(scope);
+    if (this.isScopePinned(entry) || this.hasAdmittedOperation(entry))
+      return held;
+    let loadedHere = false;
+    const result = await this.serialized(entry, async () => {
+      // Another holder queued behind the admission: let it go first.
+      if (
+        entry.inFlightTurns !== 1 ||
+        (entry.lifecycle !== 'unloaded' && entry.lifecycle !== 'recovery_error')
+      )
+        return held;
+      let before: Awaited<ReturnType<ChatStorageV2['format']>>;
+      try {
+        before = await entry.store.format();
+      } catch (cause) {
+        return { outcome: 'failed', cause } as const;
+      }
+      if (before === 'v4') return { outcome: 'already_format4' } as const;
+      if (entry.inFlightTurns !== 1) return held;
+      loadedHere = true;
+      try {
+        await this.load(scope, entry);
+      } catch (cause) {
+        return { outcome: 'failed', cause } as const;
+      }
+      let after: Awaited<ReturnType<ChatStorageV2['format']>>;
+      try {
+        after = await entry.store.format();
+      } catch (cause) {
+        return { outcome: 'failed', cause } as const;
+      }
+      if (after === 'v4') return { outcome: 'promoted' } as const;
+      return entry.backend.allowsFormat4Promotion()
+        ? ({ outcome: 'failed' } as const)
+        : ({ outcome: 'withheld' } as const);
+    });
+    // A failed load the sweep made is released, so a later offer or open
+    // loads it afresh instead of meeting the sweep's cached failure.
+    if (loadedHere && entry.lifecycle === 'recovery_error')
+      await this.releaseScope(scope).catch(() => false);
+    else if (loadedHere) {
+      for (let round = 0; round < 64; round += 1) {
+        await entry.tail;
+        if (
+          entry.inFlightTurns === 0 &&
+          entry.maintenanceImmediate === undefined &&
+          entry.maintenanceChats.size === 0
+        )
+          break;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (this.scopes.get(directory) === entry && entry.lifecycle === 'ready')
+        await this.serialized(entry, () => this.unloadIdleScope(entry)).catch(
+          () => undefined,
+        );
+    }
+    return result;
   }
   public getArtifactMaintenanceStatus(scope: ChatScopeKey): {
     pendingChats: number;

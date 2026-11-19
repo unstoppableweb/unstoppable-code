@@ -32,7 +32,11 @@ import type {
   ExecutionState,
   Pipeline,
 } from '@canopy/execution-engine/types/pipeline';
-import { recoverOrphanedPipelineExecutions } from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import {
+  recoverOrphanedPipelineExecutions,
+  type PipelineRecoveryFailure,
+} from '@canopy/execution-engine/node/pipelines/executor/crash-recovery';
 import {
   projectPipelineExecution,
   projectPipelineExecutionView,
@@ -477,8 +481,8 @@ export function stagePipelineControl(
 
 /** What a startup sweep or shutdown checkpoint left on the host. */
 interface RecoveryCapture {
-  /** The sweep's per-execution messages, which may name host paths. */
-  errors?: string[];
+  /** The sweep's per-execution failures: codes and names, never messages. */
+  errors?: PipelineRecoveryFailure[];
   /** The checkpoint's own error. */
   error?: unknown;
 }
@@ -501,6 +505,24 @@ export async function readStoredPipelineExecution(
     executionId,
     (await monitoredRuntime()).executionsDir,
   );
+}
+
+/**
+ * Stored root executions paused now, for the transient-retry startup re-arm
+ * (CAN-4175).
+ */
+export async function listPausedPipelineExecutions(): Promise<
+  ExecutionState[]
+> {
+  const { executionsDir } = await monitoredRuntime();
+  const paused: ExecutionState[] = [];
+  for (const summary of await listExecutionSummaries(executionsDir)) {
+    if (summary.status !== 'paused') continue;
+    const state = await loadExecutionState(summary.id, executionsDir);
+    if (state?.status === 'paused' && !state.parent_execution_id)
+      paused.push(state);
+  }
+  return paused;
 }
 
 /**
@@ -771,6 +793,9 @@ export const desktopPipelineWorker: PipelineExecutionWorker = {
     const errors = await recoverOrphanedPipelineExecutions(
       executionIds,
       (await monitoredRuntime()).executionsDir,
+      // The native error can name host paths: it goes to the local log only.
+      (executionId, error) =>
+        logMainProcessWarn(`Pipeline ${executionId} recovery failed`, error),
     );
     recoveryCaptures.set(requestId, { errors });
     return { failureCount: errors.length };

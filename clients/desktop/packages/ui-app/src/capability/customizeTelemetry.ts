@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import {
   pipelineFiltersActive,
+  recordedErrorOf,
   type InstalledStatusFilterValue,
   type MarketplaceCatalogTabId,
   type PipelineFilterValues,
@@ -10,6 +11,7 @@ import {
   officialMarketplaceProvider,
   sourceLabelProvider,
 } from '@canopy/ui-shared/lib/unified-plugin-entry';
+import { isAppErrorCode, type AppErrorCode } from '@canopy/protocol/app-errors';
 import type { PluginProvider } from '@canopy/protocol/plugins';
 import type { CustomizeTabModel } from './customizeSections';
 
@@ -121,11 +123,20 @@ export interface CustomizeInstallStartProperties {
   readonly target_harness_count: number;
 }
 
+/**
+ * Why an install failed: the catalog code of the error main recorded for it,
+ * or `unknown` when none was (a refusal before the install ran, or a failure
+ * main did not record). Never the message.
+ */
+export type CustomizeInstallFailureCode = AppErrorCode | 'unknown';
+
 export interface CustomizeInstallEndProperties extends CustomizeInstallStartProperties {
   readonly install_outcome: CustomizeInstallOutcome;
   readonly claude_result: CustomizeHarnessResult;
   readonly codex_result: CustomizeHarnessResult;
   readonly duration_ms: number;
+  /** Set only on an install that threw. */
+  readonly failure_code?: CustomizeInstallFailureCode;
 }
 
 export type CustomizeTelemetryEvent =
@@ -500,6 +511,7 @@ export function buildCustomizeInstallEndEvent(input: {
     Record<PluginProvider, { readonly installed: boolean }>
   >;
   readonly failed?: boolean;
+  readonly failureCode?: CustomizeInstallFailureCode;
   readonly durationMs: number;
 }): CustomizeTelemetryEvent {
   const targeted = (provider: PluginProvider): boolean =>
@@ -536,8 +548,16 @@ export function buildCustomizeInstallEndEvent(input: {
       claude_result: claude,
       codex_result: codex,
       duration_ms: Math.max(0, Math.round(input.durationMs)),
+      ...(input.failureCode === undefined
+        ? {}
+        : { failure_code: input.failureCode }),
     },
   };
+}
+
+function installFailureCode(error: unknown): CustomizeInstallFailureCode {
+  const code = recordedErrorOf(error)?.code;
+  return code !== undefined && isAppErrorCode(code) ? code : 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +700,7 @@ export async function trackCustomizeInstall<T>(
         plugin,
         request,
         failed: true,
+        failureCode: installFailureCode(error),
         durationMs: Date.now() - startedAt,
       }),
     );

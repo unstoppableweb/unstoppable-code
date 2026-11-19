@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isUnreadablePathError } from '../filesystem/unreadable-path-error';
 import type {
   CanopyWorkspaceScope,
   WorkerGitExecutableIssue,
@@ -49,6 +50,7 @@ import {
 import type { CanopyHandlerContext } from '../../runtime/types';
 import {
   GitRepositoryWriteError,
+  gitWriteExitError,
   type GitRepositoryWrite,
   type GitRepositoryWriteFailureCode,
   type GitRepositoryWriteOutput,
@@ -236,10 +238,16 @@ const UNAVAILABLE_WRITE_CODES: ReadonlySet<GitRepositoryWriteFailureCode> =
 
 /**
  * Worktree-list failures in which Git itself answered, or printed past the
- * 8 MiB the desktop's runner also refuses: retrying cannot change them.
+ * 8 MiB the desktop's runner also refuses, or the host refused its fixed
+ * input or startup environment: retrying cannot change them.
  */
 const BEST_EFFORT_READ_CODES: ReadonlySet<GitRepositoryReadError['code']> =
-  new Set(['exit_status', 'invalid_request', 'output_limit']);
+  new Set([
+    'exit_status',
+    'invalid_request',
+    'environment_invalid',
+    'output_limit',
+  ]);
 
 /**
  * `worker.git.*` hosts over canonical workspace records and a read-only Git
@@ -611,9 +619,9 @@ export function createRecordedWorkerGitHosts(
       }
     };
     const succeeded = async (write: GitRepositoryWrite): Promise<string> => {
-      const { exitCode, stdout } = await run(write);
-      if (exitCode !== 0) throw new GitRepositoryWriteError('exit_status');
-      return stdout;
+      const output = await run(write);
+      if (output.exitCode !== 0) throw gitWriteExitError(output);
+      return output.stdout;
     };
     return {
       run,
@@ -974,7 +982,12 @@ export function createRecordedWorkerGitHosts(
         const reposDir = join(worktreePath, 'repos');
         for (const entry of await files
           .readDirectory(reposDir)
-          .catch(() => [])) {
+          .catch((error: unknown) => {
+            // Only a missing `repos/` lists nothing; unreadable is reported
+            // by the health check, not as missing repositories.
+            if (isUnreadablePathError(error)) throw error;
+            return [];
+          })) {
           if (!entry.isDirectory()) continue;
           entries.push({
             repoId: entry.name,

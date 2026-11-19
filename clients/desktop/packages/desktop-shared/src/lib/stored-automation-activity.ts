@@ -32,3 +32,27 @@ export function sharedAutomationActivity(
     ? shown
     : storedAutomationActivity(activity);
 }
+
+/**
+ * The stored workflow a packaged install shares in place of its chat
+ * projection, when the chat form is kept only for its installed capability
+ * package (CAN-6455), or `null`. The share carries the package rebuilt for the
+ * workflow. A chat routed to an Agent stays a chat, as the share contract
+ * carries the Agent only there.
+ */
+export function installedPackageWorkflowActivity(
+  activity: ScheduledActivity,
+): ScheduledActivity | null {
+  if (
+    activity.ownedPipeline?.chatEditable !== true ||
+    activity.installedFrom?.capabilityPackage === undefined ||
+    ('model' in activity.action &&
+      activity.action.model?.startsWith(AGENT_MODEL_PREFIX) === true)
+  )
+    return null;
+  const stored = storedAutomationActivity(activity);
+  return stored.action.type === 'worktree_pipeline' &&
+    stored.action.pipelineSource === 'user'
+    ? stored
+    : null;
+}

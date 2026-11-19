@@ -1762,7 +1762,7 @@ export function createAppAdvisorToolRuntime(
       if (action.type === 'worktree.set_base_branch') {
         // CAN-6024: the main base-branch flow worktree chats' SetBaseBranch
         // uses, on the requested worktree; an open PR's choice is asked in
-        // this chat.
+        // this chat unless it has Full access (CAN-7222).
         const { setWorktreeBaseBranchForAgent } =
           await import('../canopy-tools/set-base-branch-runtime');
         return setWorktreeBaseBranchForAgent({
@@ -1771,6 +1771,11 @@ export function createAppAdvisorToolRuntime(
             worktreeId: action.worktreeId,
           },
           chatId: destination.chatId,
+          approvalChat: {
+            projectId: destination.projectId,
+            worktreeId: destination.worktreeId,
+            chatId: destination.chatId,
+          },
           baseBranch: action.baseBranch,
           ...(action.repoId ? { repoId: action.repoId } : {}),
           requestUserAnswers: (questions) =>
@@ -2107,6 +2112,52 @@ export function createAppAdvisorToolRuntime(
         };
       }
       return actionResponse;
+    },
+
+    async authorizeForcedMcpRemoval(request, toolContext) {
+      const getWindow = (): BrowserWindow | null => {
+        const window =
+          surfaces.getAppAdvisorWindow() ?? surfaces.getMainWindow();
+        return window && !window.isDestroyed() ? window : null;
+      };
+      if (!getWindow() || toolContext?.signal?.aborted) return false;
+      const approval = createApprovalSession({
+        sessionKey: `app-advisor-mcp-evidence-remove-${randomUUID()}`,
+        projectId: destination.projectId,
+        worktreeId: destination.worktreeId,
+        chatId: destination.chatId,
+        provider: context?.providerType ?? 'claude',
+        workspaceRoot: getDataDir(),
+        mode: 'ask',
+        sessionRules: [],
+        getWindow,
+      });
+      const cancel = (): void => approval.dispose();
+      toolContext?.signal?.addEventListener('abort', cancel, { once: true });
+      try {
+        if (toolContext?.signal?.aborted) return false;
+        const outcome = await approval.check(
+          { kind: 'tool', toolName: 'installed_items.force_mcp_removal' },
+          {
+            title: 'Remove device MCP server and keep evidence',
+            description: request.finishUninstall
+              ? 'Resume this exact saved device removal and reconcile its saved workspace and chat references. Account connections are never removed.'
+              : 'Preserve this exact device server as private evidence, clear its sign-ins and remove only its own index row. A damaged index remains unresolved.',
+            details: {
+              kind: 'tool',
+              toolName: 'installed_items.force_mcp_removal',
+              inputSummary: JSON.stringify(request),
+            },
+            toolUseId: toolContext?.toolUseId,
+          },
+        );
+        return outcome.decision === 'allow' && !toolContext?.signal?.aborted;
+      } catch {
+        return false;
+      } finally {
+        toolContext?.signal?.removeEventListener('abort', cancel);
+        approval.dispose();
+      }
     },
 
     async authorizeInstalledItemUninstall(request, toolContext) {

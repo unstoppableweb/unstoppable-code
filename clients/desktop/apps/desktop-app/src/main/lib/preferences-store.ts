@@ -307,12 +307,12 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
       invalidateAntigravityModels();
       const { broadcastModelRegistryUpdated } =
         await import('../models/model-registry');
-      const { notifyPortalModelCatalogChanged } =
-        await import('../portal/portal-event-bus');
+      const { notifyModelCatalogChanged } =
+        await import('../remote-projection/agent-catalog-compatibility');
       broadcastModelRegistryUpdated();
       // Catalog projection may read preferences. Do not await it while this
       // serialized preferences commit still owns the write queue.
-      trackDetachedWork(() => notifyPortalModelCatalogChanged());
+      trackDetachedWork(() => notifyModelCatalogChanged());
     }
     if (previous.opencodeEnabled !== next.opencodeEnabled)
       openCodeEnabledRevision++;

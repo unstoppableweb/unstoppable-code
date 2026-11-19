@@ -87,6 +87,7 @@ import { TurnTimer } from './TurnTimer';
 import type { DisplayBlock } from './types';
 import { HookInfoBanner } from './HookInfoBanner';
 import { useExpandedRunInterest } from '@/lib/chat-interest';
+import { useRemoteImagesAllowed } from '@/lib/remote-image';
 import { isAskUserQuestionToolName } from '@/lib/canopy-tool-aliases';
 import { findAskUserQuestionRecordState } from './ask-user-pending-match';
 import { SkillIcon } from '@canopy/ui-shared/icons';
@@ -235,6 +236,9 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
 }: ComponentPropsWithoutRef<'img'>): JSX.Element {
   const rawSrc = typeof src === 'string' ? src : '';
   const target = useContext(ChatMarkdownFileTargetContext);
+  // A local-only build loads no remote images in chat; the image shows as
+  // unavailable instead of the transcript making a request.
+  const remoteImages = useRemoteImagesAllowed();
   const [resolvedSrc, setResolvedSrc] = useState<string | null | undefined>();
   const shouldResolve = target !== null && isAbsoluteLocalImageSource(rawSrc);
 
@@ -269,7 +273,10 @@ const ChatMarkdownImage = memo(function ChatMarkdownImage({
     };
   }, [rawSrc, shouldResolve, target]);
 
-  if (isNetworkPathImageSource(rawSrc)) {
+  if (
+    isNetworkPathImageSource(rawSrc) ||
+    (!remoteImages && /^https?:/i.test(rawSrc.trimStart()))
+  ) {
     return <MarkdownImageUnavailable alt={alt} />;
   }
   if (!shouldResolve) {

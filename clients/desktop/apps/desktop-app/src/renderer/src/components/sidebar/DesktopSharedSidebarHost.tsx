@@ -190,12 +190,19 @@ import { CloudArchivedNavLink } from '@/cloud-chats/CloudArchivedTasksPage';
 import {
   archiveCloudTask,
   CLOUD_TASK_ARCHIVE_FAILED,
+  CLOUD_TASK_DELETE_FAILED,
+  cloudTaskDeletionRetentionDays,
+  deleteCloudTask,
 } from '@/cloud-chats/archive-cloud-task';
 import {
   CLOUD_PROJECT_DANGER_COPY,
   cloudSidebarRowCapabilities,
   type CloudSidebarRowKind,
 } from '@/cloud-chats/cloud-sidebar-capabilities';
+import {
+  CloudProjectSettingsHost,
+  type CloudProjectSettingsTarget,
+} from '@/cloud-chats/CloudProjectSettingsDialog';
 import { useCloudCoworkSidebar } from '@/cloud-chats/useCloudCoworkSidebar';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { appendCloudSidebarRows } from '@/cloud-chats/append-cloud-sidebar-rows';
@@ -487,6 +494,8 @@ const NON_STORE_ROW_MENU_KEYS: ReadonlySet<string> = new Set([
 const CLOUD_ROW_MENU_KEYS: ReadonlySet<string> = new Set([
   ...NON_STORE_ROW_MENU_KEYS,
   'archive',
+  // Offered only where the row's capabilities allow it (CAN-7052).
+  'delete',
 ]);
 
 /**
@@ -768,11 +777,12 @@ export const removeDesktopWorktreeInBatch = async (
     onRowHidden,
   }: WorktreeBatchRemovalOptions,
 ): Promise<void> => {
-  // A cloud task only archives, through the web core (CAN-6511).
+  // A cloud task archives, or deletes to the Trash where its row offers
+  // Delete, through the web core (CAN-6511, CAN-7052).
   if (isWebCoreScope(workspaceId)) {
-    if (mode !== 'archive')
-      throw new Error('A cloud task can only be archived.');
-    await archiveCloudTask(workspaceId, worktreeId);
+    await (mode === 'delete'
+      ? deleteCloudTask(workspaceId, worktreeId)
+      : archiveCloudTask(workspaceId, worktreeId));
     return;
   }
   const project = useProjectsStore
@@ -896,10 +906,15 @@ export const setDesktopWorkEntryPinned = (
   useStandaloneChatStore
     .getState()
     .setWorkEntryPinned(entryId, pinned, workspaceId)
-    .catch(() => {
+    .catch((error: unknown) => {
       useGitHubStore
         .getState()
-        .addToast(pinned ? 'Failed to pin' : 'Failed to unpin', 'error');
+        .addToast(
+          pinned ? 'Failed to pin' : 'Failed to unpin',
+          'error',
+          undefined,
+          { caught: error },
+        );
     });
 
 /** The single row's Mark done / Mark active, awaited; failures stay quiet as there. */
@@ -1315,7 +1330,17 @@ export function DesktopSharedSidebarHost({
     scopingContext,
   ]);
   const cloudSidebar = useCloudCoworkSidebar();
-  const cloudRows = cloudSidebar.status === 'online' ? cloudSidebar.rows : null;
+  // Offline, the rows last listed stay, above the offline row (CAN-6374).
+  const cloudRows =
+    cloudSidebar.status === 'disabled' ? null : cloudSidebar.rows;
+  // The removal a cloud task's confirmation last ran, for its failure line.
+  const [cloudRemoval, setCloudRemoval] = useState<'archive' | 'delete'>(
+    'archive',
+  );
+  // A cloud project's settings, with its instructions and default plugins
+  // (CAN-7053), opened in place of the sidebar's details-only dialog.
+  const [cloudSettingsTarget, setCloudSettingsTarget] =
+    useState<CloudProjectSettingsTarget | null>(null);
   const surfaceSnapshot = useMemo(
     (): SessionViewModel | null =>
       localSurfaceSnapshot && cloudRows
@@ -1844,7 +1869,12 @@ export function DesktopSharedSidebarHost({
       return;
     useGitHubStore
       .getState()
-      .addToast(error instanceof Error ? error.message : fallback, 'error');
+      .addToast(
+        error instanceof Error ? error.message : fallback,
+        'error',
+        undefined,
+        { caught: error },
+      );
   };
   // A create that failed after its row registered: a background outcome.
   const reportLateCreateError = (error: unknown): void =>
@@ -2076,9 +2106,24 @@ export function DesktopSharedSidebarHost({
           useNavigationStore.getState().openAddWorkspaceModal();
           return true;
         }}
-        onOpenWorkspaceSettingsOverride={(workspaceId) => {
-          // A cloud project opens the shared settings its capabilities allow.
-          if (isWebCoreScope(workspaceId)) return false;
+        onOpenWorkspaceSettingsOverride={(workspaceId, initialTab) => {
+          if (isWebCoreScope(workspaceId)) {
+            // A listed cloud project opens its own settings over the web
+            // core; offline, the sidebar's details dialog says why it can't
+            // save.
+            if (
+              cloudSidebar.status !== 'online' ||
+              !cloudSidebar.rows.workspaces.some(
+                (workspace) => workspace.localId === workspaceId,
+              )
+            )
+              return false;
+            setCloudSettingsTarget({
+              projectId: workspaceId,
+              ...(initialTab === undefined ? {} : { initialTab }),
+            });
+            return true;
+          }
           model.onOpenSettings(workspaceId);
           return true;
         }}
@@ -2225,6 +2270,10 @@ export function DesktopSharedSidebarHost({
         // Delete's menu tooltip names the project's retention window, as the
         // legacy row's did.
         worktreeRetentionDaysFor={(workspaceId) => {
+          // A cloud task's Delete says how long its project keeps it, as the
+          // web's does (CAN-7052).
+          if (isWebCoreScope(workspaceId))
+            return cloudTaskDeletionRetentionDays(workspaceId);
           const project = model.sortedProjects.find(
             (item) => item.id === workspaceId,
           );
@@ -2341,7 +2390,11 @@ export function DesktopSharedSidebarHost({
         // sortable. Keyed by local id, as the surface resolves it.
         capabilitiesFor={(localId) =>
           isWebCoreScope(localId)
-            ? cloudSidebarRowCapabilities(capabilities, cloudRowKind(localId))
+            ? cloudSidebarRowCapabilities(capabilities, cloudRowKind(localId), {
+                taskDelete:
+                  cloudSidebar.status === 'online' && cloudSidebar.taskDelete,
+                offline: cloudSidebar.status === 'offline',
+              })
             : nonStoreWorktreeIds.has(localId)
               ? {
                   ...capabilities,
@@ -2365,6 +2418,8 @@ export function DesktopSharedSidebarHost({
                   ? error.message
                   : 'Group changes could not be saved. Try again.',
                 'error',
+                undefined,
+                { caught: error },
               );
           return {
             create: (itemId): ReturnType<typeof store.create> =>
@@ -2438,16 +2493,24 @@ export function DesktopSharedSidebarHost({
           return createLocalWorktree(workspaceId, groupId, options);
         }}
         onCreateBranchWorktree={model.onCreateBranchWorktree}
-        onArchiveWorktree={(workspaceId, worktreeId) => {
-          // A cloud task archives through the web core, never the local
-          // projects store (CAN-6511).
+        onArchiveWorktree={(workspaceId, worktreeId, mode) => {
+          // A cloud task archives, or deletes to the Trash, through the web
+          // core, never the local projects store (CAN-6511, CAN-7052).
           // The confirmation waits for it and says so if it's refused.
-          if (isWebCoreScope(workspaceId))
-            return archiveCloudTask(workspaceId, worktreeId);
+          if (isWebCoreScope(workspaceId)) {
+            setCloudRemoval(mode === 'delete' ? 'delete' : 'archive');
+            return mode === 'delete'
+              ? deleteCloudTask(workspaceId, worktreeId)
+              : archiveCloudTask(workspaceId, worktreeId);
+          }
           model.onArchiveWorktree(workspaceId, worktreeId);
           return undefined;
         }}
-        removalFailedMessage={CLOUD_TASK_ARCHIVE_FAILED}
+        removalFailedMessage={
+          cloudRemoval === 'delete'
+            ? CLOUD_TASK_DELETE_FAILED
+            : CLOUD_TASK_ARCHIVE_FAILED
+        }
         onRemoveWorktreeInBatch={removeDesktopWorktreeInBatch}
         getWorktreeBatchRemovalFacts={worktreeBatchRemovalFacts}
         worktreeBatchBranchChoice
@@ -2498,7 +2561,7 @@ export function DesktopSharedSidebarHost({
         )}
         onWorkspaceCollapsedChange={(workspaceId, collapsed) => {
           if (isWebCoreScope(workspaceId)) {
-            if (cloudSidebar.status === 'online')
+            if (cloudSidebar.status !== 'disabled')
               cloudSidebar.setCollapsed(workspaceId, collapsed);
             return;
           }
@@ -3011,6 +3074,15 @@ export function DesktopSharedSidebarHost({
             inviteContextTransitionRef.current = undefined;
             setInviteTarget(null);
           }}
+        />
+      )}
+      {cloudSettingsTarget !== null && (
+        // Mounted while open, so a dropped connection keeps the draft.
+        <CloudProjectSettingsHost
+          key={cloudSettingsTarget.projectId}
+          target={cloudSettingsTarget}
+          sidebar={cloudSidebar}
+          onClose={(): void => setCloudSettingsTarget(null)}
         />
       )}
       <DesktopMoveToOrganizationDialog />

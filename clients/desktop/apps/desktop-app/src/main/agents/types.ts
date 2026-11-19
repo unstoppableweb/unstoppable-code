@@ -2,7 +2,7 @@ import type { MaterializedCapabilityOverlay } from '@canopy/desktop-shared/node/
 import type { ManagedDelegationMode } from '@canopy/protocol/delegation/discovery';
 import type { ManagedDelegationSurface } from '@canopy/protocol/delegation';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
-import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from './agent-interface-port';
 import type {
   ChatInputAdmission,
   ChatInputWithdrawal,
@@ -73,6 +73,13 @@ export interface AgentSessionOptions {
   claudeForkToolResults?: ClaudeForkToolResult[];
   pluginSelections?: ChatTabPluginSelections;
   packageOverlay?: PipelinePackageCapabilityOverlay;
+  /**
+   * `unattended` for a turn an automation sent (CAN-6232): a connector with
+   * several accounts loads only the exact or the only account, never the
+   * person's default. Omitted for a chat a person runs. Part of the session's
+   * capability signature, so the two never share a live session.
+   */
+  accountResolution?: 'unattended';
   /** Host-private snapshot of this turn's successfully materialized home content. */
   inheritedCapabilityOverlay?: MaterializedCapabilityOverlay;
   /**
@@ -285,6 +292,6 @@ export interface AgentProvider {
   createSession(
     opts: AgentSessionOptions,
     onEvent: (data: unknown) => void | Promise<void>,
-    getWindow: () => BrowserWindow | null,
+    interfacePort: AgentInterfacePort,
   ): AgentSession;
 }

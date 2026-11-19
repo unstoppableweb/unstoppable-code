@@ -10,10 +10,21 @@ import type { AgentModelDefinition } from '@canopy/execution-engine/types/agent-
 import { getAgentModelAvailability } from '@canopy/desktop-shared/types';
 import {
   AgentDefinitionSummary,
+  AgentReadDetail,
+  Button,
+  CustomizeRowSplitButton,
+  DetailActionBar,
+  DetailFact,
+  DetailFactError,
+  DetailFactList,
   DetailPageActions,
   ExecutionActionButton,
 } from '@canopy/ui-shared/components';
-import { MarketplaceEntityHeader } from '@canopy/ui-app/capability';
+import {
+  MarketplaceEntityHeader,
+  customizeRowAction,
+} from '@canopy/ui-app/capability';
+import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib/unified-plugin-entry';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { McpServerLogo } from '@/components/shared/McpServerLogo';
 import { formatDateOrEmpty } from '@/lib/format';
@@ -21,6 +32,32 @@ import {
   agentBaseModelLabel,
   agentPluginLabels,
 } from '@/lib/marketplaceAgents';
+
+/**
+ * A local agent's primary, as its tile draws it: an agent has no status to
+ * change, so it reads Installed.
+ */
+export function LocalAgentInstalledAction({
+  entry,
+}: {
+  entry: UnifiedPluginEntry;
+}): JSX.Element {
+  const action = customizeRowAction({
+    entry,
+    installed: true,
+    statuses: [],
+    pendingKeys: new Set(),
+  });
+  return (
+    <CustomizeRowSplitButton
+      // The title names it; labels keep its name out of replay.
+      entryName="this agent"
+      idPrefix={`agent-detail-${entry.id}`}
+      action={{ ...action, accessibleName: 'This agent is installed' }}
+      items={[]}
+    />
+  );
+}
 
 export interface LocalAgentMarketplaceDetailProps {
   agent: AgentModelDefinition;
@@ -33,6 +70,18 @@ export interface LocalAgentMarketplaceDetailProps {
   /** The list's load failure and its Try again, above the detail. */
   notice?: ReactNode;
   onDelete: () => void;
+  /**
+   * New Customize: the shared layout with the tile's identity. Delete moves
+   * to the shell's ⋯ menu, and the list's load failure is said under the
+   * facts with its Try again.
+   */
+  layout?: {
+    readonly entry: UnifiedPluginEntry;
+    readonly logo: ReactNode;
+    readonly publisher: ReactNode;
+    readonly loadFailed: boolean;
+    readonly onRetry?: () => void;
+  };
 }
 
 /**
@@ -45,8 +94,73 @@ export function LocalAgentMarketplaceDetail({
   onDelete,
   editDisabled = false,
   notice,
+  layout,
 }: LocalAgentMarketplaceDetailProps): JSX.Element {
   const available = getAgentModelAvailability(agent.id).available;
+  if (layout) {
+    return (
+      <AgentReadDetail
+        dataTestId="local-agent-marketplace-detail"
+        name={layout.entry.name}
+        description={layout.entry.description}
+        logo={layout.logo}
+        publisher={layout.publisher}
+        actions={
+          <DetailActionBar
+            secondary={
+              <ExecutionActionButton
+                placement="detail"
+                label="Edit"
+                ariaLabel="Edit this agent"
+                onClick={onEdit}
+                disabled={editDisabled}
+                dataTestId="local-agent-detail-edit"
+                stopKeyDownPropagation={false}
+              />
+            }
+            primary={<LocalAgentInstalledAction entry={layout.entry} />}
+          />
+        }
+        source={layout.entry.sourceLabel}
+        baseModel={agentBaseModelLabel(agent)}
+        model={agent.id}
+        {...(available
+          ? {}
+          : {
+              status: (
+                <DetailFactList>
+                  <DetailFact
+                    label="Status"
+                    testId="local-agent-detail-availability"
+                  >
+                    Unavailable
+                  </DetailFact>
+                </DetailFactList>
+              ),
+            })}
+        notice={
+          layout.loadFailed ? (
+            <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
+              <DetailFactError
+                error="Couldn't load your agents"
+                testId="local-agent-detail-error"
+              />
+              {layout.onRetry && (
+                <>
+                  <span aria-hidden>·</span>
+                  <Button variant="link" onClick={layout.onRetry}>
+                    Try again
+                  </Button>
+                </>
+              )}
+            </span>
+          ) : undefined
+        }
+        items={agentPluginLabels(agent)}
+        instructions={agent.instructions}
+      />
+    );
+  }
   return (
     <Stack gap="section" data-testid="local-agent-marketplace-detail">
       <DetailPageActions

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { runWithGitRequestContext } from '@canopy/desktop-shared/node/git-request-context';
 import { withGitObservation } from '../lib/git-observation';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { withWorktreeGitRead } from '../lib/worktree-read-availability';
@@ -83,6 +85,7 @@ import { isPathInside } from '../lib/path-safety';
 import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
 import { resolveEffectiveBaseBranchForRepo } from '../lib/worktree-base-branches';
 import { registerIpcHandler } from './register';
+import { secretSafeView } from '../agent-secrets/view-redaction';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
 import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read/viewer-root';
 import { assertWritableScope } from '../lib/read-only-scope';
@@ -554,56 +557,63 @@ export function registerActivityPanelHandlers(
     validateId(request.worktreeId, 'worktreeId');
     if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
       return getViewerChangedFiles(request.worktreeId);
-    return withWorktreeGitRead<ActivityChangedFilesResponse>(
-      request.projectId,
-      request.worktreeId,
-      { uncommitted: [], committed: [] },
+    // Tags every Git launch of this read, including the background
+    // revalidation it starts, for diagnostic attribution (CAN-4397).
+    return runWithGitRequestContext(
+      { source: 'activity-changed-files', requestId: randomUUID() },
       () =>
-        withGitObservation(async () => {
-          if (isMultiRepoWorkspace(request.projectId)) {
-            return getWorkspaceChangedFiles(
-              runtime.dispatcher,
-              runtime.resolveCaller(event),
-              request.projectId,
-              request.worktreeId,
-            );
-          }
+        withWorktreeGitRead<ActivityChangedFilesResponse>(
+          request.projectId,
+          request.worktreeId,
+          { uncommitted: [], committed: [] },
+          () =>
+            withGitObservation(async () => {
+              if (isMultiRepoWorkspace(request.projectId)) {
+                return getWorkspaceChangedFiles(
+                  runtime.dispatcher,
+                  runtime.resolveCaller(event),
+                  request.projectId,
+                  request.worktreeId,
+                );
+              }
 
-          const worktreePath = resolveWorktreeCwd(
-            request.projectId,
-            request.worktreeId,
-          );
-          await waitForFetchHeadStart(
-            fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
-          );
-          // `ls-remote` can wait on a credential helper as long as the fetch, so the
-          // remote default branch is revalidated in the background instead.
-          revalidateDefaultBranchInBackground(worktreePath);
-          const effectiveBaseBranch = await resolveEffectiveBaseBranchForRepo({
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            repoPath: worktreePath,
-            allowRemoteLookup: false,
-          });
-          const caller = runtime.resolveCaller(event);
-          const target = {
-            projectId: request.projectId,
-            worktreeId: request.worktreeId,
-            repoId: WORKSPACE_ROOT_REPO_ID,
-            repoPath: worktreePath,
-          };
-          const [uncommitted, committed] = await Promise.all([
-            listUncommittedChangedFiles(runtime.dispatcher, caller, target),
-            listCommittedChangedFiles(
-              runtime.dispatcher,
-              caller,
-              target,
-              effectiveBaseBranch.branch ?? undefined,
-            ).catch(() => []),
-          ]);
+              const worktreePath = resolveWorktreeCwd(
+                request.projectId,
+                request.worktreeId,
+              );
+              await waitForFetchHeadStart(
+                fetchOrigin(worktreePath, AUTOMATIC_ACTIVITY_FETCH_OPTIONS),
+              );
+              // `ls-remote` can wait on a credential helper as long as the fetch, so the
+              // remote default branch is revalidated in the background instead.
+              revalidateDefaultBranchInBackground(worktreePath);
+              const effectiveBaseBranch =
+                await resolveEffectiveBaseBranchForRepo({
+                  projectId: request.projectId,
+                  worktreeId: request.worktreeId,
+                  repoPath: worktreePath,
+                  allowRemoteLookup: false,
+                });
+              const caller = runtime.resolveCaller(event);
+              const target = {
+                projectId: request.projectId,
+                worktreeId: request.worktreeId,
+                repoId: WORKSPACE_ROOT_REPO_ID,
+                repoPath: worktreePath,
+              };
+              const [uncommitted, committed] = await Promise.all([
+                listUncommittedChangedFiles(runtime.dispatcher, caller, target),
+                listCommittedChangedFiles(
+                  runtime.dispatcher,
+                  caller,
+                  target,
+                  effectiveBaseBranch.branch ?? undefined,
+                ).catch(() => []),
+              ]);
 
-          return { uncommitted, committed };
-        }),
+              return { uncommitted, committed };
+            }),
+        ),
     );
   });
 
@@ -642,7 +652,7 @@ export function registerActivityPanelHandlers(
             path: request.filePath,
             source,
           });
-        const result =
+        const raw =
           request.source === 'combined'
             ? await Promise.allSettled([
                 read('committed'),
@@ -672,6 +682,15 @@ export function registerActivityPanelHandlers(
                 };
               })
             : await read(request.source);
+        // A diff of a file holding agent secret values is withheld whole.
+        await secretSafeView({
+          kind: 'diff',
+          oldValue: raw.oldValue,
+          newValue: raw.newValue,
+          truncated: raw.truncated === true,
+          ...(raw.imagePreview ? { imagePreview: raw.imagePreview } : {}),
+        });
+        const result = raw;
         return {
           oldValue: result.oldValue,
           newValue: result.newValue,
@@ -705,7 +724,7 @@ export function registerActivityPanelHandlers(
         allowRemoteLookup: false,
       });
 
-      let result: {
+      let raw: {
         oldValue: string;
         newValue: string;
         truncated: boolean;
@@ -714,23 +733,34 @@ export function registerActivityPanelHandlers(
       };
       switch (request.source) {
         case 'uncommitted':
-          result = await getFileDiffUncommitted(repoPath, request.filePath);
+          raw = await getFileDiffUncommitted(repoPath, request.filePath);
           break;
         case 'committed':
-          result = await getFileDiffCommitted(
+          raw = await getFileDiffCommitted(
             repoPath,
             request.filePath,
             effectiveBaseBranch.branch ?? undefined,
           );
           break;
         case 'combined':
-          result = await getFileDiffCombined(
+          raw = await getFileDiffCombined(
             repoPath,
             request.filePath,
             effectiveBaseBranch.branch ?? undefined,
           );
           break;
       }
+      // A diff of a file holding agent secret values is withheld whole:
+      // either full side, or the secrets file itself.
+      await secretSafeView({
+        kind: 'diff',
+        oldValue: raw.oldValue,
+        newValue: raw.newValue,
+        truncated: raw.truncated,
+        ...(raw.imagePreview ? { imagePreview: raw.imagePreview } : {}),
+        paths: [join(repoPath, request.filePath)],
+      });
+      const result = raw;
 
       return {
         oldValue: result.oldValue,
@@ -772,6 +802,15 @@ export function registerActivityPanelHandlers(
         request.startTree,
         request.endTree,
       );
+      // A diff of a file holding agent secret values is withheld whole.
+      await secretSafeView({
+        kind: 'diff',
+        oldValue: result.oldValue,
+        newValue: result.newValue,
+        truncated: result.truncated,
+        ...(result.imagePreview ? { imagePreview: result.imagePreview } : {}),
+        paths: [join(repoPath, request.filePath)],
+      });
 
       return {
         oldValue: result.oldValue,
@@ -908,11 +947,17 @@ export function registerActivityPanelHandlers(
   registerIpcHandler<[ActivityStartOutputPollingRequest], void>(
     IPC_CHANNELS.activityStartOutputPolling,
     (_event, request) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      validateId(request.chatId, 'chatId');
-      validateTaskId(request.taskId, 'taskId');
-      assertAllowedOutputPath(request.outputFile);
+      // Refused inputs (including a subagent transcript symlinked out of the
+      // temp directory) are expected rejections, not unexpected errors.
+      try {
+        validateId(request.projectId, 'projectId');
+        validateId(request.worktreeId, 'worktreeId');
+        validateId(request.chatId, 'chatId');
+        validateTaskId(request.taskId, 'taskId');
+        assertAllowedOutputPath(request.outputFile);
+      } catch (error) {
+        throw classifyError(error, 'input.not_accepted');
+      }
       startOutputPolling(request, getWindow);
     },
   );
@@ -951,7 +996,12 @@ export function registerActivityPanelHandlers(
       return { lines: [], truncated: false };
     }
 
-    const validatedPath = assertAllowedOutputPath(request.outputFile);
+    let validatedPath: string;
+    try {
+      validatedPath = assertAllowedOutputPath(request.outputFile);
+    } catch (error) {
+      throw classifyError(error, 'input.not_accepted');
+    }
 
     try {
       return await readOutputTail(validatedPath);

@@ -13,7 +13,11 @@ import {
   useRef,
   useState,
 } from 'react';
-import { sharedAutomationActivity } from '@/lib/workflows/stored-automation-activity';
+import {
+  installedPackageWorkflowActivity,
+  sharedAutomationActivity,
+} from '@/lib/workflows/stored-automation-activity';
+import { useSharedAutomationsWorkflowFormEnabled } from '@/hooks/useSharedAutomationsWorkflowFormEnabled';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import { Disclosure, Notice } from '@canopy/ui-shared';
 import {
@@ -24,6 +28,8 @@ import {
 } from '@canopy/ui-shared/components';
 import { AutomationTargetRequirementLine } from '@canopy/ui-shared/components/AutomationDefinitionSummary';
 import { CHAT_LABEL } from '@canopy/protocol';
+import { CHAT_AUTOMATION_JOB } from '@canopy/desktop-shared/lib/chat-automation-conversion';
+import { sharedWorkflowForm } from '@canopy/desktop-shared/lib/shared-chat-automation-conversion';
 import type { AutomationSessionTargetKind } from '@canopy/desktop-shared/lib/automation-target';
 import {
   resolveAutomationTargetRequirement,
@@ -180,8 +186,28 @@ export function ShareAutomationModal({
   onOpenAccountSettings,
   onShared,
 }: ShareAutomationModalProps): JSX.Element {
+  const { account: cloudAccount } = useCanopyCloudAccountState();
   // The shared projection preserves Agent routes and installed chat packages.
-  const activity = useMemo(() => sharedAutomationActivity(listed), [listed]);
+  const chatProjection = useMemo(
+    () => sharedAutomationActivity(listed),
+    [listed],
+  );
+  // CAN-6455: behind the flag, a packaged install shares the workflow it runs,
+  // with the installed package rebuilt for that workflow, once the server
+  // takes the v6 documents a workflow's global target needs.
+  const workflowFormEnabled = useSharedAutomationsWorkflowFormEnabled();
+  const serverAcceptsPipelineTarget =
+    cloudAccount?.capabilities.includes(
+      SHARED_AUTOMATION_PIPELINE_TARGET_CAPABILITY,
+    ) === true;
+  const installedWorkflow = useMemo(
+    () =>
+      workflowFormEnabled && serverAcceptsPipelineTarget
+        ? installedPackageWorkflowActivity(listed)
+        : null,
+    [listed, serverAcceptsPipelineTarget, workflowFormEnabled],
+  );
+  const activity = installedWorkflow ?? chatProjection;
   useCurrentUiStateReporter('sharing.automationDialog', {
     open: true,
     activityId: activity.id,
@@ -196,7 +222,6 @@ export function ShareAutomationModal({
         activity.ifCommand?.trim() ?? '',
       ).includes('possible_secret'),
   );
-  const { account: cloudAccount } = useCanopyCloudAccountState();
   // The dialog replaces its whole form (options included) when the server
   // lacks the required capability, so a v4 default would leave no way back to
   // v3. Without the capability the command stays private, as before v4. This
@@ -759,11 +784,18 @@ export function ShareAutomationModal({
             },
           ],
           bindings: [
-            {
-              jobId: 'automation',
-              stepId: 'action',
-              resourceIds: ['installed-capability-package'],
-            },
+            // Rebuilt for the workflow, the package binds its send step.
+            installedWorkflow
+              ? {
+                  jobId: CHAT_AUTOMATION_JOB,
+                  stepId: 'send',
+                  resourceIds: ['installed-capability-package'],
+                }
+              : {
+                  jobId: 'automation',
+                  stepId: 'action',
+                  resourceIds: ['installed-capability-package'],
+                },
           ],
           environmentRequirements: [],
           totalFiles: 0,
@@ -814,6 +846,7 @@ export function ShareAutomationModal({
     api,
     bundledPipeline,
     installedCapabilityPackage,
+    installedWorkflow,
     packageContentKey,
     packageWorktree,
     pipelineDependencies,
@@ -843,25 +876,59 @@ export function ShareAutomationModal({
       let outgoing = buildResult.document;
       let committedPackageUploadId: string | undefined;
       if (selection !== null) {
-        const expectedInstalledPackageContentHash = installedCapabilityPackage
-          ? (bundledPipeline?.contentHash ??
-            (await hashPipelineDocumentYaml(packageContentKey)))
-          : undefined;
+        // A packaged install shared as its workflow keeps its install pinned
+        // to the chat it shows, so the pin check hashes that chat.
+        const expectedInstalledPackageContentHash = installedWorkflow
+          ? await hashPipelineDocumentYaml(
+              JSON.stringify({
+                name: chatProjection.name,
+                action: chatProjection.action,
+              }),
+            )
+          : installedCapabilityPackage
+            ? (bundledPipeline?.contentHash ??
+              (await hashPipelineDocumentYaml(packageContentKey)))
+            : undefined;
+        const rebind =
+          installedWorkflow !== null
+            ? {
+                packageRef: installedCapabilityPackage,
+                workflow: bundledPipeline?.rawPipeline,
+                pin: expectedInstalledPackageContentHash,
+              }
+            : null;
+        if (
+          rebind !== null &&
+          (rebind.packageRef === undefined ||
+            rebind.workflow === undefined ||
+            rebind.pin === undefined ||
+            rebind.pin === null)
+        )
+          throw new Error('The automation’s workflow could not be read.');
         const committed = unwrapShareOperationResult(
           await api.commitCapabilityPackage(
-            installedCapabilityPackage
+            rebind?.packageRef !== undefined &&
+              rebind.workflow !== undefined &&
+              typeof rebind.pin === 'string'
               ? {
                   localAutomationId: activity.id,
-                  packageRef: installedCapabilityPackage,
-                  expectedPackageContentHash:
-                    expectedInstalledPackageContentHash ?? null,
+                  packageRef: rebind.packageRef,
+                  expectedPackageContentHash: rebind.pin,
+                  reboundWorkflow: rebind.workflow,
                 }
-              : {
-                  analysisId: selection.analysisId,
-                  selectedOptionalResourceIds: [
-                    ...selection.selectedOptionalResourceIds,
-                  ],
-                },
+              : installedCapabilityPackage
+                ? {
+                    localAutomationId: activity.id,
+                    packageRef: installedCapabilityPackage,
+                    expectedPackageContentHash:
+                      expectedInstalledPackageContentHash ?? null,
+                  }
+                : {
+                    analysisId: selection.analysisId,
+                    selectedOptionalResourceIds: [
+                      ...selection.selectedOptionalResourceIds,
+                    ],
+                  },
           ),
         );
         committedPackageUploadId = committed.committedPackageUploadId;
@@ -894,6 +961,19 @@ export function ShareAutomationModal({
           );
         }
         outgoing = rebuilt.document;
+      }
+
+      // CAN-6455: behind the flag, a chat document without a package shares
+      // as its workflow when the shared converter accepts it, once the server
+      // takes v6 documents; otherwise the chat form, as before.
+      if (
+        workflowFormEnabled &&
+        serverAcceptsPipelineTarget &&
+        outgoing.action.type !== 'worktree_pipeline' &&
+        outgoing.capabilityPackage === undefined
+      ) {
+        const workflow = await sharedWorkflowForm(outgoing);
+        if (workflow) outgoing = workflow;
       }
 
       const ownerFields = shareOwnerFields(input, remoteDetail);
@@ -1021,12 +1101,17 @@ export function ShareAutomationModal({
       api,
       baseBuildOptions,
       buildResult,
+      chatProjection.action,
+      chatProjection.name,
       declaredTargetContexts,
-      bundledPipeline?.contentHash,
+      bundledPipeline,
       installedCapabilityPackage,
+      installedWorkflow,
       packageContentKey,
       remoteDetail,
       remoteMissing,
+      serverAcceptsPipelineTarget,
+      workflowFormEnabled,
     ],
   );
 

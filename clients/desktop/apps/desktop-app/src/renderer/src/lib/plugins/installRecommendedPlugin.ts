@@ -47,8 +47,9 @@ export async function installRecommendedPlugin(
           (provider) => !result.data?.providerOutcomes[provider]?.installed,
         )
       ) {
-        throw new Error(
-          result.error ?? 'Could not install the plugin. Try again.',
+        throw Object.assign(
+          new Error(result.error ?? 'Could not install the plugin. Try again.'),
+          { appError: result.appError },
         );
       }
       updated = result.data.plugin;
@@ -64,8 +65,9 @@ export async function installRecommendedPlugin(
       sourceUrl,
     );
     if (!result.success || !result.data || pluginNeedsInstall(result.data))
-      throw new Error(
-        result.error ?? 'Could not install the plugin. Try again.',
+      throw Object.assign(
+        new Error(result.error ?? 'Could not install the plugin. Try again.'),
+        { appError: result.appError },
       );
     updated = result.data;
   }

@@ -69,6 +69,17 @@ const MCP_CONNECT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   invalid_callback: SIGN_IN_EXPIRED,
   account_mismatch:
     'This sign-in started from a different account. Sign in to that account, then try again.',
+  // The sign-in page saw a browser session it can't use: an account that
+  // isn't active (usually not the one that started the sign-in), or one
+  // that hasn't finished two-factor verification.
+  account_inactive:
+    'Your browser is signed in to an account that isn’t active. Sign in with your active account, then try again.',
+  two_factor_required:
+    'Finish two-factor verification in your browser, then try again.',
+  // What the app that started the sign-in is told: the browser's account
+  // couldn't continue, without saying why (only that browser sees why).
+  browser_account_refused:
+    'The account your browser is signed in to can’t finish this sign-in. Sign in with the account you use here, then try again.',
   issuer_mismatch: 'Sign-in came back from a different service. Sign in again.',
   access_denied: 'Access wasn’t approved. Sign in again to approve it.',
   oauth_error: 'The sign-in page reported a problem. Sign in again.',

@@ -1,6 +1,7 @@
 import type { PostHogSessionBridge } from './client/posthog-session';
 import type { PostHogRoute } from './posthog-routes';
 import type { PostHogAccountSource } from './posthog-account';
+import type { DesktopInstrumentationInitFailureReason } from '@canopy/execution-engine/types/observability';
 
 export type DesktopInstrumentationProvider = 'posthog';
 
@@ -39,7 +40,7 @@ export interface DesktopInstrumentationOperationOptions {
 export interface DesktopInstrumentationInitResult {
   enabled: boolean;
   provider: DesktopInstrumentationProvider;
-  reason?: string;
+  reason?: 'disabled' | DesktopInstrumentationInitFailureReason;
 }
 
 /** Host-projected flags. Missing or malformed values must fail closed. */
@@ -105,7 +106,7 @@ export interface DesktopInstrumentationClientInitOptions {
     ) => () => void;
   };
   surface: DesktopInstrumentationSurface;
-  getPostHogAnonymousId?: () => Promise<string>;
+  getPostHogAnonymousId?: () => Promise<string | null>;
   posthogAccount?: PostHogAccountSource;
   posthogSession?: PostHogSessionBridge;
   /**

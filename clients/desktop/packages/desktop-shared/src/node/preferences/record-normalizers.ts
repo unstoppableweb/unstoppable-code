@@ -1,4 +1,5 @@
 import { DATA_SHARING_OPT_IN_FEATURES } from '@canopy/protocol/canopy-server';
+import { McpRemovalRecoverySchema } from '@canopy/protocol/mcp-removal';
 import {
   parseInstalledItemKey,
   InstalledItemRefSchema,
@@ -669,8 +670,21 @@ export function normalizePendingInstalledItemUninstalls(
     .object({
       target: InstalledItemUninstallTargetSchema,
       refs: z.array(InstalledItemRefSchema),
+      mcpRemoval: McpRemovalRecoverySchema.optional(),
     })
-    .strict();
+    .strict()
+    .refine((entry) => {
+      if (!entry.mcpRemoval) return true;
+      const target = entry.target;
+      return (
+        target.kind === 'mcp-server' &&
+        /^[a-f0-9-]{1,256}$/.test(target.serverId) &&
+        entry.refs.every(
+          (ref) =>
+            ref.kind === 'mcp-config' && ref.serverId === target.serverId,
+        )
+      );
+    });
   return value.flatMap((entry: unknown) => {
     const result = schema.safeParse(entry);
     return result.success ? [result.data] : [];

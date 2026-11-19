@@ -12,9 +12,11 @@ import {
   PluginsIcon,
   SingleRepoWorkspaceIcon,
   SkillIcon,
+  StorefrontIcon,
 } from '../icons/AppIcons';
 import { UnstoppableDomainsIcon } from '../icons/UnstoppableDomainsIcon';
 import { Tooltip } from './Tooltip';
+import { useItemStateMarks } from './ItemStateMark';
 
 interface MarketplaceTypeLabelProps {
   readonly kind: UnifiedEntryKind;
@@ -49,6 +51,15 @@ const DETAIL_ENTITY_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
   blueprint: 'Template',
 };
 
+/**
+ * Kinds that carry a type label only on New Customize's shared detail page,
+ * so other pages keep their headers.
+ */
+const NEW_CUSTOMIZE_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
+  pipeline: 'Workflow',
+  automation: 'Automation',
+};
+
 /** Labels every header on a detail page with the kind it shows. */
 export function DetailEntityTypeProvider({
   kind,
@@ -57,7 +68,10 @@ export function DetailEntityTypeProvider({
   kind: UnifiedEntryKind;
   children: ReactNode;
 }): JSX.Element {
-  const label = DETAIL_ENTITY_TYPE_LABELS[kind];
+  const newCustomize = useItemStateMarks();
+  const label =
+    DETAIL_ENTITY_TYPE_LABELS[kind] ??
+    (newCustomize ? NEW_CUSTOMIZE_TYPE_LABELS[kind] : undefined);
   const value = useMemo(() => (label ? { kind, label } : null), [kind, label]);
   return (
     <DetailEntityTypeContext.Provider value={value}>
@@ -92,6 +106,19 @@ export function MarketplaceTypeLabel({
     >
       {MARKETPLACE_TYPE_GLYPHS[kind]}
       <span>{label}</span>
+    </span>
+  );
+}
+
+/** A marketplace page's type label, in the same quiet style. */
+export function MarketplaceKindLabel(): JSX.Element {
+  return (
+    <span
+      data-testid="detail-entity-type"
+      className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs fg-tertiary"
+    >
+      <StorefrontIcon size="xs" ariaHidden />
+      <span>Marketplace</span>
     </span>
   );
 }

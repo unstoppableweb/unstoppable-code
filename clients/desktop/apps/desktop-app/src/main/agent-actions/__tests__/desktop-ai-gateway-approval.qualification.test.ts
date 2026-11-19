@@ -122,7 +122,7 @@ describe('AI gateway save prompt through the approval broker', () => {
   it('fails at once with no eligible client and saves nothing', async () => {
     setDesktopChatWaitPresence({
       getMainWindow: () => null,
-      portalAttached: () => false,
+      remoteControllerAttached: () => false,
     });
 
     await expect(executeDesktopAiGateway(ACTION, call)).rejects.toThrow(
@@ -135,7 +135,7 @@ describe('AI gateway save prompt through the approval broker', () => {
   it('refuses an allow from an older revision and saves only on a current one', async () => {
     setDesktopChatWaitPresence({
       getMainWindow: () => settingsWindow,
-      portalAttached: () => false,
+      remoteControllerAttached: () => false,
     });
     const saved = executeDesktopAiGateway(ACTION, call);
     await until(() => cards().length === 1);

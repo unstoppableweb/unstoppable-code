@@ -2,9 +2,13 @@ import { join } from 'path';
 import { BRAND } from '@canopy/brand/current';
 import { getSkillSourceDirectoryName } from '@canopy/execution-engine/node/skills/paths';
 import { getDataDir } from '../lib/paths';
+import {
+  BUILT_IN_SKILL_SOURCE_ID,
+  CUSTOM_SKILL_SOURCE_ID,
+} from '@canopy/protocol/skills';
 
-export const BUILTIN_SOURCE_ID = 'builtin:app';
-export const CUSTOM_SOURCE_ID = 'custom:app';
+export const BUILTIN_SOURCE_ID = BUILT_IN_SKILL_SOURCE_ID;
+export const CUSTOM_SOURCE_ID = CUSTOM_SKILL_SOURCE_ID;
 
 export function isBuiltinSourceId(sourceId: string): boolean {
   return (
