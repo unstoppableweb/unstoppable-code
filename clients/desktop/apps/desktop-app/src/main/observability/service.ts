@@ -9514,6 +9514,10 @@ export class ObservabilityService {
           await import('../opencode/connection')
         ).refreshOpenCodeAccounts();
         break;
+      case 'antigravity':
+        if (this.host.antigravity?.isEnabled())
+          await this.host.antigravity.refreshAccount();
+        break;
       default:
         throw new Error(
           `Unknown provider type in refreshProviderUsage: ${String(provider)}`,

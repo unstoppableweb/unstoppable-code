@@ -15,6 +15,11 @@ import {
   type InstalledEntryStatusState,
   type InstalledItemMutationOutcome,
 } from '../lib/installed-item-status';
+import {
+  removalBusyLabel,
+  removalFallbackError,
+  type RemovalVerb,
+} from '../lib/customize-row-copy';
 import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
 import { Button } from './Button';
 import { Skeleton } from './Skeleton';
@@ -189,16 +194,20 @@ function NoticeLines({
  */
 function InstalledItemMoreMenu({
   itemName,
+  deviceServer,
   anchorRef,
   disabled,
   testId,
   onUninstall,
 }: {
   readonly itemName: string;
+  /** The item removes a device MCP server. */
+  readonly deviceServer: boolean;
   readonly anchorRef: RefObject<HTMLSpanElement | null>;
   readonly disabled: boolean;
   readonly testId: string;
-  readonly onUninstall: () => void;
+  /** Opens the confirmation, titled with the verb this menu showed. */
+  readonly onUninstall: (verb: RemovalVerb) => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const menuId = useId();
@@ -208,11 +217,17 @@ function InstalledItemMoreMenu({
   // already removes the item, so a second Uninstall… beside it would read as
   // the same action. A disabled Delete… removes nothing, so Uninstall stays.
   const newCustomize = useItemStateMarks();
+  const hostDestructive = hostItems.some((item) => item.destructive === true);
   const hostRemoves =
     newCustomize &&
     hostItems.some(
       (item) => item.destructive === true && item.disabled !== true,
     );
+  // New Customize deletes a device MCP server, as its row says. Beside a
+  // host's own Delete… (and with New Customize off) this full cleanup, which
+  // also clears saved selections, keeps Uninstall… so the two differ.
+  const verb: RemovalVerb =
+    deviceServer && newCustomize && !hostDestructive ? 'Delete' : 'Uninstall';
   return (
     <>
       <span ref={anchorRef} className="inline-flex">
@@ -255,10 +270,10 @@ function InstalledItemMoreMenu({
                 : [
                     {
                       id: 'uninstall',
-                      label: 'Uninstall…',
+                      label: `${verb}…`,
                       icon: <TrashIcon />,
                       testId: `${testId}-uninstall`,
-                      onSelect: onUninstall,
+                      onSelect: (): void => onUninstall(verb),
                       disabled,
                       destructive: true,
                     },
@@ -276,10 +291,10 @@ function InstalledItemMoreMenu({
             data-testid={`${testId}-uninstall`}
             onClick={(): void => {
               setOpen(false);
-              onUninstall();
+              onUninstall(verb);
             }}
           >
-            Uninstall…
+            {verb}…
           </DropdownMenuItem>
         )}
       </FloatingMenu>
@@ -353,7 +368,8 @@ export function InstalledItemStatusRow({
   testId = 'installed-item-status-row',
 }: InstalledItemStatusRowProps): JSX.Element | null {
   const [error, setError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  // The verb of the menu row that opened the confirmation, if one is open.
+  const [confirming, setConfirming] = useState<RemovalVerb | null>(null);
   const uninstallRef = useRef<HTMLSpanElement>(null);
   if (!state) return null;
 
@@ -561,22 +577,26 @@ export function InstalledItemStatusRow({
           more={
             <InstalledItemMoreMenu
               itemName={itemName}
+              deviceServer={uninstallTarget.kind === 'mcp-server'}
               anchorRef={uninstallRef}
               disabled={pendingKeys.has(
                 installedItemTargetKey(ready.item.target),
               )}
               testId={testId}
-              onUninstall={(): void => setConfirming(true)}
+              onUninstall={setConfirming}
             />
           }
         />
       )}
       {confirming && uninstallTarget && onUninstall && ready && (
         <UninstallConfirmDialog
-          title={`Uninstall ${itemName}?`}
+          title={`${confirming} ${itemName}?`}
           message={
             ready.item.uninstallDescription ?? `This removes ${itemName}.`
           }
+          confirmLabel={confirming}
+          busyLabel={removalBusyLabel(confirming)}
+          fallbackErrorMessage={removalFallbackError(confirming)}
           restoreFocusRef={uninstallRef}
           dataTestId={`${testId}-uninstall-dialog`}
           confirmTestId={`${testId}-uninstall-confirm`}
@@ -585,11 +605,11 @@ export function InstalledItemStatusRow({
             const outcome = await onUninstall(uninstallTarget);
             return outcome.ok
               ? null
-              : (outcome.message ?? 'Could not uninstall. Try again.');
+              : (outcome.message ?? removalFallbackError(confirming));
           }}
-          onCancel={(): void => setConfirming(false)}
+          onCancel={(): void => setConfirming(null)}
           onUninstalled={(): void => {
-            setConfirming(false);
+            setConfirming(null);
             onUninstalled?.();
           }}
         />

@@ -118,7 +118,11 @@ import { scanPluginDetails } from './plugin-scanner';
 import { materializeCodexPluginsOffMain } from './codex-plugin-materialization-runner';
 import type { MaterializedCodexPlugin } from './codex-plugin-materialization-protocol';
 import { pruneMarketplacePluginRefsFromValue } from './marketplace-plugin-ref-prune';
-import { updateWorkspacePlugins } from '../lib/workspace-plugin-defaults';
+import {
+  updateWorkspacePlugins,
+  WorkspacePluginsRefusedError,
+} from '../lib/workspace-plugin-defaults';
+import { isErrnoException } from '../lib/type-guards';
 import { pruneMarketplaceRefsFromPreferences } from './marketplace-preferences-prune';
 import {
   getCuratedPluginMarketplaceName,
@@ -4291,19 +4295,21 @@ function migrateLegacyCacheForFastLoad(cache: PluginsCacheV1): PluginsCache {
   };
 }
 
-async function safeReadDir(target: string): Promise<fs.Dirent<string>[]> {
+async function safeReadDir(
+  target: string,
+  onFailure: 'best-effort' | 'throw' = 'best-effort',
+): Promise<fs.Dirent<string>[]> {
   try {
     return await fs.promises.readdir(target, {
       encoding: 'utf8',
       withFileTypes: true,
     });
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      process.stderr.write(
-        `[plugins] safeReadDir(${target}) failed: ${errorMessage(error)}\n`,
-      );
-    }
+    if (isErrnoException(error) && error.code === 'ENOENT') return [];
+    if (onFailure === 'throw') throw error;
+    process.stderr.write(
+      `[plugins] safeReadDir(${target}) failed: ${errorMessage(error)}\n`,
+    );
     return [];
   }
 }
@@ -4340,9 +4346,10 @@ interface SelectionPruneTargets {
 async function addWorkspaceSelectionPruneTargets(
   targets: Set<SelectionPruneTarget>,
   chatScopes: CanonicalChatScopePruneTarget[],
+  workspaceDiscovery: 'best-effort' | 'throw',
 ): Promise<void> {
   const workspacesRoot = path.join(getDataDir(), 'workspaces');
-  const entries = await safeReadDir(workspacesRoot);
+  const entries = await safeReadDir(workspacesRoot, workspaceDiscovery);
   await settleAll(
     entries
       .filter((entry) => entry.isDirectory())
@@ -4437,14 +4444,16 @@ async function addStandaloneSelectionPruneTargets(
   );
 }
 
-async function collectSelectionPruneTargets(): Promise<SelectionPruneTargets> {
+async function collectSelectionPruneTargets(
+  workspaceDiscovery: 'best-effort' | 'throw' = 'best-effort',
+): Promise<SelectionPruneTargets> {
   // Callers prune preferences and pipeline preferences through their stores;
   // the generic file loops must never receive their paths (admitted writers,
   // CAN-5152 and CAN-4480).
   const targets = new Set<SelectionPruneTarget>();
   const chatScopes: CanonicalChatScopePruneTarget[] = [];
   await settleAll([
-    addWorkspaceSelectionPruneTargets(targets, chatScopes),
+    addWorkspaceSelectionPruneTargets(targets, chatScopes, workspaceDiscovery),
     addStandaloneSelectionPruneTargets(targets),
   ]);
   return { files: Array.from(targets), chatScopes };
@@ -4587,22 +4596,54 @@ async function pruneSelectionRefsForMarketplace(
   }
 }
 
+/**
+ * Prunes one installed item from a workspace's `workspace.json`. Discovery
+ * lists every folder under `workspaces/`, including leftovers that never had
+ * a manifest (`default`, `standalone-chat`, old Cowork scopes). A project can
+ * hold a manifest reference only through its manifest, so one that is absent
+ * when read inside the write queue (refused `not-found`, also when it was
+ * removed after discovery) holds nothing to prune and must not block the
+ * removal. Every other failure, an unreadable or unsupported manifest
+ * included, still fails the prune: it may hold a reference. The folder's chat
+ * files and scopes are separate targets and are still pruned.
+ */
+async function pruneInstalledItemInWorkspaceConfig(
+  workspaceId: string,
+  ref: InstalledItemRef,
+): Promise<void> {
+  try {
+    await updateWorkspacePlugins({
+      workspaceId,
+      change: { kind: 'pruneInstalledItem', ref },
+      source: 'marketplace_removal',
+    });
+  } catch (error) {
+    if (
+      error instanceof WorkspacePluginsRefusedError &&
+      error.reason === 'not-found'
+    )
+      return;
+    throw error;
+  }
+}
+
 /** Reuse selection discovery and canonical metadata writers for single-item removal. */
 export async function pruneSelectionRefsForInstalledItem(
   ref: InstalledItemRef,
+  options: { strictWorkspaceDiscovery: boolean },
 ): Promise<void> {
-  const targets = await collectSelectionPruneTargets();
+  // A failed enumeration cannot prove there were no workspace references.
+  // Keep the device-removal receipt so cleanup can be retried.
+  const targets = await collectSelectionPruneTargets(
+    options.strictWorkspaceDiscovery ? 'throw' : 'best-effort',
+  );
   await prunePipelinePreferenceSelections(
     (entries) => pruneInstalledItemRefs(entries, ref),
     'electron_main',
   );
   for (const file of targets.files) {
     if (typeof file !== 'string') {
-      await updateWorkspacePlugins({
-        workspaceId: file.workspaceId,
-        change: { kind: 'pruneInstalledItem', ref },
-        source: 'marketplace_removal',
-      });
+      await pruneInstalledItemInWorkspaceConfig(file.workspaceId, ref);
       continue;
     }
     const raw = await fs.promises

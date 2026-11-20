@@ -8,6 +8,7 @@ import {
   installedItemActionCatalog,
   experimentActionCatalog,
   inventorySyncActionCatalog,
+  remoteControlActionCatalog,
   settingsActionCatalog,
   type AgentActionCatalogEntry,
   type AppAdvisorPipelineRunAction,
@@ -155,6 +156,7 @@ function sharedEngineActionCatalog(): readonly AgentActionCatalogEntry[] {
     ...installedItemActionCatalog(),
     ...experimentActionCatalog(),
     ...inventorySyncActionCatalog(),
+    ...remoteControlActionCatalog(),
     ...settingsActionCatalog(),
     ...appAdvisorPipelinesActionCatalog(),
   ];

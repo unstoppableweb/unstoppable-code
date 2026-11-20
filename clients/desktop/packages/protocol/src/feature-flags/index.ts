@@ -39,7 +39,8 @@ import type { LabsExperimentAvailability } from '../experiments';
  *
  * 1. Confirm the intended values for both LaunchDarkly default modes and
  *    for local-only builds (required: typecheck fails without it).
- * 2. Add a new entry to this object with typed defaults for every mode.
+ * 2. Add a new entry to this object with typed defaults for every mode and
+ *    its {@link FeatureFlagOwnership}.
  * 3. Extend {@link ClientFeatureFlagValues} so the value type is pinned per
  *    key (TypeScript will surface every missed update site).
  * 4. Add the matching entries to the default maps below.
@@ -49,8 +50,19 @@ interface ClientFeatureFlagDefinition {
   readonly launchDarklyDisabledDefaultValue: boolean | number | string;
   readonly launchDarklyEnabledUnavailableValue: boolean | number | string;
   readonly localOnlyDefaultValue: boolean | number | string;
+  readonly ownership: FeatureFlagOwnership;
   readonly description: string;
 }
+
+/**
+ * Where a flag is evaluated (CAN-4181). `core`: a backend host gates
+ * behavior on it (desktop main, the daemon, the web server). `interface`:
+ * only UI reads it to decide presentation. `both`: each does. Core serves
+ * `core` and `both` flags through `core.featureFlag.*`; an `interface` flag
+ * never crosses that contract. A flag nothing reads yet is `interface`
+ * until a core host starts gating on it.
+ */
+export type FeatureFlagOwnership = 'core' | 'interface' | 'both';
 
 export const CLIENT_FEATURE_FLAGS = {
   canopyAiGatewaySettingsEnabled: {
@@ -58,6 +70,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description: 'Personal and organization AI gateway setup.',
   },
   canopyDesktopLabsEarlyAccess: {
@@ -65,6 +78,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'both',
     description: 'Availability of the account Early access experiment.',
   },
   canopyDesktopLabsSidebar: {
@@ -72,6 +86,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Sidebar experiment.',
   },
   canopyDesktopLabsActivityCard: {
@@ -79,6 +94,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Chat activity card experiment.',
   },
   // Historical UI rollout keys remain reserved for older client snapshots.
@@ -88,6 +104,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Minimal workspace layout experiment.',
   },
   canopyDesktopLabsCometSpinners: {
@@ -95,6 +112,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Comet spinners experiment.',
   },
   canopyDesktopLabsChatTabPreviews: {
@@ -102,6 +120,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Tab previews experiment.',
   },
   canopyDesktopLabsSubagentsView: {
@@ -109,6 +128,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Subagents view experiment.',
   },
   canopyDesktopLabsArchivedChatsCard: {
@@ -116,6 +136,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Archived chats card experiment.',
   },
   canopyDesktopLabsCompactQueue: {
@@ -123,6 +144,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Compact queue experiment.',
   },
   canopyDesktopLabsProxyAccountCards: {
@@ -130,6 +152,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Proxy account cards experiment.',
   },
   canopyDesktopLabsPrHoverCards: {
@@ -137,6 +160,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Pull request cards experiment.',
   },
   canopyDesktopLabsSmoothStreaming: {
@@ -144,6 +168,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description: 'Availability of the Smooth streaming experiment.',
   },
   // Retired Labs selector; preserve its wire key and availability values.
@@ -152,6 +177,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete Files Labs selector. Retained only for wire compatibility.',
   },
@@ -161,6 +187,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete terminal Labs selector. Retained only for wire compatibility.',
   },
@@ -170,6 +197,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete code graph Labs selector. Retained only for wire compatibility.',
   },
@@ -179,6 +207,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete daemon scripts Labs selector. Retained only for wire compatibility.',
   },
@@ -188,6 +217,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete daemon workflows Labs selector. Retained only for wire compatibility.',
   },
@@ -197,6 +227,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Orchestrator page Labs experiment.',
   },
   canopyDesktopLabsBots: {
@@ -205,6 +236,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'hidden',
     launchDarklyEnabledUnavailableValue: 'hidden',
     localOnlyDefaultValue: 'hidden',
+    ownership: 'core',
     description: 'Availability of the Bots Labs experiment.',
   },
   canopyDesktopLabsPromptSuggestions: {
@@ -212,6 +244,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
     description:
       'Obsolete next prompt suggestions Labs selector. Retained only for wire compatibility.',
   },
@@ -220,6 +253,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Overview page Labs experiment.',
   },
   canopyDesktopLabsKanbanPage: {
@@ -227,6 +261,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Kanban page Labs experiment.',
   },
   canopyDesktopLabsStatisticsPage: {
@@ -234,6 +269,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Statistics page Labs experiment.',
   },
   canopyDesktopLabsAuditTrailPage: {
@@ -241,6 +277,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'core',
     description: 'Availability of the Audit Trail page Labs experiment.',
   },
   canopyDesktopLabsCustomizeDiscovery: {
@@ -249,6 +286,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: 'offered',
     launchDarklyEnabledUnavailableValue: 'offered',
     localOnlyDefaultValue: 'offered',
+    ownership: 'both',
     description: 'Availability of the New Customize Labs experiment.',
   },
   canopyPostHogCaptureEnabled: {
@@ -257,6 +295,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (PostHog): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Allows desktop PostHog capture only within the bundled instrumentation settings.',
   },
@@ -267,6 +306,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: 0,
     // Hosted (PostHog): off in a local-only build.
     localOnlyDefaultValue: 0,
+    ownership: 'interface',
     description:
       'Caps desktop PostHog replay sampling at a percentage from 0 to 100; never enables replay by itself.',
   },
@@ -279,6 +319,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (PostHog): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Allows desktop PostHog click autocapture, rage clicks, dead clicks, and heatmaps while capture is enabled; never enables capture by itself.',
   },
@@ -288,6 +329,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (release notes are read from our cloud): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls release-note reads, changelog access, and desktop highlights.',
   },
@@ -296,6 +338,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Gates the Agent Ledger local store and core handlers, agent tools, Feed panel, and Feed page.',
   },
@@ -304,6 +347,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Controls whether the shared Claude Fable 5 model is visible and usable.',
   },
@@ -321,6 +365,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (Work Digests are generated and delivered by our cloud): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls periodic Work Digest generation, delivery, and settings surfaces.',
   },
@@ -329,6 +374,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls whether shared custom agent UI surfaces are visible in desktop and web.',
   },
@@ -342,6 +388,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (cloud account sign-in): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Requires a connected Canopy Cloud account before the desktop app shell is usable; shows a blocking sign-in splash when disconnected.',
   },
@@ -351,6 +398,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (guest sessions are minted by our cloud): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls whether desktop first-run shows the guest-mode consent screen (guest session, no account required) instead of the blocking Cloud sign-in gate.',
   },
@@ -359,6 +407,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls whether desktop PR Split entry points are visible and usable.',
   },
@@ -367,6 +416,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       "Controls whether desktop shares chat automations that it would otherwise share in chat form (packaged installs, native chat automations, container automations) as workflows (CAN-6455). Off until recipients run a desktop that binds a workflow's project input.",
   },
@@ -375,6 +425,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'core',
     description:
       'Controls whether desktop promotes writable chat scopes to storage format 4. Turning it off stops new promotions and never demotes a promoted scope.',
   },
@@ -383,6 +434,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls desktop Cursor settings, model selection, and interactive runtime access.',
   },
@@ -391,6 +443,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Promotes Cursor out of Labs into Accounts and harness discovery when the Cursor harness gate is also enabled.',
   },
@@ -399,6 +452,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls desktop Antigravity setup, model discovery, and runtime access.',
   },
@@ -407,6 +461,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Promotes Antigravity setup from Labs to Providers when the Antigravity harness gate is also enabled.',
   },
@@ -415,6 +470,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls desktop GitHub Copilot setup, model selection, and runtime access.',
   },
@@ -423,6 +479,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Promotes GitHub Copilot setup out of Labs into Accounts when the Copilot harness gate is also enabled.',
   },
@@ -431,6 +488,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls desktop OpenCode setup, model selection, and runtime access.',
   },
@@ -439,6 +497,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Promotes OpenCode setup out of Labs into Accounts when the OpenCode harness gate is also enabled.',
   },
@@ -451,6 +510,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls whether desktop Claude Worker terminal-mode settings and execution paths are visible and usable.',
   },
@@ -464,6 +524,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls whether desktop Claude Code chat terminal-mode settings and composer controls are visible and usable.',
   },
@@ -475,6 +536,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'core',
     description:
       'Controls personal Claude Mod admission before desktop Claude launches.',
   },
@@ -485,6 +547,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'core',
     description:
       'Controls whether an admitted Claude Mod draws its toasts, status lines and log lines in desktop Claude chats.',
   },
@@ -493,6 +556,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls whether desktop code-graph generation (worktree-create and agent-invoked builds) and the nine code-graph injected tools are advertised, executed, and mentioned in agent prompts. Desktop-only; the SEA CLI is a separate surface and is not gated.',
   },
@@ -504,6 +568,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'core',
     description:
       'Controls whether desktop chat visuals are offered to agents and whether new visual tool calls can execute.',
   },
@@ -518,6 +583,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (billing): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Gates all Canopy billing surfaces (Stripe payment collection, pricing tiers/trials, native AI credits, billing panels, public pricing page, admin billing API). Off by default; every billing surface checks this one flag server-side.',
   },
@@ -529,6 +595,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: true,
     localOnlyDefaultValue: true,
+    ownership: 'interface',
     description:
       'Controls whether MCP-aware suggested prompts render on the desktop New Task and blank chat empty states.',
   },
@@ -537,6 +604,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls project start-page persistence, publication, and first-open behavior on desktop.',
   },
@@ -552,6 +620,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (shared containers are hosted): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls whether desktop shared-container invite, manage, and revoke entry points are visible and usable on code worktrees and Cowork Work Entries.',
   },
@@ -561,6 +630,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (shared containers are hosted): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls direct shared-container grants and email invitations outside an organization.',
   },
@@ -579,6 +649,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (cloud agents): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Shows cloud (agentic-core) workspaces in the web Chat tab and enables the /api/cloud endpoints.',
   },
@@ -591,6 +662,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (lifecycle campaigns are hosted): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls whether the post-install activation notification journey schedules and delivers campaigns on desktop.',
   },
@@ -607,6 +679,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (organization projects are hosted): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Gates organization projects: the Personal/organization context switcher, org project catalog and setup, and the organization admin Projects surface across desktop and web.',
   },
@@ -616,6 +689,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (Auto routing runs in our cloud): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Controls Jev-powered per-turn Auto model routing, its organization Statistics attribution, and the automatic model routing backtest (Statistics and profile).',
   },
@@ -625,6 +699,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (web vault and hosted MCP proxy): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Account-scoped MCP connections (web vault + proxy) in the cloud picker and desktop MCP tab',
   },
@@ -637,6 +712,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Shows the per-space notification choices and accepts changes to them; never disables reading or enforcing saved choices.',
   },
@@ -646,6 +722,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (cloud terminals): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Cloud terminals on durable sandbox terminals through the web core (worker.terminal.*), surviving a page reload',
   },
@@ -655,6 +732,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (cloud chats): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Temporary: cloud cowork chats in the desktop sidebar and chat view through the web core (CAN-4185); remove at CAN-4186 rollout.',
   },
@@ -664,6 +742,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (cloud copies of installed skills): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       "Temporary: a desktop cloud chat's picker offers skills installed from GitHub, a URL or a local folder for a private cloud copy (CAN-6943); main refuses them while off.",
   },
@@ -685,6 +764,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (billing (deprecated)): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Deprecated: retained for shipped builds. Makes every app feature free for signed-in users in older clients; no current code reads it.',
   },
@@ -697,6 +777,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls the desktop account proxy (CLIProxyAPI): the Labs opt-in, its settings, and routing agents through it.',
   },
@@ -705,6 +786,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description: 'Learn local memory from eligible completed chat turns.',
   },
   canopyDesktopSkillSuggestions: {
@@ -715,6 +797,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Controls desktop repeat-task skill suggestions: recording repeated requests, the idle scan, the composer banner, and the Settings section. The Settings toggle opts out on top of this flag.',
   },
@@ -724,6 +807,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: false,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Obsolete Files selector. Retained only for wire compatibility.',
   },
@@ -735,6 +819,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (web core): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'both',
     description:
       'Web /chat opens and holds a shared-protocol connection to the web core (CAN-6091); no feature uses it yet.',
   },
@@ -747,6 +832,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyEnabledUnavailableValue: false,
     // Hosted (opens a hosted page through the Portal): off in a local-only build.
     localOnlyDefaultValue: false,
+    ownership: 'interface',
     description:
       'Shows the External agents (MCP) row in the desktop account menu, which opens the hosted page through the authenticated Portal.',
   },
@@ -758,6 +844,7 @@ export const CLIENT_FEATURE_FLAGS = {
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
+    ownership: 'both',
     description:
       'Agent secret requests: the RequestSecrets, RunWithSecrets and WriteSecretsFile tools, the secret request form, and the secret_requests capability cloud clients advertise.',
   },
@@ -778,6 +865,27 @@ export type ClientFeatureFlagName = keyof typeof CLIENT_FEATURE_FLAGS;
  */
 export type ClientFeatureFlagKey =
   (typeof CLIENT_FEATURE_FLAGS)[ClientFeatureFlagName]['key'];
+
+type CoreOwnedFlag = Extract<
+  (typeof CLIENT_FEATURE_FLAGS)[ClientFeatureFlagName],
+  { ownership: 'core' | 'both' }
+>;
+
+/** A flag core evaluates: owned by core or shared with interfaces. */
+export type CoreFeatureFlagKey = CoreOwnedFlag['key'];
+
+/** The keys `core.featureFlag.*` serves (CAN-4181). */
+export const CORE_FEATURE_FLAG_KEYS: ReadonlySet<CoreFeatureFlagKey> = new Set(
+  Object.values(CLIENT_FEATURE_FLAGS)
+    .filter((flag): flag is CoreOwnedFlag => flag.ownership !== 'interface')
+    .map((flag) => flag.key),
+);
+
+export function isCoreFeatureFlagKey(key: string): key is CoreFeatureFlagKey {
+  return Object.values(CLIENT_FEATURE_FLAGS).some(
+    (flag) => flag.key === key && flag.ownership !== 'interface',
+  );
+}
 
 /**
  * Map of every registered client-visible flag key to its evaluated value

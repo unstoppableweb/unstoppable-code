@@ -1041,6 +1041,37 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
     );
     expect(scripts.ok, scripts.message).toBe(true);
 
+    // Claude Mods are in the browser list (CAN-7436): the browser reads the
+    // computer's admission state and sends surface commands, but a Mod's
+    // composer answers stay on this computer's own window.
+    const mods = await settle(transport.invoke('claude-mods:get', {}));
+    expect(mods.ok, mods.message).toBe(true);
+    expect(typeof mods.value?.enabled).toBe('boolean');
+    const modChat = {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: 'direct-web-mods',
+    };
+    const resend = await settle(
+      transport.invoke('claude-mods:surface-command', {
+        ...modChat,
+        command: { kind: 'resend' },
+      }),
+    );
+    expect(resend.ok, resend.message).toBe(true);
+    const answer = await settle(
+      transport.invoke('claude-mods:surface-command', {
+        ...modChat,
+        command: {
+          kind: 'composer-answer',
+          requestId: 'direct-web-mods',
+          answer: { kind: 'read', text: '', cursor: 0 },
+        },
+      }),
+    );
+    expect(answer.ok).toBe(false);
+    expect(answer.message).toMatch(HOST_PROFILE_REFUSAL);
+
     // Outside BROWSER_CONTROLLER_CHANNELS: terminals, chat interest
     // subscriptions and preferences reads.
     for (const [channel, args] of [

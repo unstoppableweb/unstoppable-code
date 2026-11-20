@@ -6,7 +6,9 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
  * working directory and in each ancestor up to the nearest Git root (only the
  * working directory without one). It walks from both its process and session
  * working directories, so callers launch with one directory for both. No
- * launch flag disables that discovery. Re-probe on a runtime version change.
+ * launch flag disables that discovery; it still runs, but the Canopy agent
+ * every launch selects (ANTIGRAVITY_AGENT_DEFINITION in runtime.ts) does not
+ * inherit what it finds. Re-probe on a runtime version change.
  */
 const CUSTOMIZATION_DIRECTORIES = ['.agents', '.agent', '_agents', '_agent'];
 

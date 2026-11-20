@@ -11,7 +11,9 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import type * as SyncFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -147,6 +149,39 @@ async function intentFiles(): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+/** Keeps `folder` from being removed until the returned release runs. */
+async function lockFolder(folder: string): Promise<() => Promise<void>> {
+  if (process.platform !== 'win32') {
+    await chmod(folder, 0o500);
+    return () =>
+      chmod(folder, 0o700).catch((error: unknown) => {
+        if (!isMissing(error)) throw error;
+      });
+  }
+  // Windows ignores a folder's mode, but refuses to remove a process's
+  // working folder while it runs.
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1e9)'], {
+    cwd: folder,
+    stdio: 'ignore',
+  });
+  await once(holder, 'spawn');
+  return async () => {
+    if (holder.exitCode !== null || holder.signalCode !== null) return;
+    const exited = once(holder, 'exit');
+    holder.kill();
+    await exited;
+  };
+}
+
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'ENOENT'
+  );
 }
 
 /**
@@ -1151,12 +1186,12 @@ describe('pipeline install crash qualification (CAN-5633)', () => {
     const locked = join(data, 'assets', 'tools', stage, 'locked');
     await mkdir(locked, { recursive: true });
     await writeFile(join(locked, 'run.sh'), 'staged\n');
-    await chmod(locked, 0o500);
+    const release = await lockFolder(locked);
     const warn = jest.spyOn(logging, 'logMainProcessWarn');
     try {
       await recoverInterruptedPipelineInstalls();
     } finally {
-      await chmod(locked, 0o700);
+      await release();
     }
 
     expect(warn).toHaveBeenCalledWith(

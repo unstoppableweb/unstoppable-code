@@ -332,7 +332,7 @@ export function mcpDeleteScopeDescription(
     case 'device-and-cloud':
       return `${serverName}: ${mcpDeleteImpact('device-and-cloud')}`;
     case 'device':
-      return `This removes ${serverName} and its configurations from this device. Chats that use it lose access.`;
+      return `This deletes ${serverName} and its configurations from this device. Chats that use it lose access.`;
     case 'cloud':
       return `${serverName}: ${mcpDeleteImpact('cloud')}`;
     case 'provider':

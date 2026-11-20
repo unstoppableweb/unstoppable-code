@@ -7,6 +7,8 @@ import {
   REMOTE_PROTOCOL_MISMATCH_CODE,
   REMOTE_PROTOCOL_VERSION,
   RemoteTransportDisconnectedError,
+  SecretRequestSettleParamsSchema,
+  SecretRequestSettleResultSchema,
   SessionEndedParamsSchema,
   UNKNOWN_METHOD_CODE,
   UnknownRemoteMethodError,
@@ -20,6 +22,8 @@ import {
   type RemoteIpcTransport,
   type RemoteSurface,
   type RemoteVersion,
+  type SecretRequestSettleParams,
+  type SecretRequestSettleResult,
 } from '@canopy/protocol/remote-control';
 import {
   HostUnsupportedError,
@@ -69,6 +73,8 @@ export interface RequiredHostFeatures {
 
 /** Hello timeout, as the desktop controller uses. */
 export const SESSION_HELLO_TIMEOUT_MS = 15_000;
+/** The host stores the values, then settles the agent's wait. */
+const SECRET_REQUEST_SETTLE_TIMEOUT_MS = 30_000;
 
 /**
  * Checks a host's `session.hello` answer for this controller. A restricted
@@ -330,6 +336,52 @@ export class RemoteControllerConnection {
       throw error;
     }
     this.close();
+  }
+
+  /**
+   * Answers a waiting RequestSecrets form on the host
+   * (`secret-request.settle`, U7). Requires an open session and the host's
+   * `secretRequestSettle` feature: without either nothing is sent, and it
+   * never opens or waits for a session. Not retried: a disconnect before
+   * the answer leaves the outcome unknown and rejects, and the host takes
+   * only the first answer anyway.
+   */
+  async settleSecretRequest(
+    params: SecretRequestSettleParams,
+  ): Promise<SecretRequestSettleResult> {
+    // Checked before anything is sent, so a bad value never leaves.
+    const request = SecretRequestSettleParamsSchema.safeParse(params);
+    if (!request.success)
+      throw new RemoteSessionError(
+        'invalid_request',
+        'Check the secrets and try again.',
+      );
+    // Only over the session that is open now: the values never wait for a
+    // reconnect, and a computer that is offline is refused, not queued.
+    const rpc = this.rpc;
+    if (rpc === null || rpc.isClosed)
+      throw new RemoteSessionError(
+        'not_connected',
+        `"${REMOTE_METHODS.secretRequestSettle}" was not sent: not connected.`,
+      );
+    if (this.helloValue?.features?.secretRequestSettle !== true)
+      throw new HostUnsupportedError(
+        ['secretRequestSettle'],
+        'Your computer needs an update before it can take secrets from here.',
+      );
+    try {
+      return SecretRequestSettleResultSchema.parse(
+        await rpc.request(REMOTE_METHODS.secretRequestSettle, request.data, {
+          timeoutMs: SECRET_REQUEST_SETTLE_TIMEOUT_MS,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof RpcClosedError)
+        throw new RemoteTransportDisconnectedError(
+          REMOTE_METHODS.secretRequestSettle,
+        );
+      throw error;
+    }
   }
 
   /** Retries now instead of waiting out the backoff (host came online). */

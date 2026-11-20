@@ -10,6 +10,11 @@ import {
 } from '../../definitions';
 import { inherentOperationErrorSchema } from '../shared';
 import { CloudAccountStatusSchema } from './cloud-account';
+import {
+  LINEAR_ISSUE_TITLE_MAX_CODE_POINTS,
+  LINEAR_STATUS_TYPES,
+  LINEAR_WORKSPACE_SLUG_PATTERN,
+} from '../../../reference-previews';
 
 export const CORE_INTEGRATION_GRANTS = {
   read: 'core.integration.read',
@@ -26,6 +31,8 @@ const OpaqueIdSchema = z
 /** Fixed ids of the two GitHub connections the desktop host serves. */
 export const GITHUB_INTEGRATION_ID = 'github';
 export const GITHUB_CLI_INTEGRATION_ID = 'github-cli';
+/** The machine's one Linear connection, shared by every Canopy account. */
+export const LINEAR_INTEGRATION_ID = 'linear';
 
 /** Where Canopy's own GitHub credential comes from; never the credential. */
 export const GITHUB_TOKEN_SOURCES = ['pat', 'gh-cli', 'none'] as const;
@@ -71,6 +78,11 @@ export const GitHubCliStatusSchema = z.strictObject({
   unavailableReason: z.enum(GITHUB_CLI_UNAVAILABLE_REASONS).nullable(),
 });
 
+/** `kind: 'linear'`: whether a Linear API token is stored; no part of it. */
+export const LinearCredentialStatusSchema = z.strictObject({
+  storedCredential: z.boolean(),
+});
+
 // Open for version 1, as the catalog row declares: kinds add their own
 // members. The GitHub members are declared so they are validated.
 export const CoreIntegrationSchema = z
@@ -84,6 +96,7 @@ export const CoreIntegrationSchema = z
     githubCredential: GitHubCredentialStatusSchema.optional(),
     githubCli: GitHubCliStatusSchema.optional(),
     cloudAccount: CloudAccountStatusSchema.optional(),
+    linearCredential: LinearCredentialStatusSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema);
 
@@ -113,6 +126,7 @@ export const CORE_INTEGRATION_RESOURCE_KINDS = [
   'project',
   'issue',
   'workflow',
+  'team',
 ] as const;
 
 export const CoreIntegrationResourceListParamsSchema = z.strictObject({
@@ -140,6 +154,50 @@ export const CoreIntegrationResourceListResultSchema = z.strictObject({
   nextCursor: OpaqueIdSchema.nullable(),
 });
 
+export const CoreIntegrationResourceGetParamsSchema = z.strictObject({
+  integrationId: OpaqueIdSchema,
+  resourceId: OpaqueIdSchema,
+  workspaceSlug: z
+    .string()
+    .regex(LINEAR_WORKSPACE_SLUG_PATTERN)
+    .optional()
+    .describe(
+      'Linear: the workspace a link names; an issue from another workspace is resource.notFound.',
+    ),
+});
+
+/**
+ * A Linear issue's preview fields the base resource has no member for:
+ * `resourceId` is the identifier, `name` the title, `locator` the issue URL.
+ * Bounds are UTF-16 lengths, twice the preview's code-point caps.
+ */
+export const LinearIssueResourceSchema = z.strictObject({
+  description: z.string().max(560).nullable(),
+  status: z.string().max(400).nullable(),
+  statusType: z.enum(LINEAR_STATUS_TYPES).nullable(),
+  assignee: z.string().max(400).nullable(),
+  assigneeAvatarUrl: z
+    .string()
+    .max(2048)
+    .regex(/^https:\/\//)
+    .nullable(),
+  project: z.string().max(400).nullable(),
+});
+
+export const CoreIntegrationResourceGetResultSchema =
+  CoreIntegrationResourceSchema.extend({
+    name: z.string().max(LINEAR_ISSUE_TITLE_MAX_CODE_POINTS * 2),
+    linearIssue: LinearIssueResourceSchema.optional(),
+    credentialScope: z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .describe(
+        'Opaque scope of the credential that served this read, captured with it.',
+      ),
+  });
+
 export const CORE_INTEGRATION_GET_ERROR_CODES = [
   'core.integration.notFound',
 ] as const;
@@ -154,6 +212,12 @@ export const CORE_INTEGRATION_RESOURCE_LIST_ERROR_CODES = [
   'core.integration.resource.kindUnsupported',
   'core.integration.resource.queryUnsupported',
   'core.integration.resource.invalidCursor',
+] as const;
+
+export const CORE_INTEGRATION_RESOURCE_GET_ERROR_CODES = [
+  'core.integration.notFound',
+  'core.integration.notAuthenticated',
+  'core.integration.resource.notFound',
 ] as const;
 
 export type CoreIntegrationGetParams = z.output<
@@ -174,6 +238,15 @@ export type CoreIntegrationResourceListParams = z.output<
 >;
 export type CoreIntegrationResourceListResult = z.output<
   typeof CoreIntegrationResourceListResultSchema
+>;
+export type CoreIntegrationResourceGetParams = z.output<
+  typeof CoreIntegrationResourceGetParamsSchema
+>;
+export type CoreIntegrationResourceGetResult = z.output<
+  typeof CoreIntegrationResourceGetResultSchema
+>;
+export type CoreIntegrationLinearCredential = z.output<
+  typeof LinearCredentialStatusSchema
 >;
 
 /**
@@ -216,6 +289,20 @@ export const CORE_INTEGRATION_QUERIES = defineCanopyQueryRegistry('core', {
     idempotency: 'inherent',
     requiredGrants: ['core.integration.read'],
   }),
+  // Defined, not served: the desktop serves it from CAN-4178 L3.
+  'core.integration.resource.get': defineCanopyQuery({
+    plane: 'core',
+    domain: 'integration',
+    version: 1,
+    placement: 'core-only',
+    params: CoreIntegrationResourceGetParamsSchema,
+    result: CoreIntegrationResourceGetResultSchema,
+    error: inherentOperationErrorSchema(
+      CORE_INTEGRATION_RESOURCE_GET_ERROR_CODES,
+    ),
+    idempotency: 'inherent',
+    requiredGrants: ['core.integration.read'],
+  }),
 });
 
 /**
@@ -249,6 +336,47 @@ export type CoreIntegrationSourceRepositoryStarResult = z.output<
 export type CoreIntegrationSourceRepositoryStarErrorCode =
   (typeof CORE_INTEGRATION_SOURCE_REPOSITORY_STAR_ERROR_CODES)[number];
 
+/** Only the Linear kind is defined; the Cloud and gateway kinds stay proposed. */
+export const CoreIntegrationCredentialValidateParamsSchema = z.strictObject({
+  credentialKind: z.literal('linear.apiToken'),
+  secret: z
+    .string()
+    .min(1)
+    .max(16384)
+    .meta({ writeOnly: true })
+    .describe('Secret input; never echoed, logged or returned.'),
+});
+
+export const CORE_INTEGRATION_CREDENTIAL_VALIDATION_ERROR_KINDS = [
+  'unauthorized',
+  'unreachable',
+  'invalid',
+] as const;
+
+/** A failed probe is a result, not an error: `valid` false with its kind. */
+export const CoreIntegrationCredentialValidateResultSchema =
+  z.discriminatedUnion('valid', [
+    z.strictObject({
+      valid: z.literal(true),
+      displayName: z.string().min(1).max(512).optional(),
+    }),
+    z.strictObject({
+      valid: z.literal(false),
+      errorKind: z.enum(CORE_INTEGRATION_CREDENTIAL_VALIDATION_ERROR_KINDS),
+    }),
+  ]);
+
+export const CORE_INTEGRATION_CREDENTIAL_VALIDATE_ERROR_CODES = [
+  'core.integration.credential.providerUnreachable',
+] as const;
+
+export type CoreIntegrationCredentialValidateParams = z.output<
+  typeof CoreIntegrationCredentialValidateParamsSchema
+>;
+export type CoreIntegrationCredentialValidateResult = z.output<
+  typeof CoreIntegrationCredentialValidateResultSchema
+>;
+
 /**
  * Stars the brand's source repository with the GitHub CLI's own github.com
  * account. Starring is a PUT, so a repeat is inherently idempotent.
@@ -268,6 +396,21 @@ export const CORE_INTEGRATION_INSTRUCTIONS = defineCanopyInstructionRegistry(
       ),
       idempotency: 'inherent',
       requiredGrants: ['core.integration.star'],
+    }),
+    // Probes a candidate token and stores nothing. Defined, not served: the
+    // desktop serves it from CAN-4178 L3.
+    'core.integration.credential.validate': defineCanopyInstruction({
+      plane: 'core',
+      domain: 'integration',
+      version: 1,
+      placement: 'core-only',
+      params: CoreIntegrationCredentialValidateParamsSchema,
+      result: CoreIntegrationCredentialValidateResultSchema,
+      error: inherentOperationErrorSchema(
+        CORE_INTEGRATION_CREDENTIAL_VALIDATE_ERROR_CODES,
+      ),
+      idempotency: 'inherent',
+      requiredGrants: ['core.integration.write'],
     }),
   },
 );

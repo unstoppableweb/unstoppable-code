@@ -4,6 +4,11 @@ import {
   CoreIntegrationCredentialClearParamsSchema,
   CoreIntegrationCredentialResultSchema,
 } from '../core/integration/credential';
+import {
+  CORE_INTEGRATION_RESOURCE_KINDS,
+  CoreIntegrationSchema,
+  LINEAR_INTEGRATION_ID,
+} from '../core/integration/operations';
 import { z } from 'zod';
 
 import {
@@ -184,6 +189,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
+    | 'core.integration.resource.get'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
     | 'core.pullRequest.mergeQueue.get'
@@ -273,6 +279,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.integration.get'
     | 'core.integration.list'
     | 'core.integration.resource.list'
+    | 'core.integration.resource.get'
     | 'core.pullRequest.get'
     | 'core.pullRequest.list'
     | 'core.pullRequest.mergeQueue.get'
@@ -1483,6 +1490,7 @@ describe('universal Canopy query registry', () => {
       'core.integration.get',
       'core.integration.list',
       'core.integration.resource.list',
+      'core.integration.resource.get',
       'core.pullRequest.get',
       'core.pullRequest.list',
       'core.pullRequest.mergeQueue.get',
@@ -2339,6 +2347,7 @@ describe('common request and error contracts', () => {
       'core.initiatedWork.source.list',
       'core.integration.get',
       'core.integration.list',
+      'core.integration.resource.get',
       'core.integration.resource.list',
       'core.ledger.changes.list',
       'core.ledger.entries.search',
@@ -2405,6 +2414,7 @@ describe('common request and error contracts', () => {
       'core.dictation.model.remove',
       'core.integration.credential.clear',
       'core.integration.credential.set',
+      'core.integration.credential.validate',
       'core.integration.sourceRepository.star',
       'core.ledger.entry.add',
       'core.ledger.entry.update',
@@ -2838,6 +2848,189 @@ describe('integration credential write-only wire contract (CAN-5815)', () => {
           }).success,
         ).toBe(true);
     }
+  });
+});
+
+describe('Linear integration protocol (CAN-4178)', () => {
+  const linear = {
+    integrationId: LINEAR_INTEGRATION_ID,
+    kind: 'linear',
+    accountLabel: 'Ada',
+    state: 'connected',
+    capabilities: [],
+    revision: 0,
+  };
+
+  it('reports only whether a Linear credential is stored, never any part of it', () => {
+    expect(LINEAR_INTEGRATION_ID).toBe('linear');
+    for (const linearCredential of [
+      { storedCredential: true },
+      { storedCredential: false },
+    ])
+      expect(
+        CoreIntegrationSchema.safeParse({ ...linear, linearCredential })
+          .success,
+      ).toBe(true);
+    for (const linearCredential of [
+      {},
+      { storedCredential: 'present' },
+      { storedCredential: true, tokenHint: '…f4k3' },
+      { storedCredential: true, token: 'lin_api_f4k3' },
+    ])
+      expect(
+        CoreIntegrationSchema.safeParse({ ...linear, linearCredential })
+          .success,
+      ).toBe(false);
+  });
+
+  it('lists Linear team keys as a resource kind', () => {
+    expect(CORE_INTEGRATION_RESOURCE_KINDS).toContain('team');
+  });
+
+  it('reads one resource, with typed Linear issue preview fields', () => {
+    const definition =
+      CANOPY_QUERY_DEFINITIONS['core.integration.resource.get'];
+    expect(definition).toMatchObject({
+      kind: 'query',
+      plane: 'core',
+      domain: 'integration',
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.integration.read'],
+    });
+    expect(
+      definition.params.safeParse({
+        integrationId: 'linear',
+        resourceId: 'CAN-1',
+      }).success,
+    ).toBe(true);
+    expect(
+      definition.params.safeParse({ integrationId: 'linear' }).success,
+    ).toBe(false);
+    // A Linear link names its workspace; core must not answer it from another.
+    expect(
+      definition.params.safeParse({
+        integrationId: 'linear',
+        resourceId: 'CAN-1',
+        workspaceSlug: 'acme',
+      }).success,
+    ).toBe(true);
+    for (const workspaceSlug of ['Acme', '', 'a'.repeat(65), '-acme'])
+      expect(
+        definition.params.safeParse({
+          integrationId: 'linear',
+          resourceId: 'CAN-1',
+          workspaceSlug,
+        }).success,
+      ).toBe(false);
+    const issue = {
+      integrationId: 'linear',
+      resourceId: 'CAN-1',
+      kind: 'issue',
+      name: 'Fix the thing',
+      locator: 'https://linear.app/acme/issue/CAN-1/fix-the-thing',
+      capabilities: [],
+      updatedAt: '2026-11-19T00:00:00.000Z',
+    };
+    const linearIssue = {
+      description: 'An excerpt.',
+      status: 'In Progress',
+      statusType: 'started',
+      assignee: 'Ada',
+      assigneeAvatarUrl: 'https://example.com/a.png',
+      project: null,
+    };
+    expect(definition.result.safeParse(issue).success).toBe(true);
+    expect(definition.result.safeParse({ ...issue, linearIssue }).success).toBe(
+      true,
+    );
+    // The opaque scope of the credential that served the read, so a cache
+    // keyed by an older scope can refuse the answer.
+    expect(
+      definition.result.safeParse({
+        ...issue,
+        linearIssue,
+        credentialScope: 'a'.repeat(64),
+      }).success,
+    ).toBe(true);
+    for (const credentialScope of ['', 'a'.repeat(129)])
+      expect(
+        definition.result.safeParse({ ...issue, credentialScope }).success,
+      ).toBe(false);
+    // Linear caps titles at 512 code points; emoji take two UTF-16 units.
+    expect(
+      definition.result.safeParse({
+        ...issue,
+        name: `${'x'.repeat(511)}😀`,
+        linearIssue,
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { ...issue, extra: true },
+      { ...issue, linearIssue: { ...linearIssue, statusType: 'done' } },
+      {
+        ...issue,
+        linearIssue: { ...linearIssue, assigneeAvatarUrl: 'http://x.test/a' },
+      },
+    ])
+      expect(definition.result.safeParse(bad).success).toBe(false);
+    // Each code with its documented kind. The schema checks the code only,
+    // so a mispaired kind still parses; the catalog page is the authority.
+    for (const [code, kind] of [
+      ['core.integration.notFound', 'not_found'],
+      ['core.integration.notAuthenticated', 'failed_precondition'],
+      ['core.integration.resource.notFound', 'not_found'],
+    ])
+      expect(
+        definition.error.safeParse({
+          kind,
+          code,
+          message: 'redacted',
+          retry: { kind: 'never' },
+        }).success,
+      ).toBe(true);
+  });
+
+  it('validates a candidate Linear token without echoing it', () => {
+    const definition =
+      CANOPY_INSTRUCTION_DEFINITIONS['core.integration.credential.validate'];
+    expect(definition).toMatchObject({
+      kind: 'instruction',
+      plane: 'core',
+      domain: 'integration',
+      placement: 'core-only',
+      idempotency: 'inherent',
+      requiredGrants: ['core.integration.write'],
+    });
+    expect(
+      definition.params.safeParse({
+        credentialKind: 'linear.apiToken',
+        secret: 'x'.repeat(16384),
+      }).success,
+    ).toBe(true);
+    for (const params of [
+      { credentialKind: 'linear.apiToken' },
+      { credentialKind: 'linear.apiToken', secret: '' },
+      { credentialKind: 'linear.apiToken', secret: 'x'.repeat(16385) },
+      { credentialKind: 'github.pat', secret: 'x' },
+      { credentialKind: 'linear.apiToken', secret: 'x', baseUrl: 'https://x' },
+    ])
+      expect(definition.params.safeParse(params).success).toBe(false);
+    for (const result of [
+      { valid: true, displayName: 'Ada' },
+      { valid: false, errorKind: 'unauthorized' },
+      { valid: false, errorKind: 'unreachable' },
+      { valid: false, errorKind: 'invalid' },
+    ])
+      expect(definition.result.safeParse(result).success).toBe(true);
+    for (const result of [
+      { valid: true, displayName: '' },
+      { valid: false, errorKind: 'rate_limited' },
+      { valid: true, secret: 'x' },
+      { valid: false },
+      { valid: true, errorKind: 'unauthorized' },
+    ])
+      expect(definition.result.safeParse(result).success).toBe(false);
   });
 });
 

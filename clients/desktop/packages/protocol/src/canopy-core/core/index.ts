@@ -58,6 +58,7 @@ export * from './search';
 export * from './pipeline';
 export * from './plan';
 export * from './review';
+export * from './featureFlag';
 export * from './publication';
 export * from './cloudEnvironment/environments';
 export * from './vault';

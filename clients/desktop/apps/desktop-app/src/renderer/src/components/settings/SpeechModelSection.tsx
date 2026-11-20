@@ -1,30 +1,11 @@
-import { type JSX, useCallback, useEffect, useRef, useState } from 'react';
-import { toAppError } from '@canopy/protocol/app-errors';
-import type { DictationModelStatus } from '@canopy/protocol/canopy-core';
+import { type JSX, useEffect, useRef, useState } from 'react';
 import { Button, ProgressBar, StatusLabel } from '@canopy/ui-shared/components';
+import {
+  formatModelSize,
+  percentOf,
+  useSpeechModelStatus,
+} from '@/hooks/useSpeechModelStatus';
 import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
-
-/** How often the section re-reads the status while a download runs. */
-const POLL_MS = 500;
-/**
- * And otherwise, so a download the app started on its own (after an update
- * changed the model) shows up while Settings is open.
- */
-const IDLE_POLL_MS = 5_000;
-
-/** Bytes as settings show sizes: decimal megabytes, as the plan quotes them. */
-function formatModelSize(bytes: number): string {
-  const megabytes = bytes / 1_000_000;
-  return megabytes >= 10
-    ? `${Math.round(megabytes)} MB`
-    : `${megabytes.toFixed(1)} MB`;
-}
-
-function percentOf(status: DictationModelStatus): number {
-  const total = status.progress?.totalBytes ?? 0;
-  if (total <= 0) return 0;
-  return Math.floor(((status.progress?.receivedBytes ?? 0) / total) * 100);
-}
 
 /**
  * The speech model the Linux dictation helper needs (CAN-7231): its size, a
@@ -38,34 +19,15 @@ export function SpeechModelSection({
   /** Called when the model becomes installed or stops being installed. */
   readonly onInstalledChange?: () => void;
 }): JSX.Element | null {
-  const [status, setStatus] = useState<DictationModelStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-
-  // Keeps the newest status: a poll that started before an action can
-  // answer after it, and `revision` says which is newer.
-  const accept = useCallback((next: DictationModelStatus): void => {
-    setStatus((previous) =>
-      previous && next.revision < previous.revision ? previous : next,
-    );
-  }, []);
-
-  const refresh = useCallback(async (): Promise<void> => {
-    try {
-      accept(await window.api.voice.speechModel.status());
-      setActionError(null);
-    } catch (error) {
-      // Keep the last status; the next poll or action tries again.
-      setActionError(
-        toAppError(error)?.detail.message.trim() ||
-          'Couldn’t read the speech model’s status.',
-      );
-    }
-  }, [accept]);
-
+  // Polls only once the first read says this host manages a model.
+  const [managed, setManaged] = useState(false);
+  const { status, readError, busy, actionError, act } = useSpeechModelStatus({
+    fetchOnMount: true,
+    poll: managed,
+  });
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    setManaged(status !== null && status.state !== 'unsupported');
+  }, [status]);
 
   // Tell the page when installation changes, so its Compatibility row
   // re-checks support.
@@ -81,36 +43,6 @@ export function SpeechModelSection({
     }
     installedBefore.current = installedNow;
   }, [status, installedNow, onInstalledChange]);
-
-  const running =
-    status?.state === 'downloading' || status?.state === 'verifying';
-  const managed = status !== null && status.state !== 'unsupported';
-  useEffect(() => {
-    if (!managed) return undefined;
-    const timer = window.setInterval(
-      () => void refresh(),
-      running ? POLL_MS : IDLE_POLL_MS,
-    );
-    return (): void => window.clearInterval(timer);
-  }, [managed, running, refresh]);
-
-  const act = useCallback(
-    async (action: () => Promise<DictationModelStatus>): Promise<void> => {
-      setBusy(true);
-      setActionError(null);
-      try {
-        accept(await action());
-      } catch (error) {
-        setActionError(
-          toAppError(error)?.detail.message.trim() ||
-            'Something went wrong. Try again.',
-        );
-      } finally {
-        setBusy(false);
-      }
-    },
-    [accept],
-  );
 
   if (!status || status.state === 'unsupported' || !status.model) return null;
   const { model } = status;
@@ -253,7 +185,9 @@ export function SpeechModelSection({
               data-testid="dictation-model-status"
             >
               {description}
-              {actionError ? <StatusLabel>{actionError}</StatusLabel> : null}
+              {(readError ?? actionError) ? (
+                <StatusLabel>{readError ?? actionError}</StatusLabel>
+              ) : null}
             </span>
           }
           control={control ?? undefined}

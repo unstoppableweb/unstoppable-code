@@ -908,33 +908,30 @@ export async function withTrackedPlanRevision<T>(
 }
 
 export async function updateTrackedPlan(
-  request: UpdateTrackedPlanRequest & { expectedRevision?: number },
-  guard?: {
-    revisionNumber: number;
-    source: TrackedPlanData['source'];
+  request: UpdateTrackedPlanRequest & {
+    expectedRevision?: number;
+    expectedSource?: TrackedPlanData['source'];
   },
 ): Promise<TrackedPlanData | null> {
-  const plan = await trackedPlanEngine.update(
-    {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      planId: request.planId,
-      expectedRevision: request.expectedRevision,
-      proposalRequestId: request.proposalRequestId,
-      content: request.content,
-      title: request.title,
-      source: request.source,
-      reviewStatus: request.reviewStatus,
-      linkedExecutionId: request.linkedExecutionId,
-      approvedAt: request.approvedAt,
-      dismissedAt: request.dismissedAt,
-      hidden: request.hidden,
-      chatId: request.chatId,
-      initiationSource: request.initiationSource,
-      lastEditSource: request.lastEditSource,
-    },
-    guard,
-  );
+  const plan = await trackedPlanEngine.update({
+    projectId: request.projectId,
+    worktreeId: request.worktreeId,
+    planId: request.planId,
+    expectedRevision: request.expectedRevision,
+    expectedSource: request.expectedSource,
+    proposalRequestId: request.proposalRequestId,
+    content: request.content,
+    title: request.title,
+    source: request.source,
+    reviewStatus: request.reviewStatus,
+    linkedExecutionId: request.linkedExecutionId,
+    approvedAt: request.approvedAt,
+    dismissedAt: request.dismissedAt,
+    hidden: request.hidden,
+    chatId: request.chatId,
+    initiationSource: request.initiationSource,
+    lastEditSource: request.lastEditSource,
+  });
   return plan ? storedTrackedPlan(plan) : null;
 }
 

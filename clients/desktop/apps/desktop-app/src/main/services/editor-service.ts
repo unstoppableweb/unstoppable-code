@@ -20,7 +20,10 @@ import {
   type RemoteControlEditorSlashCommandOption,
   type SlashCommandData,
   type WorktreeData,
+  type WorktreeDiscovery,
 } from '@canopy/desktop-shared/types';
+import type { RemoteControlEditorSkippedMod } from '@canopy/protocol/remote-control/shell';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   chatInheritsProjectDefaults,
   chatSurfaceUsesGlobalPluginDefaults,
@@ -47,7 +50,13 @@ import {
   resolveInvocableSelection,
 } from '../plugins/invocable-inventory-service';
 import { prepareCodexCompatibilityPlugin } from '../plugins/plugin-service';
-import { fitListResult } from '../remote-projection/result-budget';
+import {
+  fitListResult,
+  resultByteLength,
+} from '../remote-projection/result-budget';
+import { REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES } from '@canopy/protocol/remote-control/shell';
+import { getFeatureFlagService } from '../feature-flags';
+import { readLatestChatDiscovery } from '../ipc/worktree-discovery';
 import { createRemoteControlCaller } from '../remote-projection/remote-control-caller';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { RemoteControlServiceError } from './remote-control-service-error';
@@ -433,12 +442,55 @@ export async function listChatInvocables(input: {
     ...lists.promotedInventoryCommands,
     ...lists.availableInventoryCommands,
   ].map(toInvocableOption);
-  return fitListResult(commands, (rows, truncated) => ({
-    commands: rows,
-    stale: inventory.stale,
-    rebuilding: inventory.rebuilding,
-    ...(inventory.builtAt ? { builtAt: inventory.builtAt } : {}),
-    ...(truncated ? { truncated: true as const } : {}),
+  const forecast = chatSkippedModsForecast(
+    tab,
+    readLatestChatDiscovery(scope.projectId, scope.worktreeId, tab.id) ??
+      tab.discovery,
+  );
+  const resultWith =
+    (skippedMods: RemoteControlEditorSkippedMod[] | undefined) =>
+    (
+      rows: RemoteControlEditorInvocableOption[],
+      truncated: boolean,
+    ): RemoteControlEditorListInvocablesResult => ({
+      commands: rows,
+      stale: inventory.stale,
+      rebuilding: inventory.rebuilding,
+      ...(inventory.builtAt ? { builtAt: inventory.builtAt } : {}),
+      ...(truncated ? { truncated: true as const } : {}),
+      ...(skippedMods ? { skippedMods } : {}),
+    });
+  // The forecast is a notice: when the reply is over budget it goes first,
+  // so it never pushes a menu row out.
+  const complete = resultWith(forecast)(commands, false);
+  if (resultByteLength(complete) <= REMOTE_CONTROL_CATALOG_RESULT_MAX_BYTES)
+    return complete;
+  return fitListResult(commands, resultWith(undefined));
+}
+
+/**
+ * The Mods the chat's discovery forecast to skip, for the web composer's
+ * notice (CAN-7436), under the desktop composer's own condition: the
+ * forecast is for the chat's current provider. Undefined while the admission
+ * flag is off or nothing is skipped.
+ */
+export function chatSkippedModsForecast(
+  tab: PersistedChatTab,
+  discovery: WorktreeDiscovery | undefined,
+): RemoteControlEditorSkippedMod[] | undefined {
+  const forecast = discovery?.skippedMods;
+  if (
+    forecast === undefined ||
+    forecast.length === 0 ||
+    discovery?.providerType !== resolveDiscoveryProviderType(tab) ||
+    !getFeatureFlagService().isEnabled(
+      CLIENT_FEATURE_FLAGS.canopyDesktopClaudeModAdmission.key,
+    )
+  )
+    return undefined;
+  return forecast.map((entry) => ({
+    pluginId: entry.pluginId,
+    reason: entry.reason,
   }));
 }
 

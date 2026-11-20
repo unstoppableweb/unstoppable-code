@@ -24,6 +24,10 @@ import {
   inventorySyncActionCatalog,
 } from '../families/inventory-sync';
 import {
+  REMOTE_CONTROL_ACTION_TYPES,
+  remoteControlActionCatalog,
+} from '../families/remote-control';
+import {
   SETTINGS_ACTION_TYPES,
   settingsActionCatalog,
 } from '../families/settings';
@@ -568,6 +572,7 @@ function sharedActionOffer(
     ...CHAT_HISTORY_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...INVENTORY_SYNC_ACTION_TYPES,
+    ...REMOTE_CONTROL_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES.filter(
       (type) => aiGateway || !type.startsWith('settings.ai_gateway.'),
     ),
@@ -585,6 +590,7 @@ function sharedActionOffer(
       ...chatHistoryActionCatalog,
       ...experimentActionCatalog(),
       ...inventorySyncActionCatalog(),
+      ...remoteControlActionCatalog(),
       ...settingsActionCatalog(),
       ...(aiGateway ? aiGatewayActionCatalog : []),
       ...pullRequestActionCatalog(),
@@ -1081,6 +1087,51 @@ export function runAgentActionConformance<H>(
           false,
           'writing the current state changes nothing',
         );
+      },
+    );
+  });
+
+  t.describe('remote control dialog contract', () => {
+    t.it(
+      'refuses extra fields, opens or skips, and closes repeatably',
+      async () => {
+        const current = await session();
+        if (
+          !current.supports('remote_control.open_dialog') ||
+          !current.supports('remote_control.close_dialog')
+        ) {
+          // Only a desktop has the Remote Control dialog.
+          return;
+        }
+        for (const invalid of [
+          { type: 'remote_control.open_dialog', open: true },
+          { type: 'remote_control.close_dialog', windowId: 1 },
+        ]) {
+          const rejected = await current.dispatch(invalid);
+          check(
+            rejected.result.isError === true &&
+              rejected.result.text.includes('Invalid arguments'),
+            'extra remote control dialog fields are refused before dispatch',
+          );
+        }
+        const opened = await current.dispatch({
+          type: 'remote_control.open_dialog',
+        });
+        check(at(opened.json, 'ok') === true, 'the dialog open succeeds');
+        check(
+          at(opened.json, 'result', 'opened') === true ||
+            at(opened.json, 'result', 'skipped') === true,
+          'the dialog open reports opened or skipped',
+        );
+        for (const attempt of ['first', 'second']) {
+          const closed = await current.dispatch({
+            type: 'remote_control.close_dialog',
+          });
+          check(
+            at(closed.json, 'ok') === true,
+            `the ${attempt} dialog close succeeds`,
+          );
+        }
       },
     );
   });

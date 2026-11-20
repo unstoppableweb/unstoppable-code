@@ -119,6 +119,7 @@ import { StoredSecretError } from '../lib/stored-secrets';
 import { getRemoteImageCacheDir } from '../lib/paths';
 import {
   readPreferencesFile,
+  readPreferencesFileDetailed,
   writePreferencesFile,
   updatePreferencesFile,
 } from '../lib/preferences-store';
@@ -429,15 +430,24 @@ function removalService(
   });
 }
 
-/** Discovery does not depend on inventory; partial hints never authorize removal. */
+/**
+ * Discovery does not depend on inventory; partial hints never authorize removal.
+ * The list is complete only over authoritative preferences: a damaged or
+ * missing main file may serve last-good data from before a saved uninstall,
+ * so its receipts are listed as hints and the result is incomplete (CAN-7362).
+ */
 export async function listDeviceMcpRemovalCandidates(): Promise<McpRemovalCandidatesResult> {
   const discovered = await configRepository.removalCandidates();
   const ids = new Set(discovered.serverIds);
   const pending = new Set<string>();
   let incomplete = discovered.incomplete;
   try {
-    const preferences = await readPreferencesFile();
-    for (const intent of preferences.pendingInstalledItemUninstalls ?? []) {
+    const read = await readPreferencesFileDetailed({ includeServed: true });
+    // 'absent' is a device with no saved preferences, so no saved uninstalls.
+    if (read.authority === 'unreadable') incomplete = true;
+    const preferences =
+      read.authority === 'unreadable' ? read.served : read.preferences;
+    for (const intent of preferences?.pendingInstalledItemUninstalls ?? []) {
       if (
         intent.target.kind === 'mcp-server' &&
         /^[a-f0-9-]{1,256}$/.test(intent.target.serverId)
@@ -677,10 +687,6 @@ export function areArgsSafe(args: string[] | undefined): boolean {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function readIndex(): Promise<McpServersIndexFile> {
-  return configRepository.readIndex();
-}
-
 async function notifyConfigIndexChanged(): Promise<void> {
   // Publication already succeeded; notification errors must not invite a replay.
   try {
@@ -854,8 +860,8 @@ function lacksUrlIndexFields(entry: McpServerIndexEntry): boolean {
 /**
  * Index entries written before `urlHost`/`urlScheme` existed carry neither, so
  * a custom HTTPS row would never be promotable. Derive them from the stored
- * definition for just those rows and persist the result once; a complete
- * index costs nothing beyond the scan.
+ * definition for just those rows and persist the result once. Both read paths
+ * omit confirmed-absent device definitions before adding account rows.
  */
 async function readIndexWithUrlBackfill(): Promise<McpServersIndexFile> {
   let backfilled;
@@ -871,7 +877,7 @@ async function readIndexWithUrlBackfill(): Promise<McpServersIndexFile> {
     if (!(error instanceof McpConfigStateError)) throw error;
     // Display fallback only: the refused index is never rewritten from it.
     logMainProcessWarn('MCP index backfill refused', error.detail);
-    return readIndex();
+    return configRepository.readIndexForPresentation();
   }
   if (backfilled.changed) await notifyConfigIndexChanged();
   return backfilled.index;
@@ -1934,6 +1940,15 @@ export async function uninstallInstalledDeviceMcpServer(
   await configRepository.withServerMutation(id, () =>
     deleteMcpServerAndOAuthTokens(id),
   );
+}
+
+/** Re-checks ordinary removal under the per-server writer lease. */
+export function confirmInstalledDeviceMcpServerAbsent(
+  id: string,
+): Promise<boolean> {
+  if (!id || !SAFE_ID_RE.test(id))
+    throw new Error(`Invalid MCP server id: ${id}`);
+  return removalService().confirmAbsent(id);
 }
 
 async function writeMcpServer(

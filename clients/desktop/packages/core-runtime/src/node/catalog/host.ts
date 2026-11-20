@@ -34,6 +34,11 @@ export interface CatalogSnapshotRead {
   entries: CatalogEntry[];
   /** The refs of every entry above, for id resolution. */
   refs: CatalogSelectionRefs;
+  /**
+   * Kinds the host could not read right now. Their entries are left out, so
+   * a read that covers one of them fails instead of answering a short list.
+   */
+  unreadableKinds?: CatalogEntry['kind'][];
 }
 
 /** A source as the host lists it; its revision comes from catalogContentRevision. */

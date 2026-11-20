@@ -184,7 +184,11 @@ import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
 import { HomeWorkspacePicker } from './HomeWorkspacePicker';
 import { HomeBranchPicker } from './HomeBranchPicker';
 import { HomeBaseBranchPicker } from './HomeBaseBranchPicker';
-import { HomeComposerControls } from './HomeComposerControls';
+import {
+  HomeComposerControls,
+  type HomeSpeechModelPrompt,
+} from './HomeComposerControls';
+import { SpeechModelDownloadPrompt } from '@/components/chat/SpeechModelDownloadPrompt';
 import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
 import { HomeComposerContextRow } from './HomeComposerContextRow';
 import { HomeLinkTarget } from './HomeLinkTargetChip';
@@ -1605,6 +1609,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
   const [planModeHint, setPlanModeHint] = useState<PlanModeSuggestion | null>(
     null,
   );
+  const [speechModelPrompt, setSpeechModelPrompt] =
+    useState<HomeSpeechModelPrompt | null>(null);
 
   return (
     <Surface
@@ -1662,6 +1668,15 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
           ) : null,
           showsRestoreNotices ? (
             <HomeRestoreNotices key="home-restore" />
+          ) : null,
+          speechModelPrompt?.offering ? (
+            <SpeechModelDownloadPrompt
+              key="home-speech-model"
+              className="pointer-events-auto"
+              size={speechModelPrompt.size}
+              onDownload={speechModelPrompt.download}
+              onNotNow={speechModelPrompt.notNow}
+            />
           ) : null,
           unbillableModelSwitch ? (
             <ModelUnavailableNotice
@@ -1896,6 +1911,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 composerBoxRef={homeComposerRef}
                 onVoiceRecordingChange={setVoiceRecording}
                 onPlanModeHintChange={setPlanModeHint}
+                voiceDestinationKey={`${workspaceId ?? ''}/${draftGeneration}`}
+                onSpeechModelPromptChange={setSpeechModelPrompt}
               />
               {mode === 'pipeline' && taskPlanPreset && (
                 <div

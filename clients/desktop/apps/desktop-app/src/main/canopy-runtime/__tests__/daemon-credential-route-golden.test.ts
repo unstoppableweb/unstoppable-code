@@ -564,8 +564,18 @@ it('bounds a mirror attempt and ignores cancellation without retrying', async ()
   }
 });
 
-// A case that times out keeps running; the next case waits for its isolated
-// registry to close instead of failing to nest a second one.
+// Each case walks two test-build modes and five override environments, with a
+// filesystem round trip for every legacy path. That is about 500-900 ms on an
+// idle machine and several times that on a loaded CI runner (merge queue run
+// 44598339355, Tests 2/2, maxWorkers=6: the stable case exceeded Jest's 5 s
+// default and the file took 17 s). Keep an explicit budget sized for that load.
+const LEGACY_PATH_CASE_TIMEOUT_MS = 30_000;
+
+// A timed-out case keeps running, and Jest starts the next case immediately.
+// The callback installs and restores build-identity globals, env, and mocks,
+// and it runs only after the previous callback has restored them, so an
+// overrun cannot change the next case's identity. The isolated registry stays
+// inside that same callback so two registries never nest.
 let isolationTail: Promise<void> = Promise.resolve();
 async function isolated(run: () => Promise<void>): Promise<void> {
   const previous = isolationTail;
@@ -587,35 +597,38 @@ describe.each([canopyBrand, unstoppableBrand])(
     it.each(['stable', 'rc', 'internal', 'dev'] as const)(
       'matches Electron auth lookup for %s with and without overrides',
       async (flavor) => {
-        const defines = {
-          __CANOPY_RELEASE_FLAVOR__: flavor,
-          __CANOPY_BUILD_IDENTITY__: { brandId: brand.id, build: flavor },
-          __CANOPY_TEST_DATA_OVERRIDES__: false,
-          __CANOPY_COMPILED_RUNTIME__: true,
-        };
-        const originals = new Map(
-          Object.keys(defines).map((key) => [
-            key,
-            Object.getOwnPropertyDescriptor(globalThis, key),
-          ]),
-        );
-        for (const [key, value] of Object.entries(defines))
-          Object.defineProperty(globalThis, key, { value, configurable: true });
-        const environment = jest.replaceProperty(process, 'env', {
-          ...process.env,
-          NODE_ENV: flavor === 'dev' ? 'development' : 'production',
-          CANOPY_TEST_DATA_OVERRIDES: '1',
-          CANOPY_E2E_BUILD: '1',
-          CANOPY_ENV: undefined,
-          CANOPY_DATA_DIR: undefined,
-          CANOPY_SECURE_DATA_DIR: undefined,
-        });
-        jest.doMock('@canopy/brand/current', () => ({ BRAND: brand }));
-        try {
-          // Build identity is fixed for this brand/flavor. Keep one isolated
-          // auth graph, but reset path caches for every environment case.
-          jest.dontMock('../../lib/paths');
-          await isolated(async () => {
+        await isolated(async () => {
+          const defines = {
+            __CANOPY_RELEASE_FLAVOR__: flavor,
+            __CANOPY_BUILD_IDENTITY__: { brandId: brand.id, build: flavor },
+            __CANOPY_TEST_DATA_OVERRIDES__: false,
+            __CANOPY_COMPILED_RUNTIME__: true,
+          };
+          const originals = new Map(
+            Object.keys(defines).map((key) => [
+              key,
+              Object.getOwnPropertyDescriptor(globalThis, key),
+            ]),
+          );
+          for (const [key, value] of Object.entries(defines))
+            Object.defineProperty(globalThis, key, {
+              value,
+              configurable: true,
+            });
+          const environment = jest.replaceProperty(process, 'env', {
+            ...process.env,
+            NODE_ENV: flavor === 'dev' ? 'development' : 'production',
+            CANOPY_TEST_DATA_OVERRIDES: '1',
+            CANOPY_E2E_BUILD: '1',
+            CANOPY_ENV: undefined,
+            CANOPY_DATA_DIR: undefined,
+            CANOPY_SECURE_DATA_DIR: undefined,
+          });
+          jest.doMock('@canopy/brand/current', () => ({ BRAND: brand }));
+          try {
+            // Build identity is fixed for this brand/flavor. Keep one isolated
+            // auth graph, but reset path caches for every environment case.
+            jest.dontMock('../../lib/paths');
             const paths =
               jest.requireActual<typeof LegacyPaths>('../../lib/paths');
             const { readStoredPatWithStatus } =
@@ -747,16 +760,17 @@ describe.each([canopyBrand, unstoppableBrand])(
                   );
               }
             }
-          });
-        } finally {
-          environment.restore();
-          for (const [key, original] of originals) {
-            if (original) Object.defineProperty(globalThis, key, original);
-            else Reflect.deleteProperty(globalThis, key);
+          } finally {
+            environment.restore();
+            for (const [key, original] of originals) {
+              if (original) Object.defineProperty(globalThis, key, original);
+              else Reflect.deleteProperty(globalThis, key);
+            }
+            jest.dontMock('@canopy/brand/current');
           }
-          jest.dontMock('@canopy/brand/current');
-        }
+        });
       },
+      LEGACY_PATH_CASE_TIMEOUT_MS,
     );
   },
 );

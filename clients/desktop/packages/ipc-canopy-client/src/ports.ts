@@ -11,7 +11,11 @@ import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import type { ToolFamilyResolver } from '@canopy/agent-transcript/remote-control/persisted-chat-projection';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
-import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
+import type {
+  RemoteIpcTransport,
+  SecretRequestSettleParams,
+  SecretRequestSettleResult,
+} from '@canopy/protocol/remote-control';
 import type { TerminalOutputEvent } from '@canopy/protocol/terminal';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { RemoteIpcMalformedReplyError } from './channel-client';
@@ -140,6 +144,14 @@ export interface IpcCanopyClientPorts {
     fileName: string,
     bytes: Uint8Array,
   ) => Promise<string>;
+  /**
+   * Answers a waiting RequestSecrets form on the computer (a remote
+   * session's `secret-request.settle`, U7). The values go only here, never
+   * through a channel. Absent: `chat.secretRequest.settle` is refused.
+   */
+  readonly settleSecretRequest?: (
+    params: SecretRequestSettleParams,
+  ) => Promise<SecretRequestSettleResult>;
   /**
    * The controller's App Advisor surface on the same session: where the
    * computer delivers Orchestrator questions and expects their answers

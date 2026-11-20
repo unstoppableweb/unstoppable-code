@@ -274,6 +274,9 @@ export function createDesktopDictationHost(
         response = await options.fetch(url, { headers, signal });
       } catch (error) {
         if (isAbort(error, signal)) throw abortError();
+        // The fetch adapter's own refusal (a local-only build) already says
+        // what to do.
+        if (error instanceof SpeechModelInstallError) throw error;
         throw new SpeechModelInstallError(
           'network',
           `Couldn't reach the speech model download: ${error instanceof Error ? error.message : String(error)}`,

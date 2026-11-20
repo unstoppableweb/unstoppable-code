@@ -310,6 +310,11 @@ export const InstalledItemMutationResultSchema = z
           code: z.string(),
           message: z.string(),
           retryable: z.boolean(),
+          /**
+           * The host removed this device MCP server before a later cleanup
+           * step failed. Absent means the server's removal is unconfirmed.
+           */
+          serverRemoved: z.literal(true).optional(),
         })
         .strict(),
     ),

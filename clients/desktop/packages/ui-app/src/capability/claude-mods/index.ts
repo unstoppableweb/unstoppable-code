@@ -7,6 +7,10 @@ export {
   claudeModAdmissionUpdate,
   type ClaudeModAdmissionSwitchState,
 } from './claudeModAdmissionModel';
+export {
+  ClaudeModsComposerNotice,
+  type ClaudeModsComposerNoticeProps,
+} from './ClaudeModsComposerNotice';
 export { ClaudeModsKillSwitch } from './ClaudeModsKillSwitch';
 export {
   ClaudeModsSkippedHostProvider,

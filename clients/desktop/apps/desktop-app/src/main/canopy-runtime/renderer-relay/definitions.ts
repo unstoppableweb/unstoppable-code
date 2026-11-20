@@ -1,5 +1,4 @@
 import {
-  CANOPY_STREAM_DEFINITIONS,
   CORE_CLIENT_TOOL_INSTRUCTION_DEFINITIONS,
   CORE_CLIENT_TOOLS_REGISTER,
   CORE_CLIENT_TOOLS_UNREGISTER,
@@ -19,6 +18,7 @@ import {
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import { DESKTOP_INSTRUCTION_DEFINITIONS } from '../desktop-instruction-definitions';
 import { DESKTOP_QUERY_DEFINITIONS } from '../desktop-query-definitions';
+import { DESKTOP_STREAM_DEFINITIONS } from '../desktop-stream-definitions';
 
 export const CAPABILITIES_REGISTER = 'core.client.capabilities.register';
 export const TOOLS_REGISTER = CORE_CLIENT_TOOLS_REGISTER;
@@ -49,7 +49,7 @@ export const RELAY_DEFINITIONS: RelayDefinitions = {
     },
   ),
   streams: composeCanopyStreamRegistries(
-    CANOPY_STREAM_DEFINITIONS,
+    DESKTOP_STREAM_DEFINITIONS,
     CANOPY_RUNTIME_STREAM_DEFINITIONS,
   ),
 };

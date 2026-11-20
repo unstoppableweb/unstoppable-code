@@ -16,7 +16,8 @@ import {
 } from '../canopy-cloud/shared-item-subscriptions';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { mkdir, readFile, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, readdir, readFile, unlink } from 'node:fs/promises';
 import { writeFileAtomically } from '../lib/atomic-file';
 import { dirname } from 'node:path';
 import type {
@@ -34,6 +35,7 @@ import {
   getBundleConfigFilePath,
   getBundlesIndexFilePath,
   getCollectionConfigFilePath,
+  getCollectionsDir,
   getCollectionsIndexFilePath,
 } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
@@ -138,27 +140,93 @@ function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
   };
 }
 
+// Stored files are unvalidated. The web rejects the whole Collections list for
+// one row that fails isCollectionRow
+// (apps/web/src/lib/desktop-inventory/inventory-result-parsers.ts:412-428, its
+// only row check; an invalid sharedSource is dropped, not rejected). The web
+// app can't be imported here, so this mirrors every clause of it.
+function isValidRevision(revision: unknown): boolean {
+  return (
+    revision === undefined ||
+    (typeof revision === 'string' &&
+      revision.trim().length > 0 &&
+      revision.length <= 256)
+  );
+}
+
+function isListableRow(row: CollectionIndexEntry): boolean {
+  const fields: Record<string, unknown> = { ...row };
+  return (
+    ['id', 'name', 'description', 'updatedAt'].every(
+      (key) => typeof fields[key] === 'string',
+    ) &&
+    ['skillCount', 'pluginCount', 'mcpServerCount'].every(
+      (key) => typeof fields[key] === 'number',
+    ) &&
+    isValidRevision(fields.revision)
+  );
+}
+
 function fromLegacyBundle(bundle: BundleConfig): CollectionConfig {
+  const fields: Record<string, unknown> = { ...bundle };
   return {
     id: bundle.id,
     name: bundle.name,
-    description: bundle.description,
-    skills: bundle.skills,
-    plugins: bundle.plugins,
+    description:
+      typeof fields.description === 'string' ? fields.description : '',
+    skills: Array.isArray(bundle.skills) ? bundle.skills : [],
+    plugins: Array.isArray(bundle.plugins) ? bundle.plugins : [],
     mcpServers: Array.isArray(bundle.mcpServers) ? bundle.mcpServers : [],
     createdAt: bundle.createdAt,
     updatedAt: bundle.updatedAt,
   };
 }
 
-async function readCollectionIndexFile(): Promise<CollectionIndexFile | null> {
+type CollectionIndexRead =
+  | { status: 'ok'; index: CollectionIndexFile }
+  | { status: 'missing' }
+  | { status: 'damaged' | 'newer'; raw: string };
+
+/** Absence, damage and a newer version stay distinct; a read error throws. */
+async function readCollectionIndexFile(): Promise<CollectionIndexRead> {
+  let raw: string;
   try {
-    const raw = await readFile(getCollectionsIndexFilePath(), 'utf8');
-    const parsed = JSON.parse(raw) as CollectionIndexFile;
-    if (parsed.version !== 2 || !Array.isArray(parsed.collections)) {
-      return { version: 2, collections: [] };
+    raw = await readFile(getCollectionsIndexFilePath(), 'utf8');
+  } catch (error) {
+    if (isErrnoException(error) && error.code === 'ENOENT') {
+      return { status: 'missing' };
     }
-    return {
+    throw new Error(
+      `Unreadable collections/index.json: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  let parsed: CollectionIndexFile;
+  try {
+    parsed = JSON.parse(raw) as CollectionIndexFile;
+  } catch {
+    return { status: 'damaged', raw };
+  }
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    typeof parsed.version === 'number' &&
+    parsed.version > 2
+  ) {
+    return { status: 'newer', raw };
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    parsed.version !== 2 ||
+    !Array.isArray(parsed.collections)
+  ) {
+    return { status: 'damaged', raw };
+  }
+  return {
+    status: 'ok',
+    index: {
       ...parsed,
       collections: parsed.collections.map((entry) => {
         const { sharedSource: raw, remote: rawRemote, ...rest } = entry;
@@ -173,17 +241,8 @@ async function readCollectionIndexFile(): Promise<CollectionIndexFile | null> {
           ...(sharedSource ? { sharedSource } : {}),
         };
       }),
-    };
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') {
-      return null;
-    }
-    throw new Error(
-      `Malformed collections/index.json: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
+    },
+  };
 }
 
 async function readLegacyBundleIndexFile(): Promise<BundlesIndexFile | null> {
@@ -195,8 +254,10 @@ async function readLegacyBundleIndexFile(): Promise<BundlesIndexFile | null> {
     }
     return parsed;
   } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') {
-      return null;
+    // An I/O failure must not publish an index that ends the conversion.
+    if (isErrnoException(error)) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
     }
     return { version: 1, bundles: [] };
   }
@@ -206,13 +267,21 @@ async function readLegacyBundleConfig(
   id: string,
 ): Promise<CollectionConfig | null> {
   try {
+    if (!SAFE_ID_RE.test(id)) throw new Error(`Invalid bundle id ${id}`);
     const raw = await readFile(getBundleConfigFilePath(id), 'utf8');
     const parsed = JSON.parse(raw) as BundleConfigFile;
-    if (parsed.version !== 1 || !parsed.bundle) {
+    if (parsed.version !== 1 || parsed.bundle?.id !== id) {
       throw new Error(`Invalid bundle config for ${id}`);
     }
-    return fromLegacyBundle(parsed.bundle);
+    const collection = fromLegacyBundle(parsed.bundle);
+    if (!isListableRow(toIndexEntry(collection))) {
+      throw new Error(`Bundle config for ${id} has no listable row`);
+    }
+    return collection;
   } catch (error) {
+    // An I/O failure retries the conversion on the next read; content that
+    // cannot convert is skipped for good, and the file stays on disk.
+    if (isErrnoException(error) && error.code !== 'ENOENT') throw error;
     process.emitWarning(
       `Skipping malformed legacy bundle config ${id}: ${
         error instanceof Error ? error.message : String(error)
@@ -346,31 +415,184 @@ function indexSchemaComplete(index: CollectionIndexFile): boolean {
   );
 }
 
-async function readCollectionIndexUnfiltered(): Promise<CollectionIndexFile> {
-  const currentIndex = await readCollectionIndexFile();
-  if (currentIndex) {
-    if (!indexSchemaComplete(currentIndex)) {
-      return repairIndexEntrySchema(currentIndex);
-    }
-    const hasLegacyEntries = currentIndex.collections.some(
-      (entry) => typeof entry.hasExistingShare !== 'boolean',
-    );
-    if (!hasLegacyEntries) return currentIndex;
+const COLLECTION_CONFIG_FILE_RE = /^collection-([a-f0-9-]+)\.json$/;
 
-    const collections = await Promise.all(
-      currentIndex.collections.map(async (entry) => {
-        if (typeof entry.hasExistingShare === 'boolean') return entry;
-        const file = await readCollectionConfigUnfiltered(entry.id, false);
-        return {
-          ...entry,
-          hasExistingShare: Boolean(file?.collection.remote),
-        };
-      }),
-    );
-    await writeCollectionIndexFile(collections);
-    return { ...currentIndex, collections };
+/**
+ * Bring the index in line with the configs, the authoritative records: drop rows
+ * whose config is gone, re-project rows an interrupted edit left stale and list
+ * configs an interrupted save never indexed. Unreadable configs keep their row
+ * and stay on disk unlisted otherwise.
+ */
+async function reconcileIndexWithConfigs(
+  index: CollectionIndexFile,
+  mustWrite: boolean,
+): Promise<CollectionIndexFile> {
+  let fileNames: string[] = [];
+  try {
+    fileNames = await readdir(getCollectionsDir());
+  } catch (error) {
+    if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
   }
-  return migrateLegacyBundles();
+  const unindexed = new Set(
+    fileNames.flatMap((name) => {
+      const id = COLLECTION_CONFIG_FILE_RE.exec(name)?.[1];
+      return id ? [id] : [];
+    }),
+  );
+  // A config whose content cannot be read or projected, whose stored id is not
+  // its file name's, or whose stored revision or row fails the web's row check
+  // is unreadable. An I/O error instead leaves reconcile to retry next read.
+  let retry = false;
+  const project = async (
+    id: string,
+  ): Promise<{ createdAt: string; row: CollectionIndexEntry } | null> => {
+    try {
+      const file = await readCollectionConfigUnfiltered(id, false);
+      if (file?.collection.id !== id) return null;
+      // The row drops a falsy revision, so check the stored one too.
+      if (!isValidRevision(file.collection.revision)) return null;
+      const row = toIndexEntry(file.collection);
+      return isListableRow(row)
+        ? { createdAt: String(file.collection.createdAt), row }
+        : null;
+    } catch (error) {
+      if (isErrnoException(error)) retry = true;
+      return null;
+    }
+  };
+  // Read every config at once to keep the store lock held briefly.
+  const projections = new Map(
+    await Promise.all(
+      [...unindexed].map(async (id) => [id, await project(id)] as const),
+    ),
+  );
+  // Listing reads fail until a reconcile reads every config, so callers such
+  // as inventory sync keep their last good list.
+  if (mustWrite || !retry) rebuildIncomplete = retry;
+  let changed = mustWrite;
+  const collections: CollectionIndexEntry[] = [];
+  for (const entry of index.collections) {
+    if (!unindexed.delete(entry.id)) {
+      changed = true;
+      continue;
+    }
+    const projected = projections.get(entry.id);
+    if (projected && projected.row.revision !== entry.revision) {
+      collections.push(projected.row);
+      changed = true;
+    } else {
+      collections.push(entry);
+    }
+  }
+  const adopted: Array<{ createdAt: string; row: CollectionIndexEntry }> = [];
+  for (const id of unindexed) {
+    const projected = projections.get(id);
+    if (projected) adopted.push(projected);
+  }
+  adopted.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  collections.push(...adopted.map(({ row }) => row));
+  if (!changed && adopted.length === 0) {
+    indexReconciled = !retry;
+    return index;
+  }
+  const complete = mustWrite || indexSchemaComplete(index);
+  try {
+    await writeCollectionIndexFile(collections, complete);
+    indexReconciled = !retry;
+  } catch (error) {
+    // A set-aside index must be replaced before it is reported as recovered;
+    // otherwise the next read retries the reconcile.
+    if (mustWrite) throw error;
+    process.emitWarning(
+      `Could not save the reconciled collections/index.json: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  // A rebuild that could not read every config is written, so the damaged
+  // index is copied aside once, but it is not reported as recovered.
+  if (mustWrite && retry) {
+    throw new Error(
+      'Some Collection configs could not be read; the next read finishes rebuilding collections/index.json.',
+    );
+  }
+  return {
+    version: 2,
+    ...(complete
+      ? {
+          entrySchema: 2 as const,
+          memberCountsSchema: 1 as const,
+          authorLinkSchema: 1 as const,
+        }
+      : {}),
+    collections,
+  };
+}
+
+/** Keep a damaged or newer index as evidence; nothing is written if the copy fails. */
+async function setIndexAside(status: 'damaged' | 'newer'): Promise<void> {
+  const path = getCollectionsIndexFilePath();
+  await assertMutationContext();
+  await copyFile(
+    path,
+    `${path}.${status}-${Date.now()}`,
+    constants.COPYFILE_EXCL,
+  );
+}
+
+// Lazily, once per process: set once a reconcile's result is on disk.
+let indexReconciled = false;
+// Set while a rebuilt index still lacks configs an I/O error left unread.
+let rebuildIncomplete = false;
+
+/** The index for listing; saves still use the partial index while a rebuild is incomplete. */
+async function readListedCollectionIndex(): Promise<CollectionIndexFile> {
+  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
+  if (rebuildIncomplete) {
+    throw new Error(
+      'Some Collection configs could not be read; collections/index.json is still being rebuilt.',
+    );
+  }
+  return index;
+}
+
+async function readCollectionIndexUnfiltered(): Promise<CollectionIndexFile> {
+  const read = await readCollectionIndexFile();
+  if (read.status === 'damaged' || read.status === 'newer') {
+    await setIndexAside(read.status);
+    return reconcileIndexWithConfigs({ version: 2, collections: [] }, true);
+  }
+  const index =
+    read.status === 'ok'
+      ? await readStoredCollectionIndex(read.index)
+      : await migrateLegacyBundles();
+  if (indexReconciled) return index;
+  return reconcileIndexWithConfigs(index, false);
+}
+
+async function readStoredCollectionIndex(
+  currentIndex: CollectionIndexFile,
+): Promise<CollectionIndexFile> {
+  if (!indexSchemaComplete(currentIndex)) {
+    return repairIndexEntrySchema(currentIndex);
+  }
+  const hasLegacyEntries = currentIndex.collections.some(
+    (entry) => typeof entry.hasExistingShare !== 'boolean',
+  );
+  if (!hasLegacyEntries) return currentIndex;
+
+  const collections = await Promise.all(
+    currentIndex.collections.map(async (entry) => {
+      if (typeof entry.hasExistingShare === 'boolean') return entry;
+      const file = await readCollectionConfigUnfiltered(entry.id, false);
+      return {
+        ...entry,
+        hasExistingShare: Boolean(file?.collection.remote),
+      };
+    }),
+  );
+  await writeCollectionIndexFile(collections);
+  return { ...currentIndex, collections };
 }
 
 async function readCollectionConfigUnfiltered(
@@ -546,7 +768,7 @@ export async function readLocalCollectionSnapshot(
 }
 
 export async function readCollectionIndex(): Promise<CollectionIndexFile> {
-  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
+  const index = await readListedCollectionIndex();
   if (!resourceContextEnabled()) return index;
   const snapshot = await resourceContextSnapshot();
   const allowed = await Promise.all(
@@ -585,7 +807,7 @@ export async function readPersonalCollectionConfig(
 
 /** Read the Collection index through the Personal sync view. */
 export async function readPersonalCollectionIndex(): Promise<CollectionIndexFile> {
-  const index = await withCollectionStoreLock(readCollectionIndexUnfiltered);
+  const index = await readListedCollectionIndex();
   const allowed = await Promise.all(
     index.collections.map(
       async (entry) => (await readPersonalCollectionConfig(entry.id)) !== null,
@@ -819,7 +1041,11 @@ async function clearCollectionRemoteMetadataByRemoteIdUnlocked(
     ) {
       const entry = index.collections[entryIndex];
       if (!entry) continue;
-      const file = await readCollectionConfigUnfiltered(entry.id);
+      // The cloud share is already gone; one unreadable config must not keep
+      // the others linked to it.
+      const file = await readCollectionConfigUnfiltered(entry.id).catch(
+        () => null,
+      );
       if (file?.collection.remote?.remoteId !== remoteId) continue;
       const collection = { ...file.collection };
       delete collection.remote;
@@ -866,6 +1092,8 @@ async function deleteCollectionConfigUnlocked(id: string): Promise<void> {
     () => undefined,
   );
 
+  // An unreadable index refuses the delete before the config goes.
+  const index = await readCollectionIndexUnfiltered();
   await assertMutationContext();
   try {
     await unlink(getCollectionConfigFilePath(id));
@@ -873,7 +1101,6 @@ async function deleteCollectionConfigUnlocked(id: string): Promise<void> {
     if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
   }
 
-  const index = await readCollectionIndexUnfiltered();
   await writeCollectionIndexFile(
     index.collections.filter((entry) => entry.id !== id),
     indexSchemaComplete(index),

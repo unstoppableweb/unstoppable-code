@@ -3,6 +3,10 @@ import { CanonicalMacSchema } from './security';
 import { DEVICE_PLATFORMS, DEVICE_KINDS } from '../device-relay/index';
 import { CanopyRetryDirectiveSchema } from '../canopy-core/errors';
 import {
+  AGENT_SECRET_NAME_PATTERN,
+  AGENT_SECRET_VALUE_MAX_LENGTH,
+} from '../agent-secrets/names';
+import {
   REMOTE_SURFACES,
   ACCOUNT_PROXY_SIGN_IN_STATE_PATTERN,
 } from './constants';
@@ -49,6 +53,14 @@ export const REMOTE_METHODS = {
    * answer with an unknown-method error.
    */
   pairRevoke: 'pair.revoke',
+  /**
+   * Controller → host, browser and mobile control sessions: answer a waiting
+   * RequestSecrets form with values, or decline it. Values travel only in
+   * this method, never on a tunneled channel or a question answer. Hosts
+   * advertise it with `features.secretRequestSettle`; older hosts answer
+   * with an unknown-method error.
+   */
+  secretRequestSettle: 'secret-request.settle',
   /**
    * Controller → host: run one core operation the host lists in its hello
    * `coreOperations`. Served before the protocol check: the operation's own
@@ -273,6 +285,11 @@ export const HelloResultSchema = z.object({
       hostedDelegation: z.boolean(),
       /** The host serves `pair.revoke`. Absent means unsupported. */
       pairRevoke: z.boolean().optional(),
+      /**
+       * The host serves `secret-request.settle` to this controller. Absent
+       * means unsupported.
+       */
+      secretRequestSettle: z.boolean().optional(),
       /** Both peers support explicit local:/remote: worktree base refs. */
       exactWorktreeBaseBranch: z.boolean().optional(),
     })
@@ -390,6 +407,46 @@ export type PairRevokeParams = z.infer<typeof PairRevokeParamsSchema>;
 
 export const PairRevokeResultSchema = z.object({ revoked: z.literal(true) });
 export type PairRevokeResult = z.infer<typeof PairRevokeResultSchema>;
+
+const SecretNameSchema = z.string().regex(AGENT_SECRET_NAME_PATTERN);
+
+/**
+ * `secret-request.settle`: a person's answer to one waiting RequestSecrets
+ * form, from a paired browser or phone. `values` holds the entered values by
+ * name; `useHeld` names values the chat already holds. There is no scope:
+ * the host keeps paired answers for the chat only. The host validates them
+ * against the waiting request exactly as it does the local form's.
+ */
+export const SecretRequestSettleParamsSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('provide'),
+      requestId: z.uuid(),
+      values: z
+        .record(
+          SecretNameSchema,
+          z.string().min(1).max(AGENT_SECRET_VALUE_MAX_LENGTH),
+        )
+        .refine((values) => Object.keys(values).length <= 10),
+      useHeld: z.array(SecretNameSchema).max(10),
+    })
+    .strict(),
+  z.object({ action: z.literal('decline'), requestId: z.uuid() }).strict(),
+]);
+export type SecretRequestSettleParams = z.infer<
+  typeof SecretRequestSettleParamsSchema
+>;
+
+/** Whether the host took the answer; `error` never echoes a value. */
+export const SecretRequestSettleResultSchema = z
+  .object({
+    accepted: z.boolean(),
+    error: z.string().max(500).optional(),
+  })
+  .strict();
+export type SecretRequestSettleResult = z.infer<
+  typeof SecretRequestSettleResultSchema
+>;
 
 export const REMOTE_PROTOCOL_MISMATCH_CODE = 'remote_protocol_mismatch';
 

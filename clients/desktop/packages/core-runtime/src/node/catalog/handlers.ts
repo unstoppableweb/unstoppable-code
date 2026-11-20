@@ -196,6 +196,25 @@ async function readSnapshot(
   }
 }
 
+/** The kind an entry id names: every catalog entry id is `<kind>:<rest>`. */
+const entryIdKind = (id: string): string => id.slice(0, id.indexOf(':'));
+
+/**
+ * The snapshot for a read covering `kinds`. A kind the host could not read
+ * fails the read rather than answering without its entries.
+ */
+async function readSnapshotCovering(
+  host: CoreCatalogHost,
+  kinds: readonly string[],
+): Promise<CatalogSnapshotRead> {
+  const snapshot = await readSnapshot(host);
+  if (snapshot.unreadableKinds?.some((kind) => kinds.includes(kind)))
+    throw fail('unavailable', 'The catalog cannot be read right now.', {
+      retry: { kind: 'same_request' },
+    });
+  return snapshot;
+}
+
 async function readSelection(
   host: CoreCatalogHost,
   scope: CatalogSelectionScope,
@@ -262,7 +281,10 @@ export function createCoreCatalogHandlers(options: {
     key: string,
   ): Promise<CatalogSelectionRead> => {
     const current = await readSelection(host, scope);
-    const snapshot = await readSnapshot(host);
+    const snapshot = await readSnapshotCovering(
+      host,
+      params.selectedItemIds.map(entryIdKind),
+    );
     const refs = resolveIds(params.selectedItemIds, snapshot, current);
     try {
       return await host.replaceWorkspaceSelection({
@@ -333,7 +355,7 @@ export function createCoreCatalogHandlers(options: {
           );
         const kinds: readonly string[] =
           params.kinds.length > 0 ? params.kinds : served;
-        const snapshot = await readSnapshot(host);
+        const snapshot = await readSnapshotCovering(host, kinds);
         const entries: CatalogEntry[] = snapshot.entries.filter(
           (entry) =>
             kinds.includes(entry.kind) &&
@@ -354,7 +376,10 @@ export function createCoreCatalogHandlers(options: {
       'core.catalog.selection.get': async (params) => {
         const scope = catalogSelectionScopeOf(params.scope, params.targetId);
         const read = await readSelection(host, scope);
-        const snapshot = await readSnapshot(host);
+        const snapshot = await readSnapshotCovering(
+          host,
+          selectionEntryIds(read.selections).map(entryIdKind),
+        );
         const offered = new Set([
           ...snapshot.entries
             .filter((entry) => entry.availability === 'available')
@@ -437,7 +462,10 @@ export function createCoreCatalogHandlers(options: {
           recorded === null
             ? {
                 current: await readSelection(host, scope),
-                snapshot: await readSnapshot(host),
+                snapshot: await readSnapshotCovering(
+                  host,
+                  params.selectedItemIds.map(entryIdKind),
+                ),
               }
             : null;
         return runs.run({
@@ -458,7 +486,10 @@ export function createCoreCatalogHandlers(options: {
           effect: async () => {
             const { current, snapshot } = reads ?? {
               current: await readSelection(host, scope),
-              snapshot: await readSnapshot(host),
+              snapshot: await readSnapshotCovering(
+                host,
+                params.selectedItemIds.map(entryIdKind),
+              ),
             };
             const refs = resolveIds(params.selectedItemIds, snapshot, current);
             // CAN-5898: refuse before writing what the ledger cannot record.

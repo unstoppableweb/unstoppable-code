@@ -29,7 +29,14 @@ import {
   isCloudTaskDeleted,
 } from '@/stores/chat/web-core/task-deletions';
 import { useCloudArchivedTasksStore } from '@/cloud-chats/cloud-archived-tasks';
-import { resetWebCoreServedOperations } from '@/lib/web-core-served-operations';
+import {
+  readWebCoreServedOperationsOnline,
+  resetWebCoreServedOperations,
+  retryWebCoreServedOperations,
+  webCoreServedOperationsFailed,
+  webCoreServedOperationsKnown,
+} from '@/lib/web-core-served-operations';
+import { CostPanelHost } from '@/components/panels/cost/CostPanelHost';
 import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import type { AppAdvisorActionResponse } from '@/lib/app-actions/types';
 import { desktopCostNavigatorFor } from '@/lib/cost/cost-navigator';
@@ -50,6 +57,7 @@ import { setWorkspacePanelLayoutMode } from '@/lib/panels/workspace-layout-mode-
 import {
   layoutScopeServesPanelKind,
   panelKindsUnavailableFor,
+  removeScopeUnavailablePanels,
 } from '@/lib/panels/scope-panel-kinds';
 import { listAddablePanels } from '@/lib/panels/registry';
 import { openSubagentChatPanel } from '@/lib/panels/subagent-panel-open';
@@ -364,9 +372,9 @@ function lockedRowNamed(label: string): HTMLElement | undefined {
  */
 let mockDelegationStop = false;
 /**
- * Whether a cloud scope serves the Subagents and subagent chat panels
- * (CAN-7133). The desktop ships it off; a case turns it on as its switch-on
- * would.
+ * Forces a cloud scope's Subagents and subagent chat panels on whatever the
+ * manifest lists (CAN-7133). The manifest turns them on only with Stop, so a
+ * case uses this alone to pin what the viewer offers without it.
  */
 let mockCloudSubagentPanels = false;
 jest.mock('@/lib/web-core-scope-capabilities', () => {
@@ -665,6 +673,17 @@ let servesFork = false;
  * with none, as an older web core does.
  */
 let transcriptPageDetails: string[] | undefined | null = null;
+/**
+ * Which of a cloud chat's delegate reads, Stop and Stop all the manifest
+ * lists, and whether each is available (CAN-7245): `null` lists none and
+ * serves no manifest for them.
+ */
+let delegationOperationsAvailable: Readonly<Record<string, boolean>> | null =
+  null;
+/** Holds the manifest reply until released, as a read still in flight (CAN-7133). */
+let manifestGate: Promise<void> | null = null;
+/** How many manifest reads the web core refuses before it answers (CAN-7464). */
+let manifestRefusals = 0;
 /**
  * Whether the stub lists projects and tasks, so the cloud cowork store can
  * connect through the relay. Off by default: the cases that seed the store
@@ -1166,61 +1185,95 @@ Object.defineProperty(window, 'canopyCore', {
           },
         });
       if (
-        (servesCost || servesFork || transcriptPageDetails !== null) &&
+        manifestRefusals > 0 &&
+        request.method === 'core.runtime.manifest.get'
+      ) {
+        manifestRefusals -= 1;
+        return Promise.resolve({
+          ok: false,
+          error: {
+            kind: 'unavailable',
+            message: 'The web core is unavailable.',
+            retry: { kind: 'never' },
+          },
+        });
+      }
+      if (
+        (servesCost ||
+          servesFork ||
+          transcriptPageDetails !== null ||
+          delegationOperationsAvailable !== null) &&
         request.method === 'core.runtime.manifest.get'
       )
-        return ok({
-          runtime: {
-            runtimeId: 'web-core',
-            hostId: 'web',
-            authorityId: null,
-            profile: 'core',
-            daemonEpoch: 'e1',
-            protocolVersions: [1],
-            state: 'ready',
+        return held(manifestGate).then(() => ({
+          ok: true,
+          value: {
+            runtime: {
+              runtimeId: 'web-core',
+              hostId: 'web',
+              authorityId: null,
+              profile: 'core',
+              daemonEpoch: 'e1',
+              protocolVersions: [1],
+              state: 'ready',
+            },
+            operations: [
+              ...(servesCost
+                ? [
+                    costOperation('core.cost.scope.get'),
+                    {
+                      ...costOperation('core.cost.chat.get'),
+                      ...(costChatDetails === undefined
+                        ? {}
+                        : { details: costChatDetails }),
+                    },
+                  ]
+                : []),
+              ...(servesFork
+                ? [
+                    {
+                      name: 'core.chat.fork',
+                      kind: 'instruction',
+                      version: 1,
+                      placement: 'core-only',
+                      requiredGrants: ['core.chat.write'],
+                      available: true,
+                    },
+                  ]
+                : []),
+              ...Object.entries(delegationOperationsAvailable ?? {}).map(
+                ([name, available]) => ({
+                  name,
+                  kind:
+                    name === 'core.managedDelegation.stop' ||
+                    name === 'core.managedDelegation.stopAll'
+                      ? 'instruction'
+                      : 'query',
+                  version: 1,
+                  placement: 'core-only',
+                  requiredGrants: ['core.managedDelegation.read'],
+                  available,
+                }),
+              ),
+              ...(transcriptPageDetails === null
+                ? []
+                : [
+                    {
+                      name: 'core.chat.transcript.page',
+                      kind: 'query',
+                      version: 1,
+                      placement: 'core-only',
+                      requiredGrants: ['core.chat.read'],
+                      available: true,
+                      ...(transcriptPageDetails === undefined
+                        ? {}
+                        : { details: transcriptPageDetails }),
+                    },
+                  ]),
+            ],
+            generatedAt: CREATED_AT,
           },
-          operations: [
-            ...(servesCost
-              ? [
-                  costOperation('core.cost.scope.get'),
-                  {
-                    ...costOperation('core.cost.chat.get'),
-                    ...(costChatDetails === undefined
-                      ? {}
-                      : { details: costChatDetails }),
-                  },
-                ]
-              : []),
-            ...(servesFork
-              ? [
-                  {
-                    name: 'core.chat.fork',
-                    kind: 'instruction',
-                    version: 1,
-                    placement: 'core-only',
-                    requiredGrants: ['core.chat.write'],
-                    available: true,
-                  },
-                ]
-              : []),
-            ...(transcriptPageDetails === null
-              ? []
-              : [
-                  {
-                    name: 'core.chat.transcript.page',
-                    kind: 'query',
-                    version: 1,
-                    placement: 'core-only',
-                    requiredGrants: ['core.chat.read'],
-                    available: true,
-                    ...(transcriptPageDetails === undefined
-                      ? {}
-                      : { details: transcriptPageDetails }),
-                  },
-                ]),
-          ],
-          generatedAt: CREATED_AT,
-        });
+        }));
       if (servesCost && request.method === 'core.cost.scope.get') {
         const totals = {
           usd: 0.45,
@@ -2407,6 +2460,9 @@ beforeEach(() => {
   forkCreations = 0;
   servesFork = false;
   transcriptPageDetails = null;
+  delegationOperationsAvailable = null;
+  manifestGate = null;
+  manifestRefusals = 0;
   clearCloudForks();
   loseCreateReply = false;
   servesCoworkLists = false;
@@ -5147,6 +5203,91 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(cardStop('resumed')).not.toBeNull();
   });
 
+  const ALL_DELEGATION_OPERATIONS = {
+    'core.managedDelegation.list': true,
+    'core.managedDelegation.get': true,
+    'core.managedDelegation.stop': true,
+    'core.managedDelegation.stopAll': true,
+  } as const;
+
+  for (const [label, available, stops] of [
+    ['lists none of them, as an older web core does', {}, false],
+    [
+      'lists them all unavailable, as while its cloud managed delegation rollout is off for the user',
+      {
+        'core.managedDelegation.list': false,
+        'core.managedDelegation.get': false,
+        'core.managedDelegation.stop': false,
+        'core.managedDelegation.stopAll': false,
+      },
+      false,
+    ],
+    [
+      'lists Stop all unavailable',
+      { ...ALL_DELEGATION_OPERATIONS, 'core.managedDelegation.stopAll': false },
+      false,
+    ],
+    [
+      'lists only the reads',
+      {
+        'core.managedDelegation.list': true,
+        'core.managedDelegation.get': true,
+      },
+      false,
+    ],
+    [
+      'lists their reads, Stop and Stop all available',
+      ALL_DELEGATION_OPERATIONS,
+      true,
+    ],
+  ] as const) {
+    it(`stops a cloud chat's delegates only when the web core's manifest ${label} (CAN-7245)`, async () => {
+      delegationOperationsAvailable = available;
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      // The capability follows the manifest, which loads after first render.
+      await settle();
+      expect(coreRequests).toContain('core.runtime.manifest.get');
+      expect(cloudScopeCapabilitiesNow().delegationStop === true).toBe(stops);
+    });
+  }
+
+  it("offers a cloud delegate card's Stop from the web core's manifest alone, with no option forced on (CAN-7245)", async () => {
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
+    for (const run of ['first', 'second'])
+      delegationSnapshots.set(
+        `cloud-delegate-${run}`,
+        liveDelegateSnapshot(run),
+      );
+    await openDelegateCards(['first', 'second']);
+    await settle();
+    await settle();
+    expect(mockDelegationStop).toBe(false);
+    expect(cloudScopeCapabilitiesNow().delegationStop).toBe(true);
+    expect(cardStop('first')).not.toBeNull();
+    act(() => {
+      cardStop('first')?.click();
+    });
+    await settle();
+    await settle();
+    expect(keyedRequests('core.managedDelegation.stop')).toEqual([
+      {
+        params: {
+          scope: { workspaceId: 'ws-1', worktreeId: 'wt-1' },
+          chatId: 'wt-1',
+          delegationId: 'cloud-delegate-first',
+        },
+        key: 'string',
+      },
+    ]);
+    expect(cardText('first')).toContain('Cancelled');
+    expect(delegationIpcCalls()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
   it("refuses to stop a delegate that isn't on a card in that cloud chat, or one asked for another chat, and never shows a refused or unanswered stop as stopped (CAN-7245)", async () => {
     mockDelegationStop = true;
     delegationSnapshots.set(
@@ -5566,8 +5707,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       expect(coreRequests).toContain('core.runtime.manifest.get');
       const capabilities = cloudScopeCapabilitiesNow();
       expect(capabilities.delegationTranscriptReads === true).toBe(reads);
-      // Without cloudSubagentPanels, which nothing passes yet (CAN-7133),
-      // the add menu and the layout refuse both kinds either way.
+      // The manifest lists no delegate operations, so the add menu and the
+      // layout refuse both kinds either way (CAN-7133).
       expect(
         panelKindsUnavailableFor(capabilities).filter(
           (kind) => kind === 'subagents' || kind === 'subagent-chat',
@@ -5775,12 +5916,348 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(callsCarryingWebCoreIds()).toEqual([]);
   });
 
-  it("lists a cloud task's root chats, and each root's own delegates and native subagents, from what the desktop already holds (CAN-7133)", async () => {
+  for (const [label, details, operations, serves] of [
+    [
+      'lists the delegation pages and all four delegate operations',
+      ['delegation'],
+      ALL_DELEGATION_OPERATIONS,
+      true,
+    ],
+    [
+      'lists the delegation pages but Stop all unavailable',
+      ['delegation'],
+      { ...ALL_DELEGATION_OPERATIONS, 'core.managedDelegation.stopAll': false },
+      false,
+    ],
+    [
+      'lists the delegation pages and only three of the four delegate operations',
+      ['delegation'],
+      {
+        'core.managedDelegation.list': true,
+        'core.managedDelegation.get': true,
+        'core.managedDelegation.stop': true,
+      },
+      false,
+    ],
+    [
+      'lists all four delegate operations but no delegation pages',
+      undefined,
+      ALL_DELEGATION_OPERATIONS,
+      false,
+    ],
+    [
+      'lists the delegation pages and none of the delegate operations',
+      ['delegation'],
+      {},
+      false,
+    ],
+  ] as const) {
+    it(`offers a cloud task the Subagents panels only when the web core's manifest ${label} (CAN-7133)`, async () => {
+      transcriptPageDetails = details === undefined ? undefined : [...details];
+      delegationOperationsAvailable = operations;
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      // The capability follows the manifest, which loads after first render.
+      await settle();
+      expect(coreRequests).toContain('core.runtime.manifest.get');
+      expect(mockCloudSubagentPanels).toBe(false);
+      const capabilities = cloudScopeCapabilitiesNow();
+      expect(capabilities.subagentPanels === true).toBe(serves);
+      expect(
+        panelKindsUnavailableFor(capabilities).filter(
+          (kind) => kind === 'subagents' || kind === 'subagent-chat',
+        ),
+      ).toEqual(serves ? [] : ['subagents', 'subagent-chat']);
+      expect(
+        (['subagents', 'subagent-chat'] as const).map((kind) =>
+          layoutScopeServesPanelKind(CLOUD_SCOPE_KEY, kind),
+        ),
+      ).toEqual([serves, serves]);
+    });
+  }
+
+  /** The kinds of the task's subagent tabs, in its layout. */
+  const subagentTabKinds = (): string[] =>
+    Object.values(
+      usePanelLayoutStore.getState().layouts[CLOUD_SCOPE_KEY]?.groups ?? {},
+    )
+      .flatMap((group) => group.tabs.map((tab) => tab.kind))
+      .filter((kind) => kind === 'subagents' || kind === 'subagent-chat')
+      .sort();
+
+  /** Holds the manifest reply; the returned function releases it. */
+  function holdManifest(): () => void {
+    let release = (): void => undefined;
+    manifestGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return () => {
+      act(() => {
+        release();
+      });
+    };
+  }
+
+  /** No delegate read, Stop or main call has been made. */
+  function expectNoSubagentRequests(): void {
+    expect(delegationRequests('core.managedDelegation.list')).toEqual([]);
+    expect(delegationRequests('core.managedDelegation.get')).toEqual([]);
+    expect(delegationRequests('core.managedDelegation.stop')).toEqual([]);
+    expect(delegationRequests('core.managedDelegation.stopAll')).toEqual([]);
+    expect(delegationReads()).toEqual([]);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  }
+
+  it("keeps a cloud task's Subagents tabs while the web core's manifest read is in flight, with no request and no Stop, and serves them once it lands (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
+    const releaseManifest = holdManifest();
     seedTwoRoots();
     await openSubagentsPanel();
+    expect(webCoreServedOperationsKnown()).toBe(false);
+    // A restored layout's sweep keeps the tab while the read is in flight.
+    act(() => {
+      removeScopeUnavailablePanels(CLOUD_SCOPE_KEY);
+    });
+    await settle();
+    expect(subagentTabKinds()).toEqual(['subagents']);
+    expect(shown('subagents-pending')).toBe(true);
+    expect(shown('subagents-panel')).toBe(false);
+    expect(shown('subagents-inspector-stop')).toBe(false);
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(subagentTabKinds()).toEqual(['subagent-chat', 'subagents']);
+    expect(shown('subagent-chat-pending')).toBe(true);
+    expect(shown('subagent-chat-panel')).toBe(false);
+    expectNoSubagentRequests();
+
+    // The manifest lands, listing the reads: the kept tab serves them.
+    releaseManifest();
+    await settle();
+    await settle();
+    expect(webCoreServedOperationsKnown()).toBe(true);
+    expect(shown('subagent-chat-panel')).toBe(true);
+    expect(pageReads()).toEqual(['chat-2/cloud-delegate-b/1']);
+    expect(subagentIpc()).toEqual([]);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("shows a cloud task's kept Subagents tabs as unavailable, not removed, when the web core's manifest then doesn't serve them (CAN-7133)", async () => {
+    // The manifest lists the pages but no delegate operation.
+    transcriptPageDetails = ['delegation'];
+    const releaseManifest = holdManifest();
+    seedTwoRoots();
+    await openSubagentsPanel();
+    await openCloudSubagentChat('chat-2', 'b');
+    expect(subagentTabKinds()).toEqual(['subagent-chat', 'subagents']);
+
+    releaseManifest();
+    await settle();
+    await settle();
+    expect(webCoreServedOperationsKnown()).toBe(true);
+    expect(cloudScopeCapabilitiesNow().subagentPanels).toBeUndefined();
+    expect(layoutScopeServesPanelKind(CLOUD_SCOPE_KEY, 'subagents')).toBe(
+      false,
+    );
+    // Both tabs stay, and the open one says the task doesn't serve it.
+    expect(subagentTabKinds()).toEqual(['subagent-chat', 'subagents']);
+    expect(shown('subagents-empty-unavailable')).toBe(true);
+    expect(shown('subagent-chat-panel')).toBe(false);
+    expectNoSubagentRequests();
+  });
+
+  /** The manifest reads asked of the web core so far. */
+  const manifestReads = (): number =>
+    coreRequests.filter((method) => method === 'core.runtime.manifest.get')
+      .length;
+
+  /**
+   * Reads the scope's capabilities a few times, as each render of a reader
+   * does; each read asks the loader for the manifest.
+   */
+  async function readCapabilitiesAgain(): Promise<void> {
+    for (let render = 0; render < 3; render += 1) cloudScopeCapabilitiesNow();
+    await settle();
+  }
+
+  it("shows a kept cloud Subagents tab's failed manifest read with Try again, reads nothing and asks no more on its own, then serves once Try again lands (CAN-7464)", async () => {
+    transcriptPageDetails = ['delegation'];
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
+    manifestRefusals = 1;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    // Failed, not loading: the tab stays and says so, with Try again.
+    expect(subagentTabKinds()).toEqual(['subagents']);
+    expect(shown('subagents-manifest-failed')).toBe(true);
+    expect(shown('subagents-pending')).toBe(false);
+    const reads = manifestReads();
+    await readCapabilitiesAgain();
+    expect(manifestReads()).toBe(reads);
+    expectNoSubagentRequests();
+    expect(shown('subagents-manifest-retry')).toBe(true);
+
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="subagents-manifest-retry"]')
+        ?.click();
+    });
+    expect(shown('subagents-manifest-failed')).toBe(false);
+    expect(shown('subagents-pending')).toBe(true);
+    await settle();
+    await settle();
+    expect(manifestReads()).toBe(reads + 1);
+    expect(webCoreServedOperationsFailed()).toBe(false);
+    expect(shown('subagents-panel')).toBe(true);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  /** Adds a Cost tab to the task's layout. */
+  function addCostTab(): void {
+    const groups =
+      usePanelLayoutStore.getState().layouts[CLOUD_SCOPE_KEY]?.groups ?? {};
+    const groupId =
+      'group-extras' in groups ? 'group-extras' : Object.keys(groups)[0];
+    act(() => {
+      usePanelLayoutStore
+        .getState()
+        .addTab(CLOUD_SCOPE_KEY, groupId ?? '', 'cost');
+    });
+    onCaseEnd(() => {
+      const layouts = usePanelLayoutStore.getState();
+      for (const [id, group] of Object.entries(
+        layouts.layouts[CLOUD_SCOPE_KEY]?.groups ?? {},
+      ))
+        layouts.closeTabs(
+          CLOUD_SCOPE_KEY,
+          id,
+          group.tabs
+            .filter((tab) => tab.kind === 'cost')
+            .map((tab) => tab.panelId),
+        );
+    });
+  }
+
+  const costReads = (): number =>
+    coreRequests.filter((method) => method === 'core.cost.scope.get').length;
+
+  it("shows a kept cloud Cost tab's failed manifest read with Try again, reads no cost and asks no more on its own, then reads its cost once Try again lands (CAN-7464)", async () => {
+    servesCost = true;
+    manifestRefusals = 1;
+    await openTaskChat();
+    addCostTab();
+    await settle();
+    await settle();
+    expect(shown('cost-manifest-failed')).toBe(true);
+    const reads = manifestReads();
+    await readCapabilitiesAgain();
+    expect(manifestReads()).toBe(reads);
+    expect(costReads()).toBe(0);
+
+    act(() => {
+      container
+        .querySelector<HTMLElement>('[data-testid="cost-manifest-retry"]')
+        ?.click();
+    });
+    expect(shown('cost-manifest-failed')).toBe(false);
+    expect(
+      container.querySelector(
+        '[data-testid="cost-panel-host"] [data-testid="delayed-loading-placeholder"]',
+      ),
+    ).not.toBeNull();
+    await settle();
+    await settle();
+    expect(manifestReads()).toBe(reads + 1);
+    expect(shown('cost-manifest-failed')).toBe(false);
+    expect(costReads()).toBeGreaterThan(0);
+    expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("reads a local Cost panel from this computer as before, whatever the web core's manifest read did (CAN-7464)", async () => {
+    servesCost = true;
+    manifestRefusals = 1;
+    await openTaskChat();
+    const local = document.createElement('div');
+    document.body.append(local);
+    const localRoot = createRoot(local);
+    onCaseEnd(() => {
+      act(() => {
+        localRoot.unmount();
+      });
+      local.remove();
+    });
+    act(() => {
+      localRoot.render(
+        <CanopyClientProvider
+          client={createDesktopCanopyClient(
+            createDesktopCapabilities('darwin', {}, {}),
+          )}
+        >
+          <DesktopCostCurrencyProvider>
+            <CostPanelHost projectId="local-project" worktreeId="local-wt" />
+          </DesktopCostCurrencyProvider>
+        </CanopyClientProvider>,
+      );
+    });
+    await settle();
+    // No manifest gate: the body renders and reads main's cost index.
+    expect(local.querySelector('[data-testid="cost-manifest-failed"]')).toBe(
+      null,
+    );
+    expect(local.querySelector('[data-testid="cost-panel-host"]')).not.toBe(
+      null,
+    );
+    expect(
+      calls.some(
+        (call) =>
+          call.path.startsWith('api.cost.') &&
+          JSON.stringify(call.args).includes('local-project'),
+      ),
+    ).toBe(true);
+  });
+
+  for (const via of ['Try again', 'a reconnect'] as const)
+    it(`keeps a cloud task's Fork and delegate Stop off after a failed manifest read, asking no more on its own, and turns them on once ${via} reads it (CAN-7464)`, async () => {
+      servesFork = true;
+      delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
+      manifestRefusals = 1;
+      connectCloud();
+      renderPage();
+      act(() => {
+        openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+      });
+      await settle();
+      await settle();
+      const off = cloudScopeCapabilitiesNow();
+      expect([off.chatTaskFork, off.delegationStop]).toEqual([
+        undefined,
+        undefined,
+      ]);
+      const reads = manifestReads();
+      await readCapabilitiesAgain();
+      expect(manifestReads()).toBe(reads);
+
+      act(() => {
+        if (via === 'Try again') retryWebCoreServedOperations();
+        else readWebCoreServedOperationsOnline();
+      });
+      await settle();
+      await settle();
+      expect(manifestReads()).toBe(reads + 1);
+      const on = cloudScopeCapabilitiesNow();
+      expect([on.chatTaskFork, on.delegationStop]).toEqual([true, true]);
+    });
+
+  it("lists a cloud task's root chats, and each root's own delegates and native subagents, from what the desktop already holds (CAN-7133)", async () => {
+    transcriptPageDetails = ['delegation'];
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
+    seedTwoRoots();
+    await openSubagentsPanel();
+    // The manifest alone turns the panels on: no option is forced.
+    expect(mockCloudSubagentPanels).toBe(false);
+    expect(cloudScopeCapabilitiesNow().subagentPanels).toBe(true);
     expect(shown('subagents-panel')).toBe(true);
     // Both of the task's chats are roots: each holds its own delegate card.
     expect(await subagentRootOptions()).toEqual([
@@ -5850,8 +6327,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("opens a cloud delegate's subagent chat and reads its pages from the web core, scoped to its own root chat (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     seedTwoRoots();
     delegateTranscripts.set('cloud-delegate-b', [
       {
@@ -5889,8 +6365,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it('offers a cloud subagent only the controls its scope serves (CAN-7133)', async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     seedTwoRoots();
     await openSubagentsPanel();
     await selectSubagentRoot('chat-2');
@@ -5931,6 +6406,8 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("offers no Stop on a cloud subagent while its scope doesn't stop delegates (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
+    // The manifest serves the panels only with Stop: forced on, the viewer
+    // still offers Stop only where the scope stops delegates.
     mockCloudSubagentPanels = true;
     seedTwoRoots();
     await openSubagentsPanel();
@@ -5955,8 +6432,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("refuses a delegate that isn't on its root chat's cards, with no request (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     seedTwoRoots();
     delegateTranscripts.set('cloud-delegate-b', [
       {
@@ -6093,8 +6569,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("keeps reading a cloud root's settled delegates in the Subagents panel while the root's turn runs, and stops once it ends (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     // The second chat runs a turn; its delegate b has settled. The task's
     // chat is the one opened, so only the panel watches the second chat.
     secondChatTurn = 'notes-turn';
@@ -6201,8 +6676,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("shows a cloud delegate's final answer once in its subagent chat when its pages repeat it (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
     transcripts['chat-2'] = chatWithCards('notes', [
       {
@@ -6221,8 +6695,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("shows a newer cloud run's own final text once, though it repeats the recorded run's answer (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     // Both runs end the same way; run 2 has no card, so its view is drawn
     // from run 1's.
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
@@ -6246,8 +6719,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("keeps a cloud delegate's earlier runs when the web core reports a newer one, and reads each run's pages only under its own root (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     // B's chat recorded run 1, settled; the web core says run 2 now runs.
     // A's chat has a delegate of its own and no card for B's.
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
@@ -6344,8 +6816,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
   /** B's chat with one settled run-2 card for c, and c's live run. */
   async function openRootWithLiveRun(liveRun: number): Promise<void> {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
     transcripts['chat-2'] = chatWithCards('notes', [
       {
@@ -6391,8 +6862,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it('keeps a managed-only cloud root in the Subagents picker after its transcript is evicted, and reloads it when selected (CAN-7133)', async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
     // The second chat's only subagent is a managed delegate.
     transcripts['chat-2'] = chatWithCards('notes', [
@@ -6461,8 +6931,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
 
   it("ignores a cloud delegate's live state from a run older than its latest card (CAN-7133)", async () => {
     transcriptPageDetails = ['delegation'];
-    mockDelegationStop = true;
-    mockCloudSubagentPanels = true;
+    delegationOperationsAvailable = ALL_DELEGATION_OPERATIONS;
     // C's chat recorded run 2, settled; the web core still reports run 1.
     transcripts['wt-1'] = chatWithCards('brief', [runningDelegateCard('a')]);
     transcripts['chat-2'] = chatWithCards('notes', [

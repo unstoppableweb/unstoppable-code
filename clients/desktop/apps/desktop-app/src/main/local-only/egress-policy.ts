@@ -27,6 +27,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { getLocalOnlySettingsFilePath } from '../lib/paths';
 import { isLoopbackHost, normalizeEgressHost } from './loopback';
+import { isLocalOnlyBuild } from './profile';
 
 /** Returns the hosts a source allows at the moment it is called. */
 export type EgressAllowedHostSource = () => Iterable<string>;
@@ -247,6 +248,22 @@ export function evaluateEgressUrl(value: string): EgressUrlDecision {
   return isEgressHostAllowed(host)
     ? { allowed: true }
     : { allowed: false, host };
+}
+
+/**
+ * The host a local-only build would refuse for `url`, or null when the
+ * request may go (always null in a normal build). Unlike the guard's own
+ * check, it reads `local-only.json` again first, so a host just added to
+ * `allowedHosts` counts on the next attempt. For user-started downloads that
+ * explain a refusal before sending anything (CAN-7341).
+ */
+export async function localOnlyBlockedHost(
+  url: string,
+): Promise<string | null> {
+  if (!isLocalOnlyBuild()) return null;
+  await refreshSettings();
+  const decision = evaluateEgressUrl(url);
+  return decision.allowed ? null : decision.host;
 }
 
 export function resetEgressPolicyForTests(): void {

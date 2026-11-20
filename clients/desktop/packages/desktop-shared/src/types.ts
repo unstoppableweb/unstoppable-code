@@ -14120,7 +14120,7 @@ export interface McpSecretRequest {
   accessMode: 'ask' | 'full' | 'cloud';
   /** `session` when secure storage is unavailable: values stay in memory. */
   storage: 'encrypted' | 'session';
-  secrets: McpSecretRequestItem[];
+  secrets: readonly McpSecretRequestItem[];
 }
 
 /**
@@ -19695,6 +19695,15 @@ export interface WorkersApi {
 export type DeepLinkShareOpenEvent = DesktopShareDeepLink;
 
 /**
+ * Payload pushed over `IPC_CHANNELS.remoteControlDialogRequest` when an agent
+ * asks this window to open (`true`) or close (`false`) its Remote Control
+ * dialog (CAN-7298). One-way: main learns only that the request was sent.
+ */
+export interface RemoteControlDialogRequest {
+  open: boolean;
+}
+
+/**
  * Request/response for `IPC_CHANNELS.deepLinkResolveShare`: the landing modal
  * resolving a deep-linked public share to its pinned snapshot (anonymous web
  * endpoint; works signed-out). Unavailable shares and malformed requests
@@ -20007,6 +20016,14 @@ export interface CanopyApi {
   ) => () => void;
   /** Subscribe to validated Remote Control navigation deep links. */
   onDeepLinkRemoteControlOpen: (cb: () => void) => () => void;
+  /**
+   * Subscribe to agent requests to open (`open: true`) or close this
+   * window's Remote Control dialog. Payloads that are not exactly
+   * `{ open: boolean }` are dropped.
+   */
+  onRemoteControlDialogRequest: (
+    cb: (request: RemoteControlDialogRequest) => void,
+  ) => () => void;
   /**
    * Subscribe to validated billing return links. The payload is a refresh
    * hint only: it never proves a payment and never selects a model.
@@ -29178,6 +29195,9 @@ export const IPC_CHANNELS = {
   remoteControlOpenPairingWindow: 'remote-control:open-pairing-window',
   remoteControlClosePairingWindow: 'remote-control:close-pairing-window',
   remoteControlPairingEvent: 'remote-control:pairing-event',
+  // Agent request to open or close this window's Remote Control dialog
+  // (CAN-7298). Payload: RemoteControlDialogRequest.
+  remoteControlDialogRequest: 'remote-control:dialog-request', // main → renderer event
   // Served by the controlled machine: its stable install identifier, read
   // through the Portal state store's identity boundary.
   remoteControlInstallId: 'remote-control:install-id',

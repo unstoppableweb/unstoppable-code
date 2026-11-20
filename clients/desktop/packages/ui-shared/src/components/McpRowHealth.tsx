@@ -33,6 +33,7 @@ export function McpRowAttention({
   checkedLabel,
   testId,
   instruction: instructionOverride,
+  showLabel = false,
 }: {
   readonly name: string;
   readonly label: string;
@@ -41,6 +42,8 @@ export function McpRowAttention({
   readonly testId: string;
   /** Replaces the sentence that says where to fix it. */
   readonly instruction?: string;
+  /** New Customize: the callout says its label in plain text. */
+  readonly showLabel?: boolean;
 }): JSX.Element {
   const instruction =
     instructionOverride ??
@@ -63,14 +66,20 @@ export function McpRowAttention({
         tabIndex={0}
         aria-label={message}
         data-testid={testId}
-        className="focus-ring focus-ring-inset inline-flex shrink-0 items-center justify-center rounded-sm fg-warning pointer-coarse:min-h-6 pointer-coarse:min-w-6"
+        className={`focus-ring focus-ring-inset inline-flex shrink-0 items-center justify-center rounded-sm pointer-coarse:min-h-6 pointer-coarse:min-w-6 ${showLabel ? 'gap-1 fg-primary' : 'fg-warning'}`}
         onKeyDown={(event): void => {
           if (event.key !== 'Enter' && event.key !== ' ') return;
           event.preventDefault();
           event.currentTarget.click();
         }}
       >
-        <AlertTriangle width={13} height={13} aria-hidden="true" />
+        <AlertTriangle
+          width={13}
+          height={13}
+          aria-hidden="true"
+          className={showLabel ? 'shrink-0 fg-warning' : undefined}
+        />
+        {showLabel && <span>{label}</span>}
       </span>
     </Tooltip>
   );
@@ -85,6 +94,8 @@ export function McpRowHealth({
 }: McpRowHealthProps): JSX.Element {
   // New Customize: the dot carries the color; the text stays plain.
   const neutralText = useItemStateMarks();
+  // New Customize says the warning in text, so a sign-in with nothing to
+  // click still reads as one without opening the tooltip.
   if (model.tone === 'attention')
     return (
       <McpRowAttention
@@ -93,6 +104,7 @@ export function McpRowHealth({
         action={model.action}
         checkedLabel={checkedLabel}
         testId={testId}
+        showLabel={neutralText}
       />
     );
   return (

@@ -24,7 +24,14 @@ interface VoiceInputButtonProps {
   primary?: boolean;
   /** Its keyboard shortcut, shown in the tooltip while it can start. */
   shortcut?: string;
+  /**
+   * The speech model is downloading for this composer (CAN-7341): the
+   * starting look, labelled for the download, and clicks do nothing.
+   */
+  preparing?: boolean;
 }
+
+const PREPARING_LABEL = 'Downloading the speech model…';
 
 export function VoiceInputButton({
   state,
@@ -35,11 +42,12 @@ export function VoiceInputButton({
   capsule = false,
   primary = false,
   shortcut,
+  preparing = false,
 }: VoiceInputButtonProps): JSX.Element {
   const isActive = state === 'listening' || state === 'connecting';
 
   const handleClick = (): void => {
-    if (disabled) {
+    if (disabled || preparing) {
       return;
     }
     if (isActive) {
@@ -51,24 +59,30 @@ export function VoiceInputButton({
 
   const title = disabled
     ? 'Voice dictation is unavailable in terminal mode'
-    : state === 'error' && error
-      ? error
-      : state === 'listening'
-        ? 'Stop dictation'
-        : state === 'connecting'
-          ? 'Starting microphone…'
-          : 'Start voice dictation';
+    : preparing
+      ? PREPARING_LABEL
+      : state === 'error' && error
+        ? error
+        : state === 'listening'
+          ? 'Stop dictation'
+          : state === 'connecting'
+            ? 'Starting microphone…'
+            : 'Start voice dictation';
 
   // Idle, the tooltip names the action and its key; every other state keeps
   // the state readout (listening, starting, error).
-  const idle = !disabled && (state === 'idle' || (state === 'error' && !error));
+  const idle =
+    !disabled &&
+    !preparing &&
+    (state === 'idle' || (state === 'error' && !error));
   const tooltipLabel = idle ? 'Dictate' : title;
   const tooltipShortcut = idle ? shortcut : undefined;
 
   // Listening is the destructive tone held active (the wash stays on); an
   // error rests in it; starting up is pending, with no hover feedback.
-  const tone: ComposerIconButtonTone =
-    state === 'listening' || state === 'error'
+  const tone: ComposerIconButtonTone = preparing
+    ? 'pending'
+    : state === 'listening' || state === 'error'
       ? 'destructive'
       : state === 'connecting'
         ? 'pending'
@@ -88,6 +102,7 @@ export function VoiceInputButton({
           variant="primary"
           iconOnly
           data-testid="voice-input-button"
+          data-state={state}
           data-emphasis="primary"
           onClick={handleClick}
           disabled={disabled}
@@ -110,12 +125,18 @@ export function VoiceInputButton({
         active={state === 'listening'}
         capsule={capsule}
         data-testid="voice-input-button"
+        data-state={preparing ? 'preparing' : state}
         onClick={handleClick}
         disabled={disabled}
         aria-label={title}
         aria-pressed={state === 'listening'}
+        {...(preparing ? { 'aria-busy': true } : {})}
       >
-        {state === 'connecting' ? <LoadingSpinner /> : <MicIcon size="sm" />}
+        {preparing || state === 'connecting' ? (
+          <LoadingSpinner />
+        ) : (
+          <MicIcon size="sm" />
+        )}
       </ComposerIconButton>
     </Tooltip>
   );

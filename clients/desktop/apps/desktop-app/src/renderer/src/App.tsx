@@ -12,6 +12,10 @@ import {
   localPlatform,
   shellDrawsTitlebarDragRegion,
 } from '@/lib/local-platform';
+import {
+  openAccountSettingsFromRemoteControl,
+  requestRemoteControlDialogOpen,
+} from '@/lib/navigation/remote-control-dialog';
 import { bridgeMainSkillsChanged } from '@/lib/skillsChanged';
 import {
   openCloudAccountSettings,
@@ -1357,6 +1361,18 @@ function App(): JSX.Element {
     });
   }, []);
 
+  // CAN-7298: agent requests from main to open or close this window's
+  // Remote Control dialog.
+  useEffect(() => {
+    return window.api.onRemoteControlDialogRequest((request) => {
+      if (request.open) {
+        requestRemoteControlDialogOpen();
+        return;
+      }
+      useNavigationStore.getState().closeRemoteControlDialog();
+    });
+  }, []);
+
   useEffect(() => {
     return window.api.onDeepLinkSettingsOpen(openSettingsDeepLink);
   }, []);
@@ -1591,9 +1607,9 @@ function App(): JSX.Element {
             dispatchUiAction({ type: 'navigation.open_settings' })
           }
           settingsOpen={sidebarPageOpen}
-          onRemoteControlClick={() =>
-            dispatchUiAction({ type: 'canopy_portal.open' })
-          }
+          onRemoteControlClick={() => {
+            requestRemoteControlDialogOpen();
+          }}
           ledgerEnabled={ledgerEnabled}
           claudeTuiWorkersEnabled={claudeTuiWorkersEnabled}
           // With the Orchestrator page experiment the row opens it as a page
@@ -1699,11 +1715,7 @@ function App(): JSX.Element {
                 )}
                 {visiblePage === 'plugins' && (
                   <PluginsPage
-                    onOpenAccountSettings={() => {
-                      dispatchUiAction({
-                        type: 'canopy_portal.open_account_settings',
-                      });
-                    }}
+                    onOpenAccountSettings={openAccountSettingsFromRemoteControl}
                   />
                 )}
                 {visiblePage === 'audit' && <AuditTrailPage />}
@@ -1812,9 +1824,7 @@ function App(): JSX.Element {
         <Suspense fallback={null}>
           <RemoteControlModal
             onClose={closeRemoteControlDialog}
-            onOpenAccountSettings={() => {
-              dispatchUiAction({ type: 'canopy_portal.open_account_settings' });
-            }}
+            onOpenAccountSettings={openAccountSettingsFromRemoteControl}
             onRequestSignIn={() => {
               // Route through the shared cloud connect gate (CAN-936, WS3). The
               // Portal modal stays mounted underneath, so once connected it

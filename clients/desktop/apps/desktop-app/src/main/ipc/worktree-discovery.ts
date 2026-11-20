@@ -58,6 +58,19 @@ const lastChatDiscovery = new Map<
   }
 >();
 
+/**
+ * The chat's latest discovery this process ran, which can be newer than the
+ * tab's persisted copy. Read only; it never starts a discovery.
+ */
+export function readLatestChatDiscovery(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): WorktreeDiscovery | undefined {
+  return lastChatDiscovery.get(`${projectId}/${worktreeId}/${chatId}`)?.event
+    .discovery;
+}
+
 subscribeWorkspaceTargetRemoval((projectId, worktreeId) => {
   const prefix = `${projectId}/${worktreeId}`;
   for (const key of lastChatDiscovery.keys()) {

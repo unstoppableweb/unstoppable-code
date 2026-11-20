@@ -24,6 +24,8 @@ import {
 } from '@canopy/execution-engine/pipelines/store';
 import { createHash } from 'node:crypto';
 import { readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import { app } from 'electron';
 import * as storeModule from '@canopy/execution-engine/pipelines/store';
 import * as pipelineInstallContext from '../../pipelines/pipeline-install-context';
@@ -50,6 +52,7 @@ import {
 } from '../../pipelines/pipeline-local-metadata-store';
 import {
   IPC_CHANNELS,
+  type InstallAutomationPipelinesResponse,
   type ScheduledActivity,
 } from '@canopy/desktop-shared/types';
 import {
@@ -68,7 +71,10 @@ import {
   findCapabilityPackageInstallByOwner,
   upsertCapabilityPackageInstall,
 } from '../../pipelines/pipeline-package-install-store';
-import { getPipelinePackageInstallStorePath } from '../../lib/paths';
+import {
+  getPipelineAssetsDir,
+  getPipelinePackageInstallStorePath,
+} from '../../lib/paths';
 import * as advisorAccess from '../../lib/app-advisor-project-agent-access';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
@@ -88,6 +94,8 @@ import {
 import {
   createPipelineGoldenWorld,
   GOLDEN_AUTOMATION_ENTRY_KEY,
+  GOLDEN_AUTOMATION_NOTES,
+  GOLDEN_AUTOMATION_REVISED_NOTES,
   GOLDEN_AUTOMATION_SHARE_ID,
   GOLDEN_AUTOMATION_WORKER_KEY,
   type GoldenAutomationPackage,
@@ -1048,6 +1056,241 @@ describe('installs from the curated catalog and shares', () => {
     const added = (listStoredPipelines().data ?? []).length - before;
     for (const id of Object.values(ids)) deleteStoredPipeline(id);
     expect({ ...results, added }).toMatchSnapshot();
+  });
+
+  /** Stage A of a golden package, over the recorded pipelines when given. */
+  async function automationStageA(
+    automationPackage: GoldenAutomationPackage,
+    existing?: {
+      entry: string;
+      worker: string;
+      from: GoldenAutomationPackage;
+    },
+  ): Promise<InstallAutomationPipelinesResponse> {
+    const { installAutomationPipelines } =
+      await import('../../pipelines/automation-pipeline-install');
+    return installAutomationPipelines({
+      remoteId: GOLDEN_AUTOMATION_SHARE_ID,
+      packageRef: { version: 1, digest: automationPackage.digest },
+      source: 'public',
+      stage: 'pipelines',
+      ...(existing
+        ? {
+            existingPipelines: [
+              {
+                key: GOLDEN_AUTOMATION_ENTRY_KEY,
+                localPipelineId: existing.entry,
+                expectedContentHash:
+                  existing.from.contentHashes[GOLDEN_AUTOMATION_ENTRY_KEY] ??
+                  '',
+              },
+              {
+                key: GOLDEN_AUTOMATION_WORKER_KEY,
+                localPipelineId: existing.worker,
+                expectedContentHash:
+                  existing.from.contentHashes[GOLDEN_AUTOMATION_WORKER_KEY] ??
+                  '',
+              },
+            ],
+          }
+        : {}),
+    });
+  }
+
+  /** The local ids a Stage A install reported, by golden pipeline key. */
+  const installedIds = (
+    response: InstallAutomationPipelinesResponse,
+  ): { entry: string; worker: string } => ({
+    entry:
+      response.pipelines.find(
+        (pipeline) => pipeline.key === GOLDEN_AUTOMATION_ENTRY_KEY,
+      )?.localPipelineId ?? '',
+    worker:
+      response.pipelines.find(
+        (pipeline) => pipeline.key === GOLDEN_AUTOMATION_WORKER_KEY,
+      )?.localPipelineId ?? '',
+  });
+
+  it('CAN-7336 a run that starts while an automation installs never sees the new workflow without its complete files', async () => {
+    const { pipelineAssetEnvironment } =
+      await import('../../pipelines/pipeline-asset-install');
+    const { v1, v3 } = world.automationPackages;
+    const stageA = automationStageA;
+    const sha256 = (text: string): string =>
+      createHash('sha256').update(text).digest('hex');
+    // What a run that starts now loads: the stored entry workflow, and the
+    // supporting file it reads from its asset folder.
+    const runStart = (
+      id: string,
+      revisions: Record<string, GoldenAutomationPackage>,
+    ): { workflow: string; notes: string } => {
+      const text = storeModule.getStoredPipelineText(id);
+      const hash =
+        text.success && text.data !== undefined
+          ? hashPipelinePackageYaml(text.data)
+          : undefined;
+      const workflow =
+        hash === undefined
+          ? 'absent'
+          : (Object.entries(revisions).find(
+              ([, revision]) =>
+                revision.contentHashes[GOLDEN_AUTOMATION_ENTRY_KEY] === hash,
+            )?.[0] ?? 'unknown');
+      let notes = 'absent';
+      try {
+        const bytes = readFileSync(
+          join(getPipelineAssetsDir(id), 'specialists', 'notes.md'),
+          'utf8',
+        );
+        notes =
+          sha256(bytes) === sha256(GOLDEN_AUTOMATION_NOTES)
+            ? 'v1'
+            : sha256(bytes) === sha256(GOLDEN_AUTOMATION_REVISED_NOTES)
+              ? 'v3'
+              : 'unknown';
+      } catch {
+        // Not written yet.
+      }
+      return { workflow, notes };
+    };
+    // Stage A installs each pipeline through core.pipeline.definition.import,
+    // whose packaged remote writes the files and the document. A run starts
+    // beside every file the install moves into place.
+    const realMove = pipelineAssetEnvironment.moveAssetFile;
+    const observed: Array<{ at: string; workflow: string; notes: string }> = [];
+    const move = jest
+      .spyOn(pipelineAssetEnvironment, 'moveAssetFile')
+      .mockImplementation(async (id, from, to) => {
+        observed.push({ at: 'before move', ...runStart(id, { v1, v3 }) });
+        await realMove(id, from, to);
+        observed.push({ at: 'after move', ...runStart(id, { v1, v3 }) });
+      });
+    const created: string[] = [];
+    try {
+      const { entry, worker } = installedIds(await stageA(v1));
+      created.push(entry, worker);
+      const createdRuns = observed.splice(0);
+      const installedRun = runStart(entry, { v1, v3 });
+
+      await stageA(v3, { entry, worker, from: v1 });
+      const updateRuns = observed.splice(0);
+      const updatedRun = runStart(entry, { v1, v3 });
+
+      expect({
+        // A new workflow has no document until its file is in place.
+        createdRuns,
+        installedRun,
+        // An update keeps the old document until its replaced file is in
+        // place, so no run sees the new workflow with the old file. A run in
+        // between can see the old document with the new file (CAN-7359).
+        updateNewWorkflowWithoutItsFile: updateRuns.filter(
+          (run) => run.workflow === 'v3' && run.notes !== 'v3',
+        ),
+        updateRuns,
+        updatedRun,
+      }).toEqual({
+        createdRuns: [
+          { at: 'before move', workflow: 'absent', notes: 'absent' },
+          { at: 'after move', workflow: 'absent', notes: 'v1' },
+        ],
+        installedRun: { workflow: 'v1', notes: 'v1' },
+        updateNewWorkflowWithoutItsFile: [],
+        updateRuns: [
+          { at: 'before move', workflow: 'v1', notes: 'v1' },
+          { at: 'after move', workflow: 'v1', notes: 'v3' },
+        ],
+        updatedRun: { workflow: 'v3', notes: 'v3' },
+      });
+    } finally {
+      move.mockRestore();
+      for (const id of created) if (id) deleteStoredPipeline(id);
+    }
+  });
+
+  it('CAN-7336 a kept workflow edited after Stage A planned is refused before any of its files change', async () => {
+    const { readPipelineAssetsManifest } =
+      await import('../../pipelines/pipeline-asset-install');
+    const { v1, v4 } = world.automationPackages;
+    const { entry, worker } = installedIds(await automationStageA(v1));
+    const notesPath = join(
+      getPipelineAssetsDir(entry),
+      'specialists',
+      'notes.md',
+    );
+    const before = {
+      notes: readFileSync(notesPath, 'utf8'),
+      assets: await readPipelineAssetsManifest(entry),
+    };
+    // v4 keeps both pipelines' YAML, so Stage A only links them, and replaces
+    // the entry's file. The person edits the entry once Stage A has planned,
+    // as core.pipeline.definition.import starts installing it.
+    const edited = parsePipelineText(GOLDEN_USER_PIPELINE_YAML);
+    let editedOnce = false;
+    setDesktopCanopyRuntime(
+      new Proxy(runtime, {
+        get: (target, property, receiver): unknown => {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (property !== 'instruction' || typeof value !== 'function')
+            return value;
+          return (
+            name: unknown,
+            params: unknown,
+            ...rest: unknown[]
+          ): unknown => {
+            if (
+              !editedOnce &&
+              name === 'core.pipeline.definition.import' &&
+              typeof params === 'object' &&
+              params !== null &&
+              'definitionId' in params &&
+              params.definitionId === entry
+            ) {
+              editedOnce = true;
+              saveStoredPipeline({
+                id: entry,
+                name: edited.name,
+                description: '',
+                icon: '',
+                content: edited,
+              });
+            }
+            const result: unknown = Reflect.apply(value, target, [
+              name,
+              params,
+              ...rest,
+            ]);
+            return result;
+          };
+        },
+      }),
+    );
+    try {
+      const refused = await automationStageA(v4, {
+        entry,
+        worker,
+        from: v1,
+      }).then(
+        () => 'installed',
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      );
+      expect({
+        editedOnce,
+        refusedAsEdited: refused.includes(
+          'could not be saved exactly as shared',
+        ),
+        notes: readFileSync(notesPath, 'utf8'),
+        assets: await readPipelineAssetsManifest(entry),
+      }).toEqual({
+        editedOnce: true,
+        refusedAsEdited: true,
+        notes: before.notes,
+        assets: before.assets,
+      });
+    } finally {
+      setDesktopCanopyRuntime(runtime);
+      for (const id of [entry, worker]) if (id) deleteStoredPipeline(id);
+    }
   });
 });
 

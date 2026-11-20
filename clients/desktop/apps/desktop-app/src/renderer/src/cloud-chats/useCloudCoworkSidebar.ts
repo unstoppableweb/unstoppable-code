@@ -23,7 +23,7 @@ import { cloudCoworkStore } from './cloud-cowork-store';
 import { createRelayCoreCoworkInvoker } from './relay-invoker';
 import { refreshChatScopeRevisioned } from '@/stores/chat/slices/revisioned';
 import {
-  loadWebCoreServedOperations,
+  readWebCoreServedOperationsOnline,
   useWebCoreServesTaskDelete,
 } from '@/lib/web-core-served-operations';
 import {
@@ -468,10 +468,11 @@ export function useCloudCoworkSidebar(): CloudCoworkSidebarModel {
     [],
   );
   // Read once cloud chats are online; a task offers Delete only once the
-  // manifest lists it (CAN-7052).
+  // manifest lists it (CAN-7052). Coming back online also reads a failed
+  // manifest again (CAN-7464).
   const online = enabled && status === 'online';
   useEffect(() => {
-    if (online) loadWebCoreServedOperations();
+    if (online) readWebCoreServedOperationsOnline();
   }, [online]);
   const taskDelete = useWebCoreServesTaskDelete();
   // Read in render, so another account's rows never show for a frame: none

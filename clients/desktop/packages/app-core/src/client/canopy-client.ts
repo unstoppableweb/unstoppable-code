@@ -5,6 +5,10 @@ import type {
   ForceMcpRemovalRequest,
   ForceMcpRemovalResult,
 } from '@canopy/protocol/mcp-removal';
+import type {
+  SecretRequestSettleParams,
+  SecretRequestSettleResult,
+} from '@canopy/protocol/remote-control';
 import type { WorkflowsPanelClient } from './workflows-panel-client';
 import type { OrchestratorSettingsDraftClient } from './orchestrator-settings';
 import type {
@@ -268,6 +272,16 @@ export interface ChatAttachmentDeleteArgs {
   readonly attachmentId: string;
 }
 
+/**
+ * A person's answer to a paired computer's RequestSecrets form, for
+ * `chat.secretRequest.settle`. The values go only to the computer's session
+ * method; no client keeps, logs or queues them.
+ */
+export type ChatSecretRequestSettleArgs = SecretRequestSettleParams & {
+  /** The workspace the chat belongs to; routes the answer to its computer. */
+  readonly workspaceLocalId: string;
+};
+
 /** Optional project/worktree scope applied after the host lists live PTYs. */
 export interface TerminalListArgs {
   readonly projectId?: string;
@@ -466,7 +480,7 @@ export interface QueryMap
   /**
    * Personal projects this host can bring into a team (CAN-3706). Gated by
    * `personalProjectConversion`; desktop reads its own workspaces, web asks
-   * the paired desktop.
+   * the directly controlled computer.
    */
   'personalOrganization.projects': {
     args: Record<string, never>;
@@ -846,6 +860,16 @@ export interface CommandMap
   'chat.attachments.delete': {
     args: ChatAttachmentDeleteArgs;
     result: void;
+  };
+  /**
+   * Answer a paired computer's RequestSecrets form (U7): the values, or a
+   * decline, sent straight to the computer over the encrypted session
+   * (`secret-request.settle`), never queued. Served by a directly controlled
+   * computer's client; every other client refuses it.
+   */
+  'chat.secretRequest.settle': {
+    args: ChatSecretRequestSettleArgs;
+    result: SecretRequestSettleResult;
   };
   /**
    * Activity actions (Scripts / Hooks sections). Fire-and-forget mutations: the

@@ -11,6 +11,10 @@ import { SlowLoadNote } from './SlowLoadNote';
 export interface DelayedLoadingPlaceholderProps {
   /** The placeholder: a skeleton in the content's shape, or `CenteredLoadingSpinner`. */
   readonly children: ReactNode;
+  /**
+   * `0` shows it from the first render, for a placeholder that takes over
+   * from one already on screen.
+   */
   readonly delayMs?: number;
   /**
    * What is still loading, said once the load runs past `slowAfterMs`:
@@ -38,7 +42,8 @@ export function DelayedLoadingPlaceholder({
   slowAfterMs = SLOW_LOAD_NOTE_DELAY_MS,
   className = '',
 }: DelayedLoadingPlaceholderProps): JSX.Element {
-  const visible = useDelayedFlag(true, delayMs);
+  const delayed = useDelayedFlag(delayMs > 0, delayMs);
+  const visible = delayMs <= 0 || delayed;
   // Only a placeholder with a note arms the second clock.
   const slow = useDelayedFlag(slowNote !== undefined, slowAfterMs);
   return (

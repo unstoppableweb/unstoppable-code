@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckIcon,
   CircleCheckIcon,
+  CloseIcon,
   PlayIcon,
   PlusIcon,
   QuestionMarkIcon,
@@ -162,6 +163,7 @@ export function ItemStateMark({
   readonly tone: ItemStateTone;
   readonly size?: number;
 }): JSX.Element {
+  const marks = useItemStateMarks();
   switch (tone) {
     case 'active':
       return (
@@ -226,8 +228,19 @@ export function ItemStateMark({
           className="shrink-0 fg-warning"
         />
       );
+    // New Customize draws a failure as a red cross and the update icon in
+    // full ink; with the experiment off both keep their original look on
+    // every surface that shows them (detail-page errors, version facts).
     case 'failed':
-      return (
+      return marks ? (
+        <span aria-hidden data-item-state-icon={tone} className="inline-flex">
+          <CloseIcon
+            size="sm"
+            aria-hidden
+            className="shrink-0 fg-destructive"
+          />
+        </span>
+      ) : (
         <AlertTriangle
           data-item-state-icon={tone}
           width={13}
@@ -239,11 +252,19 @@ export function ItemStateMark({
     case 'update':
       return (
         <span aria-hidden data-item-state-icon={tone} className="inline-flex">
-          <RefreshIcon
-            size="xs"
-            aria-hidden
-            className="shrink-0 fg-secondary"
-          />
+          {marks ? (
+            <RefreshIcon
+              size="xs"
+              aria-hidden
+              className="shrink-0 fg-primary"
+            />
+          ) : (
+            <RefreshIcon
+              size="xs"
+              aria-hidden
+              className="shrink-0 fg-secondary"
+            />
+          )}
         </span>
       );
   }

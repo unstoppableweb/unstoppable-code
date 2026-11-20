@@ -38,7 +38,13 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isGatewayOnlyModel } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { useComposerMenu } from '@/hooks/useComposerMenu';
-import { ChoiceField, Heading, Surface } from '@canopy/ui-shared/components';
+import {
+  ChoiceField,
+  ComposerNoticeStack,
+  Heading,
+  Surface,
+} from '@canopy/ui-shared/components';
+import { SpeechModelDownloadPrompt } from '@/components/chat/SpeechModelDownloadPrompt';
 import { applyTheme } from '@/lib/theme';
 import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import type { EditorSelectionContext } from '@/lib/editorSelectionContext';
@@ -263,6 +269,10 @@ interface ComposerStateSpec {
   readonly multiRepo?: boolean;
   /** Dictation is turned off or unsupported: no microphone. */
   readonly voiceOff?: boolean;
+  /** Linux with no speech model: the mic's download offer (CAN-7341). */
+  readonly speechModelOffer?: boolean;
+  /** The speech model downloads for this composer: the mic is preparing. */
+  readonly voicePreparing?: boolean;
   readonly voiceRecording?: boolean;
   readonly dragging?: boolean;
   readonly pendingModel?: boolean;
@@ -410,6 +420,7 @@ function GalleryComposer({
         capsule
         primary={primary}
         shortcut={DICTATION_SHORTCUT_LABEL}
+        preparing={spec.voicePreparing === true}
       />
     ) : null;
 
@@ -652,6 +663,16 @@ function GalleryComposer({
         editingQueued ? 'pb-4' : 'pb-2'
       }`}
     >
+      {/* Placed as ChatInput places its notice stack: above the box. */}
+      <ComposerNoticeStack>
+        {spec.speechModelOffer === true ? (
+          <SpeechModelDownloadPrompt
+            size="269 MB"
+            onDownload={(): void => {}}
+            onNotNow={(): void => {}}
+          />
+        ) : null}
+      </ComposerNoticeStack>
       <div
         ref={boxRef}
         data-composer-layout={
@@ -1181,6 +1202,21 @@ const SECTIONS: readonly GallerySection[] = [
       },
       { id: 'archived', title: 'Archived chat', readOnly: 'archived' },
       { id: 'stale', title: 'Session cannot resume', readOnly: 'stale' },
+    ],
+  },
+  {
+    title: 'Dictation: speech model (Linux)',
+    states: [
+      {
+        id: 'speech-model-offer',
+        title: 'Mic clicked with no speech model',
+        speechModelOffer: true,
+      },
+      {
+        id: 'speech-model-downloading',
+        title: 'Downloading the speech model',
+        voicePreparing: true,
+      },
     ],
   },
 ];

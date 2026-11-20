@@ -56,6 +56,7 @@ import { isErrnoException, isRecord } from '../lib/type-guards';
 import { validateId } from '../lib/validation';
 import { readChatTabsFileForIndex } from '../lib/chat-tabs-reader';
 import { readChatArchivesFileForIndex } from '../lib/chat-archives';
+import { chatArchiveSourceKey } from './archive-source-key';
 import {
   readArchiveMetaForIndex,
   readArchiveSnapshotForIndex,
@@ -1257,12 +1258,12 @@ export class ChatSearchService {
   }
 
   indexWorktreeArchives(projectId: string, worktreeId: string): void {
+    const fileKey = this.worktreeArchiveFilePath(projectId, worktreeId);
+    if (fileKey === undefined) return;
     this.reactivateScope(projectId, worktreeId);
     const generation = this.worktreeGeneration(projectId, worktreeId);
     const contentEpoch = this.advanceArchiveContentEpoch(projectId, worktreeId);
-    this.activeScanSourceKeys?.add(
-      this.worktreeArchiveFilePath(projectId, worktreeId),
-    );
+    this.activeScanSourceKeys?.add(fileKey);
     this.enqueue(`archive:${projectId}/${worktreeId}`, async () => {
       if (
         !this.isWorktreeGenerationCurrent(projectId, worktreeId, generation) ||
@@ -1270,7 +1271,6 @@ export class ChatSearchService {
       ) {
         return;
       }
-      const fileKey = this.worktreeArchiveFilePath(projectId, worktreeId);
       const data = await readChatArchivesFileForIndex(projectId, worktreeId);
       if (
         this.closed ||
@@ -1343,9 +1343,8 @@ export class ChatSearchService {
     const indexer = this.getIndexer();
     await indexer.deleteWorktreeDocs(projectId, containerId);
     await indexer.deleteSourceFile(this.liveFilePath(projectId, containerId));
-    await indexer.deleteSourceFile(
-      this.worktreeArchiveFilePath(projectId, containerId),
-    );
+    const archiveKey = this.worktreeArchiveFilePath(projectId, containerId);
+    if (archiveKey !== undefined) await indexer.deleteSourceFile(archiveKey);
     await indexer.deleteSourceFile(this.plansFilePath(projectId, containerId));
     this.indexArchivedContainer(projectId, containerId);
   }
@@ -1580,9 +1579,8 @@ export class ChatSearchService {
     const indexer = this.getIndexer();
     await indexer.deleteWorktreeDocs(projectId, worktreeId);
     await indexer.deleteSourceFile(this.liveFilePath(projectId, worktreeId));
-    await indexer.deleteSourceFile(
-      this.worktreeArchiveFilePath(projectId, worktreeId),
-    );
+    const archiveKey = this.worktreeArchiveFilePath(projectId, worktreeId);
+    if (archiveKey !== undefined) await indexer.deleteSourceFile(archiveKey);
     await indexer.deleteSourceFile(this.plansFilePath(projectId, worktreeId));
     if (worktreeId === COWORK_HOME_WORKTREE_ID) {
       const historyRoot = `${getWorkspaceChatHistoryRootDir(projectId)}${sep}`;
@@ -3276,7 +3274,7 @@ export class ChatSearchService {
         row.chat_id,
         row.source,
       );
-      if (!sourceKeys.has(fileKey)) {
+      if (fileKey === undefined || !sourceKeys.has(fileKey)) {
         await indexer.deleteDocById(row.doc_id);
       }
     }
@@ -3287,7 +3285,7 @@ export class ChatSearchService {
     worktreeId: string,
     chatId: string,
     source: ChatSearchSource,
-  ): string {
+  ): string | undefined {
     if (source === 'live') return this.liveFilePath(projectId, worktreeId);
     if (source === 'worktree-archive') {
       return this.worktreeArchiveFilePath(projectId, worktreeId);
@@ -3565,8 +3563,8 @@ export class ChatSearchService {
   private worktreeArchiveFilePath(
     projectId: string,
     worktreeId: string,
-  ): string {
-    return getWorkspaceChatArchivesFilePath(projectId, worktreeId);
+  ): string | undefined {
+    return chatArchiveSourceKey(projectId, worktreeId);
   }
 
   private plansFilePath(projectId: string, worktreeId: string): string {

@@ -42,7 +42,13 @@ import {
   finishEntryCostArchive,
 } from '../cost-index/lifecycle';
 import { KeyedAsyncLock } from './keyed-async-lock';
-import { isPathInside } from './path-safety';
+import {
+  ContainedPathRefusedError,
+  isPathInside,
+  readContainedFile,
+  resolveContainedRealPath,
+} from './path-safety';
+import { logMainProcessWarn } from './main-process-logging';
 import {
   getArchivedContainerAttachmentsDir,
   getArchivedContainerCostDir,
@@ -740,6 +746,73 @@ export function resolveArchivedContainerRelativePath(
   );
 }
 
+export type ArchivedContainerFileRead = 'execution-report' | 'step-log';
+
+function logArchivedContainerRefusal(
+  operation: ArchivedContainerFileRead | 'partial-restore-cleanup',
+  error: ContainedPathRefusedError,
+  projectId: string,
+  containerId: string,
+): void {
+  // Reason codes and ids only: never file content, a path or a link target.
+  logMainProcessWarn(
+    '[archived-containers] Refused a path inside a container',
+    {
+      reason: `archived-container-${error.reason}`,
+      operation,
+      projectId,
+      containerId,
+    },
+  );
+}
+
+/**
+ * Reads a file an archived-container reader resolved, refusing a symbolic
+ * link anywhere from the container directory down to the file (CAN-7346).
+ */
+export async function readArchivedContainerFile(
+  projectId: string,
+  containerId: string,
+  filePath: string,
+  operation: ArchivedContainerFileRead,
+): Promise<string> {
+  try {
+    return await readContainedFile(
+      getArchivedContainerDir(projectId, containerId),
+      filePath,
+    );
+  } catch (error) {
+    if (error instanceof ContainedPathRefusedError) {
+      logArchivedContainerRefusal(operation, error, projectId, containerId);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Every removal below runs through the container directory, so a container
+ * directory that is a symbolic link would point them at its target instead.
+ */
+async function assertArchivedContainerDirectoryNotLinked(
+  projectId: string,
+  containerId: string,
+): Promise<void> {
+  const containerDir = getArchivedContainerDir(projectId, containerId);
+  try {
+    await resolveContainedRealPath(containerDir, containerDir);
+  } catch (error) {
+    if (error instanceof ContainedPathRefusedError) {
+      logArchivedContainerRefusal(
+        'partial-restore-cleanup',
+        error,
+        projectId,
+        containerId,
+      );
+    }
+    throw error;
+  }
+}
+
 function archivedChatStorage(
   projectId: string,
   containerId: string,
@@ -1304,6 +1377,7 @@ export async function removeArchivedContainerPayloadsAfterPartialRestore(
   projectId: string,
   containerId: string,
 ): Promise<void> {
+  await assertArchivedContainerDirectoryNotLinked(projectId, containerId);
   const manifest = await readManifestFile(projectId, containerId);
   if (manifest.diskUsage !== undefined) {
     const { diskUsage: _diskUsage, ...unmeasuredManifest } = manifest;

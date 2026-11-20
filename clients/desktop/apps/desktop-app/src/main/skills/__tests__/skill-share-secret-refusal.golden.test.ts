@@ -8,10 +8,23 @@
  * SKILL.md in its package, so it refuses before the package commit. An
  * update that resends the stored text unchanged, or makes it private, isn't a
  * new share and still goes through, as on the server.
+ *
+ * Sharing a collection does the same for each inline custom skill:
+ * `createSharedCollection` and `updateSharedCollection` in the collection
+ * cloud client, which the share dialog, the Collections tab, Remote Control
+ * and App Advisor all reach through the collection handlers, refuse before
+ * any read or request, so a refused share or update makes no network call.
  */
 import { createHash } from 'node:crypto';
 import { CatalogHostRefusedError } from '@canopy/core-runtime/node/catalog';
+import { COLLECTIONS_CHANNELS } from '@canopy/desktop-shared/constants/collection-channels';
 import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels';
+import { buildSharedCollectionPayload } from '@canopy/desktop-shared/collections/shared-collection-payload';
+import type { CollectionConfig } from '@canopy/desktop-shared/types/collections';
+import type {
+  SharedCollectionCustomSkillPayload,
+  SharedCollectionDetail,
+} from '@canopy/protocol/collections';
 import {
   findPackageFileCredentialRule,
   type InstalledSkillInfo,
@@ -19,12 +32,54 @@ import {
 } from '@canopy/protocol/skills';
 import { requestCanopyCloudJson } from '../../canopy-cloud/client';
 
-jest.mock('../../canopy-cloud/client', () => ({
-  ...jest.requireActual<object>('../../canopy-cloud/client'),
-  requestCanopyCloudJson: jest.fn(),
-  resolveCanopyCloudCredentialContext: (): Promise<unknown> =>
-    Promise.resolve({ apiKey: 'k', account: { id: 'acct-1' } }),
-  assertCanopyCloudCapability: (): Promise<void> => Promise.resolve(),
+// Every other cloud request a collection share could make is recorded, so a
+// refusal can show it made none at all.
+const mockOtherRequests: string[] = [];
+jest.mock('../../canopy-cloud/client', () => {
+  const actual = jest.requireActual<
+    Record<string, (...args: unknown[]) => unknown>
+  >('../../canopy-cloud/client');
+  const recorded =
+    (name: string) =>
+    (...args: unknown[]): unknown => {
+      mockOtherRequests.push(name);
+      return actual[name]?.(...args);
+    };
+  return {
+    ...actual,
+    requestCanopyCloudJson: jest.fn(),
+    requestCanopyCloudJsonConditional: recorded(
+      'requestCanopyCloudJsonConditional',
+    ),
+    requestCanopyCloudNoContent: recorded('requestCanopyCloudNoContent'),
+    requestCanopyCloudBinary: recorded('requestCanopyCloudBinary'),
+    requestCanopyCloudPublicBinary: recorded('requestCanopyCloudPublicBinary'),
+    requestCanopyCloudPublicJson: recorded('requestCanopyCloudPublicJson'),
+    resolveCanopyCloudCredentialContext: (): Promise<unknown> =>
+      Promise.resolve({ apiKey: 'k', account: { id: 'acct-1' } }),
+    assertCanopyCloudCapability: (): Promise<void> => Promise.resolve(),
+  };
+});
+// Off unless a case turns it on: with it on, an update reads the stored
+// share before its PUT, and a refusal must come before that read too.
+let mockResourceContextOn = false;
+jest.mock('../../lib/resource-context', () => ({
+  ...jest.requireActual<object>('../../lib/resource-context'),
+  resourceContextEnabled: (): boolean => mockResourceContextOn,
+  resourceContextSnapshot: (): Promise<string> => Promise.resolve('snapshot'),
+  assertResourceContext: (): Promise<void> => Promise.resolve(),
+}));
+const mockStoreReads: string[] = [];
+jest.mock('../../collections/collection-store', () => ({
+  readCollectionConfig: (id: string): Promise<unknown> => {
+    mockStoreReads.push(id);
+    return Promise.resolve({
+      collection: { id, name: 'Deploy kit', mcpServers: [] },
+    });
+  },
+  writeCollectionRemoteMetadata: (): Promise<boolean> => Promise.resolve(true),
+  clearCollectionRemoteMetadataByRemoteId: (): Promise<void> =>
+    Promise.resolve(),
 }));
 jest.mock('../resource-lanes', () => ({
   ...jest.requireActual<object>('../resource-lanes'),
@@ -52,6 +107,19 @@ jest.mock('../../ipc/register', () => ({
 }));
 
 import { registerSkillHandlers } from '../skill-handlers';
+import {
+  createSharedCollectionForCaller,
+  registerCollectionHandlers,
+  updateSharedCollectionForCaller,
+} from '../../collections/collection-handlers';
+import {
+  createSharedCollection,
+  updateSharedCollection,
+} from '../../collections/canopy-server-client';
+import {
+  dispatchAdvisorCollectionSharingAction,
+  type AdvisorCollectionSharingHost,
+} from '../../app-advisor/advisor-collection-sharing-actions';
 import { createSharedSkill, updateSharedSkill } from '../canopy-server-client';
 import { SkillSecretDetectedError } from '../../sharing/share-operation-result';
 import {
@@ -95,10 +163,14 @@ const invoke = (channel: string, body: object): Promise<unknown> => {
 
 beforeAll(() => {
   registerSkillHandlers();
+  registerCollectionHandlers();
 });
 beforeEach(() => {
   request.mockReset();
   mockWarnings.length = 0;
+  mockOtherRequests.length = 0;
+  mockStoreReads.length = 0;
+  mockResourceContextOn = false;
 });
 afterEach(() => {
   // The sentinel reaches no main-process log line on any path.
@@ -390,5 +462,313 @@ describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a
     ).resolves.toMatchObject({ publicationId: 'remote-new' });
     expect(commits).toEqual([PKG]);
     expect(creates).toHaveLength(1);
+  });
+});
+
+describe('desktop collection share refuses an inline custom skill holding secret-looking text before any request (CAN-7226)', () => {
+  const COLLECTION_MESSAGE = MESSAGE;
+  const RENAME_MESSAGE =
+    "One of this collection's skills has a name that looks like it contains a secret (a GitHub token). Rename it, then share again.";
+  const RAW_COLLECTION = JSON.stringify({
+    version: 1,
+    name: 'Deploy kit',
+    description: '',
+    items: [
+      { type: 'custom_skill', clientKey: 'k1', skill_name: 'deploy-helper' },
+    ],
+  });
+  const skills = (
+    rawSkill: string,
+    name = 'deploy-helper',
+  ): SharedCollectionCustomSkillPayload[] => [
+    { clientKey: 'k1', name, rawSkill },
+  ];
+  const collectionDetail = (): SharedCollectionDetail => ({
+    id: 'remote-c1',
+    name: 'Deploy kit',
+    description: '',
+    contentHash: sha256(RAW_COLLECTION),
+    itemCounts: { skills: 0, plugins: 0, customSkills: 1 },
+    shareScope: 'private',
+    owner: { type: 'user', id: 'u1', name: null },
+    createdBy: { id: 'u1', name: null, email: null },
+    createdAt: AT,
+    updatedAt: AT,
+    canUpdate: true,
+    canDelete: true,
+    publicShare: null,
+    rawCollection: RAW_COLLECTION,
+    collection: {
+      version: 1,
+      name: 'Deploy kit',
+      description: '',
+      items: [],
+    },
+    customSkills: [],
+  });
+
+  const consoleLines: string[] = [];
+  const spies: jest.SpyInstance[] = [];
+  beforeEach(() => {
+    consoleLines.length = 0;
+    for (const method of ['log', 'info', 'warn', 'error'] as const)
+      spies.push(
+        jest.spyOn(console, method).mockImplementation((...args) => {
+          consoleLines.push(JSON.stringify(args));
+        }),
+      );
+  });
+  afterEach(() => {
+    for (const spy of spies.splice(0)) spy.mockRestore();
+    expect(consoleLines.join('\n')).not.toContain(SENTINEL);
+  });
+
+  const expectNoRequest = (): void => {
+    expect(request).not.toHaveBeenCalled();
+    expect(mockOtherRequests).toEqual([]);
+    expect(mockStoreReads).toEqual([]);
+  };
+  const caught = (promise: Promise<unknown>): Promise<unknown> =>
+    promise.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+  it.each([
+    [
+      'create',
+      COLLECTIONS_CHANNELS.SHARED_CREATE,
+      {
+        rawCollection: RAW_COLLECTION,
+        customSkills: skills(SECRET_SKILL),
+        shareScope: 'private',
+      },
+    ],
+    [
+      'update',
+      COLLECTIONS_CHANNELS.SHARED_UPDATE,
+      {
+        collectionId: 'remote-c1',
+        rawCollection: RAW_COLLECTION,
+        customSkills: skills(SECRET_SKILL),
+      },
+    ],
+  ])(
+    'the share dialog %s fails as unavailable, naming skill, file and rule, and sends nothing',
+    async (_case, channel, body) => {
+      const result = await invoke(channel, body);
+      expect(result).toMatchObject({
+        ok: false,
+        failure: {
+          kind: 'unavailable',
+          stage: 'access',
+          message: COLLECTION_MESSAGE,
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain(SENTINEL);
+      expectNoRequest();
+    },
+  );
+
+  it('the client refuses create and update, even an update that would first read the stored share, with zero requests', async () => {
+    mockResourceContextOn = true;
+    for (const call of [
+      (): Promise<unknown> =>
+        createSharedCollection({
+          sourceCollectionId: 'local-c1',
+          rawCollection: RAW_COLLECTION,
+          customSkills: skills(PLACEHOLDER_SKILL).concat(skills(SECRET_SKILL)),
+          shareScope: 'team',
+          teamId: 'team-1',
+        }),
+      (): Promise<unknown> =>
+        updateSharedCollection({
+          sourceCollectionId: 'local-c1',
+          collectionId: 'remote-c1',
+          rawCollection: RAW_COLLECTION,
+          customSkills: skills(SECRET_SKILL),
+          shareScope: 'organization',
+          organizationId: 'org-1',
+        }),
+    ]) {
+      const error = await caught(call());
+      expect(error).toBeInstanceOf(SkillSecretDetectedError);
+      expect(error).toMatchObject({
+        kind: 'unavailable',
+        stage: 'access',
+        message: COLLECTION_MESSAGE,
+      });
+      expect(JSON.stringify(error)).not.toContain(SENTINEL);
+    }
+    expectNoRequest();
+  });
+
+  it('never repeats a secret that sits in a custom skill name', async () => {
+    for (const call of [
+      (): Promise<unknown> =>
+        createSharedCollectionForCaller({
+          rawCollection: RAW_COLLECTION,
+          customSkills: skills(PLACEHOLDER_SKILL, `deploy-${SENTINEL}`),
+        }),
+      (): Promise<unknown> =>
+        updateSharedCollectionForCaller({
+          collectionId: 'remote-c1',
+          rawCollection: RAW_COLLECTION,
+          customSkills: skills(SECRET_SKILL, `deploy-${SENTINEL}`),
+        }),
+    ]) {
+      const result = await call();
+      expect(result).toMatchObject({
+        ok: false,
+        failure: { kind: 'unavailable', message: RENAME_MESSAGE },
+      });
+      expect(JSON.stringify(result)).not.toContain(SENTINEL);
+    }
+    expectNoRequest();
+  });
+
+  describe('App Advisor, through the real collection handlers', () => {
+    const LOCAL: CollectionConfig = {
+      id: 'local-c1',
+      name: 'Deploy kit',
+      description: '',
+      skills: [],
+      plugins: [],
+      mcpServers: [],
+      createdAt: AT,
+      updatedAt: AT,
+    };
+    const advisorHost = (rawSkill: string): AdvisorCollectionSharingHost => ({
+      selectedOrganizationId: () => undefined,
+      memberOrganizationIds: () => Promise.resolve(new Set<string>()),
+      loadCollection: () => Promise.resolve(LOCAL),
+      editable: () =>
+        Promise.resolve({
+          remoteId: '',
+          name: 'Deploy kit',
+          description: '',
+          items: [
+            {
+              kind: 'draft_custom_skill',
+              clientKey: 'k1',
+              localSkillId: 'custom:app/deploy-helper',
+              skillName: 'deploy-helper',
+            },
+          ],
+        }),
+      payload: (editable) =>
+        buildSharedCollectionPayload({
+          ...editable,
+          customSkillReader: () => Promise.resolve(rawSkill),
+        }),
+      listShared: () => Promise.reject(new Error('not listed')),
+      // The advisor's own read of the current share carries no skill text.
+      getShared: () => Promise.resolve(collectionDetail()),
+      createShared: createSharedCollectionForCaller,
+      updateShared: updateSharedCollectionForCaller,
+      deleteShared: () => Promise.reject(new Error('not deleted')),
+      resolveImport: () => Promise.reject(new Error('not imported')),
+      saveCollection: () => Promise.reject(new Error('not saved')),
+      installPackage: () => Promise.reject(new Error('not installed')),
+      confirm: () => Promise.reject(new Error('not asked')),
+    });
+
+    it.each([
+      [
+        'collections.share',
+        {
+          type: 'collections.share',
+          id: 'local-c1',
+          shareScope: 'team',
+          teamId: 'team-1',
+        },
+      ],
+      [
+        'collections.update_shared',
+        {
+          type: 'collections.update_shared',
+          id: 'local-c1',
+          collectionId: 'remote-c1',
+        },
+      ],
+    ] as const)(
+      '%s fails as execution_failed with the refusal and sends nothing',
+      async (_case, action) => {
+        const response = await dispatchAdvisorCollectionSharingAction(
+          action,
+          advisorHost(SECRET_SKILL),
+        );
+        expect(response).toMatchObject({
+          ok: false,
+          error: { code: 'execution_failed', message: COLLECTION_MESSAGE },
+        });
+        expect(JSON.stringify(response)).not.toContain(SENTINEL);
+        expectNoRequest();
+      },
+    );
+
+    it('still shares a collection whose skill only names a placeholder, with one request', async () => {
+      request.mockResolvedValue(collectionDetail());
+      const response = await dispatchAdvisorCollectionSharingAction(
+        {
+          type: 'collections.share',
+          id: 'local-c1',
+          shareScope: 'team',
+          teamId: 'team-1',
+        },
+        advisorHost(PLACEHOLDER_SKILL),
+      );
+      expect(response).toMatchObject({ ok: true });
+      expect(request).toHaveBeenCalledTimes(1);
+      const init = request.mock.calls[0]?.[1];
+      const body: unknown =
+        typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
+      expect(body).toMatchObject({
+        customSkills: skills(PLACEHOLDER_SKILL),
+      });
+    });
+  });
+
+  it.each([
+    [
+      'create',
+      COLLECTIONS_CHANNELS.SHARED_CREATE,
+      {
+        rawCollection: RAW_COLLECTION,
+        customSkills: skills(PLACEHOLDER_SKILL),
+        shareScope: 'private',
+      },
+    ],
+    [
+      'update',
+      COLLECTIONS_CHANNELS.SHARED_UPDATE,
+      {
+        collectionId: 'remote-c1',
+        rawCollection: RAW_COLLECTION,
+        customSkills: skills(PLACEHOLDER_SKILL),
+      },
+    ],
+  ])(
+    'still sends a %s whose skills only name a placeholder, with one request',
+    async (_case, channel, body) => {
+      request.mockResolvedValue(collectionDetail());
+      await expect(invoke(channel, body)).resolves.toMatchObject({
+        ok: true,
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(mockOtherRequests).toEqual([]);
+    },
+  );
+
+  it('still sends an update that links its custom skills and carries no inline text', async () => {
+    request.mockResolvedValue(collectionDetail());
+    await expect(
+      updateSharedCollection({
+        collectionId: 'remote-c1',
+        rawCollection: RAW_COLLECTION,
+        shareScope: 'private',
+      }),
+    ).resolves.toMatchObject({ id: 'remote-c1' });
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });

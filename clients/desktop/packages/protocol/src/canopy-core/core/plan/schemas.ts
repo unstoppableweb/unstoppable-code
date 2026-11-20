@@ -8,8 +8,9 @@ import { isSafePortableRelativePath } from '../../../safe-relative-path';
  * Tracked and detected plans (CAN-4165). The plan record mirrors the desktop
  * store's v1 entries: stored plans keep fields this version does not know
  * (`looseObject`), as the store always has; operation params and results are
- * otherwise closed. Diagrams (CAN-4167) and comment threads and sharing
- * (CAN-4166) join the record additively when those tickets move them.
+ * otherwise closed. Diagram artifacts are typed on the record (CAN-4167);
+ * comment threads and sharing (CAN-4166) join it additively when that ticket
+ * moves them.
  *
  * No host path crosses this contract. A plan's source file is a path relative
  * to its worktree (or one of its repositories), and an import names a file
@@ -45,6 +46,7 @@ export const PlanRelativePathSchema = z
 /** What wrote a plan. A write with any other source is refused. */
 export const PLAN_SOURCES = [
   'copilot',
+  'antigravity',
   'opencode',
   'cursor',
   'claude',
@@ -93,6 +95,45 @@ export const PlanRevisionSchema = z.looseObject({
   proposalRequestId: id.optional(),
 });
 
+export const PLAN_DIAGRAM_KINDS = [
+  'sequence',
+  'logicDiff',
+  'dataModelDiff',
+] as const;
+export const PlanDiagramKindSchema = z.enum(PLAN_DIAGRAM_KINDS);
+
+export const PLAN_DIAGRAM_STATUSES = [
+  'pending',
+  'generating',
+  'ready',
+  'stale',
+  'error',
+] as const;
+
+/**
+ * One generated diagram. It accepts what the desktop store reads
+ * (`isPlanDiagramArtifacts`), so typing it hides no stored plan: `data` is the
+ * kind's diagram, or null until the first generation completes.
+ */
+export const PlanDiagramArtifactSchema = z.looseObject({
+  data: z.unknown(),
+  /** The plan revision the diagram was generated from. */
+  derivedFromRevision: z.number(),
+  status: z.enum(PLAN_DIAGRAM_STATUSES),
+  /**
+   * The generator writes an ISO timestamp and a failure message; the store
+   * never checks either, so any stored value is read as it is.
+   */
+  generatedAt: z.unknown().optional(),
+  error: z.unknown().optional(),
+});
+
+export const PlanDiagramArtifactsSchema = z.looseObject({
+  sequence: PlanDiagramArtifactSchema.optional(),
+  logicDiff: PlanDiagramArtifactSchema.optional(),
+  dataModelDiff: PlanDiagramArtifactSchema.optional(),
+});
+
 export const PlanRecordSchema = z.looseObject({
   id,
   projectId: scopeId,
@@ -115,6 +156,7 @@ export const PlanRecordSchema = z.looseObject({
   lastEditSource: PlanEditSourceSchema.optional(),
   sourceFilePath: PlanRelativePathSchema.optional(),
   sourceRepoId: id.optional(),
+  diagrams: PlanDiagramArtifactsSchema.optional(),
 });
 export type PlanRecord = z.output<typeof PlanRecordSchema>;
 
@@ -163,6 +205,8 @@ export const PlanUpdateParamsSchema = z.strictObject({
   planId: id,
   /** With it, a write against another revision is refused; without it, the last write wins. */
   expectedRevision: z.number().int().min(1).optional(),
+  /** With it, a write against a plan from another source is refused as a revision conflict. */
+  expectedSource: PlanSourceSchema.optional(),
   proposalRequestId: id.optional(),
   content: z.string().optional(),
   title: z.string().min(1).max(512).optional(),
@@ -198,6 +242,38 @@ export const PlanImportParamsSchema = z.strictObject({
 });
 export const PlanImportResultSchema = z.strictObject({
   plan: PlanRecordSchema,
+});
+
+// --- Diagrams (CAN-4167) -----------------------------------------------------
+
+export const PlanDiagramGenerateParamsSchema = z.strictObject({
+  scope: PlanScopeSchema,
+  planId: id,
+  /** With it, a request against another revision is refused as a revision conflict. */
+  expectedRevision: z.number().int().min(1).optional(),
+  /** Omitted: every kind the plan qualifies for. A subset is refused until a caller needs one. */
+  kinds: z
+    .array(PlanDiagramKindSchema)
+    .min(1)
+    .max(PLAN_DIAGRAM_KINDS.length)
+    .optional(),
+  initiationSource: PlanInitiationSourceSchema.optional(),
+});
+
+export const PLAN_DIAGRAM_GENERATE_STATUSES = [
+  'started',
+  'queued',
+  'missing',
+] as const;
+
+export const PlanDiagramGenerateResultSchema = z.strictObject({
+  /**
+   * `started`: a generation began; `queued`: one more runs after the one in
+   * flight; `missing`: the scope has no such plan.
+   */
+  status: z.enum(PLAN_DIAGRAM_GENERATE_STATUSES),
+  /** The revision the diagrams are generated from; absent when `missing`. */
+  revision: z.number().int().min(1).optional(),
 });
 
 // --- Detected plans (decision P1: their own operations) ---------------------

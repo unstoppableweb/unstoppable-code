@@ -26,10 +26,12 @@ import {
   mcpAuthStatusLabel,
 } from '@canopy/ui-shared/lib/mcp-card-display';
 import { BRAND } from '@canopy/brand/current';
+import { access } from 'node:fs/promises';
 import { safeReadJson } from '../lib/fs-utils';
 import {
   getBundleConfigFilePath,
   getCollectionConfigFilePath,
+  getCollectionsIndexFilePath,
   getMcpServerFilePath,
 } from '../lib/paths';
 import type {
@@ -109,15 +111,28 @@ async function probeMcpHttpOAuthRequirementForInventory(
   }
 }
 
-function readCollectionForInventory(
+async function readCollectionForInventory(
   collectionId: string,
-): CollectionConfigFile['collection'] | null {
+): Promise<CollectionConfigFile['collection'] | null> {
   const collectionFile = safeReadJson<CollectionConfigFile>(
     getCollectionConfigFilePath(collectionId),
   );
   if (collectionFile?.collection) {
     return collectionFile.collection;
   }
+  // Once collections exist, a legacy bundle is converted or deleted, never live.
+  // An index published since the first read means the config is now written.
+  if (
+    await access(getCollectionsIndexFilePath()).then(
+      () => true,
+      () => false,
+    )
+  )
+    return (
+      safeReadJson<CollectionConfigFile>(
+        getCollectionConfigFilePath(collectionId),
+      )?.collection ?? null
+    );
 
   const legacyBundleFile = safeReadJson<BundleConfigFile>(
     getBundleConfigFilePath(collectionId),
@@ -782,7 +797,7 @@ export async function listDetectedMcpServersForSelections(
   }
 
   for (const collectionId of selections.collectionIds) {
-    const collection = readCollectionForInventory(collectionId);
+    const collection = await readCollectionForInventory(collectionId);
     if (!collection) {
       warnings.push(`Collection "${collectionId}" could not be loaded.`);
       continue;

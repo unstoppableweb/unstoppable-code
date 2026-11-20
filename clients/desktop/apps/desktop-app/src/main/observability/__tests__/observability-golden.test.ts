@@ -25,7 +25,10 @@ import {
   sweepCrashDumps,
   sweepStartupCrashDumps,
 } from '../crash-dump-sweep';
-import type { OpenCodeAccountSnapshot } from '@canopy/protocol/remote-control/shell';
+import type {
+  AntigravityAccountSnapshot,
+  OpenCodeAccountSnapshot,
+} from '@canopy/protocol/remote-control/shell';
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
 import type {
@@ -137,8 +140,20 @@ jest.mock('../../cursor/account-usage', () => ({
 jest.mock('../../copilot/feature-flag', () => ({
   isCopilotHarnessEnabled: (): boolean => false,
 }));
+let mockAntigravityEnabled = false;
+let mockAntigravityAccount: AntigravityAccountSnapshot | undefined;
+const mockRefreshAntigravityAccount = jest.fn<Promise<void>, []>();
 jest.mock('../../antigravity/feature-flag', () => ({
-  isAntigravityHarnessEnabled: (): boolean => false,
+  isAntigravityHarnessEnabled: (): boolean => mockAntigravityEnabled,
+}));
+jest.mock('../../antigravity/account', () => ({
+  peekAntigravityAccount: (): AntigravityAccountSnapshot | undefined =>
+    mockAntigravityAccount,
+  onAntigravityAccountChanged: (): (() => void) => (): void => undefined,
+}));
+jest.mock('../../antigravity/models', () => ({
+  refreshAntigravityAccount: (): Promise<void> =>
+    mockRefreshAntigravityAccount(),
 }));
 jest.mock('../../copilot/account-usage', () => ({
   readCopilotUsageSummary: (): Promise<null> => Promise.resolve(null),
@@ -429,6 +444,52 @@ it('observability:refresh-usage projects OpenCode quota outcomes without persist
     await disposeAll(host);
     mockOpenCodeAccounts = undefined;
     mockRefreshOpenCodeAccounts.mockReset();
+    restoreGoldenEnvironment(setCurrentService);
+  }
+});
+
+// The Antigravity plan label lives only in memory and is written by a native
+// model discovery, so after a restart nothing re-reads it until a Usage
+// surface asks: the explicit refresh must run that read.
+it('observability:refresh-usage reads the Antigravity account a restart left empty', async () => {
+  useGoldenTimers();
+  mockAntigravityEnabled = true;
+  const host = createDesktopHost(setCurrentService);
+  try {
+    await host.boot();
+    const service = host.incarnations[0]?.service;
+    if (!service) throw new Error('Observability service did not boot');
+    const ready: AntigravityAccountSnapshot = {
+      status: 'ready',
+      updatedAt: '2026-11-07T12:00:00.000Z',
+      planLabel: 'Google AI Pro',
+    };
+    mockRefreshAntigravityAccount.mockImplementationOnce(() => {
+      mockAntigravityAccount = ready;
+      return Promise.resolve();
+    });
+    expect(service.loadSnapshot().usage.antigravityAccount).toBeUndefined();
+    await service.refreshProviderUsage('antigravity');
+    expect(mockRefreshAntigravityAccount).toHaveBeenCalledTimes(1);
+    expect(service.loadSnapshot().usage.antigravityAccount).toEqual(ready);
+    await service.flush();
+    const stored = await readFile(
+      join(host.dataRoot, 'agent-observability', 'snapshot.json'),
+      'utf8',
+    );
+    expect(stored).not.toContain('antigravityAccount');
+
+    // Off the rollout the read never reaches Google.
+    mockAntigravityEnabled = false;
+    mockRefreshAntigravityAccount.mockClear();
+    await service.refreshProviderUsage('antigravity');
+    expect(mockRefreshAntigravityAccount).not.toHaveBeenCalled();
+    expect(service.loadSnapshot().usage.antigravityAccount).toBeUndefined();
+  } finally {
+    await disposeAll(host);
+    mockAntigravityEnabled = false;
+    mockAntigravityAccount = undefined;
+    mockRefreshAntigravityAccount.mockReset();
     restoreGoldenEnvironment(setCurrentService);
   }
 });

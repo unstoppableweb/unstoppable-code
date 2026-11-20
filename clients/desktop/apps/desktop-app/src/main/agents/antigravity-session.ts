@@ -49,7 +49,10 @@ import {
   getRawAntigravityModelId,
   isAntigravityModel,
 } from '@canopy/execution-engine/lib/antigravity-models';
-import { createAntigravityEventProjection } from '@canopy/desktop-shared/node/antigravity/event-projection';
+import {
+  ANTIGRAVITY_DENIED_STOP_MESSAGE,
+  createAntigravityEventProjection,
+} from '@canopy/desktop-shared/node/antigravity/event-projection';
 import type { AntigravityToolRoutes } from '@canopy/desktop-shared/node/antigravity/tool-display';
 import { normalizeCanopyMcpServerDisplayName } from '@canopy/desktop-shared/lib/turn-utils';
 import {
@@ -67,7 +70,16 @@ import {
   isAntigravitySessionMissing,
 } from '@canopy/desktop-shared/node/antigravity/recovery';
 import { antigravityTokenUsage } from '@canopy/desktop-shared/node/antigravity/usage';
-import { collectAntigravityPlanProposal } from '@canopy/desktop-shared/node/antigravity/plan-proposal';
+import {
+  ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+  ANTIGRAVITY_PLAN_ARTIFACT_MESSAGE,
+  antigravityPlanArtifact,
+  collectAntigravityPlanProposal,
+} from '@canopy/desktop-shared/node/antigravity/plan-proposal';
+import {
+  antigravityWorkspaceRootsBlock,
+  readAntigravityRepositoryInstructions,
+} from '@canopy/desktop-shared/node/antigravity/repository-instructions';
 import {
   AntigravitySessionConfigError,
   applyAntigravitySessionConfig,
@@ -81,7 +93,7 @@ import {
   openAntigravityRuntime,
   type AntigravityRuntime,
 } from '../antigravity/runtime';
-import { authorizeAntigravityTool } from '../antigravity/tool-approval';
+import { authorizeAntigravityToolCall } from '../antigravity/tool-approval';
 import { additionalDirectoriesParam } from '@canopy/desktop-shared/node/acp/capabilities';
 import { antigravityAdditionalDirectories } from '../antigravity/workspace-directories';
 import { isAntigravityConnectionEnabled } from '../antigravity/connection';
@@ -264,12 +276,24 @@ export class AntigravityProvider implements AgentProvider {
             : { server: original, tool };
         },
       };
+      // Why each native call this turn was denied, by ACP tool call id: the
+      // runtime reports a denial as an empty failure, and ACP cannot carry it.
+      const deniedTools = new Map<string, string>();
+      // What an artifact write's row says if the runtime fails it empty. Kept
+      // apart from real denials, so a completed write never reads as denied.
+      const artifactMessages = new Map<string, string>();
+      let lastToolCallId: string | undefined;
       const projection = createAntigravityEventProjection({
         limitMessage: 'Google response exceeded the local chat limit.',
         routes,
+        deniedToolResult: (toolCallId) =>
+          deniedTools.get(toolCallId) ?? artifactMessages.get(toolCallId),
       });
       // The ACP plans a plan-mode turn reports, for its proposal.
       const planUpdates: SessionUpdate[] = [];
+      // The last plan Gemini handed in as an artifact write this turn: plan
+      // mode never writes the file, so the call's content is the plan.
+      let planArtifact: { toolCallId: string; content: string } | undefined;
       const currentApproval = createApprovalSession({
         sessionKey: key,
         ...scope,
@@ -366,6 +390,19 @@ export class AntigravityProvider implements AgentProvider {
             try {
               if (planMode && update.update.sessionUpdate === 'plan')
                 planUpdates.push(update.update);
+              if (update.update.sessionUpdate === 'tool_call')
+                lastToolCallId = update.update.toolCallId;
+              const artifact = antigravityPlanArtifact(update.update);
+              if (artifact !== undefined) {
+                if (planMode) planArtifact = artifact;
+                // The runtime reports the unwritten file as an empty failure.
+                artifactMessages.set(
+                  artifact.toolCallId,
+                  planMode
+                    ? ANTIGRAVITY_PLAN_ARTIFACT_MESSAGE
+                    : ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+                );
+              }
               const event = projection.update(update);
               for (const flushed of projection.takeFlushed())
                 await buffer.push(flushed);
@@ -383,17 +420,24 @@ export class AntigravityProvider implements AgentProvider {
               !turnState.ownsKeyResources()
             )
               return 'deny';
-            const decision = await authorizeAntigravityTool(request, {
+            const authorization = await authorizeAntigravityToolCall(request, {
               approval: currentApproval,
               cwd: opts.cwd,
               planMode,
               stopTurn: () => abort.abort(),
             });
+            const toolCallId = request.request.toolCall.toolCallId;
+            // In plan mode the plan artifact's row explains its review instead.
+            if (
+              authorization.message !== undefined &&
+              !(planMode && planArtifact?.toolCallId === toolCallId)
+            )
+              deniedTools.set(toolCallId, authorization.message);
             return abort.signal.aborted ||
               lifetime.signal.aborted ||
               !turnState.ownsKeyResources()
               ? 'deny'
-              : decision;
+              : authorization.decision;
           },
         });
         runtime = opened;
@@ -548,9 +592,35 @@ export class AntigravityProvider implements AgentProvider {
               );
           }
         };
+        // Other repositories of a multi-repo worktree, sent only when the
+        // runtime advertised additional workspace roots.
+        const additionalDirectories = await antigravityAdditionalDirectories({
+          projectId: opts.projectId,
+          worktreeId: opts.worktreeId,
+          cwd: opts.cwd,
+        });
+        assertCurrent();
+        const sentDirectories = additionalDirectoriesParam(
+          additionalDirectories,
+          opened.client.supportsAdditionalDirectories(),
+        );
+        // The host delivers AGENTS.md and GEMINI.md, not native discovery,
+        // from exactly the roots the runtime receives.
+        const workspaceRoots = [
+          opts.cwd,
+          ...(sentDirectories.additionalDirectories ?? []),
+        ];
+        const repositoryInstructions =
+          await readAntigravityRepositoryInstructions(
+            workspaceRoots,
+            abort.signal,
+          );
+        assertCurrent();
         const append = [
           opts.globalInstructionsBlock,
           opts.globalInstructionsSnapshot,
+          antigravityWorkspaceRootsBlock(workspaceRoots),
+          repositoryInstructions.block,
           opts.systemPromptAppend,
           appTools.instructions,
           managedDelegation?.systemPromptGuidance,
@@ -560,20 +630,9 @@ export class AntigravityProvider implements AgentProvider {
         ]
           .filter(Boolean)
           .join('\n\n');
-        // Other repositories of a multi-repo worktree, sent only when the
-        // runtime advertised additional workspace roots.
-        const additionalDirectories = await antigravityAdditionalDirectories({
-          projectId: opts.projectId,
-          worktreeId: opts.worktreeId,
-          cwd: opts.cwd,
-        });
-        assertCurrent();
         const params = {
           cwd: opts.cwd,
-          ...additionalDirectoriesParam(
-            additionalDirectories,
-            opened.client.supportsAdditionalDirectories(),
-          ),
+          ...sentDirectories,
           mcpServers: [...appTools.servers, ...extensions.servers],
           _meta: { antigravity: { systemPrompt: { append } } },
         };
@@ -732,10 +791,11 @@ export class AntigravityProvider implements AgentProvider {
         assertCurrent();
         const extensionNotices = managedDelegation
           ? [
+              ...repositoryInstructions.notices,
               ...extensions.notices,
               'Subagents do not automatically inherit the skills, plugins, commands or MCP servers selected for this chat.',
             ]
-          : extensions.notices;
+          : [...repositoryInstructions.notices, ...extensions.notices];
         if (extensionNotices.length > 0) {
           // Use the shared system transcript notice, so desktop and Portal
           // persist the explanation without attributing it to the model.
@@ -824,8 +884,20 @@ export class AntigravityProvider implements AgentProvider {
             ? collectAntigravityPlanProposal(
                 planUpdates,
                 projection.getFinalResponseText(),
+                planArtifact?.content,
               )
             : null;
+        // Gemini ends the turn silently once a native call is denied; say so
+        // rather than leave the chat on a bare error count. A proposal
+        // replaces the notice.
+        const stoppedAfterDenial =
+          proposal === null &&
+          result.stopReason === 'end_turn' &&
+          lastToolCallId !== undefined &&
+          deniedTools.has(lastToolCallId) &&
+          projection.getFinalResponseText().trim() === '';
+        if (stoppedAfterDenial)
+          await buffer.push(projection.notice(ANTIGRAVITY_DENIED_STOP_MESSAGE));
         // The plan's own text reaches the transcript before its review.
         if (proposal !== null) await buffer.flush();
         // A turn stopped by then commits no review: a committed one would
@@ -880,7 +952,9 @@ export class AntigravityProvider implements AgentProvider {
               ? 'Turn cancelled'
               : isError
                 ? stopMessage
-                : projection.getResponseText(),
+                : stoppedAfterDenial
+                  ? ANTIGRAVITY_DENIED_STOP_MESSAGE
+                  : projection.getResponseText(),
         };
       } finally {
         // Discovery reads this turn's routes, so settle it before they close.

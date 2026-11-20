@@ -1147,6 +1147,153 @@ describe('web core authority on the canopy-core:relay channel (CAN-4185 PR-C)', 
     relay.dispose();
   });
 
+  it("a cloud chat's delegates' reads, Stop and Stop all reach the web core from the main window only, narrowed to the chat's scope, the chat and the delegate (CAN-7245)", async () => {
+    const binding = jest.fn<
+      ReturnType<RelayBindingProvider>,
+      Parameters<RelayBindingProvider>
+    >(unreachable);
+    const relay = webCoreRelay(binding);
+    const advisor = webCoreRelay(binding, 'app-advisor');
+    const scope = { workspaceId: 'ws-1', worktreeId: 'wt-1' };
+    const chatId = 'chat-1';
+    const delegationId = 'delegation-1';
+    const wellFormed: readonly {
+      readonly method: string;
+      readonly params: Record<string, unknown>;
+    }[] = [
+      { method: 'core.managedDelegation.list', params: { scope, chatId } },
+      {
+        method: 'core.managedDelegation.list',
+        params: { scope, chatId, cursor: 'cursor-1' },
+      },
+      {
+        method: 'core.managedDelegation.get',
+        params: { scope, chatId, delegationId },
+      },
+      {
+        method: 'core.managedDelegation.stop',
+        params: {
+          scope,
+          chatId,
+          delegationId,
+          _meta: { idempotencyKey: 'key-stop' },
+        },
+      },
+      {
+        method: 'core.managedDelegation.stopAll',
+        params: { scope, chatId, _meta: { idempotencyKey: 'key-stop-all' } },
+      },
+    ];
+    for (const { method, params } of wellFormed) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(true);
+      // App Advisor reaches no web core operation.
+      await expect(
+        advisor.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+      // The relay sends them as they are, and they fail only at the
+      // unreachable binding.
+      const { _meta: meta, ...sent } = params;
+      void meta;
+      expect(webCoreRelayNarrowParams(method, sent)).toBe(sent);
+      await expect(
+        relay.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'unavailable' } });
+    }
+    expect(binding).toHaveBeenCalledTimes(wellFormed.length);
+    binding.mockClear();
+
+    // Anything a chat's own cards don't send is refused before it leaves
+    // main: another delegate's subtree, closed delegates, a chat id inside
+    // the scope, or a missing or empty chat, scope or delegate.
+    for (const [method, params] of [
+      [
+        'core.managedDelegation.list',
+        { scope, chatId, underDelegationId: delegationId },
+      ],
+      ['core.managedDelegation.list', { scope, chatId, includeClosed: true }],
+      ['core.managedDelegation.list', { scope, chatId, cursor: 7 }],
+      ['core.managedDelegation.list', { scope }],
+      ['core.managedDelegation.list', { scope, chatId: '' }],
+      ['core.managedDelegation.get', { scope, chatId }],
+      ['core.managedDelegation.get', { scope, chatId, delegationId: 7 }],
+      [
+        'core.managedDelegation.stop',
+        { scope: { ...scope, chatId }, chatId, delegationId },
+      ],
+      [
+        'core.managedDelegation.stop',
+        { scope: { workspaceId: 'ws-1' }, chatId, delegationId },
+      ],
+      [
+        'core.managedDelegation.stop',
+        { scope: { ...scope, worktreeId: '' }, chatId, delegationId },
+      ],
+      ['core.managedDelegation.stop', { chatId, delegationId }],
+      ['core.managedDelegation.stopAll', { scope, chatId, delegationId }],
+      ['core.managedDelegation.stopAll', { scope, chatId, reason: 'user' }],
+    ] as const) {
+      await expect(
+        relay.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'invalid_argument',
+          message:
+            "Only this chat's own delegates can be read or stopped here.",
+        },
+      });
+    }
+    expect(binding).not.toHaveBeenCalled();
+
+    // Starting, messaging or steering a delegate, and its output, models
+    // and lifetime, stay off the relay.
+    for (const method of [
+      'core.managedDelegation.spawn',
+      'core.managedDelegation.message',
+      'core.managedDelegation.steering.request',
+      'core.managedDelegation.output.read',
+      'core.managedDelegation.models.list',
+      'core.managedDelegation.lifetime.get',
+      'core.managedDelegation.workspace.manage',
+    ]) {
+      expect(WEB_CORE_RELAY_OPERATIONS.has(method)).toBe(false);
+      await expect(
+        relay.invoke(rendererEvent(), {
+          kind: 'request',
+          method,
+          params: { scope, chatId },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    }
+
+    // With cloud chats off, none of them reaches the web core.
+    const off = createWebCoreRendererRelay({
+      bindingProvider: binding,
+      resolveSurface: (): RendererRelaySurfaceResolution => ({
+        surface: 'main',
+        caller: CALLER,
+      }),
+      cloudChatsEnabled: () => false,
+    });
+    for (const { method, params } of wellFormed)
+      await expect(
+        off.invoke(rendererEvent(), { kind: 'request', method, params }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'capability_unavailable' },
+      });
+    expect(binding).not.toHaveBeenCalled();
+    relay.dispose();
+    advisor.dispose();
+    off.dispose();
+  });
+
   it('cloud durable terminal operations reach the web core binding (CAN-6175 R10)', async () => {
     const binding = jest.fn<
       ReturnType<RelayBindingProvider>,

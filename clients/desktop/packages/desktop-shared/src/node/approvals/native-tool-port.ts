@@ -15,5 +15,10 @@ export interface NativeToolApprovalPort {
       toolUseId?: string;
       signal?: AbortSignal;
     },
-  ): Promise<{ decision: 'allow' | 'deny'; stopTurn?: boolean }>;
+  ): Promise<{
+    decision: 'allow' | 'deny';
+    /** Shared denial text (approval-denial.ts), shown as the tool's result. */
+    message?: string;
+    stopTurn?: boolean;
+  }>;
 }

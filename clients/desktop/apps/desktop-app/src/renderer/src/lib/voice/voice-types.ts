@@ -1,3 +1,5 @@
+import type { VoiceIsSupportedResponse } from '@canopy/desktop-shared/types';
+
 export type VoiceSessionState = 'idle' | 'connecting' | 'listening' | 'error';
 
 export interface VoiceTranscript {
@@ -16,6 +18,13 @@ export interface VoiceProviderHandlers {
    * every provider can measure it.
    */
   onLevel?: (level: number) => void;
+  /**
+   * The host has no speech model to recognize with (Linux only: the probe's
+   * `model-missing` code). Called at most once per `start()`, even when that
+   * start was stopped or cancelled while it waited, because the answer
+   * describes the host rather than the take.
+   */
+  onSpeechModelMissing?: () => void;
 }
 
 export interface VoiceTranscriptionProvider {
@@ -31,9 +40,16 @@ export interface VoiceTranscriptionProvider {
 }
 
 export class VoiceUnsupportedError extends Error {
-  constructor(message = 'Voice input is not supported') {
+  /** The probe's code, when it says why (Linux only). */
+  readonly code?: VoiceIsSupportedResponse['code'];
+
+  constructor(
+    message = 'Voice input is not supported',
+    code?: VoiceIsSupportedResponse['code'],
+  ) {
     super(message);
     this.name = 'VoiceUnsupportedError';
+    if (code !== undefined) this.code = code;
   }
 }
 

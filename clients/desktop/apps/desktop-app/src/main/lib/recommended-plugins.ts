@@ -28,10 +28,12 @@ import type {
 import { parseGitHubSource } from '../skills/source-parser';
 import { installSkills } from '../skills/skill-service';
 import { getCanopyJsonPath, readCanopyJson } from './canopy-json';
+import { access } from 'node:fs/promises';
 import { safeReadJson } from './fs-utils';
 import {
   getBundleConfigFilePath,
   getCollectionConfigFilePath,
+  getCollectionsIndexFilePath,
   getWorktreeDir,
   getWorkspaceWorktreeRepoDir,
   getWorkspaceWorktreeRootRepoDir,
@@ -176,9 +178,9 @@ function normalizeRecommendedPluginRefs(
   return result;
 }
 
-function readCollectionConfig(
+async function readCollectionConfig(
   collectionId: string,
-): CollectionConfigFile | null {
+): Promise<CollectionConfigFile | null> {
   if (!/^[a-f0-9-]+$/.test(collectionId)) {
     return null;
   }
@@ -188,6 +190,17 @@ function readCollectionConfig(
   if (collection) {
     return collection;
   }
+  // Once collections exist, a legacy bundle is converted or deleted, never live.
+  // An index published since the first read means the config is now written.
+  if (
+    await access(getCollectionsIndexFilePath()).then(
+      () => true,
+      () => false,
+    )
+  )
+    return safeReadJson<CollectionConfigFile>(
+      getCollectionConfigFilePath(collectionId),
+    );
   const legacy = safeReadJson<BundleConfigFile>(
     getBundleConfigFilePath(collectionId),
   );
@@ -196,9 +209,9 @@ function readCollectionConfig(
     : null;
 }
 
-function expandDefaultSelectionKeys(
+async function expandDefaultSelectionKeys(
   selections: ChatTabPluginSelections,
-): ExpandedSelectionKeys {
+): Promise<ExpandedSelectionKeys> {
   const skillKeys = new Set<string>();
   const pluginKeys = new Set<string>();
 
@@ -210,7 +223,7 @@ function expandDefaultSelectionKeys(
   }
 
   for (const collectionId of selections.collectionIds) {
-    const collectionFile = readCollectionConfig(collectionId);
+    const collectionFile = await readCollectionConfig(collectionId);
     const collection = collectionFile?.collection;
     if (!collection) {
       continue;
@@ -351,7 +364,7 @@ export async function inspectRecommendedPlugins(
   const selections = normalizeDefaultPluginSelections(
     config.defaultPluginSelections,
   );
-  const expandedSelections = expandDefaultSelectionKeys(selections);
+  const expandedSelections = await expandDefaultSelectionKeys(selections);
   const optOutKeys = new Set(config.recommendedPluginOptOutKeys ?? []);
 
   const items = recommendations.map((ref) => {

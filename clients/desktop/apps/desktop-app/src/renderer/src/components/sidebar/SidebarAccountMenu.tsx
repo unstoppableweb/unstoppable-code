@@ -91,7 +91,7 @@ export interface SidebarAccountMenuProps {
   onNavigate: (page: NavigationPage) => void;
   onSettingsClick: () => void;
   settingsOpen: boolean;
-  /** Opens the Remote Control dialog (the host's `canopy_portal.open` dispatch). */
+  /** Opens the Remote Control dialog through the host's `requestRemoteControlDialogOpen`. */
   onRemoteControlClick: () => void;
   /**
    * Lowest-priority footer banner slot (the DEV banner), rendered after the

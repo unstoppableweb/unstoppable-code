@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, resolve, sep } from 'node:path';
 import {
   ARCHIVED_CONTAINER_CHANGES_DEFAULT_PAGE_SIZE,
@@ -51,6 +50,7 @@ import {
   purgeArchivedContainer,
   readArchivedContainerChatArchives,
   readArchivedContainerChats,
+  readArchivedContainerFile,
   readArchivedContainerManifest,
   readArchivedContainerTrackedPlans,
   setArchivedContainerLocked,
@@ -663,7 +663,13 @@ export function registerArchivedContainerHandlers(
         executionId: request.executionId,
         persistedPath,
       });
-      return { content: await readFile(filePath, 'utf8'), filePath };
+      const content = await readArchivedContainerFile(
+        request.projectId,
+        request.containerId,
+        filePath,
+        'execution-report',
+      );
+      return { content, filePath };
     },
   );
 
@@ -720,7 +726,14 @@ export function registerArchivedContainerHandlers(
         throw new Error('Invalid archived step log path');
       }
       try {
-        const lines = (await readFile(filePath, 'utf8'))
+        const lines = (
+          await readArchivedContainerFile(
+            request.projectId,
+            request.containerId,
+            filePath,
+            'step-log',
+          )
+        )
           .replace(/\r\n/g, '\n')
           .split('\n');
         if (lines[lines.length - 1] === '') lines.pop();

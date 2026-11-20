@@ -120,6 +120,16 @@ export const CURSOR_CHAT_LIMIT_MESSAGE =
 /** The projection refused a turn past its bound; the message is the surface's copy. */
 export class CursorProjectionLimitError extends Error {}
 
+/** No text anywhere: absent, blank, or only empty arrays and records. */
+function isEmptyToolOutput(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value === 'string') return value.trim().length === 0;
+  if (Array.isArray(value)) return value.every(isEmptyToolOutput);
+  if (typeof value === 'object')
+    return Object.values(value).every(isEmptyToolOutput);
+  return false;
+}
+
 /**
  * Bounds one turn's projection at 8 MiB of notification JSON or 4,096 blocks,
  * because every block is held in memory until the turn ends. The bound is the
@@ -151,6 +161,12 @@ export class CursorEventProjection {
       onToolInvocation?: (invocation: CursorToolInvocation) => void;
       toolDisplay?: typeof cursorToolDisplay;
       recognizeCursorErrors?: boolean;
+      /**
+       * Text to show as the result of a failed call that reported no output,
+       * by ACP tool call id: a host that refused the call knows why, while
+       * the runtime reports only an empty failure.
+       */
+      toolResultOverride?: (toolCallId: string) => string | undefined;
     } = {},
   ) {
     this.onToolInvocation = options.onToolInvocation;
@@ -378,14 +394,22 @@ export class CursorEventProjection {
         'tool_use',
       );
       if (update.status === 'completed' || update.status === 'failed') {
+        const reported = update.rawOutput ?? update.content ?? [];
+        const override =
+          update.status === 'failed' && isEmptyToolOutput(reported)
+            ? this.options.toolResultOverride?.(update.toolCallId)
+            : undefined;
         upsert(
           {
             type: 'tool_result',
             toolUseId,
             toolName: name,
-            output: JSON.stringify(
-              this.maskToolValue(update.rawOutput ?? update.content ?? []),
-            ),
+            // A host denial is plain text, as Claude and Codex persist it, so
+            // the shared chat recognizes it as a denial rather than an error.
+            output:
+              override === undefined
+                ? JSON.stringify(this.maskToolValue(reported))
+                : String(this.maskToolValue(override)),
             isError:
               update.status === 'failed' ||
               cursorToolOutputIsError(update.rawOutput),

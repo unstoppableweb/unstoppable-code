@@ -1,4 +1,7 @@
-import { WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS } from '@canopy/protocol/canopy-core';
+import {
+  WORKER_GIT_MERGE_INSTRUCTION_DEFINITIONS,
+  type CoreIntegrationResourceListResult,
+} from '@canopy/protocol/canopy-core';
 import { createWorkerGitMergeAdapter } from '../canopy-runtime/worker-git-merge-adapter';
 // CAN-4070 rule: captured on the unchanged GitHub IPC handlers before CAN-4109
 // serves them through core.pullRequest.* and core.integration.*. Real data
@@ -156,14 +159,23 @@ import {
   type CorePullRequest,
   type CorePullRequestListParams,
 } from '@canopy/protocol/canopy-core';
-import { createCanopyDispatcher } from '@canopy/core-runtime';
+import {
+  createCanopyDispatcher,
+  CanopyOperationError,
+} from '@canopy/core-runtime';
 import {
   mintPullRequestId,
   mintRepositoryId,
+  type CoreIntegrationHost,
+  type LinearIntegrationPort,
 } from '@canopy/core-runtime/node/github';
 import { createWorkerGitRemoteHandlers } from '@canopy/core-runtime/node/git';
-import { createCoreIntegrationAdapter } from '../canopy-runtime/core-integration-adapter';
+import {
+  createCoreIntegrationAdapter,
+  desktopCoreIntegrationHost,
+} from '../canopy-runtime/core-integration-adapter';
 import { createCorePullRequestAdapter } from '../canopy-runtime/core-pull-request-adapter';
+import { desktopGitHubRequestHandle } from '../github/request-handle';
 import { desktopWorkerGitRemoteHost } from '../canopy-runtime/worker-git-adapter';
 import {
   deriveDesktopIpcCaller,
@@ -2091,6 +2103,274 @@ describe('projection through the desktop dispatcher', () => {
       expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
         expect.objectContaining({ owner: 'golden-org', repo: 'untracked' }),
       );
+    });
+  });
+});
+
+// CAN-4178 L3: the desktop host appends the Linear connection after the two
+// GitHub ones, so GitHub's items, positions and offset cursors never move.
+describe('core.integration.list connection order (CAN-4178)', () => {
+  const lister: { caller: CanopyCallerDescriptor } = {
+    caller: { ...DESKTOP_IPC_CALLER, grants: ['core.integration.read'] },
+  };
+  // Fixed GitHub state, so items are JSON-identical across runs.
+  const { linear: desktopLinear, ...desktopGitHubHost } =
+    desktopCoreIntegrationHost;
+  void desktopLinear;
+  const githubOnlyHost: CoreIntegrationHost = {
+    ...desktopGitHubHost,
+    github: {
+      ...desktopGitHubRequestHandle,
+      describe: () =>
+        Promise.resolve({ tokenSource: 'pat', storedCredential: 'present' }),
+    },
+    observeGitHubCli: () => Promise.resolve({ kind: 'not-installed' }),
+  };
+  const unexpected = (): Promise<never> =>
+    Promise.reject(new Error('A list never calls Linear'));
+  const linearPort: LinearIntegrationPort = {
+    readCredentialState: () => Promise.resolve('stored'),
+    readCurrentScope: unexpected,
+    readTeamKeys: unexpected,
+    readIssue: unexpected,
+    validate: unexpected,
+  };
+  // As the dispatcher's result schema orders them.
+  const GITHUB =
+    '{"integrationId":"github","kind":"github","accountLabel":"","state":"connected","capabilities":["pull-requests","repositories"],"revision":0,"githubCredential":{"tokenSource":"pat","storedCredential":"present"}}';
+  const GITHUB_CLI =
+    '{"integrationId":"github-cli","kind":"github-cli","accountLabel":"","state":"error","capabilities":[],"revision":0,"githubCli":{"login":null,"tokenSourceKind":null,"environmentVariable":null,"hasCredentialStoreLogin":false,"unavailableReason":"not_installed"}}';
+  const LINEAR =
+    '{"integrationId":"linear","kind":"linear","accountLabel":"","state":"connected","capabilities":["issues","teams"],"revision":0,"linearCredential":{"storedCredential":true}}';
+  // The store couldn't be read: not a confirmed disconnection, so no member.
+  const LINEAR_UNREADABLE =
+    '{"integrationId":"linear","kind":"linear","accountLabel":"","state":"error","capabilities":[],"revision":0}';
+  const CURSOR = /^\d{1,4}\.[\w-]{43}$/;
+
+  function listing(host: CoreIntegrationHost): {
+    list: (params: {
+      pageSize?: number;
+      cursor?: string;
+    }) => Promise<{ items: string[]; nextCursor: string | null }>;
+  } {
+    const listDispatcher = createCanopyDispatcher({
+      profile: 'core+worker',
+      definitions: {
+        queries: CORE_INTEGRATION_QUERIES,
+        instructions: {},
+        streams: {},
+      },
+      handlers: {
+        queries: createCoreIntegrationAdapter(host).queries,
+        instructions: {},
+        streams: {},
+      },
+    });
+    return {
+      list: async (params) => {
+        const page = await listDispatcher.query(
+          'core.integration.list',
+          params,
+          lister,
+        );
+        return {
+          items: page.items.map((item) => JSON.stringify(item)),
+          nextCursor: page.nextCursor,
+        };
+      },
+    };
+  }
+
+  async function walk(
+    list: ReturnType<typeof listing>['list'],
+  ): Promise<string[][]> {
+    const pages: string[][] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await list({
+        pageSize: 1,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      pages.push(page.items);
+      if (page.nextCursor !== null) expect(page.nextCursor).toMatch(CURSOR);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    return pages;
+  }
+
+  it('lists a GitHub-only host exactly as before, with no linear item', async () => {
+    const { list } = listing(githubOnlyHost);
+    await expect(list({})).resolves.toEqual({
+      items: [GITHUB, GITHUB_CLI],
+      nextCursor: null,
+    });
+    const first = await list({ pageSize: 1 });
+    expect(first.items).toEqual([GITHUB]);
+    expect(first.nextCursor).toMatch(/^1\./);
+    await expect(walk(list)).resolves.toEqual([[GITHUB], [GITHUB_CLI]]);
+  });
+
+  it('appends linear at index 2 and keeps offset 1 at github-cli', async () => {
+    const { list } = listing({ ...githubOnlyHost, linear: linearPort });
+    await expect(list({})).resolves.toEqual({
+      items: [GITHUB, GITHUB_CLI, LINEAR],
+      nextCursor: null,
+    });
+    const first = await list({ pageSize: 1 });
+    expect(first.nextCursor).toMatch(/^1\./);
+    const second = await list({
+      pageSize: 1,
+      cursor: first.nextCursor ?? undefined,
+    });
+    expect(second.items).toEqual([GITHUB_CLI]);
+    expect(second.nextCursor).toMatch(/^2\./);
+    await expect(walk(list)).resolves.toEqual([
+      [GITHUB],
+      [GITHUB_CLI],
+      [LINEAR],
+    ]);
+  });
+
+  it('refuses a team page read under a credential replaced mid-request', async () => {
+    const teams = (
+      current: string | null,
+    ): Promise<CoreIntegrationResourceListResult> =>
+      createCanopyDispatcher({
+        profile: 'core+worker',
+        definitions: {
+          queries: CORE_INTEGRATION_QUERIES,
+          instructions: {},
+          streams: {},
+        },
+        handlers: {
+          queries: createCoreIntegrationAdapter({
+            ...githubOnlyHost,
+            linear: {
+              ...linearPort,
+              readCurrentScope: () => Promise.resolve(current),
+              readTeamKeys: () =>
+                Promise.resolve({
+                  status: 'ok',
+                  scope: 'scope-a',
+                  keys: ['ABC'],
+                  fetchedAt: 1,
+                }),
+            },
+          }).queries,
+          instructions: {},
+          streams: {},
+        },
+      }).query(
+        'core.integration.resource.list',
+        {
+          integrationId: 'linear',
+          kinds: ['team'],
+          query: null,
+          cursor: null,
+          limit: 50,
+        },
+        lister,
+      );
+    await expect(teams('scope-a')).resolves.toMatchObject({
+      resources: [{ resourceId: 'ABC', kind: 'team' }],
+    });
+    for (const current of ['scope-b', null])
+      await expect(teams(current)).rejects.toMatchObject({
+        payload: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      });
+  });
+
+  it('refuses resource reads from an unreadable Linear store as retryable, with fixed text', async () => {
+    const reads = (
+      state: 'unreadable' | 'stored' | 'absent',
+    ): ReturnType<typeof createCanopyDispatcher> => {
+      const port: LinearIntegrationPort = {
+        ...linearPort,
+        readCredentialState: () => Promise.resolve(state),
+        // The reader can't tell an unreadable store from no token.
+        readTeamKeys: () => Promise.resolve({ status: 'disconnected' }),
+        readIssue: () => Promise.resolve({ status: 'disconnected' }),
+      };
+      return createCanopyDispatcher({
+        profile: 'core+worker',
+        definitions: {
+          queries: CORE_INTEGRATION_QUERIES,
+          instructions: {},
+          streams: {},
+        },
+        handlers: {
+          queries: createCoreIntegrationAdapter({
+            ...githubOnlyHost,
+            linear: port,
+          }).queries,
+          instructions: {},
+          streams: {},
+        },
+      });
+    };
+    const notAuthenticated = {
+      kind: 'failed_precondition',
+      code: 'core.integration.notAuthenticated',
+      message: 'No working Linear API token is stored.',
+      retry: { kind: 'never' },
+    } as const;
+    for (const [state, payload] of [
+      [
+        'unreadable',
+        {
+          kind: 'unavailable',
+          message: 'The Linear credential store could not be read.',
+          retry: { kind: 'same_request' },
+        },
+      ],
+      // A stored token Linear refused (or one held back as revoked) reads as
+      // disconnected too: that is a missing working credential, not a retry.
+      ['stored', notAuthenticated],
+      ['absent', notAuthenticated],
+    ] as const) {
+      const dispatcher = reads(state);
+      for (const read of [
+        (): Promise<unknown> =>
+          dispatcher.query(
+            'core.integration.resource.get',
+            { integrationId: 'linear', resourceId: 'ABC-1' },
+            lister,
+          ),
+        (): Promise<unknown> =>
+          dispatcher.query(
+            'core.integration.resource.list',
+            {
+              integrationId: 'linear',
+              kinds: ['team'],
+              query: null,
+              cursor: null,
+              limit: 50,
+            },
+            lister,
+          ),
+      ])
+        // Exactly these fields: no store path, OS error text or credential detail.
+        await expect(
+          read().then(
+            () => null,
+            (error: unknown) =>
+              error instanceof CanopyOperationError ? error.payload : error,
+          ),
+        ).resolves.toStrictEqual(payload);
+    }
+  });
+
+  it('reports an unreadable Linear store as an error, not a disconnection', async () => {
+    const { list } = listing({
+      ...githubOnlyHost,
+      linear: {
+        ...linearPort,
+        readCredentialState: () => Promise.resolve('unreadable'),
+      },
+    });
+    await expect(list({})).resolves.toEqual({
+      items: [GITHUB, GITHUB_CLI, LINEAR_UNREADABLE],
+      nextCursor: null,
     });
   });
 });

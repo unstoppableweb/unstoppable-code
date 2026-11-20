@@ -7,6 +7,9 @@ import {
   CORE_PLAN_INSTRUCTION_DEFINITIONS,
   CORE_PLAN_QUERY_DEFINITIONS,
   CORE_PLAN_STREAM_DEFINITIONS,
+  PLAN_DIAGRAM_ERROR_CODES,
+  PlanRecordSchema,
+  PlanSourceSchema,
 } from '../core';
 
 const scope = { projectId: 'project-1', worktreeId: 'task-1' };
@@ -23,6 +26,7 @@ const INSTRUCTIONS = [
   'core.plan.import',
   'core.plan.detected.scan',
   'core.plan.detected.update',
+  'core.plan.diagram.generate',
 ] as const;
 const STREAMS = ['core.plan.events'] as const;
 
@@ -106,6 +110,18 @@ describe('core.plan contract (CAN-4165)', () => {
     ).toBe(false);
   });
 
+  // Antigravity chats propose plans with this source; leaving it out of the
+  // list refused every Google plan with "Unknown plan source: antigravity".
+  it('accepts a create from an Antigravity chat', () => {
+    const { params } = CORE_PLAN_INSTRUCTION_DEFINITIONS['core.plan.create'];
+    expect(PlanSourceSchema.safeParse('antigravity').success).toBe(true);
+    expect(PlanSourceSchema.safeParse('gemini').success).toBe(false);
+    expect(
+      params.safeParse({ scope, source: 'antigravity', content: '# Plan' })
+        .success,
+    ).toBe(true);
+  });
+
   it('makes the revision check optional on an update', () => {
     const { params } = CORE_PLAN_INSTRUCTION_DEFINITIONS['core.plan.update'];
     expect(
@@ -124,6 +140,22 @@ describe('core.plan contract (CAN-4165)', () => {
         scope,
         planId: 'plan-1',
         expectedRevision: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      params.safeParse({
+        scope,
+        planId: 'plan-1',
+        expectedRevision: 2,
+        expectedSource: 'opencode',
+        reviewStatus: 'approved',
+      }).success,
+    ).toBe(true);
+    expect(
+      params.safeParse({
+        scope,
+        planId: 'plan-1',
+        expectedSource: 'manual',
       }).success,
     ).toBe(false);
     expect(
@@ -195,6 +227,144 @@ describe('core.plan contract (CAN-4165)', () => {
     ).toBe(true);
     expect(
       params.safeParse({ scope, entryId: 'entry-1', status: 'gone' }).success,
+    ).toBe(false);
+  });
+
+  // CAN-4167 PR 3a: spec-first, so nothing serves it yet.
+  it('requests diagrams for a plan and answers only whether a generation started', () => {
+    const { params, result, error } =
+      CORE_PLAN_INSTRUCTION_DEFINITIONS['core.plan.diagram.generate'];
+    expect(params.safeParse({ scope, planId: 'plan-1' }).success).toBe(true);
+    expect(
+      params.safeParse({
+        scope,
+        planId: 'plan-1',
+        expectedRevision: 3,
+        kinds: ['sequence', 'logicDiff', 'dataModelDiff'],
+        initiationSource: 'user',
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { scope, planId: 'plan-1', expectedRevision: 0 },
+      { scope, planId: 'plan-1', kinds: [] },
+      { scope, planId: 'plan-1', kinds: ['flowchart'] },
+      { scope, planId: 'plan-1', formats: ['svg'] },
+      { scope, planId: 'plan-1', userInitiated: true },
+      { planId: 'plan-1' },
+    ]) {
+      expect(params.safeParse(bad).success).toBe(false);
+    }
+    expect(result.safeParse({ status: 'started', revision: 2 }).success).toBe(
+      true,
+    );
+    expect(result.safeParse({ status: 'queued', revision: 2 }).success).toBe(
+      true,
+    );
+    expect(result.safeParse({ status: 'missing' }).success).toBe(true);
+    expect(result.safeParse({ status: 'ready' }).success).toBe(false);
+    const modelUnavailable = {
+      kind: 'failed_precondition',
+      message: 'No harness serves the diagram model.',
+      code: PLAN_DIAGRAM_ERROR_CODES.DIAGRAM_MODEL_UNAVAILABLE,
+      details: { reason: 'DIAGRAM_MODEL_UNAVAILABLE' },
+      retry: { kind: 'never' },
+    };
+    expect(error.safeParse(modelUnavailable).success).toBe(true);
+    expect(
+      CORE_PLAN_INSTRUCTION_DEFINITIONS['core.plan.update'].error.safeParse(
+        modelUnavailable,
+      ).success,
+    ).toBe(false);
+  });
+
+  // Typing the diagrams must hide no plan the desktop store reads today.
+  it('reads every stored diagram artifact the desktop store accepts', () => {
+    const stored = {
+      id: 'plan-1',
+      ...scope,
+      source: 'claude',
+      title: 'Plan',
+      content: '# Plan',
+      reviewStatus: 'pending',
+      createdAt: '2026-11-20T00:00:00.000Z',
+      updatedAt: '2026-11-20T00:00:00.000Z',
+      latestRevisionNumber: 2,
+      revisions: [],
+      linkedExecutionIds: [],
+    };
+    const graph = { schemaVersion: 1, nodes: [], edges: [] };
+    const flow = { nodes: [], edges: [] };
+    const diff = {
+      schemaVersion: 1,
+      current: flow,
+      planned: flow,
+      changes: [],
+    };
+    for (const diagrams of [
+      {},
+      {
+        sequence: {
+          data: graph,
+          derivedFromRevision: 2,
+          status: 'ready',
+          generatedAt: '2026-11-20T00:00:00.000Z',
+        },
+        logicDiff: { data: null, derivedFromRevision: 2, status: 'generating' },
+        dataModelDiff: {
+          data: diff,
+          derivedFromRevision: 1,
+          status: 'stale',
+          generatedAt: '2026-11-19T00:00:00.000Z',
+        },
+      },
+      {
+        sequence: {
+          data: graph,
+          derivedFromRevision: 2,
+          status: 'error',
+          error: 'Diagram generation returned no graph',
+        },
+        logicDiff: { data: diff, derivedFromRevision: 2, status: 'pending' },
+      },
+      // The store never checks generatedAt or error.
+      {
+        sequence: {
+          data: graph,
+          derivedFromRevision: 2,
+          status: 'ready',
+          generatedAt: null,
+          error: null,
+        },
+        logicDiff: {
+          data: null,
+          derivedFromRevision: 2,
+          status: 'error',
+          generatedAt: 1763605200000,
+          error: { message: 'Diagram generation returned no graph' },
+        },
+      },
+      // The store reads any data and keeps fields it does not know.
+      {
+        sequence: {
+          data: { schemaVersion: 2, shape: 'future' },
+          derivedFromRevision: 2,
+          status: 'ready',
+          renderHint: 'compact',
+        },
+        futureKind: { data: null, derivedFromRevision: 1, status: 'ready' },
+      },
+    ]) {
+      expect(PlanRecordSchema.safeParse({ ...stored, diagrams }).success).toBe(
+        true,
+      );
+    }
+    expect(
+      PlanRecordSchema.safeParse({
+        ...stored,
+        diagrams: {
+          sequence: { data: null, derivedFromRevision: 2, status: 'drawn' },
+        },
+      }).success,
     ).toBe(false);
   });
 

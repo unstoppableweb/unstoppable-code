@@ -1,13 +1,17 @@
 import { join } from 'node:path';
 import { app, net } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
-import { DEFAULT_SPEECH_MODEL } from '@canopy/core-runtime/dictation';
+import {
+  DEFAULT_SPEECH_MODEL,
+  SpeechModelInstallError,
+} from '@canopy/core-runtime/dictation';
 import { getBrandEnv } from '@canopy/execution-engine/brand/env';
 import {
   getCanopyReleaseFlavor,
   type CanopyReleaseFlavor,
 } from '../lib/app-identity';
 import { getDictationModelsDir } from '../lib/paths';
+import { localOnlyBlockedHost } from '../local-only/egress-policy';
 import {
   createDesktopDictationHost,
   type DesktopDictationHostOptions,
@@ -78,8 +82,19 @@ export function desktopSpeechModelHostOptions(): DesktopDictationHostOptions {
     modelsDir: getDictationModelsDir(),
     baseUrl,
     // Electron's `net` uses the session's proxy settings: the system proxy,
-    // PAC and `--proxy-server`, which Node's own fetch ignores.
-    fetch: (url, init) => net.fetch(url, { ...init, redirect }),
+    // PAC and `--proxy-server`, which Node's own fetch ignores. A local-only
+    // build that doesn't allow the host says how to allow it, and sends
+    // nothing.
+    fetch: async (url, init) => {
+      const blocked = await localOnlyBlockedHost(url);
+      if (blocked !== null) {
+        throw new SpeechModelInstallError(
+          'network',
+          `This local-only build blocks ${blocked}. Add it to allowedHosts in local-only.json, then try again.`,
+        );
+      }
+      return net.fetch(url, { ...init, redirect });
+    },
   };
 }
 

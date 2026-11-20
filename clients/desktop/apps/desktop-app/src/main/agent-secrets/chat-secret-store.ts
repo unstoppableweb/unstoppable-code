@@ -227,6 +227,11 @@ export interface AgentSecretAuditEntry {
   commandDigest?: string;
   /** For a WriteSecretsFile `used`: the file, relative to the worktree. */
   path?: string;
+  /**
+   * For `provided` and `declined`: the paired device kind a person answered
+   * from (U7). Absent when they answered in this computer's window.
+   */
+  answeredFrom?: 'browser' | 'mobile';
 }
 
 function readUtf8(path: string): Promise<string> {
@@ -1627,6 +1632,7 @@ export class ChatSecretStore {
       ...(entry.tool ? { tool: entry.tool } : {}),
       ...(entry.commandDigest ? { commandDigest: entry.commandDigest } : {}),
       ...(entry.path ? { path: entry.path } : {}),
+      ...(entry.answeredFrom ? { answeredFrom: entry.answeredFrom } : {}),
     };
     try {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });

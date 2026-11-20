@@ -6,6 +6,7 @@ import {
 import { desktopBrowserPort } from './desktop-browser-port';
 import { desktopExperimentsPort } from './desktop-experiments-port';
 import { desktopInventorySyncPort } from './desktop-inventory-sync-port';
+import { desktopRemoteControlDialogPort } from './desktop-remote-control-dialog-port';
 import { desktopInstalledItemsPort } from './desktop-installed-items-port';
 import { desktopSettingsPort } from './desktop-settings-port';
 import { desktopPipelineExecutionsPort } from './desktop-pipeline-executions-port';
@@ -20,6 +21,7 @@ import {
   createProjectActionFamily,
   createExperimentsActionFamily,
   createInventorySyncActionFamily,
+  createRemoteControlActionFamily,
   createInstalledItemsActionFamily,
   type AgentInstalledItemsPort,
   createSettingsActionFamily,
@@ -31,6 +33,7 @@ import {
   type AgentCapabilityPackagePort,
   type AgentExperimentsPort,
   type AgentInventorySyncPort,
+  type AgentRemoteControlDialogPort,
   type AgentPipelineExecutionsPort,
   type AgentPipelinesPort,
   type AgentPullRequestReviewPort,
@@ -82,6 +85,8 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     'bots',
     'experiments',
     'inventory-sync',
+    // The Remote Control dialog in the calling chat's window (CAN-7298).
+    'remote-control',
     'installed-items',
     'settings',
     'capability-package',
@@ -173,6 +178,8 @@ export interface DesktopAgentActionPorts {
   experiments?: AgentExperimentsPort<CanopyInjectedToolRuntime>;
   /** This computer's Sync lists to the web switch; turning off always asks. */
   inventorySync?: AgentInventorySyncPort<CanopyInjectedToolRuntime>;
+  /** Opens and closes the Remote Control dialog in the calling chat's window. */
+  remoteControlDialog?: AgentRemoteControlDialogPort<CanopyInjectedToolRuntime>;
   /** Opens hosted account and organization settings in the main window. */
   settings?: AgentSettingsPort<CanopyInjectedToolRuntime>;
   /** Starts pipeline runs through the main-process start path. */
@@ -211,6 +218,7 @@ export function desktopAgentActionPorts(): DesktopAgentActionPorts {
       receipts,
       experiments: desktopExperimentsPort,
       inventorySync: desktopInventorySyncPort,
+      remoteControlDialog: desktopRemoteControlDialogPort,
       settings: desktopSettingsPort,
       capabilityPackage: desktopCapabilityPackagePort,
       pipelines: desktopPipelinesPort,
@@ -257,6 +265,9 @@ export function desktopAgentActionFamilies(
       port: ports.inventorySync ?? desktopInventorySyncPort,
       receipts: ports.receipts,
       limits: capabilities.limits ? ports.limits : null,
+    }),
+    createRemoteControlActionFamily({
+      port: ports.remoteControlDialog ?? desktopRemoteControlDialogPort,
     }),
     createSettingsActionFamily({
       port: ports.settings ?? desktopSettingsPort,

@@ -125,8 +125,8 @@ export interface CanopyCapabilities {
    * allowed Mods and the "turn off every Mod" switch). Optional and
    * default-deny: unset is the confirmed default for unconfigured and
    * configured-but-unavailable hosts, and shared UI then shows no Mod
-   * controls. Desktop serves it; the Portal reports it when the paired
-   * desktop announces `claude_mod_admission_v1`; cloud chats leave it unset.
+   * controls. Desktop serves it, and so does web Remote Control of a directly
+   * controlled computer (CAN-7436); cloud chats leave it unset.
    * Whether admission is on is the separate `ClaudeModsState.enabled`.
    */
   readonly claudeModAdmission?: boolean;
@@ -135,8 +135,10 @@ export interface CanopyCapabilities {
    * `claudeMods.surface` events. Optional and default-deny: unset is the
    * confirmed default for unconfigured and configured-but-unavailable hosts,
    * and shared UI then draws no Mod surface. Desktop serves it, and main
-   * sends events only while the surface and admission flags are on; the
-   * Portal and cloud chats leave it unset.
+   * sends events only while the surface and admission flags are on. Web
+   * Remote Control of a directly controlled computer serves it too, without
+   * the Mod's composer requests, which stay on that computer (CAN-7436);
+   * cloud chats leave it unset.
    */
   readonly claudeModSurface?: boolean;
   /** Chat operations wired by this target's adapter. Missing members deny. */
@@ -796,7 +798,7 @@ export interface CanopyCapabilities {
   readonly organizationInvites?: boolean;
   /**
    * Host can list and bring Personal projects into a team: desktop locally,
-   * web only through a paired desktop session. Default-deny.
+   * web only through a directly controlled computer (CAN-7440). Default-deny.
    */
   readonly personalProjectConversion?: boolean;
   /**

@@ -3,18 +3,27 @@ import { deriveChatWorkflowCapabilities } from '@canopy/app-core';
 import type { PlanExitRequestEvent } from '@canopy/desktop-shared/types';
 import { getPendingPlanExitSource } from '../../../renderer/src/stores/chat/plan-utils';
 import type { AgentInterfacePort } from '../agent-interface-port';
+import { ANTIGRAVITY_DENIED_STOP_MESSAGE } from '@canopy/desktop-shared/node/antigravity/event-projection';
+import {
+  ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+  ANTIGRAVITY_PLAN_ARTIFACT_MESSAGE,
+  antigravityPlanArtifact,
+} from '@canopy/desktop-shared/node/antigravity/plan-proposal';
 import { AntigravityProvider } from '../antigravity-session';
 import type { AgentSession } from '../types';
 
 // A Google turn runs against a fake ACP runtime: each prompt replays the
 // session updates the test scripts, then ends the turn. Everything around the
 // native runtime (routes, approvals, snapshots) is stubbed to its no-op shape.
+// A scripted `{ permission: toolCallId }` entry asks the session to authorize
+// that native call, which the stubbed authorizer denies with `mockDenial`.
 
 // Unknown, so a test can also send what a malformed runtime would.
 const mockScript: { updates: unknown[] } = { updates: [] };
 const mockPrompts: string[] = [];
 const mockAppliedModes: string[] = [];
 const mockCommitted: PlanExitRequestEvent[] = [];
+const mockDenial = { message: 'The user denied this tool call.' };
 const mockAttention: unknown[] = [];
 /** What the workspace-directories lookup returns for the next session. */
 const mockDirectories: { paths: string[]; advertised: boolean } = {
@@ -45,6 +54,7 @@ jest.mock('../../antigravity/runtime', () => ({
       sessionId: string;
       update: unknown;
     }) => Promise<void>;
+    onPermission: (request: unknown) => Promise<string>;
   }): Promise<unknown> =>
     Promise.resolve({
       client: {
@@ -72,7 +82,20 @@ jest.mock('../../antigravity/runtime', () => ({
         }) => {
           mockPrompts.push(request.prompt.map((block) => block.text).join(''));
           for (const update of mockScript.updates)
-            await params.onUpdate({ sessionId: 'native-session', update });
+            if (
+              typeof update === 'object' &&
+              update !== null &&
+              'permission' in update
+            )
+              await params.onPermission({
+                request: {
+                  sessionId: 'native-session',
+                  options: [],
+                  toolCall: { toolCallId: update.permission },
+                },
+                signal: new AbortController().signal,
+              });
+            else await params.onUpdate({ sessionId: 'native-session', update });
           return { stopReason: 'end_turn' };
         },
         supportsAdditionalDirectories: (): boolean =>
@@ -164,6 +187,8 @@ jest.mock('../../antigravity/connection', () => ({
 }));
 jest.mock('../../antigravity/tool-approval', () => ({
   authorizeAntigravityTool: (): Promise<string> => Promise.resolve('deny'),
+  authorizeAntigravityToolCall: (): Promise<object> =>
+    Promise.resolve({ decision: 'deny', message: mockDenial.message }),
 }));
 jest.mock('../../antigravity/models', () => ({
   markAntigravityCatalogStale: (): void => undefined,
@@ -695,6 +720,298 @@ describe('Antigravity plan proposals', () => {
     ]);
     expect(mockCommitted).toHaveLength(1);
     expect(presented).toHaveLength(1);
+  });
+
+  describe('a denied native tool', () => {
+    const deniedCall = [
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'denied-1',
+        title: 'run_command',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: { CommandLine: 'touch SHOULD_NOT_EXIST.txt' },
+      },
+      { permission: 'denied-1' },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'denied-1',
+        status: 'failed',
+        rawOutput: { output: '' },
+      },
+    ];
+
+    function result(): Record<string, unknown> | undefined {
+      return events.find((event) => event.type === 'result');
+    }
+
+    it('shows the denial as the tool result and explains the stopped turn', async () => {
+      mockDenial.message = 'The user denied this tool call: wrong folder';
+      open(false);
+      await turn('Create the file', deniedCall);
+
+      expect(
+        patchBlocks(events).filter((block) => block.type === 'tool_result'),
+      ).toContainEqual(
+        expect.objectContaining({
+          output: mockDenial.message,
+          isError: true,
+        }),
+      );
+      expect(result()).toMatchObject({
+        is_error: false,
+        result: ANTIGRAVITY_DENIED_STOP_MESSAGE,
+      });
+      expect(patchBlocks(events, 'system').map((block) => block.text)).toEqual([
+        ANTIGRAVITY_DENIED_STOP_MESSAGE,
+      ]);
+    });
+
+    it('keeps the reply when Google answers after the denial', async () => {
+      open(false);
+      await turn('Create the file', [...deniedCall, reply('I will not.')]);
+
+      expect(result()).toMatchObject({
+        is_error: false,
+        result: 'I will not.',
+      });
+      expect(patchBlocks(events, 'system')).toEqual([]);
+    });
+
+    it('explains a plan-mode refusal that ends the turn', async () => {
+      mockDenial.message = 'Plan mode is read-only; the command was not run.';
+      open(true);
+      await turn('Plan the cleanup', deniedCall);
+
+      expect(result()).toMatchObject({
+        is_error: false,
+        result: ANTIGRAVITY_DENIED_STOP_MESSAGE,
+      });
+      expect(mockCommitted).toEqual([]);
+    });
+  });
+
+  describe('a plan handed in as an artifact write', () => {
+    const ARTIFACT_PLAN =
+      '# Rename plan\n\n1. Rename the helper\n2. Update its callers';
+
+    /**
+     * Gemini's native `write_file` of a plan artifact, which the runtime then
+     * reports failed with empty output; `permission` asks the authorizer
+     * first, as a workspace path does.
+     */
+    function artifactWrite(
+      toolCallId: string,
+      content: string,
+      options: { path?: string; permission?: boolean } = {},
+    ): unknown[] {
+      const path =
+        options.path ??
+        '/profile/antigravity-cli/brain/abc/implementation_plan.md';
+      return [
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId,
+          title: `File ${path}`,
+          kind: 'edit',
+          status: 'pending',
+          rawInput: {
+            ArtifactMetadata: {
+              RequestFeedback: true,
+              UserFacing: true,
+              Summary: 'The rename plan.',
+            },
+            Content: content,
+            Overwrite: true,
+            Path: path,
+          },
+        },
+        ...(options.permission ? [{ permission: toolCallId }] : []),
+        {
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          status: 'failed',
+          content: [],
+        },
+      ];
+    }
+
+    function toolResults(): Record<string, unknown>[] {
+      return patchBlocks(events).filter(
+        (block) => block.type === 'tool_result',
+      );
+    }
+
+    it('proposes the artifact content and explains the unwritten file', async () => {
+      open(true);
+      await turn('Plan the rename', artifactWrite('artifact-1', ARTIFACT_PLAN));
+
+      expect(mockCommitted).toHaveLength(1);
+      expect(mockCommitted[0]?.toolInput).toEqual({
+        plan: ARTIFACT_PLAN,
+        source: 'antigravity',
+        reviewMode: 'proposal',
+      });
+      expect(presented).toEqual(mockCommitted);
+      expect(toolResults()).toContainEqual(
+        expect.objectContaining({ output: ANTIGRAVITY_PLAN_ARTIFACT_MESSAGE }),
+      );
+      // The proposal replaces the stopped-turn notice.
+      expect(patchBlocks(events, 'system').map((block) => block.text)).toEqual(
+        [],
+      );
+      expect(events.find((event) => event.type === 'result')?.result).not.toBe(
+        ANTIGRAVITY_DENIED_STOP_MESSAGE,
+      );
+    });
+
+    it('keeps the plan message when the plan-mode authorizer refuses a workspace artifact', async () => {
+      mockDenial.message = 'Plan mode is read-only; the file was not written.';
+      open(true);
+      await turn(
+        'Plan the rename',
+        artifactWrite('artifact-1', ARTIFACT_PLAN, {
+          path: '/repo/.gemini/rename.md',
+          permission: true,
+        }),
+      );
+
+      expect(mockCommitted[0]?.toolInput.plan).toBe(ARTIFACT_PLAN);
+      expect(toolResults()).toContainEqual(
+        expect.objectContaining({ output: ANTIGRAVITY_PLAN_ARTIFACT_MESSAGE }),
+      );
+    });
+
+    it('still prefers ACP plan entries over the artifact', async () => {
+      open(true);
+      await turn('Plan the rename', [
+        planUpdate(['Rename the helper', 'Update its callers']),
+        ...artifactWrite('artifact-1', ARTIFACT_PLAN),
+      ]);
+
+      expect(mockCommitted).toHaveLength(1);
+      expect(mockCommitted[0]?.toolInput.plan).toBe(
+        '- Rename the helper\n- Update its callers',
+      );
+    });
+
+    it('proposes the last of two artifact writes', async () => {
+      open(true);
+      await turn('Plan the rename', [
+        ...artifactWrite('artifact-1', 'First draft'),
+        ...artifactWrite('artifact-2', `  ${ARTIFACT_PLAN}\n`),
+      ]);
+
+      expect(mockCommitted).toHaveLength(1);
+      expect(mockCommitted[0]?.toolInput.plan).toBe(ARTIFACT_PLAN);
+    });
+
+    it('explains a failed artifact write outside plan mode and proposes nothing', async () => {
+      open(false);
+      await turn('Write it up', artifactWrite('artifact-1', ARTIFACT_PLAN));
+
+      expect(toolResults()).toContainEqual(
+        expect.objectContaining({
+          output: ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+        }),
+      );
+      expect(mockCommitted).toEqual([]);
+      expect(presented).toEqual([]);
+    });
+    it('leaves a completed artifact write alone outside plan mode', async () => {
+      open(false);
+      const [call] = artifactWrite('artifact-1', ARTIFACT_PLAN);
+      await turn('Write it up', [
+        call,
+        {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'artifact-1',
+          status: 'completed',
+          content: [],
+        },
+      ]);
+
+      expect(toolResults()).not.toContainEqual(
+        expect.objectContaining({
+          output: ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+        }),
+      );
+      expect(patchBlocks(events, 'system')).toEqual([]);
+      expect(events.find((event) => event.type === 'result')?.result).not.toBe(
+        ANTIGRAVITY_DENIED_STOP_MESSAGE,
+      );
+      expect(mockCommitted).toEqual([]);
+    });
+
+    it("shows the user's denial reason for an artifact write outside plan mode", async () => {
+      mockDenial.message = 'The user denied this tool call: not that file';
+      open(false);
+      await turn(
+        'Write it up',
+        artifactWrite('artifact-1', ARTIFACT_PLAN, {
+          path: '/repo/.gemini/rename.md',
+          permission: true,
+        }),
+      );
+
+      expect(toolResults()).toContainEqual(
+        expect.objectContaining({ output: mockDenial.message }),
+      );
+      expect(toolResults()).not.toContainEqual(
+        expect.objectContaining({
+          output: ANTIGRAVITY_ARTIFACT_NOT_WRITTEN_MESSAGE,
+        }),
+      );
+    });
+  });
+
+  describe('antigravityPlanArtifact', () => {
+    function call(rawInput: unknown, kind = 'edit'): SessionUpdate {
+      return {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call-1',
+        title: 'File /repo/plan.md',
+        kind,
+        status: 'pending',
+        rawInput,
+      } as SessionUpdate;
+    }
+
+    it('reads the trimmed content of an artifact write', () => {
+      expect(
+        antigravityPlanArtifact(
+          call({ ArtifactMetadata: {}, Content: '  The plan\n', Path: 'p' }),
+        ),
+      ).toEqual({ toolCallId: 'call-1', content: 'The plan' });
+    });
+
+    it('ignores a write_file without ArtifactMetadata', () => {
+      expect(
+        antigravityPlanArtifact(
+          call({ Content: 'The plan', Overwrite: true, Path: '/repo/a.md' }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('ignores an artifact whose content is blank', () => {
+      expect(
+        antigravityPlanArtifact(
+          call({ ArtifactMetadata: { UserFacing: true }, Content: '  \n ' }),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('ignores a call that is not an edit', () => {
+      expect(
+        antigravityPlanArtifact(
+          call({ ArtifactMetadata: {}, Content: 'The plan' }, 'execute'),
+        ),
+      ).toBeUndefined();
+    });
+
+    it('ignores other session updates', () => {
+      expect(antigravityPlanArtifact(planUpdate(['A step']))).toBeUndefined();
+    });
   });
 
   it('opens the native session with the worktree repositories as additional directories', async () => {

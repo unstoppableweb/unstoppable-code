@@ -83,7 +83,9 @@ import * as localPipelineService from './pipeline-service';
  * Every recorded pipeline and every blob is checked before anything is
  * written, so a refusal (a locally edited pipeline, a blob that doesn't
  * match its hash) leaves no pipeline, record or file behind. Each pipeline's
- * files are installed before its install record, and every write is noted in
+ * files are installed before its document is saved, so a run never sees the
+ * new document without them (CAN-7336), and the document before its install
+ * record. Every write is noted in
  * the install's intent record first (CAN-5633): a failure, or an exit that
  * startup recovery finds, removes the pipelines it created and restores the
  * ones it rewrote or linked, with their records and the supporting files it
@@ -201,6 +203,17 @@ function currentPipelineHash(localPipelineId: string): string | undefined {
   return raw.success && raw.data !== undefined
     ? hashPipelinePackageYaml(raw.data)
     : undefined;
+}
+
+/** Refuses a local pipeline that doesn't hold the shared YAML exactly. */
+function assertStoredAsShared(
+  localPipelineId: string,
+  document: PackagedPipelineDocument,
+): void {
+  if (currentPipelineHash(localPipelineId) !== document.pipelineContentHash)
+    throw new Error(
+      `"${document.displayName}" could not be saved exactly as shared. Try installing again.`,
+    );
 }
 
 async function readPackagedPipeline(
@@ -451,8 +464,9 @@ export interface PackagedPipelineRemote {
  * Its version is the pipeline's content hash. The install creates the
  * local pipeline under the id core chose, or updates the one Stage A named
  * (keeping the recipient's name, description and icon, or only linking it
- * when it already has this YAML), then installs its files and its install
- * record, noting each write in the install's intent record first.
+ * when it already has this YAML). Its files are installed before the
+ * document is saved, and its install record after, each write noted in the
+ * install's intent record first.
  */
 export async function readPackagedPipelineRemote(
   remoteDefinitionId: string,
@@ -478,23 +492,17 @@ export async function readPackagedPipelineRemote(
         write,
         session.rewrites.has(document.key),
         intent,
+        async (id) => {
+          if (document.assets.length === 0) return;
+          await installPipelineAssets({
+            localPipelineId: id,
+            packagePath: session.packagePath,
+            resources: document.assets,
+            beforeWrite: (plan) => intent.noteAssetFiles(id, plan),
+          });
+        },
       );
-      if (
-        currentPipelineHash(localPipelineId) !== document.pipelineContentHash
-      ) {
-        throw new Error(
-          `"${document.displayName}" could not be saved exactly as shared. Try installing again.`,
-        );
-      }
-      // Files first: a recorded pipeline always has every file it declares.
-      if (document.assets.length > 0) {
-        await installPipelineAssets({
-          localPipelineId,
-          packagePath: session.packagePath,
-          resources: document.assets,
-          beforeWrite: (plan) => intent.noteAssetFiles(localPipelineId, plan),
-        });
-      }
+      assertStoredAsShared(localPipelineId, document);
       const record = {
         localPipelineId,
         pipelineContentHash: document.pipelineContentHash,
@@ -595,6 +603,14 @@ async function materializePipeline(
   write: PipelineDefinitionInstall,
   rewrite: boolean,
   intent: PipelineInstallIntent,
+  /**
+   * Installs the pipeline's files. It runs after the definition is noted and
+   * before the document is saved: the saved document is the install's
+   * commit point, so a run never reads it without its files (CAN-7336). A
+   * pipeline that is only linked saves nothing, so its files wait for the
+   * exact-bytes check instead.
+   */
+  installFiles: (localPipelineId: string) => Promise<void>,
 ): Promise<string> {
   const localPipelineId = write.definitionId;
   if (write.replaces) {
@@ -606,6 +622,9 @@ async function materializePipeline(
         change: 'linked',
         contentHash: document.pipelineContentHash,
       });
+      // No document is saved here, so the check comes before any file.
+      assertStoredAsShared(localPipelineId, document);
+      await installFiles(localPipelineId);
       return localPipelineId;
     }
     // Rewrite in place, keeping the recipient's name, description and icon.
@@ -620,6 +639,7 @@ async function materializePipeline(
       change: 'replaced',
       contentHash: document.pipelineContentHash,
     });
+    await installFiles(localPipelineId);
     const saved = localPipelineService.savePipeline({
       id: localPipelineId,
       name: existing.data.info.name,
@@ -642,6 +662,7 @@ async function materializePipeline(
     contentHash: document.pipelineContentHash,
     assets: true,
   });
+  await installFiles(localPipelineId);
   const saved = localPipelineService.savePipeline(
     {
       name: write.name,

@@ -25,6 +25,11 @@ export interface PageHeaderProps {
    * left-aligned with it. Top-level pages have none.
    */
   back?: PageHeaderBack;
+  /**
+   * Let the description run wider than the default measure, for a line that
+   * carries inline marks and would otherwise wrap.
+   */
+  wideDescription?: boolean;
   /** A quiet state beside the title, such as `Read-only` or `Off`. */
   badge?: ReactNode;
   /**
@@ -68,6 +73,7 @@ export interface PageHeaderProps {
 export function PageHeader({
   title,
   description,
+  wideDescription = false,
   headingLevel = 'h1',
   back,
   badge,
@@ -137,7 +143,7 @@ export function PageHeader({
               // saved description of any length (a workflow's) stops at two
               // lines, so the page body below keeps its room.
               <div
-                className="line-clamp-2 max-w-160 text-s text-pretty fg-tertiary"
+                className={`line-clamp-2 ${wideDescription ? 'max-w-4xl' : 'max-w-160'} text-s text-pretty fg-tertiary`}
                 data-testid="page-header-description"
               >
                 {description}

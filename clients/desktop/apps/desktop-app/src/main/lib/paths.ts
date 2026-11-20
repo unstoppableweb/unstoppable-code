@@ -1863,6 +1863,8 @@ export function getWorkspaceChatArchivesFilePath(
   workspaceId: string,
   worktreeId: string,
 ): string {
+  // The id becomes a file name: refuse traversal and separators (CAN-7346).
+  validateId(worktreeId, 'worktreeId');
   return join(getWorkspaceChatArchivesDir(workspaceId), `${worktreeId}.json`);
 }
 

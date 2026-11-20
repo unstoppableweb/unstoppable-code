@@ -175,37 +175,6 @@ export async function updatePlan(
   return detail;
 }
 
-/** Record only the plan revision that the user explicitly chose to implement. */
-export async function approveOpenCodePlanReview(request: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-  planId: string;
-  revisionNumber: number;
-  approvedAt: string;
-}): Promise<boolean> {
-  validateWorktreeIds(request);
-  assertWritableScope(request.projectId);
-  validateId(request.planId, 'planId');
-  const plan = await updateTrackedPlan(
-    {
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      planId: request.planId,
-      chatId: request.chatId,
-      reviewStatus: 'approved',
-      approvedAt: request.approvedAt,
-      dismissedAt: null,
-      initiationSource: 'user',
-    },
-    {
-      revisionNumber: request.revisionNumber,
-      source: 'opencode',
-    },
-  );
-  return plan !== null;
-}
-
 export async function saveTrackedPlanCommentsData(
   request: SaveTrackedPlanCommentsRequest,
 ): Promise<TrackedPlanData | null> {

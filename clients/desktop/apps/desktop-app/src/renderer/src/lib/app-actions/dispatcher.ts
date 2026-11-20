@@ -360,7 +360,6 @@ import {
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { MAX_MANAGED_DELEGATION_DEPTH } from '@canopy/protocol/delegation/discovery';
 import { isClaudeSettingsAvailable } from '@/lib/claude-settings-availability';
-import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { isClaudeTuiChatsEnabled } from '@/lib/claude-tui-chats';
 import {
   getTriggerTypes,
@@ -390,7 +389,6 @@ import {
   createEmptySelections,
   parseSelectionsJson,
 } from '@/lib/pluginSelections';
-import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import { isClaudeBackedChatTab } from '@/lib/chat-provider';
 import { isCoworkChatTarget } from '@/lib/cowork';
@@ -451,7 +449,6 @@ import {
   spaceNotificationMenuStateFor,
   useSpaceNotificationStore,
 } from '@/stores/spaceNotificationStore';
-import { openCloudAccountSettings } from '@/lib/navigation/settings-destinations';
 import {
   CLOUD_RUN_RETRY_UNSUPPORTED,
   cancelCloudRun,
@@ -710,7 +707,6 @@ const WORKTREE_GIT_ACTIONS = new Set<WorktreeGitAction>([
 ]);
 
 const CLOUD_NAME = `${brandText.appName} Cloud`;
-export const REMOTE_CONTROL_DISABLED_TOAST = `${REMOTE_CONTROL_LABEL} is not available.`;
 
 const SHARED_CONTAINERS_DISABLED_MESSAGE =
   'Shared containers are not available.';
@@ -756,19 +752,6 @@ function pageUnavailableError(
   return {
     code: 'surface_unavailable',
     message: formatPageUnavailableMessage(unavailable),
-  };
-}
-
-function remoteControlDisabledResponse(): {
-  ok: true;
-  result: { skipped: true; reason: string };
-} {
-  return {
-    ok: true,
-    result: {
-      skipped: true,
-      reason: 'remote-control-unavailable',
-    },
   };
 }
 
@@ -10175,13 +10158,20 @@ async function routeAction(
     case 'canopy_cloud.disconnect':
     case 'canopy_portal.start':
     case 'canopy_portal.stop':
+    case 'canopy_portal.open':
+    case 'canopy_portal.close':
+    case 'canopy_portal.open_account_settings':
     case 'remote_control.get_state':
     case 'remote_control.set_allow_incoming':
     case 'opencode.connection':
     case 'ollama.install':
       // CAN-6008: the App Advisor runtime runs credential and remote-access
       // actions in main, only while this window's lease is bound; these
-      // never reach the renderer dispatcher.
+      // never reach the renderer dispatcher. CAN-7298: the canopy_portal
+      // dialog names are main-routed legacy aliases of the shared
+      // remote_control.open_dialog / close_dialog (and settings.open)
+      // actions; UI callers use lib/navigation/remote-control-dialog.
+      // CAN-7345 removes these labels with the aliases.
       return {
         ok: false,
         error: {
@@ -14620,25 +14610,6 @@ async function routeAction(
         };
       }
       return { ok: true, result: { saved: true } };
-    }
-    case 'canopy_portal.open':
-      // A host from before Remote Control graduated may still say it is
-      // unavailable (CAN-5986).
-      if (!useRemoteControlStore.getState().state.available) {
-        useGitHubStore
-          .getState()
-          .addToast(REMOTE_CONTROL_DISABLED_TOAST, 'info');
-        return remoteControlDisabledResponse();
-      }
-      useNavigationStore.getState().openRemoteControlDialog();
-      return { ok: true };
-    case 'canopy_portal.close':
-      useNavigationStore.getState().closeRemoteControlDialog();
-      return { ok: true };
-    case 'canopy_portal.open_account_settings': {
-      useNavigationStore.getState().closeRemoteControlDialog();
-      openCloudAccountSettings();
-      return { ok: true };
     }
     case 'app_advisor.open': {
       // User-visible open: creates the BrowserWindow if missing, then

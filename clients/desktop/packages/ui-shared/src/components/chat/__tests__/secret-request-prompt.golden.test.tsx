@@ -274,6 +274,50 @@ describe('SecretRequestPrompt', () => {
     ).toContain('Reconnect to provide secrets.');
   });
 
+  // U7: a paired browser or phone never queues values for an offline
+  // computer, so the form locks and says why.
+  it('locks while the paired computer is offline and says values are never queued', () => {
+    render({ computerOffline: true });
+    expect(input('STRIPE_SECRET_KEY').disabled).toBe(true);
+    expect(input('STRIPE_SECRET_KEY').placeholder).toBe(
+      'Unavailable while offline',
+    );
+    expect(
+      harness.byTestId('chat-secret-request-notice').textContent,
+    ).toContain(
+      "Your computer is offline. Secrets go straight to it and are never queued, so you can provide them once it's back online.",
+    );
+    harness.click(harness.byTestId('chat-secret-request-provide'));
+    expect(submitted).toEqual([]);
+  });
+
+  it('locking forgets what was revealed and the Paste .env text, also after it unlocks', () => {
+    render({});
+    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
+    const paste = harness.byTestId('chat-secret-request-paste');
+    if (!(paste instanceof HTMLTextAreaElement)) throw new Error('no paste');
+    type(paste, `STRIPE_SECRET_KEY=${'sk_test_canary'}`);
+    harness.click(
+      harness.byTestId('chat-secret-request-toggle-STRIPE_SECRET_KEY'),
+    );
+    expect(input('STRIPE_SECRET_KEY').type).toBe('text');
+    render({ computerOffline: true });
+    expect(input('STRIPE_SECRET_KEY').type).toBe('password');
+    expect(
+      document.querySelector('[data-testid="chat-secret-request-paste"]'),
+    ).toBeNull();
+    // Back online: nothing shows in the clear until revealed or pasted again.
+    render({ computerOffline: false });
+    expect(input('STRIPE_SECRET_KEY').type).toBe('password');
+    expect(
+      document.querySelector('[data-testid="chat-secret-request-paste"]'),
+    ).toBeNull();
+    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
+    const reopened = harness.byTestId('chat-secret-request-paste');
+    if (!(reopened instanceof HTMLTextAreaElement)) throw new Error('no paste');
+    expect(reopened.value).toBe('');
+  });
+
   it("says a cloud chat's values go to its cloud workspace", () => {
     render({ accessMode: 'cloud', agentName: 'Agent' });
     expect(harness.byTestId('chat-secret-request-footer').textContent).toBe(

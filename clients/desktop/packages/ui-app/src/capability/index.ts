@@ -62,6 +62,7 @@ export * from './SkillSuggestionsList';
 export { unifiedEntryIdForRef } from './unified-entry-id';
 export * from './useOpenCreatedCustomItem';
 export * from './customizeSections';
+export * from './customizeDiscoveryDescription';
 export * from './customizeTelemetry';
 export * from './collectionUpdateSummary';
 export * from './useCollectionUpdateSummaries';

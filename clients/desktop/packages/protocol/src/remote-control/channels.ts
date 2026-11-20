@@ -131,7 +131,7 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  * conditional branch. Operations the web keeps on web-side clients (billing,
  * external agents, account and organization operations, install-update
  * emails) and every capability the web leaves off (terminals, file writes,
- * item grouping, delegation lifetime, Mods, tips, suggestions, journals,
+ * item grouping, delegation lifetime, tips, suggestions, journals,
  * discard, provider quotas, shared multi-repo) add nothing. The web golden
  * keeps this list equal to that derivation and drives the composite with a
  * transport that refuses anything else.
@@ -201,10 +201,33 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   dialog makes, and the `script-actions:changed` push the snapshot
  *   refreshes on. `script-actions:found` is not listed: notices poll the
  *   receipt as Portal does. No terminal channel is added.
+ * - Claude Mods (CAN-7436):
+ *   - `claude-mods:get` reads the computer's Mod admission state.
+ *   - `claude-mods:update` allows or disallows a plugin's Mod and sets the
+ *     turn-off-every-Mod switch. The host authorizes by channel, so a paired
+ *     browser can send any update the desktop's handler accepts, not only
+ *     what the web UI offers, as Portal's `portal.claude_mods.update` could.
+ *   - `claude-mods:surface-push` carries a chat's Mod toasts, status lines,
+ *     log lines, band and pane trees; the host withholds composer requests
+ *     and withdrawals from every controller.
+ *   - `claude-mods:surface-command` sends presses, edits, picks, pane and
+ *     scroll commands and `resend`; the host refuses `composer-answer`, and
+ *     a command whose kind it cannot read.
  * - Portal retirement (CAN-5986): `work-entries:list-archived`, a cowork
  *   project's archived and deleted Work Entries and its legacy archived
  *   chats, the overview Portal's archived list served. Read only; it
  *   restores, deletes or reopens nothing.
+ * - Personal project conversion (CAN-7440): `personal-organization-upgrade:
+ *   list` reads the computer's convertible Personal projects. `:status` reads
+ *   one saved run's progress; acknowledging a finished run also removes that
+ *   run's record from the computer's conversion journal. `:convert` creates
+ *   and shares an organization project from each selected Personal project
+ *   as the computer's signed-in account, only into an organization that
+ *   account belongs to (the desktop service checks the destination against
+ *   fresh server state), and switches the computer's app to that
+ *   organization. It deletes nothing. `:promote`, `:invite` and
+ *   `:invite-status` stay off: the browser's own session creates the team
+ *   and sends invites.
  * - Terminals: none. Remote Control on the web is terminal-free.
  */
 export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
@@ -226,6 +249,10 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'chat:queue-force',
   'chat:queue-set-edit-lock',
   'chat:send-message',
+  'claude-mods:get',
+  'claude-mods:surface-command',
+  'claude-mods:surface-push',
+  'claude-mods:update',
   'desktop:session-snapshot',
   'desktop:session-snapshot-invalidate',
   'desktop:session-snapshot-stale',
@@ -247,6 +274,9 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'hook:started',
   'hook:stop',
   'model-registry:get',
+  'personal-organization-upgrade:convert',
+  'personal-organization-upgrade:list',
+  'personal-organization-upgrade:status',
   'pipelines:cancel-execution',
   'pipelines:curated-import',
   'pipelines:discover-project',

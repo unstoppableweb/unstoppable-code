@@ -150,3 +150,12 @@ function usableClassification(value: unknown): value is ErrorClassification {
     ['code', 'source', 'retryAt', 'copy'].includes(key),
   );
 }
+
+export function validRetryAt(value: unknown): number | undefined {
+  return typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+    ? Math.round(value)
+    : undefined;
+}

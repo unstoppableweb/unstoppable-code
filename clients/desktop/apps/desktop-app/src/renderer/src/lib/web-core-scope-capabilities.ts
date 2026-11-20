@@ -45,8 +45,9 @@ export interface WebCoreScopeOptions {
   /**
    * A cloud scope serves the Subagents and subagent chat panels from what
    * its chats hold (CAN-7133): each root chat's own delegate cards and
-   * transcript, its delegates' pages and their live state. Off until it is
-   * switched on for review; unset reads as off.
+   * transcript, its delegates' pages and their live state. On when the web
+   * core's manifest serves both the pages and the delegates' reads and
+   * Stops; unset reads as off.
    */
   readonly cloudSubagentPanels?: boolean;
 }
@@ -97,7 +98,9 @@ export function cloudTerminalsEnabled(
  * web core serves at revision 2 of the chat's transcript and events
  * (CAN-6509, CAN-6755); a chat whose answers carry no meter shows none.
  * A cowork project's chats fork whole into a new task when the web core
- * serves the fork (CAN-7007); the tab fork stays off.
+ * serves the fork (CAN-7007); the tab fork stays off. Its Subagents and
+ * subagent chat panels show what its chats hold when the web core serves
+ * their delegates' pages, reads and Stops (CAN-7133).
  * Scripts stay off: a cloud terminal can't run a startup command.
  */
 function buildWebCoreScopeCapabilities(

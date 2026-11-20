@@ -25,6 +25,8 @@ import {
   PlanCreateParamsSchema,
   PlanDeleteParamsSchema,
   PlanDeleteResultSchema,
+  PlanDiagramGenerateParamsSchema,
+  PlanDiagramGenerateResultSchema,
   PlanEventSchema,
   PlanEventsParamsSchema,
   PlanGetParamsSchema,
@@ -100,6 +102,43 @@ export const PlanInstructionErrorSchema = CanopyErrorPayloadSchema.extend({
   retry: CanopyKeyedRetryDirectiveSchema,
 });
 
+/**
+ * `core.plan.diagram.generate` (CAN-4167) adds one reason to the plan
+ * failures: no execution harness serves the configured diagram model.
+ */
+export const PLAN_DIAGRAM_ERROR_REASONS = [
+  ...PLAN_ERROR_REASONS,
+  'DIAGRAM_MODEL_UNAVAILABLE',
+] as const;
+
+export const PLAN_DIAGRAM_ERROR_CODES = {
+  ...PLAN_ERROR_CODES,
+  DIAGRAM_MODEL_UNAVAILABLE: 'core.plan.diagramModelUnavailable',
+} as const satisfies Record<
+  (typeof PLAN_DIAGRAM_ERROR_REASONS)[number],
+  string
+>;
+
+export const PlanDiagramGenerateErrorSchema = CanopyErrorPayloadSchema.extend({
+  code: z
+    .enum([
+      PLAN_DIAGRAM_ERROR_CODES.REVISION_CONFLICT,
+      PLAN_DIAGRAM_ERROR_CODES.READ_ONLY_SCOPE,
+      PLAN_DIAGRAM_ERROR_CODES.UNSUPPORTED_SCOPE,
+      PLAN_DIAGRAM_ERROR_CODES.IMPORT_PATH,
+      PLAN_DIAGRAM_ERROR_CODES.DAMAGED_STATE,
+      PLAN_DIAGRAM_ERROR_CODES.DIAGRAM_MODEL_UNAVAILABLE,
+    ])
+    .optional(),
+  details: z
+    .strictObject({
+      reason: z.enum(PLAN_DIAGRAM_ERROR_REASONS),
+      currentRevision: z.number().int().min(1).optional(),
+    })
+    .optional(),
+  retry: CanopyKeyedRetryDirectiveSchema,
+});
+
 export const PlanEventsOpenResultSchema = z.strictObject({
   subscriptionId: z.string().min(1).max(512),
   acceptedCursor: CanopyStreamCursorSchema.nullable(),
@@ -118,8 +157,8 @@ const plan = {
 
 // Served by the desktop dispatcher only (CAN-4165): list, get, create, update
 // and delete, in process over the plan engine. No binding serves import, the
-// detected-plan operations or core.plan.events yet; they answer
-// `capability_unavailable`.
+// detected-plan operations, core.plan.diagram.generate (CAN-4167 PR 3a,
+// spec-first) or core.plan.events yet; they answer `capability_unavailable`.
 export const CORE_PLAN_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {
   'core.plan.list': defineCanopyQuery({
     ...plan,
@@ -194,6 +233,14 @@ export const CORE_PLAN_INSTRUCTION_DEFINITIONS =
       params: DetectedPlanUpdateParamsSchema,
       result: DetectedPlanUpdateResultSchema,
       error: PlanInstructionErrorSchema,
+      idempotency: 'keyed',
+      requiredGrants: [PLAN_GRANTS.write],
+    }),
+    'core.plan.diagram.generate': defineCanopyInstruction({
+      ...plan,
+      params: PlanDiagramGenerateParamsSchema,
+      result: PlanDiagramGenerateResultSchema,
+      error: PlanDiagramGenerateErrorSchema,
       idempotency: 'keyed',
       requiredGrants: [PLAN_GRANTS.write],
     }),

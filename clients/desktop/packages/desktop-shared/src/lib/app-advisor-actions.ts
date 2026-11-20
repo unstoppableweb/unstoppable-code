@@ -10062,19 +10062,25 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     },
     {
       type: 'canopy_portal.open',
-      category: 'portal',
+      category: 'remote-control',
       summary: `Open the ${remoteControlDisplayNameInline} modal.`,
       fields: [],
       example: { type: 'canopy_portal.open' },
-      keywords: ['portal', 'open', 'modal'],
+      keywords: ['open', 'modal'],
+      notes: [
+        'Legacy alias of remote_control.open_dialog, retained for one release; new callers should use remote_control.open_dialog.',
+      ],
     },
     {
       type: 'canopy_portal.close',
-      category: 'portal',
+      category: 'remote-control',
       summary: `Close the ${remoteControlDisplayNameInline} modal.`,
       fields: [],
       example: { type: 'canopy_portal.close' },
-      keywords: ['portal', 'close', 'modal'],
+      keywords: ['close', 'modal'],
+      notes: [
+        'Legacy alias of remote_control.close_dialog, retained for one release; new callers should use remote_control.close_dialog.',
+      ],
     },
     {
       type: 'canopy_portal.start',
@@ -10112,17 +10118,15 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     },
     {
       type: 'canopy_portal.open_account_settings',
-      category: 'portal',
+      category: 'remote-control',
       summary: `Close ${remoteControlDisplayNameInline} and open Accounts settings.`,
       fields: [],
       example: { type: 'canopy_portal.open_account_settings' },
-      keywords: [
-        'portal',
-        'accounts settings',
-        'canopy cloud',
-        'account',
-        'api key',
+      notes: [
+        'Legacy alias, retained for one release: closes the Remote Control dialog, then runs settings.open with destination { scope: account, page: account }. New callers should use settings.open.',
+        'Signed out, settings.open refuses with authentication_failed after the dialog has closed; sign in with canopy_cloud.start_oauth_login first.',
       ],
+      keywords: ['accounts settings', 'canopy cloud', 'account', 'api key'],
     },
     {
       type: 'app_advisor.open',

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatCancelRequest } from '@canopy/desktop-shared/types';
 import { buildChatSessionKey } from '../agents/session-key';
+import { captureWaitingSecretRequests } from '../agent-secrets/waiting-secret-requests';
 import { deferredToolsReloadCoordinator } from '../deferred-tools/reload-coordinator';
 import { getChatTurnOwnership } from '../services/chat-turn-ownership';
 import {
@@ -156,6 +157,9 @@ async function runStopSequence(
   result: 'Cancelled';
   canopy_turn_user_message_id?: string;
 }> {
+  // Only the secret requests waiting as this Stop begins: a newer turn's
+  // request, opened while the provider stops, is not this Stop's.
+  const cancelWaitingSecretRequests = captureWaitingSecretRequests(request);
   autoRoutingControllers.get(routingKey(request))?.abort();
   cancelTransientRetryForChat(request, 'stop');
   deferredToolsReloadCoordinator.cancelActiveReload(
@@ -170,7 +174,16 @@ async function runStopSequence(
     stopContext.fence !== undefined && userMessageId === undefined
       ? randomUUID()
       : undefined;
-  const { outcome } = await cancelChatTurn(request, 'stop', stopContext);
+  // A secret request the stopped turn left waiting is cancelled once the
+  // provider is interrupted, even if that fails, not kept answerable: a late
+  // answer would store a value no agent waits for.
+  const { outcome } = await cancelChatTurn(
+    request,
+    'stop',
+    stopContext,
+  ).finally((): void => {
+    cancelWaitingSecretRequests();
+  });
   // Lazy local imports break the queue/state/cancellation initialization cycle.
   const [{ getChatQueueService }, { getChatStateService }] = await Promise.all([
     import('../services/chat-queue-service'),

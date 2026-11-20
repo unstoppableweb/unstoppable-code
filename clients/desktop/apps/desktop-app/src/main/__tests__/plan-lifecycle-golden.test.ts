@@ -34,6 +34,7 @@ import type * as ExecutionRuntime from '../pipelines/execution-runtime';
 import type * as PlanMode from '../agents/plan-mode-tracked-plan';
 import type * as PlanExit from '../services/chat-state-plan-exit';
 import type * as InterfacePort from '../agents/agent-interface-port';
+import type * as HostWriters from '../canopy-runtime/plan-host-writers';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { controllerMayInvoke } from '../remote-control/host/controller-profile';
 import { relayAllows } from '../canopy-runtime/renderer-relay/surface-allowlist';
@@ -736,6 +737,27 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
     expect(plans.map((plan) => plan.source).sort()).toEqual([
       'claude',
       'copilot',
+    ]);
+  });
+
+  // An Antigravity (Google) plan could not be saved: core.plan refused the
+  // `antigravity` source its chats write with.
+  it('creates an Antigravity plan and reads it back', async () => {
+    const other = {
+      projectId: WORKSPACE_ID,
+      worktreeId: 'golden-wt-antigravity',
+    };
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...other, source: 'antigravity', content: '# From antigravity' },
+    );
+    expect(created.source).toBe('antigravity');
+    const plans = await invoke<TrackedPlanData[]>(
+      IPC_CHANNELS.trackedPlansList,
+      other,
+    );
+    expect(plans.map((plan) => [plan.id, plan.source])).toEqual([
+      [created.id, 'antigravity'],
     ]);
   });
 
@@ -1585,6 +1607,278 @@ describe('plan-mode agent and pipeline plan writes on core.plan (CAN-7295)', () 
       chmodSync(plansDir, 0o700);
     }
     expect(broadcasts).toEqual([]);
+  });
+});
+
+// CAN-4165 PR 4b-1: proposal-mode approval and a pipeline run's implicit
+// approval write through core.plan.update as host writers. The approval's
+// revision and source check is expectedRevision plus expectedSource, which
+// core checks under the plan file's lock.
+describe('plan approvals on core.plan (CAN-4165 PR 4b-1)', () => {
+  const approvals = {
+    projectId: WORKSPACE_ID,
+    worktreeId: 'golden-wt-approvals',
+  };
+  const PLAN_REVIEW: CanopyCallerDescriptor = {
+    principalId: 'desktop-agent-plan-mode',
+    clientInstanceId: 'electron-main-plan-review',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: ['core.plan.write'],
+  };
+  const PIPELINE_RUNTIME: CanopyCallerDescriptor = {
+    principalId: 'desktop-pipeline-plans',
+    clientInstanceId: 'electron-main-pipeline-runtime',
+    authorityId: 'local-desktop',
+    interfaceKind: 'desktop',
+    grants: ['core.plan.write'],
+  };
+  const relay = (
+    key: string,
+  ): {
+    caller: CanopyCallerDescriptor;
+    metadata: { idempotencyKey: string };
+  } => ({
+    caller: { ...RENDERER, grants: ['core.plan.write'] },
+    metadata: { idempotencyKey: `${key}-${Math.random()}` },
+  });
+  let hostWriters: typeof HostWriters;
+
+  async function stored(
+    source: 'opencode' | 'claude' | 'pipeline',
+    content: string,
+  ): Promise<TrackedPlanData> {
+    const { plan } = await dispatcher.instruction(
+      'core.plan.create',
+      { scope: approvals, source, content },
+      relay('create'),
+    );
+    return must(
+      await persistence.getTrackedPlan(
+        approvals.projectId,
+        approvals.worktreeId,
+        must(plan).id,
+      ),
+    );
+  }
+
+  async function read(planId: string): Promise<TrackedPlanData> {
+    return must(
+      await persistence.getTrackedPlan(
+        approvals.projectId,
+        approvals.worktreeId,
+        planId,
+      ),
+    );
+  }
+
+  function approve(
+    planId: string,
+    revisionNumber: number,
+    scope: { projectId: string; worktreeId: string } = approvals,
+  ): Promise<boolean> {
+    return hostWriters.approveProposalPlanReview({
+      ...scope,
+      chatId: 'golden-approval-chat',
+      planId,
+      revisionNumber,
+      approvedAt: '2026-11-19T12:00:00.000Z',
+    });
+  }
+
+  function announced(): number {
+    return broadcasts.filter(
+      ({ channel }) => channel === IPC_CHANNELS.trackedPlansUpdated,
+    ).length;
+  }
+
+  beforeAll(async () => {
+    hostWriters = await import('../canopy-runtime/plan-host-writers');
+    const access = await import('../canopy-runtime/desktop-runtime-access');
+    access.setDesktopCanopyRuntime(dispatcher);
+  });
+
+  afterAll(async () => {
+    const access = await import('../canopy-runtime/desktop-runtime-access');
+    access.setDesktopCanopyRuntime(null);
+  });
+
+  it('approves a proposal plan at its revision as the plan review client, and announces it once', async () => {
+    const created = await stored('opencode', '# Proposal');
+    await dispatcher.instruction(
+      'core.plan.update',
+      { scope: approvals, planId: created.id, content: '# Proposal, revised' },
+      relay('revise'),
+    );
+    dispatcherCalls.clear();
+    broadcasts.length = 0;
+    await expect(approve(created.id, 2)).resolves.toBe(true);
+    expect(await read(created.id)).toMatchObject({
+      reviewStatus: 'approved',
+      approvedAt: '2026-11-19T12:00:00.000Z',
+      latestRevisionNumber: 2,
+      content: '# Proposal, revised',
+    });
+    expect(dispatched()).toEqual([
+      { name: 'core.plan.update', caller: PLAN_REVIEW },
+    ]);
+    expect(announced()).toBe(1);
+  });
+
+  it('answers false and writes nothing for another revision, another source or a missing plan', async () => {
+    const proposal = await stored('opencode', '# Proposal at one');
+    const agent = await stored('claude', '# Agent plan');
+    broadcasts.length = 0;
+    await expect(approve(proposal.id, 2)).resolves.toBe(false);
+    await expect(approve(agent.id, 1)).resolves.toBe(false);
+    await expect(approve('golden-missing-plan', 1)).resolves.toBe(false);
+    expect(await read(proposal.id)).toEqual(proposal);
+    expect(await read(agent.id)).toEqual(agent);
+    expect(announced()).toBe(0);
+  });
+
+  it('only narrows a write with expectedSource: a mismatch is a revision conflict, a retry with it still refuses, and a stale revision stays refused', async () => {
+    const plan = await stored('claude', '# Sourced');
+    const conflict = {
+      payload: {
+        kind: 'conflict',
+        code: 'core.plan.revisionConflict',
+        details: { currentRevision: 1 },
+      },
+    };
+    const mismatch = {
+      scope: approvals,
+      planId: plan.id,
+      expectedRevision: 1,
+      expectedSource: 'opencode' as const,
+      content: '# Wrong source',
+    };
+    await expect(
+      dispatcher.instruction('core.plan.update', mismatch, relay('mismatch')),
+    ).rejects.toMatchObject(conflict);
+    await expect(
+      dispatcher.instruction('core.plan.update', mismatch, relay('retry')),
+    ).rejects.toMatchObject(conflict);
+    await expect(
+      dispatcher.instruction(
+        'core.plan.update',
+        {
+          scope: approvals,
+          planId: plan.id,
+          expectedRevision: 2,
+          expectedSource: 'claude',
+          content: '# Stale revision',
+        },
+        relay('stale'),
+      ),
+    ).rejects.toMatchObject(conflict);
+    expect(await read(plan.id)).toEqual(plan);
+    await expect(
+      dispatcher.instruction(
+        'core.plan.update',
+        {
+          scope: approvals,
+          planId: plan.id,
+          expectedRevision: 1,
+          expectedSource: 'claude',
+          content: '# Matching source',
+        },
+        relay('match'),
+      ),
+    ).resolves.toMatchObject({
+      plan: { content: '# Matching source', latestRevisionNumber: 2 },
+    });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.update',
+        { scope: approvals, planId: plan.id, content: '# Without either' },
+        relay('without'),
+      ),
+    ).resolves.toMatchObject({
+      plan: { content: '# Without either', latestRevisionNumber: 3 },
+    });
+  });
+
+  it('keeps refusing an approval where plans are refused, with the errors they always had', async () => {
+    await expect(
+      approve('golden-plan', 1, {
+        projectId: COWORK_ID,
+        worktreeId: WORKTREE_ID,
+      }),
+    ).rejects.toThrow(
+      `Tracked plans are not available for cowork project ${COWORK_ID}`,
+    );
+    await expect(approve('not a valid id', 1)).rejects.toThrow();
+    await expect(
+      hostWriters.approvePlanForPipelineRun({
+        projectId: COWORK_ID,
+        worktreeId: WORKTREE_ID,
+        planId: 'golden-plan',
+        executionId: 'execution-cowork',
+        approvedAt: '2026-11-19T12:00:00.000Z',
+      }),
+    ).rejects.toThrow(
+      `Tracked plans are not available for cowork project ${COWORK_ID}`,
+    );
+  });
+
+  it("approves a pipeline run's plan as the pipeline principal, linking the run, and announces it once", async () => {
+    const plan = await stored('pipeline', '# Run this');
+    dispatcherCalls.clear();
+    broadcasts.length = 0;
+    const approved = await hostWriters.approvePlanForPipelineRun({
+      ...approvals,
+      planId: plan.id,
+      executionId: 'execution-implicit',
+      approvedAt: '2026-11-19T12:00:00.000Z',
+      initiationSource: 'user',
+    });
+    expect(approved).toMatchObject({
+      id: plan.id,
+      reviewStatus: 'approved',
+      linkedExecutionIds: ['execution-implicit'],
+    });
+    await expect(
+      hostWriters.approvePlanForPipelineRun({
+        ...approvals,
+        planId: 'golden-missing-plan',
+        executionId: 'execution-missing',
+        approvedAt: '2026-11-19T12:00:00.000Z',
+      }),
+    ).resolves.toBeNull();
+    expect(dispatched()).toEqual([
+      { name: 'core.plan.update', caller: PIPELINE_RUNTIME },
+      { name: 'core.plan.update', caller: PIPELINE_RUNTIME },
+    ]);
+    expect(announced()).toBe(1);
+  });
+
+  it('dispatches a renderer that names the plan review client as itself, and exports no such caller', async () => {
+    const plan = await stored('opencode', '# Forged review');
+    dispatcherCalls.clear();
+    await invoke(IPC_CHANNELS.trackedPlansUpdate, {
+      ...approvals,
+      planId: plan.id,
+      reviewStatus: 'approved',
+      expectedRevision: 1,
+      expectedSource: 'opencode',
+      principalId: 'desktop-agent-plan-mode',
+      clientInstanceId: 'electron-main-plan-review',
+      caller: PLAN_REVIEW,
+    });
+    expect(dispatched()).toEqual([
+      {
+        name: 'core.plan.update',
+        caller: { ...RENDERER, grants: ['core.plan.write'] },
+      },
+    ]);
+    const exported: unknown[] = Object.values(
+      await import('../canopy-runtime/plan-host-writers'),
+    );
+    for (const value of exported)
+      expect(JSON.stringify(value) ?? '').not.toMatch(
+        /desktop-agent-plan-mode|desktop-pipeline-plans|electron-main-plan-review/,
+      );
   });
 });
 

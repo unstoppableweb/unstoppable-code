@@ -45,16 +45,18 @@ void daemonCredentialSet;
 void daemonCredentialClear;
 
 // The tracked-plan writes (CAN-4165 PR 3b-2); import and detected plans join
-// in PR 5.
+// in PR 5, diagram generation in CAN-4167 PR 3b.
 const {
   'core.plan.import': planImport,
   'core.plan.detected.scan': detectedPlanScan,
   'core.plan.detected.update': detectedPlanUpdate,
+  'core.plan.diagram.generate': planDiagramGenerate,
   ...CORE_PLAN_LIFECYCLE_INSTRUCTION_DEFINITIONS
 } = CORE_PLAN_INSTRUCTION_DEFINITIONS;
 void planImport;
 void detectedPlanScan;
 void detectedPlanUpdate;
+void planDiagramGenerate;
 // The code review state writes (CAN-4167 PR 2c); generation joins in PR 2d.
 // Resolve isn't served yet: code-review persistence has no status change it
 // makes under its lock, and a read then a save could bring back a thread

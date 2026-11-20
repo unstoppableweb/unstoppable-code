@@ -159,6 +159,7 @@ import {
   type UpdateEvent,
   type SplitTemporaryWorkspaceCompleteEvent,
   type DeepLinkShareOpenEvent,
+  type RemoteControlDialogRequest,
   type WorktreeDiscoveryEvent,
   type WorktreeGitReadyEvent,
   type WorktreeGitFailedEvent,
@@ -536,6 +537,15 @@ let claudeModelEntries: ClaudeModelEntry[] = [];
 let codexModelEntries: CodexModelEntry[] = [];
 let ollamaModelEntries: OllamaModelEntry[] = [];
 let modelAliases: Record<string, string> = {};
+
+/** Exactly `{ open: boolean }`, or null. */
+function parseRemoteControlDialogRequest(
+  value: unknown,
+): RemoteControlDialogRequest | null {
+  if (!isRecord(value) || typeof value.open !== 'boolean') return null;
+  if (Object.keys(value).length !== 1) return null;
+  return { open: value.open };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -2379,6 +2389,22 @@ const canopyApi: CanopyApi = {
     return (): void => {
       ipcRenderer.removeListener(
         IPC_CHANNELS.deepLinkRemoteControlOpen,
+        handler,
+      );
+    };
+  },
+  onRemoteControlDialogRequest: (cb) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      request: unknown,
+    ): void => {
+      const parsed = parseRemoteControlDialogRequest(request);
+      if (parsed) cb(parsed);
+    };
+    ipcRenderer.on(IPC_CHANNELS.remoteControlDialogRequest, handler);
+    return (): void => {
+      ipcRenderer.removeListener(
+        IPC_CHANNELS.remoteControlDialogRequest,
         handler,
       );
     };

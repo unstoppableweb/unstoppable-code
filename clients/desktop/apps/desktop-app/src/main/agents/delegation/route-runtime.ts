@@ -803,8 +803,8 @@ export class DelegationRouteRuntime {
           !model?.enabled
         )
           return unavailable('capability_unavailable');
-        // Antigravity children are refused until their native discovery
-        // boundary is qualified; see antigravityChildAdmission.
+        // Antigravity children are admitted per antigravityChildAdmission()
+        // (darwin, harness flag on, gemini- models) on the isolation evidence.
         if (harness === 'antigravity') {
           if (!antigravityDelegateRawModel(runtime.runtimeModel))
             return unavailable(

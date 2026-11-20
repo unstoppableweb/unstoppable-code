@@ -1,5 +1,9 @@
 import type { ApprovalRule } from '../../types';
 import { isAbsolute } from 'node:path';
+import {
+  FAIL_CLOSED_MESSAGE,
+  POLICY_DENIED_FALLBACK_MESSAGE,
+} from '@canopy/protocol/approvals';
 import type { AcpPermissionRequest } from '@canopy/desktop-shared/node/acp';
 import type { NativeToolApprovalPort } from '../approvals/native-tool-port';
 import { approvalCheckForClaudeTool } from '../approvals/tool-checks';
@@ -66,25 +70,41 @@ export function antigravityNativeOperation(
   return operation;
 }
 
+/** Plan mode refuses every mutating native call without a prompt. */
+export const ANTIGRAVITY_PLAN_MODE_DENIED_MESSAGE =
+  'Plan mode is read-only; the command was not run.';
+
+/**
+ * The decision and, for a denial, the text the transcript shows as the tool's
+ * result. ACP's permission reply carries only an option id, so this text never
+ * reaches the model; the host renders it in place of the runtime's empty one.
+ */
+export interface AntigravityToolAuthorization {
+  decision: 'allow' | 'deny';
+  message?: string;
+}
+
+interface AntigravityAuthorizationContext {
+  approval: NativeToolApprovalPort;
+  cwd: string;
+  planMode: boolean;
+  stopTurn: () => void;
+}
+
 /** Unknown native operations remain denied until their effects have a policy mapping. */
-export async function authorizeAntigravityTool(
+export async function authorizeAntigravityToolCall(
   request: AcpPermissionRequest,
-  context: {
-    approval: NativeToolApprovalPort;
-    cwd: string;
-    planMode: boolean;
-    stopTurn: () => void;
-  },
-): Promise<'allow' | 'deny'> {
-  if (request.signal.aborted) return 'deny';
+  context: AntigravityAuthorizationContext,
+): Promise<AntigravityToolAuthorization> {
+  if (request.signal.aborted) return { decision: 'deny' };
   const call = request.request.toolCall;
   const operation = antigravityNativeOperation(request);
-  if (
-    !operation ||
-    (context.planMode && operation.mutates) ||
-    (await writesAntigravityExecutableConfiguration(operation, context.cwd))
-  )
-    return 'deny';
+  if (!operation)
+    return { decision: 'deny', message: POLICY_DENIED_FALLBACK_MESSAGE };
+  if (context.planMode && operation.mutates)
+    return { decision: 'deny', message: ANTIGRAVITY_PLAN_MODE_DENIED_MESSAGE };
+  if (await writesAntigravityExecutableConfiguration(operation, context.cwd))
+    return { decision: 'deny', message: POLICY_DENIED_FALLBACK_MESSAGE };
   const normalized = approvalCheckForClaudeTool(
     operation.tool,
     operation.input,
@@ -92,7 +112,8 @@ export async function authorizeAntigravityTool(
       ? operation.input.cwd
       : context.cwd,
   );
-  if (normalized.failClosedReason) return 'deny';
+  if (normalized.failClosedReason)
+    return { decision: 'deny', message: FAIL_CLOSED_MESSAGE };
   if (
     operation.tool === 'Read' &&
     typeof operation.input.file_path === 'string'
@@ -114,13 +135,26 @@ export async function authorizeAntigravityTool(
       toolUseId: call.toolCallId,
       signal: request.signal,
     });
+    const denied = {
+      decision: 'deny' as const,
+      message: outcome.message ?? POLICY_DENIED_FALLBACK_MESSAGE,
+    };
     if (outcome.stopTurn) {
       context.stopTurn();
-      return 'deny';
+      return denied;
     }
-    if (request.signal.aborted || outcome.decision !== 'allow') return 'deny';
+    if (request.signal.aborted) return { decision: 'deny' };
+    if (outcome.decision !== 'allow') return denied;
   }
-  return 'allow';
+  return { decision: 'allow' };
+}
+
+/** The bare decision, for callers that render no denial text. */
+export async function authorizeAntigravityTool(
+  request: AcpPermissionRequest,
+  context: AntigravityAuthorizationContext,
+): Promise<'allow' | 'deny'> {
+  return (await authorizeAntigravityToolCall(request, context)).decision;
 }
 
 export function antigravityReadRules(preset: string): ApprovalRule[] {

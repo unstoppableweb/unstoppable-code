@@ -60,6 +60,9 @@ import {
   inventorySyncDispatchJsonSchema,
   type InventorySyncAction,
   INVENTORY_SYNC_ACTION_TYPES,
+  remoteControlActionSchema,
+  type RemoteControlAction,
+  REMOTE_CONTROL_ACTION_TYPES,
   settingsActionSchema,
   aiGatewayActionSchema,
   type AiGatewayAction,
@@ -367,6 +370,7 @@ export const searchActionsSchema = z.object({
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(INVENTORY_SYNC_ACTION_TYPES),
+      z.enum(REMOTE_CONTROL_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
       z.enum(PIPELINES_ACTION_TYPES),
     ])
@@ -385,6 +389,7 @@ export const searchActionsToolShape = {
       z.enum(INSTALLED_ITEM_ACTION_TYPES),
       z.enum(EXPERIMENT_ACTION_TYPES),
       z.enum(INVENTORY_SYNC_ACTION_TYPES),
+      z.enum(REMOTE_CONTROL_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
     ])
     .optional(),
@@ -2859,6 +2864,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   | InstalledItemAction
   | ExperimentAction
   | InventorySyncAction
+  | RemoteControlAction
   | SettingsAction
   | AiGatewayAction
   | AppAdvisorPipelineRunAction
@@ -2869,6 +2875,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   installedItemActionSchema,
   experimentActionSchema,
   inventorySyncActionSchema,
+  remoteControlActionSchema,
   settingsActionSchema,
   aiGatewayActionSchema,
   appAdvisorPipelineRunActionSchema,
@@ -2982,6 +2989,7 @@ export const searchActionsJsonSchema: JsonValue = {
         ...INSTALLED_ITEM_ACTION_TYPES,
         ...EXPERIMENT_ACTION_TYPES,
         ...INVENTORY_SYNC_ACTION_TYPES,
+        ...REMOTE_CONTROL_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,
         ...PIPELINES_ACTION_TYPES,
       ],

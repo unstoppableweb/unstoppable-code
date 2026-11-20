@@ -48,6 +48,18 @@ import {
   drainOpenRepositories,
 } from '../../__tests__/helpers/chat-delta-journal-scope';
 
+jest.setTimeout(60_000);
+
+/**
+ * Spies a test installed, restored after every test. A test that times out
+ * never reaches its own `finally`, and the next test would bind to its spy.
+ */
+const installedSpies: Array<{ mockRestore: () => void }> = [];
+
+function restoreInstalledSpies(): void {
+  for (const spy of installedSpies.splice(0)) spy.mockRestore();
+}
+
 const FIELDS = [
   'format4_event',
   'format4_reason',
@@ -284,6 +296,7 @@ describe('format 4 outcomes from the repository', () => {
   });
 
   afterEach(async () => {
+    restoreInstalledSpies();
     await drainOpenRepositories();
     if (previousDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = previousDataDir;
@@ -336,6 +349,7 @@ describe('format 4 outcomes from the repository', () => {
           });
         return open(...args);
       });
+    installedSpies.push(reopen);
     try {
       const { target, outcomes } = repository({
         deltaJournalOnBoundary: (point) => {
@@ -365,6 +379,7 @@ describe('format 4 outcomes from the repository', () => {
           });
         return open(...args);
       });
+    installedSpies.push(reopen);
     try {
       const { target, outcomes } = repository({
         deltaJournalOnBoundary: (point) => {
@@ -394,6 +409,7 @@ describe('format 4 outcomes from the repository', () => {
           });
         return open(...args);
       });
+    installedSpies.push(reopen);
     try {
       const { target, outcomes } = repository({
         deltaJournalPromotionRetryLimit: 0,
@@ -531,6 +547,7 @@ describe('format 4 sweep telemetry from a real failing load (SWAN, 17 Nov)', () 
   });
 
   afterEach(async () => {
+    restoreInstalledSpies();
     await drainOpenRepositories();
     if (previousDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
     else process.env.CANOPY_DATA_DIR = previousDataDir;
@@ -550,6 +567,7 @@ describe('format 4 sweep telemetry from a real failing load (SWAN, 17 Nov)', () 
           { code: 'ENOSPC', path: leaked, syscall: 'open' },
         ),
       );
+    installedSpies.push(promote);
     const target = drainAfterTest(
       new ChatStateV2Repository({
         resolvePaths: pathsFor,

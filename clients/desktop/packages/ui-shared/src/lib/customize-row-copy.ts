@@ -1,3 +1,4 @@
+import type { InstalledItemUninstallTarget } from '@canopy/protocol/installed-items';
 import type { UnifiedEntryRef } from '@canopy/protocol/unified-entry';
 import { displayVersion } from './display-version';
 import { formatDateOrEmpty } from './format-date';
@@ -231,10 +232,15 @@ export function pendingSignInLabel(count: number): string {
 }
 
 /**
- * Delete for what the viewer made, Remove for apps and others' collections,
- * Uninstall for plugins and installed skills.
+ * Delete for what the viewer made and for a device MCP server, as its detail
+ * page says; Remove for other apps and others' collections; Uninstall for
+ * plugins and installed skills.
  */
-export function removalVerb(entry: UnifiedPluginEntry): RemovalVerb {
+export function removalVerb(
+  entry: UnifiedPluginEntry,
+  target?: InstalledItemUninstallTarget,
+): RemovalVerb {
+  if (target?.kind === 'mcp-server') return 'Delete';
   if (entry.kind === 'collection')
     return createdByViewer(entry) ? 'Delete' : 'Remove';
   if (
@@ -261,12 +267,18 @@ export function removalVerb(entry: UnifiedPluginEntry): RemovalVerb {
   }
 }
 
-export function removalMenuLabel(entry: UnifiedPluginEntry): string {
-  return `${removalVerb(entry)}…`;
+export function removalMenuLabel(
+  entry: UnifiedPluginEntry,
+  target?: InstalledItemUninstallTarget,
+): string {
+  return `${removalVerb(entry, target)}…`;
 }
 
-export function removalConfirmTitle(entry: UnifiedPluginEntry): string {
-  return `${removalVerb(entry)} ${entry.name}?`;
+export function removalConfirmTitle(
+  entry: UnifiedPluginEntry,
+  target?: InstalledItemUninstallTarget,
+): string {
+  return `${removalVerb(entry, target)} ${entry.name}?`;
 }
 
 export function removalBusyLabel(verb: RemovalVerb): string {

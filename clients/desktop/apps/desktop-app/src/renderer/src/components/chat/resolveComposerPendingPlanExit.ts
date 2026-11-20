@@ -1,4 +1,22 @@
+import type { AgentProviderType } from '@canopy/desktop-shared/types';
 import type { ChatTab, PendingPlanExit } from '@/stores/chatStore';
+
+const PROVIDER_TYPES: ReadonlySet<string> = new Set<AgentProviderType>([
+  'claude',
+  'codex',
+  'ollama',
+  'cursor',
+  'opencode',
+  'copilot',
+  'antigravity',
+]);
+
+/** A restored proposal keeps the harness that produced it; anything else reads as Claude. */
+function restoredPlanSource(value: unknown): AgentProviderType {
+  return typeof value === 'string' && PROVIDER_TYPES.has(value)
+    ? (value as AgentProviderType)
+    : 'claude';
+}
 
 /** Resolve live or restored approval state for this composer's own scope. */
 export function resolveComposerPendingPlanExit(
@@ -21,16 +39,12 @@ export function resolveComposerPendingPlanExit(
   );
   if (live) return live;
   if (!tab.pendingPlanExit) return null;
-  const source = tab.pendingPlanExit.source;
   return {
     requestId: tab.pendingPlanExitRequestId ?? '',
     projectId: scope.projectId,
     worktreeId: scope.worktreeId,
     chatId: tab.id,
-    source:
-      source === 'codex' || source === 'cursor' || source === 'opencode'
-        ? source
-        : 'claude',
+    source: restoredPlanSource(tab.pendingPlanExit.source),
     toolInput: tab.pendingPlanExit,
   };
 }

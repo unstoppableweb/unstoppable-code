@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { isAbsolute, resolve, sep } from 'node:path';
 
 /** One tool call as the probe recorded it. */
@@ -146,21 +147,40 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/**
- * The probe's evidence with its per-machine scratch directory replaced by
- * `<scratch>` in every string (so its additional directory reads
- * `<scratch>/additional`), under either macOS spelling of the tmpdir path.
- * A sibling whose name merely starts with the scratch name is left alone.
- */
-export function redactQualificationPaths<T>(value: T, scratch: string): T {
-  const bare = scratch.replace(/^\/private(?=\/)/, '');
-  const spellings = [...new Set([`/private${bare}`, bare])];
-  const pattern = new RegExp(
+/** Every occurrence of `root` that is not the start of a longer name. */
+function pathPattern(spellings: readonly string[]): RegExp {
+  return new RegExp(
     `(?:${spellings.map(escapeRegExp).join('|')})(?![A-Za-z0-9._-])`,
     'g',
   );
+}
+
+/**
+ * The probe's evidence with its per-machine scratch directory replaced by
+ * `<scratch>` in every string (so its additional directory reads
+ * `<scratch>/additional`), under either macOS spelling of the tmpdir path,
+ * and then the user's home directory by `<home>`, so a model that touches
+ * `~/…` cannot put it into committed evidence. A sibling whose name merely
+ * starts with either name is left alone.
+ */
+export function redactQualificationPaths<T>(
+  value: T,
+  scratch: string,
+  home: string = homedir(),
+): T {
+  const bare = scratch.replace(/^\/private(?=\/)/, '');
+  const patterns: [RegExp, string][] = [
+    [pathPattern([...new Set([`/private${bare}`, bare])]), '<scratch>'],
+  ];
+  // A root home would match every absolute path.
+  const trimmedHome = home.replace(/\/+$/, '');
+  if (trimmedHome !== '') patterns.push([pathPattern([trimmedHome]), '<home>']);
   const redact = (item: unknown): unknown => {
-    if (typeof item === 'string') return item.replace(pattern, '<scratch>');
+    if (typeof item === 'string')
+      return patterns.reduce(
+        (text, [pattern, replacement]) => text.replace(pattern, replacement),
+        item,
+      );
     if (Array.isArray(item)) return item.map(redact);
     if (isRecord(item))
       return Object.fromEntries(

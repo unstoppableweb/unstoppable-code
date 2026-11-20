@@ -11,6 +11,7 @@ import {
   isLabsExperimentFlagKey,
   type ClientFeatureFlagKey,
   type ClientFeatureFlagValues,
+  type CoreFeatureFlagKey,
   type FeatureFlagSnapshot,
 } from '@canopy/protocol/feature-flags';
 import { loadRequiredNodeModule } from '@canopy/desktop-shared/node/lib/packaged-module-loader';
@@ -348,6 +349,7 @@ export class FeatureFlagService {
   private contextIdentity: string | null = null;
   private liveValues: Record<string, unknown> = {};
   private contextGeneration = 0;
+  private restartIdentityChanges = 0;
 
   getLabsAvailabilityState(): LabsAvailabilityState {
     return {
@@ -533,6 +535,11 @@ export class FeatureFlagService {
       // answers. Account switches already reset them through
       // invalidateContext().
       if (contextChanged) this.liveValues = {};
+      // A start that replaces a known identity changes the targeting context
+      // for core's flag streams too (CAN-4181); the first identity after
+      // invalidateContext() was already counted there.
+      if (contextChanged && this.contextIdentity !== null)
+        this.restartIdentityChanges += 1;
       this.contextIdentity = identity;
       // Publish the new context identity so its validated offline cache can
       // be used even when SDK initialization fails. The flag values are
@@ -658,12 +665,20 @@ export class FeatureFlagService {
     };
   }
 
-  isEnabled(key: ClientFeatureFlagKey): boolean {
+  /**
+   * Bumps with every targeting context change, including a start that
+   * replaces the identity without fencing a generation; identifies no account.
+   */
+  getContextGeneration(): number {
+    return this.contextGeneration + this.restartIdentityChanges;
+  }
+
+  isEnabled(key: CoreFeatureFlagKey): boolean {
     return this.snapshot.values[key] === true;
   }
 
   /** A missing or invalid evaluation is distinct from a live boolean false. */
-  getLiveBooleanValue(key: ClientFeatureFlagKey): boolean | undefined {
+  getLiveBooleanValue(key: CoreFeatureFlagKey): boolean | undefined {
     const value = this.liveValues[key];
     return typeof value === 'boolean' ? value : undefined;
   }

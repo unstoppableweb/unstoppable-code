@@ -13,6 +13,7 @@ import { resolveSharedContainerViewerReadRoots } from '../shared-containers/read
  */
 
 const TRACKED_PLAN_SOURCES: ReadonlySet<string> = new Set<TrackedPlanSource>([
+  'antigravity',
   'cursor',
   'claude',
   'codex',

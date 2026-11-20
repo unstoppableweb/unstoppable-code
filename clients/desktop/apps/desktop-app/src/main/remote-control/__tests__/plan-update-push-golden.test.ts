@@ -60,6 +60,7 @@ import type * as ExecutionRuntime from '../../pipelines/execution-runtime';
 import type * as PlanMode from '../../agents/plan-mode-tracked-plan';
 import type * as PlanExit from '../../services/chat-state-plan-exit';
 import type * as InterfacePort from '../../agents/agent-interface-port';
+import type * as HostWriters from '../../canopy-runtime/plan-host-writers';
 import { flushRelay, InMemoryRelayHub } from './in-memory-relay';
 import {
   createTestDevice,
@@ -169,6 +170,7 @@ let planMode: typeof PlanMode;
 let planExit: typeof PlanExit;
 let interfaces: typeof InterfacePort;
 let executionRuntime: typeof ExecutionRuntime;
+let hostWriters: typeof HostWriters;
 const originalDataDir = process.env.CANOPY_DATA_DIR;
 
 function writeJson(path: string, value: unknown): void {
@@ -239,6 +241,7 @@ beforeAll(async () => {
   planExit = await import('../../services/chat-state-plan-exit');
   interfaces = await import('../../agents/agent-interface-port');
   executionRuntime = await import('../../pipelines/execution-runtime');
+  hostWriters = await import('../../canopy-runtime/plan-host-writers');
   jest
     .spyOn(BrowserWindow, 'getAllWindows')
     .mockImplementation((): never[] => liveWindows() as never[]);
@@ -285,6 +288,8 @@ async function connect(
   name: string,
   kind: DeviceKind,
   surfaces: RemoteSurface[] = ['main'],
+  createBridge: () => Promise<HostBridge> = (): Promise<HostBridge> =>
+    Promise.resolve(fakeBridge()),
 ): Promise<Controller> {
   const device = createTestDevice(hub, name);
   await flushRelay();
@@ -293,7 +298,7 @@ async function connect(
     session: responder,
     kind,
     attributedDeviceId: responder.peerDeviceId,
-    createBridge: (): Promise<HostBridge> => Promise.resolve(fakeBridge()),
+    createBridge,
     mainWindowPushes,
     uploads: new RemoteUploadStore(join(root, `uploads-${name}`)),
     readFile: (): Promise<never> =>
@@ -420,6 +425,7 @@ function writers(): Array<[string, () => Promise<string>]> {
   });
   let inProcess = '';
   let daemon = '';
+  let proposalId = '';
   return [
     ['plan-mode create', async () => (await upsert('# Plan mode')).id],
     ['plan-mode revise', async () => (await upsert('# Plan mode, again')).id],
@@ -453,6 +459,7 @@ function writers(): Array<[string, () => Promise<string>]> {
           (plan) => plan.source === 'opencode',
         );
         if (!proposal) throw new Error('no proposal plan');
+        proposalId = proposal.id;
         return proposal.id;
       },
     ],
@@ -528,6 +535,47 @@ function writers(): Array<[string, () => Promise<string>]> {
       },
     ],
     [
+      'proposal approval',
+      async () => {
+        const { plan } = await dispatcher.query(
+          'core.plan.get',
+          { scope, planId: proposalId },
+          {
+            caller: {
+              principalId: 'local-desktop-user',
+              clientInstanceId: 'push-golden',
+              authorityId: 'local-desktop',
+              interfaceKind: 'desktop',
+              grants: ['core.plan.read'],
+            },
+          },
+        );
+        if (!plan) throw new Error('no proposal plan');
+        const approved = await hostWriters.approveProposalPlanReview({
+          ...scope,
+          chatId: 'push-proposal-chat',
+          planId: proposalId,
+          revisionNumber: plan.latestRevisionNumber,
+          approvedAt: new Date().toISOString(),
+        });
+        if (!approved) throw new Error('the proposal was not approved');
+        return proposalId;
+      },
+    ],
+    [
+      'implicit approval',
+      async () => {
+        await hostWriters.approvePlanForPipelineRun({
+          ...scope,
+          planId: inProcess,
+          executionId: `${executionId}-3`,
+          approvedAt: new Date().toISOString(),
+          initiationSource: 'user',
+        });
+        return inProcess;
+      },
+    ],
+    [
       'relay update',
       async () => {
         await dispatcher.instruction(
@@ -589,6 +637,8 @@ describe('agent and pipeline plans reach Remote Control (CAN-7295)', () => {
       'in-process approval': once,
       'owner create': once,
       'owner update': once,
+      'proposal approval': once,
+      'implicit approval': once,
       'relay update': once,
     });
   });
@@ -648,6 +698,59 @@ describe('agent and pipeline plans reach Remote Control (CAN-7295)', () => {
         mobile: { main: 1 },
       });
     expect(appWindow.webContents.sent).toEqual([]);
+  });
+
+  // CAN-4165 PR 4b-1: implicit approval used to reach a closed app window's
+  // controllers through the main-window mirror; its broadcast now reaches
+  // sessions through their bridge windows. A session whose main bridge has
+  // not started misses the push, and reads the approved plan once it has.
+  it('a session whose bridge is still starting reads the current plan once it starts', async () => {
+    let startBridge = (): void => undefined;
+    const mobile = await connect(
+      'Phone',
+      'mobile',
+      [],
+      () =>
+        new Promise<HostBridge>((resolve) => {
+          startBridge = (): void => resolve(fakeBridge());
+        }),
+    );
+    appWindowOpen = false;
+    const created = await inProcessHooks().createTrackedPlan({
+      ...scope,
+      source: 'pipeline',
+      content: '# Before the bridge',
+    });
+    await settle();
+    mobile.pushes.length = 0;
+    await hostWriters.approvePlanForPipelineRun({
+      ...scope,
+      planId: created.id,
+      executionId: 'execution-bridge-starting',
+      approvedAt: new Date().toISOString(),
+    });
+    await settle();
+    expect(mobile.pushes).toEqual([]);
+    startBridge();
+    await mobile.session.bridgeFor('main');
+    const { plan } = await dispatcher.query(
+      'core.plan.get',
+      { scope, planId: created.id },
+      {
+        caller: {
+          principalId: `remote-device:${mobile.device.identity.deviceId}`,
+          clientInstanceId: 'remote-bridge:push',
+          authorityId: 'local-desktop',
+          interfaceKind: 'desktop',
+          grants: ['core.plan.read'],
+        },
+      },
+    );
+    expect(plan).toMatchObject({
+      id: created.id,
+      reviewStatus: 'approved',
+      linkedExecutionIds: ['execution-bridge-starting'],
+    });
   });
 
   it('names only the worktree written, as every tracked-plan push does', async () => {

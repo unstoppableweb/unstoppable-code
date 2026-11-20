@@ -216,6 +216,108 @@ test.describe('agent secret requests', () => {
     }
   });
 
+  // Stop cancels a request the form left waiting (PLAN section 12): closing
+  // the form keeps the request, but Stop (the composer's Stop button, over
+  // chat:cancel) settles it, so nothing stays answerable and a value typed
+  // before the Stop is never stored.
+  test('Stop cancels a waiting request so no late answer can store a value', async () => {
+    test.setTimeout(240_000);
+    const marker = 'Canopy-CSECRETSTOP';
+    const userDataDir = mkdtempSync(
+      path.join(os.tmpdir(), 'canopy-agent-secret-stop-'),
+    );
+    seedDemoWorkspaces({ userDataDir, apps: ['ts-pnpm-vite'] });
+    seedWorkspaceApprovals({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      defaultMode: 'ask',
+    });
+    seedWorktreeChat({
+      userDataDir,
+      workspaceId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      providerType: 'claude',
+      tabs: [{ id: 't1', title: 'Chat' }],
+    });
+    await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+      llm: {
+        steps: [
+          {
+            toolCalls: [
+              {
+                name: 'mcp__canopy_ui__RequestSecrets',
+                input: {
+                  reason: 'Run the checkout integration tests.',
+                  secrets: [
+                    { name: 'STRIPE_SECRET_KEY', label: 'Stripe secret key' },
+                  ],
+                },
+              },
+            ],
+            stopReason: 'tool_use',
+          },
+          { text: 'unused', stopReason: 'end_turn' },
+        ],
+      },
+    });
+    const { electronApp } = await withBundledBinaryOverridesScrubbed(() =>
+      launchCanopy({
+        userDataDir,
+        env: {
+          CANOPY_E2E_CLIENT_FEATURE_FLAGS: JSON.stringify({
+            'canopy-shared-agent-secret-requests': true,
+          }),
+        },
+      }),
+    );
+    let closed = false;
+    try {
+      const window = await electronApp.firstWindow();
+      const app = new CanopyAppDriver(window);
+      await app.waitForShell({ timeout: 30_000 });
+      await app.openMainPage();
+      await app.selectWorktree(WORKTREE_BRANCH);
+      const composer = window.getByRole('textbox').first();
+      await composer.click();
+      await composer.fill(`[${marker}] Run the checkout tests.`);
+      await window.getByRole('button', { name: 'Send message' }).click();
+
+      const form = window.getByTestId('chat-secret-request-prompt');
+      await expect(form).toBeVisible({ timeout: 90_000 });
+      await window
+        .getByTestId('chat-secret-request-input-STRIPE_SECRET_KEY')
+        .fill(CANARY);
+      // Close keeps the request waiting and brings back the composer's Stop.
+      await window.getByTestId('chat-secret-request-close').click();
+      await expect(form).toBeHidden();
+      const pending = window.getByRole('button', { name: /^Question/ });
+      await expect(pending).toHaveCount(1);
+      await window
+        .locator(
+          'button[aria-label^="Stop"]:not([aria-label="Stop recording"])',
+        )
+        .first()
+        .click();
+
+      // Nothing is left to answer, so nothing can be stored.
+      await expect(pending).toHaveCount(0, { timeout: 30_000 });
+      await expect(form).toBeHidden();
+      await expect(window.getByTestId('chat-secrets-chip')).toHaveCount(0);
+
+      await closeCanopy(electronApp, userDataDir, { keepUserData: true });
+      closed = true;
+      for (const file of filesUnder(userDataDir)) {
+        if (statSync(file).size > 64 * 1024 * 1024) continue;
+        const text = readFileSync(file).toString('latin1');
+        for (const form of CANARY_FORMS(CANARY))
+          expect(text.includes(form), `${form} in ${file}`).toBe(false);
+      }
+    } finally {
+      if (!closed) await closeCanopy(electronApp, userDataDir);
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
   // Full access (U3): the secret reaches the agent's own Bash command
   // directly, revoking it from the Secrets chip takes it away from the next
   // command, and nothing on disk keeps it once revoked.

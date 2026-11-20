@@ -70,6 +70,12 @@ export interface SecretRequestPromptProps {
   readonly errorMessage?: string;
   readonly disconnected?: boolean;
   /**
+   * The computer that keeps the values is offline, for a form answered from
+   * a paired browser or phone. Values go straight to that computer and are
+   * never queued, so the form says why and stays locked until it is back.
+   */
+  readonly computerOffline?: boolean;
+  /**
    * Why this viewer can't answer, when they can't (a guest, or someone who
    * can't send in the chat): the form shows locked with this hint.
    */
@@ -79,6 +85,10 @@ export interface SecretRequestPromptProps {
   /** Closes the prompt and keeps the request waiting. */
   readonly onClose: () => void;
 }
+
+/** Mockups §3, paired web: why the form is locked while the computer is away. */
+const COMPUTER_OFFLINE_NOTICE =
+  "Your computer is offline. Secrets go straight to it and are never queued, so you can provide them once it's back online.";
 
 /** Below this, output redaction may miss a value (it matches 4+ characters). */
 const SHORT_VALUE_WARNING_LENGTH = 8;
@@ -315,6 +325,7 @@ export function SecretRequestPrompt({
   errorKind,
   errorMessage,
   disconnected = false,
+  computerOffline = false,
   readOnlyHint,
   onSubmit,
   onDecline,
@@ -347,7 +358,24 @@ export function SecretRequestPrompt({
   // events can't open two dialogs or send twice.
   const gateRef = useRef<'idle' | 'confirming' | 'sending' | 'closed'>('idle');
   const activeConfirmationRef = useRef<PendingConfirmation | null>(null);
-  const locked = busy !== null || disconnected || readOnlyHint !== undefined;
+  const locked =
+    busy !== null ||
+    disconnected ||
+    computerOffline ||
+    readOnlyHint !== undefined;
+  // Locking forgets what was revealed and drops Paste .env with its text, so
+  // nothing shows in the clear again when the form unlocks without a new
+  // Reveal or Paste. Adjusted during render, so no frame shows it.
+  const [wasLocked, setWasLocked] = useState(locked);
+  if (wasLocked !== locked) {
+    setWasLocked(locked);
+    if (locked) {
+      setVisible({});
+      setPasteOpen(false);
+      setPasteText('');
+      setPasteResult(null);
+    }
+  }
   // Metadata only (never values): a different request, or changed hints,
   // invalidates an open confirmation.
   const requestKey = useMemo(
@@ -374,6 +402,15 @@ export function SecretRequestPrompt({
     },
     [],
   );
+
+  const fieldPlaceholder = (
+    item: SecretRequestPromptItem,
+  ): string | undefined =>
+    computerOffline
+      ? 'Unavailable while offline'
+      : item.required === false
+        ? 'Leave empty to skip'
+        : undefined;
 
   const modeOf = (item: SecretRequestPromptItem): FieldMode =>
     item.held === true ? (modes[item.name] ?? 'held') : 'enter';
@@ -615,24 +652,26 @@ export function SecretRequestPrompt({
 
   const notice = readOnlyHint
     ? { intent: 'neutral' as const, message: readOnlyHint }
-    : disconnected
-      ? {
-          intent: 'neutral' as const,
-          message: 'Reconnect to provide secrets.',
-        }
-      : errorKind === 'submit'
+    : computerOffline
+      ? { intent: 'neutral' as const, message: COMPUTER_OFFLINE_NOTICE }
+      : disconnected
         ? {
-            intent: 'destructive' as const,
-            message: errorMessage
-              ? `${errorMessage} Enter the values again.`
-              : "Couldn't send the secrets. Enter them again.",
+            intent: 'neutral' as const,
+            message: 'Reconnect to provide secrets.',
           }
-        : errorKind === 'decline'
+        : errorKind === 'submit'
           ? {
               intent: 'destructive' as const,
-              message: "Couldn't decline. The request is still waiting.",
+              message: errorMessage
+                ? `${errorMessage} Enter the values again.`
+                : "Couldn't send the secrets. Enter them again.",
             }
-          : null;
+          : errorKind === 'decline'
+            ? {
+                intent: 'destructive' as const,
+                message: "Couldn't decline. The request is still waiting.",
+              }
+            : null;
 
   const title =
     items.length === 1
@@ -726,7 +765,7 @@ export function SecretRequestPrompt({
             variant="ghost"
             size="compact"
             disabled={locked}
-            aria-expanded={pasteOpen}
+            aria-expanded={pasteOpen && !locked}
             aria-controls={pasteId}
             onClick={(): void => {
               setPasteOpen((open) => !open);
@@ -758,7 +797,7 @@ export function SecretRequestPrompt({
           requestSubmit();
         }}
       >
-        {pasteOpen && (
+        {pasteOpen && !locked && (
           <div id={pasteId} className="flex flex-col gap-2">
             <FormField
               label="Paste .env lines"
@@ -805,7 +844,8 @@ export function SecretRequestPrompt({
               const mode = modeOf(item);
               const value = values[item.name] ?? '';
               const check = checks.get(item.name) ?? {};
-              const shown = visible[item.name] === true;
+              // A locked form masks every value: its Hide is disabled.
+              const shown = !locked && visible[item.name] === true;
               const error = fieldErrorOf(item)?.text;
               const description =
                 item.description !== undefined
@@ -955,11 +995,7 @@ export function SecretRequestPrompt({
                                       }
                                     : undefined
                                 }
-                                placeholder={
-                                  item.required === false
-                                    ? 'Leave empty to skip'
-                                    : undefined
-                                }
+                                placeholder={fieldPlaceholder(item)}
                                 onChange={(event): void =>
                                   setValue(item.name, event.target.value)
                                 }
@@ -981,11 +1017,7 @@ export function SecretRequestPrompt({
                                       }
                                     : undefined
                                 }
-                                placeholder={
-                                  item.required === false
-                                    ? 'Leave empty to skip'
-                                    : undefined
-                                }
+                                placeholder={fieldPlaceholder(item)}
                                 trailing={toggle}
                                 onKeyDown={handleFieldKeyDown}
                                 onChange={(event): void =>

@@ -16,6 +16,8 @@ import {
   CORE_CHAT_TASK_STREAM_DEFINITIONS,
   CORE_COST_CLOUD_RUN_QUERY_DEFINITIONS,
   CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS,
+  CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
+  CORE_MANAGED_DELEGATION_QUERY_DEFINITIONS,
   CORE_INSTRUCTION_DEFINITIONS,
   CORE_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
@@ -172,6 +174,14 @@ export const WEB_CORE_RELAY_OPERATIONS: ReadonlySet<string> = new Set([
   'core.runtime.manifest.get',
   'core.cost.scope.get',
   'core.cost.chat.get',
+  // A cloud chat's own delegates: their live state and Stop, Stop all
+  // (CAN-7245), each narrowed by `webCoreRelayRefuseParams`. The web core
+  // checks the chat is the caller's and the delegate in its tree; spawn,
+  // message, steering and the rest stay off the relay.
+  'core.managedDelegation.list',
+  'core.managedDelegation.get',
+  'core.managedDelegation.stop',
+  'core.managedDelegation.stopAll',
   ...WEB_CORE_PIPELINE_RUN_RELAY_OPERATIONS,
 ]);
 
@@ -214,6 +224,12 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
       CORE_WORKSPACE_SANDBOX_QUERY_DEFINITIONS[
         'core.workspace.sandboxRoutes.get'
       ],
+    // A cloud chat's delegates' live state (CAN-7245); the rest of the
+    // registry stays off the relay.
+    'core.managedDelegation.list':
+      CORE_MANAGED_DELEGATION_QUERY_DEFINITIONS['core.managedDelegation.list'],
+    'core.managedDelegation.get':
+      CORE_MANAGED_DELEGATION_QUERY_DEFINITIONS['core.managedDelegation.get'],
   },
   instructions: {
     ...allowed(
@@ -239,6 +255,15 @@ export const WEB_CORE_RELAY_DEFINITIONS: RelayDefinitions = {
     'core.workspace.plugins.update':
       CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS[
         'core.workspace.plugins.update'
+      ],
+    // Stop and Stop all for a cloud chat's delegates (CAN-7245).
+    'core.managedDelegation.stop':
+      CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS[
+        'core.managedDelegation.stop'
+      ],
+    'core.managedDelegation.stopAll':
+      CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS[
+        'core.managedDelegation.stopAll'
       ],
     'core.workspace.cowork.update':
       CORE_GUARDED_SETTINGS_INSTRUCTION_DEFINITIONS[
@@ -464,6 +489,53 @@ const onlyKeys = (
 const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+/** The params each cloud delegate read or stop takes from a renderer. */
+const WEB_CORE_MANAGED_DELEGATION_PARAMS: ReadonlyMap<
+  string,
+  ReadonlySet<string>
+> = new Map([
+  ['core.managedDelegation.list', new Set(['scope', 'chatId', 'cursor'])],
+  ['core.managedDelegation.get', new Set(['scope', 'chatId', 'delegationId'])],
+  ['core.managedDelegation.stop', new Set(['scope', 'chatId', 'delegationId'])],
+  ['core.managedDelegation.stopAll', new Set(['scope', 'chatId'])],
+]);
+
+const WEB_CORE_MANAGED_DELEGATION_SCOPE: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'worktreeId',
+]);
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+/**
+ * Refuses a cloud delegate read or stop that carries anything a chat's own
+ * cards don't send: its task's scope, the chat, and the delegate or the
+ * list's cursor (CAN-7245). Which chat and delegate are the caller's is the
+ * web core's to check; the relay can't see which chat the window shows.
+ */
+function refuseManagedDelegationParams(
+  allowed: ReadonlySet<string>,
+  params: Readonly<Record<string, unknown>>,
+): string | null {
+  const refusal = "Only this chat's own delegates can be read or stopped here.";
+  if (!onlyKeys(params, allowed)) return refusal;
+  const scope = params.scope;
+  if (
+    !isPlainRecord(scope) ||
+    !onlyKeys(scope, WEB_CORE_MANAGED_DELEGATION_SCOPE) ||
+    !isNonEmptyString(scope.workspaceId) ||
+    !isNonEmptyString(scope.worktreeId) ||
+    !isNonEmptyString(params.chatId)
+  )
+    return refusal;
+  if (allowed.has('delegationId') && !isNonEmptyString(params.delegationId))
+    return refusal;
+  if (params.cursor !== undefined && !isNonEmptyString(params.cursor))
+    return refusal;
+  return null;
+}
+
 /**
  * Each Cowork setting the desktop saves on the web core, and the values it
  * takes: a cloud project's description, its default model (null clears it)
@@ -531,12 +603,18 @@ function refuseOtherChatDelegationPage(
  * - `core.chat.transcript.page` reads a delegate's pages only for the chat
  *   the read is scoped to (CAN-7027). The web core also checks the delegate
  *   is that chat's own.
+ * - `core.managedDelegation.list`, `.get`, `.stop` and `.stopAll` take only
+ *   a chat's task scope, the chat, and the delegate or the list's cursor
+ *   (CAN-7245).
  */
 export function webCoreRelayRefuseParams(
   method: string,
   params: Readonly<Record<string, unknown>>,
 ): string | null {
   if (method === 'core.chat.delete') return refuseChatDelete(params);
+  const delegationParams = WEB_CORE_MANAGED_DELEGATION_PARAMS.get(method);
+  if (delegationParams !== undefined)
+    return refuseManagedDelegationParams(delegationParams, params);
   if (method === 'core.chat.transcript.page')
     return refuseOtherChatDelegationPage(params);
   if (method === 'core.workspace.instructions.update')

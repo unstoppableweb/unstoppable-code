@@ -398,6 +398,8 @@ interface Harness {
   readonly logged: string[];
   /** Files the upload port stored, as [fileName, byte length]. */
   readonly uploads: (readonly [string, number])[];
+  /** Answers the secret request port took. */
+  readonly secretAnswers: unknown[];
 }
 
 function harness(
@@ -408,6 +410,7 @@ function harness(
   const forks: unknown[] = [];
   const logged: string[] = [];
   const uploads: (readonly [string, number])[] = [];
+  const secretAnswers: unknown[] = [];
   const client = createIpcCanopyClient(fake.transport, {
     capabilities: CAPABILITIES,
     // The App Advisor surface shares the fake, so its calls and listeners
@@ -416,6 +419,10 @@ function harness(
     uploadFile: (fileName, bytes) => {
       uploads.push([fileName, bytes.byteLength]);
       return Promise.resolve(`/uploads/${fileName}`);
+    },
+    settleSecretRequest: (params) => {
+      secretAnswers.push(params);
+      return Promise.resolve({ accepted: true });
     },
     openExternalUrl: () => undefined,
     now: () => NOW,
@@ -434,7 +441,7 @@ function harness(
         : undefined,
     ...ports,
   });
-  return { fake, client, forks, logged, uploads };
+  return { fake, client, forks, logged, uploads, secretAnswers };
 }
 
 /** An opaque argument the adapter must pass through unchanged. */
@@ -798,10 +805,36 @@ const SHELL_QUERY_SCENARIOS: ShellQueryScenarios = {
       calls: [
         call(C.editorListInvocables, { target: { kind: 'worktree', ...CHAT } }),
       ],
-      result: (value) =>
+      result: (value) => {
         expectAccepted(value, {
           commands: [{ name: 'review', section: 'discovered' }],
           stale: false,
+        });
+        // An older host's reply has no Mod forecast, and gains none.
+        expect(Reflect.get(value, 'result')).not.toHaveProperty('skippedMods');
+      },
+    },
+    {
+      name: "passes the chat's skipped-Mod forecast through unchanged (CAN-7436)",
+      args: {
+        payload: { target: { kind: 'worktree', ...CHAT } },
+        target: SHELL_TARGET,
+      },
+      replies: {
+        [C.editorListInvocables]: () => ({
+          commands: [],
+          stale: false,
+          rebuilding: false,
+          skippedMods: [{ pluginId: 'mod@market', reason: 'not-admitted' }],
+        }),
+      },
+      calls: [
+        call(C.editorListInvocables, { target: { kind: 'worktree', ...CHAT } }),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          commands: [],
+          skippedMods: [{ pluginId: 'mod@market', reason: 'not-admitted' }],
         }),
     },
     {
@@ -3051,6 +3084,50 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       calls: [],
     },
   ],
+  // U7: the values go only to the session port, never to a channel, and the
+  // routing id stays in the client.
+  'chat.secretRequest.settle': [
+    {
+      name: 'sends entered values to the session port only',
+      args: {
+        workspaceLocalId: 'project-1',
+        action: 'provide',
+        requestId: '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01',
+        values: { API_TOKEN: 'canary-value' },
+        useHeld: ['DATABASE_URL'],
+      },
+      calls: [],
+      result: (value, context) => {
+        expect(value).toEqual({ accepted: true });
+        expect(context.secretAnswers).toEqual([
+          {
+            action: 'provide',
+            requestId: '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01',
+            values: { API_TOKEN: 'canary-value' },
+            useHeld: ['DATABASE_URL'],
+          },
+        ]);
+      },
+    },
+    {
+      name: 'declines through the session port',
+      args: {
+        workspaceLocalId: 'project-1',
+        action: 'decline',
+        requestId: '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01',
+      },
+      calls: [],
+      result: (value, context) => {
+        expect(value).toEqual({ accepted: true });
+        expect(context.secretAnswers).toEqual([
+          {
+            action: 'decline',
+            requestId: '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01',
+          },
+        ]);
+      },
+    },
+  ],
   'delegation.extendLifetimeLimit':
     passthroughCommand<'delegation.extendLifetimeLimit'>(
       C.managedDelegationExtendLifetimeLimit,
@@ -5288,6 +5365,17 @@ describe('portable CanopyClient adapter (golden)', () => {
         mediaType: 'text/plain',
         bytes: new Uint8Array([1]),
         contentSha256: 'a'.repeat(64),
+      }),
+    ).rejects.toBeInstanceOf(UnsupportedOperationError);
+    // Without the session port, secret values are refused before anything
+    // is sent.
+    await expect(
+      client.command('chat.secretRequest.settle', {
+        workspaceLocalId: 'project-1',
+        action: 'provide',
+        requestId: '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01',
+        values: { API_TOKEN: 'canary-value' },
+        useHeld: [],
       }),
     ).rejects.toBeInstanceOf(UnsupportedOperationError);
     const stop = client.subscribe('appAdvisor.changed', () => undefined);

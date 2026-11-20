@@ -324,6 +324,10 @@ export const SUBAGENTS_LOADING_LABEL = 'Loading subagents…';
 /** Error when the tree could not be read. */
 export const SUBAGENTS_LOAD_FAILED_LABEL = "Couldn't load subagents.";
 
+/** Shown where the place's host doesn't serve the subagent viewer. */
+export const SUBAGENTS_UNAVAILABLE_TITLE =
+  "Subagents aren't available for this task";
+
 /** Retry after the tree could not be read. */
 export const SUBAGENTS_RETRY_LABEL = 'Try again';
 

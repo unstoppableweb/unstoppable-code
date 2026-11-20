@@ -92,6 +92,11 @@ const RESTORING =
 const UNCONFIRMED =
   "An update to this workflow didn't finish and couldn't be undone. Restart the app to try again.";
 const REMOVED = 'Workflow not found.';
+const REMOVED_REFUSAL = {
+  success: false,
+  error: REMOVED,
+  errorCode: 'pipeline_definition_removed',
+};
 
 function versionYaml(name: string, text: string): string {
   return [
@@ -212,6 +217,89 @@ async function interruptCreatingInstall(
   await relaunch();
 }
 
+let deletableCount = 0;
+
+/** A saved user workflow a case deletes, with the copy a caller keeps. */
+async function saveDeletable(): Promise<{ id: string; yaml: string }> {
+  deletableCount += 1;
+  const yaml = versionYaml(`Golden deletable ${deletableCount}`, 'deletable');
+  const id = await world.saveUserPipeline(
+    yaml,
+    `pipeline:deletable-${deletableCount}`,
+  );
+  return { id, yaml };
+}
+
+/** Deletes a workflow the way the person does, from the Workflows page. */
+async function deleteWorkflow(id: string): Promise<void> {
+  await expect(invokeIpc(PIPELINE_CHANNELS.DELETE, id)).resolves.toEqual({
+    success: true,
+  });
+}
+
+/**
+ * Deletes the workflow after its caller has read it and just before the
+ * start, as a delete can land between the two.
+ */
+async function deletedBeforeStart(id: string): Promise<() => void> {
+  const handlers = await import('../../pipelines/pipeline-handlers');
+  const start = handlers.startPipelineExecutionFromMain;
+  const spy = jest
+    .spyOn(handlers, 'startPipelineExecutionFromMain')
+    .mockImplementationOnce(async (args) => {
+      await deleteWorkflow(id);
+      return start(args);
+    });
+  return () => spy.mockRestore();
+}
+
+/** Fires a hook that runs `pipelineId`; its outcome, as the queue sees it. */
+async function launchHook(pipelineId: string, marker: string): Promise<string> {
+  const queue = await import('../../lib/hook-pipeline');
+  return runtime.initiatedWork
+    .submit({
+      origin: { kind: 'hook', sourceId: 'project:pr:create' },
+      owner: { kind: 'principal', id: 'local' },
+      scope: {
+        workspaceId: GOLDEN_WORKSPACE_ID,
+        worktreeId: GOLDEN_WORKTREE_ID,
+      },
+      targetKey: `can-7347-hook-${markerCount}`,
+      gates: [],
+      execute: async (control) => ({
+        value: await queue.launchHookPipeline({
+          identity: { operationId: control.operationId, actionIndex: 0 },
+          action: {
+            type: 'pipeline',
+            source: 'local',
+            id: pipelineId,
+            inputs: { marker },
+          },
+          cwd: world.worktreePath,
+          projectId: GOLDEN_WORKSPACE_ID,
+          worktreeId: GOLDEN_WORKTREE_ID,
+          env: {},
+          triggerSource: {
+            kind: 'hook',
+            hook_key: 'project:pr:create',
+            hook_label: 'Review',
+            trigger_name: 'pr:create',
+            target: 'project',
+            action_index: 0,
+            triggered_at: '2026-11-19T00:00:00Z',
+          },
+          getWindow: () => null,
+        }),
+        result: { status: 'succeeded', exitCode: 0, durationMs: 0 },
+      }),
+    })
+    .then(
+      (value: unknown) => JSON.stringify(value),
+      (error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+    );
+}
+
 function newMarker(): string {
   markerCount += 1;
   return join(world.root, 'markers', `marker-${markerCount}`);
@@ -221,8 +309,10 @@ function startRun(
   pipelineId: string,
   yaml: string,
   marker: string,
+  extra: Record<string, unknown> = {},
 ): Promise<unknown> {
   return invokeIpc(PIPELINE_CHANNELS.EXECUTE, parsePipelineText(yaml), {
+    ...extra,
     pipelineId,
     cwd: world.worktreePath,
     projectId: GOLDEN_WORKSPACE_ID,
@@ -866,6 +956,268 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
         runs: 1,
       });
       expect(recordedRuns()).toBe(before);
+    });
+
+    it('refuses an automation run whose workflow is deleted after the automation read it (CAN-7347)', async () => {
+      const { id } = await saveDeletable();
+      const { run, outcome } = await automations();
+      const restore = await deletedBeforeStart(id);
+      try {
+        const before = recordedRuns();
+        const racing = await run(id, 'Golden deleted automation');
+        await racing.started;
+        await expect(settledOutcome(() => outcome(racing.id))).resolves.toEqual(
+          { status: 'failure', error: REMOVED, runs: 1 },
+        );
+        expect(recordedRuns()).toBe(before);
+      } finally {
+        restore();
+      }
+    });
+
+    it('records an automation of a workflow deleted before it read it as a failed run, as before (CAN-7347)', async () => {
+      const { id } = await saveDeletable();
+      const { create, runNow, outcome } = await automations();
+      const activityId = await create(
+        id,
+        'Golden automation of a deleted workflow',
+      );
+      await deleteWorkflow(id);
+      const before = recordedRuns();
+      await runNow(activityId);
+      await expect(settledOutcome(() => outcome(activityId))).resolves.toEqual({
+        status: 'failure',
+        error: `Workflow not found: ${id}`,
+        runs: 1,
+      });
+      expect(recordedRuns()).toBe(before);
+    });
+  });
+
+  describe('deleted workflows (CAN-7347)', () => {
+    it('refuses a run of a deleted workflow and never runs the copy the window still holds', async () => {
+      const { id, yaml } = await saveDeletable();
+      await deleteWorkflow(id);
+      const before = recordedRuns();
+      const marker = newMarker();
+      await expect(startRun(id, yaml, marker)).resolves.toEqual(
+        REMOVED_REFUSAL,
+      );
+      expect(recordedRuns()).toBe(before);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('refuses a run whose workflow is deleted between the start check and admission', async () => {
+      const { id, yaml } = await saveDeletable();
+      const admission =
+        await import('../../pipelines/run-definition-admission');
+      const admit = admission.admitStoredRunDefinition;
+      const spy = jest
+        .spyOn(admission, 'admitStoredRunDefinition')
+        .mockImplementationOnce(async (definitionId, scope) => {
+          await deleteWorkflow(id);
+          return admit(definitionId, scope);
+        });
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        await expect(startRun(id, yaml, marker)).resolves.toEqual(
+          REMOVED_REFUSAL,
+        );
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('refuses a hook whose workflow is deleted after the hook read it', async () => {
+      const { id } = await saveDeletable();
+      const restore = await deletedBeforeStart(id);
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        await expect(launchHook(id, marker)).resolves.toContain(REMOVED);
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        restore();
+      }
+    });
+
+    it('refuses an agent run whose workflow is deleted after the agent loaded it', async () => {
+      const { id } = await saveDeletable();
+      const { desktopPipelinesPort } =
+        await import('../../agent-actions/desktop-pipelines-port');
+      const restore = await deletedBeforeStart(id);
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        await expect(
+          desktopPipelinesPort.run(
+            { type: 'pipeline.run', pipelineId: id, inputs: { marker } },
+            {
+              host: {
+                requestUserAnswers: () => Promise.resolve([]),
+                loadScriptOutput: () =>
+                  Promise.resolve({ found: false, lines: [] }),
+                worktreeActionRuntime: {
+                  projectId: GOLDEN_WORKSPACE_ID,
+                  worktreeId: GOLDEN_WORKTREE_ID,
+                  chatId: 'golden-chat',
+                  cwd: world.worktreePath,
+                  getWindow: () => null,
+                },
+              },
+            },
+          ),
+        ).resolves.toEqual({
+          status: 'rejected',
+          reason: 'execution_failed',
+          message: REMOVED,
+        });
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        restore();
+      }
+    });
+
+    it('refuses a Remote Control run whose workflow is deleted after it loaded it', async () => {
+      const { id } = await saveDeletable();
+      const { runPipeline } = await import('../../services/pipelines-service');
+      const restore = await deletedBeforeStart(id);
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        await expect(
+          runPipeline({
+            pipelineId: id,
+            projectId: GOLDEN_WORKSPACE_ID,
+            worktreeId: GOLDEN_WORKTREE_ID,
+            inputs: { marker },
+          }),
+        ).rejects.toThrow(REMOVED);
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+      } finally {
+        restore();
+      }
+    });
+
+    it('refuses a start that names a saved workflow another process deleted', async () => {
+      const { id, yaml } = await saveDeletable();
+      const { inspectStoredPipelineDocument, removeStoredPipeline } =
+        await import('@canopy/execution-engine/pipelines/store');
+      const stored = inspectStoredPipelineDocument(id);
+      if (stored.kind !== 'stored')
+        throw new Error('The workflow was not saved');
+      const removed = removeStoredPipeline(id, {
+        expectedRevision: stored.revision,
+      });
+      if (!removed.ok) throw new Error(removed.message);
+      const before = recordedRuns();
+      const marker = newMarker();
+      await expect(
+        startRun(id, yaml, marker, {
+          pipelinePreferenceLocator: {
+            type: 'stored',
+            source: 'user',
+            value: id,
+          },
+        }),
+      ).resolves.toEqual(REMOVED_REFUSAL);
+      expect(recordedRuns()).toBe(before);
+      // A residual, named in the PR: without that claim, this process can't
+      // tell the copy from a definition that was never saved.
+      const unclaimed = newMarker();
+      const result = await startRun(id, yaml, unclaimed);
+      await expect(ranAndWrote(result, unclaimed)).resolves.toBe('deletable');
+    });
+
+    it('still runs a definition that was never saved, as given', async () => {
+      const yaml = versionYaml('Golden one-off workflow', 'one-off');
+      const marker = newMarker();
+      const result = await startRun(randomUUID(), yaml, marker);
+      await expect(ranAndWrote(result, marker)).resolves.toBe('one-off');
+    });
+
+    it("refuses a start-over of a deleted workflow's earlier run", async () => {
+      const { id, yaml } = await saveDeletable();
+      const marker = newMarker();
+      const earlier = await startRun(id, yaml, marker);
+      await expect(ranAndWrote(earlier, marker)).resolves.toBe('deletable');
+      await deleteWorkflow(id);
+      const before = recordedRuns();
+      await expect(
+        invokeIpc(PIPELINE_CHANNELS.RERUN_EXECUTION, executionIdOf(earlier)),
+      ).resolves.toEqual(REMOVED_REFUSAL);
+      expect(recordedRuns()).toBe(before);
+    });
+
+    it("refuses a retry of a deleted workflow's failed run", async () => {
+      deletableCount += 1;
+      const yaml = [
+        'pipeline:',
+        `  name: Golden failing ${deletableCount}`,
+        '  on:',
+        '    dispatch:',
+        '      inputs:',
+        '        marker:',
+        '          type: string',
+        '          required: true',
+        '  jobs:',
+        '    write:',
+        '      name: Write',
+        '      steps:',
+        '        - id: fail',
+        '          run: exit 1',
+        '',
+      ].join('\n');
+      const id = await world.saveUserPipeline(
+        yaml,
+        `pipeline:deletable-${deletableCount}`,
+      );
+      const failed = await startRun(id, yaml, newMarker());
+      await waitForExecution(executionsDir, executionIdOf(failed));
+      await deleteWorkflow(id);
+      await expect(
+        invokeIpc(PIPELINE_CHANNELS.RETRY_EXECUTION, executionIdOf(failed)),
+      ).resolves.toEqual(REMOVED_REFUSAL);
+    });
+
+    it("refuses a start-over of a deleted workflow's run after a restart, from the run's own record", async () => {
+      const { id, yaml } = await saveDeletable();
+      const marker = newMarker();
+      const earlier = await startRun(id, yaml, marker);
+      await expect(ranAndWrote(earlier, marker)).resolves.toBe('deletable');
+      await deleteWorkflow(id);
+      await relaunch();
+      const before = recordedRuns();
+      await expect(
+        invokeIpc(PIPELINE_CHANNELS.RERUN_EXECUTION, executionIdOf(earlier)),
+      ).resolves.toEqual(REMOVED_REFUSAL);
+      expect(recordedRuns()).toBe(before);
+    });
+
+    it('runs a deleted workflow again once it is saved again under the same id', async () => {
+      const { id, yaml } = await saveDeletable();
+      await deleteWorkflow(id);
+      const { savePipeline } = await import('../../pipelines/pipeline-service');
+      const saved = savePipeline(
+        {
+          name: 'Golden deletable again',
+          description: '',
+          icon: '',
+          content: parsePipelineText(yaml),
+          rawContent: yaml,
+        },
+        { id },
+      );
+      if (!saved.success) throw new Error(saved.error);
+      const marker = newMarker();
+      const result = await startRun(id, yaml, marker);
+      await expect(ranAndWrote(result, marker)).resolves.toBe('deletable');
     });
   });
 });

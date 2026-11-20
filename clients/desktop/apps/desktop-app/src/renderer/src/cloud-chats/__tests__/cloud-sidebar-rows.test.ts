@@ -27,6 +27,7 @@ import {
 import { openCoworkWorkEntryFromSidebar } from '@/lib/openCoworkWorkEntryFromSidebar';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { CoreCoworkOutcomeUnknownError } from '@canopy/app-state/core-cowork';
+import type { CanopyCoreRelayApi } from '../../../../shared/canopy-core-relay';
 import {
   archiveCloudTask,
   CLOUD_TASK_ARCHIVE_FAILED,
@@ -38,7 +39,11 @@ import type { SingleRepoSidebarItem } from '@canopy/desktop-shared/types';
 import { useProjectsStore } from '@/stores/projectsStore';
 import {
   loadWebCoreServedOperations,
+  readWebCoreServedOperationsOnline,
   resetWebCoreServedOperations,
+  retryWebCoreServedOperations,
+  webCoreServedOperationsFailed,
+  webCoreServedOperationsKnown,
   webCoreServesTaskDelete,
 } from '@/lib/web-core-served-operations';
 
@@ -708,5 +713,221 @@ describe('the offline cloud list (CAN-6374)', () => {
     expect(orgTitles()).toEqual([]);
     expect(titles()).toEqual(['Personal', 'Personal task']);
     await settle(() => root.unmount());
+  });
+});
+
+/** One manifest reply: listing `core.chat.delete` or not, refused, or a rejection. */
+type ManifestAnswer = 'delete' | 'none' | 'refuse' | 'reject';
+
+function manifestReply(answer: ManifestAnswer): Promise<unknown> {
+  if (answer === 'reject') return Promise.reject(new Error('relay gone'));
+  if (answer === 'refuse')
+    return Promise.resolve({
+      ok: false as const,
+      error: {
+        kind: 'unavailable',
+        message: 'The web core is unavailable.',
+        retry: { kind: 'never' },
+      },
+    });
+  return Promise.resolve({
+    ok: true as const,
+    value: {
+      runtime: {
+        runtimeId: 'web-core',
+        hostId: 'web',
+        authorityId: null,
+        profile: 'core',
+        daemonEpoch: 'e1',
+        protocolVersions: [1],
+        state: 'ready',
+      },
+      operations:
+        answer === 'delete'
+          ? [
+              {
+                name: 'core.chat.delete',
+                kind: 'instruction',
+                version: 1,
+                placement: 'core-only',
+                requiredGrants: ['core.chat.write'],
+                available: true,
+              },
+            ]
+          : [],
+      generatedAt: '2026-11-20T04:00:00.000Z',
+    },
+  });
+}
+
+/**
+ * A relay answering each manifest read with the next answer; `hold` keeps
+ * that read's reply until `release` is called with an answer.
+ */
+/** A fake relay's handle: its relay, the invoke spy, and the held-reply release. */
+interface ManifestRelay {
+  readonly relay: () => CanopyCoreRelayApi;
+  readonly invoke: jest.Mock<Promise<unknown>, []>;
+  readonly release: (answer: ManifestAnswer) => void;
+}
+
+function manifestRelay(answers: (ManifestAnswer | 'hold')[]): ManifestRelay {
+  const pending: ((answer: ManifestAnswer) => void)[] = [];
+  const invoke = jest.fn((): Promise<unknown> => {
+    const answer = answers.shift() ?? 'none';
+    if (answer !== 'hold') return manifestReply(answer);
+    return new Promise((resolve, reject) => {
+      pending.push((late) => {
+        manifestReply(late).then(resolve, reject);
+      });
+    });
+  });
+  const api = { invoke } as unknown as CanopyCoreRelayApi;
+  return {
+    relay: (): CanopyCoreRelayApi => api,
+    invoke,
+    release: (answer: ManifestAnswer): void => pending.shift()?.(answer),
+  };
+}
+
+/** Lets a read's reply settle and land. */
+async function settleRead(): Promise<void> {
+  for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+}
+
+function switchAccount(): void {
+  act(() => {
+    useWorkspaceContextStore.setState((state) => ({
+      accountEpoch: state.accountEpoch + 1,
+    }));
+  });
+}
+
+describe('a failed web core manifest read (CAN-7464)', () => {
+  beforeEach(() => {
+    resetWebCoreServedOperations();
+  });
+  afterAll(() => {
+    resetWebCoreServedOperations();
+  });
+
+  for (const answer of ['refuse', 'reject'] as const)
+    it(`reports a ${answer === 'refuse' ? 'refused' : 'rejected'} read as failed, not loading, and doesn't read it again on its own`, async () => {
+      const { relay, invoke } = manifestRelay([answer]);
+      loadWebCoreServedOperations(relay);
+      await settleRead();
+      expect(webCoreServedOperationsFailed()).toBe(true);
+      expect(webCoreServedOperationsKnown()).toBe(false);
+      expect(webCoreServesTaskDelete()).toBe(false);
+      // Every capability read asks for the manifest; a failed one isn't read.
+      for (let render = 0; render < 3; render += 1)
+        loadWebCoreServedOperations(relay);
+      await settleRead();
+      expect(invoke).toHaveBeenCalledTimes(1);
+    });
+
+  it('retries only a failed read: two retries in one tick read once, and a read in flight or landed is left as it is', async () => {
+    const { relay, invoke } = manifestRelay(['refuse', 'hold']);
+    loadWebCoreServedOperations(relay);
+    await settleRead();
+    retryWebCoreServedOperations(relay);
+    retryWebCoreServedOperations(relay);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    // In flight: nothing.
+    retryWebCoreServedOperations(relay);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a failed manifest again on Try again, and a later success clears the failure (task delete)', async () => {
+    const { relay, invoke } = manifestRelay(['refuse', 'delete']);
+    loadWebCoreServedOperations(relay);
+    await settleRead();
+    expect(webCoreServesTaskDelete()).toBe(false);
+    retryWebCoreServedOperations(relay);
+    await settleRead();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(webCoreServedOperationsFailed()).toBe(false);
+    expect(webCoreServesTaskDelete()).toBe(true);
+    // Landed: Try again does nothing.
+    retryWebCoreServedOperations(relay);
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a failed manifest again when cloud chats come back online, and the sidebar reads it that way (task delete)', async () => {
+    const { relay, invoke } = manifestRelay(['refuse', 'delete']);
+    readWebCoreServedOperationsOnline(relay);
+    await settleRead();
+    expect(webCoreServedOperationsFailed()).toBe(true);
+    readWebCoreServedOperationsOnline(relay);
+    await settleRead();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(webCoreServesTaskDelete()).toBe(true);
+    // Online again with a landed read: nothing.
+    readWebCoreServedOperationsOnline(relay);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    // The sidebar's online effect is this read.
+    const sidebar = readFileSync(
+      path.resolve(__dirname, '../useCloudCoworkSidebar.ts'),
+      'utf8',
+    );
+    expect(sidebar).toMatch(
+      /if \(online\) readWebCoreServedOperationsOnline\(\);/,
+    );
+    expect(sidebar).not.toMatch(/\bloadWebCoreServedOperations\b/);
+  });
+
+  it('drops a reply that lands after a reset', async () => {
+    const { relay, release } = manifestRelay(['hold']);
+    loadWebCoreServedOperations(relay);
+    resetWebCoreServedOperations();
+    release('delete');
+    await settleRead();
+    expect(webCoreServesTaskDelete()).toBe(false);
+    expect(webCoreServedOperationsKnown()).toBe(false);
+    expect(webCoreServedOperationsFailed()).toBe(false);
+  });
+
+  for (const [label, first, second] of [
+    ['serves more', 'none', 'delete'],
+    ['serves less', 'delete', 'none'],
+  ] as const)
+    it(`turns every manifest-gated feature off on an account switch until the new account's read lands, then follows it when that account ${label}`, async () => {
+      const { relay, invoke } = manifestRelay([first, second]);
+      loadWebCoreServedOperations(relay);
+      await settleRead();
+      expect(webCoreServesTaskDelete()).toBe(first === 'delete');
+      switchAccount();
+      // Nothing of the first account's answer, and nothing read yet.
+      expect(webCoreServesTaskDelete()).toBe(false);
+      expect(webCoreServedOperationsKnown()).toBe(false);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      // The next capability read asks the new account's web core.
+      loadWebCoreServedOperations(relay);
+      await settleRead();
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(webCoreServesTaskDelete()).toBe(second === 'delete');
+    });
+
+  it("drops the old account's reply that lands after an account switch", async () => {
+    const { relay, release } = manifestRelay(['hold']);
+    loadWebCoreServedOperations(relay);
+    switchAccount();
+    release('delete');
+    await settleRead();
+    expect(webCoreServesTaskDelete()).toBe(false);
+    expect(webCoreServedOperationsKnown()).toBe(false);
+  });
+
+  it('reads again after an account switch from a failed read, with no Try again', async () => {
+    const { relay, invoke } = manifestRelay(['refuse', 'delete']);
+    loadWebCoreServedOperations(relay);
+    await settleRead();
+    expect(webCoreServedOperationsFailed()).toBe(true);
+    switchAccount();
+    expect(webCoreServedOperationsFailed()).toBe(false);
+    loadWebCoreServedOperations(relay);
+    await settleRead();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(webCoreServesTaskDelete()).toBe(true);
   });
 });

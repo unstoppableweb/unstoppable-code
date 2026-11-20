@@ -1,4 +1,7 @@
-import { classifyError } from '@canopy/protocol/app-errors/classification';
+import {
+  classifyError,
+  validRetryAt,
+} from '@canopy/protocol/app-errors/classification';
 import type { AppErrorCode } from '@canopy/protocol/app-errors';
 
 function property(value: unknown, key: string): unknown {
@@ -74,14 +77,7 @@ export function classifySystemError<Value>(error: Value): Value {
   return classification ? classifyError(error, classification) : error;
 }
 
-export function validRetryAt(value: unknown): number | undefined {
-  return typeof value === 'number' &&
-    Number.isFinite(value) &&
-    value > 0 &&
-    value <= Number.MAX_SAFE_INTEGER
-    ? Math.round(value)
-    : undefined;
-}
+export { validRetryAt };
 
 export function retryAtFromDelay(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0

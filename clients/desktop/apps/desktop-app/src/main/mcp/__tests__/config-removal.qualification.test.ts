@@ -22,6 +22,7 @@ import type {
   StorageWriterPrincipal,
 } from '@canopy/core-runtime/storage';
 import type {
+  AccountMcpConnection,
   McpServerData,
   McpServerIndexEntry,
 } from '@canopy/execution-engine/types/mcp-servers';
@@ -42,7 +43,10 @@ import {
   McpConfigRemovalEvidence,
   type McpRemovalEvidenceHost,
 } from '../config-removal-evidence';
-import { McpConfigRemovalService } from '../config-removal-service';
+import {
+  McpConfigRemovalService,
+  McpOrdinaryRemovalError,
+} from '../config-removal-service';
 import {
   McpRemovalRefusedError,
   prepareMcpRemoval,
@@ -54,6 +58,7 @@ import {
 } from '../config-writer-admission';
 
 jest.mock('@canopy/execution-engine/canopy-paths', () => ({
+  ...jest.requireActual<object>('@canopy/execution-engine/canopy-paths'),
   getCanopyDataDir: (): string => root,
   getCanopySecureDataDir: (): string => join(root, 'secure'),
 }));
@@ -433,6 +438,7 @@ describe('strict removal preparation and final publication', () => {
     expect(await removal).toMatchObject({
       phase: 'tokenClear',
       effects: 'unknown',
+      serverUnlinked: false,
     });
     await next;
     expect(leased).toBe(true);
@@ -448,10 +454,44 @@ describe('strict removal preparation and final publication', () => {
     await expect(service.remove(serverId)).rejects.toMatchObject({
       effects: 'unknown',
       code: 'index_malformed',
+      serverUnlinked: false,
     });
     expect(await fs.readFile(sourcePath(serverId), 'utf8')).toContain(
       'example.test',
     );
+  });
+
+  // CAN-7362: uninstall reports the server deleted only on this confirmation.
+  it('confirms the server unlinked when only the later index write fails', async () => {
+    const indexWriteFails = new McpConfigRemovalService({
+      repository: new McpConfigRepository(
+        { index: (): string => indexPath, server: sourcePath },
+        {
+          ...fs,
+          writeFile: (
+            ...args: Parameters<typeof fs.writeFile>
+          ): Promise<void> =>
+            args[0] === indexPath
+              ? Promise.reject(new Error('disk full'))
+              : fs.writeFile(...args),
+        },
+        host,
+      ),
+      authorizeForce: (): Promise<boolean> => authorized(),
+      clearServerCredentials: (id): Promise<void> => credentials(id),
+      removed: (id): Promise<void> => published(id),
+      clearConfigCredentials: (id, configId): Promise<void> =>
+        configCredentials(id, configId),
+    });
+    await expect(indexWriteFails.remove(serverId)).rejects.toMatchObject({
+      phase: 'indexUpdate',
+      effects: 'unknown',
+      serverUnlinked: true,
+    });
+    await expect(fs.stat(sourcePath(serverId))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect(published).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1554,6 +1594,7 @@ describe('device uninstall recovery and preference compatibility', () => {
           events.push('remove');
         }),
       ),
+      confirmDeviceServerAbsent: () => Promise.resolve(true),
       reconcileDeviceRemoval: <T>(
         _serverId: string,
         _recovery: unknown,
@@ -1581,8 +1622,124 @@ describe('device uninstall recovery and preference compatibility', () => {
     );
     expect(preferences().pendingInstalledItemUninstalls).toEqual([]);
     expect(port.remove).not.toHaveBeenCalled();
-    expect(port.prune).toHaveBeenCalledWith(refs);
+    expect(port.prune).toHaveBeenCalledWith(refs, target);
   });
+
+  // CAN-7362: the UI treats only this marker as proof the server is gone.
+  it('marks an incomplete saved uninstall serverRemoved only after the server removal succeeded', async () => {
+    const pruneFails = setup();
+    pruneFails.port.prune = jest.fn(() =>
+      Promise.reject(new Error('Prune failed')),
+    );
+    const pruned = await createInstalledItemStatusService(
+      pruneFails.port,
+    ).uninstall({ target });
+    expect(pruned.removed).toEqual([]);
+    expect(pruned.errors).toContainEqual(
+      expect.objectContaining({
+        target,
+        code: 'uninstall_incomplete',
+        serverRemoved: true,
+      }),
+    );
+    expect(pruneFails.preferences().pendingInstalledItemUninstalls).toEqual([
+      legacy,
+    ]);
+
+    const removalFails = setup();
+    removalFails.port.removeDeviceServer = jest.fn(() =>
+      Promise.reject(new Error('Server file remains')),
+    );
+    const kept = await createInstalledItemStatusService(
+      removalFails.port,
+    ).uninstall({ target });
+    expect(kept.errors).toContainEqual(
+      expect.objectContaining({ target, code: 'uninstall_incomplete' }),
+    );
+    expect(kept.errors.some((error) => error.serverRemoved === true)).toBe(
+      false,
+    );
+    expect(removalFails.port.prune).not.toHaveBeenCalled();
+  });
+
+  it.each(['saved', 'fresh'] as const)(
+    'leaves serverRemoved unset if the same server ID is recreated before a failed prune on the %s path',
+    async (path) => {
+      const state = setup();
+      if (path === 'fresh') {
+        await state.port.updatePreferences(() => ({
+          pendingInstalledItemUninstalls: [],
+        }));
+        state.port.list = jest.fn(() => Promise.resolve([]));
+      }
+      let serverPresent = false;
+      state.port.prune = jest.fn(() => {
+        serverPresent = true;
+        return Promise.reject(new Error('Prune failed'));
+      });
+      const port = Object.assign(state.port, {
+        confirmDeviceServerAbsent: jest.fn(() =>
+          Promise.resolve(!serverPresent),
+        ),
+      });
+      const outcome = await createInstalledItemStatusService(port).uninstall({
+        target,
+      });
+      expect(port.prune).toHaveBeenCalled();
+      expect(outcome.errors.some((error) => error.serverRemoved === true)).toBe(
+        false,
+      );
+      expect(port.confirmDeviceServerAbsent).toHaveBeenCalledWith(serverId);
+    },
+  );
+
+  // CAN-7362: the host can unlink the server file and then fail its index
+  // write; its typed failure, not the message, says the server is gone.
+  it.each([
+    ['saved', true],
+    ['fresh', true],
+    ['saved', false],
+    ['fresh', false],
+  ] as const)(
+    'marks a %s uninstall serverRemoved after a rejected removal only when the unlink is confirmed (%s)',
+    async (path, unlinked) => {
+      const { port, preferences } = setup();
+      if (path === 'fresh') {
+        await port.updatePreferences(() => ({
+          pendingInstalledItemUninstalls: [],
+        }));
+        port.list = jest.fn(() => Promise.resolve([]));
+      }
+      port.removeDeviceServer = jest.fn(() =>
+        Promise.reject(
+          new McpOrdinaryRemovalError(
+            unlinked ? 'indexUpdate' : 'serverUnlink',
+            'unknown',
+            'publication_failed',
+          ),
+        ),
+      );
+      const outcome = await createInstalledItemStatusService(port).uninstall({
+        target,
+      });
+      expect(outcome.removed).toEqual([]);
+      expect(outcome.errors).toContainEqual(
+        expect.objectContaining({
+          target,
+          code: 'uninstall_incomplete',
+          retryable: true,
+        }),
+      );
+      expect(outcome.errors.some((error) => error.serverRemoved === true)).toBe(
+        unlinked,
+      );
+      expect(port.prune).not.toHaveBeenCalled();
+      // The receipt stays for Repair or a retry either way.
+      expect(preferences().pendingInstalledItemUninstalls).toEqual([
+        path === 'saved' ? legacy : { target, refs: [] },
+      ]);
+    },
+  );
 
   it.each(['unresolved', 'pending', 'unknown', 'refused'] as const)(
     'retains recovery identity and refs after %s repair, with no ordinary/account fallback',
@@ -1606,6 +1763,9 @@ describe('device uninstall recovery and preference compatibility', () => {
       expect(outcome.errors).toContainEqual(
         expect.objectContaining({ code: 'uninstall_incomplete' }),
       );
+      expect(outcome.errors.some((error) => error.serverRemoved === true)).toBe(
+        false,
+      );
       expect(preferences().pendingInstalledItemUninstalls).toEqual([
         recovering,
       ]);
@@ -1616,6 +1776,52 @@ describe('device uninstall recovery and preference compatibility', () => {
         serverId,
         recovering.mcpRemoval,
       );
+    },
+  );
+
+  // CAN-7362: a receipt-bound retry proves the server gone only once the
+  // fenced reconciliation confirmed it absent under the server lease.
+  it.each([
+    ['rejects the fence (same-ID recreation)', false],
+    ['confirms absence, then pruning fails', true],
+  ] as const)(
+    'marks a receipt-bound retry serverRemoved only when reconciliation %s',
+    async (_case, fenced) => {
+      const { port, preferences } = setup(recovering);
+      port.resumeDeviceRemoval = jest.fn(
+        (): Promise<ForceMcpRemovalResult> =>
+          Promise.resolve({
+            serverId,
+            recoveryId,
+            status: 'complete',
+            custody: true,
+            credentials: true,
+            index: 'complete',
+          }),
+      );
+      port.reconcileDeviceRemoval = <T>(
+        _serverId: string,
+        _recovery: unknown,
+        run: () => Promise<T>,
+      ): Promise<T> =>
+        fenced
+          ? Promise.resolve(run())
+          : Promise.reject(new Error('Server was recreated'));
+      port.prune = jest.fn(() => Promise.reject(new Error('Prune failed')));
+      const outcome = await createInstalledItemStatusService(port).uninstall({
+        target,
+      });
+      expect(outcome.removed).toEqual([]);
+      expect(outcome.errors).toContainEqual(
+        expect.objectContaining({ target, code: 'uninstall_incomplete' }),
+      );
+      expect(outcome.errors.some((error) => error.serverRemoved === true)).toBe(
+        fenced,
+      );
+      expect(port.prune).toHaveBeenCalledTimes(fenced ? 1 : 0);
+      expect(preferences().pendingInstalledItemUninstalls).toEqual([
+        recovering,
+      ]);
     },
   );
 
@@ -1715,6 +1921,384 @@ describe('device uninstall recovery and preference compatibility', () => {
       expect(port.removeDeviceServer).not.toHaveBeenCalled();
     }
   });
+
+  async function expectListAfterUnlink(
+    scope: 'device' | 'account',
+  ): Promise<void> {
+    const previous = process.env.CANOPY_DATA_DIR;
+    const handlers = new Map<string, (event: unknown) => Promise<unknown>>();
+    let failIndexWrite = true;
+    const account: AccountMcpConnection = {
+      id: '00000000-0000-4000-8000-000000000001',
+      serverKey: 'test-provider',
+      configId: 'default',
+      displayName: 'Hosted Test',
+      status: 'CONNECTED',
+      routeId: 'test-route',
+      enabledTools: null,
+      kind: 'CURATED',
+    };
+    let connections: AccountMcpConnection[] = [];
+    const stale: McpServerIndexEntry = {
+      ...entry(),
+      curatedKey: account.serverKey,
+      ...(scope === 'account'
+        ? { scope, authHandler: 'account', accountConnectionId: account.id }
+        : {}),
+    };
+    if (scope === 'account') {
+      const local = server();
+      local.definition.httpAuthHandler = 'account';
+      await fs.writeFile(
+        sourcePath(serverId),
+        json({ version: 1, server: local }),
+      );
+    }
+    await fs.writeFile(
+      sourcePath(otherId),
+      json({ version: 1, server: server(otherId) }),
+    );
+    await fs.writeFile(
+      indexPath,
+      json({ version: 1, servers: [stale, entry(otherId)] }),
+    );
+    process.env.CANOPY_DATA_DIR = root;
+    try {
+      await jest.isolateModulesAsync(async () => {
+        jest.dontMock('../../ipc/mcp-servers');
+        jest.dontMock('../../lib/preferences-store');
+        const { McpConfigRepository } = await import('../config-repository');
+        const disk = {
+          ...fs,
+          writeFile: (
+            ...args: Parameters<typeof fs.writeFile>
+          ): Promise<void> =>
+            args[0] === indexPath && failIndexWrite
+              ? Promise.reject(new Error('disk full'))
+              : fs.writeFile(...args),
+        };
+        const readdir = jest.spyOn(disk, 'readdir');
+        const deviceRepository = new McpConfigRepository(
+          { index: (): string => indexPath, server: sourcePath },
+          disk,
+          host,
+        );
+        jest.doMock('../config-store', () => ({
+          mcpConfigRepository: deviceRepository,
+        }));
+        jest.doMock('../../ipc/register', () => ({
+          registerIpcHandler: (
+            channel: string,
+            handler: (event: unknown) => Promise<unknown>,
+          ): void => void handlers.set(channel, handler),
+        }));
+        jest.doMock('../../lib/e2e-gate', () => ({
+          isE2eBuild: (): boolean => true,
+        }));
+        jest.doMock('../../lib/main-process-logging', () => ({
+          logMainProcessError: jest.fn(),
+          logMainProcessInfo: jest.fn(),
+          logMainProcessWarn: jest.fn(),
+          logMainProcessDebug: jest.fn(),
+        }));
+        jest.doMock('../http-proxy-service', () => ({
+          getMcpHttpProxyService: (): Record<string, jest.Mock> => ({
+            setWindowAccessor: jest.fn(),
+            refreshPreferredPortStatus: jest.fn(),
+            setBroadcastHandlers: jest.fn(),
+          }),
+        }));
+        jest.doMock('../oauth-token-store', () => ({
+          ...jest.requireActual<object>('../oauth-token-store'),
+          clearMcpOAuthTokensForServer: credentials,
+          clearMcpOAuthToken: configCredentials,
+        }));
+        jest.doMock('../../feature-flags/service', () => ({
+          ...jest.requireActual<object>('../../feature-flags/service'),
+          getFeatureFlagService: (): { isEnabled: () => boolean } => ({
+            isEnabled: (): boolean => true,
+          }),
+        }));
+        jest.doMock('../../canopy-cloud/mcp-connections', () => ({
+          ...jest.requireActual<object>('../../canopy-cloud/mcp-connections'),
+          listAccountMcpConnections: (): Promise<AccountMcpConnection[]> =>
+            Promise.resolve(connections),
+        }));
+        const {
+          listDeviceMcpRemovalCandidates,
+          readMcpServersIndexForPresentation,
+          registerMcpServerHandlers,
+          uninstallInstalledDeviceMcpServer,
+        } = await import('../../ipc/mcp-servers');
+        const { createInstalledItemStatusService } =
+          await import('../../installed-items/installed-item-status-service');
+        const { MCP_SERVER_CHANNELS } =
+          await import('@canopy/desktop-shared/constants/mcp-server-channels');
+        const store = await import('../../lib/preferences-store');
+        await store.updatePreferencesFile(() => ({
+          pendingInstalledItemUninstalls: [legacy],
+        }));
+        await store.flushPreferencesWrites();
+        const { port } = setup();
+        const uninstall = createInstalledItemStatusService({
+          ...port,
+          readPreferences: store.readPreferencesFile,
+          updatePreferences: store.updatePreferencesFile,
+          removeDeviceServer: uninstallInstalledDeviceMcpServer,
+        }).uninstall;
+        registerMcpServerHandlers(() => null);
+        const loadIndex = handlers.get(MCP_SERVER_CHANNELS.LOAD_INDEX);
+        if (!loadIndex)
+          throw new Error('No MCP LOAD_INDEX handler registered.');
+        const list = (): Promise<unknown> => loadIndex(undefined);
+
+        expect(
+          (await deviceRepository.readIndexForPresentation()).servers,
+        ).toEqual([stale, entry(otherId)]);
+        expect((await uninstall({ target })).errors).toContainEqual(
+          expect.objectContaining({
+            target,
+            code: 'uninstall_incomplete',
+            serverRemoved: true,
+          }),
+        );
+        await expect(fs.stat(sourcePath(serverId))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect((await deviceRepository.readIndex()).servers).toEqual([
+          stale,
+          entry(otherId),
+        ]);
+        // Let the URL backfill for the live row write without dropping the stale row.
+        failIndexWrite = false;
+        await expect(list()).resolves.toMatchObject({
+          servers: [
+            { id: otherId, urlHost: 'example.test', urlScheme: 'https' },
+          ],
+        });
+        expect((await deviceRepository.readIndex()).servers).toEqual([
+          stale,
+          { ...entry(otherId), urlHost: 'example.test', urlScheme: 'https' },
+        ]);
+
+        connections = [account];
+        const listed = await list();
+        expect(listed).toMatchObject({
+          servers: [
+            {
+              id: account.serverKey,
+              scope: 'account',
+              accountConnection: account,
+            },
+            { id: otherId },
+          ],
+        });
+        // The hosted row must not nest the unlinked device copy.
+        expect(listed).not.toHaveProperty(['servers', 0, 'deviceCopies']);
+        const presented = await readMcpServersIndexForPresentation();
+        expect(presented.servers[0]?.deviceCopies).toBeUndefined();
+        expect(presented.servers.map(({ id }) => id)).toEqual([
+          account.serverKey,
+          otherId,
+        ]);
+
+        // Only absence is proof; a failed directory read preserves both rows.
+        connections = [];
+        readdir.mockRejectedValueOnce(unreadable());
+        await expect(list()).resolves.toMatchObject({
+          servers: [{ id: serverId }, { id: otherId }],
+        });
+
+        readdir.mockRejectedValueOnce(
+          Object.assign(new Error('no directory'), { code: 'ENOENT' }),
+        );
+        await expect(list()).resolves.toMatchObject({ servers: [] });
+
+        // A v1 legacy-readable but mutation-refused index takes the fallback.
+        const beforeFallback = await fs.readFile(indexPath, 'utf8');
+        const legacyRow = entry('legacy-id');
+        const malformedRow = { ...entry('c3'), authHandler: 'legacy' };
+        const fallbackIndex = json({
+          version: 1,
+          servers: [stale, entry(otherId), legacyRow, malformedRow],
+        });
+        await fs.writeFile(indexPath, fallbackIndex);
+        await expect(list()).resolves.toMatchObject({
+          servers: [{ id: otherId }, legacyRow, malformedRow],
+        });
+        expect(await fs.readFile(indexPath, 'utf8')).toBe(fallbackIndex);
+        await fs.writeFile(indexPath, beforeFallback);
+
+        await expect(listDeviceMcpRemovalCandidates()).resolves.toEqual({
+          candidates: [
+            { serverId, pendingUninstall: true },
+            { serverId: otherId, pendingUninstall: false },
+          ],
+          incomplete: false,
+        });
+        expect((await uninstall({ target })).removed).toEqual([target]);
+        expect((await deviceRepository.readIndex()).servers).toMatchObject([
+          { id: otherId },
+        ]);
+        await store.flushPreferencesWrites();
+        expect(
+          (await store.readPreferencesFile()).pendingInstalledItemUninstalls,
+        ).toEqual([]);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = previous;
+      for (const module of [
+        '../config-store',
+        '../http-proxy-service',
+        '../oauth-token-store',
+        '../../ipc/register',
+        '../../lib/e2e-gate',
+        '../../lib/main-process-logging',
+        '../../feature-flags/service',
+        '../../canopy-cloud/mcp-connections',
+      ])
+        jest.dontMock(module);
+    }
+  }
+
+  it.each(['device', 'account'] as const)(
+    'hides a confirmed-unlinked %s-routed server from the MCP list while keeping the saved uninstall repairable',
+    expectListAfterUnlink,
+    30_000,
+  );
+
+  // CAN-7362: through the registered installed-items:uninstall handler and
+  // the production installed-item service, over this suite's data root.
+  it('INSTALLED_ITEM_CHANNELS.UNINSTALL skips manifest-less workspace folders and keeps the receipt when workspace discovery fails', async () => {
+    const env = {
+      data: process.env.CANOPY_DATA_DIR,
+      claude: process.env.CLAUDE_CONFIG_DIR,
+    };
+    process.env.CANOPY_DATA_DIR = root;
+    process.env.CLAUDE_CONFIG_DIR = root;
+    let preferences: PreferencesData = { ...DEFAULT_PREFERENCES };
+    const handlers = new Map<
+      string,
+      (event: unknown, request: unknown) => Promise<unknown>
+    >();
+    try {
+      await jest.isolateModulesAsync(async () => {
+        jest.doMock('../../ipc/register', () => ({
+          registerIpcHandler: (
+            channel: string,
+            handler: (event: unknown, request: unknown) => Promise<unknown>,
+          ): void => void handlers.set(channel, handler),
+        }));
+        jest.doMock('../../lib/preferences-store', () => ({
+          readPreferencesFile: (): Promise<PreferencesData> =>
+            Promise.resolve(preferences),
+          updatePreferencesFile: async (
+            update: (
+              current: PreferencesData,
+            ) => Partial<PreferencesData> | Promise<Partial<PreferencesData>>,
+          ): Promise<PreferencesData> =>
+            (preferences = { ...preferences, ...(await update(preferences)) }),
+          peekPreferencesLoadError: (): null => null,
+        }));
+        // Device deletion itself is covered above; it only drops the server.
+        jest.doMock('../../ipc/mcp-servers', () => ({
+          uninstallInstalledDeviceMcpServer: async (
+            id: string,
+          ): Promise<void> => {
+            await fs.rm(sourcePath(id), { force: true });
+            await fs.writeFile(indexPath, json({ version: 1, servers: [] }));
+          },
+          confirmInstalledDeviceMcpServerAbsent: (): Promise<boolean> =>
+            Promise.resolve(true),
+        }));
+        jest.doMock('../../lib/e2e-gate', () => ({
+          isE2eBuild: (): boolean => true,
+        }));
+        jest.doMock('../../lib/main-process-logging', () => ({
+          logMainProcessError: jest.fn(),
+          logMainProcessInfo: jest.fn(),
+          logMainProcessWarn: jest.fn(),
+          logMainProcessDebug: jest.fn(),
+        }));
+        jest.doMock('../../installed-items/installed-item-events', () => ({
+          notifyInstalledItemsChanged: jest.fn(),
+        }));
+        jest.doMock('../../plugins/invocable-inventory-service', () => ({
+          refreshInvocableInventoryAfterMutation: jest.fn(),
+        }));
+        const { INSTALLED_ITEM_CHANNELS } =
+          await import('@canopy/desktop-shared/types/installed-items');
+        const paths = await import('../../lib/paths');
+        const { settleDetachedWork } =
+          await import('@canopy/desktop-shared/node/lib/detached-work');
+        const { registerInstalledItemHandlers } =
+          await import('../../ipc/installed-items');
+        registerInstalledItemHandlers();
+        const uninstall = handlers.get(INSTALLED_ITEM_CHANNELS.UNINSTALL);
+        if (!uninstall) throw new Error('No uninstall handler registered.');
+        // Standalone chat files the prune always targets.
+        for (const [file, value] of [
+          [paths.getChatProjectsFilePath(), { projects: [] }],
+          [paths.getChatProjectProjectFilePath('default'), {}],
+          [paths.getChatProjectChatTabsFilePath('default'), { tabs: [] }],
+        ] as const) {
+          await fs.mkdir(join(file, '..'), { recursive: true });
+          await fs.writeFile(file, json(value));
+        }
+        const workspaces = join(root, 'workspaces');
+        await fs.mkdir(join(workspaces, 'default', 'worktree-data', 'w'), {
+          recursive: true,
+        });
+        await fs.writeFile(
+          join(workspaces, 'default', 'worktree-data', 'w', 'state.json'),
+          '{}',
+        );
+
+        // A folder with no workspace.json holds no manifest reference.
+        await expect(uninstall(undefined, { target })).resolves.toMatchObject({
+          success: true,
+          removed: [target],
+          errors: [],
+        });
+        expect(preferences.pendingInstalledItemUninstalls).toEqual([]);
+        await expect(
+          fs.stat(join(workspaces, 'default', 'workspace.json')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+
+        // A failed listing cannot prove there were no workspace references.
+        // The server itself was removed first, which the result confirms.
+        await seed();
+        await fs.rm(workspaces, { recursive: true });
+        await fs.writeFile(workspaces, 'not a directory');
+        await expect(uninstall(undefined, { target })).resolves.toMatchObject({
+          success: false,
+          removed: [],
+          errors: [
+            {
+              target,
+              code: 'uninstall_incomplete',
+              message:
+                'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
+              retryable: true,
+              serverRemoved: true,
+            },
+          ],
+        });
+        expect(preferences.pendingInstalledItemUninstalls).toEqual([
+          { target, refs: [...refs] },
+        ]);
+        await settleDetachedWork();
+      });
+    } finally {
+      for (const [key, value] of [
+        ['CANOPY_DATA_DIR', env.data],
+        ['CLAUDE_CONFIG_DIR', env.claude],
+      ] as const)
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+    }
+  }, 30_000);
 });
 
 describe('inventory-independent removal candidate discovery', () => {
@@ -1745,4 +2329,70 @@ describe('inventory-independent removal candidate discovery', () => {
       incomplete: false,
     });
   });
+
+  // CAN-7362: the desktop host of this operation (listDeviceMcpRemovalCandidates)
+  // is complete only over authoritative preferences. A damaged main file's
+  // last-good receipts stay listed as hints, and the list is incomplete.
+  it('core.catalog.mcpServer.removal.candidates is incomplete over unreadable preferences', async () => {
+    const previous = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = root;
+    const receipt: NonNullable<
+      PreferencesData['pendingInstalledItemUninstalls']
+    >[number] = {
+      target: { kind: 'mcp-server', serverId },
+      refs: [{ kind: 'mcp-config', serverId, configId: 'c1' }],
+    };
+    try {
+      await jest.isolateModulesAsync(async () => {
+        // Earlier cases' module mocks outlive their isolated registries.
+        jest.dontMock('../../ipc/mcp-servers');
+        jest.dontMock('../../lib/preferences-store');
+        jest.doMock('../../lib/e2e-gate', () => ({
+          isE2eBuild: (): boolean => true,
+        }));
+        jest.doMock('../../lib/main-process-logging', () => ({
+          logMainProcessError: jest.fn(),
+          logMainProcessInfo: jest.fn(),
+          logMainProcessWarn: jest.fn(),
+          logMainProcessDebug: jest.fn(),
+        }));
+        jest.doMock('../config-store', () => ({
+          mcpConfigRepository: {
+            removalCandidates: (): Promise<{
+              serverIds: string[];
+              incomplete: boolean;
+            }> => Promise.resolve({ serverIds: [], incomplete: false }),
+          },
+        }));
+        const store = await import('../../lib/preferences-store');
+        const { getPreferencesFilePath } = await import('../../lib/paths');
+        const { listDeviceMcpRemovalCandidates } =
+          await import('../../ipc/mcp-servers');
+        // No saved preferences is authoritative absence: nothing pending.
+        await expect(listDeviceMcpRemovalCandidates()).resolves.toEqual({
+          candidates: [],
+          incomplete: false,
+        });
+        // The second write keeps a last-good copy holding the receipt.
+        for (let write = 0; write < 2; write += 1)
+          await store.updatePreferencesFile(() => ({
+            pendingInstalledItemUninstalls: [receipt],
+          }));
+        await store.flushPreferencesWrites();
+        await expect(listDeviceMcpRemovalCandidates()).resolves.toEqual({
+          candidates: [{ serverId, pendingUninstall: true }],
+          incomplete: false,
+        });
+        await fs.writeFile(getPreferencesFilePath(), '{ damaged');
+        await expect(listDeviceMcpRemovalCandidates()).resolves.toEqual({
+          candidates: [{ serverId, pendingUninstall: true }],
+          incomplete: true,
+        });
+        await store.flushPreferencesWrites().catch(() => undefined);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = previous;
+    }
+  }, 30_000);
 });

@@ -4,6 +4,7 @@ import {
   INSTALLED_ITEM_ACTION_TYPES,
   INVENTORY_SYNC_ACTION_TYPES,
   PIPELINES_ACTION_TYPES,
+  REMOTE_CONTROL_ACTION_TYPES,
   SETTINGS_ACTION_TYPES,
   TRANSCRIPT_READ_ACTION_TYPES,
 } from '@canopy/agent-actions';
@@ -25,6 +26,7 @@ const DISPATCH_ACTION_TYPES = [
     ...INSTALLED_ITEM_ACTION_TYPES,
     ...EXPERIMENT_ACTION_TYPES,
     ...INVENTORY_SYNC_ACTION_TYPES,
+    ...REMOTE_CONTROL_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
     ...PIPELINES_ACTION_TYPES,
   ]),
@@ -66,8 +68,8 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
     }).toEqual({
       coreWrites: 182,
       coreReads: 120,
-      hostPresentation: 3,
-      presentation: 90,
+      hostPresentation: 8,
+      presentation: 87,
       legacyWrites: 36,
       legacyReads: 9,
     });
@@ -92,6 +94,21 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       grants: ['core.catalog.write'],
       revision: 'none',
     });
+  });
+
+  // CAN-7298: the Remote Control dialog actions and their legacy aliases run
+  // in main through the shared engine, never as renderer presentation.
+  it('the Remote Control dialog actions and canopy_portal aliases run through the shared engine', () => {
+    for (const type of [
+      ...REMOTE_CONTROL_ACTION_TYPES,
+      'canopy_portal.open',
+      'canopy_portal.close',
+      'canopy_portal.open_account_settings',
+    ])
+      expect(APP_ADVISOR_ACTION_DISPOSITIONS[type]).toEqual({
+        kind: 'host_presentation',
+        executor: 'shared-engine',
+      });
   });
 
   it("the grant set is exactly the union of the writes' grants", () => {

@@ -92,6 +92,8 @@ export interface UpdatePlanInput extends PlanScopeIds {
   planId: string;
   /** With it, a write against another revision is refused. */
   expectedRevision?: number;
+  /** With it, a write against a plan from another source is refused. */
+  expectedSource?: string;
   proposalRequestId?: string;
   content?: string;
   title?: string;
@@ -105,12 +107,6 @@ export interface UpdatePlanInput extends PlanScopeIds {
   chatId?: string;
   /** Who started the write, carried to the host's commit hook only. */
   initiationSource?: string;
-}
-
-/** Desktop's revision guard: answer null unless the plan still matches. */
-export interface PlanUpdateGuard {
-  revisionNumber: number;
-  source: string;
 }
 
 export type PlanCommit =
@@ -161,10 +157,7 @@ export interface PlanEngine {
   ): Promise<{ plans: StoredPlan[]; skipped: number }>;
   get(scope: PlanScopeIds, planId: string): Promise<StoredPlan | null>;
   create(input: CreatePlanInput): Promise<StoredPlan>;
-  update(
-    input: UpdatePlanInput,
-    guard?: PlanUpdateGuard,
-  ): Promise<StoredPlan | null>;
+  update(input: UpdatePlanInput): Promise<StoredPlan | null>;
   /** False when the scope did not have the plan. */
   delete(scope: PlanScopeIds, planId: string): Promise<boolean>;
   /** Removes every plan of the scope. */
@@ -402,10 +395,7 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
   const list = async (scope: PlanScopeIds): Promise<StoredPlan[]> =>
     (await listWithSkipped(scope)).plans;
 
-  const update = async (
-    input: UpdatePlanInput,
-    guard?: PlanUpdateGuard,
-  ): Promise<StoredPlan | null> => {
+  const update = async (input: UpdatePlanInput): Promise<StoredPlan | null> => {
     validateProposalRequestId(input.proposalRequestId);
     if (input.proposalRequestId && input.content === undefined)
       throw invalidArgument('A proposal revision requires plan content.');
@@ -414,13 +404,7 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
     return withPlanStateLock(path, async () => {
       const plans = await readForWrite(path);
       const existing = plans.find((plan) => plan.id === input.planId);
-      if (
-        !existing ||
-        (guard &&
-          (existing.latestRevisionNumber !== guard.revisionNumber ||
-            existing.source !== guard.source))
-      )
-        return null;
+      if (!existing) return null;
 
       if (
         input.proposalRequestId &&
@@ -438,8 +422,10 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
       }
 
       if (
-        input.expectedRevision !== undefined &&
-        input.expectedRevision !== existing.latestRevisionNumber
+        (input.expectedRevision !== undefined &&
+          input.expectedRevision !== existing.latestRevisionNumber) ||
+        (input.expectedSource !== undefined &&
+          input.expectedSource !== existing.source)
       )
         throw revisionConflict(existing.latestRevisionNumber);
 

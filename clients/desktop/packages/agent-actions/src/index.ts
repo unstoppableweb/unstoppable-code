@@ -471,6 +471,18 @@ export type {
   AgentInventorySyncWriteResult,
 } from './port/inventory-sync-port';
 export type { InventorySyncAction } from './families/inventory-sync/actions';
+export {
+  createRemoteControlActionFamily,
+  remoteControlActionCatalog,
+  remoteControlDispatchJsonSchema,
+  remoteControlActionSchema,
+  REMOTE_CONTROL_ACTION_TYPES,
+} from './families/remote-control';
+export type {
+  AgentRemoteControlDialogOpenResult,
+  AgentRemoteControlDialogPort,
+} from './port/remote-control-dialog-port';
+export type { RemoteControlAction } from './families/remote-control/actions';
 
 export {
   BROWSER_ACTION_TYPES,

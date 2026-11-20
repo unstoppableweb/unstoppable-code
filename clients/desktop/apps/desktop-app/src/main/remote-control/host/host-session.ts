@@ -25,6 +25,7 @@ import {
   RemoteProtocolMismatchError,
   RemoteChannelUnavailableError,
   RemoteControllerRefusedError,
+  SecretRequestSettleParamsSchema,
   UnknownRemoteMethodError,
   UploadPutParamsSchema,
   type AppAdvisorWindowParams,
@@ -37,6 +38,7 @@ import {
   type PairRevokeResult,
   type RemoteVersion,
   type RemoteSessionEndReason,
+  type SecretRequestSettleResult,
 } from '../remote-protocol';
 import { RpcPeer, RpcPublicError } from '../transport/rpc-peer';
 import type {
@@ -52,6 +54,7 @@ import {
   HOST_FEATURES,
   controllerMayInvoke,
   controllerMayUseChannel,
+  controllerPushWithheld,
   negotiateHello,
 } from './controller-profile';
 import type { HostFileReader } from './file-reads';
@@ -125,6 +128,38 @@ export interface HostSessionOptions {
    * in hello. Without it the host answers that it does not serve them.
    */
   core?: RemoteCoreAccess;
+  /**
+   * Answers a waiting RequestSecrets form for a browser or mobile controller
+   * (`secret-request.settle`, U7): the local form's own submit and decline.
+   * Without it the host answers that it does not serve the method.
+   */
+  secretRequests?: RemoteSecretRequestPort;
+}
+
+/** The local form's settlement, which this session reaches for a person. */
+export interface RemoteSecretRequestPort {
+  submit(
+    request: {
+      requestId: string;
+      values: Record<string, string>;
+      useHeld: string[];
+    },
+    answeredFrom: SecretRequestController,
+  ): Promise<SecretRequestSettleResult>;
+  decline(
+    requestId: string,
+    answeredFrom: SecretRequestController,
+  ): Promise<SecretRequestSettleResult>;
+}
+
+/** The controller kinds a person answers secret requests from. */
+type SecretRequestController = 'browser' | 'mobile';
+
+/** Controllers that are a person on a paired browser or phone. */
+function servesSecretRequests(
+  kind: DeviceKind,
+): kind is SecretRequestController {
+  return kind === 'browser' || kind === 'mobile';
 }
 
 /** Streams one controller may hold open at once. */
@@ -332,6 +367,8 @@ export class RemoteHostSession {
     const forwarder = createPushForwarder(
       (channel, args, surface) => {
         if (!this.allows(channel)) return;
+        // Composer requests stay on this computer's own window (CAN-7436).
+        if (controllerPushWithheld(channel, args)) return;
         this.forwardPush(channel, args, surface);
       },
       undefined,
@@ -543,9 +580,53 @@ export class RemoteHostSession {
         this.coreSubscriptions.delete(subscriptionKey);
         return { closed: true };
       }
+      case REMOTE_METHODS.secretRequestSettle:
+        return this.settleSecretRequest(method, params);
       default:
         throw new UnknownRemoteMethodError(method);
     }
+  }
+
+  /**
+   * A paired person's answer to a RequestSecrets form. Only browser and
+   * mobile controllers, whose kind the relay authenticated, are served:
+   * hosted agents never provide secrets, and a desktop controller answers in
+   * its own window's form. The values are never logged, and a malformed
+   * request is refused without echoing what it carried.
+   */
+  private async settleSecretRequest(
+    method: string,
+    params: unknown,
+  ): Promise<SecretRequestSettleResult> {
+    const port = this.options.secretRequests;
+    if (!port) throw new UnknownRemoteMethodError(method);
+    if (!this.compatible) throw this.mismatchError();
+    const kind = this.options.kind;
+    if (!servesSecretRequests(kind))
+      throw new RemoteControllerRefusedError(
+        `"${method}" is not available to this controller.`,
+      );
+    const request = SecretRequestSettleParamsSchema.safeParse(params);
+    if (!request.success)
+      return { accepted: false, error: 'Check the secrets and try again.' };
+    const answer = request.data;
+    // The same validation, person-only and first-answer-wins rules as the
+    // local form: the port is that form's own settlement. No scope is
+    // accepted, so a paired answer is kept for the chat only.
+    const result =
+      answer.action === 'provide'
+        ? await port.submit(
+            {
+              requestId: answer.requestId,
+              values: answer.values,
+              useHeld: answer.useHeld,
+            },
+            kind,
+          )
+        : await port.decline(answer.requestId, kind);
+    return result.error === undefined
+      ? { accepted: result.accepted }
+      : { accepted: result.accepted, error: result.error };
   }
 
   /**
@@ -657,7 +738,13 @@ export class RemoteHostSession {
       ...(this.options.core && this.options.kind === 'desktop'
         ? { coreOperations: { ...this.options.core.operations } }
         : {}),
-      features: { ...HOST_FEATURES },
+      features: {
+        ...HOST_FEATURES,
+        ...(this.options.secretRequests &&
+        servesSecretRequests(this.options.kind)
+          ? { secretRequestSettle: true }
+          : {}),
+      },
     };
     const session = this.options.session;
     const parsed = HelloParamsSchema.safeParse(params);

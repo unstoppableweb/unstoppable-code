@@ -26454,14 +26454,13 @@ describe('chat state service', () => {
         const target = await pendingReview({
           ...{ withPlanReviewRevision: undefined },
           approvePlanReview: async (request) => {
-            const approved = await planPersistence.updateTrackedPlan(
-              {
-                ...request,
-                reviewStatus: 'approved',
-                approvedAt: request.approvedAt,
-              },
-              { revisionNumber: request.revisionNumber, source: 'opencode' },
-            );
+            const approved = await planPersistence.updateTrackedPlan({
+              ...request,
+              reviewStatus: 'approved',
+              approvedAt: request.approvedAt,
+              expectedRevision: request.revisionNumber,
+              expectedSource: 'opencode',
+            });
             expect(approved?.latestRevisionNumber).toBe(2);
             const edited = await planPersistence.updateTrackedPlan({
               ...SCOPE,

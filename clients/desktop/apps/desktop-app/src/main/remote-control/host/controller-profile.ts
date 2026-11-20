@@ -25,6 +25,10 @@ import {
   type HostedDelegation,
   type RemoteVersion,
 } from '@canopy/protocol/remote-control';
+import type {
+  ClaudeModSurfaceCommand,
+  ClaudeModSurfaceUpdate,
+} from '@canopy/protocol/extension-ui';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { importEd25519PublicKey } from '../crypto/device-key';
 
@@ -74,6 +78,8 @@ export function controllerMayUseChannel(
  * argument policy of generic dispatch channels, so `chat:command` can start
  * chats and send messages but never answer approvals, archive or reset work.
  * Browser and mobile file reads use the same scoped-read policy as hosted controllers.
+ * No controller of any kind may answer a Mod's composer request, and a Mod
+ * surface command whose kind cannot be read is refused (CAN-7436).
  */
 export function controllerMayInvoke(
   kind: DeviceKind,
@@ -89,7 +95,107 @@ export function controllerMayInvoke(
     channel === 'file:read-content'
   )
     return hostedInvocationAllowed(channel, args);
+  if (
+    channel === CLAUDE_MOD_SURFACE_COMMAND_CHANNEL &&
+    !controllerMaySendSurfaceCommand(nestedKind(args, 'command'))
+  )
+    return false;
   return kind !== 'hosted' || hostedInvocationAllowed(channel, args);
+}
+
+const CLAUDE_MOD_SURFACE_COMMAND_CHANNEL = 'claude-mods:surface-command';
+const CLAUDE_MOD_SURFACE_PUSH_CHANNEL = 'claude-mods:surface-push';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** `args[0][field].kind` when it is a string, else null. */
+function nestedKind(args: readonly unknown[], field: string): string | null {
+  const first = args[0];
+  if (!isRecord(first)) return null;
+  const inner = first[field];
+  if (!isRecord(inner)) return null;
+  return typeof inner.kind === 'string' ? inner.kind : null;
+}
+
+/**
+ * Whether a controller may send each Mod surface command kind. Composer
+ * reads and fills stay on the host's own desktop (CAN-7436), so no
+ * controller of any kind sends a `composer-answer`. The record is
+ * exhaustive, so a new kind fails to compile until someone decides whether
+ * controllers may send it.
+ */
+const CONTROLLER_SURFACE_COMMANDS: Readonly<
+  Record<ClaudeModSurfaceCommand['kind'], boolean>
+> = {
+  press: true,
+  input: true,
+  select: true,
+  'pane-show': true,
+  'pane-focus': true,
+  'pane-close': true,
+  'pane-resize': true,
+  scroll: true,
+  focus: true,
+  resend: true,
+  'composer-answer': false,
+};
+
+/**
+ * Whether controllers receive each Mod surface push kind. A Mod's composer
+ * requests and their withdrawals are answered only by the host's own desktop
+ * window (CAN-7436); `composer-activity` still forwards, as the log line a
+ * controller shows for a read or fill. Exhaustive, like the command record.
+ */
+const CONTROLLER_SURFACE_PUSHES: Readonly<
+  Record<ClaudeModSurfaceUpdate['kind'], boolean>
+> = {
+  toast: true,
+  status: true,
+  log: true,
+  panes: true,
+  tree: true,
+  scroll: true,
+  focus: true,
+  ended: true,
+  'composer-activity': true,
+  'composer-request': false,
+  'composer-withdraw': false,
+};
+
+/**
+ * Whether `record` allows `kind`; false when it is absent or unreadable.
+ * Inherited properties are never `true`, so `toString` and the like fail.
+ */
+function kindAllowed(
+  record: Readonly<Record<string, boolean>>,
+  kind: string | null,
+): boolean {
+  return kind !== null && record[kind] === true;
+}
+
+/**
+ * Whether a controller may send a Mod surface command of this kind. An
+ * unreadable or unknown kind is refused: the gate fails closed rather than
+ * leaving it to the handler's parser.
+ */
+function controllerMaySendSurfaceCommand(kind: string | null): boolean {
+  return kindAllowed(CONTROLLER_SURFACE_COMMANDS, kind);
+}
+
+/**
+ * Whether the host withholds this push from every controller, whatever its
+ * kind, after the channel check passed. Only `claude-mods:surface-push` has
+ * an argument policy: composer requests and withdrawals never leave the
+ * host, and a push whose kind cannot be read is withheld.
+ */
+export function controllerPushWithheld(
+  channel: string,
+  args: readonly unknown[],
+): boolean {
+  if (channel !== CLAUDE_MOD_SURFACE_PUSH_CHANNEL) return false;
+  return !kindAllowed(CONTROLLER_SURFACE_PUSHES, nestedKind(args, 'push'));
 }
 
 /** Domain label for the hosted agent attribution's connection identifier. */

@@ -398,7 +398,7 @@ export function registerAllIpcHandlers(
   stopInitiatedPresentation = (): void => initiatedPresentation.stop();
   registerSessionTransferHandlers(getMainWindow);
   registerSettingsHandlers(canopyRuntime);
-  registerReferencePreviewHandlers();
+  registerReferencePreviewHandlers(canopyRuntime);
   registerGitExecutableHandlers(getMainWindow, canopyRuntime);
   registerDeepLinkHandlers();
   registerStandaloneChatHandlers();

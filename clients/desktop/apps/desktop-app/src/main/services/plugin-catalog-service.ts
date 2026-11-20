@@ -134,14 +134,21 @@ export async function buildPluginCatalog(): Promise<RemoteControlPluginCatalog> 
   };
 }
 
+/** The core read of the catalog: collections are null when they can't be read. */
+export type CachedPluginCatalog = Omit<
+  RemoteControlPluginCatalog,
+  'collections'
+> & { collections: RemoteControlPluginCatalogCollection[] | null };
+
 /**
  * The picker catalog for core reads (CAN-4123): the same lists as
  * buildPluginCatalog, with plugins read from the cache only. Never refreshes
- * providers and never seeds curated defaults.
+ * providers and never seeds curated defaults. A Collection index that can't
+ * be read gives null collections, never an empty list (CAN-4170).
  */
-export async function buildCachedPluginCatalog(): Promise<RemoteControlPluginCatalog> {
+export async function buildCachedPluginCatalog(): Promise<CachedPluginCatalog> {
   const [collections, plugins, mcpServers] = await Promise.all([
-    readCatalogCollections(),
+    listCatalogCollections().catch(() => null),
     readCachedCatalogPlugins(),
     readCatalogMcpServers(),
   ]);
@@ -153,19 +160,29 @@ export async function buildCachedPluginCatalog(): Promise<RemoteControlPluginCat
   };
 }
 
+async function listCatalogCollections(): Promise<
+  RemoteControlPluginCatalogCollection[]
+> {
+  const index = await readCollectionIndex();
+  return index.collections.map((collection) => ({
+    id: collection.id,
+    name: collection.name,
+    description: collection.description,
+    skillCount: collection.skillCount,
+    pluginCount: collection.pluginCount,
+    mcpServerCount: collection.mcpServerCount,
+  }));
+}
+
+/**
+ * The picker's collections, best-effort like its other sections: an index
+ * read failure lists none until the picker has a load error (CAN-7473).
+ */
 async function readCatalogCollections(): Promise<
   RemoteControlPluginCatalogCollection[]
 > {
   try {
-    const index = await readCollectionIndex();
-    return index.collections.map((collection) => ({
-      id: collection.id,
-      name: collection.name,
-      description: collection.description,
-      skillCount: collection.skillCount,
-      pluginCount: collection.pluginCount,
-      mcpServerCount: collection.mcpServerCount,
-    }));
+    return await listCatalogCollections();
   } catch {
     return [];
   }

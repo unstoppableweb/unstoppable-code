@@ -38,6 +38,11 @@ import {
   MOBILE_CONTROLLER_CHANNELS,
 } from '@canopy/protocol/remote-control/channels';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import type { ClaudeModsUpdate } from '@canopy/protocol/claude-mods';
+import type {
+  ClaudeModSurfaceCommandArgs,
+  ClaudeModSurfacePushEvent,
+} from '@canopy/protocol/extension-ui';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
@@ -273,6 +278,10 @@ interface Host {
   events: RemoteControlPairingEvent[];
   bridge: FakeBridgeLog;
   hostedChat: HostedChatLog;
+  /** Answers the secret request port took (U7), first answer per request. */
+  secretAnswers: Array<{ answer: unknown; from: string }>;
+  /** Everything the service logged. */
+  logs: string[];
   mainPush: (channel: string, args: unknown[]) => void;
   portal: { reads: number };
   readSettings: () => Promise<RemoteControlFile>;
@@ -348,6 +357,24 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     ...(options.portalReads ?? [{ reliable: true, active: false }]),
   ];
   const uploads = new RemoteUploadStore(join(dir, 'uploads'));
+  // The secret form's settlement, first answer wins as in the real store.
+  const secretAnswers: Host['secretAnswers'] = [];
+  const settledSecretRequests = new Set<string>();
+  const settleSecret = (
+    requestId: string,
+    answer: unknown,
+    from: string,
+  ): Promise<{ accepted: boolean; error?: string }> => {
+    if (settledSecretRequests.has(requestId))
+      return Promise.resolve({
+        accepted: false,
+        error: 'This request was already answered.',
+      });
+    settledSecretRequests.add(requestId);
+    secretAnswers.push({ answer, from });
+    return Promise.resolve({ accepted: true });
+  };
+  const logs: string[] = [];
   const hostedChat: HostedChatLog = {
     dispatched: [],
     answers: [],
@@ -428,6 +455,15 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     deviceName: (): string => 'Host',
     platform: 'darwin',
     version: options.version ?? VERSION,
+    secretRequests: {
+      submit: (request, from): ReturnType<typeof settleSecret> =>
+        settleSecret(request.requestId, request, from),
+      decline: (requestId, from): ReturnType<typeof settleSecret> =>
+        settleSecret(requestId, { decline: requestId }, from),
+    },
+    log: (message: string, context?: unknown): void => {
+      logs.push(`${message} ${JSON.stringify(context ?? null)}`);
+    },
     createBridge: (): Promise<HostBridge> =>
       Promise.resolve({
         getChatInterest: (): undefined => undefined,
@@ -502,6 +538,8 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     events,
     bridge,
     hostedChat,
+    secretAnswers,
+    logs,
     mainPush: (channel, args): void => {
       for (const listener of Array.from(mainListeners)) listener(channel, args);
     },
@@ -618,6 +656,21 @@ async function hello(
 async function invokeCode(rpc: RpcPeer, channel: string): Promise<string> {
   try {
     await rpc.request(REMOTE_METHODS.invoke, { channel, args: [] });
+    return 'ok';
+  } catch (error) {
+    return error instanceof RpcRemoteError
+      ? (error.code ?? error.message)
+      : 'failed';
+  }
+}
+
+async function invokeCodeWith(
+  rpc: RpcPeer,
+  channel: string,
+  args: unknown[],
+): Promise<string> {
+  try {
+    await rpc.request(REMOTE_METHODS.invoke, { channel, args });
     return 'ok';
   } catch (error) {
     return error instanceof RpcRemoteError
@@ -1182,6 +1235,162 @@ describe('browser controller channels', () => {
     expect(host.bridge.invokes).toEqual(invoked);
   });
 
+  it('serves Claude Mods to browsers and keeps composer requests on this computer (CAN-7436)', async () => {
+    const channels = [
+      IPC_CHANNELS.claudeModsGet,
+      IPC_CHANNELS.claudeModsUpdate,
+      IPC_CHANNELS.claudeModSurfaceCommand,
+      IPC_CHANNELS.claudeModSurfacePush,
+    ];
+    expect(channels).toEqual([
+      'claude-mods:get',
+      'claude-mods:update',
+      'claude-mods:surface-command',
+      'claude-mods:surface-push',
+    ]);
+    for (const channel of channels) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    const chat = { projectId: 'p1', worktreeId: 'w1', chatId: 'c1' };
+    const command = (
+      value: ClaudeModSurfaceCommandArgs['command'],
+    ): ClaudeModSurfaceCommandArgs[] => [{ ...chat, command: value }];
+    const press = command({
+      kind: 'press',
+      press: { plugin: 'mod@market', handle: 1 },
+      key: 'go',
+    });
+    const answer = command({
+      kind: 'composer-answer',
+      requestId: 'r1',
+      answer: { kind: 'read', text: 'draft', cursor: 5 },
+    });
+    const modsOff: ClaudeModsUpdate = {
+      action: 'set-mods-disabled',
+      modsDisabled: true,
+    };
+    const pushOf = (
+      push: ClaudeModSurfacePushEvent['push'],
+    ): ClaudeModSurfacePushEvent[] => [{ ...chat, push }];
+
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+          pinned(desktop),
+        ],
+      },
+    });
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const fromDesktop = await control(host, desktop);
+    await hello(fromDesktop.rpc);
+
+    const allowed: Array<[string, unknown[]]> = [
+      [IPC_CHANNELS.claudeModsGet, [{}]],
+      [IPC_CHANNELS.claudeModsUpdate, [modsOff]],
+      [IPC_CHANNELS.claudeModSurfaceCommand, press],
+    ];
+    for (const [channel, args] of allowed) {
+      expect(await invokeCodeWith(fromBrowser.rpc, channel, args)).toBe('ok');
+      expect(await invokeCodeWith(fromPhone.rpc, channel, args)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    // No controller answers a Mod's composer request, and a command whose
+    // kind cannot be read is refused before the handler.
+    const refused: unknown[][] = [
+      answer,
+      [],
+      [{ ...chat }],
+      [{ ...chat, command: {} }],
+      [{ ...chat, command: { kind: 7 } }],
+      [{ ...chat, command: { kind: 'toString' } }],
+    ];
+    for (const args of refused) {
+      for (const rpc of [fromBrowser.rpc, fromDesktop.rpc]) {
+        expect(
+          await invokeCodeWith(rpc, IPC_CHANNELS.claudeModSurfaceCommand, args),
+        ).toBe('remote_channel_unavailable');
+      }
+    }
+    expect(
+      await invokeCodeWith(
+        fromDesktop.rpc,
+        IPC_CHANNELS.claudeModSurfaceCommand,
+        press,
+      ),
+    ).toBe('ok');
+    expect(host.bridge.invokes).toEqual([
+      ...allowed.map(([channel]) => channel),
+      IPC_CHANNELS.claudeModSurfaceCommand,
+    ]);
+    expect(host.bridge.invokeArgs).toEqual([
+      ...allowed.map(([, args]) => args),
+      press,
+    ]);
+
+    // Composer requests and withdrawals, and pushes of unreadable kinds,
+    // never leave this computer; composer activity is a log line and does.
+    host.mainPush(
+      IPC_CHANNELS.claudeModSurfacePush,
+      pushOf({
+        kind: 'composer-request',
+        requestId: 'r1',
+        request: { kind: 'read' },
+        expiresAt: 1,
+      }),
+    );
+    host.mainPush(
+      IPC_CHANNELS.claudeModSurfacePush,
+      pushOf({ kind: 'composer-withdraw', requestId: 'r1' }),
+    );
+    host.mainPush(IPC_CHANNELS.claudeModSurfacePush, [{ ...chat }]);
+    host.mainPush(IPC_CHANNELS.claudeModSurfacePush, [
+      { ...chat, push: { kind: null } },
+    ]);
+    const forwarded = [
+      pushOf({ kind: 'status', plugin: 'mod@market', text: 'Ready' }),
+      pushOf({
+        kind: 'tree',
+        site: 'band',
+        instanceId: 'above-prompt',
+        tree: null,
+      }),
+      pushOf({ kind: 'composer-activity', action: 'read', plugin: null }),
+    ];
+    for (const args of forwarded) {
+      host.mainPush(IPC_CHANNELS.claudeModSurfacePush, args);
+    }
+    await until(() => browser.pushes.length >= 3 && desktop.pushes.length >= 3);
+    await settle(20);
+    for (const controller of [browser, desktop]) {
+      expect(controller.pushPayloads).toEqual(
+        forwarded.map((args) => ({
+          channel: IPC_CHANNELS.claudeModSurfacePush,
+          args,
+        })),
+      );
+    }
+    expect(phone.pushes).toEqual([]);
+  });
+
   it('serves the archived Work Entry list to browsers and refuses controllers without it', async () => {
     // The archive overview Portal's paired session read (CAN-5986). Portal
     // allowed it only to its own active pairing; over Remote Control the
@@ -1221,6 +1430,68 @@ describe('browser controller channels', () => {
     expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
     expect(host.bridge.invokes).toEqual([channel]);
   });
+
+  it('serves Personal project conversion to browsers only, never the session-owned team steps', async () => {
+    // Listing, converting and reading a run's status (CAN-7440). Conversion
+    // runs as the computer's signed-in account and deletes nothing; the
+    // browser's own session promotes the team and sends invites, so those
+    // channels stay off every controller list but the desktop's.
+    const invoked = [
+      IPC_CHANNELS.personalOrganizationUpgradeList,
+      IPC_CHANNELS.personalOrganizationUpgradeConvert,
+      IPC_CHANNELS.personalOrganizationUpgradeStatus,
+    ];
+    for (const channel of invoked) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    const withheld = [
+      IPC_CHANNELS.personalOrganizationUpgradePromote,
+      IPC_CHANNELS.personalOrganizationUpgradeInvite,
+      IPC_CHANNELS.personalOrganizationUpgradeInviteStatus,
+    ];
+    for (const channel of withheld) {
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of invoked) {
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(host.bridge.invokes).toEqual([]);
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of withheld) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    for (const channel of invoked) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+    }
+    expect(host.bridge.invokes).toEqual(invoked);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1231,6 +1502,175 @@ describe('browser controller channels', () => {
 // remote-control:close-pairing-window and the remote-control:pairing-event
 // push (api.remoteControl.openPairingWindow, closePairingWindow and
 // onPairingEvent are pass-throughs to them).
+describe('paired secret requests (U7)', () => {
+  const CANARY = 'canary-3e9d1b7a-paired-secret';
+  const requestId = '5b1f0f2e-4d8a-4c1e-9b3a-2f6d7e8c9a01';
+  const provide = {
+    action: 'provide',
+    requestId,
+    values: { NPM_TOKEN: CANARY },
+    useHeld: [],
+  };
+
+  async function settleCode(rpc: RpcPeer, params: unknown): Promise<unknown> {
+    try {
+      return await rpc.request(REMOTE_METHODS.secretRequestSettle, params);
+    } catch (error) {
+      return error instanceof RpcRemoteError
+        ? (error.code ?? error.message)
+        : 'failed';
+    }
+  }
+
+  it('serves browser and mobile people only, advertised in hello', async () => {
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const mobile = addController(hub, 'mobile');
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(mobile, 'mobile'),
+          pinned(desktop),
+        ],
+      },
+    });
+    const fromBrowser = await control(host, browser);
+    const browserHello = await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(browserHello.features).toMatchObject({ secretRequestSettle: true });
+    expect(await settleCode(fromBrowser.rpc, provide)).toEqual({
+      accepted: true,
+    });
+    const fromMobile = await control(host, mobile);
+    expect(
+      (
+        await hello(fromMobile.rpc, {
+          version: VERSION,
+          controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+        })
+      ).features,
+    ).toMatchObject({ secretRequestSettle: true });
+    expect(
+      await settleCode(fromMobile.rpc, {
+        action: 'decline',
+        requestId: '6c2a1f3e-5d8b-4c1e-9b3a-2f6d7e8c9a02',
+      }),
+    ).toEqual({ accepted: true });
+    expect(host.secretAnswers).toEqual([
+      {
+        answer: { requestId, values: { NPM_TOKEN: CANARY }, useHeld: [] },
+        from: 'browser',
+      },
+      {
+        answer: { decline: '6c2a1f3e-5d8b-4c1e-9b3a-2f6d7e8c9a02' },
+        from: 'mobile',
+      },
+    ]);
+    // A desktop controller answers in its own window's form.
+    const fromDesktop = await control(host, desktop);
+    expect((await hello(fromDesktop.rpc)).features).not.toHaveProperty(
+      'secretRequestSettle',
+    );
+    expect(await settleCode(fromDesktop.rpc, provide)).toBe(
+      'remote_controller_refused',
+    );
+    // Never through the bridge, a channel, or a log.
+    expect(host.bridge.invokes).toEqual([]);
+    expect(JSON.stringify(host.bridge.invokeArgs)).not.toContain(CANARY);
+    expect(host.logs.join('\n')).not.toContain(CANARY);
+    expect(host.secretAnswers).toHaveLength(2);
+  });
+
+  it('refuses hosted agents and malformed answers without echoing a value', async () => {
+    const hub = new Hub();
+    const root = generateDeviceKeyPair();
+    const browser = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          {
+            deviceId: root.deviceId,
+            name: 'Agents',
+            platform: 'linux',
+            kind: 'hosted',
+            publicKey: root.publicKey,
+            pairedAt: new Date(0).toISOString(),
+          },
+        ],
+      },
+    });
+    const child = addController(hub, 'hosted');
+    const hosted = await control(
+      host,
+      child,
+      delegate(root, child.identity.publicKey, Date.now() + 60_000),
+    );
+    expect((await hello(hosted.rpc)).features).not.toHaveProperty(
+      'secretRequestSettle',
+    );
+    expect(await settleCode(hosted.rpc, provide)).toBe(
+      'remote_controller_refused',
+    );
+    const { rpc } = await control(host, browser);
+    await hello(rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const params of [
+      { ...provide, scope: 'project' },
+      { ...provide, values: { 'not a name': CANARY } },
+      { ...provide, requestId: 'not-a-uuid' },
+      { ...provide, values: { NPM_TOKEN: '' } },
+      CANARY,
+    ]) {
+      const answer = await settleCode(rpc, params);
+      expect(answer).toEqual({
+        accepted: false,
+        error: 'Check the secrets and try again.',
+      });
+      expect(JSON.stringify(answer)).not.toContain(CANARY);
+    }
+    expect(host.secretAnswers).toEqual([]);
+  });
+
+  it('settles once: a resent answer, or one sent again after a reconnect, is refused', async () => {
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(browser, 'browser')] },
+    });
+    const first = await control(host, browser);
+    await hello(first.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(await settleCode(first.rpc, provide)).toEqual({ accepted: true });
+    expect(await settleCode(first.rpc, provide)).toEqual({
+      accepted: false,
+      error: 'This request was already answered.',
+    });
+    // A new session has new keys; the request is still settled once.
+    first.session.close('closed');
+    const again = await control(host, browser);
+    await hello(again.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(
+      await settleCode(again.rpc, {
+        ...provide,
+        values: { NPM_TOKEN: 'another-value' },
+      }),
+    ).toEqual({ accepted: false, error: 'This request was already answered.' });
+    expect(host.secretAnswers).toHaveLength(1);
+  });
+});
+
 describe('pairing', () => {
   it('pairs once per link without a prompt, saving the authenticated kind before answering', async () => {
     const hub = new Hub();
@@ -2316,5 +2756,61 @@ describe('install identifier (remote-control:install-id)', () => {
     expect(await readFile(join(dir, 'portal-state.json'), 'utf8')).toBe(
       '{not json',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Disconnect is not cancellation (CAN-4186)
+// ---------------------------------------------------------------------------
+
+describe('a closed controller session', () => {
+  it('sends this computer no stop or cancel for a command it already accepted, and keeps serving another controller', async () => {
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [pinned(browser, 'browser'), pinned(laptop)],
+      },
+    });
+    const connected = async (controller: Controller): Promise<boolean> =>
+      (await state(host)).controllers.some(
+        (each) => each.deviceId === controller.deviceId && each.connected,
+      );
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const send = {
+      schemaVersion: 1,
+      commandId: 'command-1',
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      command: {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'message-1',
+        text: 'Run the tests',
+      },
+    };
+    expect(
+      await fromBrowser.rpc.request(REMOTE_METHODS.invoke, {
+        channel: 'chat:command',
+        args: [send],
+      }),
+    ).toBe('ok');
+    await until(() => connected(browser));
+
+    fromBrowser.session.close('closed');
+    await until(async () => !(await connected(browser)));
+    expect(host.bridge.invokes).toEqual(['chat:command']);
+    expect(host.bridge.invokeArgs).toEqual([[send]]);
+    expect(host.bridge.posts).toEqual([]);
+
+    const fromLaptop = await control(host, laptop);
+    await hello(fromLaptop.rpc);
+    expect(await invokeCode(fromLaptop.rpc, MOBILE_CHANNEL)).toBe('ok');
+    expect(host.bridge.invokes).toEqual(['chat:command', MOBILE_CHANNEL]);
   });
 });

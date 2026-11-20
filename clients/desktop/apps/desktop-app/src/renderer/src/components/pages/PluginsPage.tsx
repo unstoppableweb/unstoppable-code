@@ -27,6 +27,7 @@ import {
   useOpenCreatedCustomItem,
   useResourceContext,
   type CustomizeMcpRowActions,
+  customizeDiscoveryDescription,
 } from '@canopy/ui-app/capability';
 import { useCapabilities, useCanopyClient } from '@canopy/app-state';
 import type { MarketplaceSource } from '@canopy/app-core/client';
@@ -152,7 +153,6 @@ import type {
   AccountMcpConnection,
 } from '@canopy/execution-engine/types/mcp-servers';
 import {
-  CUSTOMIZE_DISCOVERY_SUBTITLE,
   CUSTOMIZE_SECTION_SUBTITLE,
   EmptyState,
   PageHeader,
@@ -3922,9 +3922,10 @@ export function PluginsPage({
             <div className="flex flex-col gap-0">
               <PageHeader
                 title={CUSTOMIZE_LABEL}
+                wideDescription={discoveryEnabled}
                 description={
                   discoveryEnabled
-                    ? CUSTOMIZE_DISCOVERY_SUBTITLE
+                    ? customizeDiscoveryDescription(kindFilter ?? 'all')
                     : CUSTOMIZE_SECTION_SUBTITLE
                 }
                 actions={
@@ -3969,7 +3970,11 @@ export function PluginsPage({
             matching the other top-level utility pages. */}
             <div
               className={
-                showingSources ? 'flex flex-col gap-6' : 'flex flex-col gap-0'
+                showingSources
+                  ? 'flex flex-col gap-6'
+                  : discoveryEnabled
+                    ? 'flex flex-col gap-3'
+                    : 'flex flex-col gap-0'
               }
             >
               <div className="flex flex-col gap-4">

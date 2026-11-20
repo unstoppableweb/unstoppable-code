@@ -10,8 +10,15 @@ import {
   getAntigravityModelEntries,
   initAntigravityModels,
 } from '@canopy/execution-engine/model-catalog';
-import { isAntigravityConnectionEnabled } from './connection';
-import { antigravityPlanLabelFromMeta, setAntigravityAccount } from './account';
+import {
+  antigravityRuntimeStatus,
+  isAntigravityConnectionEnabled,
+} from './connection';
+import {
+  antigravityPlanLabelFromMeta,
+  peekAntigravityAccount,
+  setAntigravityAccount,
+} from './account';
 
 let available: boolean | undefined;
 let pending: Promise<boolean> | undefined;
@@ -152,6 +159,22 @@ export async function refreshAntigravityModels(): Promise<boolean> {
     });
   pending = probe;
   return probe;
+}
+
+/**
+ * The Usage surfaces' explicit account read. The plan label is only kept in
+ * memory and only discovery writes it, so after a restart nothing shows it
+ * until something rediscovers. This runs that discovery once per launch or
+ * invalidation (sign-in, disconnect and rollout clear the label). A read
+ * that failed is not retried here: the card points at Refresh models in
+ * Settings for that, so a Usage visit never reopens Google repeatedly. It
+ * never starts Google when no CLI is installed.
+ */
+export async function refreshAntigravityAccount(): Promise<void> {
+  if (!isAntigravityHarnessEnabled()) return;
+  if (peekAntigravityAccount() !== undefined) return;
+  if (!(await antigravityRuntimeStatus()).installed) return;
+  await refreshAntigravityModels();
 }
 
 function isTransientDiscoveryFailure(error: unknown): boolean {

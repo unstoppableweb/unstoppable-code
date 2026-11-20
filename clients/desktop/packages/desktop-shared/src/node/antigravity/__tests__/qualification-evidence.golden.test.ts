@@ -496,8 +496,35 @@ describe('redactQualificationPaths', () => {
 
   it('leaves a sibling directory with a longer name alone', () => {
     expect(
-      redactQualificationPaths('/tmp/q-1 /tmp/q-10/x /tmp/q-1/y', '/tmp/q-1'),
+      redactQualificationPaths(
+        '/tmp/q-1 /tmp/q-10/x /tmp/q-1/y',
+        '/tmp/q-1',
+        '/nonexistent-home',
+      ),
     ).toBe('<scratch> /tmp/q-10/x <scratch>/y');
+  });
+
+  it('replaces the home directory after the scratch directory', () => {
+    expect(
+      redactQualificationPaths(
+        {
+          title: 'File /Users/someone/.ssh/config',
+          detail:
+            '/Users/someone /Users/someone2/x /Users/someone/tmp/q/profile',
+        },
+        '/Users/someone/tmp/q',
+        '/Users/someone/',
+      ),
+    ).toEqual({
+      title: 'File <home>/.ssh/config',
+      detail: '<home> /Users/someone2/x <scratch>/profile',
+    });
+  });
+
+  it('leaves paths alone for an empty or root home', () => {
+    expect(redactQualificationPaths('/Users/x/a', '/tmp/q', '/')).toBe(
+      '/Users/x/a',
+    );
   });
 });
 

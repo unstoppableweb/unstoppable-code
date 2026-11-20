@@ -26,7 +26,11 @@ export const MUTATION_FENCE_RESERVED_WORKSPACE_IDS: ReadonlySet<string> =
 export const MUTATION_FENCE_MAX_TARGETS = 1024;
 
 /** Why the owner holds a worktree; each hold is fenced and released alone. */
-export const MUTATION_FENCE_HOLDS = ['splitLock'] as const;
+export const MUTATION_FENCE_HOLDS = [
+  'splitLock',
+  'archive',
+  'autoDelete',
+] as const;
 export type MutationFenceHold = (typeof MUTATION_FENCE_HOLDS)[number];
 
 /** One fenced worktree, named as its owner names it, with the hold on it. */

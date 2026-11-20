@@ -100,6 +100,7 @@ import {
   isPipelineContextDenial,
   pipelineResourceContextEnabled,
 } from './resource-lanes';
+import { noteDefinitionRemoved } from './removed-definitions';
 
 function isoTimestamp(value: string | undefined): string | null {
   const time = value ? Date.parse(value) : Number.NaN;
@@ -950,6 +951,8 @@ export function applyUserPipelineSaveEffects(editedId: string | null): void {
 export async function applyUserPipelineDeleteEffects(
   definitionId: string,
 ): Promise<void> {
+  // CAN-7347: a start that still holds a copy of it is refused.
+  noteDefinitionRemoved(definitionId, 'deleted');
   deleteUserPipelineLocalMetadata(definitionId);
   // The subscription ledger names every share this copy came from, even
   // after a local edit dropped its package record.

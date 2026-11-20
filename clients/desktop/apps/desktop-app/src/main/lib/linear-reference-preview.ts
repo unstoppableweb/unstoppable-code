@@ -143,7 +143,7 @@ function failureResult(
   }
 }
 
-export function createLinearReferencePreviewReader(
+function createLinearReferencePreviewReader(
   deps: LinearReferencePreviewDeps = defaultDeps,
 ): {
   readScope: () => Promise<LinearPreviewScope>;
@@ -165,9 +165,10 @@ export function createLinearReferencePreviewReader(
     token: string;
     scope: string;
   } | null> => {
+    // The token is read last, so a sign-out during the account lookup is seen.
+    const accountId = await deps.resolveAccountId().catch(() => '');
     const token = (await deps.resolveToken()).trim();
     if (!token) return null;
-    const accountId = await deps.resolveAccountId().catch(() => '');
     const scope = createHash('sha256')
       .update(`reference-preview\0${accountId}\0${token}`)
       .digest('base64url')
@@ -295,4 +296,19 @@ export function createLinearReferencePreviewReader(
       return pending;
     },
   };
+}
+
+let sharedReader:
+  | ReturnType<typeof createLinearReferencePreviewReader>
+  | undefined;
+
+/**
+ * The one reader the preview IPC and the core.integration host share, so
+ * they share its revocation hold-back and team-key catalog. Built on first use.
+ */
+export function sharedLinearReferencePreviewReader(): ReturnType<
+  typeof createLinearReferencePreviewReader
+> {
+  sharedReader ??= createLinearReferencePreviewReader();
+  return sharedReader;
 }

@@ -17,6 +17,10 @@ import {
   type ElectronDaemonOwnerClient,
 } from './electron-daemon-owner';
 import type { ElectronDaemonSession } from './electron-daemon-connection';
+import {
+  setWorkspaceTargetHoldConfirmer,
+  type WorkspaceTargetHold,
+} from '../lib/workspace-target-exclusion';
 
 /**
  * How long a Split PR start waits for the daemon to confirm its fence. The
@@ -81,6 +85,13 @@ export interface SplitLockFencePublisher {
   confirmLocked(held: HeldSplitLock): Promise<void>;
   /** Publishes a release; never throws. */
   released(held: HeldSplitLock): void;
+  /**
+   * Resolves once the daemon fences `held` with an archive or Auto Delete
+   * hold, or at once with no owner. Each confirm needs a matching release.
+   */
+  confirmHold(held: HeldSplitLock, hold: WorkspaceTargetHold): Promise<void>;
+  /** Releases one confirm; the last one publishes the release. Never throws. */
+  releaseHold(held: HeldSplitLock, hold: WorkspaceTargetHold): void;
   /** Publishes a snapshot on every new lease of `session`. */
   observe(session: FenceOwnerSession): void;
   /**
@@ -112,13 +123,19 @@ function pause(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function target(held: HeldSplitLock): CoreMutationFenceTarget {
+function target(
+  held: HeldSplitLock,
+  hold: CoreMutationFenceTarget['hold'] = 'splitLock',
+): CoreMutationFenceTarget {
   return {
     workspaceId: held.workspaceId,
     worktreeId: held.worktreeId,
-    hold: 'splitLock',
+    hold,
   };
 }
+
+const holdKey = (fenced: CoreMutationFenceTarget): string =>
+  `${fenced.workspaceId}\0${fenced.worktreeId}\0${fenced.hold}`;
 
 function withTimeout<T>(run: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -147,6 +164,15 @@ export function createSplitLockFencePublisher(
   let epoch = 0;
   let queue: Promise<unknown> = Promise.resolve();
   const observed = new WeakSet<object>();
+  // Archive and Auto Delete holds, counted: archives of one worktree nest.
+  const holds = new Map<
+    string,
+    { target: CoreMutationFenceTarget; count: number }
+  >();
+  const fencedNow = (): CoreMutationFenceTarget[] => [
+    ...options.locks().map((held) => target(held)),
+    ...Array.from(holds.values(), (entry) => entry.target),
+  ];
 
   const send = (
     client: FenceOwnerClient,
@@ -163,7 +189,7 @@ export function createSplitLockFencePublisher(
       run.catch(() => {
         send(client, {
           kind: 'snapshot',
-          fenced: options.locks().map(target),
+          fenced: fencedNow(),
         }).catch(() => undefined);
       });
     return run;
@@ -175,7 +201,7 @@ export function createSplitLockFencePublisher(
     session.lease.register(REGISTRATION, async (_lease, client) => {
       await send(client, {
         kind: 'snapshot',
-        fenced: options.locks().map(target),
+        fenced: fencedNow(),
       });
     });
   };
@@ -214,30 +240,49 @@ export function createSplitLockFencePublisher(
     }
   };
 
-  return {
-    confirmLocked: (held) =>
-      withTimeout(
-        (async (): Promise<void> => {
-          const session = await ownerSession();
-          if (!session) return;
-          await send(session.client, {
-            kind: 'change',
-            fenced: [target(held)],
-            released: [],
-          });
-        })(),
-        ackTimeoutMs,
-      ),
-    released: (held): void => {
-      void (async (): Promise<void> => {
+  const fence = (fenced: CoreMutationFenceTarget): Promise<void> =>
+    withTimeout(
+      (async (): Promise<void> => {
         const session = await ownerSession();
         if (!session) return;
         await send(session.client, {
           kind: 'change',
-          fenced: [],
-          released: [target(held)],
+          fenced: [fenced],
+          released: [],
         });
-      })().catch((error: unknown) => options.onReleaseFailed?.(error));
+      })(),
+      ackTimeoutMs,
+    );
+  const release = (released: CoreMutationFenceTarget): void => {
+    void (async (): Promise<void> => {
+      const session = await ownerSession();
+      if (!session) return;
+      await send(session.client, {
+        kind: 'change',
+        fenced: [],
+        released: [released],
+      });
+    })().catch((error: unknown) => options.onReleaseFailed?.(error));
+  };
+
+  return {
+    confirmLocked: (held) => fence(target(held)),
+    released: (held): void => release(target(held)),
+    confirmHold: (held, hold) => {
+      const fenced = target(held, hold);
+      const entry = holds.get(holdKey(fenced));
+      if (entry) entry.count += 1;
+      else holds.set(holdKey(fenced), { target: fenced, count: 1 });
+      return fence(fenced);
+    },
+    releaseHold: (held, hold): void => {
+      const fenced = target(held, hold);
+      const entry = holds.get(holdKey(fenced));
+      if (!entry) return;
+      entry.count -= 1;
+      if (entry.count > 0) return;
+      holds.delete(holdKey(fenced));
+      release(fenced);
     },
     observe,
     keepObserved,
@@ -250,6 +295,9 @@ export function createSplitLockFencePublisher(
  */
 function refuseLocksAfterOwner(): void {
   setSplitLockFenceConfirmer(() =>
+    Promise.reject(new Error('The daemon owner has been disposed.')),
+  );
+  setWorkspaceTargetHoldConfirmer(() =>
     Promise.reject(new Error('The daemon owner has been disposed.')),
   );
 }
@@ -268,7 +316,21 @@ export function connectSplitLockFences(
   const stopReleasing = onSplitLockChange((event) => {
     if (!event.locked) publisher.released(event);
   });
+  const stopHolding = setWorkspaceTargetHoldConfirmer(
+    async (projectId, worktreeId, hold) => {
+      const held = { workspaceId: projectId, worktreeId };
+      try {
+        await publisher.confirmHold(held, hold);
+      } catch (error) {
+        // A late fence still lands; its release is queued behind it.
+        publisher.releaseHold(held, hold);
+        throw error;
+      }
+      return (): void => publisher.releaseHold(held, hold);
+    },
+  );
   return (): void => {
+    stopHolding();
     stopReleasing();
     stopConfirming();
   };

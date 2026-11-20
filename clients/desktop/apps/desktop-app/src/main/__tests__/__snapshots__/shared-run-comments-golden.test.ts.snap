@@ -1,0 +1,1006 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`shared runs (CAN-4169 golden) degrades comments to none on a server without run-comments-v1 1`] = `
+{
+  "created": {
+    "rejected": "<Brand> Cloud does not support run-comments-v1.",
+  },
+  "listed": {
+    "resolved": {
+      "detail": null,
+      "lastSeenCommentRevision": 0,
+    },
+  },
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/.well-known/<ns>",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/.well-known/<ns>",
+    },
+  ],
+}
+`;
+
+exports[`shared runs (CAN-4169 golden) drops a revoked run from the poll and records other poll failures 1`] = `
+{
+  "afterShutdown": [],
+  "failingTick": {
+    "diagnostics": [
+      {
+        "chatId": "chat-shared",
+        "error": "HTTP 401: Invalid API key.",
+        "kind": "shared_run_comment_poll_failed",
+        "projectId": "shared-runs-golden",
+        "providerType": "unknown",
+        "sessionKey": "shared-runs-golden/golden-wt/chat-shared",
+        "timestamp": "2026-11-01T12:26:00.000Z",
+        "version": 1,
+        "worktreeId": "golden-wt",
+      },
+    ],
+    "pushes": [],
+    "registry": {
+      "entries": [
+        {
+          "chatId": "chat-shared",
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastPolledCommentRevision": 6,
+          "lastSeenCommentRevision": 6,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-retry",
+          "externalId": "00000000-0000-4000-8000-000000000002",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+      ],
+      "pollCursor": 0,
+      "version": 1,
+    },
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000010",
+      },
+    ],
+  },
+  "goneTick": {
+    "registry": {
+      "entries": [
+        {
+          "chatId": "chat-retry",
+          "externalId": "00000000-0000-4000-8000-000000000002",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+      ],
+      "pollCursor": 0,
+      "version": 1,
+    },
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+      },
+    ],
+  },
+  "nextTick": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+    },
+  ],
+}
+`;
+
+exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves run comments 1`] = `
+{
+  "backfill": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-legacy",
+        "commentRevision": 0,
+        "commentThreads": [],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000010",
+        "messages": [],
+        "organizationId": null,
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "team",
+        "summary": "",
+        "title": "Legacy run",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+      "lastSeenCommentRevision": 0,
+    },
+  },
+  "backfillRequests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000010",
+    },
+  ],
+  "created": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-shared",
+        "commentRevision": 1,
+        "commentThreads": [
+          {
+            "anchor": {
+              "kind": "message",
+              "messageId": "turn-1:msg-1",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Why did the retry loop change?",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-1",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000001",
+            "status": "open",
+          },
+        ],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "messages": [
+          {
+            "chatId": "chat-shared",
+            "createdAtMs": 1793534400000,
+            "messageId": "turn-1:msg-1",
+            "role": "assistant",
+            "status": "complete",
+            "text": "I changed the retry loop.",
+          },
+        ],
+        "organizationId": "00000000-0000-4000-8000-00000000b001",
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "organization",
+        "summary": "",
+        "title": "Fix the flaky upload test",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+    },
+  },
+  "goneRun": {
+    "rejected": "HTTP 404: Run not found",
+  },
+  "invalidThread": {
+    "rejected": "Invalid threadId",
+  },
+  "listed": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-shared",
+        "commentRevision": 3,
+        "commentThreads": [
+          {
+            "anchor": {
+              "kind": "message",
+              "messageId": "turn-1:msg-1",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Why did the retry loop change?",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-1",
+              },
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Because uploads time out.",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-2",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000001",
+            "status": "resolved",
+          },
+        ],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "messages": [
+          {
+            "chatId": "chat-shared",
+            "createdAtMs": 1793534400000,
+            "messageId": "turn-1:msg-1",
+            "role": "assistant",
+            "status": "complete",
+            "text": "I changed the retry loop.",
+          },
+        ],
+        "organizationId": "00000000-0000-4000-8000-00000000b001",
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "organization",
+        "summary": "",
+        "title": "Fix the flaky upload test",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+      "lastSeenCommentRevision": 0,
+    },
+  },
+  "registryAfterBackfill": {
+    "entries": [
+      {
+        "chatId": "chat-shared",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-retry",
+        "externalId": "00000000-0000-4000-8000-000000000002",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-legacy",
+        "externalId": "00000000-0000-4000-8000-000000000010",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+    ],
+    "pollCursor": 0,
+    "version": 1,
+  },
+  "registryAfterGone": {
+    "entries": [
+      {
+        "chatId": "chat-shared",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-retry",
+        "externalId": "00000000-0000-4000-8000-000000000002",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-legacy",
+        "externalId": "00000000-0000-4000-8000-000000000010",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-gone",
+        "externalId": "00000000-0000-4000-8000-000000000011",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+    ],
+    "pollCursor": 0,
+    "version": 1,
+  },
+  "replied": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-shared",
+        "commentRevision": 2,
+        "commentThreads": [
+          {
+            "anchor": {
+              "kind": "message",
+              "messageId": "turn-1:msg-1",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Why did the retry loop change?",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-1",
+              },
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Because uploads time out.",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-2",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000001",
+            "status": "open",
+          },
+        ],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "messages": [
+          {
+            "chatId": "chat-shared",
+            "createdAtMs": 1793534400000,
+            "messageId": "turn-1:msg-1",
+            "role": "assistant",
+            "status": "complete",
+            "text": "I changed the retry loop.",
+          },
+        ],
+        "organizationId": "00000000-0000-4000-8000-00000000b001",
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "organization",
+        "summary": "",
+        "title": "Fix the flaky upload test",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+    },
+  },
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "anchor": {
+          "kind": "message",
+          "messageId": "turn-1:msg-1",
+        },
+        "body": "Why did the retry loop change?",
+      },
+      "method": "POST",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000001/comments",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "body": "Because uploads time out.",
+      },
+      "method": "POST",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000001/comments/web%3A00000000-0000-4000-9000-000000000001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "status": "resolved",
+      },
+      "method": "PATCH",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000001/comments/web%3A00000000-0000-4000-9000-000000000001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "body": {
+        "body": "After access was revoked",
+      },
+      "method": "POST",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000001/comments",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "<api>/runs/00000000-0000-4000-8000-000000000011",
+    },
+  ],
+  "resolved": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-shared",
+        "commentRevision": 3,
+        "commentThreads": [
+          {
+            "anchor": {
+              "kind": "message",
+              "messageId": "turn-1:msg-1",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Why did the retry loop change?",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-1",
+              },
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Because uploads time out.",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-2",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000001",
+            "status": "resolved",
+          },
+        ],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "messages": [
+          {
+            "chatId": "chat-shared",
+            "createdAtMs": 1793534400000,
+            "messageId": "turn-1:msg-1",
+            "role": "assistant",
+            "status": "complete",
+            "text": "I changed the retry loop.",
+          },
+        ],
+        "organizationId": "00000000-0000-4000-8000-00000000b001",
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "organization",
+        "summary": "",
+        "title": "Fix the flaky upload test",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+    },
+  },
+  "revoked": {
+    "rejected": "HTTP 404: Run not found",
+  },
+  "unshared": {
+    "resolved": {
+      "detail": null,
+      "lastSeenCommentRevision": 0,
+    },
+  },
+  "unsharedCreate": {
+    "rejected": "This chat is not currently shared as a run.",
+  },
+  "unsharedRequests": [],
+}
+`;
+
+exports[`shared runs (CAN-4169 golden) polls comments on the interval and on focus, and pushes runs:comments:updated 1`] = `
+{
+  "beforeInterval": 0,
+  "focusAfterMinute": 3,
+  "focusBeforeMinute": 0,
+  "focusTick": {
+    "pushes": [
+      {
+        "channel": "runs:comments:updated",
+        "payload": {
+          "chatId": "chat-legacy",
+          "commentRevision": 1,
+          "externalId": "00000000-0000-4000-8000-000000000010",
+          "lastSeenCommentRevision": 0,
+          "ownCommentsOnly": false,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 1,
+          "worktreeId": "golden-wt",
+        },
+      },
+    ],
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000010",
+      },
+    ],
+  },
+  "intervalTick": {
+    "pushes": [
+      {
+        "channel": "runs:comments:updated",
+        "payload": {
+          "chatId": "chat-shared",
+          "commentRevision": 4,
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastSeenCommentRevision": 0,
+          "ownCommentsOnly": false,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 3,
+          "worktreeId": "golden-wt",
+        },
+      },
+    ],
+    "registry": {
+      "entries": [
+        {
+          "chatId": "chat-shared",
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastPolledCommentRevision": 4,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 3,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-retry",
+          "externalId": "00000000-0000-4000-8000-000000000002",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-legacy",
+          "externalId": "00000000-0000-4000-8000-000000000010",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+      ],
+      "pollCursor": 0,
+      "version": 1,
+    },
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000010",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000011",
+      },
+    ],
+  },
+  "listedAfterSeen": {
+    "resolved": {
+      "detail": {
+        "author": {
+          "image": null,
+          "name": "Owner",
+          "userId": "user-owner",
+        },
+        "clientChatId": "chat-shared",
+        "commentRevision": 4,
+        "commentThreads": [
+          {
+            "anchor": {
+              "kind": "message",
+              "messageId": "turn-1:msg-1",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Why did the retry loop change?",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-1",
+              },
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-owner",
+                },
+                "body": "Because uploads time out.",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-2",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000001",
+            "status": "resolved",
+          },
+          {
+            "anchor": {
+              "kind": "run",
+            },
+            "anchorState": "matched",
+            "comments": [
+              {
+                "author": {
+                  "displayName": null,
+                  "image": null,
+                  "userId": "user-teammate",
+                },
+                "body": "Looks good, one question.",
+                "createdAt": "2026-11-01T12:00:00.000Z",
+                "id": "comment-3",
+              },
+            ],
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "id": "web:00000000-0000-4000-9000-000000000002",
+            "status": "open",
+          },
+        ],
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "diff": "",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "messages": [
+          {
+            "chatId": "chat-shared",
+            "createdAtMs": 1793534400000,
+            "messageId": "turn-1:msg-1",
+            "role": "assistant",
+            "status": "complete",
+            "text": "I changed the retry loop.",
+          },
+        ],
+        "organizationId": "00000000-0000-4000-8000-00000000b001",
+        "plans": [],
+        "rollup": {
+          "cacheCreationInputTokens": 0,
+          "cacheReadInputTokens": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "provider": "claude",
+          "status": "success",
+          "toolUseCount": 0,
+          "totalCostUsd": 0,
+          "turnCount": 1,
+        },
+        "shareScope": "organization",
+        "summary": "",
+        "title": "Fix the flaky upload test",
+        "transcript": [],
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+        "viewerUserId": "user-owner",
+      },
+      "lastSeenCommentRevision": 4,
+    },
+  },
+  "ownComment": {
+    "pushes": [
+      {
+        "channel": "runs:comments:updated",
+        "payload": {
+          "chatId": "chat-shared",
+          "commentRevision": 5,
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastSeenCommentRevision": 4,
+          "ownCommentsOnly": true,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 1,
+          "worktreeId": "golden-wt",
+        },
+      },
+    ],
+    "registry": {
+      "entries": [
+        {
+          "chatId": "chat-shared",
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastPolledCommentRevision": 5,
+          "lastSeenCommentRevision": 4,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 1,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-retry",
+          "externalId": "00000000-0000-4000-8000-000000000002",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-legacy",
+          "externalId": "00000000-0000-4000-8000-000000000010",
+          "lastPolledCommentRevision": 1,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 1,
+          "worktreeId": "golden-wt",
+        },
+      ],
+      "pollCursor": 0,
+      "version": 1,
+    },
+  },
+  "quietTick": {
+    "pushes": [],
+    "requests": [
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000001",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000002",
+      },
+      {
+        "authorization": "Bearer <api key>",
+        "method": "GET",
+        "path": "<api>/runs/00000000-0000-4000-8000-000000000010",
+      },
+    ],
+  },
+  "registry": {
+    "entries": [
+      {
+        "chatId": "chat-shared",
+        "externalId": "00000000-0000-4000-8000-000000000001",
+        "lastPolledCommentRevision": 4,
+        "lastSeenCommentRevision": 4,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-retry",
+        "externalId": "00000000-0000-4000-8000-000000000002",
+        "lastPolledCommentRevision": 0,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 0,
+        "worktreeId": "golden-wt",
+      },
+      {
+        "chatId": "chat-legacy",
+        "externalId": "00000000-0000-4000-8000-000000000010",
+        "lastPolledCommentRevision": 1,
+        "lastSeenCommentRevision": 0,
+        "projectId": "shared-runs-golden",
+        "unreadCommentCount": 1,
+        "worktreeId": "golden-wt",
+      },
+    ],
+    "pollCursor": 0,
+    "version": 1,
+  },
+  "requests": [
+    "GET <api>/runs/00000000-0000-4000-8000-000000000001",
+  ],
+  "seen": {
+    "resolved": {
+      "lastSeenCommentRevision": 4,
+      "unreadCommentCount": 0,
+    },
+  },
+  "seenBackwards": {
+    "resolved": {
+      "lastSeenCommentRevision": 4,
+      "unreadCommentCount": 0,
+    },
+  },
+  "seenUnknown": {
+    "resolved": {
+      "lastSeenCommentRevision": 0,
+      "unreadCommentCount": 0,
+    },
+  },
+  "seenWhilePolling": {
+    "pushes": [],
+    "registry": {
+      "entries": [
+        {
+          "chatId": "chat-shared",
+          "externalId": "00000000-0000-4000-8000-000000000001",
+          "lastPolledCommentRevision": 6,
+          "lastSeenCommentRevision": 6,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-retry",
+          "externalId": "00000000-0000-4000-8000-000000000002",
+          "lastPolledCommentRevision": 0,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 0,
+          "worktreeId": "golden-wt",
+        },
+        {
+          "chatId": "chat-legacy",
+          "externalId": "00000000-0000-4000-8000-000000000010",
+          "lastPolledCommentRevision": 1,
+          "lastSeenCommentRevision": 0,
+          "projectId": "shared-runs-golden",
+          "unreadCommentCount": 1,
+          "worktreeId": "golden-wt",
+        },
+      ],
+      "pollCursor": 0,
+      "version": 1,
+    },
+    "seenInFlight": {
+      "resolved": {
+        "lastSeenCommentRevision": 6,
+        "unreadCommentCount": 0,
+      },
+    },
+  },
+}
+`;

@@ -205,7 +205,8 @@ import { enqueueKnownPrFastRefresh } from '../lib/github-poller';
 import { buildPipelinePreferenceEnv } from './preference-env';
 import { getObservabilityService } from '../observability';
 import { createDesktopPipelineObservabilityFeed } from '../observability/ingest';
-import { readTrackedPlanData, updatePlan } from '../services/plans-service';
+import { readTrackedPlanData } from '../services/plans-service';
+import { approvePlanForPipelineRun } from '../canopy-runtime/plan-host-writers';
 import { CURSOR_PLAN_EXECUTION_UNAVAILABLE } from '@canopy/desktop-shared/plan-review';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';
 import { assertNotSplitLocked } from '../services/split-lock-service';
@@ -287,9 +288,14 @@ import {
   admitStoredRunDefinition,
 } from './run-definition-admission';
 import {
+  PIPELINE_DEFINITION_REMOVED_MESSAGE,
   pipelineDefinitionRecoveryRefusal,
   type PipelineDefinitionRecoveryRefusal,
 } from './pipeline-install-intents';
+import {
+  isRemovedSavedDefinition,
+  isRunOfRemovedSavedDefinition,
+} from './removed-definitions';
 import {
   setPipelineExecutionFanOut,
   settlePipelineExecutionEvent,
@@ -578,6 +584,22 @@ async function installRecoveryRefusal(
   const refusal = await pipelineDefinitionRecoveryRefusal(definitionId);
   return refusal ? { success: false, ...refusal } : null;
 }
+
+/** CAN-7347: the saved workflow a start names was deleted or undone. */
+class PipelineDefinitionRemovedError extends Error {
+  readonly code = 'pipeline_definition_removed' as const;
+
+  constructor() {
+    super(PIPELINE_DEFINITION_REMOVED_MESSAGE);
+    this.name = 'PipelineDefinitionRemovedError';
+  }
+}
+
+const DEFINITION_REMOVED_REFUSAL: InstallRecoveryRefusal = {
+  success: false,
+  error: PIPELINE_DEFINITION_REMOVED_MESSAGE,
+  errorCode: 'pipeline_definition_removed',
+};
 
 function isProjectPipelineRequest(
   request: PipelineLookupRequest,
@@ -2381,10 +2403,10 @@ function sanitizeRendererExecuteOptions(
  * Advisor `pipeline.run`), so approval/sync happens here instead of being
  * duplicated across scattered renderer call sites.
  *
- * `updatePlan` no-ops when the plan id does not exist and only records the
- * `plan_approved` usage event on the real `pending -> approved` transition, so
- * re-approval is idempotent. Best-effort: a failure here must never fail the
- * pipeline run.
+ * The write goes through `core.plan.update` as the pipeline plan writer. It
+ * no-ops when the plan id does not exist and only records the `plan_approved`
+ * usage event on the real `pending -> approved` transition, so re-approval is
+ * idempotent. Best-effort: a failure here must never fail the pipeline run.
  */
 async function applyImplicitPlanApproval(args: {
   options: MainProcessExecutePipelineRequestOptions;
@@ -2408,13 +2430,12 @@ async function applyImplicitPlanApproval(args: {
     (options.eventName === 'plan_ready' ? 'user' : undefined);
 
   try {
-    await updatePlan({
+    await approvePlanForPipelineRun({
       projectId,
       worktreeId,
       planId,
-      reviewStatus: 'approved',
+      executionId,
       approvedAt: new Date().toISOString(),
-      linkedExecutionId: executionId,
       ...(options.chatId !== undefined ? { chatId: options.chatId } : {}),
       ...(initiationSource !== undefined ? { initiationSource } : {}),
     });
@@ -2444,6 +2465,15 @@ export async function startPipelineExecutionFromMain(args: {
   if (speedError) return { success: false, error: speedError };
   const recoveryRefusal = await installRecoveryRefusal(args.options.pipelineId);
   if (recoveryRefusal) return recoveryRefusal;
+  // CAN-7347: a deleted workflow never runs from a copy its caller still
+  // holds.
+  if (
+    isRemovedSavedDefinition(
+      args.options.pipelineId,
+      args.options.pipelinePreferenceLocator,
+    )
+  )
+    return DEFINITION_REMOVED_REFUSAL;
   // A global start is refused before any reservation, owner binding, scratch
   // folder, or watcher exists, including when its owner checks can't read.
   const globalRefusal = await preflightGlobalStart(args.pipeline, args.options);
@@ -2553,6 +2583,9 @@ async function replayThroughLocalWorker(
     if (stored) {
       const refusal = await installRecoveryRefusal(stored.pipeline_id);
       if (refusal) return refusal;
+      // CAN-7347: a retry or start-over of a deleted workflow's run.
+      if (isRunOfRemovedSavedDefinition(stored))
+        return DEFINITION_REMOVED_REFUSAL;
     }
     const secretBindings = await buildPipelineSecretBindings({
       workspaceId: stored?.project_id,
@@ -3585,6 +3618,15 @@ async function startPipelineExecutionFromMainInternal(args: {
       if (admitted) {
         pipelineContent = admitted.pipeline;
         admittedDocument = admitted.definition.document;
+      } else if (
+        // A delete since the check above, as between a hook or automation's
+        // read of the workflow and this start.
+        isRemovedSavedDefinition(
+          executionOptions.pipelineId,
+          executionOptions.pipelinePreferenceLocator,
+        )
+      ) {
+        throw new PipelineDefinitionRemovedError();
       }
     }
     if (storedPipelineId !== undefined && topLevelGlobal) {
@@ -3760,7 +3802,8 @@ async function startPipelineExecutionFromMainInternal(args: {
       error: formatPipelineExecutionError(error),
       ...(error instanceof SharedPipelinePinMismatchError
         ? { errorCode: 'shared_pipeline_changed' as const }
-        : error instanceof PipelineNowOwnedError
+        : error instanceof PipelineNowOwnedError ||
+            error instanceof PipelineDefinitionRemovedError
           ? { errorCode: error.code }
           : {}),
     };

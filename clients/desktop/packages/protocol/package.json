@@ -31,6 +31,7 @@
     "./canopy-core": "./src/canopy-core/index.ts",
     "./canopy-core/core": "./src/canopy-core/core/index.ts",
     "./canopy-core/core/ledger": "./src/canopy-core/core/ledger/index.ts",
+    "./canopy-core/core/managedDelegation/testing": "./src/canopy-core/core/managedDelegation/testing/index.ts",
     "./canopy-core/core/pipeline/cloud-runs": "./src/canopy-core/core/pipeline/cloud-runs.ts",
     "./canopy-core/worker": "./src/canopy-core/worker/index.ts",
     "./file-path": "./src/file-path.ts",

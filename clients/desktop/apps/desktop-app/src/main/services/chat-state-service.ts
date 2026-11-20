@@ -3818,8 +3818,9 @@ export class ChatStateService implements ChatStateCommandPort {
     this.approvePlanReview =
       options.approvePlanReview ??
       (async (request): Promise<boolean> => {
-        const { approveOpenCodePlanReview } = await import('./plans-service');
-        return approveOpenCodePlanReview(request);
+        const { approveProposalPlanReview } =
+          await import('../canopy-runtime/plan-host-writers');
+        return approveProposalPlanReview(request);
       });
     this.authorizeSend =
       options.authorizeSend ??

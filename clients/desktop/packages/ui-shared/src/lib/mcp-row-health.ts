@@ -14,6 +14,18 @@ export function mcpHasMultipleTargets(entry: UnifiedPluginEntry): boolean {
   );
 }
 
+/**
+ * Whether a server on this device stands behind the row: a device connection
+ * on an integration card, or a standalone server outside the account. An
+ * account-only row has connections to remove, never a server to delete.
+ */
+export function mcpRowHasDeviceServer(entry: UnifiedPluginEntry): boolean {
+  const connections = entry.integration?.connections;
+  if (connections !== undefined)
+    return connections.some((connection) => connection.binding === 'device');
+  return entry.placement !== 'account';
+}
+
 /** The one action a Customize MCP row offers inline. */
 export type McpRowInlineAction = 'test' | 'connect' | 'reconnect';
 

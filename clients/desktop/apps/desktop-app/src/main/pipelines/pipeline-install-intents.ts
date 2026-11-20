@@ -71,6 +71,10 @@ import { createResourceInstallReceiptsStore } from '../lib/resource-install-rece
 import type { PipelineAssetInstallPlan } from './pipeline-asset-install';
 import { deleteUserPipelineLocalMetadata } from './pipeline-local-metadata-store';
 import {
+  definitionRemoval,
+  noteDefinitionRemoved,
+} from './removed-definitions';
+import {
   findCapabilityPackageInstallByOwner,
   removeCapabilityPackageInstall,
   upsertCapabilityPackageInstall,
@@ -1075,7 +1079,7 @@ export async function recoverInterruptedPipelineInstalls(
       for (const { definitionId } of intent.definitions)
         if (inspectStoredPipelineDocument(definitionId).kind === 'absent') {
           removed.add(definitionId);
-          removedByRecovery.add(definitionId);
+          noteDefinitionRemoved(definitionId, 'undone');
         }
       settle('ready', removed);
     } catch (error) {
@@ -1136,13 +1140,6 @@ export function isPipelineDefinitionClaimed(definitionId: string): boolean {
  * next start, so what they cover is only partly restored until then.
  */
 const failedRollbacks = new Set<string>();
-
-/**
- * Definitions a successful rollback in this process removed, because the
- * interrupted install had created them. Cleared once the store holds the
- * definition again.
- */
-const removedByRecovery = new Set<string>();
 
 /** Where a run of a definition stands against install recovery. */
 export type PipelineDefinitionRecovery =
@@ -1246,11 +1243,7 @@ async function definitionRecovery(
     );
     return pending;
   }
-  if (removedByRecovery.has(definitionId)) {
-    if (inspectStoredPipelineDocument(definitionId).kind === 'absent')
-      return 'removed';
-    removedByRecovery.delete(definitionId);
-  }
+  if (definitionRemoval(definitionId) === 'undone') return 'removed';
   const owner = claimedDefinitions.get(definitionId);
   return owner !== undefined && failedRollbacks.has(owner)
     ? 'unconfirmed'

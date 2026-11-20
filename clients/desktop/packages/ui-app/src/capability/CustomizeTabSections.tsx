@@ -5,13 +5,18 @@ import {
   type ComponentType,
   type JSX,
   type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
-import type { InstalledItemUninstallTarget } from '@canopy/protocol/installed-items';
+import type {
+  InstalledItemStatus,
+  InstalledItemUninstallTarget,
+} from '@canopy/protocol/installed-items';
 import { useOptionalCanopyClient } from '@canopy/app-state';
 import { isFeatureSurfaceAvailable } from '@canopy/app-core/gating';
 import {
@@ -25,6 +30,9 @@ import {
   InstalledItemStatusControl,
   InstalledItemStatusPicker,
   Button,
+  CenteredLoadingSpinner,
+  Count,
+  DelayedLoadingPlaceholder,
   InstalledItemStatusUnavailable,
   McpRowHealth,
   McpRowCheckFeedback,
@@ -54,6 +62,7 @@ import { displayVersion } from '@canopy/ui-shared/lib/display-version';
 import type { HostAction } from '@canopy/ui-shared/lib/host-action';
 import {
   mcpHasMultipleTargets,
+  mcpRowHasDeviceServer,
   mcpRowHealthModel,
 } from '@canopy/ui-shared/lib/mcp-row-health';
 import {
@@ -87,6 +96,8 @@ import {
   customizeDiscoverySourceOptions,
   type CustomizeDefaultHarness,
   DEFAULT_CUSTOMIZE_DISCOVERY_FILTERS,
+  LOADING_PLACEHOLDER_DELAY_MS,
+  SLOW_LOAD_NOTE_DELAY_MS,
 } from '@canopy/ui-shared/lib';
 import {
   useCustomizeDiscoveryEnabled,
@@ -156,6 +167,19 @@ export interface CustomizeMcpRowActions {
     | { readonly authorizationUrl?: string; readonly onCancel: () => void }
     | undefined;
   readonly edit: (entry: UnifiedPluginEntry) => HostAction<() => void>;
+  /**
+   * Whether a row with several configurations can be reconnected from its
+   * details: a connection test, or a picker for the configuration to test.
+   * Omitted: it can. A row whose details can't shows no Reconnect.
+   */
+  readonly reconnectsInDetails?: (entry: UnifiedPluginEntry) => boolean;
+  /**
+   * Whether the details a row's Delete… opens can delete its device server.
+   * Omitted: they can. A row whose details only remove its account
+   * connections says Remove… instead; a disabled item opens nothing and
+   * keeps Delete….
+   */
+  readonly removesDeviceServer?: (entry: UnifiedPluginEntry) => boolean;
   readonly formatTimestamp?: (iso: string) => string;
   /** A failed action or the status refresh after it. */
   readonly onError?: (message: string) => void;
@@ -177,10 +201,15 @@ interface McpRowPresentation {
   };
   readonly connectRun?: () => void;
   readonly cancelSignIn?: () => void;
+  /** New Customize: "✕ Couldn't connect · Reconnect" on the status line. */
+  readonly unreachable?: CustomizeRowFailure;
 }
 
 /** How long a passed Test connection reads "Connected" on the row. */
 const MCP_TEST_CONNECTED_MS = 3000;
+
+/** The longest New Customize's first-load spinner waits for the reads. */
+const SETTLE_DEADLINE_MS = 15_000;
 
 const MCP_ROW_ACTION_FAILED = "Couldn't finish that. Try again.";
 
@@ -299,6 +328,17 @@ export interface CustomizeTabSectionsProps {
   /** True while the data that decides the focus target is still loading. */
   readonly focusPending?: boolean;
   readonly onFocusSectionSettled?: () => void;
+  /**
+   * True while a host read that adds installed rows outside
+   * `installedInventory` (the web's account MCP connections) is on its way.
+   * Only New Customize's first-load spinner waits on it.
+   */
+  readonly installedRowsPending?: boolean;
+  /**
+   * What follows the list (the web's Show more and pages). New Customize
+   * holds it back with the list behind the first-load spinner.
+   */
+  readonly afterList?: ReactNode;
 }
 
 const TYPE_TAB_SECTION_IDS: Record<
@@ -365,7 +405,35 @@ interface PendingRemoval {
   readonly scope: string | undefined;
 }
 
-/** Why an MCP row's Remove is off; loading or unknown states give no reason. */
+/**
+ * A failed status change, named by where it was going: Active turns on,
+ * Disabled turns off, and Available is neither. The retry repeats the
+ * change, so it names the direction too.
+ */
+function statusFailureCopy(
+  next: InstalledItemStatus,
+): Pick<CustomizeRowFailure, 'label' | 'retryLabel'> {
+  switch (next) {
+    case 'active':
+      return { label: "Couldn't turn on", retryLabel: 'Try turning on again' };
+    case 'disabled':
+      return {
+        label: "Couldn't turn off",
+        retryLabel: 'Try turning off again',
+      };
+    case 'available':
+      return {
+        label: "Couldn't make it available",
+        retryLabel: 'Try making it available again',
+      };
+    default: {
+      const unhandled: never = next;
+      return unhandled;
+    }
+  }
+}
+
+/** Why an MCP row's Delete is off; loading or unknown states give no reason. */
 function mcpRemoveDisabledReason(
   entry: UnifiedPluginEntry,
   state: InstalledEntryStatusState | undefined,
@@ -387,12 +455,160 @@ const DEFAULT_UNAVAILABLE: CustomizeInstalledUnavailableCopy = {
   body: 'Browse is still available. Installed items show up once this device can read them.',
 };
 
+/** When the first-load spinner on screen began, shared by the spinners. */
+interface FirstLoadClock {
+  /** How long the spinner on screen has waited; 0 with none mounted. */
+  readonly elapsed: () => number;
+  /** Counts a mounted spinner; returns its release. */
+  readonly hold: () => () => void;
+}
+
+function createFirstLoadClock(): FirstLoadClock {
+  let startedAt: number | null = null;
+  let holders = 0;
+  let reset: ReturnType<typeof setTimeout> | undefined;
+  return {
+    elapsed: () => (startedAt === null ? 0 : Date.now() - startedAt),
+    hold: () => {
+      clearTimeout(reset);
+      startedAt ??= Date.now();
+      holders += 1;
+      return (): void => {
+        holders -= 1;
+        // A spinner mounted in the same commit keeps the start time.
+        if (holders === 0)
+          reset = setTimeout(() => {
+            startedAt = null;
+          }, 0);
+      };
+    },
+  };
+}
+
+const FirstLoadClockContext = createContext<FirstLoadClock | null>(null);
+
+/**
+ * Lets a first-load spinner that replaces another one (the web's first-screen
+ * placeholder handing over to the list) carry on from it: it waits out only
+ * the rest of the delay, so the spinner never blinks off between them.
+ */
+export function CustomizeFirstLoadContinuity({
+  children,
+}: {
+  readonly children: ReactNode;
+}): JSX.Element {
+  const [clock] = useState(createFirstLoadClock);
+  return (
+    <FirstLoadClockContext.Provider value={clock}>
+      {children}
+    </FirstLoadClockContext.Provider>
+  );
+}
+
+/**
+ * New Customize's first-load placeholder: one centered spinner in place of
+ * the whole list. A host that renders its own placeholder before the list
+ * mounts (the web's first-screen region) shows this one too.
+ */
+export function CustomizeFirstLoadSpinner(): JSX.Element {
+  const clock = useContext(FirstLoadClockContext);
+  const [elapsed] = useState(() => clock?.elapsed() ?? 0);
+  useEffect(() => clock?.hold(), [clock]);
+  return (
+    <div data-testid="customize-installed-loading">
+      <DelayedLoadingPlaceholder
+        delayMs={Math.max(0, LOADING_PLACEHOLDER_DELAY_MS - elapsed)}
+        slowNote="Still loading installed items…"
+        slowAfterMs={Math.max(0, SLOW_LOAD_NOTE_DELAY_MS - elapsed)}
+      >
+        <CenteredLoadingSpinner spacing="section" />
+      </DelayedLoadingPlaceholder>
+    </div>
+  );
+}
+
+/**
+ * What an empty list says past the deadline while a first read is still
+ * pending: the host's empty state would claim there is nothing yet.
+ */
+function CustomizeStillLoading(): JSX.Element {
+  return (
+    <p
+      data-testid="customize-sections-pending"
+      aria-live="polite"
+      className="py-10 text-center text-s fg-secondary"
+    >
+      Still loading installed items…
+    </p>
+  );
+}
+
+interface CustomizeFirstLoadHold {
+  /** A first read New Customize waits on is still on its way. */
+  readonly readsPending: boolean;
+  readonly deadlinePassed: boolean;
+  /** The spinner shows in place of the list and what follows it. */
+  readonly holdForSettle: boolean;
+}
+
+function useCustomizeFirstLoadHold({
+  tab,
+  loading = false,
+  installedInventory,
+  installedStatusInventory,
+  focusPending = false,
+  installedRowsPending = false,
+}: CustomizeTabSectionsProps): CustomizeFirstLoadHold {
+  const discoveryEnabled = useCustomizeDiscoveryEnabled();
+  // Only the first inventory read holds; `installedRowsPending` is read live.
+  const inventoryLoading =
+    loading || installedInventory === 'loading' || focusPending;
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  if (!inventoryLoading && !inventoryLoaded) setInventoryLoaded(true);
+  // The status read holds only tabs that show statuses, so it keeps its own
+  // first-read latch: a tab without them can't use up a status tab's hold.
+  const statusLoading = installedStatusInventory === 'loading';
+  const [statusLoaded, setStatusLoaded] = useState(false);
+  if (!statusLoading && !statusLoaded) setStatusLoaded(true);
+  const readsPending =
+    discoveryEnabled &&
+    ((inventoryLoading && !inventoryLoaded) ||
+      (customizeTabHasInstalledStatuses(tab) &&
+        statusLoading &&
+        !statusLoaded) ||
+      installedRowsPending);
+  // One deadline per mount, armed by the first hold and kept across tabs.
+  const [deadlineArmed, setDeadlineArmed] = useState(false);
+  const [deadlinePassed, setDeadlinePassed] = useState(false);
+  const holdForSettle = readsPending && !deadlinePassed;
+  if (holdForSettle && !deadlineArmed) setDeadlineArmed(true);
+  useEffect(() => {
+    if (!deadlineArmed) return undefined;
+    const timer = setTimeout(() => setDeadlinePassed(true), SETTLE_DEADLINE_MS);
+    return (): void => clearTimeout(timer);
+  }, [deadlineArmed]);
+  return { readsPending, deadlinePassed, holdForSettle };
+}
+
 /**
  * The Customize page body shared by desktop and web: Updates, Installed,
  * Shared by me and Browse, in that order. Hosts supply reads and actions.
  */
-export function CustomizeTabSections(
-  props: CustomizeTabSectionsProps,
+export function CustomizeTabSections({
+  afterList,
+  ...props
+}: CustomizeTabSectionsProps): JSX.Element {
+  const hold = useCustomizeFirstLoadHold(props);
+  return (
+    <>
+      <CustomizeTabSectionsBody {...props} hold={hold} />
+      {hold.holdForSettle ? null : afterList}
+    </>
+  );
+}
+
+function CustomizeTabSectionsBody(
+  props: CustomizeTabSectionsProps & { readonly hold: CustomizeFirstLoadHold },
 ): JSX.Element {
   const {
     tab,
@@ -453,6 +669,7 @@ export function CustomizeTabSections(
     focusSection,
     focusPending = false,
     onFocusSectionSettled,
+    hold: { readsPending, deadlinePassed, holdForSettle },
   } = props;
   const searchActive = query.trim() !== '';
   // Default-deny: a host without a client provider (the Portal page) or one
@@ -668,7 +885,9 @@ export function CustomizeTabSections(
       pipelineFilters,
     },
     model,
-    loading,
+    // A search counts only once the reads finished or failed, never on the
+    // deadline, so it cannot report a partial count.
+    loading: loading || readsPending,
     browseGroupsCollapse: onExpandBrowseGroup !== undefined,
   });
   const selectTrackedEntry = useCallback(
@@ -729,10 +948,7 @@ export function CustomizeTabSections(
         if (outcome.ok) next.delete(entryId);
         else
           next.set(entryId, {
-            label:
-              outcome.next === 'disabled'
-                ? 'Couldn’t turn off'
-                : 'Couldn’t turn on',
+            ...statusFailureCopy(outcome.next),
             reason: outcome.message,
             tone: 'attention',
             retry: (): void => {
@@ -905,7 +1121,14 @@ export function CustomizeTabSections(
       null)
     : null;
   useEffect(() => {
-    if (!focusSection || !onFocusSectionSettled || loading || focusPending)
+    // Behind the settle spinner no section exists, so the request waits.
+    if (
+      !focusSection ||
+      !onFocusSectionSettled ||
+      loading ||
+      focusPending ||
+      holdForSettle
+    )
       return;
     if (focusTargetDomId) {
       const target = document.getElementById(focusTargetDomId);
@@ -924,6 +1147,7 @@ export function CustomizeTabSections(
   }, [
     focusSection,
     focusPending,
+    holdForSettle,
     focusTargetDomId,
     loading,
     onFocusSectionSettled,
@@ -1084,7 +1308,7 @@ export function CustomizeTabSections(
       if (!item.removable || target === undefined) return null;
       return {
         id: 'remove',
-        label: removalMenuLabel(entry),
+        label: removalMenuLabel(entry, target),
         destructive: true,
         disabled: entryStatus.pendingKeys.has(installedItemTargetKey(target)),
         onSelect: () =>
@@ -1333,7 +1557,15 @@ export function CustomizeTabSections(
         const chooseTarget = mcpHasMultipleTargets(entry);
         items.push({
           id: 'remove',
-          label: 'Remove…',
+          // Delete for a device server, as its detail page and dialog say;
+          // an account-only row, or one whose details can't delete the
+          // device server, only removes the account its details pick.
+          label:
+            mcpRowHasDeviceServer(entry) &&
+            (!chooseTarget ||
+              mcpRowActions?.removesDeviceServer?.(entry) !== false)
+              ? 'Delete…'
+              : 'Remove…',
           destructive: true,
           disabled: !chooseTarget,
           disabledReason: chooseTarget
@@ -1430,10 +1662,10 @@ export function CustomizeTabSections(
     const onUninstall = entryStatus?.onUninstall;
     if (!activeRemoval || !onUninstall) return null;
     const { entry, target, description } = activeRemoval;
-    const verb = removalVerb(entry);
+    const verb = removalVerb(entry, target);
     return (
       <UninstallConfirmDialog
-        title={removalConfirmTitle(entry)}
+        title={removalConfirmTitle(entry, target)}
         message={
           entry.kind === 'collection'
             ? 'This removes the collection grouping. Skills, plugins and MCP servers you already use are kept.'
@@ -1561,10 +1793,43 @@ export function CustomizeTabSections(
               const userTest = discoveryEnabled
                 ? mcpUserTests.get(entry.id)
                 : undefined;
+              const unreachable: CustomizeRowFailure | undefined =
+                discoveryEnabled &&
+                !disabled &&
+                mcpConnection.disabled !== true &&
+                model.tone === 'destructive' &&
+                pending === undefined
+                  ? {
+                      label: model.text,
+                      reason: `${model.text} to ${entry.name}.${
+                        model.checkedAt !== undefined &&
+                        mcpRowActions.formatTimestamp
+                          ? ` Checked ${mcpRowActions.formatTimestamp(model.checkedAt)}.`
+                          : ''
+                      }`,
+                      tone: 'destructive',
+                      alongsideSignIn: true,
+                      retryLabel: 'Reconnect',
+                      retryBusyLabel: 'Reconnecting…',
+                      retryBusy:
+                        mcpRowBusyIds.has(entry.id) || userTest === 'checking',
+                      ...(mcpHasMultipleTargets(entry)
+                        ? mcpRowActions.reconnectsInDetails?.(entry) === false
+                          ? {}
+                          : { retry: (): void => onSelectEntry(entry) }
+                        : test.available
+                          ? {
+                              retry: (): void =>
+                                void runUserMcpTest(entry, test.run),
+                            }
+                          : {}),
+                    }
+                  : undefined;
               const hideHealth =
                 discoveryEnabled &&
                 (disabled ||
                   mcpConnection.disabled === true ||
+                  unreachable !== undefined ||
                   (model.tone !== 'attention' && model.tone !== 'destructive'));
               const busy = mcpRowBusyIds.has(entry.id) || pending !== undefined;
               const severalConnections = mcpHasMultipleTargets(entry);
@@ -1604,6 +1869,7 @@ export function CustomizeTabSections(
                   : undefined;
               return {
                 connectLabel,
+                ...(unreachable ? { unreachable } : {}),
                 ...(inline && !pending?.authorizationUrl
                   ? { signIn: { busy: inline.busy, run: inline.onClick } }
                   : {}),
@@ -1969,7 +2235,11 @@ export function CustomizeTabSections(
           splitAction={splitAction}
           signIn={rowSignIn}
           update={rowUpdate}
-          failure={discoveryEnabled ? statusFailures.get(entry.id) : undefined}
+          failure={
+            discoveryEnabled
+              ? (statusFailures.get(entry.id) ?? mcpHealth?.unreachable)
+              : undefined
+          }
           actions={
             section.id === 'browse' &&
             installed &&
@@ -2035,7 +2305,9 @@ export function CustomizeTabSections(
     const state = section.inventoryState ?? 'ready';
     return (
       <>
-        {customizeTabHasInstalledStatuses(tab) &&
+        {/* New Customize says this under the page title instead. */}
+        {!discoveryEnabled &&
+          customizeTabHasInstalledStatuses(tab) &&
           state === 'ready' &&
           // Rows carry no status control when the host cannot read statuses.
           installedStatusInventory !== 'unavailable' &&
@@ -2050,7 +2322,9 @@ export function CustomizeTabSections(
           )}
         {state === 'ready' &&
           section.entries.length === 0 &&
-          (emptyState && !searchActive && !statusFilter ? (
+          (readsPending && !searchActive && !statusFilter ? (
+            <CustomizeStillLoading />
+          ) : emptyState && !searchActive && !statusFilter ? (
             emptyState
           ) : (
             <EmptyStateRow
@@ -2132,6 +2406,12 @@ export function CustomizeTabSections(
             action={installedUnavailable.action}
           />
         )}
+        {/* The notice covers this device only; account rows may still come. */}
+        {(state === 'unavailable' || state === 'error') &&
+          section.entries.length === 0 &&
+          readsPending &&
+          !searchActive &&
+          !statusFilter && <CustomizeStillLoading />}
       </>
     );
   }
@@ -2190,7 +2470,13 @@ export function CustomizeTabSections(
     );
   }
 
-  if (loading) return <PluginsDiscoveryListLoading />;
+  // New Customize shows one centered spinner while the first reads are
+  // pending, so the page appears whole; past the deadline it renders what has
+  // arrived, never the skeleton.
+  if (holdForSettle) return <CustomizeFirstLoadSpinner />;
+
+  if (loading && !(readsPending && deadlinePassed))
+    return <PluginsDiscoveryListLoading />;
 
   const remainingBrowseActions =
     tab === 'workflow' &&
@@ -2250,6 +2536,9 @@ export function CustomizeTabSections(
             onAction={searchActive ? onClearSearch : undefined}
             actionTestId="customize-sections-clear-search"
           />
+        ) : readsPending ? (
+          // Past the deadline (the hold returned above until then).
+          <CustomizeStillLoading />
         ) : !emptyState ? (
           <p
             data-testid="customize-sections-empty"
@@ -2402,9 +2691,11 @@ export function CustomizeTabSections(
 }
 
 /**
- * New Customize's bulk update (Sergii's QA, item 5): a text link on the
- * Installed heading, "Update all (N)", shown only while N rows can update
- * now. It reuses each row's existing update.
+ * New Customize's bulk update (Sergii's QA, item 5): a compact secondary
+ * button styled like "Add collection", "Update all" with a plain count, on
+ * the Installed heading. It batches the skills this Installed list shows, so
+ * it appears on tabs that list skills and only while they can update now. It
+ * reuses each row's existing update.
  */
 function CustomizeUpdateAllLink({
   entries,
@@ -2424,16 +2715,23 @@ function CustomizeUpdateAllLink({
   );
   if (updatable.length === 0) return null;
   return (
-    <span className="text-xs">
-      <Button
-        variant="link"
-        data-testid="customize-update-all"
-        disabled={busy}
-        aria-busy={busy || undefined}
-        onClick={() => onUpdateAll(updatable)}
-      >
-        {busy ? 'Updating…' : `Update all (${updatable.length})`}
-      </Button>
-    </span>
+    <Button
+      type="button"
+      size="compact"
+      variant="secondary"
+      data-testid="customize-update-all"
+      disabled={busy}
+      aria-busy={busy || undefined}
+      onClick={() => onUpdateAll(updatable)}
+    >
+      {busy ? (
+        'Updating…'
+      ) : (
+        <span className="inline-flex items-center gap-1.5">
+          Update all
+          <Count value={updatable.length} />
+        </span>
+      )}
+    </Button>
   );
 }

@@ -317,6 +317,14 @@ export const DESKTOP_OPERATIONS = {
       'is_first_message',
     ],
   },
+  'canopy.dictation_session': {
+    kind: 'product',
+    posthogEvent: 'dictation:session_end',
+    // One per recording session (CAN-6070). `failure_reason` is a closed value
+    // chosen from the error's type, only on `outcome: failed`. Never
+    // transcript text, audio details or ids.
+    contextKeys: ['outcome', 'failure_reason', 'chat_surface'],
+  },
   'canopy.portal_chat_visual_read': {
     kind: 'product',
     posthogEvent: 'chat:visual_view',
@@ -648,10 +656,17 @@ export interface PostHogOperationTracker {
 
 /** Bounds start times for operations that never finish. */
 const MAX_TRACKED_OPERATION_STARTS = 500;
+/**
+ * Operations whose start-to-finish span is only reportable when capture was
+ * eligible at the start, and is dropped when capture is withdrawn mid-span.
+ * `canopy.dictation_session` joins because a take that began before analytics
+ * opt-in must not be sent, with its duration, once the user opts in.
+ */
 const ACQUISITION_LIFECYCLES: ReadonlySet<string> = new Set([
   'canopy.first_run_import',
   'canopy.project_import',
   'canopy.remote_pairing',
+  'canopy.dictation_session',
 ]);
 
 function projectContextKeys(

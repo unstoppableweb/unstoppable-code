@@ -38,10 +38,7 @@ import {
   type CoreWorkspacePluginsUpdateResult,
 } from '@canopy/protocol/canopy-core';
 import type { InstalledItemRef } from '@canopy/protocol/installed-items';
-import type {
-  RemoteControlPluginCatalog,
-  RemoteControlPluginCatalogMcpServer,
-} from '@canopy/protocol/remote-control/shell';
+import type { RemoteControlPluginCatalogMcpServer } from '@canopy/protocol/remote-control/shell';
 import {
   chatInheritsProjectDefaults,
   chatSurfaceUsesGlobalPluginDefaults,
@@ -67,11 +64,12 @@ import type {
 } from '@canopy/execution-engine/types/plugins';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { pluginDefaultsWorkspaceId } from '../plugins/plugin-defaults-revision';
+import type { CachedPluginCatalog } from '../services/plugin-catalog-service';
 import { runningCatalogRefresh } from './core-catalog-mutation-host';
 
 /** What the desktop catalog host reads and writes; tests inject fakes. Defaults load lazily. */
 export interface DesktopCatalogHostDeps {
-  buildCachedPluginCatalog(): Promise<RemoteControlPluginCatalog>;
+  buildCachedPluginCatalog(): Promise<CachedPluginCatalog>;
   readCollection(id: string): Promise<{
     skills: { sourceId: string; skillName: string }[];
     plugins: { marketplaceId: string; pluginName: string }[];
@@ -645,7 +643,7 @@ export function createDesktopCatalogHost(
     const at = new Date().toISOString();
     const stamp = { revision: 0, createdAt: at, updatedAt: at };
     const collections = await Promise.all(
-      catalog.collections.map(async (collection) => ({
+      (catalog.collections ?? []).map(async (collection) => ({
         collection,
         members: await deps.readCollection(collection.id),
       })),
@@ -781,7 +779,9 @@ export function createDesktopCatalogHost(
       ),
     ];
     const refs: CatalogSelectionRefs = {
-      collectionIds: catalog.collections.map((collection) => collection.id),
+      collectionIds: (catalog.collections ?? []).map(
+        (collection) => collection.id,
+      ),
       skillRefs: catalog.skills.map((skill) => ({
         sourceId: skill.sourceId,
         skillName: skill.skillName,
@@ -795,7 +795,9 @@ export function createDesktopCatalogHost(
         configId: server.configId,
       })),
     };
-    return { entries, refs };
+    const read: CatalogSnapshotRead = { entries, refs };
+    if (catalog.collections === null) read.unreadableKinds = ['collection'];
+    return read;
   };
 
   return {

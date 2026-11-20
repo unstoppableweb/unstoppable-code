@@ -1,0 +1,387 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`shared-container local state (CAN-6501 golden) answers preview from the worktree and the capability-package cache 1`] = `
+{
+  "cacheBeforeCold": null,
+  "cacheBeforeWarm": {
+    "analysis": "empty",
+  },
+  "cold": {
+    "resolved": {
+      "approvedFileScope": {
+        "excludedNoteIds": [
+          "note-1",
+        ],
+        "excludedPaths": [
+          "draft.txt",
+        ],
+        "includedNoteIds": [],
+        "includedPaths": [],
+        "includedPromptIds": [],
+        "includedRunScripts": [],
+        "preferredLayout": {
+          "enabled": false,
+        },
+        "runSharingDisabled": true,
+        "runSharingEnabled": false,
+      },
+      "artifactBudget": {
+        "limit": 200,
+        "used": 3,
+      },
+      "attachmentCount": 0,
+      "chatCount": 0,
+      "containerType": "CODE_WORKTREE",
+      "defaultIncludedFilePaths": [
+        "notes.txt",
+      ],
+      "dirtyFileCount": 1,
+      "noteCount": 0,
+      "notes": [],
+      "planCount": 0,
+      "promptCount": 0,
+      "prompts": [],
+      "repository": {
+        "baseCommitSha": "8d787badf6ddea30e8dff0c326380c9a9c332e44",
+        "remoteUrl": "https://github.com/example/golden.git",
+      },
+      "startPage": null,
+      "undisclosedRepositoryCount": 0,
+      "untrackedCandidateCount": 2,
+      "untrackedCandidates": [
+        "notes.txt",
+        "draft.txt",
+      ],
+    },
+  },
+  "previewFailures": [],
+  "pushes": [
+    [
+      "invocable-inventory:changed",
+    ],
+  ],
+  "refusals": {
+    "cloudChatType": {
+      "rejected": "containerType does not match project type",
+    },
+    "coworkType": {
+      "rejected": "containerType does not match project type",
+    },
+    "invalidAudience": {
+      "rejected": "Invalid audience",
+    },
+    "invalidWorktree": {
+      "rejected": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+    },
+    "unknownType": {
+      "rejected": "Invalid containerType",
+    },
+  },
+  "warm": {
+    "resolved": {
+      "approvedFileScope": {
+        "excludedNoteIds": [
+          "note-1",
+        ],
+        "excludedPaths": [
+          "draft.txt",
+        ],
+        "includedNoteIds": [],
+        "includedPaths": [],
+        "includedPromptIds": [],
+        "includedRunScripts": [],
+        "preferredLayout": {
+          "enabled": false,
+        },
+        "runSharingDisabled": true,
+        "runSharingEnabled": false,
+      },
+      "artifactBudget": {
+        "limit": 200,
+        "used": 3,
+      },
+      "attachmentCount": 0,
+      "chatCount": 0,
+      "containerType": "CODE_WORKTREE",
+      "defaultIncludedFilePaths": [
+        "notes.txt",
+      ],
+      "dirtyFileCount": 1,
+      "noteCount": 0,
+      "notes": [],
+      "planCount": 0,
+      "promptCount": 0,
+      "prompts": [],
+      "repository": {
+        "baseCommitSha": "8d787badf6ddea30e8dff0c326380c9a9c332e44",
+        "remoteUrl": "https://github.com/example/golden.git",
+      },
+      "startPage": null,
+      "undisclosedRepositoryCount": 0,
+      "untrackedCandidateCount": 2,
+      "untrackedCandidates": [
+        "notes.txt",
+        "draft.txt",
+      ],
+    },
+  },
+}
+`;
+
+exports[`shared-container local state (CAN-6501 golden) answers run-status from the run record without the run environment 1`] = `
+{
+  "allowed": {
+    "resolved": {
+      "allowed": true,
+      "allowedAt": "2026-11-01T12:00:00.000Z",
+      "hasRunningProcesses": false,
+      "publisherUserId": "00000000-0000-4000-8000-00000000b001",
+      "run": {
+        "commands": [
+          {
+            "command": "pnpm dev",
+            "name": "dev",
+            "repoId": "app",
+          },
+        ],
+        "requiredEnv": [
+          "API_TOKEN",
+          "REGION",
+        ],
+      },
+      "runCopyNeedsRefresh": true,
+      "runCopySizeBytes": "<the copy, every entry>",
+      "unsetRequiredEnv": [
+        "REGION",
+      ],
+      "values": [
+        {
+          "key": "API_TOKEN",
+          "value": {
+            "kind": "stored-secret",
+            "ref": "ssr1_YlAzKBJbiNgvIrzZuo2PqyxmiEYOvRKvKDuNJcvX1fU",
+          },
+        },
+      ],
+    },
+  },
+  "crossRevision": {
+    "rejected": "Shared-container revision is not available",
+  },
+  "invalidId": {
+    "rejected": "Invalid containerId: must be lowercase alphanumeric with hyphens",
+  },
+  "invalidRevision": {
+    "rejected": "Invalid revisionId: must be lowercase alphanumeric with hyphens",
+  },
+  "notAccepted": {
+    "rejected": "Shared container has not been accepted on this device.",
+  },
+  "offMac": {
+    "rejected": "Shared-container run is disabled.",
+  },
+  "other": {
+    "resolved": {
+      "allowed": false,
+      "hasRunningProcesses": false,
+      "run": {
+        "commands": [
+          {
+            "command": "pnpm start",
+            "name": "dev",
+            "repoId": "app",
+          },
+        ],
+        "requiredEnv": [
+          "API_TOKEN",
+          "REGION",
+        ],
+      },
+      "runCopyNeedsRefresh": false,
+      "runCopySizeBytes": "0",
+      "unsetRequiredEnv": [
+        "API_TOKEN",
+      ],
+      "values": [
+        {
+          "key": "REGION",
+          "value": {
+            "kind": "stored-secret",
+            "ref": "ssr1_YrSo1BtrgyJ4ybciJmNd6J06dB-VfHqwrHMtLJM7udQ",
+          },
+        },
+      ],
+    },
+  },
+  "otherCrossRevision": {
+    "rejected": "Shared-container revision is not available",
+  },
+  "staleRevision": {
+    "rejected": "Shared-container revision is not available",
+  },
+}
+`;
+
+exports[`shared-container local state (CAN-6501 golden) lists accepted containers with their identity and no run consent 1`] = `
+{
+  "empty": {
+    "resolved": {
+      "containerIds": [],
+      "records": {},
+    },
+  },
+  "file": {
+    "accepted": {
+      "00000000-0000-4000-8000-00000000c001": {
+        "acceptedAt": "2026-11-01T12:00:00.000Z",
+        "access": "organization",
+        "organizationId": "00000000-0000-4000-8000-00000000a001",
+        "runAllowedAt": "2026-11-01T12:00:00.000Z",
+        "runAllowedPublisherUserId": "00000000-0000-4000-8000-00000000b001",
+      },
+      "00000000-0000-4000-8000-00000000c002": {
+        "acceptedAt": "2026-11-01T12:00:00.000Z",
+        "access": "direct",
+      },
+    },
+    "version": 1,
+  },
+  "listed": {
+    "resolved": {
+      "containerIds": [
+        "00000000-0000-4000-8000-00000000c001",
+        "00000000-0000-4000-8000-00000000c002",
+      ],
+      "records": {
+        "00000000-0000-4000-8000-00000000c001": {
+          "acceptedAt": "2026-11-01T12:00:00.000Z",
+          "access": "organization",
+          "organizationId": "00000000-0000-4000-8000-00000000a001",
+        },
+        "00000000-0000-4000-8000-00000000c002": {
+          "acceptedAt": "2026-11-01T12:00:00.000Z",
+          "access": "direct",
+        },
+      },
+    },
+  },
+}
+`;
+
+exports[`shared-container local state (CAN-6501 golden) reads fork provenance only from the requested worktree 1`] = `
+{
+  "absent": {
+    "resolved": null,
+  },
+  "invalidFile": {
+    "rejected": "Invalid shared-container fork provenance",
+  },
+  "invalidId": {
+    "rejected": "Invalid worktreeId: must be lowercase alphanumeric with hyphens",
+  },
+  "otherWorktree": {
+    "resolved": null,
+  },
+  "present": {
+    "resolved": {
+      "forkedAt": "2026-11-01T12:00:00.000Z",
+      "organizationId": "00000000-0000-4000-8000-00000000a001",
+      "sourceContainerId": "00000000-0000-4000-8000-00000000c001",
+      "sourceOwnerDisplayName": "Example Publisher",
+      "sourceRevisionCreatedAt": "2026-11-01T12:00:00.000Z",
+      "sourceRevisionId": "00000000-0000-4000-8000-00000000e001",
+    },
+  },
+}
+`;
+
+exports[`shared-container local state (CAN-6501 golden) refuses every local-state channel while shared containers are disabled 1`] = `
+{
+  "listAccepted": {
+    "rejected": "Shared containers are disabled.",
+  },
+  "preview": {
+    "rejected": "Shared containers are disabled.",
+  },
+  "readForkProvenance": {
+    "rejected": "Shared containers are disabled.",
+  },
+  "runStatus": {
+    "rejected": "Shared containers are disabled.",
+  },
+  "saveFileScope": {
+    "rejected": "Shared containers are disabled.",
+  },
+}
+`;
+
+exports[`shared-container local state (CAN-6501 golden) validates and persists save-file-scope, idempotently 1`] = `
+{
+  "file": {
+    "excludedNoteIds": [
+      "note-1",
+    ],
+    "excludedPaths": [
+      "draft.txt",
+    ],
+    "includedNoteIds": [],
+    "includedPaths": [],
+    "includedPromptIds": [],
+    "includedRunScripts": [],
+    "preferredLayout": {
+      "enabled": false,
+    },
+    "runSharingDisabled": true,
+    "runSharingEnabled": false,
+    "version": 1,
+  },
+  "pushes": [],
+  "refusals": {
+    "invalidExcludedPaths": {
+      "rejected": "Invalid excludedPaths",
+    },
+    "invalidLegacyAllowlist": {
+      "rejected": "Invalid legacyAllowlist",
+    },
+    "invalidNotes": {
+      "rejected": "Invalid note or prompt selection",
+    },
+    "invalidPreferredLayout": {
+      "rejected": "Invalid preferredLayout",
+    },
+    "invalidProject": {
+      "rejected": "Invalid projectId: must be lowercase alphanumeric with hyphens",
+    },
+    "invalidRunSharing": {
+      "rejected": "Invalid run sharing selection",
+    },
+    "missingIncludedPaths": {
+      "rejected": "Invalid includedPaths",
+    },
+    "tooManyIncludedPaths": {
+      "rejected": "Too many includedPaths",
+    },
+  },
+  "saved": {
+    "resolved": {
+      "fileScope": {
+        "excludedNoteIds": [
+          "note-1",
+        ],
+        "excludedPaths": [
+          "draft.txt",
+        ],
+        "includedNoteIds": [],
+        "includedPaths": [],
+        "includedPromptIds": [],
+        "includedRunScripts": [],
+        "preferredLayout": {
+          "enabled": false,
+        },
+        "runSharingDisabled": true,
+        "runSharingEnabled": false,
+      },
+    },
+  },
+}
+`;

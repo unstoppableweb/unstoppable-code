@@ -70,7 +70,10 @@ import {
 } from './host/controller-profile';
 import type { HostedChatAttribution } from './host/hosted-chat-dispatch';
 import type { HostFileReader } from './host/file-reads';
-import { RemoteHostSession } from './host/host-session';
+import {
+  RemoteHostSession,
+  type RemoteSecretRequestPort,
+} from './host/host-session';
 import type { MainWindowPushSource } from './host/main-window-pushes';
 import type { RemoteUploadStore } from './host/uploads';
 import {
@@ -200,6 +203,11 @@ export interface RemoteControlServiceDeps {
   fileReadChunkBytes?: number;
   /** Core operations served to paired controllers, whatever their protocol. */
   core?: RemoteCoreAccess;
+  /**
+   * The local RequestSecrets form's settlement, served to paired browser and
+   * mobile controllers (`secret-request.settle`, U7).
+   */
+  secretRequests?: RemoteSecretRequestPort;
   /**
    * Serves a hosted agent session's `chat:command` with the attribution this
    * computer derived from the session (CAN-5985). Without it hosted sessions
@@ -1837,6 +1845,10 @@ export class RemoteControlService {
         ? { completeAccountProxySignIn: this.deps.completeAccountProxySignIn }
         : {}),
       ...(this.deps.core ? { core: this.deps.core } : {}),
+      // The session serves it to browser and mobile people only.
+      ...(this.deps.secretRequests
+        ? { secretRequests: this.deps.secretRequests }
+        : {}),
       ...(grant.kind === 'hosted'
         ? {
             hostedChat: (request: unknown): Promise<unknown> =>

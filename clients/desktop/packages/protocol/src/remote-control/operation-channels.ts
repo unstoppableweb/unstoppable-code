@@ -777,6 +777,9 @@ export const REMOTE_COMMAND_CHANNELS = {
   'chat.attachments.upload': { requires: ['chatAttachments'], local: 'port' },
   // The computer's stored copy expires on its own: nothing to delete.
   'chat.attachments.delete': { local: 'answer' },
+  // `secret-request.settle` is a session method, never an IPC channel: the
+  // values go only to the host port, so no channel allowlist admits them.
+  'chat.secretRequest.settle': { local: 'port' },
 } as const satisfies OperationTable;
 
 export const REMOTE_EVENT_CHANNELS = {

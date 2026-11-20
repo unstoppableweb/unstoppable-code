@@ -169,7 +169,6 @@ import {
 import {
   isLinearApiError,
   readLinearIssueAttachments,
-  readLinearViewer,
   searchLinearIssues as searchLinearApiIssues,
   type LinearIssueSearchResult,
 } from '../lib/linear-api';
@@ -184,6 +183,7 @@ import {
   getGitHubCliStatus,
   starSourceRepository,
 } from '../canopy-runtime/github-integration-dispatch';
+import { validateLinearTokenForIpc } from '../canopy-runtime/linear-integration-dispatch';
 import { getFeatureFlagService } from '../feature-flags';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
@@ -1729,27 +1729,6 @@ async function loadLinearToken(): Promise<string | CredentialReadFailure> {
   return credentialReadResult(result);
 }
 
-async function validateLinearToken(token: string): Promise<LinearStatus> {
-  const normalized = token.trim();
-  if (!normalized) {
-    return { authenticated: false, displayName: null, error: null };
-  }
-  try {
-    const viewer = await readLinearViewer(normalized);
-    return {
-      authenticated: true,
-      displayName: viewer.displayName ?? viewer.name,
-      error: null,
-    };
-  } catch {
-    return {
-      authenticated: false,
-      displayName: null,
-      error: 'Invalid API key or unable to reach Linear.',
-    };
-  }
-}
-
 /**
  * `rejected` is narrower than `!valid` on purpose, and the difference is
  * load-bearing.
@@ -2633,8 +2612,12 @@ export function registerSettingsHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.settingsValidateLinearToken,
-    async (_event, token: string): Promise<LinearStatus> =>
-      validateLinearToken(token),
+    async (event, token: string): Promise<LinearStatus> =>
+      validateLinearTokenForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        token,
+      ),
   );
 
   registerIpcHandler(

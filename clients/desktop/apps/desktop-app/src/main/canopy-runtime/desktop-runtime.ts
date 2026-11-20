@@ -37,7 +37,6 @@ import {
   WORKER_AGENT_RUN_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_SIGN_IN_INSTRUCTION_DEFINITIONS,
   WORKER_CATALOG_INSTRUCTION_DEFINITIONS,
-  CANOPY_STREAM_DEFINITIONS,
   type CanopyStreamCursor,
   type OperationRecord,
   type CanopyInstructionDefinitionMap,
@@ -183,6 +182,12 @@ import type { LedgerService } from '../ledger/service';
 import { createCoreCostAdapter } from './core-cost-adapter';
 import { createCoreBotsAdapter, type CoreBotsHost } from './core-bots-adapter';
 import { createCoreUpdateAdapter } from './core-update-adapter';
+import type { CoreFeatureFlagHandlers } from '@canopy/core-runtime/feature-flag';
+import { createCoreFeatureFlagAdapter } from './core-feature-flag-adapter';
+import {
+  DESKTOP_STREAM_DEFINITIONS,
+  type DesktopStreamDefinitions,
+} from './desktop-stream-definitions';
 import { createCoreDictationAdapter } from './core-dictation-adapter';
 import type { CoreDictationHost } from '@canopy/core-runtime/dictation';
 import type { CoreUpdateHost } from '@canopy/core-runtime/update';
@@ -580,6 +585,8 @@ export interface CreateDesktopRuntimeOptions {
   planAdapter?: CorePlanAdapter;
   /** Handler logic for `core.review.*`; tests may inject an isolated adapter. */
   reviewAdapter?: CoreReviewAdapter;
+  /** Handler logic for `core.featureFlag.*`; tests may inject an isolated adapter. */
+  featureFlagAdapter?: CoreFeatureFlagHandlers;
   /**
    * The operation service behind `core.operation.*`; tests may inject one
    * over an isolated ledger. The runtime closes it at shutdown.
@@ -786,7 +793,7 @@ interface ChatReadProjectionContext {
 export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   DesktopQueryDefinitions & CanopyRuntimeQueries,
   DesktopInstructionDefinitions,
-  typeof CANOPY_STREAM_DEFINITIONS & CanopyRuntimeStreams
+  DesktopStreamDefinitions & CanopyRuntimeStreams
 > {
   openChatEventsForLegacyIpc(
     params: CanopyStreamParams<'core.chat.events'>,
@@ -1618,6 +1625,8 @@ export function createDesktopRuntime(
     createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
   const planAdapter = options.planAdapter ?? createCorePlanAdapter();
   const reviewAdapter = options.reviewAdapter ?? createCoreReviewAdapter();
+  const featureFlagAdapter =
+    options.featureFlagAdapter ?? createCoreFeatureFlagAdapter();
   const operationAdapter =
     options.operationAdapter ?? createCoreOperationAdapter();
   let catalogDispatcher: DesktopCanopyDispatcher | null = null;
@@ -1724,6 +1733,7 @@ export function createDesktopRuntime(
       queries: updateAdapter.queries,
       instructions: updateAdapter.instructions,
     },
+    { queries: featureFlagAdapter.queries },
     dictationAdapter,
     summaryAdapter,
     coreSearchAdapter,
@@ -1783,7 +1793,7 @@ export function createDesktopRuntime(
       coworkFolderAdapter['core.workspace.cowork.send.rollback'],
   };
   const streams: Partial<
-    CanopyDispatcherStreamHandlerMap<typeof CANOPY_STREAM_DEFINITIONS>
+    CanopyDispatcherStreamHandlerMap<DesktopStreamDefinitions>
   > = {
     ...chatEventsAdapter.handlers,
     ...watchAdapter.handlers,
@@ -1791,6 +1801,7 @@ export function createDesktopRuntime(
     ...executionAdapter.streams,
     ...observabilityAdapter.streams,
     ...updateAdapter.streams,
+    ...featureFlagAdapter.streams,
   };
   for (const entry of adapters) {
     for (const name of Object.keys(entry.queries ?? {}))
@@ -1858,7 +1869,7 @@ export function createDesktopRuntime(
     [
       CANOPY_QUERY_DEFINITIONS,
       DESKTOP_INSTRUCTION_DEFINITIONS,
-      CANOPY_STREAM_DEFINITIONS,
+      DESKTOP_STREAM_DEFINITIONS,
     ].some((definitions) =>
       Object.keys(definitions).some((name) => name.startsWith('core.vault.')),
     )
@@ -1877,7 +1888,7 @@ export function createDesktopRuntime(
     definitions: {
       queries: DESKTOP_QUERY_DEFINITIONS,
       instructions: DESKTOP_INSTRUCTION_DEFINITIONS,
-      streams: CANOPY_STREAM_DEFINITIONS,
+      streams: DESKTOP_STREAM_DEFINITIONS,
     },
     owners: [
       owned('core.chat.state', chatStateAdapter),
@@ -1917,6 +1928,11 @@ export function createDesktopRuntime(
         updateAdapter.queries,
         updateAdapter.instructions,
         updateAdapter.streams,
+      ),
+      owned(
+        'core.featureFlag',
+        featureFlagAdapter.queries,
+        featureFlagAdapter.streams,
       ),
       ownedAdapter('core.dictation', dictationAdapter),
       ownedAdapter('core.summary', summaryAdapter),

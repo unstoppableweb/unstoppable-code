@@ -329,18 +329,8 @@ function linuxMicrophoneFailureGuidance(
 function classifyLinuxVoiceError(message: string | null): VoiceErrorGuidance {
   const raw = (message ?? '').toLowerCase();
   // Match the exact reasons VoiceService sends for the Linux probe codes, so
-  // a helper error that merely mentions the model or a missing file isn't
-  // mistaken for one.
-  if (raw.includes('download the speech model')) {
-    return {
-      kind: 'unsupported',
-      title: 'Download the speech model',
-      steps: [
-        'Dictation recognizes speech on this computer with a speech model you download once.',
-        'Open Settings → Dictation and choose Download, then click the microphone again.',
-      ],
-    };
-  }
+  // a helper error that merely mentions a missing file isn't mistaken for
+  // one. A missing speech model arrives typed (`speechModelMissingGuidance`).
   if (raw.includes('it needs avx')) {
     return {
       kind: 'unsupported',
@@ -364,6 +354,62 @@ function classifyLinuxVoiceError(message: string | null): VoiceErrorGuidance {
       'Dictation reported the following error while starting:',
       message?.trim() || 'Unknown error.',
       `Try again. If it keeps failing, restart ${brandText.appName}.`,
+    ],
+  };
+}
+
+/**
+ * No speech model is downloaded (the probe's `model-missing` code). Composers
+ * that offer the download show their notice instead; this is for those that
+ * don't, such as the automation and hook editors.
+ */
+export function speechModelMissingGuidance(): VoiceErrorGuidance {
+  return {
+    kind: 'unsupported',
+    title: 'Download the speech model',
+    steps: [
+      'Dictation recognizes speech on this computer with a speech model you download once.',
+      'Open Settings → Dictation and choose Download, then click the microphone again.',
+    ],
+  };
+}
+
+/**
+ * The download a composer started failed (CAN-7341). Fixed text only: the
+ * store's failure message can name paths on this computer, and this modal is
+ * recorded by session replay. Settings → Dictation shows the message.
+ */
+export function speechModelDownloadFailedGuidance(): VoiceErrorGuidance {
+  return {
+    kind: 'generic',
+    title: "Couldn't download the speech model",
+    steps: [
+      'Settings → Dictation shows what went wrong.',
+      'Choose the microphone to try again. The download picks up where it stopped.',
+    ],
+  };
+}
+
+/** A composer waiting on the download lost track of it (CAN-7341). */
+export function speechModelCheckFailedGuidance(): VoiceErrorGuidance {
+  return {
+    kind: 'generic',
+    title: "Couldn't check the speech model download",
+    steps: [
+      "Settings → Dictation shows the download's progress.",
+      'Choose the microphone to try again.',
+    ],
+  };
+}
+
+/** The model verified, but the automatic start still found none (CAN-7341). */
+export function speechModelLoadFailedGuidance(): VoiceErrorGuidance {
+  return {
+    kind: 'generic',
+    title: "Couldn't load the speech model",
+    steps: [
+      "The speech model is downloaded, but dictation couldn't load it.",
+      'Remove it in Settings → Dictation, then choose the microphone to download it again.',
     ],
   };
 }

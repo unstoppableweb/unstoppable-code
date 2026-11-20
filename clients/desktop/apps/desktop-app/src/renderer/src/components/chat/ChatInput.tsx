@@ -17,6 +17,7 @@ import {
   useGitHubStarPrompt,
   usePlanModeSuggestion,
   useComposerHintActivity,
+  ClaudeModsComposerNotice,
   type ComposerMenuCommandOutcome,
   type ComposerMenuPick,
 } from '@canopy/ui-app';
@@ -382,8 +383,8 @@ import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
 import { FirstSendFailedSlot } from './FirstSendFailedSlot';
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { TransientRetryBanner } from './TransientRetryBanner';
+import { openClaudeModPluginDetails } from './open-claude-mod-plugin-details';
 import { ScheduledAutomationsNotice } from './ScheduledAutomationsNotice';
-import { ClaudeModsComposerNotice } from './ClaudeModsComposerNotice';
 import { TryItSignInBanner } from './TryItSignInBanner';
 import {
   useAiCreditsBannerStore,
@@ -427,7 +428,10 @@ import { openPendingPlanExit } from '@/lib/plans/open-tracked-plan';
 import { PlanReadyPipelineModal } from './PlanReadyPipelineModal';
 import { usePipelineRunWatcher } from '@/components/activity/usePipelineRunWatcher';
 import { ModelPicker } from './ModelPicker';
-import { trackChatComposerSend } from '@/lib/chatMessageSendTelemetry';
+import {
+  chatMessageSendSurfaceForProject,
+  trackChatComposerSend,
+} from '@/lib/chatMessageSendTelemetry';
 import { notifyAcceptedWorktreeTurn } from '@/components/onboarding-tips/homeSendEvents';
 import {
   resolveChatBillingFramework,
@@ -489,6 +493,8 @@ import { VoiceInputButton } from '../shared/VoiceInputButton';
 import { VoiceDictationErrorModal } from '../shared/VoiceDictationErrorModal';
 import { useVoiceTranscription } from '@/hooks/useVoiceTranscription';
 import { useHoldToDictate } from '@/hooks/useHoldToDictate';
+import { useSpeechModelPrompt } from '@/hooks/useSpeechModelPrompt';
+import { SpeechModelDownloadPrompt } from './SpeechModelDownloadPrompt';
 import { onVoiceDictationEnabledChanged } from '@/lib/voice/voice-dictation-pref';
 import { createSlateVoiceTarget } from '@/lib/voice/insert-into-slate';
 import { shouldMarkFinalTranscriptAsVoiceInput } from './dictation-input-mode';
@@ -5399,9 +5405,22 @@ function ChatInputContent({
   // 'typed' on any keyboard input or after a send.
   const dictationInputModeRef = useRef<'typed' | 'voice'>('typed');
   const voiceTarget = useMemo(() => createSlateVoiceTarget(editor), [editor]);
+  // Reported like `chat:message_send` (see `trackChatComposerSend`): workspace
+  // chat, standalone chat or App Advisor. Nothing for the Pipeline Editor, or
+  // for a composer with its own send handler (dev pages and previews).
+  const voiceTelemetryProjectId = onSendMessage
+    ? undefined
+    : (targetOverride?.projectId ?? selectedWorktree?.projectId);
   const voice = useVoiceTranscription({
     target: voiceTarget,
     destinationKey: cancelShortcutChatKey,
+    telemetrySurface: voiceTelemetryProjectId
+      ? chatMessageSendSurfaceForProject(voiceTelemetryProjectId)
+      : null,
+    // With no chat to return to, the error modal explains the download.
+    ...(cancelShortcutChatKey === null
+      ? {}
+      : { speechModelOffer: { destinationKey: cancelShortcutChatKey } }),
     onFinalCommitted: (transcribed): void => {
       if (shouldMarkFinalTranscriptAsVoiceInput(transcribed)) {
         dictationInputModeRef.current = 'voice';
@@ -5410,6 +5429,15 @@ function ChatInputContent({
       setValue(structuredClone(editor.children));
       focusEditor(editor);
     },
+  });
+  const voiceAvailable = voiceSupported && voiceEnabledPref;
+  // Linux with no speech model: the mic offers the download (CAN-7341). The
+  // mic's own disabled conditions end what it started, and so does a chat
+  // that turns read-only, which hides the mic and the recording row.
+  const speechModelPrompt = useSpeechModelPrompt({
+    voice,
+    enabled: voiceAvailable && !isTerminalMode && !sandbox && !readOnly,
+    resetKey: cancelShortcutChatKey,
   });
 
   const terminalModeError = terminalMode.error;
@@ -6442,7 +6470,7 @@ function ChatInputContent({
   }, [cancelShortcutChatKey]);
   const handleVoiceSend = useCallback((): void => {
     sendAfterVoiceRef.current = true;
-    void voice.stop();
+    void voice.stop({ send: true });
   }, [voice]);
   useEffect(() => {
     if (!sendAfterVoiceRef.current) return;
@@ -6675,7 +6703,10 @@ function ChatInputContent({
   );
 
   // Hold ⌃M to dictate (a tap leaves the take running hands-free).
-  const holdToDictate = useHoldToDictate(voice);
+  const holdToDictate = useHoldToDictate(voice, {
+    blocked: speechModelPrompt.preparing,
+    interceptStart: speechModelPrompt.interceptStart,
+  });
 
   const handleCycleThinkingLevel = useCallback((): void => {
     cycleThinkingLevel(targetOverride);
@@ -7658,18 +7689,20 @@ function ChatInputContent({
     voiceRecording ? ` ${VOICE_TAKE_EDITOR_CONTAINER_CLASS}` : ''
   }`;
 
-  const voiceAvailable = voiceSupported && voiceEnabledPref;
   const renderVoiceButton = (primary: boolean): JSX.Element | null =>
     voiceAvailable ? (
       <VoiceInputButton
         state={voice.state}
         error={voice.error}
-        onStart={(): void => void voice.start()}
+        onStart={(): void => {
+          if (!speechModelPrompt.interceptStart()) void voice.start();
+        }}
         onStop={(): void => void voice.stop()}
         disabled={isTerminalMode || sandbox}
         capsule
         primary={primary}
         shortcut={DICTATION_SHORTCUT_LABEL}
+        preparing={speechModelPrompt.preparing}
       />
     ) : null;
 
@@ -8224,6 +8257,13 @@ function ChatInputContent({
           corners, and collapses when none render. Every notice is the shared
           `Notice` primitive. */}
       <ComposerNoticeStack data-testid="chat-input-notices">
+        {speechModelPrompt.offering ? (
+          <SpeechModelDownloadPrompt
+            size={speechModelPrompt.size}
+            onDownload={speechModelPrompt.download}
+            onNotNow={speechModelPrompt.notNow}
+          />
+        ) : null}
         {unbillableModelSwitch ? (
           <ModelUnavailableNotice
             testId="chat-input-model-unavailable"
@@ -8748,6 +8788,7 @@ function ChatInputContent({
             key={claudeModsComposerContext.chatId}
             context={claudeModsComposerContext}
             mods={tabDiscovery.skippedMods}
+            onOpenDetails={openClaudeModPluginDetails}
           />
         ) : null}
       </ComposerNoticeStack>

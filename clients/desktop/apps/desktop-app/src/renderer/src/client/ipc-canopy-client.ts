@@ -53,7 +53,9 @@ import {
   webCoreServesChatFork,
   webCoreServesCost,
   webCoreServesDelegationPages,
+  webCoreServesDelegationStop,
   webCoreServesSessionBreakdown,
+  webCoreServesSubagentPanels,
 } from '@/lib/web-core-served-operations';
 import { recordTerminalOutputApplied } from '@/lib/renderer-diagnostics/recorder';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -722,6 +724,8 @@ function cloudScopeCapabilities(
     sessionBreakdown: webCoreServesSessionBreakdown(),
     taskFork: webCoreServesChatFork() && cloudProjectIsCowork(projectId),
     delegationTranscriptReads: webCoreServesDelegationPages(),
+    delegationStop: webCoreServesDelegationStop(),
+    cloudSubagentPanels: webCoreServesSubagentPanels(),
   });
 }
 

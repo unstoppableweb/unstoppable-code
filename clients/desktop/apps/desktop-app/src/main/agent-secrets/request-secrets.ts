@@ -34,6 +34,11 @@ import { isRecord } from '../lib/type-guards';
 import type { SendableBrowserWindow } from '../lib/window-send';
 import { getChatSecretStore, type ChatSecretScope } from './chat-secret-store';
 import { isAgentSecretRequestsEnabled } from './feature-gate';
+import {
+  beginSettlingSecretRequest,
+  endSettlingSecretRequest,
+  registerWaitingSecretRequest,
+} from './waiting-secret-requests';
 
 /*
  * RequestSecrets on desktop (CONTRACTS.md §3, §5, §8). The request reuses
@@ -236,6 +241,12 @@ export async function requestSecrets(
     secretRequest: request,
   };
   let answers: McpQuestionAnswer[];
+  // The wait's own abort, which a Stop of the chat also takes.
+  const wait = new AbortController();
+  const forwardAbort = (): void => wait.abort();
+  if (options.signal?.aborted) wait.abort();
+  else options.signal?.addEventListener('abort', forwardAbort, { once: true });
+  const waiting = registerWaitingSecretRequest(host.scope, wait);
   try {
     answers = await requestAnswersFromRenderer({
       sessionKey: host.sessionKey,
@@ -250,10 +261,11 @@ export async function requestSecrets(
       ...(options.toolUseId ? { toolUseId: options.toolUseId } : {}),
       ...(host.model ? { model: host.model } : {}),
       ...(host.onAwaitingUser ? { onAwaitingUser: host.onAwaitingUser } : {}),
-      ...(host.onRequestCreated
-        ? { onRequestCreated: host.onRequestCreated }
-        : {}),
-      ...(options.signal ? { signal: options.signal } : {}),
+      onRequestCreated: (requestId: string): void => {
+        waiting.identify(requestId);
+        host.onRequestCreated?.(requestId);
+      },
+      signal: wait.signal,
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'Window not available')
@@ -267,6 +279,9 @@ export async function requestSecrets(
       tool: 'RequestSecrets',
     });
     return unprovided(status, input);
+  } finally {
+    options.signal?.removeEventListener('abort', forwardAbort);
+    waiting.dispose();
   }
   const outcome = parseOutcome(answers);
   if (!outcome) return unprovided('cancelled', input);
@@ -275,8 +290,22 @@ export async function requestSecrets(
 
 // Settlement: the form's dedicated channel. ---------------------------------
 
-/** Request ids a submission is settling now: the first answer wins. */
-const settling = new Set<string>();
+/**
+ * Where a person answered: the local window (the default), or a paired
+ * browser or phone over its encrypted session (U7). Both take the same
+ * validation and first-answer-wins path; only the audit line differs.
+ */
+export interface SecretRequestAnswerOptions {
+  readonly answeredFrom?: 'browser' | 'mobile';
+}
+
+function answeredFrom(options: SecretRequestAnswerOptions): {
+  answeredFrom?: 'browser' | 'mobile';
+} {
+  return options.answeredFrom === undefined
+    ? {}
+    : { answeredFrom: options.answeredFrom };
+}
 
 function refused(error: string): SecretRequestSettleResponse {
   return { accepted: false, error };
@@ -402,13 +431,16 @@ async function settle(
  */
 export async function submitSecretRequest(
   submission: SecretRequestSubmitRequest,
+  options: SecretRequestAnswerOptions = {},
 ): Promise<SecretRequestSettleResponse> {
   if (!isAgentSecretRequestsEnabled())
     return refused('Secret requests are turned off.');
   const { requestId } = submission;
-  if (settling.has(requestId))
+  const began = beginSettlingSecretRequest(requestId);
+  if (began === 'busy')
     return refused('This request is already being answered.');
-  settling.add(requestId);
+  if (began === 'stopping')
+    return refused('This request is no longer waiting.');
   try {
     const pending = await pendingSecretRequest(requestId);
     if ('error' in pending) return refused(pending.error);
@@ -474,20 +506,24 @@ export async function submitSecretRequest(
       names: Object.keys(sources),
       sources,
       tool: 'RequestSecrets',
+      ...answeredFrom(options),
     });
     return { accepted: true };
   } finally {
-    settling.delete(requestId);
+    endSettlingSecretRequest(requestId);
   }
 }
 
 /** `secretRequest.decline`: settles the wait as declined. */
 export async function declineSecretRequest(
   requestId: string,
+  options: SecretRequestAnswerOptions = {},
 ): Promise<SecretRequestSettleResponse> {
-  if (settling.has(requestId))
+  const began = beginSettlingSecretRequest(requestId);
+  if (began === 'busy')
     return refused('This request is already being answered.');
-  settling.add(requestId);
+  if (began === 'stopping')
+    return refused('This request is no longer waiting.');
   try {
     const pending = await pendingSecretRequest(requestId);
     if ('error' in pending) return refused(pending.error);
@@ -514,9 +550,10 @@ export async function declineSecretRequest(
       scope: pending.scope,
       names: pending.request.secrets.map((secret) => secret.name),
       tool: 'RequestSecrets',
+      ...answeredFrom(options),
     });
     return { accepted: true };
   } finally {
-    settling.delete(requestId);
+    endSettlingSecretRequest(requestId);
   }
 }

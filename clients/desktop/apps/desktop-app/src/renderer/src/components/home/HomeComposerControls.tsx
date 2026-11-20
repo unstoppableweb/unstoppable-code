@@ -92,6 +92,10 @@ import {
   nextCodexSpeed,
 } from '@canopy/ui-shared';
 import { useHoldToDictate } from '@/hooks/useHoldToDictate';
+import {
+  useSpeechModelPrompt,
+  type UseSpeechModelPromptResult,
+} from '@/hooks/useSpeechModelPrompt';
 import { DICTATION_SHORTCUT_LABEL } from '@/lib/keyboardShortcuts';
 import { ChatPluginsModal } from '@/components/chat/ChatPluginsModal';
 import { ScheduleMessageModal } from '@/components/chat/ScheduleMessageModal';
@@ -313,7 +317,23 @@ export interface HomeComposerControlsProps {
    * in the composer's top drawer; null once this composer unmounts.
    */
   onPlanModeHintChange?: (hint: PlanModeSuggestion | null) => void;
+  /**
+   * The draft this composer writes into: its workspace and draft generation.
+   * A new one ends any speech model offer the old one started (CAN-7341).
+   */
+  voiceDestinationKey: string;
+  /**
+   * The speech model download offer (CAN-7341), for the surface to draw in
+   * its notices; null once this composer unmounts.
+   */
+  onSpeechModelPromptChange?: (prompt: HomeSpeechModelPrompt | null) => void;
 }
+
+/** What Home needs to draw the speech model download notice. */
+export type HomeSpeechModelPrompt = Pick<
+  UseSpeechModelPromptResult,
+  'offering' | 'size' | 'download' | 'notNow'
+>;
 
 /**
  * Home composer's controls, in the box's bottom row: `+` and, while Plan mode
@@ -343,6 +363,8 @@ export function HomeComposerControls({
   composerBoxRef,
   onVoiceRecordingChange,
   onPlanModeHintChange,
+  voiceDestinationKey,
+  onSpeechModelPromptChange,
 }: HomeComposerControlsProps): JSX.Element {
   const providerAvailability = useProviderAvailability();
 
@@ -802,13 +824,47 @@ export function HomeComposerControls({
   const voiceTarget = useMemo(() => createSlateVoiceTarget(editor), [editor]);
   const voice = useVoiceTranscription({
     target: voiceTarget,
+    speechModelOffer: { destinationKey: voiceDestinationKey },
     onFinalCommitted: (): void => {
       onEditorExternallyChanged();
     },
   });
+  // Linux with no speech model: the mic offers the download (CAN-7341).
+  const speechModelPrompt = useSpeechModelPrompt({
+    voice,
+    enabled: voiceSupported && voiceEnabledPref && !disabled,
+    resetKey: voiceDestinationKey,
+  });
+  const {
+    offering: speechModelOffering,
+    size: speechModelSize,
+    download: downloadSpeechModel,
+    notNow: dismissSpeechModelOffer,
+  } = speechModelPrompt;
+  useEffect(() => {
+    onSpeechModelPromptChange?.({
+      offering: speechModelOffering,
+      size: speechModelSize,
+      download: downloadSpeechModel,
+      notNow: dismissSpeechModelOffer,
+    });
+  }, [
+    onSpeechModelPromptChange,
+    speechModelOffering,
+    speechModelSize,
+    downloadSpeechModel,
+    dismissSpeechModelOffer,
+  ]);
+  useEffect(
+    () => (): void => onSpeechModelPromptChange?.(null),
+    [onSpeechModelPromptChange],
+  );
 
   // Hold ⌃M to dictate (a tap leaves the take running hands-free).
-  const holdToDictate = useHoldToDictate(voice);
+  const holdToDictate = useHoldToDictate(voice, {
+    blocked: speechModelPrompt.preparing,
+    interceptStart: speechModelPrompt.interceptStart,
+  });
   const modelPickerOpenSignal = useComposerShortcutRequests({
     target: composerShortcutTarget,
     onCycleEffort: cycleThinkingLevel,
@@ -1193,11 +1249,14 @@ export function HomeComposerControls({
               <VoiceInputButton
                 state={voice.state}
                 error={voice.error}
-                onStart={(): void => void voice.start()}
+                onStart={(): void => {
+                  if (!speechModelPrompt.interceptStart()) void voice.start();
+                }}
                 onStop={(): void => void voice.stop()}
                 disabled={disabled}
                 capsule
                 shortcut={DICTATION_SHORTCUT_LABEL}
+                preparing={speechModelPrompt.preparing}
               />
             )}
             <ComposerSendButton

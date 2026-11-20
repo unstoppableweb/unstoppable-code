@@ -40,6 +40,7 @@ import {
   SUBAGENT_CHAT_LOADING_LABEL,
   SUBAGENT_CHAT_NOT_FOUND_LABEL,
   SUBAGENTS_LOAD_FAILED_LABEL,
+  SubagentsEmptyState,
 } from '@canopy/ui-shared/components';
 import type { SubagentViewerCapabilities } from '@canopy/ui-app/subagents';
 import { SubagentCostSection } from '@canopy/ui-app/cost';
@@ -68,7 +69,11 @@ import {
   messageManagedSubagent,
 } from './subagent-commands';
 import { openSubagentLineageTarget } from './subagent-lineage';
-import { useSubagentViewerCapabilities } from './subagent-capabilities';
+import { retryWebCoreServedOperations } from '@/lib/web-core-served-operations';
+import {
+  useSubagentPanelsAvailability,
+  useSubagentViewerCapabilities,
+} from './subagent-capabilities';
 import {
   createSubagentEntryActions,
   SubagentEntryActionsContext,
@@ -589,8 +594,50 @@ function DesktopSubagentChatContent({
   );
 }
 
-/** Desktop binding for a subagent's shared chat panel and transcript. */
-export function DesktopSubagentChatPanelHost({
+/**
+ * Desktop binding for a subagent's chat panel. A cloud scope's panel mounts
+ * the reading host only once the web core serves it (CAN-7133).
+ */
+export function DesktopSubagentChatPanelHost(
+  props: DesktopSubagentChatPanelHostProps,
+): JSX.Element {
+  const availability = useSubagentPanelsAvailability(props.scope);
+  if (availability === 'served')
+    return <ServedSubagentChatPanelHost {...props} />;
+  if (!props.isVisible) return <></>;
+  return availability === 'pending' ? (
+    <div
+      data-testid="subagent-chat-pending"
+      className="flex min-h-0 flex-1 items-center justify-center"
+      role="status"
+      aria-busy="true"
+    >
+      <p className="text-xs fg-secondary">{SUBAGENT_CHAT_LOADING_LABEL}</p>
+    </div>
+  ) : availability === 'failed' ? (
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
+      <ErrorState
+        space="panel"
+        testId="subagent-chat-manifest-failed"
+        retryTestId="subagent-chat-manifest-retry"
+        message={SUBAGENTS_LOAD_FAILED_LABEL}
+        onRetry={retryManifest}
+      />
+    </div>
+  ) : (
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <SubagentsEmptyState kind="unavailable" />
+    </div>
+  );
+}
+
+/** Try again on a failed manifest read; the read stays one at a time. */
+function retryManifest(): void {
+  retryWebCoreServedOperations();
+}
+
+/** A subagent's shared chat panel and transcript over the scope's data. */
+function ServedSubagentChatPanelHost({
   scope,
   rootChatId,
   subagentId,

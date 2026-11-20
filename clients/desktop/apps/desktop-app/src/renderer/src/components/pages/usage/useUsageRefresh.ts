@@ -23,9 +23,9 @@ function harnessEnabled(
 
 /**
  * Read every usage group a Usage surface shows again: each provider, the
- * account proxy when it serves one, OpenCode, and AI Credits. Groups keep
+ * account proxy when it serves one, OpenCode, Antigravity, and AI Credits. Groups keep
  * their current values while the reads run. Resolves once the provider,
- * OpenCode and proxy reads settle; AI Credits reports its own read through
+ * OpenCode, Antigravity and proxy reads settle; AI Credits reports its own read through
  * its hook.
  */
 export async function refreshAllUsage(isActive: () => boolean): Promise<void> {
@@ -46,6 +46,13 @@ export async function refreshAllUsage(isActive: () => boolean): Promise<void> {
     harnessEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopOpenCodeHarness.key)
   ) {
     reads.push(refreshProviderUsage('opencode'));
+  }
+  // Antigravity's plan is held only in memory, so a restart leaves it empty
+  // until this read; main skips it once a plan was read this launch.
+  if (
+    harnessEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key)
+  ) {
+    reads.push(refreshProviderUsage('antigravity'));
   }
   if (useAccountProxyStore.getState().status !== null) {
     reads.push(refreshAccountProxyStatus());

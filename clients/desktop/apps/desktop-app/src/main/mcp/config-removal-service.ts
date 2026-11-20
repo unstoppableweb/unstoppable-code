@@ -10,7 +10,10 @@ import {
   McpRemovalPreparationError,
   type McpRemovalReceipt,
 } from './config-removal-evidence';
-import { McpRemovalRefusedError } from './config-removal-policy';
+import {
+  McpRemovalRefusedError,
+  validateMcpRemovalId,
+} from './config-removal-policy';
 
 export interface McpConfigRemovalServiceHost {
   repository: McpConfigRepository;
@@ -26,6 +29,12 @@ export interface McpConfigRemovalServiceHost {
 }
 
 export class McpOrdinaryRemovalError extends Error {
+  /**
+   * The server file is gone: the index update runs only after its unlink
+   * resolved, so only that step's failure confirms it (CAN-7362).
+   */
+  readonly serverUnlinked: boolean;
+
   constructor(
     readonly phase:
       | 'preflight'
@@ -42,6 +51,7 @@ export class McpOrdinaryRemovalError extends Error {
         : 'Device MCP removal is incomplete. Some cleanup may have applied; inspect removal before retrying.',
     );
     this.name = 'McpOrdinaryRemovalError';
+    this.serverUnlinked = phase === 'indexUpdate';
   }
 }
 
@@ -75,6 +85,17 @@ function result(
 /** One authority. Interfaces must project this through the core catalog boundary. */
 export class McpConfigRemovalService {
   constructor(private readonly host: McpConfigRemovalServiceHost) {}
+
+  /** Confirms ordinary removal under the same lease used by server writers. */
+  confirmAbsent(serverId: string): Promise<boolean> {
+    validateMcpRemovalId(serverId);
+    const repository = this.host.repository;
+    return repository.withServerMutation(
+      serverId,
+      async () =>
+        (await repository.readServerForMutation(serverId)) === undefined,
+    );
+  }
 
   /** Strict ordinary removal; no automatic escalation to evidence-preserving force. */
   remove(serverId: string): Promise<void> {

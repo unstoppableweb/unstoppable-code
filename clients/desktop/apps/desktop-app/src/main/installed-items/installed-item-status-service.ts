@@ -56,7 +56,14 @@ export interface InstalledItemStatusPort {
     enabled: boolean,
   ): Promise<void>;
   remove(this: void, record: InstalledItemRecord): Promise<void>;
+  /**
+   * A rejection whose error carries `serverUnlinked: true` confirms the
+   * server file was removed before a later step, such as the index write,
+   * failed.
+   */
   removeDeviceServer(this: void, serverId: string): Promise<void>;
+  /** Re-checks the server definition under its per-server mutation lease. */
+  confirmDeviceServerAbsent?(this: void, serverId: string): Promise<boolean>;
   /** Receipt-bound device repair, never the combined device/account remover. */
   resumeDeviceRemoval?(
     this: void,
@@ -70,7 +77,11 @@ export interface InstalledItemStatusPort {
     reconcile: () => Promise<T>,
   ): Promise<T>;
   assertAbsent?(this: void, ref: InstalledItemRef): Promise<void>;
-  prune(this: void, refs: InstalledItemRef[]): Promise<void>;
+  prune(
+    this: void,
+    refs: InstalledItemRef[],
+    target: InstalledItemTarget,
+  ): Promise<void>;
   publish(this: void, target: InstalledItemTarget): Promise<void>;
   /** Records a provider step's underlying error; never throws. */
   logError?(this: void, message: string, error: unknown): void;
@@ -87,6 +98,63 @@ function providerReason(error: unknown): string {
       .map((part) => part.replace(/^[\s✘✖×!-]+/u, '').trim())
       .find((part) => part !== '') ?? 'Unknown error.';
   return line.length > 240 ? `${line.slice(0, 239)}…` : line;
+}
+
+/** The shape of a device MCP server id; anything else is not device-owned. */
+const DEVICE_SERVER_ID_PATTERN = /^[a-f0-9-]{1,256}$/;
+
+/**
+ * The server id for a log line, only when it is a valid device id. An
+ * uninstall request carries an unvalidated string, and the persistent log
+ * ships in feedback bundles, so arbitrary text must not reach it.
+ */
+function loggableDeviceServerId(serverId: string): string {
+  return DEVICE_SERVER_ID_PATTERN.test(serverId)
+    ? serverId
+    : 'invalid device MCP server ID';
+}
+
+/**
+ * An uninstall failure as allowlisted tokens only: the error's `name`, an
+ * errno-style `code` and a workspace plugins refusal `reason`. Message and
+ * stack are never included: a cleanup step that parses chat files can throw
+ * with file contents in them, and the persistent log ships in feedback
+ * bundles regardless of chat sharing.
+ */
+function uninstallFailureDiagnostic(error: unknown): string {
+  // Structural, not `instanceof`: errors from another realm are still read.
+  if (typeof error !== 'object' || error === null)
+    return `thrown=${typeof error}`;
+  const rawName = 'name' in error ? error.name : undefined;
+  const name =
+    typeof rawName === 'string' && /^[A-Za-z_$][\w$]{0,63}$/.test(rawName)
+      ? rawName
+      : 'unnamed';
+  const parts = [`name=${name}`];
+  const code = 'code' in error ? error.code : undefined;
+  if (typeof code === 'string' && /^E[A-Z0-9_]{1,39}$/.test(code))
+    parts.push(`code=${code}`);
+  const reason = 'reason' in error ? error.reason : undefined;
+  if (
+    name === 'WorkspacePluginsRefusedError' &&
+    typeof reason === 'string' &&
+    /^[a-z]+(?:-[a-z]+){0,4}$/.test(reason)
+  )
+    parts.push(`reason=${reason}`);
+  return parts.join(' ');
+}
+
+/**
+ * Whether a `removeDeviceServer` rejection confirms the server file is gone.
+ * Structural, like the diagnostic above: only the typed field counts.
+ */
+function rejectedAfterServerUnlink(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'serverUnlinked' in error &&
+    error.serverUnlinked === true
+  );
 }
 
 function selectionFor(
@@ -222,7 +290,7 @@ export function createInstalledItemStatusService(
         ...(ref.kind === 'mcp-config'
           ? {
               reason:
-                'Uninstall the device server to remove all its configurations.',
+                'Delete the device server to delete all its configurations.',
             }
           : {}),
         uninstallDescription:
@@ -234,7 +302,7 @@ export function createInstalledItemStatusService(
                 ? 'Removes the provider installations, managed cache and saved selections. Claude persistent data is kept.'
                 : ref.kind === 'skill'
                   ? 'Removes the local skill files and saved selections.'
-                  : 'Remove the device server to uninstall every configuration and its sign-ins.',
+                  : 'Delete the device server to delete every configuration and its sign-ins.',
         ...(record.selectionRef ? { selectionRef: record.selectionRef } : {}),
         ...(record.reason ? { reason: record.reason } : {}),
         ...(ref.kind !== 'mcp-config'
@@ -313,7 +381,7 @@ export function createInstalledItemStatusService(
         uninstallTarget: { kind: 'mcp-server', serverId },
         removalScope: 'device-server',
         uninstallDescription:
-          'Removes this device server, all its configurations and their sign-ins.',
+          'Deletes this device server, all its configurations and their sign-ins.',
         configurations: records.flatMap((record) =>
           record.ref.kind === 'mcp-config' && record.ref.serverId === serverId
             ? [record.ref]
@@ -603,7 +671,7 @@ export function createInstalledItemStatusService(
       const deviceTarget = request.target;
       if (
         deviceTarget.kind === 'mcp-server' &&
-        /^[a-f0-9-]{1,256}$/.test(deviceTarget.serverId)
+        DEVICE_SERVER_ID_PATTERN.test(deviceTarget.serverId)
       ) {
         // Saved device intent is sufficient to resume. Catalog, plugin,
         // skills, collection and account reads are not removal authority.
@@ -622,6 +690,10 @@ export function createInstalledItemStatusService(
         if (saved) {
           const errors: InstalledItemMutationResult['errors'] = [];
           const removed: InstalledItemTarget[] = [];
+          // Receipt-bound retries confirm inside their fenced reconciliation.
+          // Ordinary retries re-check absence after a later step fails.
+          let serverRemoved = false;
+          let ordinaryRemovalSucceeded = false;
           try {
             if (
               !saved.refs.every(
@@ -647,7 +719,13 @@ export function createInstalledItemStatusService(
                 throw new Error('Device MCP removal is incomplete.');
             } else {
               // Legacy {target, refs} entries retain ordinary, non-escalating retry.
-              await port.removeDeviceServer(deviceTarget.serverId);
+              try {
+                await port.removeDeviceServer(deviceTarget.serverId);
+              } catch (error) {
+                serverRemoved = rejectedAfterServerUnlink(error);
+                throw error;
+              }
+              ordinaryRemovalSucceeded = true;
             }
             const reconcile = async (): Promise<void> => {
               const pending = (
@@ -659,7 +737,7 @@ export function createInstalledItemStatusService(
               );
               if (JSON.stringify(pending) !== JSON.stringify(saved))
                 throw new Error('Device MCP uninstall recovery changed.');
-              await port.prune(saved.refs);
+              await port.prune(saved.refs, deviceTarget);
               await port.updatePreferences((current) => {
                 const entries = current.pendingInstalledItemUninstalls ?? [];
                 const matching = entries.filter(
@@ -688,17 +766,39 @@ export function createInstalledItemStatusService(
               await port.reconcileDeviceRemoval(
                 deviceTarget.serverId,
                 saved.mcpRemoval,
-                reconcile,
+                async () => {
+                  // Runs only once the server is confirmed absent under its
+                  // lease; a same-ID recreation rejects before this.
+                  serverRemoved = true;
+                  await reconcile();
+                },
               );
             } else await reconcile();
             removed.push(deviceTarget);
-          } catch {
+          } catch (error) {
+            if (ordinaryRemovalSucceeded) {
+              try {
+                serverRemoved =
+                  (await port.confirmDeviceServerAbsent?.(
+                    deviceTarget.serverId,
+                  )) === true;
+              } catch {
+                serverRemoved = false;
+              }
+            }
+            // The result keeps generic text; only an allowlisted summary of
+            // the cause is logged.
+            port.logError?.(
+              `[installed-items] Saved uninstall of device MCP server ${loggableDeviceServerId(deviceTarget.serverId)} is incomplete`,
+              uninstallFailureDiagnostic(error),
+            );
             errors.push({
               target: deviceTarget,
               code: 'uninstall_incomplete',
               message:
                 'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
               retryable: true,
+              ...(serverRemoved ? { serverRemoved: true } : {}),
             });
           }
           // Refresh can fail independently; `removed` still records confirmed
@@ -721,6 +821,9 @@ export function createInstalledItemStatusService(
       );
       const errors: InstalledItemMutationResult['errors'] = [];
       const removed: InstalledItemTarget[] = [];
+      // A successful ordinary removal is re-confirmed if a later step fails.
+      let serverRemoved = false;
+      let ordinaryDeviceRemovalSucceeded = false;
       try {
         const refused = records.find((record) => !record.removable);
         if (refused)
@@ -759,18 +862,43 @@ export function createInstalledItemStatusService(
           ],
         }));
         if (target.kind === 'mcp-server') {
-          await port.removeDeviceServer(target.serverId);
+          try {
+            await port.removeDeviceServer(target.serverId);
+          } catch (error) {
+            serverRemoved = rejectedAfterServerUnlink(error);
+            throw error;
+          }
+          ordinaryDeviceRemovalSucceeded = true;
         } else for (const record of records) await port.remove(record);
         // An absent target is an idempotent retry, including cleanup after a crash.
-        await port.prune(refs);
+        await port.prune(refs, target);
         await port.updatePreferences((current) => ({
           pendingInstalledItemUninstalls: (
             current.pendingInstalledItemUninstalls ?? []
           ).filter((entry) => JSON.stringify(entry.target) !== targetKey),
         }));
         removed.push(target);
-      } catch {
+      } catch (error) {
+        if (ordinaryDeviceRemovalSucceeded && target.kind === 'mcp-server') {
+          try {
+            serverRemoved =
+              (await port.confirmDeviceServerAbsent?.(target.serverId)) ===
+              true;
+          } catch {
+            serverRemoved = false;
+          }
+        }
         const refused = records.find((record) => !record.removable);
+        // The result keeps generic text. Only the target's kind, its device
+        // server id and an allowlisted summary of the cause are logged.
+        port.logError?.(
+          `[installed-items] Uninstall of ${
+            target.kind === 'mcp-server'
+              ? `device MCP server ${loggableDeviceServerId(target.serverId)}`
+              : `a ${target.kind}`
+          } is incomplete`,
+          uninstallFailureDiagnostic(error),
+        );
         errors.push({
           target,
           code: refused ? 'not_removable' : 'uninstall_incomplete',
@@ -778,6 +906,7 @@ export function createInstalledItemStatusService(
             refused?.reason ??
             'Uninstall is incomplete. Retry to reconcile remaining installations and saved references.',
           retryable: !refused,
+          ...(serverRemoved ? { serverRemoved: true } : {}),
         });
       }
       return result(undefined, removed, errors, target);

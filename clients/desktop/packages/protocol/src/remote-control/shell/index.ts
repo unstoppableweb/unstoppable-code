@@ -2407,6 +2407,38 @@ export interface RemoteControlAskUserQuestion extends RemoteControlQuestionContr
   allowOther?: boolean;
   secret?: boolean;
   keepTextOnPick?: boolean;
+  /**
+   * Set when the agent asked for secrets (RequestSecrets). Metadata only,
+   * never a value: a controller shows the secret form and answers it with
+   * the `secret-request.settle` session method, never with this question's
+   * answers, which the host refuses.
+   */
+  secretRequest?: RemoteControlSecretRequest;
+}
+
+/** One requested secret as a paired form shows it. Never holds a value. */
+export interface RemoteControlSecretRequestItem {
+  readonly name: string;
+  readonly label?: string;
+  readonly description?: string;
+  readonly kind?: 'password' | 'token' | 'multiline';
+  /** Defaults to true. */
+  readonly required?: boolean;
+  readonly hint?: { readonly prefix?: string; readonly minLength?: number };
+  /** The chat already holds a value for this name. */
+  readonly held?: boolean;
+}
+
+/** What a RequestSecrets form shows. Never holds a value. */
+export interface RemoteControlSecretRequest {
+  readonly reason: string;
+  /** The agent's display name, such as Claude or Codex. */
+  readonly agentName: string;
+  /** Footer copy: `full` in Full access, `cloud` in a cloud chat, else `ask`. */
+  readonly accessMode: 'ask' | 'full' | 'cloud';
+  /** `session` when the computer's secure storage is unavailable. */
+  readonly storage: 'encrypted' | 'session';
+  readonly secrets: readonly RemoteControlSecretRequestItem[];
 }
 
 /**
@@ -4966,6 +4998,21 @@ export interface RemoteControlEditorListInvocablesResult {
   builtAt?: string;
   /** Rows were cut to fit the Portal result budget. */
   truncated?: true;
+  /**
+   * Claude Mods the chat's last discovery forecast to skip because they are
+   * not allowed (CAN-7436), the entry shape of
+   * {@link RemoteControlChatModsSkippedData.mods}. Absent when there are
+   * none, the forecast is for another provider, the admission flag is off,
+   * or the host predates the field. The host drops it before any command
+   * when the result budget is tight.
+   */
+  skippedMods?: RemoteControlEditorSkippedMod[];
+}
+
+/** One Mod a chat's discovery forecast to skip, and why. */
+export interface RemoteControlEditorSkippedMod {
+  pluginId: string;
+  reason: string;
 }
 
 /** Payload for `portal.editor.resolve_invocable`. */

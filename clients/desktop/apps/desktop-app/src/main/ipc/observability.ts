@@ -388,7 +388,8 @@ export function registerObservabilityHandlers(
         provider !== 'codex' &&
         provider !== 'cursor' &&
         provider !== 'copilot' &&
-        provider !== 'opencode'
+        provider !== 'opencode' &&
+        provider !== 'antigravity'
       ) {
         return Promise.reject(
           new Error(`Invalid provider: ${String(provider)}`),

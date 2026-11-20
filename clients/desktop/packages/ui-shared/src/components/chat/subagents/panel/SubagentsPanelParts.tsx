@@ -19,6 +19,7 @@ import {
   SUBAGENTS_ROOT_SECTION_ACTIVE,
   SUBAGENTS_ROOT_SECTION_FINISHED,
   SUBAGENTS_SHOW_ALL_LABEL,
+  SUBAGENTS_UNAVAILABLE_TITLE,
   subagentsCountLabel,
   subagentsFocusContextLabel,
   subagentsFocusUpAccessibleLabel,
@@ -326,7 +327,8 @@ export type SubagentsEmptyStateKind =
   | 'no-roots'
   | 'root-empty'
   | 'filter-active'
-  | 'filter-attention';
+  | 'filter-attention'
+  | 'unavailable';
 
 /** Pure empty-state body using the product's shared subagent copy. */
 export function SubagentsEmptyState({
@@ -341,7 +343,9 @@ export function SubagentsEmptyState({
         ? SUBAGENTS_EMPTY_TITLE
         : kind === 'filter-active'
           ? SUBAGENTS_FILTER_EMPTY_ACTIVE
-          : SUBAGENTS_FILTER_EMPTY_ATTENTION;
+          : kind === 'filter-attention'
+            ? SUBAGENTS_FILTER_EMPTY_ATTENTION
+            : SUBAGENTS_UNAVAILABLE_TITLE;
   const body =
     kind === 'no-roots'
       ? SUBAGENTS_NO_ROOTS_BODY

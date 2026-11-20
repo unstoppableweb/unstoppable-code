@@ -134,27 +134,37 @@ function panelKindsUnavailableInLayout(
     kinds = new Set(panelKindsUnavailableFor(capabilities));
     unavailableByCapabilities.set(capabilities, kinds);
   }
-  // A cloud scope's Cost waits on the web core manifest (CAN-6180). Until a
-  // read lands, a saved Cost tab is kept rather than dropped for good.
+  // A cloud scope's Cost (CAN-6180) and Subagents panels (CAN-7133) wait on
+  // the web core manifest. Until a read lands, their saved tabs are kept
+  // rather than dropped for good; the Subagents hosts read nothing meanwhile.
   if (
-    kinds.has('cost') &&
+    MANIFEST_PENDING_KINDS.some((kind) => kinds.has(kind)) &&
     !webCoreServedOperationsKnown() &&
     webCoreLocalId(splitWorktreeKey(worktreeKey).projectId) !== null
   )
-    return COST_PENDING_KINDS.get(kinds) ?? costPending(kinds);
+    return PENDING_KINDS.get(kinds) ?? manifestPending(kinds);
   return kinds;
 }
 
-const COST_PENDING_KINDS = new WeakMap<
+/** The kinds a cloud scope serves only once its web core manifest says so. */
+const MANIFEST_PENDING_KINDS: readonly PanelKind[] = [
+  'cost',
+  'session-breakdown',
+  'subagents',
+  'subagent-chat',
+];
+
+const PENDING_KINDS = new WeakMap<
   ReadonlySet<PanelKind>,
   ReadonlySet<PanelKind>
 >();
 
-function costPending(kinds: ReadonlySet<PanelKind>): ReadonlySet<PanelKind> {
+function manifestPending(
+  kinds: ReadonlySet<PanelKind>,
+): ReadonlySet<PanelKind> {
   const pending = new Set(kinds);
-  pending.delete('cost');
-  pending.delete('session-breakdown');
-  COST_PENDING_KINDS.set(kinds, pending);
+  for (const kind of MANIFEST_PENDING_KINDS) pending.delete(kind);
+  PENDING_KINDS.set(kinds, pending);
   return pending;
 }
 

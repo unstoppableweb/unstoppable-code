@@ -446,6 +446,11 @@ export const installedItemService = createInstalledItemStatusService({
       await import('../ipc/mcp-servers');
     await uninstallInstalledDeviceMcpServer(serverId);
   },
+  async confirmDeviceServerAbsent(serverId) {
+    const { confirmInstalledDeviceMcpServerAbsent } =
+      await import('../ipc/mcp-servers');
+    return confirmInstalledDeviceMcpServerAbsent(serverId);
+  },
   async resumeDeviceRemoval(serverId, recovery) {
     const { forceMcpRemovalThroughCore } =
       await import('../canopy-runtime/mcp-removal-dispatch');
@@ -498,7 +503,7 @@ export const installedItemService = createInstalledItemStatusService({
         );
     }
   },
-  async prune(refs) {
+  async prune(refs, target) {
     const expandedRefs = refs.flatMap<InstalledItemRef>((ref) => {
       if (ref.kind !== 'plugin') return [ref];
       const marketplace = canonicalMarketplaces.find(
@@ -531,7 +536,9 @@ export const installedItemService = createInstalledItemStatusService({
         // Keep curated seeding receipts: an explicit uninstall is not first-run setup.
         return next;
       });
-      await pruneSelectionRefsForInstalledItem(ref);
+      await pruneSelectionRefsForInstalledItem(ref, {
+        strictWorkspaceDiscovery: target.kind === 'mcp-server',
+      });
       if (ref.kind !== 'collection')
         for (const row of (await readCollectionIndex()).collections) {
           const file = await readCollectionConfig(row.id);

@@ -32,6 +32,8 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 export type UpdateTrackedPlanInput = UpdateTrackedPlanRequest & {
   /** With it, a write against another revision is refused. */
   expectedRevision?: number;
+  /** With it, a write against a plan from another source is refused. */
+  expectedSource?: TrackedPlanData['source'];
 };
 
 export interface DesktopPlanOperations {

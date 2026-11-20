@@ -42,6 +42,10 @@ export const GOLDEN_TEAM_SHARE_ID = 'shared-golden-team';
 export const GOLDEN_AUTOMATION_SHARE_ID = 'public-golden-automation';
 export const GOLDEN_AUTOMATION_ENTRY_KEY = 'journey-entry';
 export const GOLDEN_AUTOMATION_WORKER_KEY = 'journey-worker';
+/** The entry pipeline's supporting file, `specialists/notes.md`, by revision. */
+export const GOLDEN_AUTOMATION_NOTES = 'Golden specialist notes\n';
+export const GOLDEN_AUTOMATION_REVISED_NOTES =
+  'Golden specialist notes, revised\n';
 const GOLDEN_CLOUD_CAPABILITIES = ['pipelines-crud-v1'];
 
 export const GOLDEN_SHARED_YAML = [
@@ -154,10 +158,15 @@ export interface GoldenWorld {
   publicSharePin(externalId: string): GoldenPublicSharePin;
   /**
    * The automation packages the golden cloud serves: the first revision, a
-   * republished one with an updated entry pipeline, and one whose entry
-   * pipeline doesn't match its pinned hash.
+   * republished one with an updated entry pipeline, one that also revises
+   * the entry's supporting file and replaces it, one that revises and
+   * replaces only that file, and one whose entry pipeline doesn't match its
+   * pinned hash.
    */
-  automationPackages: Record<'v1' | 'v2' | 'tampered', GoldenAutomationPackage>;
+  automationPackages: Record<
+    'v1' | 'v2' | 'v3' | 'v4' | 'tampered',
+    GoldenAutomationPackage
+  >;
   /** Store a user pipeline and give its generated id a stable token. */
   saveUserPipeline(yaml: string, token: string): Promise<string>;
   dispose(): Promise<void>;
@@ -378,6 +387,10 @@ interface AutomationPackageFixture {
 function automationPackage(
   entryStep: string,
   tampered = false,
+  notes: {
+    text: string;
+    installMode: NonNullable<PipelinePackageResource['installMode']>;
+  } = { text: GOLDEN_AUTOMATION_NOTES, installMode: 'seed' },
 ): AutomationPackageFixture {
   const blobs = new Map<string, Uint8Array<ArrayBuffer>>();
   const contentHashes: Record<string, string> = {};
@@ -419,7 +432,7 @@ function automationPackage(
       ],
     };
   };
-  const asset = blob('Golden specialist notes\n');
+  const asset = blob(notes.text);
   const resources: PipelinePackageResource[] = [
     {
       id: `file-asset-${GOLDEN_AUTOMATION_ENTRY_KEY}-specialists`,
@@ -431,7 +444,7 @@ function automationPackage(
       dependencyResourceIds: [],
       pipelineKey: GOLDEN_AUTOMATION_ENTRY_KEY,
       assetId: 'specialists',
-      installMode: 'seed',
+      installMode: notes.installMode,
       required: true,
       trees: [
         {
@@ -486,6 +499,14 @@ function automationPackage(
 const AUTOMATION_PACKAGES = {
   v1: automationPackage('echo entry'),
   v2: automationPackage('echo entry again'),
+  v3: automationPackage('echo entry revised', false, {
+    text: GOLDEN_AUTOMATION_REVISED_NOTES,
+    installMode: 'replace',
+  }),
+  v4: automationPackage('echo entry', false, {
+    text: GOLDEN_AUTOMATION_REVISED_NOTES,
+    installMode: 'replace',
+  }),
   tampered: automationPackage('echo tampered', true),
 };
 
@@ -766,6 +787,14 @@ export async function createPipelineGoldenWorld(): Promise<GoldenWorld> {
       v2: {
         digest: AUTOMATION_PACKAGES.v2.digest,
         contentHashes: AUTOMATION_PACKAGES.v2.contentHashes,
+      },
+      v3: {
+        digest: AUTOMATION_PACKAGES.v3.digest,
+        contentHashes: AUTOMATION_PACKAGES.v3.contentHashes,
+      },
+      v4: {
+        digest: AUTOMATION_PACKAGES.v4.digest,
+        contentHashes: AUTOMATION_PACKAGES.v4.contentHashes,
       },
       tampered: {
         digest: AUTOMATION_PACKAGES.tampered.digest,

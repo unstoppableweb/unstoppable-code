@@ -1,5 +1,12 @@
 import { useCallback, useState, type JSX } from 'react';
 import { LifetimeLimitNotice } from '@canopy/ui-app';
+import {
+  ErrorState,
+  SUBAGENTS_LOAD_FAILED_LABEL,
+  SUBAGENTS_LOADING_LABEL,
+  SubagentsEmptyState,
+} from '@canopy/ui-shared/components';
+import { retryWebCoreServedOperations } from '@/lib/web-core-served-operations';
 import { useWorkspaceCapabilities } from '@canopy/app-state/CanopyClientProvider';
 import {
   lifetimeLimitTargetKey,
@@ -25,7 +32,10 @@ import {
   subagentScopeShowsWorkspaceDetails,
   type SubagentHostScope,
 } from './subagent-scope';
-import { useSubagentViewerCapabilities } from './subagent-capabilities';
+import {
+  useSubagentPanelsAvailability,
+  useSubagentViewerCapabilities,
+} from './subagent-capabilities';
 import { useSubagentChangeTotals } from './subagent-change-totals';
 import { desktopSubagentViewStatePersistence } from './subagent-view-state-persistence';
 import {
@@ -101,8 +111,54 @@ function LifetimeLimitUiReporter({
   return null;
 }
 
-/** Desktop adapter for the shared Subagents panel and its IPC-backed data. */
-export function DesktopSubagentsPanelHost({
+/**
+ * Desktop adapter for the shared Subagents panel. A cloud scope's panel
+ * mounts the reading host only once the web core serves it (CAN-7133).
+ */
+export function DesktopSubagentsPanelHost(
+  props: DesktopSubagentsPanelHostProps,
+): JSX.Element {
+  const availability = useSubagentPanelsAvailability(props.scope);
+  if (availability === 'served') return <ServedSubagentsPanelHost {...props} />;
+  if (!props.isVisible) return <></>;
+  return (
+    <div
+      className="flex min-h-0 min-w-0 flex-1"
+      data-panel-active={props.isActive}
+    >
+      {availability === 'pending' ? (
+        <div
+          role="status"
+          aria-busy="true"
+          data-testid="subagents-pending"
+          className="flex flex-1 items-center justify-center gap-2 text-xs fg-tertiary"
+        >
+          {SUBAGENTS_LOADING_LABEL}
+        </div>
+      ) : availability === 'failed' ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center">
+          <ErrorState
+            space="panel"
+            testId="subagents-manifest-failed"
+            retryTestId="subagents-manifest-retry"
+            message={SUBAGENTS_LOAD_FAILED_LABEL}
+            onRetry={retryManifest}
+          />
+        </div>
+      ) : (
+        <SubagentsEmptyState kind="unavailable" />
+      )}
+    </div>
+  );
+}
+
+/** Try again on a failed manifest read; the read stays one at a time. */
+function retryManifest(): void {
+  retryWebCoreServedOperations();
+}
+
+/** The panel over its IPC-backed or web core data. */
+function ServedSubagentsPanelHost({
   scope,
   isVisible,
   isActive,

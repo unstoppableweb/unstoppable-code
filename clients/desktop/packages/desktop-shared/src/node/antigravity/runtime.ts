@@ -1,5 +1,5 @@
 import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
 import {
@@ -116,6 +116,50 @@ const ANTIGRAVITY_TOOL_GATE_SCRIPT = [
   '',
 ].join('\n');
 
+export const ANTIGRAVITY_AGENT_NAME = 'canopy';
+
+/**
+ * The private-profile agent every launch selects (CAP-02). It inherits no
+ * workspace or default customizations, so repository skills, rules and
+ * workflows never reach the model, and it offers only the native tools the
+ * approval hook sends to the host. Antigravity 1.5.1 silently falls back to
+ * its default agent on any key or value outside the qualified schema, and the
+ * session handshake does not name the active agent: change these values only
+ * with a re-probe on the pinned runtime.
+ */
+export const ANTIGRAVITY_AGENT_DEFINITION = [
+  '---',
+  `name: ${ANTIGRAVITY_AGENT_NAME}`,
+  'description: App session agent',
+  'mainAgent: true',
+  'subagent: false',
+  'inheritCustomizations: false',
+  'excludeDefaultComponents: true',
+  'tools: [read_file, write_file, run_command]',
+  '---',
+  '# Session agent',
+  '',
+  'You work for the user inside the app. Work only in the workspace roots this',
+  'session names, and keep every read, write and command inside them.',
+  '',
+  'Every file read, file write and command goes through the app for approval.',
+  'If a call is denied, tell the user it was denied and why, if a reason was',
+  'given. Do not retry it, and do not reach the same result another way.',
+  '',
+  "MCP tools this session provides are the app's own tools. Use them under",
+  'the same rules.',
+  '',
+  'In plan mode, make no edits and run no commands. Answer with the plan.',
+  '',
+  'If a tool you need is unavailable, say which one and stop.',
+  '',
+].join('\n');
+
+/** Where the Canopy agent lives in the private profile. */
+export function antigravityAgentPath(profile: string): string {
+  return join(profile, 'config', 'agents', `${ANTIGRAVITY_AGENT_NAME}.md`);
+}
+
 function antigravityMcpServerList(names: readonly string[] = []): string {
   const seen = new Set<string>();
   for (const name of names) {
@@ -189,6 +233,9 @@ export async function prepareAntigravityProfile(
     join(config, 'mcp_config.json'),
     JSON.stringify({ mcpServers: {} }),
   );
+  const agent = antigravityAgentPath(profile);
+  await mkdir(dirname(agent), { recursive: true, mode: 0o700 });
+  await replacePrivateFile(agent, ANTIGRAVITY_AGENT_DEFINITION);
   return profile;
 }
 
@@ -200,6 +247,8 @@ export function antigravityArguments(profile: string): string[] {
     '--disable-telemetry',
     '--include-default-customizations=false',
     '--process-per-session',
+    '--agent',
+    ANTIGRAVITY_AGENT_NAME,
   ];
 }
 

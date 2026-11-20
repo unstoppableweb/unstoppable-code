@@ -149,21 +149,35 @@ function parseEnvelope(read: DocumentRead): Classified<JsonObject> {
 const isOptional = (value: unknown, allowed: readonly unknown[]): boolean =>
   value === undefined || allowed.includes(value);
 
+function indexEntryProblem(entry: McpServerIndexEntry): string | undefined {
+  if (hasDuplicate(entry.configs.map((config) => config.id)))
+    return `duplicate config ids for ${entry.id}`;
+  if (
+    !isOptional(entry.scope, ['device', 'account']) ||
+    !isOptional(entry.authHandler, ['canopy', 'provider', 'account']) ||
+    !['undefined', 'string'].includes(typeof entry.accountConnectionId) ||
+    !['undefined', 'string'].includes(typeof entry.urlHost) ||
+    !['undefined', 'string'].includes(typeof entry.urlScheme)
+  )
+    return `invalid routing fields for ${entry.id}`;
+  return undefined;
+}
+
+/** The display fallback accepts legacy envelopes even when a row fails this check. */
+export function isClassifiableIndexEntry(entry: unknown): boolean {
+  const envelope: unknown = { version: 1, servers: [entry] };
+  if (!isMcpServersIndexFile(envelope)) return false;
+  const [row] = envelope.servers;
+  return row !== undefined && indexEntryProblem(row) === undefined;
+}
+
 function indexProblem(value: JsonObject): string | undefined {
   if (!isMcpServersIndexFile(value)) return 'invalid server entries';
   if (hasDuplicate(value.servers.map((entry) => entry.id)))
     return 'duplicate server ids';
   for (const entry of value.servers) {
-    if (hasDuplicate(entry.configs.map((config) => config.id)))
-      return `duplicate config ids for ${entry.id}`;
-    if (
-      !isOptional(entry.scope, ['device', 'account']) ||
-      !isOptional(entry.authHandler, ['canopy', 'provider', 'account']) ||
-      !['undefined', 'string'].includes(typeof entry.accountConnectionId) ||
-      !['undefined', 'string'].includes(typeof entry.urlHost) ||
-      !['undefined', 'string'].includes(typeof entry.urlScheme)
-    )
-      return `invalid routing fields for ${entry.id}`;
+    const problem = indexEntryProblem(entry);
+    if (problem !== undefined) return problem;
   }
   return undefined;
 }

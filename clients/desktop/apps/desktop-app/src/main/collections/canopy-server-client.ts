@@ -4,11 +4,18 @@ import {
   assertResourceShareTransition,
 } from '../lib/resource-share-context';
 import { assertShareScopeTarget } from '../lib/share-scope-target';
-import { ShareOperationError } from '../sharing/share-operation-result';
+import {
+  ShareOperationError,
+  SkillSecretDetectedError,
+} from '../sharing/share-operation-result';
 import type {
   SharedCollectionPublicShareInfo,
   SharedCollectionSummary,
 } from '@canopy/protocol/collections';
+import {
+  collectionSkillSecretMessage,
+  scanSharedSkillForSecrets,
+} from '@canopy/protocol/skills';
 import {
   resourceContextEnabled,
   resourceContextSnapshot,
@@ -200,10 +207,33 @@ async function assertCollectionCanBeShared(
   }
 }
 
+/**
+ * Refuses to upload a collection whose custom skill text looks like it holds
+ * a secret (CAN-7226). It runs on the exact text that would be sent, before
+ * any read or request, so a refused share makes no network call. The message
+ * names the skill, file and rule, never the match.
+ */
+function assertCustomSkillsHoldNoSecrets(
+  customSkills: CreateSharedCollectionRequest['customSkills'],
+): void {
+  for (const skill of customSkills ?? []) {
+    const finding = scanSharedSkillForSecrets({
+      skillName: skill.name,
+      files: [{ path: 'SKILL.md', text: skill.rawSkill }],
+    });
+    if (finding !== null)
+      throw new SkillSecretDetectedError(
+        collectionSkillSecretMessage(finding),
+        'access',
+      );
+  }
+}
+
 export async function createSharedCollection(
   request: CreateSharedCollectionRequest,
 ): Promise<SharedCollectionDetail> {
   assertShareScopeTarget(request, 'a collection');
+  assertCustomSkillsHoldNoSecrets(request.customSkills);
   await assertCollectionCanBeShared(request.sourceCollectionId);
   if (resourceContextEnabled()) {
     const destination = await assertResourceShareDestination(request);
@@ -248,6 +278,7 @@ export async function updateSharedCollection(
   request: UpdateSharedCollectionRequest,
 ): Promise<SharedCollectionDetail> {
   assertShareScopeTarget(request, 'a collection');
+  assertCustomSkillsHoldNoSecrets(request.customSkills);
   await assertCollectionCanBeShared(request.sourceCollectionId);
   if (resourceContextEnabled()) {
     const current = await getSharedCollection(request.collectionId);

@@ -692,10 +692,19 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     executor: 'credentials',
     requiresInterface: true,
   }),
-  'canopy_portal.close': Object.freeze({ kind: 'presentation' }),
-  'canopy_portal.open': Object.freeze({ kind: 'presentation' }),
+  // CAN-7298: legacy aliases of remote_control.open_dialog / close_dialog
+  // (and settings.open), run through the shared engine. CAN-7345 removes them.
+  'canopy_portal.close': Object.freeze({
+    kind: 'host_presentation',
+    executor: 'shared-engine',
+  }),
+  'canopy_portal.open': Object.freeze({
+    kind: 'host_presentation',
+    executor: 'shared-engine',
+  }),
   'canopy_portal.open_account_settings': Object.freeze({
-    kind: 'presentation',
+    kind: 'host_presentation',
+    executor: 'shared-engine',
   }),
   'canopy_portal.start': Object.freeze({
     kind: 'core',
@@ -1513,6 +1522,11 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     grants: Object.freeze(['core.chat.write'] as const),
     revision: 'none',
   }),
+  // CAN-7298: the Remote Control dialog in this computer's main window.
+  'remote_control.close_dialog': Object.freeze({
+    kind: 'host_presentation',
+    executor: 'shared-engine',
+  }),
   'remote_control.get_state': Object.freeze({
     kind: 'core',
     access: 'read',
@@ -1520,6 +1534,10 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     requiresInterface: true,
   }),
   'remote_control.open_computer': Object.freeze({ kind: 'presentation' }),
+  'remote_control.open_dialog': Object.freeze({
+    kind: 'host_presentation',
+    executor: 'shared-engine',
+  }),
   'remote_control.set_allow_incoming': Object.freeze({
     kind: 'core',
     access: 'write',

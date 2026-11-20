@@ -173,9 +173,11 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // The controlled computer's Mod admission preferences.
     claudeModsGet: 'tunnel',
     claudeModsUpdate: 'tunnel',
-    // A local chat's Mod pushes; the web reaches them through the Portal (phase 07).
-    claudeModSurfacePush: 'local',
-    claudeModSurfaceCommand: 'local',
+    // A chat's Mod surface (CAN-7436). The host withholds composer requests
+    // and withdrawals from every controller and refuses `composer-answer`
+    // commands, so a Mod's composer reads stay on the host's own window.
+    claudeModSurfacePush: 'tunnel',
+    claudeModSurfaceCommand: 'tunnel',
     preferencesSetApprovalDefault: 'tunnel',
     // creates B install data dir and adoption marker; install-level
     preferencesCreatePrimaryDataDir: 'blocked',
@@ -576,11 +578,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     mcpAnswerUser: 'tunnel',
     mcpDismissUser: 'tunnel',
     mcpExpireAskUser: 'tunnel',
-    // Values go only from the local window to this computer's store.
+    // Values go only from the local window to this computer's store. A
+    // paired browser or phone answers with the `secret-request.settle`
+    // session method instead (U7), never through a tunneled channel.
     secretRequestSubmit: 'blocked',
     secretRequestDecline: 'blocked',
-    // The Secrets chip reaches paired devices with U7; until then only the
-    // local window lists, revokes or restarts.
+    // Only the local window lists, revokes or restarts: the Secrets chip on
+    // paired devices is a follow-up.
     agentSecretsList: 'blocked',
     agentSecretsRevoke: 'blocked',
     agentSecretsRestart: 'blocked',
@@ -1384,6 +1388,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlOpenPairingWindow: 'local',
     remoteControlClosePairingWindow: 'local',
     remoteControlPairingEvent: 'local',
+    // An agent's request to show this computer's own Remote Control dialog.
+    remoteControlDialogRequest: 'local',
     // The controlled computer's stable install identifier; controllers
     // (hosted MCP pairing) read it after authorization.
     remoteControlInstallId: 'tunnel',

@@ -1,4 +1,5 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import type { SecretRequestSettleResponse } from '@canopy/desktop-shared/types';
 import {
   recordRemoteControlTelemetry,
   startRemotePairingTelemetry,
@@ -57,8 +58,9 @@ import {
 import { setInterfaceToolAudienceResolver } from '../agents/interface-tool-binding';
 import { requestCanopyCloudJson } from '../canopy-cloud/client';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
-import { readDurableInstallId } from '../lib/install-identity';
+import { getInstallId, readDurableInstallId } from '../lib/install-identity';
 import { readLegacyPortalOptIn } from './legacy-portal-opt-in';
+import { buildRelayTokenRequest } from './relay-token-request';
 import {
   redeliverPendingAppAdvisorAskUserRequests,
   setRemoteAppAdvisorWindowHostResolver,
@@ -199,7 +201,13 @@ async function fetchRelayToken(
 ): Promise<ReturnType<typeof DeviceRelayTokenResponseSchema.parse>> {
   const response = await requestCanopyCloudJson<unknown>(
     DEVICE_RELAY_TOKEN_PATH,
-    { method: 'POST', body: JSON.stringify({ deviceId }) },
+    {
+      method: 'POST',
+      // `getInstallId` is the value catalog sync stores, cached after a read.
+      body: JSON.stringify(
+        await buildRelayTokenRequest(deviceId, getInstallId),
+      ),
+    },
   );
   return DeviceRelayTokenResponseSchema.parse(response);
 }
@@ -468,6 +476,26 @@ export function initializeRemoteControl(options: {
     openLocalFile: (path: string): Promise<void> =>
       openExternalGuarded(pathToFileURL(path).toString()),
     core: createRemoteCoreAccess(getDesktopCanopyRuntime),
+    // A paired person's answer to a RequestSecrets form (U7): the local
+    // form's own settlement, loaded on first use.
+    secretRequests: {
+      submit: async (
+        request,
+        answeredFrom,
+      ): Promise<SecretRequestSettleResponse> => {
+        const { submitSecretRequest } =
+          await import('../agent-secrets/request-secrets');
+        return submitSecretRequest(request, { answeredFrom });
+      },
+      decline: async (
+        requestId,
+        answeredFrom,
+      ): Promise<SecretRequestSettleResponse> => {
+        const { declineSecretRequest } =
+          await import('../agent-secrets/request-secrets');
+        return declineSecretRequest(requestId, { answeredFrom });
+      },
+    },
     dispatchHostedChatCommand: async (
       request,
       attribution,

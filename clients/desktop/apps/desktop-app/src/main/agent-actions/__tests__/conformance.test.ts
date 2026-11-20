@@ -301,6 +301,7 @@ import { DESKTOP_AGENT_ACTION_LIMITS } from '../desktop-limits-port';
 import { chatSendAdmissionCheck } from '../../services/chat-send-admission';
 import { createDesktopSplitPort } from '../desktop-split-port';
 import { createDesktopSettingsPort } from '../desktop-settings-port';
+import { createDesktopRemoteControlDialogPort } from '../desktop-remote-control-dialog-port';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { createDesktopAgentActionSurface } from '../desktop-surface';
 import { desktopAgentActionCapabilities } from '../desktop-surface';
@@ -831,6 +832,17 @@ function makeDesktopHost(world: ConformanceWorld): {
       send: (channel: string, route: unknown): void => {
         if (channel === IPC_CHANNELS.accountOrganizationSettingsOpen)
           openedSettings.push(route);
+        if (
+          channel === IPC_CHANNELS.remoteControlDialogRequest &&
+          !(
+            typeof route === 'object' &&
+            route !== null &&
+            Object.keys(route).length === 1 &&
+            'open' in route &&
+            typeof route.open === 'boolean'
+          )
+        )
+          throw new Error('Remote Control dialog request is not { open }');
       },
     },
   };
@@ -920,6 +932,14 @@ function makeDesktopHost(world: ConformanceWorld): {
                   ),
                 ),
         },
+        // The real port, sending to the calling chat's window above.
+        remoteControlDialog: createDesktopRemoteControlDialogPort({
+          getWindow: () => settingsWindow,
+          service: () =>
+            Promise.resolve({
+              getState: () => Promise.resolve({ available: true }),
+            }),
+        }),
         settings,
         environment: holds.wrap(environment),
         transcriptRead: createDesktopTranscriptReadPort({

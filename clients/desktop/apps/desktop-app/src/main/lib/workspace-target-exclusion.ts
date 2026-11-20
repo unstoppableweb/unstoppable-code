@@ -43,6 +43,51 @@ function key(projectId: string, worktreeId: string): string {
   return `${projectId}\0${worktreeId}`;
 }
 
+/** A hold other hosts enforce while an archive or Auto Delete runs. */
+export type WorkspaceTargetHold = 'archive' | 'autoDelete';
+
+/**
+ * Confirms a hold where other hosts enforce it (CAN-4730 E2 2a: the daemon's
+ * mutation fence). Resolves with its release once it holds there; rejects
+ * otherwise.
+ */
+export type WorkspaceTargetHoldConfirmer = (
+  projectId: string,
+  worktreeId: string,
+  hold: WorkspaceTargetHold,
+) => Promise<() => void>;
+
+let holdConfirmer: WorkspaceTargetHoldConfirmer | undefined;
+
+/** Installs the hold confirmer; main startup wires it. Returns an undo. */
+export function setWorkspaceTargetHoldConfirmer(
+  confirmer: WorkspaceTargetHoldConfirmer,
+): () => void {
+  const previous = holdConfirmer;
+  holdConfirmer = confirmer;
+  return (): void => {
+    if (holdConfirmer === confirmer) holdConfirmer = previous;
+  };
+}
+
+async function confirmWorkspaceTargetHold(
+  projectId: string,
+  worktreeId: string,
+  hold: WorkspaceTargetHold,
+): Promise<(() => void) | undefined> {
+  const confirm = holdConfirmer;
+  if (!confirm) return undefined;
+  try {
+    return await confirm(projectId, worktreeId, hold);
+  } catch {
+    if (hold === 'autoDelete')
+      throw new WorkspaceTargetAutoArchiveExcludedError();
+    throw new Error(
+      "Couldn't archive this worktree because file changes couldn't be paused. Try again.",
+    );
+  }
+}
+
 const RUNTIME_START_DRAIN_TIMEOUT_MS = 30_000;
 
 async function waitForWorkspaceTargetRuntimeStarts(
@@ -199,10 +244,17 @@ export async function withWorkspaceTargetArchiveDrain<T>(
   const targetKey = key(projectId, worktreeId);
   cancelWorkspaceTargetRuntimePreparation(projectId, worktreeId);
   archiveDrains.set(targetKey, (archiveDrains.get(targetKey) ?? 0) + 1);
+  let releaseHold: (() => void) | undefined;
   try {
     await waitForWorkspaceTargetRuntimeStarts(targetKey);
+    releaseHold = await confirmWorkspaceTargetHold(
+      projectId,
+      worktreeId,
+      'archive',
+    );
     return await operation();
   } finally {
+    releaseHold?.();
     const remaining = (archiveDrains.get(targetKey) ?? 1) - 1;
     if (remaining === 0) archiveDrains.delete(targetKey);
     else archiveDrains.set(targetKey, remaining);
@@ -302,9 +354,16 @@ export async function withWorkspaceTargetAutoArchiveLease<T>(
     throw new WorkspaceTargetAutoArchiveExcludedError();
   }
   autoArchiveLeases.add(targetKey);
+  let releaseHold: (() => void) | undefined;
   try {
+    releaseHold = await confirmWorkspaceTargetHold(
+      projectId,
+      worktreeId,
+      'autoDelete',
+    );
     return await operation();
   } finally {
+    releaseHold?.();
     autoArchiveLeases.delete(targetKey);
   }
 }

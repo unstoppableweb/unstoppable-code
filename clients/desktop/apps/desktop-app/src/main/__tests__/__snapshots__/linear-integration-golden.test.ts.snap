@@ -1,0 +1,672 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`captures the Linear connection, lookups and sign-out as desktop serves them 1`] = `
+[
+  {
+    "requests": [],
+    "result": {
+      "resolved": "",
+    },
+    "step": "load token, none stored",
+  },
+  {
+    "requests": [],
+    "result": {
+      "rejected": {
+        "code": "app.unexpected",
+        "copy": {
+          "description": "Reload to get back to a working state.",
+          "title": "Something went wrong.",
+        },
+        "detail": {
+          "message": "Connect Linear to look up this issue.",
+          "name": "Error",
+        },
+        "kind": "defect",
+        "legacy": "Error: Connect Linear to look up this issue.",
+        "source": "ipc:settings:search-linear-issues",
+      },
+    },
+    "step": "search identifier, not connected",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": [],
+    },
+    "step": "search text, not connected",
+  },
+  {
+    "requests": [],
+    "result": {
+      "issue": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": null,
+        },
+      },
+      "teams": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+    },
+    "step": "previews, not connected",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "authenticated": false,
+        "displayName": null,
+        "error": null,
+      },
+    },
+    "step": "validate empty",
+  },
+  {
+    "requests": [
+      "viewer <alpha>",
+    ],
+    "result": {
+      "resolved": {
+        "authenticated": true,
+        "displayName": "ada",
+        "error": null,
+      },
+    },
+    "step": "validate good",
+  },
+  {
+    "requests": [
+      "viewer <revoked>",
+    ],
+    "result": {
+      "resolved": {
+        "authenticated": false,
+        "displayName": null,
+        "error": "Invalid API key or unable to reach Linear.",
+      },
+    },
+    "step": "validate rejected",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "success": true,
+      },
+    },
+    "step": "save token",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": "<alpha>",
+    },
+    "step": "load token",
+  },
+  {
+    "requests": [
+      "searchIssues <alpha> term=ABC-1",
+      "issue_attachments <alpha> id=issue-1 first=50",
+    ],
+    "result": {
+      "resolved": [
+        {
+          "attachments": [
+            {
+              "source": "github",
+              "title": "Fix login",
+              "url": "https://github.com/acme/app/pull/7",
+            },
+          ],
+          "attachmentsComplete": true,
+          "branchName": "abc-1-login-fails",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-1",
+          "identifier": "ABC-1",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login fails on Safari",
+          "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+        },
+        {
+          "branchName": "abc-2-login-copy",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-2",
+          "identifier": "ABC-2",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login copy",
+          "url": "https://linear.app/acme/issue/ABC-2/login-copy",
+        },
+      ],
+    },
+    "step": "search identifier",
+  },
+  {
+    "requests": [
+      "searchIssues <alpha> term=login",
+    ],
+    "result": {
+      "resolved": [
+        {
+          "branchName": "abc-2-login-copy",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-2",
+          "identifier": "ABC-2",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login copy",
+          "url": "https://linear.app/acme/issue/ABC-2/login-copy",
+        },
+        {
+          "branchName": "abc-1-login-fails",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-1",
+          "identifier": "ABC-1",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login fails on Safari",
+          "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+        },
+      ],
+    },
+    "step": "search text",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": [],
+    },
+    "step": "search blank",
+  },
+  {
+    "requests": [
+      "referencePreviewTeams <alpha> first=250",
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "issue": {
+        "resolved": {
+          "preview": {
+            "assignee": "ada",
+            "assigneeAvatarUrl": null,
+            "description": "Steps: open login, see details.",
+            "identifier": "ABC-1",
+            "project": "Web",
+            "status": "In Progress",
+            "statusType": "started",
+            "title": "Login fails on Safari",
+            "updatedAt": "2026-11-01T00:00:00.000Z",
+            "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+          },
+          "scope": "<scope-1>",
+          "status": "ok",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": "<scope-1>",
+        },
+      },
+      "teams": {
+        "resolved": {
+          "fetchedAt": "<time>",
+          "keys": [
+            "ABC",
+            "OPS",
+          ],
+          "scope": "<scope-1>",
+          "status": "ok",
+        },
+      },
+    },
+    "step": "previews",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "fetchedAt": "<time>",
+        "keys": [
+          "ABC",
+          "OPS",
+        ],
+        "scope": "<scope-1>",
+        "status": "ok",
+      },
+    },
+    "step": "teams again, cached",
+  },
+  {
+    "requests": [
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "resolved": {
+        "scope": "<scope-1>",
+        "status": "unavailable",
+      },
+    },
+    "step": "issue from another workspace",
+  },
+  {
+    "requests": [
+      "referencePreviewTeams <alpha> first=250",
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "issue": {
+        "resolved": {
+          "preview": {
+            "assignee": "ada",
+            "assigneeAvatarUrl": null,
+            "description": "Steps: open login, see details.",
+            "identifier": "ABC-1",
+            "project": "Web",
+            "status": "In Progress",
+            "statusType": "started",
+            "title": "Login fails on Safari",
+            "updatedAt": "2026-11-01T00:00:00.000Z",
+            "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+          },
+          "scope": "<scope-2>",
+          "status": "ok",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": "<scope-2>",
+        },
+      },
+      "teams": {
+        "resolved": {
+          "fetchedAt": "<time>",
+          "keys": [
+            "ABC",
+            "OPS",
+          ],
+          "scope": "<scope-2>",
+          "status": "ok",
+        },
+      },
+    },
+    "step": "previews, signed in as account one",
+  },
+  {
+    "requests": [
+      "referencePreviewTeams <alpha> first=250",
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "issue": {
+        "resolved": {
+          "preview": {
+            "assignee": "ada",
+            "assigneeAvatarUrl": null,
+            "description": "Steps: open login, see details.",
+            "identifier": "ABC-1",
+            "project": "Web",
+            "status": "In Progress",
+            "statusType": "started",
+            "title": "Login fails on Safari",
+            "updatedAt": "2026-11-01T00:00:00.000Z",
+            "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+          },
+          "scope": "<scope-3>",
+          "status": "ok",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": "<scope-3>",
+        },
+      },
+      "teams": {
+        "resolved": {
+          "fetchedAt": "<time>",
+          "keys": [
+            "ABC",
+            "OPS",
+          ],
+          "scope": "<scope-3>",
+          "status": "ok",
+        },
+      },
+    },
+    "step": "previews, signed in as account two",
+  },
+  {
+    "requests": [
+      "searchIssues <alpha> term=ABC-1",
+      "issue_attachments <alpha> id=issue-1 first=50",
+    ],
+    "result": {
+      "resolved": [
+        {
+          "attachments": [
+            {
+              "source": "github",
+              "title": "Fix login",
+              "url": "https://github.com/acme/app/pull/7",
+            },
+          ],
+          "attachmentsComplete": true,
+          "branchName": "abc-1-login-fails",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-1",
+          "identifier": "ABC-1",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login fails on Safari",
+          "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+        },
+        {
+          "branchName": "abc-2-login-copy",
+          "description": "Steps: open **login**, see [details](https://example.test).",
+          "id": "issue-2",
+          "identifier": "ABC-2",
+          "priority": 2,
+          "priorityLabel": "High",
+          "title": "Login copy",
+          "url": "https://linear.app/acme/issue/ABC-2/login-copy",
+        },
+      ],
+    },
+    "step": "search identifier, account two",
+  },
+  {
+    "requests": [],
+    "result": {
+      "rejected": {
+        "code": "app.unexpected",
+        "copy": {
+          "description": "Reload to get back to a working state.",
+          "title": "Something went wrong.",
+        },
+        "detail": {
+          "message": "Invalid Linear issue preview request.",
+          "name": "Error",
+        },
+        "kind": "defect",
+        "legacy": "Error: Invalid Linear issue preview request.",
+        "source": "ipc:reference-preview:linear-issue",
+      },
+    },
+    "step": "invalid preview request",
+  },
+  {
+    "requests": [
+      "searchIssues <alpha> term=ABC-1",
+    ],
+    "result": {
+      "rejected": {
+        "code": "external.rate_limited",
+        "copy": {
+          "description": "Wait a little before continuing.",
+          "title": "Too many requests for now.",
+        },
+        "detail": {
+          "message": "Linear is rate limiting requests. Try again shortly.",
+          "name": "Error",
+          "status": 429,
+        },
+        "kind": "external",
+        "legacy": "Error: Linear is rate limiting requests. Try again shortly.",
+        "recovery": "wait",
+        "source": "ipc:settings:search-linear-issues",
+      },
+    },
+    "step": "search identifier, rate limited",
+  },
+  {
+    "requests": [
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "resolved": {
+        "retryAfterMs": 30000,
+        "status": "rate-limited",
+      },
+    },
+    "step": "issue, rate limited",
+  },
+  {
+    "requests": [
+      "searchIssues <alpha> term=ABC-1",
+    ],
+    "result": {
+      "rejected": {
+        "code": "external.offline",
+        "copy": {
+          "description": "Check your connection, then try again.",
+          "title": "Couldn't reach the network.",
+        },
+        "detail": {
+          "message": "Couldn’t reach Linear. Try again.",
+          "name": "Error",
+        },
+        "kind": "external",
+        "legacy": "Error: Couldn’t reach Linear. Try again.",
+        "recovery": "try_again",
+        "source": "ipc:settings:search-linear-issues",
+      },
+    },
+    "step": "search identifier, offline",
+  },
+  {
+    "requests": [
+      "viewer <alpha>",
+    ],
+    "result": {
+      "resolved": {
+        "authenticated": false,
+        "displayName": null,
+        "error": "Invalid API key or unable to reach Linear.",
+      },
+    },
+    "step": "validate, offline",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "success": true,
+      },
+    },
+    "step": "save revoked token",
+  },
+  {
+    "requests": [
+      "searchIssues <revoked> term=ABC-1",
+    ],
+    "result": {
+      "rejected": {
+        "code": "external.sign_in_required",
+        "copy": {
+          "description": "Sign in again to continue.",
+          "title": "Your sign-in has expired.",
+        },
+        "detail": {
+          "message": "Reconnect Linear to look up this issue.",
+          "name": "Error",
+          "status": 401,
+        },
+        "kind": "external",
+        "legacy": "Error: Reconnect Linear to look up this issue.",
+        "recovery": "fix_first",
+        "source": "ipc:settings:search-linear-issues",
+      },
+    },
+    "step": "search identifier, revoked",
+  },
+  {
+    "requests": [
+      "searchIssues <revoked> term=login",
+    ],
+    "result": {
+      "resolved": [],
+    },
+    "step": "search text, revoked",
+  },
+  {
+    "requests": [
+      "referencePreviewTeams <revoked> first=250",
+    ],
+    "result": {
+      "issue": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": "<scope-4>",
+        },
+      },
+      "teams": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+    },
+    "step": "previews, revoked",
+  },
+  {
+    "requests": [],
+    "result": {
+      "issue": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": null,
+        },
+      },
+      "teams": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+    },
+    "step": "previews again, revoked key held back",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "success": true,
+      },
+    },
+    "step": "save token again",
+  },
+  {
+    "requests": [
+      "referencePreviewTeams <alpha> first=250",
+      "referencePreviewIssue <alpha> id=ABC-1",
+    ],
+    "result": {
+      "issue": {
+        "resolved": {
+          "preview": {
+            "assignee": "ada",
+            "assigneeAvatarUrl": null,
+            "description": "Steps: open login, see details.",
+            "identifier": "ABC-1",
+            "project": "Web",
+            "status": "In Progress",
+            "statusType": "started",
+            "title": "Login fails on Safari",
+            "updatedAt": "2026-11-01T00:00:00.000Z",
+            "url": "https://linear.app/acme/issue/ABC-1/login-fails",
+          },
+          "scope": "<scope-1>",
+          "status": "ok",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": "<scope-1>",
+        },
+      },
+      "teams": {
+        "resolved": {
+          "fetchedAt": "<time>",
+          "keys": [
+            "ABC",
+            "OPS",
+          ],
+          "scope": "<scope-1>",
+          "status": "ok",
+        },
+      },
+    },
+    "step": "previews, reconnected",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": {
+        "success": true,
+      },
+    },
+    "step": "clear token",
+  },
+  {
+    "requests": [],
+    "result": {
+      "resolved": "",
+    },
+    "step": "load token after clear",
+  },
+  {
+    "requests": [],
+    "result": {
+      "rejected": {
+        "code": "app.unexpected",
+        "copy": {
+          "description": "Reload to get back to a working state.",
+          "title": "Something went wrong.",
+        },
+        "detail": {
+          "message": "Connect Linear to look up this issue.",
+          "name": "Error",
+        },
+        "kind": "defect",
+        "legacy": "Error: Connect Linear to look up this issue.",
+        "source": "ipc:settings:search-linear-issues",
+      },
+    },
+    "step": "search identifier after clear",
+  },
+  {
+    "requests": [],
+    "result": {
+      "issue": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+      "scope": {
+        "resolved": {
+          "scope": null,
+        },
+      },
+      "teams": {
+        "resolved": {
+          "status": "disconnected",
+        },
+      },
+    },
+    "step": "previews after clear",
+  },
+]
+`;

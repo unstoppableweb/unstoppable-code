@@ -329,6 +329,15 @@ function renderLink(
   host: TreeHost,
   key: number,
 ): ReactNode {
+  const children = link.children.map((child, index) =>
+    typeof child === 'string' ? child : renderText(child, host, index, false),
+  );
+  // The host validated the tree, but a directly controlled computer's trees
+  // reach the browser unparsed: a link the allow rule refuses is plain text,
+  // as in markdown.
+  if (!isExtensionUiLinkAllowed(link.href)) {
+    return <span key={key}>{children}</span>;
+  }
   return (
     <Button
       key={key}
@@ -340,11 +349,7 @@ function renderLink(
         host.onOpenLink(link.href);
       }}
     >
-      {link.children.map((child, index) =>
-        typeof child === 'string'
-          ? child
-          : renderText(child, host, index, false),
-      )}
+      {children}
     </Button>
   );
 }

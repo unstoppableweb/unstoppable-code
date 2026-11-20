@@ -6,6 +6,7 @@ import type {
 import type { ChatState } from '../state';
 import { createPlanSlice } from '../slices/plan';
 import { recoverUntrackedPlanProposals } from '../plan-proposal-recovery';
+import { resolveComposerPendingPlanExit } from '../../../components/chat/resolveComposerPendingPlanExit';
 
 let mockStore: StoreApi<ChatState>;
 const mockIsScopeRevisionedLive = jest.fn((): boolean => false);
@@ -369,4 +370,35 @@ it('creates a fresh tracked plan after a dismissed antigravity plan in a synced 
       trackedPlanReviewStatus: 'pending',
     }),
   );
+});
+
+it('keeps the antigravity source on a restored pending proposal', () => {
+  const resolved = resolveComposerPendingPlanExit(
+    {
+      id: CHAT_ID,
+      pendingPlanExit: {
+        plan: PLAN_TEXT,
+        source: 'antigravity',
+        reviewMode: 'proposal',
+      },
+      pendingPlanExitRequestId: 'req-restored',
+    },
+    { projectId: 'p', worktreeId: 'w' },
+    {},
+  );
+  expect(resolved).toEqual(
+    expect.objectContaining({
+      requestId: 'req-restored',
+      chatId: CHAT_ID,
+      source: 'antigravity',
+    }),
+  );
+  // An unrecognized or missing source still reads as Claude.
+  expect(
+    resolveComposerPendingPlanExit(
+      { id: CHAT_ID, pendingPlanExit: { plan: PLAN_TEXT } },
+      { projectId: 'p', worktreeId: 'w' },
+      {},
+    )?.source,
+  ).toBe('claude');
 });

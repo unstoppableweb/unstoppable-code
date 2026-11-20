@@ -248,8 +248,9 @@ export async function discoverManagedDelegationModels(
           !antigravityDelegateRawModel(runtime.runtimeModel)
         )
           return disabled(ANTIGRAVITY_DELEGATE_MODEL_REQUIRED);
-        // Fail-closed until native discovery isolation is qualified; a pure
-        // check, so it also runs before any plugin work.
+        // Admission follows antigravityChildAdmission() (darwin, harness flag
+        // on, gemini- models) on the isolation evidence; a pure check, so it
+        // also runs before any plugin work.
         if (harness === 'antigravity') {
           const admission = antigravityChildAdmission();
           if (!admission.admitted) return disabled(admission.reason);

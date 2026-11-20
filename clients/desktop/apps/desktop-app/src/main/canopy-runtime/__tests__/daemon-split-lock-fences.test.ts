@@ -20,6 +20,12 @@ import {
   type FenceOwnerSession,
   type SplitLockFencePublisherOptions,
 } from '../daemon-split-lock-fences';
+import {
+  resetWorkspaceTargetExclusionsForTests,
+  withWorkspaceTargetArchiveDrain,
+  withWorkspaceTargetAutoArchiveLease,
+  WorkspaceTargetAutoArchiveExcludedError,
+} from '../../lib/workspace-target-exclusion';
 
 const mockOwnerSession = jest.fn();
 let mockOwnerLifetime = new AbortController();
@@ -500,6 +506,162 @@ describe('keeping the owner session observed, on fake timers', () => {
   });
 });
 
+const ARCHIVE_UNPAUSED =
+  "Couldn't archive this worktree because file changes couldn't be paused. Try again.";
+
+const held = (worktreeId: string, hold: string): object => ({
+  workspaceId: 'project-1',
+  worktreeId,
+  hold,
+});
+
+const bodies = (): object[] =>
+  owner.sent.map((params) =>
+    Object.fromEntries(
+      Object.entries(params).filter(([key]) => key !== 'epoch'),
+    ),
+  );
+
+/** A recorded stand-in for the archive or deletion that holds the worktree. */
+const recording = (ran: string[], label: string) => (): Promise<void> => {
+  ran.push(label);
+  return Promise.resolve();
+};
+
+describe('archive and Auto Delete holds (CAN-4730 E2 2a)', () => {
+  afterEach(() => {
+    resetWorkspaceTargetExclusionsForTests();
+  });
+
+  it('fences an archive before it runs, snapshotting it on the first owner session, and releases the hold after', async () => {
+    connect();
+    await settle();
+    owner.sent.length = 0;
+    owner.state.answer = 'hang';
+    const ran: string[] = [];
+    const archiving = withWorkspaceTargetArchiveDrain(
+      'project-1',
+      'wt-1',
+      recording(ran, 'archive'),
+    );
+    await settle();
+    expect(ran).toEqual([]);
+    owner.state.answer = 'ack';
+    owner.ackHanging();
+    await archiving;
+    await settle();
+    expect(ran).toEqual(['archive']);
+    expect(bodies()).toEqual([
+      { kind: 'snapshot', fenced: [held('wt-1', 'archive')] },
+      { kind: 'change', fenced: [held('wt-1', 'archive')], released: [] },
+      { kind: 'change', fenced: [], released: [held('wt-1', 'archive')] },
+    ]);
+  });
+
+  it('fails an archive whose hold the daemon refuses or does not confirm in time, running nothing and clearing the late fence', async () => {
+    connect();
+    await settle();
+    owner.state.answer = 'fail';
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetArchiveDrain(
+        'project-1',
+        'wt-1',
+        recording(ran, 'refused'),
+      ),
+    ).rejects.toHaveProperty('message', ARCHIVE_UNPAUSED);
+    owner.state.answer = 'hang';
+    owner.sent.length = 0;
+    await expect(
+      withWorkspaceTargetArchiveDrain(
+        'project-1',
+        'wt-2',
+        recording(ran, 'late'),
+      ),
+    ).rejects.toHaveProperty('message', ARCHIVE_UNPAUSED);
+    expect(ran).toEqual([]);
+    // The late fence lands, then the release queued behind it.
+    owner.state.answer = 'ack';
+    owner.ackHanging();
+    await settle();
+    expect(bodies().slice(-2)).toEqual([
+      { kind: 'change', fenced: [held('wt-2', 'archive')], released: [] },
+      { kind: 'change', fenced: [], released: [held('wt-2', 'archive')] },
+    ]);
+  });
+
+  it('skips an Auto Delete whose hold the daemon refuses, releasing its lease for a later try', async () => {
+    connect();
+    await settle();
+    owner.state.answer = 'fail';
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-1',
+        recording(ran, 'refused'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    expect(ran).toEqual([]);
+    owner.state.answer = 'ack';
+    await settle();
+    owner.sent.length = 0;
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-1',
+      recording(ran, 'deleted'),
+    );
+    await settle();
+    expect(ran).toEqual(['deleted']);
+    expect(bodies()).toEqual([
+      { kind: 'change', fenced: [held('wt-1', 'autoDelete')], released: [] },
+      { kind: 'change', fenced: [], released: [held('wt-1', 'autoDelete')] },
+    ]);
+  });
+
+  it('carries the holds in progress in each new lease snapshot, beside the split locks', async () => {
+    connect();
+    await acquireSplitLock('project-1', 'wt-split');
+    let finish: () => void = () => undefined;
+    const archiving = withWorkspaceTargetArchiveDrain(
+      'project-1',
+      'wt-archived',
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await settle();
+    owner.sent.length = 0;
+    await owner.newLease();
+    expect(bodies()).toEqual([
+      {
+        kind: 'snapshot',
+        fenced: [target('wt-split'), held('wt-archived', 'archive')],
+      },
+    ]);
+    finish();
+    await archiving;
+  });
+
+  it('archives and deletes as before, publishing nothing, when this app is not the daemon owner', async () => {
+    connect({ ownerPossible: () => false });
+    const ran: string[] = [];
+    await withWorkspaceTargetArchiveDrain(
+      'project-1',
+      'wt-1',
+      recording(ran, 'archive'),
+    );
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-2',
+      recording(ran, 'deleted'),
+    );
+    expect(ran).toEqual(['archive', 'deleted']);
+    expect(owner.sent).toEqual([]);
+  });
+});
+
 describe('the installed publisher at quit (CAN-4730 E2-G)', () => {
   let stopInstalled: () => void = () => undefined;
   beforeEach(() => {
@@ -576,6 +738,8 @@ describe('the installed publisher at quit (CAN-4730 E2-G)', () => {
       released: () => undefined,
       observe: () => undefined,
       keepObserved: () => Promise.resolve(),
+      confirmHold: () => Promise.resolve(),
+      releaseHold: () => undefined,
     });
     for (const worktreeId of ['wt-again', 'wt-after-stops']) {
       const attempt = acquireSplitLock('project-1', worktreeId);
@@ -586,5 +750,27 @@ describe('the installed publisher at quit (CAN-4730 E2-G)', () => {
       reentrant();
     }
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it('refuses an archive and skips an Auto Delete once the owner is disposed at quit', async () => {
+    stopInstalled = installSplitLockFencePublisher();
+    mockOwnerLifetime.abort();
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetArchiveDrain(
+        'project-1',
+        'wt-quit',
+        recording(ran, 'archive'),
+      ),
+    ).rejects.toHaveProperty('message', ARCHIVE_UNPAUSED);
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-quit',
+        recording(ran, 'deleted'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    expect(ran).toEqual([]);
+    resetWorkspaceTargetExclusionsForTests();
   });
 });

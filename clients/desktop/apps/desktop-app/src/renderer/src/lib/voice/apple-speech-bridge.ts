@@ -1,4 +1,7 @@
-import type { VoiceSystemAccessResponse } from '@canopy/desktop-shared/types';
+import type {
+  VoiceIsSupportedResponse,
+  VoiceSystemAccessResponse,
+} from '@canopy/desktop-shared/types';
 import { pcm16Level } from './audio-level';
 import { getPcmWorkletModuleUrl } from './pcm-worklet';
 import { openRendererMicrophoneStream } from './renderer-microphone-access';
@@ -94,11 +97,16 @@ export class AppleSpeechBridgeProvider implements VoiceTranscriptionProvider {
     }
 
     const support = await voiceApi.isSupported();
+    if (support.code === 'model-missing') {
+      // Reported even for a start that a ⌃M release stopped while it waited:
+      // the answer describes the host, not this take.
+      handlers.onSpeechModelMissing?.();
+    }
     if (generation !== this.startGeneration) {
       return;
     }
     if (!support.supported) {
-      throw new VoiceUnsupportedError(support.reason);
+      throw new VoiceUnsupportedError(support.reason, support.code);
     }
 
     let access: VoiceSystemAccessResponse;
@@ -173,8 +181,27 @@ export class AppleSpeechBridgeProvider implements VoiceTranscriptionProvider {
     try {
       await voiceApi.start({ sessionId });
     } catch (error) {
+      const original =
+        error instanceof Error ? error : new Error(String(error));
       await this.disposeResources();
-      throw error instanceof Error ? error : new Error(String(error));
+      if (generation !== this.startGeneration) throw original;
+      // Main probes again before it spawns the helper, so a model removed
+      // since the check above fails here with a plain message. Read support
+      // once more to tell the caller why; a failed read changes nothing.
+      let reread: VoiceIsSupportedResponse;
+      try {
+        reread = await voiceApi.isSupported();
+      } catch {
+        throw original;
+      }
+      if (
+        generation === this.startGeneration &&
+        reread.code === 'model-missing'
+      ) {
+        handlers.onSpeechModelMissing?.();
+        throw new VoiceUnsupportedError(reread.reason, reread.code);
+      }
+      throw original;
     }
     if (generation !== this.startGeneration) {
       try {

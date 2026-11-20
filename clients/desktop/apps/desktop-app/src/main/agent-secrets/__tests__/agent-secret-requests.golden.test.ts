@@ -84,6 +84,10 @@ import {
   submitSecretRequest,
   type RequestSecretsHost,
 } from '../request-secrets';
+import {
+  cancelWaitingSecretRequests,
+  captureWaitingSecretRequests,
+} from '../waiting-secret-requests';
 import { desktopExecutionSecretReader } from '../../execution-secrets/reader';
 import { executeCanopyInjectedTool } from '../../canopy-tools/core';
 import { IPC_PRIVATE_CHANNELS } from '../../ipc/channel-policy';
@@ -139,6 +143,10 @@ function everything(): string {
     .filter((path) => existsSync(path))
     .map((path) => readFileSync(path, 'utf8'))
     .join('\n');
+}
+
+function readFileSyncIfExists(path: string): string {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '';
 }
 
 function expectNoCanary(text: string): void {
@@ -538,6 +546,74 @@ describe('RequestSecrets', () => {
     },
   );
 
+  it("a Stop of the chat cancels its waiting request through the wait's own abort, and no other chat's", async () => {
+    setChatSecretStoreForTests(newStore());
+    // The renderer wait settles as `ask_user_cancelled` when its signal
+    // aborts, as `requestAnswersFromRenderer` does: it closes the wait so a
+    // late answer is refused, and consumes the form.
+    const signals = new Map<string, AbortSignal>();
+    jest.mocked(requestAnswersFromRenderer).mockImplementation(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          const signal = options.signal;
+          if (!signal) {
+            reject(new Error('no signal'));
+            return;
+          }
+          signals.set(options.chatId, signal);
+          options.onRequestCreated?.(`request-${options.chatId}`);
+          signal.addEventListener('abort', () =>
+            reject(new Error('ask_user_cancelled')),
+          );
+        }),
+    );
+    const other: ChatSecretScope = { ...scope, chatId: 'chat-2' };
+    const stopped = requestSecrets(host('ask'), input);
+    const waiting = requestSecrets({ ...host('ask'), scope: other }, input);
+    for (let tries = 0; signals.size < 2 && tries < 200; tries += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    expect([...signals.keys()].sort()).toEqual(['chat-1', 'chat-2']);
+
+    expect(cancelWaitingSecretRequests(scope)).toBe(1);
+    const result = await stopped;
+    expect(result.status).toBe('cancelled');
+    expect(result.secrets.every((s) => s.state === 'skipped')).toBe(true);
+    expect(signals.get('chat-2')?.aborted).toBe(false);
+    // Settled requests leave nothing to cancel.
+    expect(cancelWaitingSecretRequests(scope)).toBe(0);
+
+    expect(cancelWaitingSecretRequests(other)).toBe(1);
+    expect((await waiting).status).toBe('cancelled');
+  });
+
+  it('a Stop cancels only the requests waiting when it began, not one a newer turn opens', async () => {
+    setChatSecretStoreForTests(newStore());
+    const signals: AbortSignal[] = [];
+    jest.mocked(requestAnswersFromRenderer).mockImplementation(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          if (options.signal) signals.push(options.signal);
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('ask_user_cancelled')),
+          );
+        }),
+    );
+    const waitFor = async (count: number): Promise<void> => {
+      for (let tries = 0; signals.length < count && tries < 200; tries += 1)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    const older = requestSecrets(host('ask'), input);
+    await waitFor(1);
+    const stop = captureWaitingSecretRequests(scope);
+    const newer = requestSecrets(host('ask'), input);
+    await waitFor(2);
+    expect(stop()).toBe(1);
+    expect((await older).status).toBe('cancelled');
+    expect(signals[1]?.aborted).toBe(false);
+    expect(cancelWaitingSecretRequests(scope)).toBe(1);
+    expect((await newer).status).toBe('cancelled');
+  });
+
   it('runs through the injected-tool executor and fails closed without a runtime', async () => {
     const requestSecretsRuntime = jest.fn(() =>
       Promise.resolve({
@@ -616,6 +692,133 @@ describe('secretRequest.submit and decline', () => {
       ),
       command: jest.fn(),
     } as never);
+  });
+
+  it('a submission that starts after Stop began is refused and stores nothing', async () => {
+    const store = newStore();
+    setChatSecretStoreForTests(store);
+    let waitSignal: AbortSignal | undefined;
+    jest.mocked(requestAnswersFromRenderer).mockImplementation(
+      (options) =>
+        new Promise((_resolve, reject) => {
+          waitSignal = options.signal;
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('ask_user_cancelled')),
+          );
+          options.onRequestCreated?.(requestId);
+        }),
+    );
+    const request = requestSecrets(host('ask'), input);
+    for (let tries = 0; !waitSignal && tries < 200; tries += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    // Stop has begun and is still interrupting the provider.
+    const stop = captureWaitingSecretRequests(scope);
+    expect(
+      await submitSecretRequest({
+        requestId,
+        values: { STRIPE_SECRET_KEY: CANARY },
+        useHeld: [],
+      }),
+    ).toEqual({ accepted: false, error: 'This request is no longer waiting.' });
+    expect(respondToChatQuestion).not.toHaveBeenCalled();
+    expect(stop()).toBe(1);
+    expect((await request).status).toBe('cancelled');
+    expect(await store.heldNames(scope, ['STRIPE_SECRET_KEY'])).toEqual([]);
+  });
+
+  it('a Stop during a submission waits for it: an accepted answer stands, a refused one is then cancelled', async () => {
+    const store = newStore();
+    setChatSecretStoreForTests(store);
+    let settleWait: ((answers: McpQuestionAnswer[]) => void) | undefined;
+    let waitSignal: AbortSignal | undefined;
+    jest.mocked(requestAnswersFromRenderer).mockImplementation(
+      (options) =>
+        new Promise((resolve, reject) => {
+          waitSignal = options.signal;
+          settleWait = resolve;
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('ask_user_cancelled')),
+          );
+          options.onRequestCreated?.(requestId);
+        }),
+    );
+    const getState = jest.fn();
+    jest.mocked(getChatStateCommandPort).mockReturnValue({
+      getState,
+      command: jest.fn(),
+    } as never);
+    const startRequest = async (): Promise<{
+      result: Promise<Awaited<ReturnType<typeof requestSecrets>>>;
+    }> => {
+      waitSignal = undefined;
+      const result = requestSecrets(host('ask'), input);
+      for (let tries = 0; !waitSignal && tries < 200; tries += 1)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      return { result };
+    };
+    /** Holds the submission at its first read until `release`. */
+    const holdSubmission = (): ((records: unknown[]) => void) => {
+      let release: (records: unknown[]) => void = () => undefined;
+      getState.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = (records): void =>
+              resolve({ tabsFile: { pendingQuestions: records } });
+          }),
+      );
+      return (records): void => release(records);
+    };
+
+    // Refused: the Stop it waited for cancels the request afterwards.
+    const refusedRequest = await startRequest();
+    let release = holdSubmission();
+    const refused = submitSecretRequest({
+      requestId,
+      values: { STRIPE_SECRET_KEY: CANARY },
+      useHeld: [],
+    });
+    expect(cancelWaitingSecretRequests(scope)).toBe(0);
+    expect(waitSignal?.aborted).toBe(false);
+    release([]);
+    expect(await refused).toEqual({
+      accepted: false,
+      error: 'This request is no longer waiting.',
+    });
+    expect((await refusedRequest.result).status).toBe('cancelled');
+    expect(await store.heldNames(scope, ['STRIPE_SECRET_KEY'])).toEqual([]);
+
+    // Accepted: the answer the person sent before the Stop stands.
+    const acceptedRequest = await startRequest();
+    release = holdSubmission();
+    getState.mockResolvedValue({ tabsFile: { pendingQuestions: [record] } });
+    jest.mocked(respondToChatQuestion).mockImplementation((request) => {
+      const text =
+        request.response.kind === 'answer'
+          ? (request.response.answers[0]?.freeformText ?? '')
+          : '';
+      settleWait?.([
+        {
+          question: 'Claude needs 2 secrets',
+          selectedOptions: [],
+          freeformText: text,
+        },
+      ]);
+      answerWait(request.questionId);
+      return Promise.resolve({ status: 'applied', result: {} as never });
+    });
+    const accepted = submitSecretRequest({
+      requestId,
+      values: { STRIPE_SECRET_KEY: CANARY },
+      useHeld: [],
+    });
+    expect(cancelWaitingSecretRequests(scope)).toBe(0);
+    release([record]);
+    expect(await accepted).toEqual({ accepted: true });
+    expect((await acceptedRequest.result).status).toBe('partial');
+    expect(waitSignal?.aborted).toBe(false);
+    expect(await store.heldNames(scope, ['STRIPE_SECRET_KEY'])).toEqual([
+      'STRIPE_SECRET_KEY',
+    ]);
   });
 
   it('stores values before settling the wait with names and states only', async () => {
@@ -836,6 +1039,69 @@ describe('secretRequest.submit and decline', () => {
         },
       ],
     });
+  });
+
+  // U7: a paired browser or phone answers through the same settlement, so
+  // it gets the same rules; only the audit line names where it came from.
+  it('settles a paired answer once, kept for the chat, and audits its origin', async () => {
+    const store = newStore();
+    setChatSecretStoreForTests(store);
+    jest.mocked(respondToChatQuestion).mockImplementation((request) => {
+      expect(request.executionOptions).toEqual({
+        answeredByPerson: true,
+        secretRequestSettlement: true,
+      });
+      answerWait(request.questionId);
+      // The settled record, as the chat state commits it.
+      record = { ...record, answeredAt: 1 };
+      return Promise.resolve({ status: 'applied', result: {} as never });
+    });
+    expect(
+      await submitSecretRequest(
+        { requestId, values: { STRIPE_SECRET_KEY: CANARY }, useHeld: [] },
+        { answeredFrom: 'browser' },
+      ),
+    ).toEqual({ accepted: true });
+    // The same answer again, resent or after a reconnect, never settles
+    // twice or replaces the value.
+    const again = await submitSecretRequest(
+      {
+        requestId,
+        values: { STRIPE_SECRET_KEY: 'another-value' },
+        useHeld: [],
+      },
+      { answeredFrom: 'mobile' },
+    );
+    expect(again).toEqual({
+      accepted: false,
+      error: 'This request was already answered.',
+    });
+    expect(
+      await declineSecretRequest(requestId, { answeredFrom: 'mobile' }),
+    ).toEqual({
+      accepted: false,
+      error: 'This request was already answered.',
+    });
+    expect(respondToChatQuestion).toHaveBeenCalledTimes(1);
+    expect(await store.listNames(scope)).toEqual(['STRIPE_SECRET_KEY']);
+    // The audit line is written without holding up the answer.
+    const auditPath = join(dir, 'audit.jsonl');
+    for (let tries = 0; tries < 100; tries += 1) {
+      if (readFileSyncIfExists(auditPath).includes('"provided"')) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const audit = readFileSync(auditPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line): unknown => JSON.parse(line));
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        event: 'provided',
+        names: ['STRIPE_SECRET_KEY'],
+        answeredFrom: 'browser',
+      }),
+    );
+    expectNoCanary(everything());
   });
 
   it('refuses every other answer or dismissal of a secret request', async () => {

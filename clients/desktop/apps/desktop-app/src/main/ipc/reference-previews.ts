@@ -10,37 +10,57 @@ import {
   type LinearPreviewScope,
   type LinearTeamKeysResult,
 } from '@canopy/protocol/reference-previews';
+import type { CoreIntegrationDispatcher } from '../canopy-runtime/core-integration-adapter';
+import {
+  readLinearIssueForIpc,
+  readLinearTeamKeysForIpc,
+} from '../canopy-runtime/linear-integration-dispatch';
 import { createGitHubReferencePreviewReader } from '../lib/github-reference-preview';
-import { createLinearReferencePreviewReader } from '../lib/linear-reference-preview';
+import { sharedLinearReferencePreviewReader } from '../lib/linear-reference-preview';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 
-/** Read-only previews for transcript references; credentials stay in main. */
-export function registerReferencePreviewHandlers(): void {
-  const linear = createLinearReferencePreviewReader();
+/**
+ * Read-only previews for transcript references; credentials stay in main.
+ * The Linear team keys and issue reads project core.integration (CAN-4178).
+ */
+export function registerReferencePreviewHandlers(runtime: {
+  dispatcher: CoreIntegrationDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   const github = createGitHubReferencePreviewReader();
 
+  // Direct (CAN-4095): no core.integration operation reads the scope alone.
   registerIpcHandler<[], LinearPreviewScope>(
     IPC_CHANNELS.referencePreviewLinearScope,
-    () => linear.readScope(),
+    () => sharedLinearReferencePreviewReader().readScope(),
   );
 
   registerIpcHandler<[], LinearTeamKeysResult>(
     IPC_CHANNELS.referencePreviewLinearTeams,
-    () => linear.readTeamKeys(),
+    (event) =>
+      readLinearTeamKeysForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+      ),
   );
 
   registerIpcHandler<[unknown], LinearIssuePreviewResult>(
     IPC_CHANNELS.referencePreviewLinearIssue,
-    async (_event, request) => {
+    async (event, request) => {
       if (!isLinearIssuePreviewRequest(request)) {
         throw new Error('Invalid Linear issue preview request.');
       }
-      return linear.readIssue({
-        identifier: request.identifier,
-        ...(request.workspaceSlug !== undefined
-          ? { workspaceSlug: request.workspaceSlug }
-          : {}),
-      });
+      return readLinearIssueForIpc(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        {
+          identifier: request.identifier,
+          ...(request.workspaceSlug !== undefined
+            ? { workspaceSlug: request.workspaceSlug }
+            : {}),
+        },
+      );
     },
   );
 

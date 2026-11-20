@@ -103,9 +103,32 @@ const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 // Token minting (web) and verification (relay)
 // ===========================================================================
 
+/**
+ * A desktop install ID as `WorkspaceInstance.deviceId` stores it: 8-4-4-4-12
+ * hex, any case, with no version check, so it accepts every value a Postgres
+ * `uuid` column can hold. Legacy installs may carry a non-UUID ID; those are
+ * never sent or recorded (CAN-7214).
+ */
+export const DEVICE_RELAY_INSTALL_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isDeviceRelayInstallId(value: unknown): value is string {
+  return (
+    typeof value === 'string' && DEVICE_RELAY_INSTALL_ID_PATTERN.test(value)
+  );
+}
+
 export const DeviceRelayTokenRequestSchema = z.object({
   deviceId: z.string().regex(DEVICE_ID_PATTERN),
   kind: z.enum(DEVICE_KINDS).optional(),
+  /**
+   * The desktop's install ID, so web can join a catalog checkout to relay
+   * presence (CAN-7214). Bookkeeping for web only: it is never a token claim.
+   * Deliberately lenient so an unexpected shape cannot fail a mint, but an
+   * empty or over-128-character value still fails validation; desktops send
+   * it only when {@link isDeviceRelayInstallId} accepts it.
+   */
+  installId: z.string().min(1).max(128).optional(),
 });
 export type DeviceRelayTokenRequest = z.infer<
   typeof DeviceRelayTokenRequestSchema

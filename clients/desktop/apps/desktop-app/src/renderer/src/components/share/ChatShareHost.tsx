@@ -13,8 +13,8 @@ import {
   useChatShareData,
 } from '@/hooks/useChatShareData';
 import { useShareAction } from '@/hooks/useShareAction';
-import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { resolveShareTarget } from '@/lib/invocableShareTarget';
+import { openAccountSettingsFromRemoteControl } from '@/lib/navigation/remote-control-dialog';
 import { trackShareDialogOpen } from '@/lib/shareDialogTelemetry';
 import {
   loadPipelineShareTargetDocument,
@@ -54,16 +54,6 @@ function liveDocument(candidate: Document | undefined): Document {
   return view && !view.closed && candidate.body?.isConnected
     ? candidate
     : document;
-}
-
-function openAccountSettings(): void {
-  void dispatchAppAction({
-    requestId: `ui-canopy_portal.open_account_settings-${String(Date.now())}-${Math.random()
-      .toString(36)
-      .slice(2)}`,
-    source: 'ui',
-    action: { type: 'canopy_portal.open_account_settings' },
-  });
 }
 
 /** Fires once when the lazily loaded dialog has actually mounted. */
@@ -293,7 +283,7 @@ export function ChatShareHost(): JSX.Element {
           onClose={close}
           onOpenAccountSettings={() => {
             close();
-            openAccountSettings();
+            openAccountSettingsFromRemoteControl();
           }}
           onShared={() => {
             if (
@@ -339,7 +329,7 @@ export function ChatShareHost(): JSX.Element {
             onClose={close}
             onOpenAccountSettings={() => {
               close();
-              openAccountSettings();
+              openAccountSettingsFromRemoteControl();
             }}
             onShared={completed}
             {...(ownerDocument ? { ownerDocument } : {})}

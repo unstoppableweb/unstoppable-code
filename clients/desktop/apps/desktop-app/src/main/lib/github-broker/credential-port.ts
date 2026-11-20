@@ -63,6 +63,13 @@ class Lease {
 /** An opaque GitHub credential lease. Only this module can mint one. */
 export type GitHubBrokerCredentialLease = Lease;
 
+/** Whether a value is a lease this module minted. */
+export function isGitHubBrokerCredentialLease(
+  value: unknown,
+): value is GitHubBrokerCredentialLease {
+  return Lease.recordOf(value) !== undefined;
+}
+
 /** The sources a caller can pin a lease to. */
 export type GitHubBrokerCredentialSource = 'resolved' | 'pat' | 'gh-cli';
 

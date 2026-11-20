@@ -72,11 +72,15 @@ export interface DesktopObservabilityHost extends ObservabilityHostServices {
     peekAccounts: typeof peekOpenCodeAccounts;
     onAccountsChanged: typeof onOpenCodeAccountsChanged;
   };
-  /** Cached discovery metadata only; reading never launches the runtime. */
+  /**
+   * Cached discovery metadata; peeking never launches the runtime. Only
+   * `refreshAccount`, the Usage surfaces' explicit read, may run discovery.
+   */
   antigravity?: {
     isEnabled: typeof isAntigravityHarnessEnabled;
     peekAccount: typeof peekAntigravityAccount;
     onAccountChanged: typeof onAntigravityAccountChanged;
+    refreshAccount(): Promise<void>;
   };
   onFeatureFlagsChanged(listener: () => void): () => void;
   accountProxy: {
@@ -142,6 +146,8 @@ export function createDesktopObservabilityHost(): DesktopObservabilityHost {
       isEnabled: () => isAntigravityHarnessEnabled(),
       peekAccount: () => peekAntigravityAccount(),
       onAccountChanged: (...args) => onAntigravityAccountChanged(...args),
+      refreshAccount: async () =>
+        (await import('../antigravity/models')).refreshAntigravityAccount(),
     },
     onFeatureFlagsChanged: (listener) =>
       getFeatureFlagService().onSnapshotChanged(listener),

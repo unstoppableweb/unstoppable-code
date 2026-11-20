@@ -1,5 +1,5 @@
 import { ListRowFrame } from './ListRow';
-import { Button, ControlButton } from './Button';
+import { ControlButton } from './Button';
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
 import {
   sourceLabelProvider,
@@ -181,7 +181,7 @@ const INTERNAL_SOURCE_LABELS = new Set([
 function discoveryFallbackSource(entry: UnifiedPluginEntry): string {
   // An MCP server added by hand, often on a private host, names no maker.
   if (entry.kind === 'app' && !entry.marketplaceSourceName)
-    return 'Custom server';
+    return 'Custom MCP server';
   const marketplace = entry.marketplaceSourceName?.trim();
   if (marketplace) return marketplace;
   const catalog = entry.sourceLabel?.trim();
@@ -208,9 +208,20 @@ export interface CustomizeRowFailure {
   /** Amber when a retry may work, red when it can't. */
   readonly tone: 'attention' | 'destructive';
   readonly retry?: () => void;
+  /** The retry's wording; "Try again" by default ("Reconnect" for MCP). */
+  readonly retryLabel?: string;
+  /** Said while the retry runs, in place of its label. */
+  readonly retryBusyLabel?: string;
+  readonly retryBusy?: boolean;
+  /**
+   * A connection check failed on one binding; a sign-in another binding waits
+   * for stays beside it. A failed status change leaves this off and outranks
+   * the sign-in.
+   */
+  readonly alongsideSignIn?: boolean;
 }
 
-/** "⚠ Couldn't turn on · Try again", the reason in the tooltip. */
+/** "✕ Reconnect" (or "✕ Couldn't connect" with nothing to click). */
 export function CustomizeRowFailureStatus({
   entryId,
   name,
@@ -221,36 +232,41 @@ export function CustomizeRowFailureStatus({
   readonly name: string;
   readonly failure: CustomizeRowFailure;
 }): JSX.Element {
+  const mark = (
+    <ItemStateMark
+      tone={failure.tone === 'destructive' ? 'failed' : 'sign-in'}
+    />
+  );
+  // One format: an icon and a clickable callout, or the status in text when
+  // there is nothing to click. The reason is in the tooltip, which describes
+  // the focused control. It can carry a home-directory path, so it stays out
+  // of accessible names (which replay records) and the tooltip is blocked.
   return (
     <span
       data-testid={`customize-row-failure-${entryId}`}
       className="pointer-events-auto inline-flex min-w-0 items-center gap-1"
     >
-      <Tooltip label={failure.reason} clamp>
-        <span
-          className="inline-flex min-w-0 items-center gap-1"
-          tabIndex={0}
-          aria-label={`${failure.label}: ${failure.reason}`}
-        >
-          <ItemStateMark
-            tone={failure.tone === 'destructive' ? 'failed' : 'sign-in'}
-          />
-          <span className="truncate fg-secondary">{failure.label}</span>
-        </span>
-      </Tooltip>
-      {failure.retry !== undefined && (
-        <>
-          <span aria-hidden>·</span>
+      {mark}
+      <Tooltip label={failure.reason} clamp replayBlock>
+        {failure.retry !== undefined ? (
           <ControlButton
             presentation="customize-row-sign-in"
             data-testid={`customize-row-failure-${entryId}-retry`}
-            aria-label={`Try again for ${name}`}
+            aria-label={`${failure.retryLabel ?? 'Try again'} for ${name}`}
+            aria-busy={failure.retryBusy || undefined}
+            disabled={failure.retryBusy}
             onClick={failure.retry}
           >
-            Try again
+            {failure.retryBusy
+              ? (failure.retryBusyLabel ?? 'Working…')
+              : (failure.retryLabel ?? 'Try again')}
           </ControlButton>
-        </>
-      )}
+        ) : (
+          <span className="truncate fg-primary" tabIndex={0}>
+            {failure.label}
+          </span>
+        )}
+      </Tooltip>
     </span>
   );
 }
@@ -292,8 +308,11 @@ export function CustomizeRowSignInStatus({
   );
 }
 
-/** The reserved third line: "↻ Update available · Update" (item 5). */
-function UpdateLine({
+/**
+ * New Customize's update callout, on the status line: "↻ Update" with the
+ * icon colored and the text plain, like every other callout.
+ */
+function UpdateCallout({
   entry,
   update,
 }: {
@@ -303,25 +322,23 @@ function UpdateLine({
   return (
     <span
       data-testid={`customize-row-update-line-${entry.id}`}
-      className="pointer-events-none relative z-10 flex min-h-4 min-w-0 items-center gap-1 whitespace-nowrap text-xs fg-tertiary"
+      className="pointer-events-none relative z-10 inline-flex min-w-0 shrink-0 items-center gap-1 whitespace-nowrap"
     >
       <ItemStateMark tone="update" />
-      <span>Update available</span>
-      {update.run !== undefined && (
-        <>
-          <span aria-hidden>·</span>
-          <Button
-            variant="link"
-            className="pointer-events-auto"
-            data-testid={`customize-update-${entry.id}`}
-            aria-label={`Update ${entry.name}`}
-            aria-busy={update.busy || undefined}
-            disabled={update.busy}
-            onClick={update.run}
-          >
-            {update.busy ? 'Updating…' : 'Update'}
-          </Button>
-        </>
+      {update.run === undefined ? (
+        <span className="fg-primary">Update available</span>
+      ) : (
+        <ControlButton
+          presentation="customize-row-sign-in"
+          className="pointer-events-auto"
+          data-testid={`customize-update-${entry.id}`}
+          aria-label={`Update ${entry.name}`}
+          aria-busy={update.busy || undefined}
+          disabled={update.busy}
+          onClick={update.run}
+        >
+          {update.busy ? 'Updating…' : 'Update'}
+        </ControlButton>
       )}
     </span>
   );
@@ -438,6 +455,8 @@ function CompactMetadata({
   dimmed = false,
   signIn,
   failure,
+  part = 'all',
+  statusExtra,
 }: {
   entry: UnifiedPluginEntry;
   metadata: ReturnType<typeof compactMetadata>;
@@ -454,6 +473,14 @@ function CompactMetadata({
   signIn?: CustomizeRowSignIn;
   /** New Customize: a failed status change or Add; it outranks the rest. */
   failure?: CustomizeRowFailure;
+  /**
+   * New Customize splits a tile's text in two: `meta` is line 2 (publisher
+   * and harness logos, always), `status` is line 3 (what needs action:
+   * failure, sign-in, update). Without discovery one line holds both.
+   */
+  part?: 'all' | 'meta' | 'status';
+  /** Callouts that join the status line, such as the update. */
+  statusExtra?: ReactNode;
 }): JSX.Element | null {
   const { tooltip, visibleCounts, triggerSummary } = metadata;
   // New Customize's line 2 (Sergii's QA): status or publisher, then the
@@ -508,7 +535,8 @@ function CompactMetadata({
     !healthConnection.disabled;
   const warning =
     !signInShown &&
-    !failureShown &&
+    (!failureShown ||
+      (hasIndependentSignIn && failure?.alongsideSignIn === true)) &&
     (hasIndependentSignIn || (!health && !fallbackHealth))
       ? attentionLabel
       : undefined;
@@ -522,18 +550,21 @@ function CompactMetadata({
   const sourceText = metadata.source
     ? entrySourceTextWithoutProvider(entry, metadata.source)
     : metadata.source;
-  // A status takes the publisher's place on New Customize's line 2, which
-  // always says something in text, never only harness logos.
+  // New Customize's line 2 always says the publisher in text, never only
+  // harness logos; a status goes on line 3.
   const source =
-    worksWith && statusShown
-      ? undefined
-      : worksWith &&
-          !sourceText &&
-          !entry.bundledBy &&
-          !triggerSummary &&
-          visibleCounts.length === 0
-        ? discoveryFallbackSource(entry)
-        : sourceText;
+    worksWith &&
+    !sourceText &&
+    !entry.bundledBy &&
+    !triggerSummary &&
+    visibleCounts.length === 0
+      ? discoveryFallbackSource(entry)
+      : sourceText;
+  // A status used to take the publisher's place here; now both show, and a
+  // manifest's publisher can name a person, so its text stays out of replay
+  // while the status controls stay recordable.
+  const sourceReplayClass =
+    worksWith && statusShown ? ` ${REPLAY_BLOCK_CLASS}` : '';
   const providerBadges = worksWith ? undefined : entry.marketplaceProviders;
   const hasSubtitle = Boolean(
     hasHarnessIcons ||
@@ -551,12 +582,8 @@ function CompactMetadata({
     attentionLabel === undefined
       ? `plugins-connection-status-${entry.id}`
       : `customize-row-sign-in-${entry.id}`;
-  if (!hasSubtitle && !statusShown) return null;
-  return (
-    <span
-      data-testid={`customize-row-subtitle-${entry.id}`}
-      className={`pointer-events-none relative z-10 mt-0.5 flex min-h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${worksWith ? '@container/customize-row-subtitle ' : ''}${customizePublisherReplayClass(entry)}`}
-    >
+  const statusNodes = (
+    <>
       {failureShown && failure !== undefined && (
         <CustomizeRowFailureStatus
           entryId={entry.id}
@@ -592,6 +619,7 @@ function CompactMetadata({
           name={entry.name}
           label={warning}
           action={(entry.pendingSignIns ?? 0) > 0 ? 'connect' : null}
+          showLabel={worksWith}
           testId={warningTestId}
         />
       )}
@@ -601,9 +629,31 @@ function CompactMetadata({
           label={harnessWarning.label}
           instruction={harnessWarning.instruction}
           action={null}
+          showLabel={worksWith}
           testId={`customize-row-harness-install-failed-${entry.id}`}
         />
       )}
+    </>
+  );
+  if (part === 'status') {
+    if (!statusShown && statusExtra === undefined) return null;
+    return (
+      <span
+        data-testid={`customize-row-status-${entry.id}`}
+        className="pointer-events-none relative z-10 flex min-h-4 min-w-0 items-center gap-3 overflow-hidden whitespace-nowrap text-xs fg-tertiary"
+      >
+        {statusNodes}
+        {statusExtra}
+      </span>
+    );
+  }
+  if (!hasSubtitle && (part === 'meta' || !statusShown)) return null;
+  return (
+    <span
+      data-testid={`customize-row-subtitle-${entry.id}`}
+      className={`pointer-events-none relative z-10 mt-0.5 flex min-h-4 min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs fg-tertiary ${worksWith ? '@container/customize-row-subtitle ' : ''}${customizePublisherReplayClass(entry)}`}
+    >
+      {part === 'all' && statusNodes}
       {providerBadges?.map((provider) => (
         <Tooltip
           key={provider}
@@ -646,7 +696,7 @@ function CompactMetadata({
         >
           <span
             data-testid={`customize-row-source-${entry.id}`}
-            className="min-w-0 truncate"
+            className={`min-w-0 truncate${sourceReplayClass}`}
           >
             {source}
           </span>
@@ -1126,24 +1176,34 @@ export function CustomizeInstalledRow({
       )}
     </span>
   );
+  const metadataProps = {
+    entry,
+    metadata,
+    health,
+    attentionLabel,
+    updateBadge,
+    worksWith: discovery,
+    harnessWarning,
+    dimmed,
+    signIn: discovery ? signIn : undefined,
+    failure: discovery ? failure : undefined,
+  };
   const metadataLine = (
-    <CompactMetadata
-      entry={entry}
-      metadata={metadata}
-      health={health}
-      attentionLabel={attentionLabel}
-      updateBadge={updateBadge}
-      worksWith={discovery}
-      harnessWarning={harnessWarning}
-      dimmed={dimmed}
-      signIn={discovery ? signIn : undefined}
-      failure={discovery ? failure : undefined}
-    />
+    <CompactMetadata {...metadataProps} part={discovery ? 'meta' : 'all'} />
   );
-  const updateLine =
-    discovery && update !== undefined ? (
-      <UpdateLine entry={entry} update={update} />
-    ) : undefined;
+  // New Customize's line 3 holds what needs action: a failure, a pending
+  // sign-in, an update. Icons carry the color; the text is plain.
+  const statusLine = discovery ? (
+    <CompactMetadata
+      {...metadataProps}
+      part="status"
+      statusExtra={
+        update !== undefined ? (
+          <UpdateCallout entry={entry} update={update} />
+        ) : undefined
+      }
+    />
+  ) : undefined;
   // New Customize replaces the "Installed for" line (item 7).
   const installedLine = discovery ? undefined : (
     <IntegrationInstalledLine entry={entry} />
@@ -1203,18 +1263,18 @@ export function CustomizeInstalledRow({
           </ControlButton>
         )}
         {skillMatch ||
-        updateLine !== undefined ||
+        statusLine != null ||
         (installedLine !== undefined && entry.integrationCopies?.installed) ? (
           <span
             className={`flex min-w-0 flex-col ${discovery ? 'gap-0.5' : 'gap-1'}`}
           >
             {metadataLine}
-            {/* Line 3 holds one thing; an update wins over the search hint. */}
-            {skillMatch && updateLine === undefined && (
+            {/* Line 3 holds what needs action; it wins over the search hint. */}
+            {skillMatch && (!discovery || update === undefined) && (
               <SkillMatchLine entryId={entry.id} match={skillMatch} />
             )}
             {installedLine}
-            {updateLine}
+            {statusLine}
           </span>
         ) : (
           metadataLine

@@ -1043,7 +1043,8 @@ export type ClaudeModSurfaceUpdate =
   | {
       /**
        * A Mod's ask of the chat's composer, for the desktop window showing
-       * the chat to answer with a `composer-answer`. Never relayed.
+       * the chat to answer with a `composer-answer`. The host withholds it
+       * from every Remote Control controller (CAN-7436).
        */
       readonly kind: 'composer-request';
       readonly requestId: string;
@@ -1058,7 +1059,8 @@ export type ClaudeModSurfaceUpdate =
       /**
        * The asker gave up a `composer-request` (the CLI cancelled it, its
        * wait ran out, or the surface ended): a window that has not acted
-       * on it yet drops it. Never relayed.
+       * on it yet drops it. The host withholds it from every Remote Control
+       * controller (CAN-7436).
        */
       readonly kind: 'composer-withdraw';
       readonly requestId: string;
@@ -1128,7 +1130,10 @@ export type ClaudeModSurfaceCommand =
       readonly kind: 'resend';
     }
   | {
-      /** A desktop window's answer to a `composer-request`. */
+      /**
+       * A desktop window's answer to a `composer-request`. The host refuses
+       * it from every Remote Control controller (CAN-7436).
+       */
       readonly kind: 'composer-answer';
       readonly requestId: string;
       readonly answer: ClaudeModComposerAnswer;

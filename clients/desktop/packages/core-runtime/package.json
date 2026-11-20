@@ -14,6 +14,7 @@
     "./storage": "./src/storage/index.ts",
     "./observability": "./src/observability/index.ts",
     "./update": "./src/update/index.ts",
+    "./feature-flag": "./src/feature-flag/index.ts",
     "./dictation": "./src/dictation/index.ts",
     "./platform/testing": "./src/platform/testing/index.ts",
     "./node": "./src/node/index.ts",

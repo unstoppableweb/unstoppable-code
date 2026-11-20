@@ -17,6 +17,7 @@ import {
   classifyServerDocument,
   indexEnvelope,
   isAbsentError,
+  isClassifiableIndexEntry,
   isServerFileName,
   overlayIndexEntry,
   overlayServerDocument,
@@ -216,6 +217,42 @@ export class McpConfigRepository {
       if (isAbsentError(error)) return [];
       throw new McpRemovalRefusedError('index_unreadable');
     }
+  }
+
+  /**
+   * Display only: local rows have definitions even when routed through an
+   * account. Keep raw rows available to writers and removal repair.
+   */
+  private async projectPresentDefinitions(
+    index: McpServersIndexFile,
+  ): Promise<McpServersIndexFile> {
+    if (index.servers.length === 0) return index;
+    let names: Set<string>;
+    try {
+      // Case-insensitive volumes still open a differently cased definition.
+      names = new Set(
+        (await this.definitionNames()).map((name) => name.toLowerCase()),
+      );
+    } catch {
+      // An unreadable directory cannot confirm any definition is absent.
+      return index;
+    }
+    return {
+      ...index,
+      servers: index.servers.filter(
+        (entry): boolean =>
+          !isClassifiableIndexEntry(entry) ||
+          !/^[a-f0-9-]{1,256}$/.test(entry.id) ||
+          names.has(basename(this.paths.server(entry.id)).toLowerCase()),
+      ),
+    };
+  }
+
+  /** Read-only presentation fallback when a strict backfill is refused. */
+  readIndexForPresentation(): Promise<McpServersIndexFile> {
+    return this.withDiskMutation(async () =>
+      this.projectPresentDefinitions(await this.readIndex()),
+    );
   }
 
   private async readRemovalPlan(id: string): Promise<McpRemovalPlan> {
@@ -547,7 +584,7 @@ export class McpConfigRepository {
     await this.removePrepared(await this.prepareRemoval(id), observe);
   }
 
-  /** Strict: an unusable index refuses; an unusable definition is skipped. */
+  /** Strict backfill; only the returned presentation index omits absent definitions. */
   backfill(
     needsFields: (entry: McpServerIndexEntry) => boolean,
     fieldsFor: (
@@ -586,7 +623,13 @@ export class McpConfigRepository {
           serializeIndexOutput(indexEnvelope(current.raw, servers)),
         );
       }
-      return { index: { ...current.index, servers }, changed };
+      return {
+        index: await this.projectPresentDefinitions({
+          ...current.index,
+          servers,
+        }),
+        changed,
+      };
     });
   }
 }

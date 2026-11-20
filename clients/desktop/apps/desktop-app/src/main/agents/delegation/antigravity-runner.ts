@@ -24,6 +24,10 @@ import {
   writesAntigravityExecutableConfiguration,
 } from '@canopy/desktop-shared/node/antigravity/workspace-configuration';
 import { antigravityTokenUsage } from '@canopy/desktop-shared/node/antigravity/usage';
+import {
+  antigravityWorkspaceRootsBlock,
+  readAntigravityRepositoryInstructions,
+} from '@canopy/desktop-shared/node/antigravity/repository-instructions';
 import { ANTIGRAVITY_RUNTIME_VERSION } from '@canopy/desktop-shared/node/antigravity/runtime-metadata';
 import { createAntigravityEventProjection } from '@canopy/desktop-shared/node/antigravity/event-projection';
 import { expandLeadingCursorCommand } from '@canopy/desktop-shared/lib/cursor-capabilities';
@@ -849,7 +853,11 @@ export function createAntigravityDelegationRunner(options: {
           throw unavailable(
             'This Antigravity runtime does not support delegated tools.',
           );
-        const instructions = `${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'antigravity')}\n${selectedGuidance}\nRead only specific granted files. Native directory listings and searches, native subagents, browser tools, workspace-discovered skills and unselected capabilities are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.${childLedgerGuidance(ledger)}`;
+        // The host delivers AGENTS.md and GEMINI.md, not native discovery.
+        const repositoryInstructions =
+          await readAntigravityRepositoryInstructions([cwd], signal);
+        await check();
+        const instructions = `${antigravityWorkspaceRootsBlock([cwd])}\n\n${repositoryInstructions.block ? `${repositoryInstructions.block}\n\n` : ''}${prepared.tools.instructions()}${childDelegationGuidance(delegation)}${delegateAppToolGuidance(prepared.appTools, 'antigravity')}\n${selectedGuidance}\nRead only specific granted files. Native directory listings and searches, native subagents, browser tools, workspace-discovered skills and unselected capabilities are unavailable. Shell follows the parent's command approval policy; file-tool grants do not sandbox shell commands.${childLedgerGuidance(ledger)}`;
         const params = {
           cwd,
           mcpServers: servers,

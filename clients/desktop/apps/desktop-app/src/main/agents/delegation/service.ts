@@ -1392,8 +1392,8 @@ async function actorFor(
       ),
     });
     // Registered so retained Google delegates resolve to one runner. Route
-    // capture refuses new Google children until their native discovery
-    // boundary is qualified (antigravityChildAdmission).
+    // capture admits new Google children per antigravityChildAdmission()
+    // (darwin, harness flag on, gemini- models) on the isolation evidence.
     registry.register({
       apiVersion: 1,
       registrationId: 'local-delegation-antigravity-v1',

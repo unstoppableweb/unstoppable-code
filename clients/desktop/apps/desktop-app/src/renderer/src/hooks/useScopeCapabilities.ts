@@ -7,6 +7,7 @@ import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
 import {
   useWebCoreServesChatFork,
   useWebCoreServesCost,
+  useWebCoreServesDelegationStop,
 } from '@/lib/web-core-served-operations';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
@@ -24,6 +25,8 @@ export function useScopeCapabilities(scope: {
   useWebCoreServesCost();
   // ...and its Fork on the manifest and the project's kind (CAN-7007).
   useWebCoreServesChatFork();
+  // ...and its delegates' Stop on the manifest (CAN-7245).
+  useWebCoreServesDelegationStop();
   useStore(cloudCoworkStore, (state) =>
     cloudProjectIsCowork(scope.projectId, state.projects),
   );

@@ -1,7 +1,13 @@
-import type {
-  CanopyCallerDescriptor,
-  CanopyJsonRpcMessage,
+import {
+  encodeCanopyError,
+  type CanopyCallerDescriptor,
+  type CanopyJsonRpcMessage,
 } from '@canopy/protocol/canopy-core';
+import {
+  DELEGATION_STOP_REFUSAL,
+  FORGED_DELEGATION_STOP,
+  MISSING_DELEGATION_STOP,
+} from '@canopy/protocol/canopy-core/core/managedDelegation/testing';
 import { CLOUD_SESSION_WAKE_HEADER } from '@canopy/protocol/cloud-session';
 import {
   WEB_CORE_CONNECTIONS_PATH,
@@ -77,6 +83,8 @@ class StubWebCore {
   readonly proofs: { method: string; proof: string | null }[] = [];
   /** The params of each `worker.filesystem.directory.list` it received. */
   readonly directoryLists: unknown[] = [];
+  /** The params of each `core.managedDelegation.stop` it received. */
+  readonly delegationStops: unknown[] = [];
   private opened = 0;
   private subscriptionCount = 0;
 
@@ -272,6 +280,7 @@ class StubWebCore {
               ...(this.servesUnsubscribe ? ['core.events.unsubscribe'] : []),
               'core.catalog.snapshot.get',
               'core.archive.container.list',
+              'core.managedDelegation.stop',
             ],
             events: [],
             streams: ['core.chat.task.events', 'core.chat.events'],
@@ -333,6 +342,15 @@ class StubWebCore {
           modifiedAt: '2026-11-10T09:00:00.000Z',
           version: 'v1',
         });
+      case 'core.managedDelegation.stop':
+        // As the web core answers a delegate outside the asking chat's tree,
+        // and one that doesn't exist (CAN-7245).
+        this.delegationStops.push(params);
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: encodeCanopyError(DELEGATION_STOP_REFUSAL),
+        };
       case 'core.archive.container.list':
         this.archiveLists.push(params);
         return result({ workspaceId: null, containers: [] });
@@ -716,6 +734,40 @@ describe('web core relay session lifecycle (CAN-4185 PR-C)', () => {
         Reflect.get(params, 'revision'),
       ),
     ).toEqual([2]);
+  });
+
+  it("sends a renderer-forged delegate stop for another of the user's chats to the web core as it is, and hands the renderer the web core's refusal, the same as for a delegate that doesn't exist (CAN-7245, end to end, desktop half)", async () => {
+    const server = new StubWebCore();
+    const relay = webCoreRelay(server);
+    relays.push(relay);
+    const event = mainWindowEvent();
+    const forged = await relay.invoke(event, {
+      kind: 'request',
+      method: FORGED_DELEGATION_STOP.method,
+      params: FORGED_DELEGATION_STOP.params,
+    });
+    const missing = await relay.invoke(event, {
+      kind: 'request',
+      method: MISSING_DELEGATION_STOP.method,
+      params: MISSING_DELEGATION_STOP.params,
+    });
+    // The relay can't tell which chat the window shows: the request reaches
+    // the web core unchanged, its key included.
+    const { _meta: forgedMeta, ...forgedParams } =
+      FORGED_DELEGATION_STOP.params;
+    expect(server.delegationStops).toHaveLength(2);
+    const sent: unknown = server.delegationStops[0];
+    if (typeof sent !== 'object' || sent === null)
+      throw new Error('No stop reached the web core.');
+    expect(sent).toMatchObject(forgedParams);
+    expect(Object.keys(sent).sort()).toEqual(
+      [...Object.keys(forgedParams), '_meta'].sort(),
+    );
+    expect(Reflect.get(sent, '_meta')).toMatchObject(forgedMeta);
+    // The renderer gets the web core's refusal whole, and nothing tells the
+    // forged stop from a stop of a delegate that doesn't exist.
+    expect(forged).toEqual({ ok: false, error: DELEGATION_STOP_REFUSAL });
+    expect(forged).toEqual(missing);
   });
 
   it('a renderer wake never reaches the web core: main has no wake proof, so the read stays non-waking (CAN-6114)', async () => {

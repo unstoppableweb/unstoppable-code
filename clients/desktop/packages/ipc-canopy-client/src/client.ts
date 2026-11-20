@@ -192,6 +192,10 @@ type SubscribeHandlers = {
   ) => Unsubscribe;
 };
 
+/** Why a client without the session port can't answer a secret form. */
+const SECRET_REQUESTS_UNAVAILABLE =
+  "Secrets can't be sent on this connection. Provide them on your computer.";
+
 const SURFACE_UPDATE_KINDS: Readonly<
   Record<ClaudeModSurfaceUpdate['kind'], true>
 > = {
@@ -209,11 +213,12 @@ const SURFACE_UPDATE_KINDS: Readonly<
 };
 
 /**
- * A Mod surface update from this desktop's main process, which validated its
- * trees before sending (`claude-mod-surface-bridge`). Not the Portal relay's
- * parser: that one reads a CLI tree, so it would strip an already validated
- * tree's layout and controls, and it drops the composer requests the relay
- * never carries.
+ * A Mod surface update from a desktop's main process, which validated its
+ * trees before sending (`claude-mod-surface-bridge`): this desktop's own, or
+ * a directly controlled computer's (CAN-7436), which withholds composer
+ * requests and withdrawals from its controllers. Only the envelope and the
+ * kind are checked here. Not the relayed-update parser: that one reads a CLI
+ * tree, so it would strip an already validated tree's layout and controls.
  */
 const isClaudeModSurfacePushEvent = reply<ClaudeModSurfacePushEvent>(
   (value) =>
@@ -488,6 +493,29 @@ class PortableIpcCanopyClient implements CanopyClient {
       'chat.attachments.upload': shell.uploadAttachment,
       // The computer's stored copy expires on its own.
       'chat.attachments.delete': (): Promise<void> => Promise.resolve(),
+      'chat.secretRequest.settle': (
+        args,
+      ): Promise<CommandMap['chat.secretRequest.settle']['result']> => {
+        const settle = ports.settleSecretRequest;
+        if (settle === undefined)
+          return Promise.reject(
+            new UnsupportedOperationError(
+              'chat.secretRequest.settle',
+              SECRET_REQUESTS_UNAVAILABLE,
+            ),
+          );
+        // Only the host's fields: the routing id stays here.
+        return settle(
+          args.action === 'provide'
+            ? {
+                action: 'provide',
+                requestId: args.requestId,
+                values: args.values,
+                useHeld: args.useHeld,
+              }
+            : { action: 'decline', requestId: args.requestId },
+        );
+      },
     };
     this.subscribeHandlers = {
       ...this.createSubscribeHandlers(terminal),
@@ -1083,7 +1111,10 @@ class PortableIpcCanopyClient implements CanopyClient {
     terminal: TerminalHandlers,
   ): Omit<
     CommandHandlers,
-    ShellCommandName | 'chat.attachments.upload' | 'chat.attachments.delete'
+    | ShellCommandName
+    | 'chat.attachments.upload'
+    | 'chat.attachments.delete'
+    | 'chat.secretRequest.settle'
   > {
     const channels = this.channels;
     return {

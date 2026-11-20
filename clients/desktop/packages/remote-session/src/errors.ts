@@ -25,7 +25,9 @@ export type RemoteSessionErrorCode =
   /** The host ended the session on purpose; no automatic reconnect. */
   | 'session_ended'
   /** The caller cancelled the operation. */
-  | 'cancelled';
+  | 'cancelled'
+  /** The arguments were refused before anything was sent. */
+  | 'invalid_request';
 
 export class RemoteSessionError extends Error {
   constructor(
@@ -43,6 +45,7 @@ export type HostSecurityFeature =
   | 'pairingProof'
   | 'hostedDelegation'
   | 'pairRevoke'
+  | 'secretRequestSettle'
   | 'protocolVersion';
 
 /**

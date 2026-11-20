@@ -15,6 +15,10 @@ import {
   type AntigravityTokenUsage,
 } from '../antigravity/usage';
 import type { AntigravityRuntime } from '../antigravity/runtime';
+import {
+  antigravityWorkspaceRootsBlock,
+  readAntigravityRepositoryInstructions,
+} from '../antigravity/repository-instructions';
 import { ANTIGRAVITY_RUNTIME_VERSION } from '../antigravity/runtime-metadata';
 import { applyAntigravitySessionConfig } from '../antigravity/session-config';
 import {
@@ -564,12 +568,18 @@ export async function runAntigravityPipelinePrompt(
     const openedRuntime = await bounded(opening);
     runtime = openedRuntime;
     stopOnUpdateFailure();
+    // The host delivers AGENTS.md and GEMINI.md, not native discovery.
+    const repositoryInstructions = await bounded(
+      readAntigravityRepositoryInstructions([cwd], signal),
+    );
     const systemPrompt = [
       buildPipelineGlobalInstructionsBlock(
         getBrandEnv(request.environment, 'PREF_GLOBAL_INSTRUCTIONS_PIPELINES'),
         { harness: 'antigravity', model: request.model },
       ),
       request.systemPrompt,
+      antigravityWorkspaceRootsBlock([cwd]),
+      repositoryInstructions.block,
       capabilities?.instructions,
     ]
       .filter(Boolean)

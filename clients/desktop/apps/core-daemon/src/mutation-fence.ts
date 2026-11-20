@@ -52,6 +52,11 @@ interface OwnerFences {
   digest: string;
   /** Each fenced key with the holds on it; a key is fenced while any remain. */
   keys: Map<string, Set<MutationFenceHold>>;
+  /**
+   * The key each fenced target resolved to, so the release of an archive or
+   * Auto Delete hold frees it after the worktree itself is gone.
+   */
+  placed: Map<string, string>;
   /** A snapshot arrived, so this owner's fences are complete. */
   published: boolean;
   /** Its owner lease is held; an ended owner's fences wait for a live one. */
@@ -79,6 +84,21 @@ export interface MutationFenceRegistry {
    * owner has published. Call the returned release once the write settles.
    */
   admit(key: string): () => void;
+}
+
+/** The refusal each hold gives, worded as the desktop words that hold. */
+const HELD_MESSAGES: Record<MutationFenceHold, string> = {
+  autoDelete:
+    'This workspace target is being automatically deleted. Retry after deletion finishes.',
+  archive: 'This worktree is being archived. Retry after archiving finishes.',
+  splitLock: 'This worktree is locked while a pull request is being split.',
+};
+
+/** Several holds on one worktree: the refusal names Auto Delete, then archive, then a split lock. */
+function heldBy(holds: ReadonlySet<MutationFenceHold>): MutationFenceHold {
+  if (holds.has('autoDelete')) return 'autoDelete';
+  if (holds.has('archive')) return 'archive';
+  return 'splitLock';
 }
 
 function refusal(
@@ -117,6 +137,9 @@ function publishRefusal(
     cause,
   );
 }
+
+const targetId = (target: CoreMutationFenceTarget): string =>
+  `${target.workspaceId}\0${target.worktreeId}\0${target.hold}`;
 
 /** Marks a refused publish's digest; a digest itself starts with '['. */
 const REFUSED = 'refused:';
@@ -259,12 +282,24 @@ export function createMutationFenceRegistry(
 
   const resolveAll = async (
     targets: readonly CoreMutationFenceTarget[],
-  ): Promise<Array<{ key: string; hold: MutationFenceHold }>> => {
-    const keys: Array<{ key: string; hold: MutationFenceHold }> = [];
+    placed?: ReadonlyMap<string, string>,
+  ): Promise<Array<{ id: string; key: string; hold: MutationFenceHold }>> => {
+    const keys: Array<{ id: string; key: string; hold: MutationFenceHold }> =
+      [];
     for (const target of targets) {
+      const id = targetId(target);
       try {
-        keys.push({ key: await resolveKey(target), hold: target.hold });
+        keys.push({ id, key: await resolveKey(target), hold: target.hold });
       } catch (error) {
+        // An archived or deleted worktree whose root no longer resolves has
+        // nothing to fence: write admission resolves the same root and
+        // refuses it. Its release frees the key it was fenced under. A split
+        // lock still needs its worktree.
+        if (target.hold !== 'splitLock') {
+          const key = placed?.get(id);
+          if (key !== undefined) keys.push({ id, key, hold: target.hold });
+          continue;
+        }
         throw publishRefusal(
           'core.mutationFence.unresolved',
           'A fenced worktree could not be resolved; nothing was applied.',
@@ -307,7 +342,9 @@ export function createMutationFenceRegistry(
     try {
       fenced = await resolveAll(params.fenced);
       released =
-        params.kind === 'change' ? await resolveAll(params.released) : [];
+        params.kind === 'change'
+          ? await resolveAll(params.released, own ? current.placed : undefined)
+          : [];
     } catch (error) {
       // The owner's set is no longer known: writes wait for its next snapshot.
       if (own) current.published = false;
@@ -319,6 +356,7 @@ export function createMutationFenceRegistry(
           epoch: params.epoch,
           digest: REFUSED + digest,
           keys: new Map(),
+          placed: new Map(),
           published: false,
           live: true,
         });
@@ -342,6 +380,11 @@ export function createMutationFenceRegistry(
       holds?.delete(hold);
       if (holds?.size === 0) keys.delete(key);
     }
+    const placed = new Map<string, string>(
+      params.kind === 'snapshot' || !own ? [] : current.placed,
+    );
+    for (const { id, key } of fenced) placed.set(id, key);
+    for (const { id } of released) placed.delete(id);
     // A change from a lease that has not snapshotted leaves the set
     // incomplete, so writes wait for that lease's snapshot.
     const published = params.kind === 'snapshot' || (own && current.published);
@@ -350,6 +393,7 @@ export function createMutationFenceRegistry(
       epoch: params.epoch,
       digest,
       keys,
+      placed,
       published,
       live: true,
     });
@@ -410,12 +454,10 @@ export function createMutationFenceRegistry(
           "Couldn't change these files because the desktop app hasn't reported which worktrees are locked. Open the desktop app, then try again.",
         );
       }
+      const holds = new Set<MutationFenceHold>();
       for (const fences of owners.values())
-        if (fences.keys.has(key))
-          throw refusal(
-            'held',
-            'This worktree is locked while a pull request is being split.',
-          );
+        for (const hold of fences.keys.get(key) ?? []) holds.add(hold);
+      if (holds.size > 0) throw refusal('held', HELD_MESSAGES[heldBy(holds)]);
       inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
       let released = false;
       return (): void => {

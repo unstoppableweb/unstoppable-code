@@ -237,6 +237,8 @@
     "chat:transient-retry-get-snapshot",
     "chat:update-plugins",
     "claude-mods:get",
+    "claude-mods:surface-command",
+    "claude-mods:surface-push",
     "claude-mods:update",
     "claude-terminal:cleanup",
     "claude-terminal:error",

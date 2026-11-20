@@ -3,8 +3,8 @@
  * while the desktop's admission flag is on, a Mod loads in a Claude chat only
  * after the person allows it at the plugin's current content. The desktop
  * keeps the allowed Mods and the "turn off every Mod" switch in its
- * preferences, and a Portal session reads and changes them through the paired
- * desktop, so both surfaces agree.
+ * preferences, and web Remote Control reads and changes them on the
+ * directly controlled computer (CAN-7436), so both surfaces agree.
  */
 
 import type { ClaudeModSurfaceCommandArgs } from '../extension-ui';

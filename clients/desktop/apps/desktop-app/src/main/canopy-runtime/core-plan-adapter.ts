@@ -162,6 +162,7 @@ export function createCorePlanAdapter({
             worktreeId: params.scope.worktreeId,
             planId: params.planId,
             expectedRevision: params.expectedRevision,
+            expectedSource: params.expectedSource,
             proposalRequestId: params.proposalRequestId,
             content: params.content,
             title: params.title,
