@@ -28,7 +28,7 @@ const DOCUMENT_CLASS = {
   archive:
     'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 canopy-compact-prose prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5',
   'workspace-item':
-    'prose prose-sm max-w-none fg-primary prose-headings:fg-primary prose-p:fg-primary/80 prose-a:fg-accent prose-strong:fg-primary prose-code:fg-primary/80 prose-pre:bg-fg-primary/[0.04]',
+    'prose prose-sm max-w-none fg-primary prose-headings:fg-primary prose-p:fg-primary/80 prose-a:fg-accent prose-strong:fg-primary prose-code:fg-primary/80 prose-pre:bg-fg-primary/[0.06]',
   article:
     'prose [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-pre:overflow-x-auto prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-strong:fg-primary prose-img:rounded-lg',
 };

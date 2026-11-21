@@ -107,6 +107,8 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
   return (
     <div
       // The card insets a trailing Download 12px, as the row pads its text.
+      // A real border, not Surface's inset ring: the Open button's hover fill
+      // reaches the card edge and would paint over a box-shadow ring.
       className={`flex min-w-0 items-center rounded-md border bg-base${onDownload ? ' pr-3' : ''}`}
       data-testid="file-deliverable-card"
     >

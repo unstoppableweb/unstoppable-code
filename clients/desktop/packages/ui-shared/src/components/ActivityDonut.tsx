@@ -1,4 +1,11 @@
-import type { JSX, ReactNode } from 'react';
+import type { CSSProperties, JSX, ReactNode } from 'react';
+
+// The hole is 112px across (h-28) in a 192px disc: transparent out to 56px.
+const DONUT_HOLE = 'radial-gradient(circle, transparent 56px, black 56.5px)';
+const DONUT_HOLE_MASK: CSSProperties = {
+  maskImage: DONUT_HOLE,
+  WebkitMaskImage: DONUT_HOLE,
+};
 
 /** A compact usage donut with room for a total and label at its center. */
 export function ActivityDonut({
@@ -9,11 +16,14 @@ export function ActivityDonut({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <div
-      className="mx-auto grid h-48 w-48 place-items-center rounded-full"
-      style={{ background: gradient }}
-    >
-      <div className="grid h-28 w-28 place-items-center rounded-full bg-card text-center">
+    <div className="relative mx-auto grid h-48 w-48 place-items-center">
+      {/* The ring is masked, not covered, so the hole shows what is behind. */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 rounded-full"
+        style={{ background: gradient, ...DONUT_HOLE_MASK }}
+      />
+      <div className="relative grid h-28 w-28 place-items-center text-center">
         {children}
       </div>
     </div>

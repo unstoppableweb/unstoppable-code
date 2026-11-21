@@ -3,6 +3,7 @@ import {
   ChatPlanReviewApprovalSchema,
 } from '../../chat-plan-review';
 import { z } from 'zod';
+import { SEND_WHILE_RUNNING_CHOICES } from '../../../remote-control/shell/input-delivery';
 import {
   CORE_CHAT_MESSAGE_SEND_ACCOUNT_BOUND_REVISION,
   CORE_CHAT_MESSAGE_SEND_SCHEMA_REVISION,
@@ -88,6 +89,13 @@ export const CoreChatMessageSendParamsSchema = ChatCommandBaseSchema.extend({
     .min(1)
     .max(20)
     .optional(),
+  /**
+   * What the user chose for a send while a turn runs; absent means `queue`.
+   * Carried only: no core reads it yet (CAN-7349).
+   */
+  sendWhileRunning: z.enum(SEND_WHILE_RUNNING_CHOICES).optional(),
+  /** The turn the user saw running when they chose to steer; unread for now. */
+  steerTurnId: IdentifierSchema.optional(),
   origin: z
     .strictObject({
       kind: z.literal('terminalInitialPrompt'),

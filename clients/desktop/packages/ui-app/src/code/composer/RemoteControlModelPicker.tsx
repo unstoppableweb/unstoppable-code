@@ -79,6 +79,8 @@ export interface RemoteControlModelPickerProps {
    * (CAN-4769). Hosts pass it only for Personal work.
    */
   readonly libraryAccess?: ModelLibraryAccess;
+  /** See `ModelPickerMenuProps.hideBilling`: a signed-out visitor's picker. */
+  readonly hideBilling?: boolean;
   /**
    * CAN-5213 — settled facts for the shared availability cues, shown only to
    * a library-locked viewer (`modelLibrary.access`). Omitted, every row keeps
@@ -198,6 +200,7 @@ export function RemoteControlModelPicker({
   autoOption,
   modelLibrary,
   libraryAccess,
+  hideBilling = false,
   rowReadiness,
   onSelect,
   gatewayNotice,
@@ -839,6 +842,7 @@ export function RemoteControlModelPicker({
       {...(openSignal === undefined ? {} : { openSignal })}
       catalog={menuCatalog}
       libraryAccess={libraryAccess}
+      hideBilling={hideBilling}
       currentModel={selectedModelId}
       currentModelLabel={currentModelLabel}
       providerType={providerType}

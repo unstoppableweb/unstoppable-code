@@ -1,13 +1,48 @@
 {
   "pattern": "(url|uri)$",
   "projected": {
+    "app-advisor:get-state": ["url"],
+    "app-advisor:settings-view": ["sourceUrl", "url"],
+    "canopy-json:read": ["url"],
     "chat:session-cloud-export-list": ["remoteUrl"],
     "chat:session-import-inspect": ["remoteUrl"],
     "clone-jobs:changed": ["remoteUrl"],
     "clone-jobs:list": ["remoteUrl"],
+    "mcp-servers:list-detected": ["url"],
+    "model-registry:get": ["baseUrl"],
+    "model-registry:updated": ["baseUrl"],
+    "plugin-catalog:list": ["sourceUrl", "url"],
+    "plugins:addMarketplace": ["sourceUrl", "url"],
+    "plugins:install-built-in-plugin": ["url"],
+    "plugins:install-plugin": ["url"],
+    "plugins:load": ["sourceUrl", "url"],
+    "plugins:loadCacheOnly": ["sourceUrl", "url"],
+    "plugins:prepare-codex-compatibility": ["url"],
+    "plugins:refreshMarketplaces": ["sourceUrl", "url"],
+    "plugins:removeMarketplace": ["sourceUrl", "url"],
+    "plugins:set-codex-compat-disabled": ["url"],
+    "plugins:updateMarketplace": ["sourceUrl", "url"],
+    "projects:load": ["manifestUrl"],
+    "projects:save": ["manifestUrl"],
     "repo:get-remote-url": ["remoteUrl"],
-    "workspace:read-settings-data": ["remoteUrl"],
-    "workspace:reference-repo-status-event": ["remoteUrl"]
+    "resource-monitor:get-snapshot": ["displayUrl"],
+    "resource-monitor:snapshot": ["displayUrl"],
+    "workspace:add-from-folder": ["manifestUrl"],
+    "workspace:add-from-remote": ["manifestUrl"],
+    "workspace:add-repo": ["manifestUrl"],
+    "workspace:combine-worktree-with-existing-worktree": ["manifestUrl"],
+    "workspace:combine-worktree-with-workspace": ["manifestUrl"],
+    "workspace:create": ["manifestUrl"],
+    "workspace:create-new": ["manifestUrl"],
+    "workspace:create-temporary-from-repos": ["manifestUrl"],
+    "workspace:create-temporary-worktree-from-repos": ["manifestUrl"],
+    "workspace:create-temporary-worktree-from-workspaces": ["manifestUrl"],
+    "workspace:import-from-repo": ["manifestUrl"],
+    "workspace:init-git": ["url"],
+    "workspace:promote-temporary": ["manifestUrl"],
+    "workspace:read-settings-data": ["manifestUrl", "remoteUrl"],
+    "workspace:reference-repo-status-event": ["remoteUrl"],
+    "workspace:set-private-memory": ["manifestUrl"]
   },
   "exempt": [
     {
@@ -443,53 +478,14 @@
         "pipelines:list",
         "pipelines:save"
       ]
+    },
+    {
+      "field": "remoteUrl",
+      "reason": "Sanitized at the source: share-preview.ts passes each repository remote through sanitizeRemoteUrl (plan-share-repos.ts), which clears userinfo, query and fragment and drops file: URLs and absolute paths. controller-remote-urls-golden pins the userinfo and token-query cases (CAN-7082).",
+      "channels": ["shared-containers:preview"]
     }
   ],
   "ticketed": [
-    {
-      "field": "manifestUrl",
-      "reason": "(a) canopy.json manifest URL. Some readers already apply sanitizeRemoteUrl (projects-list.ts, workspace-metadata-host.ts, core-workspace-adapter.ts), but not every channel is verified, and it travels back on write channels such as projects:save, so redacting it here could overwrite the stored value.",
-      "ticket": "CAN-7082",
-      "channels": [
-        "projects:load",
-        "projects:save",
-        "workspace:add-from-folder",
-        "workspace:add-from-remote",
-        "workspace:add-repo",
-        "workspace:combine-worktree-with-existing-worktree",
-        "workspace:combine-worktree-with-workspace",
-        "workspace:create",
-        "workspace:create-new",
-        "workspace:create-temporary-from-repos",
-        "workspace:create-temporary-worktree-from-repos",
-        "workspace:create-temporary-worktree-from-workspaces",
-        "workspace:import-from-repo",
-        "workspace:promote-temporary",
-        "workspace:read-settings-data",
-        "workspace:set-private-memory"
-      ]
-    },
-    {
-      "field": "url",
-      "reason": "(a) canopy.json repo entry URL can hold a token and round-trips through workspace:init-git.",
-      "ticket": "CAN-7082",
-      "channels": ["canopy-json:read", "workspace:init-git"]
-    },
-    {
-      "field": "sourceUrl",
-      "reason": "(b) Plugin marketplace source URL can hold a token and may round-trip through updateMarketplace.",
-      "ticket": "CAN-7082",
-      "channels": [
-        "app-advisor:settings-view",
-        "plugin-catalog:list",
-        "plugins:addMarketplace",
-        "plugins:load",
-        "plugins:loadCacheOnly",
-        "plugins:refreshMarketplaces",
-        "plugins:removeMarketplace",
-        "plugins:updateMarketplace"
-      ]
-    },
     {
       "field": "remoteUrl",
       "reason": "(c) app-advisor:tool-request carries a Git remote URL as action input, unredacted.",
@@ -498,43 +494,15 @@
     },
     {
       "field": "url",
-      "reason": "(d) MCP server URL in a user-configured or plugin-bundled server can carry a credential in the URL.",
+      "reason": "(d) A user-saved MCP server's URL can carry a credential, and mcp-servers:save-server takes it back from the controller, so it needs CAN-7082's write-side merge before it can be stripped. Detected and plugin-bundled servers' URLs are out-only and projected.",
       "ticket": "CAN-7082",
-      "channels": [
-        "app-advisor:settings-view",
-        "mcp-servers:list-detected",
-        "mcp-servers:load-server",
-        "mcp-servers:save-server",
-        "plugin-catalog:list",
-        "plugins:addMarketplace",
-        "plugins:install-built-in-plugin",
-        "plugins:install-plugin",
-        "plugins:load",
-        "plugins:loadCacheOnly",
-        "plugins:prepare-codex-compatibility",
-        "plugins:refreshMarketplaces",
-        "plugins:removeMarketplace",
-        "plugins:set-codex-compat-disabled",
-        "plugins:updateMarketplace"
-      ]
-    },
-    {
-      "field": "remoteUrl",
-      "reason": "Shared container preview. share-preview.ts passes each repository remote through sanitizeRemoteUrl (plan-share-repos.ts), which clears userinfo, query and fragment and drops file: URLs and absolute paths, but no existing test covers the userinfo or token-query case.",
-      "ticket": "CAN-7082",
-      "channels": ["shared-containers:preview"]
-    },
-    {
-      "field": "displayUrl",
-      "reason": "(g, new) In-app browser page URL in the resource monitor; a page URL can carry tokens in its query.",
-      "ticket": "CAN-7082",
-      "channels": ["resource-monitor:get-snapshot", "resource-monitor:snapshot"]
+      "channels": ["mcp-servers:load-server", "mcp-servers:save-server"]
     },
     {
       "field": "url",
-      "reason": "(g, new) In-app browser page URLs: an open dialog's page and the agent's browser.wait_for target; a page URL can carry tokens in its query.",
+      "reason": "(g) The agent's browser.wait_for target in an interface-tool call the controller's renderer runs. CAN-7082 refuses controller-run tool inputs that carry URLs (its third PR).",
       "ticket": "CAN-7082",
-      "channels": ["app-advisor:get-state", "app-advisor:tool-request"]
+      "channels": ["app-advisor:tool-request"]
     },
     {
       "field": "url",
@@ -581,12 +549,6 @@
       "reason": "OAuth token endpoint on a user-saved MCP server; user-entered, so it can carry a token in its query.",
       "ticket": "CAN-7082",
       "channels": ["mcp-servers:load-server", "mcp-servers:save-server"]
-    },
-    {
-      "field": "baseUrl",
-      "reason": "Model gateway base URL; user-configurable, and it is not verified that it cannot carry a credential.",
-      "ticket": "CAN-7082",
-      "channels": ["model-registry:get", "model-registry:updated"]
     }
   ],
   "refused": [

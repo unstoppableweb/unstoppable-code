@@ -1710,14 +1710,6 @@ export async function resolvePlugins(
         )
       : emptyCursorCapabilityProjection();
 
-  if (purpose === 'antigravity-session' && resolvedPlugins.length > 0) {
-    cursorNotices.push(
-      options?.skipMcpServers
-        ? 'Antigravity loads selected plugin skills and commands. Plugin hooks and native plugin agents are not loaded.'
-        : 'Antigravity loads selected plugin skills, commands and MCP servers. Plugin hooks and native plugin agents are not loaded.',
-    );
-  }
-
   if (purpose === 'claude-session' && claudeModAdmissionContext?.enabled) {
     const selectedByPath = new Map(
       selectedClaudeModInputs.flatMap((plugin) =>

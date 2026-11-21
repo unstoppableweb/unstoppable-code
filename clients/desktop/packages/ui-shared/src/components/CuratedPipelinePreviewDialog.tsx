@@ -31,6 +31,7 @@ export function CuratedPipelinePreviewDialog({
       onClose={catalog.onBack}
       maxWidth="3xl"
       dataTestId="curated-pipeline-preview-dialog"
+      trapFocus
     >
       <div
         className={

@@ -109,7 +109,7 @@ export const REMOTE_EVENTS = {
  * Version 1 is every release before this check. After a bump, run
  * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 25;
+export const REMOTE_PROTOCOL_VERSION = 26;
 
 /**
  * The oldest host protocol the web's browser and hosted controllers accept,
@@ -499,10 +499,33 @@ export class UnknownRemoteMethodError extends Error {
 
 export const CHANNEL_UNAVAILABLE_CODE = 'remote_channel_unavailable';
 
+/**
+ * Keep this text unchanged: older hosts send it, and
+ * `isChannelUnavailableRejection` matches it when Electron drops the code.
+ */
+export function channelUnavailableMessage(channel: string): string {
+  return `"${channel}" is not available while controlling another computer.`;
+}
+
 export class RemoteChannelUnavailableError extends Error {
   readonly code = CHANNEL_UNAVAILABLE_CODE;
   constructor(channel: string) {
-    super(`"${channel}" is not available while controlling another computer.`);
+    super(channelUnavailableMessage(channel));
     this.name = 'RemoteChannelUnavailableError';
   }
+}
+
+/**
+ * Whether `error` is a host's refusal of `channel`. A direct transport keeps
+ * the refusal's `code`; a desktop remote window's invoke loses it in
+ * Electron's IPC wrapper but keeps the fixed text, which names the channel.
+ * Apply it only to the rejection of that channel's own invoke.
+ */
+export function isChannelUnavailableRejection(
+  error: unknown,
+  channel: string,
+): boolean {
+  if (!(error instanceof Error)) return false;
+  if ('code' in error && error.code === CHANNEL_UNAVAILABLE_CODE) return true;
+  return error.message.includes(channelUnavailableMessage(channel));
 }

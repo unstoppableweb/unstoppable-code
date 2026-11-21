@@ -224,8 +224,8 @@ function UsageLevelMeter({
             viewBox="0 0 8 5"
             className="absolute top-full mt-0.5 -translate-x-1/2 fill-fg-quaternary"
             style={{ left: `${elapsedPercent}%` }}
-            role="img"
-            aria-label={`Window elapsed: ${Math.round(elapsedPercent)}%`}
+            // The meter's value text names the elapsed share with its window.
+            aria-hidden="true"
             data-testid="usage-window-elapsed"
           >
             <path d="M4 0 L8 5 L0 5 Z" />
@@ -235,7 +235,7 @@ function UsageLevelMeter({
       <span
         // The compact button's label size; only the meter fill carries the level. An
         // unused window's 0% steps back to tertiary.
-        className={`w-9 shrink-0 text-right text-xs ${
+        className={`w-9 shrink-0 text-right text-xs tabular-nums ${
           formatUsagePercent(usedPercent) === '0%'
             ? 'fg-tertiary'
             : 'fg-primary'
@@ -253,7 +253,7 @@ function UsageLevelMeter({
  * hairline edge as a settings group. Every direct child is one row.
  */
 export const USAGE_ROW_GROUP_CLASS =
-  '@container/usage-group flex min-w-0 flex-col divide-y rounded-lg bg-secondary px-4 ring-[length:var(--border-hairline)] ring-line-base *:min-h-13 *:py-3';
+  '@container/usage-group flex min-w-0 flex-col divide-y rounded-lg bg-secondary px-4 ring-[length:var(--border-hairline)] ring-inset ring-line-base *:min-h-13 *:py-3';
 
 /** Rows without the box, for a disclosure inside another row. */
 const USAGE_ROW_PLAIN_CLASS =
@@ -469,6 +469,7 @@ export function UsageWindowRow({
   const detail = windowDetail(window, nowMs);
   const usedPercent = window.unlimited ? undefined : window.usedPercent;
   const stale = isResetPassed(window.resetsAt, nowMs);
+  const elapsedPercent = usageWindowElapsedPercent(window, nowMs);
   return (
     <UsageRow
       title={window.title}
@@ -478,10 +479,17 @@ export function UsageWindowRow({
         usedPercent === undefined ? null : (
           <UsageLevelMeter
             usedPercent={usedPercent}
-            elapsedPercent={usageWindowElapsedPercent(window, nowMs)}
+            elapsedPercent={elapsedPercent}
             level={stale ? 'normal' : usageLevel(usedPercent)}
             label={`${window.title}: ${formatUsagePercent(usedPercent)} used`}
-            valueText={windowMeterValueText(window, usedPercent, nowMs)}
+            valueText={[
+              windowMeterValueText(window, usedPercent, nowMs),
+              elapsedPercent === undefined
+                ? null
+                : `${Math.round(elapsedPercent)}% of the window elapsed`,
+            ]
+              .filter((part): part is string => part !== null)
+              .join(', ')}
           />
         )
       }
@@ -677,7 +685,11 @@ export function UsageRefreshButton({
         iconOnly
         aria-label={label}
         aria-busy={refreshing || undefined}
-        disabled={refreshing || disabled}
+        // aria-disabled, not disabled, while refreshing: the focused button
+        // stays in the Tab order instead of dropping focus to the page.
+        aria-disabled={refreshing || undefined}
+        busyAppearance="preserved"
+        disabled={disabled}
         onClick={onRefresh}
         data-testid={testId}
       >

@@ -161,6 +161,7 @@ import { remoteControlToolOccurrenceId } from '@canopy/protocol/remote-control/s
 import {
   PROVIDER_EVENT_ADMISSION_MAX_TOOLS,
   PROVIDER_EVENT_ADMISSION_MAX_BYTES,
+  withCommittedToolVisuals,
   type ToolOccurrenceAdmission,
   type ProviderEventIngestResult,
 } from './provider-event-admission';
@@ -2076,6 +2077,13 @@ function admittedSendRequest(
       ? { attachmentPromptContexts: command.attachmentPromptContexts }
       : {}),
     ...(command.inputMode ? { inputMode: command.inputMode } : {}),
+    // Carried untouched; no host reads them yet (CAN-7349).
+    ...(command.sendWhileRunning !== undefined
+      ? { sendWhileRunning: command.sendWhileRunning }
+      : {}),
+    ...(command.steerTurnId !== undefined
+      ? { steerTurnId: command.steerTurnId }
+      : {}),
     ...(canonical.executionHarness
       ? { executionHarness: canonical.executionHarness }
       : {}),
@@ -7098,7 +7106,13 @@ export class ChatStateService implements ChatStateCommandPort {
                   ? { turnUserMessageId: input.turnUserMessageId }
                   : {}),
                 revision: commit.revision,
-                tools: admissionTools,
+                tools: isNativeVisualToolResultEvent(input)
+                  ? withCommittedToolVisuals(
+                      admissionTools,
+                      input.chatId,
+                      commit.record.mutations,
+                    )
+                  : admissionTools,
               },
             }
           : {}),

@@ -1,7 +1,7 @@
 import { CodeBlock } from './CodeBlock';
 import { Stack } from './Stack';
 import type { JSX } from 'react';
-import { ErrorBanner } from './StatusBlocks';
+import { EmptyStateText, ErrorBanner } from './StatusBlocks';
 import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { SkillMarkdownBody } from './SkillFileExplorer';
@@ -27,6 +27,7 @@ export function SkillFilePreview({
   filePath,
   state,
 }: SkillFilePreviewProps): JSX.Element {
+  // A spinner, not a measured skeleton: the file's kind and length are unknown until it loads.
   if (state.loading)
     return (
       <DelayedLoadingPlaceholder>
@@ -38,8 +39,11 @@ export function SkillFilePreview({
   if (!state.data) return <></>;
   if (state.data.binary) {
     return (
-      <p className="py-8 text-center text-s fg-secondary">
-        This file is binary and cannot be previewed.
+      <p className="py-8 text-center text-s">
+        <EmptyStateText
+          title="This file is binary and cannot be previewed."
+          tone="secondary"
+        />
       </p>
     );
   }

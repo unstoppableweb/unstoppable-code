@@ -312,7 +312,9 @@ export function PipelineStatusPopover({
                       state={PIPELINE_ENTRY_GLYPH[entry.status]}
                       size={12}
                     />
-                    <span className="truncate fg-primary">{entry.name}</span>
+                    <span className="truncate fg-primary" title={entry.name}>
+                      {entry.name}
+                    </span>
                     <span
                       className={`ml-auto shrink-0 ${pipelineEntryStatusColor(entry.status)}`}
                     >
@@ -324,18 +326,20 @@ export function PipelineStatusPopover({
                     (entry.failedJobs && entry.failedJobs.length > 0)) && (
                     <div className="pl-3 mt-0.5 flex flex-col gap-px">
                       {runtime && (
-                        <div className="text-3xs fg-secondary">{runtime}</div>
+                        <div className="text-3xs tabular-nums fg-secondary">
+                          {runtime}
+                        </div>
                       )}
                       {entry.runningJobs && entry.runningJobs.length > 0 && (
                         <div
-                          className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.active.foregroundMuted}`}
+                          className={`text-pretty break-words text-3xs ${OPERATIONAL_STATUS_COLORS.active.foregroundMuted}`}
                         >
                           Running: {entry.runningJobs.join(', ')}
                         </div>
                       )}
                       {entry.failedJobs && entry.failedJobs.length > 0 && (
                         <div
-                          className={`truncate text-3xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
+                          className={`text-pretty break-words text-3xs ${OPERATIONAL_STATUS_COLORS.failed.foregroundMuted}`}
                         >
                           Failed: {entry.failedJobs.join(', ')}
                         </div>

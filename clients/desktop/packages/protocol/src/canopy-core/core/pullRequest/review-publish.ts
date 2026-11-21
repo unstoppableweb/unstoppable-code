@@ -293,6 +293,12 @@ export const CORE_PULL_REQUEST_REVIEW_PUBLISH_ERROR_CODES = [
 ] as const;
 
 /**
+ * The `client.name` the desktop's publishing connection initializes with, so
+ * the web core can say why a handshake withheld the operation.
+ */
+export const REVIEW_PUBLISH_CLIENT_NAME = 'canopy-desktop-review-publish';
+
+/**
  * Served by the web core only, behind `canopy-github-app-reviews`, and not
  * composed into the core registry: the desktop dispatcher and the daemon
  * answer `capability_unavailable`. Keyed: the request's

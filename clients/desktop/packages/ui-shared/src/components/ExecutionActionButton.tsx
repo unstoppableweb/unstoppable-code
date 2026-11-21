@@ -4,6 +4,7 @@ import type {
   KeyboardEvent,
   MouseEvent,
   ReactNode,
+  Ref,
 } from 'react';
 import { Button, type ButtonVariant } from './Button';
 import { Tooltip } from './Tooltip';
@@ -63,6 +64,8 @@ export interface ExecutionActionButtonProps extends Pick<
    * action swallows that shortcut.
    */
   stopKeyDownPropagation?: boolean;
+  /** The rendered button, so a host can return focus to it. */
+  buttonRef?: Ref<HTMLButtonElement>;
 }
 
 /**
@@ -116,6 +119,7 @@ export function ExecutionActionButton({
   shimmer = false,
   title,
   stopKeyDownPropagation = true,
+  buttonRef,
 }: ExecutionActionButtonProps): JSX.Element {
   const collapses = iconOnlyWhenNarrow && variant === 'primary';
   const labelNode = label ? (
@@ -127,6 +131,7 @@ export function ExecutionActionButton({
     </span>
   ) : null;
   const shared = {
+    ref: buttonRef,
     variant: BUTTON_VARIANTS[variant],
     disabled,
     'data-testid': dataTestId,

@@ -24,6 +24,7 @@ import {
   type PipelineEditorControllerAdapter,
 } from '../../stores/pipelineEditorBridgeStore';
 import {
+  retitleRawYaml,
   serializePipelineToYaml,
   tryParseAndValidateYaml,
 } from '../../lib/pipeline-yaml';
@@ -377,8 +378,8 @@ export function usePipelineEditorSession(
         rawYamlBaselineRef.current = text;
       },
       applyRawYaml: () => applyRawYamlRef.current(),
-      adoptSaved: (savedPipeline, info): void => {
-        editorRef.current.adoptSaved(savedPipeline, info);
+      adoptSaved: (savedPipeline, info, shown): void => {
+        editorRef.current.adoptSaved(savedPipeline, info, shown);
         savedPipelineRef.current = savedPipeline;
       },
     };
@@ -425,6 +426,25 @@ export function usePipelineEditorSession(
   /**
    * Handle save, with raw YAML apply-first logic.
    */
+  // Raw text typed while a save renamed an Orchestrator workflow takes the
+  // entry title the save stored, so its next save can't write the old one
+  // back (CAN-5782). It stays unsaved.
+  const retitleTypedRawYaml = useCallback(
+    (previousNames: readonly string[], savedName: string): void => {
+      if (previousNames.length === 0) return;
+      const typed = retitleRawYaml(
+        rawYamlTextRef.current,
+        previousNames,
+        savedName,
+      );
+      // Text that can't be retitled now (invalid for the moment) is
+      // retitled by its next save.
+      if (typed === null) editorRef.current.deferRetitleFrom(previousNames);
+      else setRawYamlText(typed);
+    },
+    [],
+  );
+
   const saveCurrentPipeline = useCallback(async (): Promise<SaveOutcome> => {
     const wasDraft =
       editorTarget.pipelineId === null &&
@@ -446,23 +466,58 @@ export function usePipelineEditorSession(
 
       setRawYamlError(null);
       const rawYamlDirty = rawYamlText !== rawYamlBaselineRef.current;
+      const sent = rawYamlDirty ? result.pipeline : editor.pipeline;
+      const previousNames = editor.retitleFromNames();
       const saved = await editor.save(
         rawYamlDirty ? result.pipeline : undefined,
       );
       if (saved) {
-        rawYamlBaselineRef.current = rawYamlText;
+        // A save that stored more than the text said (an Orchestrator
+        // entry's new title) shows what it stored, so a later raw edit
+        // can't write the old text back. Text typed while it saved stays,
+        // unsaved.
+        const stored = editor.getSavedPipeline();
+        const text =
+          stored && stored !== sent
+            ? serializePipelineToYaml(stored)
+            : rawYamlText;
+        if (text !== rawYamlText) {
+          if (rawYamlTextRef.current === rawYamlText) setRawYamlText(text);
+          else retitleTypedRawYaml(previousNames, saved.name);
+        }
+        rawYamlBaselineRef.current = text;
         setRawYamlError(null);
       }
       return finish(saved);
     }
 
-    return finish(await editor.save());
+    const shown = editor.pipeline;
+    const previousNames = editor.retitleFromNames();
+    const saved = await editor.save();
+    // Raw view opened during the save shows what it stored; text typed
+    // there since keeps every edit, with only the entry title moved.
+    const stored = editor.getSavedPipeline();
+    if (
+      saved &&
+      shown !== null &&
+      stored !== null &&
+      stored !== shown &&
+      isRawModeRef.current
+    ) {
+      if (rawYamlTextRef.current === serializePipelineToYaml(shown)) {
+        const text = serializePipelineToYaml(stored);
+        setRawYamlText(text);
+        rawYamlBaselineRef.current = text;
+      } else retitleTypedRawYaml(previousNames, saved.name);
+    }
+    return finish(saved);
   }, [
     editorTarget.pipelineId,
     editorTarget.sharedRemoteId,
     isRawMode,
     rawYamlText,
     editor,
+    retitleTypedRawYaml,
   ]);
 
   // Publisher warning (CAN-3354): saving a shared pipeline that pinned

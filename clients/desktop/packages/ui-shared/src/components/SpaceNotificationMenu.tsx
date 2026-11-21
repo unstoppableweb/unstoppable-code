@@ -1,4 +1,4 @@
-import type { JSX, MouseEvent } from 'react';
+import { useId, type JSX, type MouseEvent } from 'react';
 import { BellIcon, CheckIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
 import { LoadingIndicator } from './LoadingIndicatorStyle';
@@ -209,6 +209,7 @@ export function SpaceNotificationMenuItems({
   onSelect,
   testIdFor,
 }: SpaceNotificationMenuItemsProps): JSX.Element | null {
+  const descriptionIdPrefix = useId();
   if (spaceNotificationMenuUnavailable(state)) return null;
   const status = spaceNotificationMenuStatus(state);
   const group = (
@@ -225,7 +226,8 @@ export function SpaceNotificationMenuItems({
           aria-checked={row.checked}
           aria-busy={row.pending ? true : undefined}
           disabled={row.disabled}
-          title={row.description}
+          aria-describedby={`${descriptionIdPrefix}-${row.key}`}
+          touchTarget="coarse"
           data-testid={testIdFor?.(`-${row.key}`)}
           onClick={(event: MouseEvent<HTMLButtonElement>): void => {
             event.stopPropagation();
@@ -236,6 +238,10 @@ export function SpaceNotificationMenuItems({
             <SpaceNotificationMenuChoiceIndicator row={row} />
           </DropdownMenuItemIcon>
           {row.label}
+          {/* Read as the row's description; the row stays one line. */}
+          <span id={`${descriptionIdPrefix}-${row.key}`} hidden>
+            {row.description}
+          </span>
         </DropdownMenuItem>
       ))}
       {status && (

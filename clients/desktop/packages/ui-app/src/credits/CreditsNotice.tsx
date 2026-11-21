@@ -1,6 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode, Ref } from 'react';
+import { useOptionalCanopyClient } from '@canopy/app-state';
 import {
   resolveCreditsPrompt,
   type CreditsCheckFeedbackKind,
@@ -20,7 +21,9 @@ import {
   AI_CREDITS_REOPEN_BILLING_LABEL,
   AiCreditsArrivedNotice,
   AiCreditsStopLine,
+  ButtonLink,
   CreditsRecoveryNotice,
+  DESKTOP_APP_ALTERNATIVE_LABEL,
   creditsPromptCopy,
   ModelUnlockConfirmedNotice,
   ModelUnlockPendingNotice,
@@ -30,6 +33,7 @@ import {
   type NoticeActionsPlacement,
 } from '@canopy/ui-shared/components';
 import { TimeslotIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { DESKTOP_DOWNLOAD_PATH } from '../external-agents/paths';
 import { providerChoicePrimaryLabel } from '../providers/provider-choice-primary';
 import { ProviderChoiceContinueMenu } from '../providers/ProviderChoiceContinueMenu';
 import {
@@ -74,6 +78,11 @@ import {
  * notice then shows only those two buttons. Without
  * `providerChoice` the notice still sells, which the recorded exceptions
  * (the cloud terminal and the web new-task funding notice) rely on.
+ *
+ * A host whose work could instead run on the desktop app opts in to
+ * `desktopAlternative`: the notice then links to the desktop download as a
+ * secondary action, only where the client can offer it
+ * (`capabilities.desktopDownload`, never on desktop).
  */
 
 /** The conditions where provider choice replaces the purchase. */
@@ -195,6 +204,16 @@ export interface CreditsNoticeProps {
    * as connecting a provider or resuming at the reset.
    */
   readonly secondaryAction?: ReactNode;
+  /**
+   * Offer the desktop app as another way to keep going: a secondary link to
+   * the desktop download, after `secondaryAction`. Shown only when the
+   * client has the `desktopDownload` capability. Opt in only where the work
+   * could run on a desktop instead (a cloud chat), never on a notice about
+   * a paired desktop. Defaults to `false`.
+   */
+  readonly desktopAlternative?: boolean;
+  /** Called when the desktop app link is chosen, before it navigates. */
+  readonly onDesktopAlternative?: () => void;
   /** Defaults to `signed-in`. */
   readonly viewer?: CreditsPromptViewer;
   /** The billing rollout is on for this viewer. Defaults to `true`. */
@@ -305,8 +324,27 @@ export function creditsNoticePaymentOwner(
 /** One AI Credits notice; see the module comment. */
 export function CreditsNotice({
   purchase: requested,
-  ...props
+  desktopAlternative = false,
+  onDesktopAlternative,
+  ...rest
 }: CreditsNoticeProps): JSX.Element {
+  const desktopDownload =
+    useOptionalCanopyClient()?.capabilities.desktopDownload === true;
+  const props: CreditsNoticeBaseProps = {
+    ...rest,
+    desktopAlternativeControl:
+      desktopAlternative && desktopDownload ? (
+        <ButtonLink
+          href={DESKTOP_DOWNLOAD_PATH}
+          variant="secondary"
+          size="sm"
+          onClick={onDesktopAlternative}
+          data-testid={`${rest['data-testid'] ?? 'credits-notice'}-desktop-app`}
+        >
+          {DESKTOP_APP_ALTERNATIVE_LABEL}
+        </ButtonLink>
+      ) : null,
+  };
   const purchase = requested ?? { kind: 'shared' };
   if (purchase.kind === 'shared')
     return <SharedPurchaseCreditsNotice {...props} purchase={purchase} />;
@@ -321,11 +359,20 @@ export function CreditsNotice({
   );
 }
 
+/** The notice's props once its host-level options are resolved. */
+interface CreditsNoticeBaseProps extends Omit<
+  CreditsNoticeProps,
+  'purchase' | 'desktopAlternative' | 'onDesktopAlternative'
+> {
+  /** The desktop app link, when the host opted in and the client offers it. */
+  readonly desktopAlternativeControl: ReactNode;
+}
+
 /** A notice whose purchase starts through the shared purchase action. */
 function SharedPurchaseCreditsNotice({
   purchase,
   ...props
-}: CreditsNoticeProps & {
+}: CreditsNoticeBaseProps & {
   readonly purchase: Extract<CreditsNoticePurchase, { kind: 'shared' }>;
 }): JSX.Element {
   const paymentOwner = creditsNoticePaymentOwner(props.owner);
@@ -377,7 +424,7 @@ function SharedPurchaseCreditsNotice({
   );
 }
 
-interface CreditsNoticeViewProps extends Omit<CreditsNoticeProps, 'purchase'> {
+interface CreditsNoticeViewProps extends CreditsNoticeBaseProps {
   readonly purchaseMode: CreditsPurchaseMode;
   /** Renders for the purchase action. */
   readonly purchaseControl: ReactNode;
@@ -420,6 +467,7 @@ function CreditsNoticeView({
   owner,
   placement,
   secondaryAction,
+  desktopAlternativeControl,
   viewer = 'signed-in',
   billingEnabled = true,
   purchaseOnUnknownOwner = false,
@@ -569,11 +617,18 @@ function CreditsNoticeView({
       ? (step.reopenBilling ?? null)
       : null;
   const shownSecondary = choicePending ? null : secondaryAction;
+  const shownDesktopAlternative = choicePending
+    ? null
+    : desktopAlternativeControl;
   const hasActions =
-    shownSecondary != null || reopen !== null || control != null;
+    shownSecondary != null ||
+    shownDesktopAlternative != null ||
+    reopen !== null ||
+    control != null;
   const actionItems = (
     <>
       {shownSecondary}
+      {shownDesktopAlternative}
       {reopen !== null && (
         <NoticeButton
           variant="secondary"

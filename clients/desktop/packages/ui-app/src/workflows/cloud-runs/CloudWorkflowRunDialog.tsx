@@ -9,6 +9,7 @@ import {
   type JSX,
 } from 'react';
 import {
+  CLOUD_RUN_START_UNCERTAIN,
   cloudRunEventName,
   cloudRunInputDefinitions,
   launchCloudPipelineRun,
@@ -231,12 +232,14 @@ export function CloudWorkflowRunDialog({
               message: sent === undefined ? null : outcome.message,
             });
             return;
-          case 'refused':
-            launchKey.current = outcome.uncertain
-              ? { ...launched, uncertain: true }
-              : null;
-            setError(outcome.message);
+          case 'refused': {
+            // A launch that couldn't be confirmed stays unconfirmed whatever
+            // a later press of it is answered: only a start settles its key.
+            const uncertain = outcome.uncertain || current?.uncertain === true;
+            launchKey.current = uncertain ? { ...launched, uncertain } : null;
+            setError(uncertain ? CLOUD_RUN_START_UNCERTAIN : outcome.message);
             return;
+          }
         }
       } finally {
         if (mounted.current) setBusy(false);

@@ -2,7 +2,7 @@ import { ButtonLink } from './ButtonLink';
 import { TextLink } from './TextLink';
 import type { JSX } from 'react';
 import { CloseIcon } from '../icons/AppIcons';
-import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
+import { badgeClassName } from '../lib/badge';
 import { Dot } from './Badge';
 import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
@@ -13,9 +13,9 @@ export const MCP_SIGN_IN_WAITING_LABEL = 'Waiting for sign-in';
 export const MCP_SIGN_IN_REOPEN_LABEL = 'Reopen sign-in';
 export const MCP_SIGN_IN_CANCEL_LABEL = 'Cancel sign-in';
 
-// Waiting on sign-in is an operational state, so it takes the stable active
-// status palette rather than the brand accent.
-const WAITING_PILL_CLASS_NAME = `${OPERATIONAL_STATUS_COLORS.active.backgroundBadge} ${OPERATIONAL_STATUS_COLORS.active.foreground}`;
+// The shared badge with a leading glyph: the spinner stands in for the tone
+// dot, and the span stays a live region, which `Badge` cannot be.
+const WAITING_PILL_CLASS_NAME = badgeClassName('info', { withIcon: true });
 
 interface McpSignInPendingStatusProps {
   /** `row` uses a neutral status dot in Customize. */
@@ -38,11 +38,11 @@ export function McpSignInPendingStatus({
     return (
       <span
         role="status"
-        className={`inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-3xs font-medium ${WAITING_PILL_CLASS_NAME}`}
+        className={WAITING_PILL_CLASS_NAME}
         aria-label={accessibleLabel}
         data-testid={dataTestId}
       >
-        <LoadingSpinner decorative />
+        <LoadingSpinner decorative tone="active" />
         {MCP_SIGN_IN_WAITING_LABEL}
       </span>
     );
@@ -181,14 +181,14 @@ export function McpSignInPendingLine({
       role="status"
       // The row subtitle is `pointer-events-none`, so the link and cancel icon
       // opt back in.
-      className="pointer-events-auto flex min-w-0 items-center gap-1.5"
+      className="pointer-events-auto flex min-w-0 items-center gap-1.5 pointer-coarse:gap-2"
       aria-label={
         serviceName ? `Waiting for ${serviceName} sign-in` : undefined
       }
       data-testid={dataTestId}
     >
       <LoadingSpinner decorative />
-      <Tooltip label={MCP_SIGN_IN_REOPEN_LABEL}>
+      <Tooltip label={MCP_SIGN_IN_REOPEN_LABEL} showOnTouch>
         <TextLink
           variant="mcp-action"
           href={authorizationUrl}

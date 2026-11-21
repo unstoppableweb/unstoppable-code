@@ -27,6 +27,7 @@ import {
   loadPipelineDocument,
   sharedDetailToPipelineData,
 } from '../lib/pipelineDocument';
+import { retitleChatAutomationEntry } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 
 export type ActivePanel = 'steps' | 'settings';
 export type MainView = 'list' | 'flowchart' | 'raw';
@@ -87,9 +88,27 @@ export interface UsePipelineEditorReturn {
   /**
    * Shows a pipeline core saved for this editor elsewhere (an agent's save,
    * CAN-5822) as its saved state. The current draft is kept, so edits made
-   * since `savedPipeline` stay unsaved.
+   * since `savedPipeline` stay unsaved, unless `shown` replaces it; either
+   * way the Undo history starts again from what is shown.
    */
-  adoptSaved: (savedPipeline: Pipeline, info: PipelineInfo) => void;
+  adoptSaved: (
+    savedPipeline: Pipeline,
+    info: PipelineInfo,
+    shown?: Pipeline,
+  ) => void;
+  /**
+   * The pipeline the editor last loaded or saved, as stored: a save may
+   * store more than it was handed (an Orchestrator entry's new title,
+   * CAN-5782), and a Raw YAML save's draft hasn't rendered yet.
+   */
+  getSavedPipeline: () => Pipeline | null;
+  /**
+   * Raw text that a rename save couldn't retitle (CAN-5782): the next save
+   * also moves an entry title generated from any of `previousNames`.
+   */
+  deferRetitleFrom: (previousNames: readonly string[]) => void;
+  /** The names a save's Orchestrator entry title follows the rename from. */
+  retitleFromNames: () => readonly string[];
   /**
    * Holds the save guard while core saves this editor's draft for an agent
    * (CAN-5822), so no other save overlaps it. Returns its release, or null
@@ -141,6 +160,8 @@ export function usePipelineEditor({
 
   // Baseline for dirty tracking (last saved state)
   const baselineRef = useRef<string>('');
+  const savedPipelineRef = useRef<Pipeline | null>(null);
+  const deferredRetitleRef = useRef<readonly string[]>([]);
   // Bumped when a save moves the baseline. A save keeps the same pipeline
   // object, so without it `isDirty` would not recompute.
   const [baselineRevision, setBaselineRevision] = useState(0);
@@ -164,6 +185,7 @@ export function usePipelineEditor({
           setPipeline(defaultPipeline);
           setPipelineInfo(null);
           baselineRef.current = JSON.stringify(defaultPipeline);
+          savedPipelineRef.current = null;
           persistedIdRef.current = undefined;
           pastRef.current = [];
           futureRef.current = [];
@@ -200,6 +222,7 @@ export function usePipelineEditor({
         setPipeline(content);
         setPipelineInfo(pipelineData.info);
         baselineRef.current = JSON.stringify(content);
+        savedPipelineRef.current = content;
         persistedIdRef.current = pipelineData.info.id;
         pastRef.current = [];
         futureRef.current = [];
@@ -570,6 +593,7 @@ export function usePipelineEditor({
           setPipelineInfo(updated.info);
           persistedIdRef.current = updated.info.id;
           baselineRef.current = JSON.stringify(pipelineToSave);
+          savedPipelineRef.current = pipelineToSave;
           setBaselineRevision((revision) => revision + 1);
           pastRef.current = [];
           futureRef.current = [];
@@ -578,17 +602,25 @@ export function usePipelineEditor({
 
         // The revision this editor loaded: a save after another writer's
         // edit is refused as a conflict instead of overwriting it.
-        const expectedRevision =
-          persistedIdRef.current && pipelineInfo?.source === 'user'
-            ? (pipelineInfo.revision ?? 0)
-            : undefined;
+        const stored =
+          persistedIdRef.current && pipelineInfo?.source === 'user';
+        const expectedRevision = stored
+          ? (pipelineInfo.revision ?? 0)
+          : undefined;
+        // A renamed Orchestrator workflow's new entries take its new name.
+        const toStore = stored
+          ? retitleChatAutomationEntry(pipelineToSave, [
+              pipelineInfo.name,
+              ...deferredRetitleRef.current,
+            ])
+          : pipelineToSave;
         const result = await window.pipelines.save({
           id: persistedIdRef.current,
           ...(expectedRevision === undefined ? {} : { expectedRevision }),
-          name: pipelineToSave.name,
-          description: pipelineToSave.description ?? '',
-          icon: pipelineToSave.icon ?? '',
-          content: pipelineToSave,
+          name: toStore.name,
+          description: toStore.description ?? '',
+          icon: toStore.icon ?? '',
+          content: toStore,
         });
 
         if (!result.success) {
@@ -597,13 +629,15 @@ export function usePipelineEditor({
         }
 
         setError(null);
-        setPipeline(pipelineToSave);
+        setPipeline(toStore);
         if (result.data) {
           setPipelineInfo(result.data);
           persistedIdRef.current = result.data.id;
         }
 
-        baselineRef.current = JSON.stringify(pipelineToSave);
+        baselineRef.current = JSON.stringify(toStore);
+        savedPipelineRef.current = toStore;
+        deferredRetitleRef.current = [];
         setBaselineRevision((revision) => revision + 1);
         pastRef.current = [];
         futureRef.current = [];
@@ -620,16 +654,40 @@ export function usePipelineEditor({
   );
 
   const adoptSaved = useCallback(
-    (savedPipeline: Pipeline, info: PipelineInfo): void => {
+    (savedPipeline: Pipeline, info: PipelineInfo, shown?: Pipeline): void => {
       setError(null);
+      // Set directly, never as an edit, so Undo can't bring back the draft
+      // it replaces.
+      if (shown !== undefined) setPipeline(shown);
       setPipelineInfo(info);
       persistedIdRef.current = info.id;
       baselineRef.current = JSON.stringify(savedPipeline);
+      savedPipelineRef.current = savedPipeline;
+      deferredRetitleRef.current = [];
       setBaselineRevision((revision) => revision + 1);
       pastRef.current = [];
       futureRef.current = [];
     },
     [],
+  );
+
+  const getSavedPipeline = useCallback(
+    (): Pipeline | null => savedPipelineRef.current,
+    [],
+  );
+
+  const deferRetitleFrom = useCallback(
+    (previousNames: readonly string[]): void => {
+      deferredRetitleRef.current = previousNames;
+    },
+    [],
+  );
+  const retitleFromNames = useCallback(
+    (): readonly string[] => [
+      ...(pipelineInfo ? [pipelineInfo.name] : []),
+      ...deferredRetitleRef.current,
+    ],
+    [pipelineInfo],
   );
 
   const holdSave = useCallback((): (() => void) | null => {
@@ -690,6 +748,9 @@ export function usePipelineEditor({
     saving,
     save,
     adoptSaved,
+    getSavedPipeline,
+    deferRetitleFrom,
+    retitleFromNames,
     holdSave,
   };
 }

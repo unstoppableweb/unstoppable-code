@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { Button } from './Button';
+import { surfaceClassName } from './Surface';
 
 export interface RunningProcessCardProps {
   dataTestId?: string;
@@ -45,14 +46,17 @@ export function RunningProcessCard({
 }: RunningProcessCardProps): JSX.Element {
   return (
     <div
-      className="flex flex-col gap-1.5 rounded-lg border border-fg-info/20 bg-fg-info/[0.06] p-2 text-xs"
+      className={surfaceClassName({
+        variant: 'group',
+        className: 'flex flex-col gap-1.5 p-2 text-xs',
+      })}
       data-testid={dataTestId}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 fg-info">
           {enlargeButton}
           {spinner}
-          <span>{statusContent}</span>
+          <span role="status">{statusContent}</span>
         </div>
         <div className="flex items-center gap-2">
           {actionSlot}

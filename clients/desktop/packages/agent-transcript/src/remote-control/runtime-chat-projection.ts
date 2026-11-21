@@ -17,8 +17,10 @@ import {
 } from '@canopy/protocol/agent-artifacts';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
 import {
+  readRemoteControlChatPartVisual,
   readRemoteControlToolOccurrence,
   readRemoteControlToolOutputLocator,
+  type RemoteControlChatVisualReference,
 } from '@canopy/protocol/remote-control/shell';
 import {
   isClaudeAiCreditsFallbackErrorCode,
@@ -278,6 +280,54 @@ function stampRuntimeToolPart(
   };
 }
 
+/**
+ * The `chat:event` field on which the desktop names the visuals a provider
+ * event's tool results committed. Main adds it after the event's commit, when
+ * the visual has its stored reference; the provider's own event never has one.
+ */
+export const CANOPY_TOOL_VISUALS_FIELD = 'canopy_tool_visuals';
+
+/** One committed visual, keyed like {@link RuntimeToolAdmission} mappings. */
+export interface RuntimeToolVisual {
+  /** The tool result's position in the provider event. */
+  readonly sourceToken: string;
+  /** The committed row that owns the visual: the read's `messageId`. */
+  readonly messageId: string;
+  readonly visual: RemoteControlChatVisualReference;
+}
+
+function runtimeToolVisual(
+  data: Record<string, unknown>,
+  token: string,
+): { messageId: string; visual: RemoteControlChatVisualReference } | undefined {
+  const entries = data[CANOPY_TOOL_VISUALS_FIELD];
+  if (!Array.isArray(entries)) return undefined;
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry.sourceToken !== token) continue;
+    const messageId = readString(entry, 'messageId');
+    const visual = readRemoteControlChatPartVisual({
+      kind: 'tool_result',
+      data: { visual: entry.visual },
+    });
+    return messageId && visual ? { messageId, visual } : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Give a live tool result the visual its commit stored, owned by the committed
+ * row, as the history read gives it, so the open chat shows it in the turn.
+ */
+function withRuntimeToolVisual(
+  part: RemoteControlChatPart,
+  data: Record<string, unknown>,
+  token: string,
+): RemoteControlChatPart {
+  if (part.kind !== 'tool_result' || !isRecord(part.data)) return part;
+  const committed = runtimeToolVisual(data, token);
+  return committed ? { ...part, data: { ...part.data, ...committed } } : part;
+}
+
 function runtimeParts(
   data: Record<string, unknown>,
   toolFamilyFor: ToolFamilyResolver | undefined,
@@ -347,22 +397,26 @@ function runtimeParts(
     if (block.type === 'tool_result') {
       parts.push(
         stampRuntimeToolPart(
-          {
-            kind: 'tool_result',
-            data: {
-              toolUseId: readString(block, 'tool_use_id') ?? '',
-              ...runtimeReceiptMetadata(
-                toolResultText(block.content),
-                block.is_error === true,
-                receiptBudget,
-              ),
-              output: truncateText(
-                toolResultText(block.content),
-                REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS,
-              ),
-              isError: block.is_error === true,
+          withRuntimeToolVisual(
+            {
+              kind: 'tool_result',
+              data: {
+                toolUseId: readString(block, 'tool_use_id') ?? '',
+                ...runtimeReceiptMetadata(
+                  toolResultText(block.content),
+                  block.is_error === true,
+                  receiptBudget,
+                ),
+                output: truncateText(
+                  toolResultText(block.content),
+                  REMOTE_CONTROL_CHAT_PART_TEXT_MAX_CHARS,
+                ),
+                isError: block.is_error === true,
+              },
             },
-          },
+            data,
+            String(index),
+          ),
           String(index),
           admission,
         ),
@@ -662,22 +716,23 @@ export function runtimeChatEventToRemoteControlMessage(
       toolFamilyFor: input.toolFamilyFor,
       fallbackMessageId: input.fallbackMessageId,
     });
-    if (!projected || !admission) return projected;
+    if (!projected) return projected;
     const event = isRecord(input.data.event) ? input.data.event : undefined;
     const item = event && isRecord(event.item) ? event.item : undefined;
     const itemId = item ? readString(item, 'id') : undefined;
     if (!itemId) return projected;
+    const data = input.data;
     return {
       ...projected,
-      parts: projected.parts?.map((part) =>
-        part.kind === 'tool_use' || part.kind === 'tool_result'
-          ? stampRuntimeToolPart(
-              part,
-              `${itemId}:${part.kind === 'tool_use' ? 'call' : 'result'}`,
-              admission,
-            )
-          : part,
-      ),
+      parts: projected.parts?.map((part) => {
+        if (part.kind !== 'tool_use' && part.kind !== 'tool_result')
+          return part;
+        const token = `${itemId}:${part.kind === 'tool_use' ? 'call' : 'result'}`;
+        const withVisual = withRuntimeToolVisual(part, data, token);
+        return admission
+          ? stampRuntimeToolPart(withVisual, token, admission)
+          : withVisual;
+      }),
     };
   }
   // The desktop chat IPC channel also carries known host control records that

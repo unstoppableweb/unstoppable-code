@@ -183,12 +183,27 @@ export const CUSTOMIZE_DISCOVERY_EXPERIMENT: SharedLabsExperiment = {
 };
 
 /**
+ * Steer by default (CAN-7349): nothing reads it yet; later changes gate their
+ * behavior on it. Desktop lists it in Settings → Labs; web follows the
+ * account's choice without listing it (see {@link WEB_FOLLOWED_LABS_EXPERIMENTS}).
+ */
+export const STEER_BY_DEFAULT_EXPERIMENT: SharedLabsExperiment = {
+  id: 'steer-by-default',
+  name: 'Steer by default',
+  description:
+    'Send a message while work is in progress to steer the current turn.',
+  // `CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault.key`.
+  flagKey: 'canopy-desktop-labs-steer-by-default',
+};
+
+/**
  * Experiments web reads but does not list under account Labs: the account
  * switches them on from desktop Settings → Labs, and web follows that choice.
  * They never make web's Labs navigation visible.
  */
 export const WEB_FOLLOWED_LABS_EXPERIMENTS: readonly SharedLabsExperiment[] = [
   CUSTOMIZE_DISCOVERY_EXPERIMENT,
+  STEER_BY_DEFAULT_EXPERIMENT,
 ];
 
 /**

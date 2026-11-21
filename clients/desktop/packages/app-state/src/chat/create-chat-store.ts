@@ -26,6 +26,10 @@ import {
   CLIENT_STORE_DISPOSE,
   type ClientStore,
 } from '../create-client-store';
+import {
+  isPersistenceCancellation,
+  reportStorePersistenceError,
+} from '../client-store-lifecycle';
 import { useCanopyClientStore } from '../CanopyClientProvider';
 import {
   computeIncrementalTurnGroups,
@@ -237,6 +241,11 @@ export interface ChatStoreState {
   readonly threads: Readonly<Record<string, ChatThreadState>>;
   /** Chats whose composer settings have received at least one seed. */
   readonly seededSettingsChatIds?: Readonly<Record<string, true>>;
+  /**
+   * Chats whose latest settings persist failed; cleared by the next success.
+   * State for hosts: the store shows nothing for it.
+   */
+  readonly settingsPersistFailedChatIds?: Readonly<Record<string, true>>;
   /** Retain transcript residency until the returned idempotent release is called. */
   retainThread(chatId: string): () => void;
   /** Monotonic per-chat residency generation; zero until first eviction/reset. */
@@ -366,6 +375,16 @@ export interface ChatStoreState {
   ): void;
   /** Cancel a chat's pending debounce and persist its settings immediately. */
   flushPersist(chatId: string): void;
+  /** Persist a chat's current settings again, as after a failed persist. */
+  retryPersistSettings(chatId: string): void;
+}
+
+export interface ChatStoreOptions {
+  /**
+   * Records one failed settings persist. Defaults to the host recorder
+   * installed with `setStorePersistenceErrorReporter`.
+   */
+  readonly report?: (error: unknown) => void;
 }
 
 interface UnrefableTimer {
@@ -726,7 +745,12 @@ function deriveStatus(
  */
 export function createChatStore(
   client: CanopyClient,
+  options: ChatStoreOptions = {},
 ): ClientStore<ChatStoreState> {
+  const report =
+    options.report ??
+    ((error: unknown): void =>
+      reportStorePersistenceError('chat-settings-persist', error));
   interface ThreadHandle {
     chatId: string;
     live: boolean;
@@ -740,6 +764,8 @@ export function createChatStore(
   const protectedResidents = new Set<string>();
   const inFlightPersistCounts = new Map<string, number>();
   const persistEpochs = new Map<string, number>();
+  /** Latest started persist per chat, so an older outcome can't flip the flag. */
+  const persistAttempts = new Map<string, number>();
   const externallyReferencedMessageIds = new Map<string, number>();
   /** Chats whose messages only their claimant writes. */
   const transcriptOwners = new Map<string, object>();
@@ -752,6 +778,9 @@ export function createChatStore(
   let disposed = false;
   let storeLifetime = 0;
   let triggerCleanup: ((chatId: string) => void) | null = null;
+  let setSettingsPersistFailed:
+    | ((chatId: string, failed: boolean) => void)
+    | null = null;
 
   const bumpResidencyGeneration = (chatId: string): number => {
     const generation = (residencyGenerations.get(chatId) ?? 0) + 1;
@@ -1010,15 +1039,18 @@ export function createChatStore(
         pendingPlanExit: thread.pendingPlanExit,
       },
     };
-    // Best-effort: a failed persist must not crash the store. The adopt ticket
-    // wires real error surfacing; until then the adapters are inert.
+    // Best-effort: a failed persist must not crash the store. Each failure is
+    // recorded once and flagged until a later persist succeeds; a persist
+    // superseded by a reset or disposal is neither.
     const lifetime = storeLifetime;
     const persistEpoch = persistEpochs.get(chatId) ?? 0;
+    const attempt = (persistAttempts.get(chatId) ?? 0) + 1;
+    persistAttempts.set(chatId, attempt);
     inFlightPersistCounts.set(
       chatId,
       (inFlightPersistCounts.get(chatId) ?? 0) + 1,
     );
-    const settled = (): void => {
+    const settled = (failure?: { readonly error: unknown }): void => {
       if (
         disposed ||
         lifetime !== storeLifetime ||
@@ -1029,13 +1061,33 @@ export function createChatStore(
       const count = inFlightPersistCounts.get(chatId) ?? 0;
       if (count <= 1) inFlightPersistCounts.delete(chatId);
       else inFlightPersistCounts.set(chatId, count - 1);
-      triggerCleanup?.(chatId);
+      // A draft without a routing target rejects by design; its settings ride
+      // the first-send payload, so that rejection is neither recorded nor flagged.
+      const cancelled =
+        failure !== undefined &&
+        (args.workspaceLocalId === undefined ||
+          isPersistenceCancellation(failure.error));
+      if (failure && !cancelled) {
+        try {
+          report(failure.error);
+        } catch {
+          // Recording is best effort and must not break the store.
+        }
+      }
+      if (!cancelled && attempt === persistAttempts.get(chatId)) {
+        setSettingsPersistFailed?.(chatId, failure !== undefined);
+      } else {
+        triggerCleanup?.(chatId);
+      }
     };
     try {
       const persist = client.command('chat.persistTabSettings', args);
-      void Promise.resolve(persist).then(settled, settled);
-    } catch {
-      settled();
+      void Promise.resolve(persist).then(
+        () => settled(),
+        (error: unknown) => settled({ error }),
+      );
+    } catch (error: unknown) {
+      settled({ error });
     }
   };
 
@@ -1292,10 +1344,30 @@ export function createChatStore(
       triggerCleanup = (chatId): void => {
         set((state) => state, [chatId]);
       };
+      setSettingsPersistFailed = (chatId, failed): void => {
+        set(
+          (state) => {
+            if (
+              (state.settingsPersistFailedChatIds?.[chatId] === true) ===
+              failed
+            ) {
+              return state;
+            }
+            const settingsPersistFailedChatIds = {
+              ...(state.settingsPersistFailedChatIds ?? {}),
+            };
+            if (failed) settingsPersistFailedChatIds[chatId] = true;
+            else delete settingsPersistFailedChatIds[chatId];
+            return { settingsPersistFailedChatIds };
+          },
+          [chatId],
+        );
+      };
 
       return {
         threads: {},
         seededSettingsChatIds: {},
+        settingsPersistFailedChatIds: {},
 
         retainThread(chatId): () => void {
           if (disposed) return (): void => {};
@@ -1882,6 +1954,7 @@ export function createChatStore(
           cancelPersist(chatId);
           persistEpochs.set(chatId, (persistEpochs.get(chatId) ?? 0) + 1);
           inFlightPersistCounts.delete(chatId);
+          persistAttempts.delete(chatId);
           bumpResidencyGeneration(chatId);
           removeResidencyCandidate(chatId);
           caches.delete(chatId);
@@ -1897,7 +1970,9 @@ export function createChatStore(
               const hasThread = chatId in state.threads;
               const hasSeededSettings =
                 state.seededSettingsChatIds?.[chatId] === true;
-              if (!hasThread && !hasSeededSettings) {
+              const hasPersistFailure =
+                state.settingsPersistFailedChatIds?.[chatId] === true;
+              if (!hasThread && !hasSeededSettings && !hasPersistFailure) {
                 return state;
               }
               const threads = { ...state.threads };
@@ -1906,7 +1981,15 @@ export function createChatStore(
                 ...(state.seededSettingsChatIds ?? {}),
               };
               delete seededSettingsChatIds[chatId];
-              return { threads, seededSettingsChatIds };
+              const settingsPersistFailedChatIds = {
+                ...(state.settingsPersistFailedChatIds ?? {}),
+              };
+              delete settingsPersistFailedChatIds[chatId];
+              return {
+                threads,
+                seededSettingsChatIds,
+                settingsPersistFailedChatIds,
+              };
             },
             [chatId],
           );
@@ -2475,7 +2558,19 @@ export function createChatStore(
                 seededSettingsChatIds[targetChatId] = true;
               }
               delete seededSettingsChatIds[sourceChatId];
-              return { threads, seededSettingsChatIds };
+              // The source's settings move to the target, unsaved ones included.
+              const settingsPersistFailedChatIds = {
+                ...(state.settingsPersistFailedChatIds ?? {}),
+              };
+              if (settingsPersistFailedChatIds[sourceChatId]) {
+                settingsPersistFailedChatIds[targetChatId] = true;
+              }
+              delete settingsPersistFailedChatIds[sourceChatId];
+              return {
+                threads,
+                seededSettingsChatIds,
+                settingsPersistFailedChatIds,
+              };
             },
             [sourceChatId, targetChatId],
           );
@@ -2557,6 +2652,11 @@ export function createChatStore(
           cancelPersist(chatId);
           doPersist(chatId);
         },
+
+        retryPersistSettings(chatId): void {
+          cancelPersist(chatId);
+          doPersist(chatId);
+        },
       };
     },
   );
@@ -2597,6 +2697,7 @@ export function createChatStore(
     protectedResidents.clear();
     inFlightPersistCounts.clear();
     persistEpochs.clear();
+    persistAttempts.clear();
     externallyReferencedMessageIds.clear();
   };
 

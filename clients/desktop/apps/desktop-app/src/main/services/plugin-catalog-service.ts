@@ -116,13 +116,15 @@ import { getAntigravityModelEntries } from '@canopy/execution-engine/model-catal
  * the MCP index file) and never triggers a marketplace network refresh, so it is
  * cheap enough to answer a `portal.chat.list_plugin_catalog` request on demand.
  *
- * Each category is best-effort: a failure in one reader yields an empty list for
- * that category rather than failing the whole catalog, so a partial inventory
- * still lets the browser render the sections that did load.
+ * Skills, plugins and MCP servers are best-effort: a failure in one of those
+ * readers yields an empty list for it, so a partial inventory still lets the
+ * browser render the sections that did load. A Collection index that can't be
+ * read rejects the whole catalog instead, so the picker shows its load error
+ * rather than a list that silently lacks collections (CAN-7473).
  */
 export async function buildPluginCatalog(): Promise<RemoteControlPluginCatalog> {
   const [collections, plugins, mcpServers] = await Promise.all([
-    readCatalogCollections(),
+    listCatalogCollections(),
     readCatalogPlugins(),
     readCatalogMcpServers(),
   ]);
@@ -172,20 +174,6 @@ async function listCatalogCollections(): Promise<
     pluginCount: collection.pluginCount,
     mcpServerCount: collection.mcpServerCount,
   }));
-}
-
-/**
- * The picker's collections, best-effort like its other sections: an index
- * read failure lists none until the picker has a load error (CAN-7473).
- */
-async function readCatalogCollections(): Promise<
-  RemoteControlPluginCatalogCollection[]
-> {
-  try {
-    return await listCatalogCollections();
-  } catch {
-    return [];
-  }
 }
 
 async function readCatalogSkills(): Promise<RemoteControlPluginCatalogSkill[]> {

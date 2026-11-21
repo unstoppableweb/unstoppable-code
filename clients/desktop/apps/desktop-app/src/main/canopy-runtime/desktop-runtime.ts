@@ -340,6 +340,10 @@ import {
   type CoreReviewAdapter,
 } from './core-review-adapter';
 import {
+  createCorePublicationAdapter,
+  type CorePublicationAdapter,
+} from './core-publication-adapter';
+import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
 } from './core-operation-adapter';
@@ -585,6 +589,8 @@ export interface CreateDesktopRuntimeOptions {
   planAdapter?: CorePlanAdapter;
   /** Handler logic for `core.review.*`; tests may inject an isolated adapter. */
   reviewAdapter?: CoreReviewAdapter;
+  /** Handler logic for `core.publication.*`; tests may inject an isolated adapter. */
+  publicationAdapter?: CorePublicationAdapter;
   /** Handler logic for `core.featureFlag.*`; tests may inject an isolated adapter. */
   featureFlagAdapter?: CoreFeatureFlagHandlers;
   /**
@@ -1625,6 +1631,8 @@ export function createDesktopRuntime(
     createCoreAnnotationAdapter({ publish: publishFileAnnotationsUpdated });
   const planAdapter = options.planAdapter ?? createCorePlanAdapter();
   const reviewAdapter = options.reviewAdapter ?? createCoreReviewAdapter();
+  const publicationAdapter =
+    options.publicationAdapter ?? createCorePublicationAdapter();
   const featureFlagAdapter =
     options.featureFlagAdapter ?? createCoreFeatureFlagAdapter();
   const operationAdapter =
@@ -1775,6 +1783,7 @@ export function createDesktopRuntime(
     annotationAdapter,
     planAdapter,
     reviewAdapter,
+    publicationAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
@@ -2006,6 +2015,7 @@ export function createDesktopRuntime(
       ownedAdapter('core.annotation', annotationAdapter),
       ownedAdapter('core.plan', planAdapter),
       ownedAdapter('core.review', reviewAdapter),
+      ownedAdapter('core.publication', publicationAdapter),
       owned(
         'core.operation',
         operationAdapter.queries,
@@ -2850,6 +2860,17 @@ export function createDesktopRuntime(
       // An open stream is an active call that shutdown would wait out.
       closeFileTreeWatchesForLegacyIpc();
       (await stopSettlingHostRequests)?.();
+      // A timed-out markSeen the dispatcher no longer tracks, bounded as the
+      // dispatcher's own drain is.
+      let closeTimer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        publicationAdapter.close(),
+        new Promise<void>((resolve) => {
+          closeTimer = setTimeout(resolve, shutdownTimeoutMs);
+          closeTimer.unref?.();
+        }),
+      ]);
+      clearTimeout(closeTimer);
       await runtime.shutdown('desktop');
       // Unfinished work stays recorded; the next launch reconciles it.
       operationAdapter.close();

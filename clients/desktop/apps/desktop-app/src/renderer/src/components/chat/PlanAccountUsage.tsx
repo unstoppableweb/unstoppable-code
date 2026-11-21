@@ -122,9 +122,11 @@ export function PlanAccountUsage({
       !needsConnection &&
       errorKind !== 'unsupported'
         ? {
-            onRetry: (): void => {
+            onRetry: (): Promise<void> => {
               setRefreshFailed(false);
-              void refresh(providerType).catch(() => setRefreshFailed(true));
+              return refresh(providerType)
+                .then(() => undefined)
+                .catch(() => setRefreshFailed(true));
             },
           }
         : {})}

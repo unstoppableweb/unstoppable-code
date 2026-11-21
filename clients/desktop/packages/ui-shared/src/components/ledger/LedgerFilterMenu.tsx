@@ -107,7 +107,8 @@ export function LedgerFilterMenu<Filters extends LedgerViewFilters>({
           event.stopPropagation();
           setOpen((previous) => !previous);
         }}
-        aria-label="Filter entries"
+        // The dot is visual only, so the name says a filter is on.
+        aria-label={active ? 'Filter entries, filters on' : 'Filter entries'}
         aria-expanded={open}
         aria-haspopup="true"
         title="Filter entries"

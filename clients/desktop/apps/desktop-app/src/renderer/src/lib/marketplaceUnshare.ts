@@ -1,5 +1,7 @@
 import type { SharedLinkKind } from '@canopy/ui-app/sharing';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   MarketplaceUnshareError,
   marketplaceUnsharedNotice,
@@ -64,6 +66,11 @@ export async function unshareMarketplaceResource(
     throw new MarketplaceUnshareError(
       marketplaceUnshareReasonForStatus(readSharedResourceErrorStatus(error)),
       error instanceof Error ? error.message : undefined,
+      // Main already recorded an IPC rejection; the dialog must not again.
+      {
+        alreadyReported:
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+      },
     );
   }
 }

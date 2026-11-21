@@ -20,6 +20,9 @@ export const ONBOARDING_TIP_IDS = [
   // stay out of organization projects (CAN-6230) keeps its dismissal here, so
   // the desktop and a Portal tab agree on it.
   'org-project-connectors',
+  // Not a slot tip yet: the one-time tip that a send while a turn runs steers
+  // it (CAN-7349). Shown only behind the Steer by default Labs experiment.
+  'steer-by-default',
 ] as const;
 
 export type OnboardingTipId = (typeof ONBOARDING_TIP_IDS)[number];

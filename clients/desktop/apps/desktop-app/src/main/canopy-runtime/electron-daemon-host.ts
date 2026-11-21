@@ -4,7 +4,10 @@ import {
   createElectronMigrationLaunch,
 } from './migration-channel';
 import { mkdir, realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { logMainProcessWarn } from '../lib/main-process-logging';
+import { createDaemonStartDiagnostics } from './daemon-start-diagnostics';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -238,6 +241,7 @@ export interface ElectronDaemonHostInputs {
   readonly executable?: string;
   readonly ownedChildNativePath?: string;
   readonly windowsProcessPath?: string;
+  readonly diagnosticsDirectory?: string;
   /**
    * The flip launch (CAN-5543): every spawn opens the W5 host, after
    * `beforeSpawn` where the platform has a startup claim.
@@ -266,6 +270,33 @@ export function selectWindowsProcessPath(
 /** A desktop consumer of a daemon stream or lease eviction threw (CAN-7116). */
 function reportDaemonListenerError(error: unknown): void {
   reportContainedFailure('core_client.listener', error);
+}
+
+let linuxDiagnostics:
+  | ReturnType<typeof createDaemonStartDiagnostics>
+  | undefined;
+
+/** Trusted main only; also records handoff failures before any spawn. */
+export function getLinuxDaemonStartDiagnostics(
+  directory?: string,
+): ReturnType<typeof createDaemonStartDiagnostics> | undefined {
+  if (hostPlatformOperatingSystem() !== 'linux') return undefined;
+  if (!linuxDiagnostics) {
+    linuxDiagnostics = createDaemonStartDiagnostics({
+      directory: directory ?? app.getPath('logs'),
+      appVersion: app.getVersion(),
+      home: homedir(),
+      warn: (facts): void =>
+        logMainProcessWarn('Linux background-service start diagnostics', facts),
+    });
+    // Both before-quit and will-quit are cancellable.
+    app.once('quit', disposeLinuxDaemonStartDiagnostics);
+  }
+  return linuxDiagnostics;
+}
+
+export function disposeLinuxDaemonStartDiagnostics(): void {
+  linuxDiagnostics?.dispose();
 }
 
 /** Uses the H1 shared launch policy and the staged opaque native ownership adapter. */
@@ -406,6 +437,30 @@ export async function createElectronDaemonHost(
     enabled: ELECTRON_MIGRATION_ROLE.enabled,
   });
   const beforeSpawn = inputs.w5?.beforeSpawn;
+  const ownedChildren = createOwnedChildServices({
+    os,
+    nativePath:
+      inputs.ownedChildNativePath ??
+      (app.isPackaged
+        ? join(process.resourcesPath, 'cli/core-owned-child.node')
+        : resolve(
+            '.cache/native-owned-child',
+            `${os}-${process.arch}`,
+            'core-owned-child.node',
+          )),
+  });
+  const diagnostics =
+    os === 'linux'
+      ? getLinuxDaemonStartDiagnostics(inputs.diagnosticsDirectory)
+      : undefined;
+  diagnostics?.endpoint({
+    endpointSelection:
+      address.kind === 'unix-socket' && address.alias ? 'alias' : 'direct',
+    socketPathBytes: Buffer.byteLength(address.path),
+    bindSiblingBytes: Buffer.byteLength(
+      join(dirname(address.path), '.000000000000'),
+    ),
+  });
   const launch = createCanopyDaemonHostLaunch({
     secureStorageLayout: 'nested-v1',
     ...(migration && { migration }),
@@ -414,18 +469,9 @@ export async function createElectronDaemonHost(
     executable,
     platform: os,
     supervision: platform.supervision,
-    ownedChildren: createOwnedChildServices({
-      os,
-      nativePath:
-        inputs.ownedChildNativePath ??
-        (app.isPackaged
-          ? join(process.resourcesPath, 'cli/core-owned-child.node')
-          : resolve(
-              '.cache/native-owned-child',
-              `${os}-${process.arch}`,
-              'core-owned-child.node',
-            )),
-    }),
+    ownedChildren: diagnostics
+      ? diagnostics.wrap(ownedChildren)
+      : ownedChildren,
     ...(inputs.w5 && { w5Host: true }),
     ...(beforeSpawn && {
       beforeSpawn: {

@@ -59,6 +59,7 @@
     "./remote-control/shell/input-delivery": "./src/remote-control/shell/input-delivery.ts",
     "./remote-control/shell/background-service": "./src/remote-control/shell/background-service.ts",
     "./remote-control/shell/external-agent-sender": "./src/remote-control/shell/external-agent-sender.ts",
+    "./remote-control/shell/provider-usage-reader": "./src/remote-control/shell/provider-usage-reader.ts",
     "./remote-control/shell/lifecycle-journal": "./src/remote-control/shell/lifecycle-journal.ts",
     "./remote-control/shell/lifecycle-journal-refusal": "./src/remote-control/shell/lifecycle-journal-refusal.ts",
     "./remote-control/shell/auto-delete-attention": "./src/remote-control/shell/auto-delete-attention.ts",
@@ -136,6 +137,7 @@
     "./turn-feedback": "./src/turn-feedback/index.ts",
     "./reference-previews": "./src/reference-previews/index.ts",
     "./org-projects": "./src/org-projects/index.ts",
+    "./clone-jobs": "./src/clone-jobs/index.ts",
     "./foreign-activity": "./src/foreign-activity.ts",
     "./workspace-context": "./src/workspace-context/index.ts",
     "./workspace-owner": "./src/workspace-owner/index.ts",
@@ -207,8 +209,10 @@
     "./copilot-recipient": "./src/copilot-recipient.ts",
     "./remote-control": "./src/remote-control/index.ts",
     "./remote-control/channels": "./src/remote-control/channels.ts",
+    "./remote-control/delegation-reads": "./src/remote-control/delegation-reads.ts",
     "./remote-control/pairing-link": "./src/remote-control/pairing-link.ts",
-    "./bot-glyph": "./src/bot-glyph.ts"
+    "./bot-glyph": "./src/bot-glyph.ts",
+    "./usage-analytics-optout": "./src/usage-analytics-optout/index.ts"
   },
   "dependencies": {
     "zod": "4.3.6"

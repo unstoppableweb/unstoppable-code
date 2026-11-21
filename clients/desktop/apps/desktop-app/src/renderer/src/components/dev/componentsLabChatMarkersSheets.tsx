@@ -175,6 +175,17 @@ export function AutoResumeMarkerSheet(): JSX.Element {
             />
           </div>
         </SpecimenCell>
+        <SpecimenCell label="Settled resend with no response" wide>
+          <div className="w-full">
+            <AutoResumeMarker
+              autoResume={resumeMetadata('usage_limit', true)}
+              providerName="Acme"
+              timestamp={RESUMED_AT}
+              text="Fix the build"
+              outputless
+            />
+          </div>
+        </SpecimenCell>
         <SpecimenCell label="Unknown provenance: neutral wording" wide>
           <div className="w-full">
             <AutoResumeMarker timestamp={RESUMED_AT} text="Continue" />

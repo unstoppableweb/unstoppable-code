@@ -422,7 +422,8 @@ describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a
         (caught: unknown) => caught,
       );
       expect(error).toBeInstanceOf(CatalogHostRefusedError);
-      expect(error).toMatchObject({ refusal: 'publish-package-blocked' });
+      // Its own refusal, so core shows the skill, file and rule.
+      expect(error).toMatchObject({ refusal: 'publish-secret-detected' });
       const cause = error instanceof Error ? error.cause : undefined;
       expect(cause instanceof Error && cause.message).toBe(
         `The skill "helper" looks like it contains a secret (${label} in SKILL.md). Remove it, or replace it with a placeholder such as \${{ secrets.NAME }}, then share again.`,
@@ -433,10 +434,10 @@ describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a
     },
   );
 
-  it('maps a custom skill the package carries that looks like it holds a secret to the existing blocked refusal', async () => {
+  it('maps a custom skill the package carries that looks like it holds a secret to its own refusal', async () => {
     const { deps, creates } = publishFakes(PLACEHOLDER_SKILL);
-    // The upload's own check refuses a dependency skill; that's a blocked
-    // package, never an unreachable cloud.
+    // The upload's own check refuses a dependency skill; that's a secret
+    // refusal naming it, never an unreachable cloud.
     deps.commitPackage = (): Promise<never> =>
       Promise.reject(
         new SkillSecretDetectedError(
@@ -451,7 +452,34 @@ describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a
       (caught: unknown) => caught,
     );
     expect(error).toBeInstanceOf(CatalogHostRefusedError);
-    expect(error).toMatchObject({ refusal: 'publish-package-blocked' });
+    expect(error).toMatchObject({ refusal: 'publish-secret-detected' });
+    expect(creates).toEqual([]);
+  });
+
+  it('names a skill the copy carries that looks like it holds a secret, never calling the files changed', async () => {
+    const { deps, commits, creates } = publishFakes(PLACEHOLDER_SKILL);
+    const message =
+      'The skill "deploy-env" looks like it contains a secret (a credential variable in SKILL.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.';
+    const ready = deps.analysisFacts;
+    deps.analysisFacts = async (
+      analysisId,
+      selected,
+    ): ReturnType<typeof ready> => {
+      const facts = await ready(analysisId, selected);
+      return facts === null
+        ? null
+        : { ...facts, ready: false, secretRefusal: message };
+    };
+    const error: unknown = await publishSkillToCloud(ENTRY, PKG, deps, {
+      expectedAccountId: 'acct-1',
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({ refusal: 'publish-secret-detected' });
+    const cause = error instanceof Error ? error.cause : undefined;
+    expect(cause instanceof Error && cause.message).toBe(message);
+    expect(commits).toEqual([]);
     expect(creates).toEqual([]);
   });
 

@@ -15,7 +15,7 @@ import { Stack } from '../Stack';
 // The desktop composer's editable text (ui-rich composer density), on a
 // plain textarea: no native ring or resize grip, growing with its content.
 const MESSAGE_EDIT_TEXT_CLASS =
-  'block min-h-8 max-h-50 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-s leading-5 fg-primary outline-none';
+  'block min-h-8 max-h-50 w-full resize-none overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-s pointer-coarse:text-m leading-5 fg-primary outline-none';
 
 export interface MessageEditCardProps {
   readonly value: string;

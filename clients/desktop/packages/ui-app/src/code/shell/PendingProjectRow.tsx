@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
 import { Button, LoadingSpinner } from '@canopy/ui-shared/components';
 import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { Surface } from '@canopy/ui-shared/components';
@@ -24,6 +24,13 @@ export interface SidebarPendingProject {
   /** True while a Retry is being submitted; disables the control. */
   readonly retrying?: boolean;
   readonly onRetry?: () => void;
+  /**
+   * Stops a running clone. Offered on a `cloning` row only; after a click the
+   * row shows "Cancelling…" with the control disabled until the host's next
+   * snapshot moves or removes it. A rejection is reported in the row, which
+   * offers Cancel again.
+   */
+  readonly onCancel?: () => Promise<void>;
   readonly onDismiss?: () => void;
 }
 
@@ -38,17 +45,44 @@ export function PendingProjectRow({
 }: {
   readonly project: SidebarPendingProject;
 }): JSX.Element {
+  const [cancelSent, setCancelSent] = useState(false);
+  const [cancelFailed, setCancelFailed] = useState(false);
   const failed = project.status === 'failed';
+  const cloning = project.status === 'cloning';
+  const onCancel = cloning ? project.onCancel : undefined;
+  // From the click until the host answers, the row reads as cancelling. A
+  // job that stopped being cancellable first (the host ignored the Cancel)
+  // drops `onCancel`, and the row reads as cloning again.
+  const cancelPending = cancelSent && onCancel !== undefined;
   // The name is the row's title, so a failure with a reason shows the reason
   // alone instead of naming the project a second time.
   const statusLine = failed
     ? (project.message ?? defaultStatusText(project))
-    : [project.statusText ?? defaultStatusText(project), project.message]
+    : [
+        cancelPending
+          ? 'Cancelling…'
+          : (project.statusText ?? defaultStatusText(project)),
+        project.message,
+        cloning && !cancelPending && cancelFailed ? "Couldn't cancel." : null,
+      ]
         .filter(Boolean)
         .join(' ');
   const hasActions =
     (failed && project.onRetry !== undefined) ||
+    onCancel !== undefined ||
     project.onDismiss !== undefined;
+  const cancel = (): void => {
+    if (onCancel === undefined || cancelSent) return;
+    setCancelSent(true);
+    setCancelFailed(false);
+    // The host's next snapshot moves the row to cancelling or removes it, so
+    // the pending state is held after success. The Cancel was clicked here,
+    // so its failure is reported here, and the row offers Cancel again.
+    void onCancel().catch((): void => {
+      setCancelSent(false);
+      setCancelFailed(true);
+    });
+  };
   const showsSpinner = !failed && project.active !== false;
   return (
     <div
@@ -97,6 +131,18 @@ export function PendingProjectRow({
                 onClick={project.onRetry}
               >
                 Try again
+              </Button>
+            )}
+            {onCancel && (
+              <Button
+                variant="link"
+                disabled={cancelPending}
+                aria-label={`Cancel cloning ${project.name}`}
+                data-testid={`sidebar-pending-project-cancel-${project.id}`}
+                className="shrink-0"
+                onClick={cancel}
+              >
+                Cancel
               </Button>
             )}
             {project.onDismiss && (

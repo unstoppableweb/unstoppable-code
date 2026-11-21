@@ -1,9 +1,8 @@
-import type {
-  AgentProviderType,
-  AgentUsageOverview,
-  ProviderRateLimitWindow,
-} from '@canopy/desktop-shared/types';
+import type { AgentUsageOverview } from '@canopy/desktop-shared/types';
+import { selectProviderUsageLimitResumeAt } from '@canopy/desktop-shared/lib/usage-limit-resume-outlook';
 import type { PipelineStatusReason } from '@canopy/execution-engine/types/pipeline';
+
+export { selectProviderUsageLimitResumeAt };
 
 function parseFutureResetMs(value: unknown, nowMs: number): number | null {
   if (typeof value !== 'string' || value.length === 0) {
@@ -11,81 +10,6 @@ function parseFutureResetMs(value: unknown, nowMs: number): number | null {
   }
   const resetMs = new Date(value).getTime();
   return Number.isFinite(resetMs) && resetMs > nowMs ? resetMs : null;
-}
-
-/**
- * Choose the ISO timestamp at which a provider usage-limited session can resume.
- *
- * The "Schedule Resume" banner action uses this, driven entirely by the
- * structured observability usage snapshot and never by parsing visible provider
- * error text. We look at the provider's rate-limit snapshots, inspect each
- * snapshot's `primary` and `secondary` windows, and keep only
- * windows that are genuinely exhausted (`usedPercent >= 100`) with a valid
- * future `resetsAt`. `resetsAt` is normally normalized to ISO before it reaches
- * the renderer, but Codex snapshots are accepted defensively as epoch seconds or
- * milliseconds too. Among those candidates we pick the *most distant* reset so
- * the session resumes only once every saturated window has refilled.
- *
- * @returns the farthest candidate reset time as an ISO 8601 string, or `null`
- *   when no exhausted provider window has a valid future reset.
- */
-export function selectProviderUsageLimitResumeAt(
-  usage: AgentUsageOverview,
-  providerType: AgentProviderType,
-  now: Date = new Date(),
-): string | null {
-  const provider = usage.providers.find(
-    (candidate) => candidate.provider === providerType,
-  );
-  if (!provider?.rateLimits) {
-    return null;
-  }
-
-  const nowMs = now.getTime();
-  let farthestMs = -Infinity;
-
-  const parseResetMs = (value: unknown): number | null => {
-    if (typeof value === 'string' && value.length > 0) {
-      const parsed = new Date(value).getTime();
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      const epochMs = value < 1_000_000_000_000 ? value * 1000 : value;
-      return Number.isFinite(epochMs) ? epochMs : null;
-    }
-    return null;
-  };
-
-  const considerWindow = (
-    window: ProviderRateLimitWindow | undefined,
-  ): void => {
-    if (!window) {
-      return;
-    }
-    if (typeof window.usedPercent !== 'number' || window.usedPercent < 100) {
-      return;
-    }
-    const resetMs = parseResetMs(window.resetsAt);
-    if (resetMs === null) {
-      return;
-    }
-    if (resetMs <= nowMs) {
-      return;
-    }
-    if (resetMs > farthestMs) {
-      farthestMs = resetMs;
-    }
-  };
-
-  for (const snapshot of provider.rateLimits) {
-    considerWindow(snapshot.primary);
-    considerWindow(snapshot.secondary);
-  }
-
-  if (farthestMs === -Infinity) {
-    return null;
-  }
-  return new Date(farthestMs).toISOString();
 }
 
 export function selectClaudeUsageLimitResumeAt(

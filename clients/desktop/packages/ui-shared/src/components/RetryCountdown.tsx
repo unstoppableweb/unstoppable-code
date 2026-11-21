@@ -28,11 +28,20 @@ export function RetryCountdown({
       ? 0
       : Math.max(0, Math.ceil((nextRetryAt - now) / 1000));
   const countdown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  if (exhausted)
+    return <>{`Gave up after ${attempt} of ${maxAttempts} attempts.`}</>;
+  const attemptText = `attempt ${attempt} of ${maxAttempts}.`;
+  // Hosts render this inside a live region, so the ticking clock is hidden
+  // from screen readers; they hear the text only when the state changes.
   return (
     <>
-      {exhausted
-        ? `Gave up after ${attempt} of ${maxAttempts} attempts.`
-        : `${seconds > 0 ? `Retrying in ${countdown}` : 'Retrying now'}, attempt ${attempt} of ${maxAttempts}.`}
+      <span aria-hidden="true" className="tabular-nums">
+        {seconds > 0 ? `Retrying in ${countdown}` : 'Retrying now'},{' '}
+        {attemptText}
+      </span>
+      <span className="sr-only">
+        {seconds > 0 ? 'Retrying automatically' : 'Retrying now'}, {attemptText}
+      </span>
     </>
   );
 }

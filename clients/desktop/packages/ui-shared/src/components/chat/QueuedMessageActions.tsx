@@ -225,7 +225,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
       className={
         variant === 'badge'
           ? 'flex flex-wrap justify-end gap-2 pt-1'
-          : 'flex justify-end gap-2 pt-1'
+          : 'flex justify-end gap-2 pt-1 pointer-coarse:gap-4'
       }
     >
       {settingsHeld && (showSteer || showInterrupt) ? (
@@ -245,7 +245,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
             variant="secondary"
             size="compact"
             onClick={onSteer}
-            disabled={showDisabledSteer}
+            aria-disabled={showDisabledSteer || undefined}
             aria-description={
               showDisabledSteer
                 ? QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP

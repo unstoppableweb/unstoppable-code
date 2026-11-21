@@ -9,6 +9,7 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./client-store-lifecycle": "./src/client-store-lifecycle.ts",
     "./personal-organization-upgrade": "./src/personal-organization-upgrade/index.ts",
     "./terminal": "./src/terminal/index.ts",
     "./script-actions": "./src/script-actions/index.ts",

@@ -60,6 +60,12 @@ export function TurnFeedbackDialog({
   // that the IPC handler short-circuits into a no-op, so the button reads as
   // working while doing nothing. "Skip" is the affordance for sending nothing.
   const hasDetail = reason !== undefined || trimmed.length > 0;
+  const submit = (): void => {
+    onSubmit({
+      ...(reason ? { reason } : {}),
+      ...(trimmed.length > 0 ? { comment: trimmed } : {}),
+    });
+  };
 
   return (
     <DialogModal
@@ -84,7 +90,8 @@ export function TurnFeedbackDialog({
           role="group"
           aria-label="Reason"
           data-testid="turn-feedback-reasons"
-          className="flex flex-wrap gap-1.5"
+          // On touch each chip's hit area reaches 10px above and below.
+          className="flex flex-wrap gap-1.5 pointer-coarse:gap-y-5"
         >
           {TURN_FEEDBACK_REASONS.map((code) => {
             const selected = reason === code;
@@ -119,6 +126,16 @@ export function TurnFeedbackDialog({
           onChange={(event): void => {
             setComment(event.target.value);
           }}
+          onKeyDown={(event): void => {
+            if (
+              event.key !== 'Enter' ||
+              !(event.metaKey || event.ctrlKey) ||
+              event.nativeEvent.isComposing
+            )
+              return;
+            event.preventDefault();
+            if (hasDetail && !event.repeat) submit();
+          }}
           rows={3}
           maxLength={MAX_TURN_FEEDBACK_COMMENT_LENGTH}
         />
@@ -147,12 +164,7 @@ export function TurnFeedbackDialog({
             size="compact"
             data-testid="turn-feedback-submit"
             disabled={!hasDetail}
-            onClick={(): void => {
-              onSubmit({
-                ...(reason ? { reason } : {}),
-                ...(trimmed.length > 0 ? { comment: trimmed } : {}),
-              });
-            }}
+            onClick={submit}
           >
             Send feedback
           </Button>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { useCanopyClient, useWorkspaceCapabilities } from '@canopy/app-state';
 import type {
   RemoteControlProviderUsageAccount,
@@ -28,6 +28,15 @@ interface ProviderQuotaPanelProps {
   projection?: RemoteControlProviderUsageProjection;
   disabled?: boolean;
   isVisible: boolean;
+  /**
+   * Replaces the "not available from this desktop yet" line when the host
+   * knows why there is no projection (an older desktop, for example).
+   */
+  unavailableMessage?: string;
+  /** Called when the panel shows, for a host that loads quotas on demand. */
+  onVisible?: () => void;
+  /** Receives each projection a Refresh answered, for a host that holds it. */
+  onProjection?: (projection: RemoteControlProviderUsageProjection) => void;
 }
 
 /** A short state beside a proxy account that cannot serve now. */
@@ -222,8 +231,15 @@ function QuotaCards({
   projection,
   workspaceLocalId,
   disabled,
+  unavailableMessage,
+  onVisible,
+  onProjection,
 }: Omit<ProviderQuotaPanelProps, 'isVisible'>): JSX.Element {
   const nowMs = useMinuteClock();
+  // Mounted only while visible, so this runs each time the panel shows.
+  useEffect(() => {
+    onVisible?.();
+  }, [onVisible]);
   const client = useCanopyClient();
   const signature = accountsSignature(projection);
   const [refreshState, setRefreshState] = useState<RefreshState | null>(null);
@@ -233,7 +249,7 @@ function QuotaCards({
   if (!projection)
     return (
       <p className="p-4 text-s fg-secondary">
-        Usage is not available from this desktop yet.
+        {unavailableMessage ?? 'Usage is not available from this desktop yet.'}
       </p>
     );
   if (
@@ -251,12 +267,13 @@ function QuotaCards({
     > = projection.providers.map((entry) => entry.provider);
     if (projection.openCodeAccounts) providers.push('opencode');
     const results = await Promise.allSettled(
-      providers.map((provider) =>
-        client.command('providerUsage.refresh', {
+      providers.map(async (provider) => {
+        const fresh = await client.command('providerUsage.refresh', {
           workspaceLocalId,
           provider,
-        }),
-      ),
+        });
+        onProjection?.(fresh);
+      }),
     );
     const failed = results.some((result) => result.status === 'rejected');
     setRefreshState((state) =>
@@ -324,6 +341,9 @@ export function ProviderQuotaPanel(
       projection={props.projection}
       workspaceLocalId={props.workspaceLocalId}
       disabled={props.disabled}
+      unavailableMessage={props.unavailableMessage}
+      onVisible={props.onVisible}
+      onProjection={props.onProjection}
     />
   );
 }

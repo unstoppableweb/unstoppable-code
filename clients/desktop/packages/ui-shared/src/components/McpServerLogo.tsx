@@ -9,19 +9,19 @@ import {
 } from '../lib/mcp-brand-logos';
 
 /**
- * A neutral edge plus shadow keeps light, dark, and fallback marks at the same
- * visual weight against either app theme. The half-pixel ring reads as a
- * hairline on Retina displays without changing the avatar's measured size.
- */
-/**
  * The light plate's fill: the same neutral in both themes (zinc-100), so a
  * logo reads as it would on a light page. The avatar chrome's hairline ring
  * keeps it from glowing in light mode.
  */
 const LOGO_PLATE_CLASSNAME = 'bg-[#f4f4f5]';
 
+/**
+ * A neutral edge keeps light, dark, and fallback marks at the same visual
+ * weight against either app theme. The half-pixel ring reads as a hairline on
+ * Retina displays without changing the avatar's measured size.
+ */
 const AVATAR_CHROME_CLASSNAME =
-  'shadow-sm ring-[length:var(--border-hairline)] ring-line-secondary';
+  'ring-[length:var(--border-hairline)] ring-line-secondary';
 
 export interface McpServerLogoProps {
   /** Curated catalog key, when the server is linked to a curated entry. */
@@ -103,7 +103,7 @@ export interface McpServerLogoProps {
 /**
  * The one way MCP server logos render across the app (suggestion chips,
  * capability pickers, the browse dialog, server lists): a circular mark with
- * the shared drop shadow, resolved bundled-first from this package's catalog,
+ * a hairline edge, resolved bundled-first from this package's catalog,
  * falling back to a matching circular tile when no logo exists or the remote
  * image fails to load. Stateful remote resolution and the active brand mark
  * are host-injected so this component remains pure display code.

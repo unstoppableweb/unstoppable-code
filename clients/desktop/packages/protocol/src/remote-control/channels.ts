@@ -131,8 +131,8 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  * conditional branch. Operations the web keeps on web-side clients (billing,
  * external agents, account and organization operations, install-update
  * emails) and every capability the web leaves off (terminals, file writes,
- * item grouping, delegation lifetime, tips, suggestions, journals,
- * discard, provider quotas, shared multi-repo) add nothing. The web golden
+ * item grouping, delegation lifetime, journals, discard, shared multi-repo)
+ * add nothing. The web golden
  * keeps this list equal to that derivation and drives the composite with a
  * transport that refuses anything else.
  *
@@ -155,8 +155,9 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   chat channel here is also on the mobile list.
  * - Workspaces and worktrees: clone from a remote, update, reorder, create,
  *   label, hide, archive, save instructions and scripts, and delete a
- *   workspace (`project:delete`, `workspace:delete`; the web UI also gates
- *   deletion behind its destructive-actions flag, as on Portal).
+ *   workspace (`project:delete`, `workspace:delete`). The web UI offers
+ *   worktree archive and delete on a directly connected computer, which is
+ *   always the account's own (CAN-7438).
  * - Execution: scripts, hooks and pipelines run and stop; Git push, pull and
  *   commit-and-push; PR status refresh.
  * - Phase 7 direct gaps:
@@ -217,6 +218,59 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   project's archived and deleted Work Entries and its legacy archived
  *   chats, the overview Portal's archived list served. Read only; it
  *   restores, deletes or reopens nothing.
+ * - Onboarding tips and suggestions (CAN-7434): two narrow reads,
+ *   `preferences:load-onboarding-tips` (only `{ dismissed }`) and
+ *   `preferences:load-suggestions` (only `enabled`, `dismissed` and
+ *   `lastCornerShownAt`), and the two writes the desktop's own tips and
+ *   suggestions make. `preferences:update-onboarding-tips` accepts exactly
+ *   what `parseOnboardingTipsUpdate` accepts: dismiss one known tip, or reset
+ *   every dismissal ("Show tips again"). `preferences:update-suggestions`
+ *   accepts exactly what `parseSuggestionsUpdate` accepts: turn the master
+ *   switch on or off, dismiss one known suggestion, or stamp a corner
+ *   suggestion as shown (the host supplies every timestamp). Each write
+ *   touches only its own field. The browser session has no read-only mode
+ *   that gates writes, so none applies. `preferences:load`, every
+ *   preference, stays off this list.
+ * - Web archive and retention (CAN-7438), offered whenever the browser is
+ *   directly connected to the account's own computer:
+ *   - `work-entries:delete`: archives or deletes a cowork Work Entry. The
+ *     adapter always sends `lockAfterArchive: true`, a locked archive the
+ *     person restores from Archived and deleted. The host checks no
+ *     arguments from a browser, as with `worktree:archive`, so a browser
+ *     controller can also send an unlocked delete (kept for the project's
+ *     retention days) of any Work Entry of a cowork project.
+ *   - `workspace:set-archive-retention`: a settings write. The adapter sends
+ *     a code project's deletion retention days only; the channel also
+ *     accepts the project's auto-archive days and branch deletion setting.
+ * - Chat reads on direct Remote Control (CAN-7432), all read only:
+ *   `chat:read-visual` (a byte range of one chat visual, checked against its
+ *   reference hash and size on the computer); and `chat:read-delegation-page`,
+ *   `chat:read-delegation-content` and `chat:read-delegation-blocks`, a
+ *   delegate's stream pages, field bodies and bounded block pages, which the
+ *   computer serves only for delegation targets of the named chat. Mobile and
+ *   hosted agents are refused all four. The watcher list and its push stay
+ *   off this list until the browser can project them to display rows.
+ * - Pending clones (CAN-7433): `clone-jobs:list` and `clone-jobs:changed`
+ *   are in-memory reads of the computer's Add project clones; `remoteUrl` is
+ *   blanked for every controller and `destinationPath` for browsers.
+ *   `clone-jobs:cancel` stops git and removes the partial checkout of that
+ *   one job, including a clone the desktop user started; it is a no-op for an
+ *   unknown or finished job. `clone-jobs:dismiss` forgets a finished job, on
+ *   the desktop too. `clone-jobs:background` is not listed.
+ * - Provider quotas (CAN-7433): `provider-usage:load` reads the curated plan
+ *   usage projection (no audit rows, credentials or raw provider responses);
+ *   `provider-usage:refresh` asks one provider, or the account proxy when it
+ *   serves that provider, for current usage and answers the projection. The
+ *   desktop joins a refresh already running for the same provider or proxy
+ *   and does not otherwise throttle a browser's refreshes. `observability:*`
+ *   stays off this list.
+ * - Repository owner nudge (CAN-7433): `org-projects:find-repository-owner`,
+ *   accepted from a browser only as exactly `{ remoteUrl }`
+ *   (`browserInvocationAllowed`), never `{ path }`. It compares the URL with
+ *   the desktop's cached organization catalogs (at most one first catalog
+ *   fetch with the desktop's account), never contacts the URL or runs Git,
+ *   gives up after 3 seconds, and answers only the organization, project and
+ *   `owner/name` for organizations the desktop's account belongs to.
  * - Personal project conversion (CAN-7440): `personal-organization-upgrade:
  *   list` reads the computer's convertible Personal projects. `:status` reads
  *   one saved run's progress; acknowledging a finished run also removes that
@@ -248,7 +302,15 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'chat:queue-edit',
   'chat:queue-force',
   'chat:queue-set-edit-lock',
+  'chat:read-delegation-blocks',
+  'chat:read-delegation-content',
+  'chat:read-delegation-page',
+  'chat:read-visual',
   'chat:send-message',
+  'clone-jobs:cancel',
+  'clone-jobs:changed',
+  'clone-jobs:dismiss',
+  'clone-jobs:list',
   'claude-mods:get',
   'claude-mods:surface-command',
   'claude-mods:surface-push',
@@ -274,6 +336,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'hook:started',
   'hook:stop',
   'model-registry:get',
+  'org-projects:find-repository-owner',
   'personal-organization-upgrade:convert',
   'personal-organization-upgrade:list',
   'personal-organization-upgrade:status',
@@ -291,9 +354,15 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'pipelines:resume',
   'pipelines:retry-execution',
   'plugin-catalog:list',
+  'preferences:load-onboarding-tips',
+  'preferences:load-suggestions',
+  'preferences:update-onboarding-tips',
+  'preferences:update-suggestions',
   'project:delete',
   'projects:load',
   'projects:save',
+  'provider-usage:load',
+  'provider-usage:refresh',
   'repo:default-clone-dir',
   'script-actions:changed',
   'script-actions:enable-shell-alias-scan',
@@ -313,6 +382,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'tracked-plans:update',
   'tracked-plans:updated',
   'work-entries:create',
+  'work-entries:delete',
   'work-entries:list',
   'work-entries:list-archived',
   'workspace:add-from-remote',
@@ -324,6 +394,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'workspace:read-scripts',
   'workspace:reorder',
   'workspace:save-claude-md',
+  'workspace:set-archive-retention',
   'workspace:update-metadata',
   'worktree-summary:generating',
   'worktree-summary:refresh',
@@ -384,6 +455,7 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'workspace:create-worktree',
   'worktree:create',
 ];
+export * from './browser-arguments';
 export * from './hosted-channels';
 export * from './ipc-channels';
 export * from './operation-channels';

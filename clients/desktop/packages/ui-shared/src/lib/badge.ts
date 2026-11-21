@@ -229,7 +229,7 @@ export function formatBadgeCount(
 export type CountTone = 'neutral' | 'unread' | 'attention';
 
 /** A count next to a label: plain quaternary ink at the label's size. */
-export const LABEL_COUNT_CLASS = 'fg-quaternary';
+export const LABEL_COUNT_CLASS = 'tabular-nums fg-quaternary';
 
 /**
  * A count on an icon: 16px capsule, 10px label at 450. Tabular, because the
@@ -260,7 +260,8 @@ export type DotTone =
   | 'filter'
   | 'working'
   | 'success'
-  | 'danger';
+  | 'danger'
+  | 'pending';
 
 export const DOT_BASE_CLASS = 'inline-block size-1.5 shrink-0 rounded-full';
 
@@ -284,6 +285,7 @@ export const DOT_TONE_CLASS: Readonly<Record<DotTone, string>> = {
   working: 'bg-fg-success-strong',
   success: 'bg-fg-success-strong',
   danger: 'bg-fg-destructive-strong',
+  pending: 'bg-fg-quaternary/50',
 };
 
 export function dotClassName(tone: DotTone, size: DotSize = 'regular'): string {

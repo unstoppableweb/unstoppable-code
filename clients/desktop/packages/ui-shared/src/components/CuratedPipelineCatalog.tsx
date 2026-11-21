@@ -3,7 +3,7 @@
 import { TextLink } from './TextLink';
 import { CodeBlock } from './CodeBlock';
 import { Stack } from './Stack';
-import type { JSX } from 'react';
+import { useId, type JSX } from 'react';
 import type {
   CuratedPipelineDetail,
   CuratedPipelineListQuery,
@@ -15,10 +15,15 @@ import {
   pipelinePackageRequirementKindLabel,
 } from '../lib/pipeline-package-display';
 import { Disclosure } from './Disclosure';
-import { ErrorBanner } from './StatusBlocks';
+import { EmptyStateText, ErrorBanner } from './StatusBlocks';
 import { Button } from './Button';
-import { TextInput } from './Field';
-import { SearchField } from './SearchField';
+import { LoadingButton } from './LoadingButton';
+import { BusyLabel } from './BusyLabel';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { Skeleton } from './Skeleton';
+import { Surface } from './Surface';
+import { SearchEmptyState, SearchField } from './SearchField';
+import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
 import { Heading } from './Heading';
 
@@ -47,6 +52,8 @@ export interface CuratedPipelineCatalogProps {
   onOpenImported?: (id: string) => void;
   importDisabledReason?: string;
   hideSearch?: boolean;
+  /** Drop the heading and its description, for a host that titles the catalog (a dialog). */
+  hideHeading?: boolean;
   /**
    * Whether the previewed template appears when running a pipeline, and how
    * to change that. The host owns the preference; omit it where the host
@@ -88,8 +95,21 @@ export function CuratedPipelineCatalog(
   props: CuratedPipelineCatalogProps,
 ): JSX.Element {
   const { detail, selectedKey, query, importedPipelineId } = props;
+  const importReasonId = useId();
   const filter = (next: Partial<CuratedPipelineListQuery>): void =>
     props.onQueryChange({ ...query, ...next, cursor: undefined });
+  // A host-owned search (`hideSearch`) is not this catalog's filter to clear.
+  const clearFilters = curatedPipelineFiltersActive(
+    props.hideSearch ? { ...query, q: undefined } : query,
+  )
+    ? (): void =>
+        filter({
+          q: props.hideSearch ? query.q : undefined,
+          category: undefined,
+          triggerType: undefined,
+          scope: undefined,
+        })
+    : undefined;
   return (
     <Stack
       as="section"
@@ -99,15 +119,19 @@ export function CuratedPipelineCatalog(
       aria-label="Workflow templates"
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Stack gap="tight" className="min-w-0">
-          <Heading level={2} variant="section">
-            Workflow templates
-          </Heading>
-          <p className="text-s fg-secondary">
-            Ready-made workflows you can add and customize.
-          </p>
-        </Stack>
+        {!props.hideHeading && (
+          <Stack gap="tight" className="min-w-0">
+            <Heading level={2} variant="section">
+              Workflow templates
+            </Heading>
+            <p className="text-s fg-secondary">
+              Ready-made workflows you can add and customize.
+            </p>
+          </Stack>
+        )}
         <Button
+          // `loading` also covers Load more and filter fetches, so it only
+          // disables: a spinner here would claim a refresh that isn't running.
           disabled={props.loading}
           onClick={props.onRefresh}
           data-testid="curated-pipeline-refresh"
@@ -127,7 +151,7 @@ export function CuratedPipelineCatalog(
       />
       {selectedKey ? (
         <div
-          className="min-w-0 flex flex-col gap-4 rounded-lg ring-1 ring-inset ring-line-base bg-base p-4"
+          className="min-w-0 flex flex-col gap-4"
           data-testid="curated-pipeline-detail"
         >
           <Button className="self-start" onClick={props.onBack}>
@@ -137,9 +161,11 @@ export function CuratedPipelineCatalog(
             <LaunchAvailabilityControl {...props.launchAvailability} />
           )}
           {props.detailLoading && (
-            <p role="status" className="text-s fg-secondary">
-              Loading workflow preview…
-            </p>
+            <DelayedLoadingPlaceholder slowNote="Still loading workflow preview…">
+              <Skeleton loading label="Loading workflow preview">
+                <CuratedPipelineDetailSummary detail={SAMPLE_DETAIL} />
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           )}
           <ErrorBanner
             errorSource="curated-pipeline-catalog-detail"
@@ -148,36 +174,7 @@ export function CuratedPipelineCatalog(
           />
           {detail && (
             <>
-              <Stack gap="inline" className="min-w-0">
-                <Heading level={3} variant="section" className="break-words">
-                  {detail.name}
-                </Heading>
-                <p className="break-words text-s fg-secondary">
-                  {detail.shortDescription}
-                </p>
-                <p className="break-words text-xs fg-secondary">
-                  {detail.version
-                    ? `Version ${detail.version}`
-                    : `Revision ${detail.revision}`}{' '}
-                  · {detail.jobCount} jobs · {detail.stepCount} steps ·{' '}
-                  {detail.scopes.join(', ')} · {detail.triggerTypes.join(', ')}
-                </p>
-                {detail.authorName && (
-                  <p className="text-s fg-secondary">By {detail.authorName}</p>
-                )}
-                {detail.docsUrl && /^https?:\/\//.test(detail.docsUrl) && (
-                  <TextLink
-                    variant="inline"
-                    size="s"
-                    className="self-start"
-                    href={detail.docsUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Documentation
-                  </TextLink>
-                )}
-              </Stack>
+              <CuratedPipelineDetailSummary detail={detail} />
               {props.onDownload && (
                 <Button
                   className="self-start"
@@ -257,7 +254,7 @@ export function CuratedPipelineCatalog(
                 replace your copy.
               </p>
               {props.importDisabledReason && (
-                <p className="text-s fg-secondary">
+                <p id={importReasonId} className="text-s fg-secondary">
                   {props.importDisabledReason}
                 </p>
               )}
@@ -282,15 +279,20 @@ export function CuratedPipelineCatalog(
                   )}
                 </div>
               ) : (
-                <Button
+                <LoadingButton
                   className="self-start"
                   variant="primary"
-                  disabled={props.importing || !!props.importDisabledReason}
+                  loading={props.importing}
+                  loadingLabel="Adding workflow…"
+                  aria-disabled={props.importDisabledReason ? true : undefined}
+                  aria-describedby={
+                    props.importDisabledReason ? importReasonId : undefined
+                  }
                   onClick={() => props.onImport(detail)}
                   data-testid="curated-pipeline-add"
                 >
-                  {props.importing ? 'Adding workflow…' : 'Add to my workflows'}
-                </Button>
+                  Add to my workflows
+                </LoadingButton>
               )}
             </>
           )}
@@ -310,17 +312,16 @@ export function CuratedPipelineCatalog(
                 data-testid="curated-pipeline-search"
               />
             )}
-            <div className="w-36">
-              <TextInput
-                density="compact"
-                aria-label="Workflow template category"
-                placeholder="Category"
-                value={query.category ?? ''}
-                onChange={(event) =>
-                  filter({ category: event.target.value || undefined })
-                }
-              />
-            </div>
+            <SearchField
+              size="sm"
+              className="w-36"
+              aria-label="Workflow template category"
+              placeholder="Category"
+              value={query.category ?? ''}
+              onValueChange={(next) => filter({ category: next || undefined })}
+              clearLabel="Clear category"
+              clearOnEscape={false}
+            />
             <SettingsSelect
               aria-label="Workflow template trigger"
               options={TRIGGER_FILTER_OPTIONS}
@@ -338,57 +339,44 @@ export function CuratedPipelineCatalog(
               }
             />
           </div>
-          {props.loading && (
-            <p role="status" className="text-s fg-secondary">
-              Loading workflow templates…
-            </p>
+          {props.loading && props.rows.length === 0 && (
+            <DelayedLoadingPlaceholder slowNote="Still loading workflow templates…">
+              <Skeleton loading label="Loading workflow templates">
+                <CuratedPipelineRows rows={SAMPLE_ROWS} />
+              </Skeleton>
+            </DelayedLoadingPlaceholder>
           )}
-          {!props.loading && !props.error && props.rows.length === 0 && (
-            <p className="text-s fg-secondary">
-              No workflow templates match these filters.
-            </p>
-          )}
-          <ul
-            className="divide-y rounded-lg ring-1 ring-inset ring-line-base"
-            data-testid="curated-pipeline-rows"
-          >
-            {props.rows.map((row) => (
-              <li key={row.key} className="flex min-w-0 items-center gap-4 p-4">
-                <div className="min-w-0 flex-1 flex flex-col gap-2">
-                  <Stack gap="tight">
-                    <Heading level={3} variant="title" className="break-words">
-                      {row.name}
-                    </Heading>
-
-                    <p className="break-words text-s fg-secondary">
-                      {row.shortDescription}
-                    </p>
-                  </Stack>
-
-                  <p className="break-words text-xs fg-secondary">
-                    {row.jobCount} jobs · {row.stepCount} steps ·{' '}
-                    {row.categories.join(', ') || 'General'} ·{' '}
-                    {row.scopes.join(', ')}
-                  </p>
-                </div>
-                <Button
-                  onClick={() => props.onSelect(row)}
-                  data-testid={`curated-pipeline-preview-${row.key}`}
-                  aria-label={`Preview ${row.name}`}
-                >
-                  Preview
-                </Button>
-              </li>
+          {!props.loading &&
+            !props.error &&
+            props.rows.length === 0 &&
+            (clearFilters ? (
+              <SearchEmptyState
+                title="No workflow templates match these filters."
+                actionLabel="Clear filters"
+                onAction={clearFilters}
+              />
+            ) : (
+              <p className="text-s">
+                <EmptyStateText
+                  title="No workflow templates match these filters."
+                  tone="secondary"
+                />
+              </p>
             ))}
-          </ul>
+          {props.rows.length > 0 && (
+            <CuratedPipelineRows rows={props.rows} onSelect={props.onSelect} />
+          )}
           {props.nextCursor && (
             <Button
               className="self-start"
-              disabled={props.loading}
+              aria-busy={props.loading || undefined}
+              aria-disabled={props.loading || undefined}
               onClick={props.onLoadMore}
               data-testid="curated-pipeline-load-more"
             >
-              Load more templates
+              <BusyLabel busy={props.loading} busyText="Loading templates…">
+                Load more templates
+              </BusyLabel>
             </Button>
           )}
         </>
@@ -416,13 +404,151 @@ function LaunchAvailabilityControl({
           ? 'Enabled. It appears when you run a workflow.'
           : 'Disabled. It is hidden when you run a workflow.'}
       </p>
-      <Button
-        disabled={pending}
+      <LoadingButton
+        loading={pending}
+        loadingLabel={enabled ? 'Disabling…' : 'Enabling…'}
         onClick={() => onChange(!enabled)}
         data-testid="curated-pipeline-toggle-enabled"
       >
         {enabled ? 'Disable workflow' : 'Enable workflow'}
-      </Button>
+      </LoadingButton>
     </div>
+  );
+}
+
+type CuratedPipelineRowFields = Pick<
+  CuratedPipelineSummary,
+  | 'key'
+  | 'name'
+  | 'shortDescription'
+  | 'jobCount'
+  | 'stepCount'
+  | 'categories'
+  | 'scopes'
+>;
+
+type CuratedPipelineDetailFields = Pick<
+  CuratedPipelineDetail,
+  | 'name'
+  | 'shortDescription'
+  | 'version'
+  | 'revision'
+  | 'jobCount'
+  | 'stepCount'
+  | 'scopes'
+  | 'triggerTypes'
+  | 'authorName'
+  | 'docsUrl'
+>;
+
+/** Sample data for the measured loading skeletons. */
+const SAMPLE_ROWS: readonly CuratedPipelineRowFields[] = [1, 2, 3].map(
+  (index) => ({
+    key: `sample-${index}`,
+    name: 'Review pull request',
+    shortDescription: 'Checks a change and reports what to fix.',
+    jobCount: 2,
+    stepCount: 4,
+    categories: ['General'],
+    scopes: ['worktree'],
+  }),
+);
+
+const SAMPLE_DETAIL: CuratedPipelineDetailFields = {
+  name: 'Review pull request',
+  shortDescription: 'Checks a change and reports what to fix.',
+  version: '1.0.0',
+  revision: 1,
+  jobCount: 2,
+  stepCount: 4,
+  scopes: ['worktree'],
+  triggerTypes: ['dispatch'],
+  authorName: null,
+  docsUrl: null,
+};
+
+function CuratedPipelineDetailSummary({
+  detail,
+}: {
+  detail: CuratedPipelineDetailFields;
+}): JSX.Element {
+  return (
+    <Stack gap="inline" className="min-w-0">
+      <Heading level={3} variant="section" className="break-words">
+        {detail.name}
+      </Heading>
+      <p className="break-words text-s fg-secondary">
+        {detail.shortDescription}
+      </p>
+      <p className="break-words text-xs fg-secondary">
+        {detail.version
+          ? `Version ${detail.version}`
+          : `Revision ${detail.revision}`}{' '}
+        · {detail.jobCount} jobs · {detail.stepCount} steps ·{' '}
+        {detail.scopes.join(', ')} · {detail.triggerTypes.join(', ')}
+      </p>
+      {detail.authorName && (
+        <p className="text-s fg-secondary">By {detail.authorName}</p>
+      )}
+      {detail.docsUrl && /^https?:\/\//.test(detail.docsUrl) && (
+        <TextLink
+          variant="inline"
+          size="s"
+          className="self-start"
+          href={detail.docsUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Documentation
+        </TextLink>
+      )}
+    </Stack>
+  );
+}
+
+function CuratedPipelineRows<Row extends CuratedPipelineRowFields>({
+  rows,
+  onSelect,
+}: {
+  rows: readonly Row[];
+  /** Omitted for the loading skeleton's sample rows. */
+  onSelect?: (row: Row) => void;
+}): JSX.Element {
+  return (
+    <Surface variant="outline">
+      <ul
+        className="divide-y"
+        data-testid={onSelect ? 'curated-pipeline-rows' : undefined}
+      >
+        {rows.map((row) => (
+          <li key={row.key} className="flex min-w-0 items-center gap-4 p-4">
+            <div className="min-w-0 flex-1 flex flex-col gap-2">
+              <Stack gap="tight">
+                <Heading level={3} variant="title" className="break-words">
+                  {row.name}
+                </Heading>
+
+                <p className="break-words text-s fg-secondary">
+                  {row.shortDescription}
+                </p>
+              </Stack>
+
+              <p className="break-words text-xs fg-secondary">
+                {row.jobCount} jobs · {row.stepCount} steps ·{' '}
+                {row.categories.join(', ') || 'General'} ·{' '}
+                {row.scopes.join(', ')}
+              </p>
+            </div>
+            <Button
+              onClick={() => onSelect?.(row)}
+              data-testid={`curated-pipeline-preview-${row.key}`}
+              aria-label={`Preview ${row.name}`}
+            >
+              Preview
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </Surface>
   );
 }

@@ -16,11 +16,13 @@
  * Review text is user data: never logged.
  */
 import { createHash } from 'node:crypto';
+import { app } from 'electron';
 import {
   CORE_PULL_REQUEST_REVIEW_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   REVIEW_APPROVAL_REASONS,
+  REVIEW_PUBLISH_CLIENT_NAME,
   composeCanopyInstructionRegistries,
   type CanopyErrorPayload,
   type ReviewPublishParams,
@@ -42,6 +44,7 @@ import type {
   PipelineHostActionResult,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type { WebCoreBindingOptions } from '../canopy-cloud/web-core-connection';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 const DEFINITIONS = {
   queries: CORE_TRANSPORT_QUERY_DEFINITIONS,
@@ -105,9 +108,8 @@ async function defaultBinding(): Promise<WebCoreBindingOptions> {
   return { ...desktopWebCoreBindingOptions(), isEnabled: () => true };
 }
 
-async function defaultClientVersion(): Promise<string> {
-  const { app } = await import('electron');
-  return app.getVersion();
+function defaultClientVersion(): Promise<string> {
+  return Promise.resolve(app.getVersion());
 }
 
 async function defaultOpenClient(
@@ -119,7 +121,7 @@ async function defaultOpenClient(
     await import('../canopy-cloud/web-core-connection');
   return createCanopyClient({
     connection: await connectWebCore(binding, signal),
-    clientName: 'canopy-desktop-review-publish',
+    clientName: REVIEW_PUBLISH_CLIENT_NAME,
     clientVersion,
     definitions: DEFINITIONS,
     signal,
@@ -131,6 +133,25 @@ function payloadOf(error: unknown): CanopyErrorPayload | null {
     error instanceof CanopyTransportError
     ? error.payload
     : null;
+}
+
+/**
+ * Every `flag_off` answer has a different cause: say which, since the result
+ * can't. A local `capability_unavailable` means the handshake's manifest left
+ * the operation out. Never the review text.
+ */
+function logUnavailable(
+  stage: 'setup' | 'connect' | 'call',
+  error: unknown,
+): void {
+  const payload = payloadOf(error);
+  logMainProcessWarn('[review-publish] Unavailable before publishing', {
+    stage,
+    kind: payload?.kind ?? null,
+    message:
+      payload?.message ??
+      (error instanceof Error ? error.message : String(error)),
+  });
 }
 
 type Attempt =
@@ -172,6 +193,7 @@ async function attempt(
     client = await deps.openClient(binding, clientVersion, deadline);
   } catch (error) {
     // Nothing was sent: a connection that could not be opened.
+    logUnavailable('connect', error);
     return {
       kind: 'answered',
       result: {
@@ -193,6 +215,8 @@ async function attempt(
     const payload = payloadOf(error);
     if (payload === null || LOST_KINDS.has(payload.kind))
       return { kind: 'lost' };
+    if (payload.kind === 'unauthenticated' || NOT_RUN_KINDS.has(payload.kind))
+      logUnavailable('call', error);
     if (payload.kind === 'unauthenticated')
       return {
         kind: 'answered',
@@ -294,8 +318,9 @@ export async function publishReviewOverWebCore(
       resolved.binding(),
       resolved.clientVersion(),
     ]);
-  } catch {
+  } catch (error) {
     // Nothing was sent: no connection could be set up.
+    logUnavailable('setup', error);
     return { status: 'unavailable', reason: 'flag_off' };
   }
   const params: PublishParams = {

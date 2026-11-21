@@ -8,7 +8,7 @@ import {
   type ProjectDeletionDiscardItemProgress,
 } from '../lib/project-deletion-discard-copy';
 import { Button } from './Button';
-import { ConfirmDialog } from './ConfirmDialog';
+import { ConfirmDialog, type ConfirmDialogErrorProps } from './ConfirmDialog';
 import { WorktreeDiscardPathList } from './WorktreeDiscardDialog';
 
 export const PROJECT_DELETION_DISCARD_DIALOG_TEST_ID =
@@ -22,20 +22,22 @@ export interface ProjectDeletionDiscardDialogItem {
   readonly progress: ProjectDeletionDiscardItemProgress;
 }
 
-export interface ProjectDeletionDiscardDialogProps {
+interface ProjectDeletionDiscardDialogBaseProps {
   readonly projectName: string;
   readonly pendingRecovery?: boolean;
   readonly items: readonly ProjectDeletionDiscardDialogItem[];
   readonly interruptedDeletion: boolean;
   readonly earlierDiscarded: readonly string[];
   readonly busy: boolean;
-  /** Why the run stopped; the dialog stays open. */
-  readonly errorMessage: string | null;
   readonly onConfirm: () => void;
   /** Discards one row only; the confirmation stays open with the rest. */
   readonly onDiscardItem?: (worktreeId: string) => void;
   readonly onCancel: () => void;
 }
+
+/** `errorMessage` is why the run stopped; the dialog stays open. */
+export type ProjectDeletionDiscardDialogProps =
+  ProjectDeletionDiscardDialogBaseProps & ConfirmDialogErrorProps;
 
 /** A row the run hasn't finished, so it can still be discarded on its own. */
 function discardable(progress: ProjectDeletionDiscardItemProgress): boolean {
@@ -57,10 +59,10 @@ export function ProjectDeletionDiscardDialog({
   interruptedDeletion,
   earlierDiscarded,
   busy,
-  errorMessage,
   onConfirm,
   onDiscardItem,
   onCancel,
+  ...errorProps
 }: ProjectDeletionDiscardDialogProps): JSX.Element {
   const copy = projectDeletionDiscardCopy({
     items: items.map((item) => ({
@@ -161,7 +163,7 @@ export function ProjectDeletionDiscardDialog({
       busyLabel="Deleting…"
       busy={busy}
       destructive
-      errorMessage={errorMessage}
+      {...errorProps}
       onConfirm={onConfirm}
       onCancel={onCancel}
     />

@@ -22,6 +22,7 @@ import {
   AI_CREDITS_PURCHASE_LABEL,
   NoticeButton,
   resumeAtLabel,
+  USAGE_LIMIT_RESUME_COPY,
   usageLimitMessage,
 } from '@canopy/ui-shared/components';
 import { CreditsNotice, type CreditsNoticeOwner } from '@canopy/ui-app/credits';
@@ -95,10 +96,21 @@ const BUYER_OWNER: CreditsNoticeOwner = { kind: 'personal' };
  */
 export interface UsageLimitScheduleResume {
   onSchedule: () => void;
+  /** Deletes the pending resume, timed or usage check (CAN-7483). */
+  onCancel?: () => void;
   inFlight: boolean;
   disabled: boolean;
   error: string | null;
+  /** A confirmed outcome to announce, such as a canceled resume. */
+  status?: string | null;
   scheduledForLabel: string | null;
+  /**
+   * The pending resume's kind: `reset` resumes at its time; `check` checks
+   * usage then and resumes only once the provider is back.
+   */
+  pendingKind?: 'reset' | 'check' | null;
+  /** A pending check's next time, with its date when not today. */
+  checkAtLabel?: string | null;
 }
 
 interface AiCreditsUsageLimitBannerProps {
@@ -268,6 +280,31 @@ export function AiCreditsUsageLimitBanner({
     }
     noticeRef.current = element;
   }, []);
+
+  // A Resume or Cancel click swaps or disables its own button. When that
+  // leaves focus nowhere, return it to the notice; if the person moved
+  // focus elsewhere meanwhile, leave it there (CAN-7483).
+  const resumeActionFocusPending = useRef(false);
+  const noteResumeActionFocus = useCallback((): void => {
+    const notice = noticeRef.current;
+    resumeActionFocusPending.current =
+      notice !== null && notice.contains(notice.ownerDocument.activeElement);
+  }, []);
+  const resumeTransitionKey = `${scheduleResume?.inFlight === true}|${
+    scheduleResume?.scheduledForLabel ?? ''
+  }|${scheduleResume?.error ?? ''}|${scheduleResume?.status ?? ''}`;
+  useEffect(() => {
+    if (!resumeActionFocusPending.current) return;
+    const notice = noticeRef.current;
+    if (notice === null) return;
+    const active = notice.ownerDocument.activeElement;
+    if (active === null || active === notice.ownerDocument.body) {
+      notice.focus();
+    }
+    if (scheduleResume?.inFlight !== true) {
+      resumeActionFocusPending.current = false;
+    }
+  }, [resumeTransitionKey, scheduleResume?.inFlight]);
 
   // Effective billing overrides stale live routing after a subscription switch.
   // The composer card also hides the notice before the first credits turn.
@@ -567,7 +604,14 @@ export function AiCreditsUsageLimitBanner({
   // owner, 2026-09-17): the sentence names the scheduled time and the
   // schedule button goes away.
   const scheduledFor = scheduleResume?.scheduledForLabel ?? null;
+  const pendingKind =
+    scheduledFor === null ? null : (scheduleResume?.pendingKind ?? 'reset');
   const showScheduleResume = Boolean(scheduleResume) && scheduledFor === null;
+  const showCancelResume =
+    pendingKind !== null && scheduleResume?.onCancel !== undefined;
+  const providerName = banner?.provider === 'codex' ? 'Codex' : 'Claude';
+  const scheduleFeedback =
+    scheduleResume?.error ?? scheduleResume?.status ?? null;
   // Shown only while the purchase CTA is rendered, so it cannot outlive it.
   const visibleHandoff = showPricing ? pendingHandoff : null;
   const handoffCopy =
@@ -711,10 +755,21 @@ export function AiCreditsUsageLimitBanner({
     <span data-testid="chat-input-usage-limit-handoff">
       {handoffCopy.message}
     </span>
+  ) : pendingKind === 'check' ? (
+    <span data-testid="chat-input-usage-limit-scheduled">
+      {USAGE_LIMIT_RESUME_COPY.checking(
+        scheduleResume?.checkAtLabel ?? scheduledFor ?? '',
+        providerName,
+      )}
+    </span>
   ) : scheduledFor ? (
     <span data-testid="chat-input-usage-limit-scheduled">
-      This chat resumes automatically at {scheduledFor}.
+      {USAGE_LIMIT_RESUME_COPY.scheduled(scheduledFor)}
     </span>
+  ) : scheduleResume && resetsLabel === null ? (
+    // Only a host that can wait for usage names the unknown reset; the
+    // mirror keeps the generic message.
+    USAGE_LIMIT_RESUME_COPY.unknownReset(providerName)
   ) : (
     usageLimitMessage(resetsLabel ?? undefined)
   );
@@ -733,14 +788,31 @@ export function AiCreditsUsageLimitBanner({
         arrived={arrived}
         provider={banner.provider === 'codex' ? 'codex' : 'claude'}
         secondaryAction={
-          showScheduleResume && scheduleResume ? (
+          showCancelResume && scheduleResume?.onCancel ? (
             <NoticeButton
               variant="secondary"
-              onClick={scheduleResume.onSchedule}
+              onClick={(): void => {
+                noteResumeActionFocus();
+                scheduleResume.onCancel?.();
+              }}
+              disabled={scheduleResume.inFlight}
+              data-testid="chat-input-usage-limit-cancel-resume"
+            >
+              {USAGE_LIMIT_RESUME_COPY.cancel}
+            </NoticeButton>
+          ) : showScheduleResume && scheduleResume ? (
+            <NoticeButton
+              variant="secondary"
+              onClick={(): void => {
+                noteResumeActionFocus();
+                scheduleResume.onSchedule();
+              }}
               disabled={scheduleResume.inFlight || scheduleResume.disabled}
               data-testid="chat-input-usage-limit-schedule-resume"
             >
-              {resumeAtLabel(resetsLabel ?? undefined)}
+              {resetsLabel !== null
+                ? resumeAtLabel(resetsLabel)
+                : USAGE_LIMIT_RESUME_COPY.resumeWhenBack(providerName)}
             </NoticeButton>
           ) : undefined
         }
@@ -754,10 +826,17 @@ export function AiCreditsUsageLimitBanner({
           ? { dismissLabel: 'Dismiss usage limit notice' }
           : {})}
         dismissTestId="chat-input-usage-limit-dismiss"
-        // Post-action feedback only (a failed schedule); never a standing
-        // subtitle.
-        {...(scheduleResume?.error
-          ? { detail: <div>{scheduleResume.error}</div> }
+        // Post-action feedback only (a failed or canceled resume, or why a
+        // usage check stopped); never a standing subtitle. It sits in the
+        // notice's own polite region.
+        {...(scheduleFeedback
+          ? {
+              detail: (
+                <div data-testid="chat-input-usage-limit-resume-feedback">
+                  {scheduleFeedback}
+                </div>
+              ),
+            }
           : {})}
       >
         {choiceMessage}

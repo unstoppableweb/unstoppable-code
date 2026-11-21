@@ -1,4 +1,5 @@
 import { readFileSync, rmSync } from 'node:fs';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
@@ -180,6 +181,7 @@ async function dispatch(
     chatId: 'chat-1',
     cwd: join(root, 'a'),
     getWindow: (): null => null,
+    interfacePort: windowAgentInterfacePort(() => null),
   };
   const parsed = desktopLegacyActionFamily.parse(action);
   if (!parsed?.ok) throw new Error('The action did not parse');

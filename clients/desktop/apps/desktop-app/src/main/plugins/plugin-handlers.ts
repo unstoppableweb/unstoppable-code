@@ -80,7 +80,10 @@ import {
   uninstallItemCompanions,
 } from './harness-install-runtime';
 import * as service from './plugin-service';
-import { installPluginForPrincipal } from './remote-install-source-gate';
+import {
+  installPluginForPrincipal,
+  storedPluginSourceUrl,
+} from './remote-install-source-gate';
 import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
 import {
   createSharedPlugin,
@@ -225,6 +228,21 @@ export async function installBuiltInPluginForCaller(
   return result;
 }
 
+/** A plugin's source as this computer's marketplace cache records it. */
+async function cachedPluginSource(
+  marketplaceId: string,
+  pluginName: string,
+): Promise<string | undefined> {
+  const { data } = await service.loadMarketplacesForPresentation(
+    undefined,
+    true,
+  );
+  const plugin = data?.marketplaces
+    .find((marketplace) => marketplace.id === marketplaceId)
+    ?.plugins.find((entry) => entry.name === pluginName);
+  return plugin === undefined ? undefined : storedPluginSourceUrl(plugin);
+}
+
 export async function installPluginForCaller(
   request: {
     marketplaceId: string;
@@ -236,7 +254,11 @@ export async function installPluginForCaller(
   options: { readonly asCompanion?: boolean } = {},
 ): Promise<Awaited<ReturnType<typeof service.installPlugin>>> {
   const result = await refreshAfterSuccess('plugins:install-plugin', () =>
-    installPluginForPrincipal(request, service.installPlugin),
+    installPluginForPrincipal(
+      request,
+      service.installPlugin,
+      cachedPluginSource,
+    ),
   );
   // Installed on its own, the plugin is the user's: no item that brought it
   // along as a copy removes it any more.

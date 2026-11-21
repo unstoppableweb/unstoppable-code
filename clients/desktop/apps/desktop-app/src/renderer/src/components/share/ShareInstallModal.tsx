@@ -912,6 +912,7 @@ export function ShareInstallModal({
           {...(offersUninstall(installed)
             ? { onUninstall: handleUninstall }
             : {})}
+          uninstallErrorRecorded={landing.uninstallErrorRecorded}
         />
       );
     }

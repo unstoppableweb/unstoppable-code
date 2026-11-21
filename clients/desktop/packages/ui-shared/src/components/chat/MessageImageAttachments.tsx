@@ -11,7 +11,7 @@ import { flushSync } from 'react-dom';
 import { PlayIcon } from '../../icons/AppIcons';
 import { FileTypeIcon } from '../../icons/FileTypeIcon';
 import { ControlButton } from '../Button';
-import { TILE_CLASS, TILE_PRESENTATION_CLASS } from '../control-button-shared';
+import { TILE_PRESENTATION_CLASS } from '../control-button-shared';
 import { Tooltip } from '../Tooltip';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
@@ -105,7 +105,36 @@ const IMAGE_EDGE_CLASS = `pointer-events-none absolute inset-0 rounded-md ${ATTA
  * its contrast over any frame, in both color modes.
  */
 const PLAY_MARK_CLASS =
-  'pointer-events-none absolute inset-0 m-auto flex size-6 items-center justify-center rounded-full bg-tooltip-inverse fg-tooltip-inverse';
+  'flex items-center justify-center rounded-full bg-tooltip-inverse fg-tooltip-inverse';
+
+const PLAY_MARK_SIZE_CLASS = { sm: 'size-6', md: 'size-8' } as const;
+
+/**
+ * A video's play mark. `sm` (24px) on a 48px or 64px thumbnail, `md` (32px)
+ * on a larger tile (the composer's 120px tile, an attachment grid tile).
+ * `overlay` centres it over the tile, whose box is the positioned parent;
+ * `inline` places it in the flow, above a name when there is no frame.
+ */
+export function MediaPlayMark({
+  size = 'sm',
+  placement = 'overlay',
+}: {
+  readonly size?: 'sm' | 'md';
+  readonly placement?: 'overlay' | 'inline';
+}): JSX.Element {
+  return (
+    <span
+      aria-hidden
+      className={`${PLAY_MARK_CLASS} ${PLAY_MARK_SIZE_CLASS[size]} ${
+        placement === 'overlay'
+          ? 'pointer-events-none absolute inset-0 m-auto'
+          : 'shrink-0'
+      }`}
+    >
+      <PlayIcon size={size === 'sm' ? 'xs' : 'sm'} />
+    </span>
+  );
+}
 
 /** Up to this many tiles show; past it, one fewer and a "+N" tile. */
 const MESSAGE_MEDIA_CAP = 8;
@@ -172,9 +201,10 @@ export function MessageMediaRow({
 /** A pressable tile: the house press, no hover fill. */
 
 /**
- * The one element every tile in the row is: a 64px tile that opens what it
- * shows (a tile, not a button: chat-blocks.md#actions), or the same box as
- * a named picture when nothing can open it.
+ * The one element every attachment tile is: a tile that opens what it shows
+ * (a tile, not a button: chat-blocks.md#actions), or the same box as a named
+ * picture when nothing can open it. A message's 64px row, the media viewer's
+ * strip and an attachment grid all draw their tiles on it.
  */
 function MessageTile({
   onPress,
@@ -184,6 +214,7 @@ function MessageTile({
   presentation,
   hover,
   children,
+  current = false,
   'aria-describedby': describedBy,
 }: {
   readonly onPress: (() => void) | undefined;
@@ -196,15 +227,17 @@ function MessageTile({
     readonly onPointerLeave: () => void;
   };
   readonly children: ReactNode;
+  /** The media viewer's strip: the item on screen. */
+  readonly current?: boolean;
   /** A wrapping `Tooltip` describes the tile through this. */
   readonly 'aria-describedby'?: string;
 }): JSX.Element {
-  const className = `${TILE_CLASS} ${TILE_PRESENTATION_CLASS[presentation]}`;
   return onPress ? (
     <ControlButton
       type="button"
       onClick={onPress}
       aria-label={label}
+      aria-current={current ? 'true' : undefined}
       aria-describedby={describedBy}
       data-testid={testId}
       data-kind={kind}
@@ -223,11 +256,70 @@ function MessageTile({
       data-testid={testId}
       data-kind={kind}
       data-message-tile=""
-      className={className}
+      className={TILE_PRESENTATION_CLASS[presentation]}
       {...hover}
     >
       {children}
     </span>
+  );
+}
+
+/** What a media thumbnail shows: a picture, or a video's first frame. */
+export type MediaThumbnailKind = 'image' | 'video';
+
+/**
+ * One image or video in the media viewer's strip: a 48px square of the
+ * picture (a video's first frame under a play mark) on the message tile's
+ * edge and 6px corner, built on the same tile so the strip and a message's
+ * row are one control. The item on screen carries `aria-current` and a ring
+ * 2px outside its edge in the primary ink, which reads on the viewer's
+ * black; the others dim until hovered. Pure display; the picture and name
+ * are blocked from session replay.
+ */
+export function MediaThumbnail({
+  src,
+  kind,
+  name,
+  label,
+  current,
+  onSelect,
+}: {
+  /** The picture; `null` while it loads or where there is none. */
+  readonly src: string | null;
+  readonly kind: MediaThumbnailKind;
+  /** The file's name; it describes the control. */
+  readonly name: string;
+  /** The control's accessible name, such as "Show image". */
+  readonly label: string;
+  readonly current: boolean;
+  readonly onSelect: () => void;
+}): JSX.Element {
+  const nameId = useId();
+  return (
+    <MessageTile
+      onPress={onSelect}
+      label={label}
+      aria-describedby={nameId}
+      testId="media-viewer-thumbnail"
+      kind={kind}
+      current={current}
+      presentation={current ? 'thumbnail-current' : 'thumbnail'}
+    >
+      {src !== null ? (
+        <img
+          src={src}
+          alt=""
+          draggable={false}
+          decoding="async"
+          className={`${REPLAY_BLOCK_CLASS} size-full object-cover`}
+        />
+      ) : null}
+      {kind === 'video' ? <MediaPlayMark /> : null}
+      <span aria-hidden className={IMAGE_EDGE_CLASS} />
+      <span id={nameId} className={`${REPLAY_BLOCK_CLASS} sr-only`}>
+        {name}
+      </span>
+    </MessageTile>
   );
 }
 
@@ -395,11 +487,7 @@ export function MessageMediaTile({
           className={`${REPLAY_BLOCK_CLASS} h-full w-full object-cover`}
         />
       ) : null}
-      {image.kind === 'video' ? (
-        <span aria-hidden className={PLAY_MARK_CLASS}>
-          <PlayIcon size="xs" />
-        </span>
-      ) : null}
+      {image.kind === 'video' ? <MediaPlayMark /> : null}
       <span aria-hidden className={IMAGE_EDGE_CLASS} />
       <span id={nameId} className={`${REPLAY_BLOCK_CLASS} sr-only`}>
         {image.alt}

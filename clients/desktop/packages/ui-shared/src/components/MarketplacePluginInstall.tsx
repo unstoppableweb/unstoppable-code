@@ -56,7 +56,8 @@ export function MissingPluginsBadge({
   return (
     <Tooltip label={label}>
       <Badge tone="warning" icon={DownloadIcon} data-testid={testId}>
-        {count}
+        <span aria-hidden="true">{count}</span>
+        <span className="sr-only">{label}</span>
       </Badge>
     </Tooltip>
   );
@@ -65,7 +66,7 @@ export function MissingPluginsBadge({
 /**
  * Per-plugin install status cell for the marketplace plugins modal.
  *
- * - installing → spinner
+ * - installing → the install button, busy, with a spinner
  * - needsInstall + error → destructive retry button (message in tooltip)
  * - needsInstall → warning install button
  * - otherwise (installed external or inline) → green check
@@ -78,47 +79,40 @@ export function PluginInstallStatusCell({
   error,
   onInstall,
 }: PluginInstallStatusCellProps): JSX.Element {
-  if (installing) {
+  if (needsInstall || installing) {
+    // One button for both states, so focus stays on it while the install runs.
     return (
-      <span
-        data-testid={`plugin-install-status-${pluginName}`}
-        className="inline-flex justify-end"
-      >
-        <span role="status" aria-label="Installing plugin">
-          <RefreshSpinner spinning />
-        </span>
-      </span>
-    );
-  }
-
-  if (needsInstall) {
-    const button = (
-      <Button
-        variant={error ? 'ghost-destructive' : 'ghost'}
-        size="sm"
-        iconOnly
-        data-testid={`plugin-install-${pluginName}`}
-        disabled={disabled}
-        onClick={(e) => {
-          e.stopPropagation();
-          if (disabled) {
-            return;
+      <Tooltip label={error} clamp={false} suppressed={!error || installing}>
+        <Button
+          variant={error && !installing ? 'ghost-destructive' : 'ghost'}
+          size="sm"
+          iconOnly
+          data-testid={
+            installing
+              ? `plugin-install-status-${pluginName}`
+              : `plugin-install-${pluginName}`
           }
-          onInstall();
-        }}
-        aria-label={
-          error ? `Try again to install ${pluginName}` : `Install ${pluginName}`
-        }
-      >
-        <DownloadIcon />
-      </Button>
-    );
-    return error ? (
-      <Tooltip label={error} clamp={false}>
-        {button}
+          disabled={disabled && !installing}
+          aria-disabled={installing || undefined}
+          aria-busy={installing || undefined}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (disabled) {
+              return;
+            }
+            onInstall();
+          }}
+          aria-label={
+            installing
+              ? `Installing ${pluginName}`
+              : error
+                ? `Try again to install ${pluginName}`
+                : `Install ${pluginName}`
+          }
+        >
+          {installing ? <RefreshSpinner spinning /> : <DownloadIcon />}
+        </Button>
       </Tooltip>
-    ) : (
-      button
     );
   }
 
@@ -126,6 +120,7 @@ export function PluginInstallStatusCell({
     <span
       data-testid={`plugin-install-status-${pluginName}`}
       className="inline-flex justify-end fg-success"
+      role="img"
       aria-label="Installed"
     >
       <CheckIcon />
@@ -166,8 +161,10 @@ export function BulkInstallButton({
             onClick={onClick}
           >
             {installing ? <StopIcon /> : <DownloadIcon />}
-            {installing && progress
-              ? `Installing ${progress.done}/${progress.total}… (cancel)`
+            {installing
+              ? progress
+                ? `Installing ${progress.done}/${progress.total}… (cancel)`
+                : 'Installing… (cancel)'
               : `Install ${missingCount} ${
                   missingCount === 1 ? 'plugin' : 'plugins'
                 }`}

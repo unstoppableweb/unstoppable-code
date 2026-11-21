@@ -6,7 +6,9 @@ import {
   useRef,
   type FormEvent,
   type JSX,
+  type KeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import type {
   LedgerFileRef,
@@ -16,11 +18,13 @@ import type {
 import { countLedgerCodePoints } from '../../lib/ledger-display';
 import { Button } from '../Button';
 import { TextArea, TextInput } from '../Field';
-import { FormField } from '../FormField';
+import { Fieldset } from '../Fieldset';
+import { FORM_FIELD_LABEL_CLASS, FormField } from '../FormField';
 import { Notice } from '../Notice';
 import { LedgerEntryTypePicker } from './LedgerEntryTypePicker';
 import { LedgerStatusControl } from './LedgerStatusControl';
 import { Heading } from '../Heading';
+import { useMediaQuery } from '../useMediaQuery';
 
 /** The Ledger's limits, in code points and items. */
 export const LEDGER_FORM_LIMITS = {
@@ -87,9 +91,10 @@ function Counter({
 }): JSX.Element {
   const count = countLedgerCodePoints(value);
   return (
+    // Not a live region: the field's description reads it on focus, and a
+    // live count would be read out after every keystroke.
     <span
       id={id}
-      aria-live="polite"
       className={`text-2xs tabular-nums ${count > limit ? 'fg-destructive' : 'fg-tertiary'}`}
     >
       {`${count}/${limit}`}
@@ -133,10 +138,43 @@ export function LedgerEntryForm({
 }: LedgerEntryFormProps): JSX.Element {
   const id = useId();
   const contentRef = useRef<HTMLTextAreaElement>(null);
-  const shouldFocusContentOnMount = useRef(autoFocusContent);
+  // Never on touch: focusing would open the on-screen keyboard unasked.
+  const coarsePointer = useMediaQuery('(pointer: coarse)');
+  const shouldFocusContentOnMount = useRef(autoFocusContent && !coarsePointer);
   useEffect(() => {
     if (shouldFocusContentOnMount.current) contentRef.current?.focus();
   }, []);
+
+  // A Remove unmounts its own row, so focus moves to the row that took its
+  // place, or to the group's first control, never to the page.
+  const highlightsRef = useRef<HTMLFieldSetElement>(null);
+  const filesRef = useRef<HTMLFieldSetElement>(null);
+  const focusAfterRemove = useRef<{
+    group: RefObject<HTMLFieldSetElement | null>;
+    index: number;
+  } | null>(null);
+  useEffect(() => {
+    const pending = focusAfterRemove.current;
+    if (pending === null) return;
+    focusAfterRemove.current = null;
+    const group = pending.group.current;
+    if (group === null) return;
+    const removes = group.querySelectorAll<HTMLElement>('[data-ledger-remove]');
+    const target =
+      removes[Math.min(pending.index, removes.length - 1)] ??
+      group.querySelector<HTMLElement>('button, input');
+    target?.focus();
+  }, [value.highlights, value.referenceFiles]);
+
+  // Save by keyboard from the multi-line Content, as the correction box does.
+  const onContentKeyDown = (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ): void => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  };
 
   const titleCount = countLedgerCodePoints(value.title);
   const contentCount = countLedgerCodePoints(value.content);
@@ -241,7 +279,9 @@ export function LedgerEntryForm({
           <TextInput
             {...control}
             value={value.title}
-            disabled={saving}
+            // Read-only, not disabled: disabling the focused field while
+            // saving would drop keyboard focus to the page.
+            readOnly={saving}
             data-testid="ledger-entry-form-title"
             onChange={(event) => onChange({ title: event.target.value })}
           />
@@ -265,9 +305,10 @@ export function LedgerEntryForm({
             {...control}
             ref={contentRef}
             value={value.content}
-            disabled={saving}
+            readOnly={saving}
             rows={5}
             data-testid="ledger-entry-form-content"
+            onKeyDown={onContentKeyDown}
             onChange={(event) => onChange({ content: event.target.value })}
           />
         )}
@@ -280,15 +321,21 @@ export function LedgerEntryForm({
           {() => ownerControl(`${id}-owner`)}
         </FormField>
       )}
-      <fieldset className="flex flex-col gap-1.5" disabled={saving}>
-        <legend className="pb-1 text-xs fg-secondary">
-          Highlights <span className="fg-tertiary">(optional)</span>
-        </legend>
+      <Fieldset
+        ref={highlightsRef}
+        gap="control"
+        legend={
+          <span className={FORM_FIELD_LABEL_CLASS}>
+            Highlights <span className="fg-tertiary">(optional)</span>
+          </span>
+        }
+      >
         {value.highlights.map((highlight, index) => (
           <div key={index} className="flex items-center gap-2">
             <TextInput
               aria-label={`Highlight ${index + 1}`}
               value={highlight}
+              readOnly={saving}
               data-testid="ledger-entry-form-highlight"
               onChange={(event) =>
                 onChange({
@@ -304,13 +351,16 @@ export function LedgerEntryForm({
               variant="ghost"
               size="sm"
               aria-label={`Remove highlight ${index + 1}`}
-              onClick={() =>
+              disabled={saving}
+              data-ledger-remove
+              onClick={() => {
+                focusAfterRemove.current = { group: highlightsRef, index };
                 onChange({
                   highlights: value.highlights.filter(
                     (_existing, position) => position !== index,
                   ),
-                })
-              }
+                });
+              }}
             >
               Remove
             </Button>
@@ -322,6 +372,7 @@ export function LedgerEntryForm({
               type="button"
               variant="ghost"
               size="sm"
+              disabled={saving}
               data-testid="ledger-entry-form-add-highlight"
               onClick={() =>
                 onChange({ highlights: [...value.highlights, ''] })
@@ -331,12 +382,17 @@ export function LedgerEntryForm({
             </Button>
           </div>
         )}
-      </fieldset>
+      </Fieldset>
       {referencesFiles && (
-        <fieldset className="flex flex-col gap-1.5" disabled={saving}>
-          <legend className="pb-1 text-xs fg-secondary">
-            Files <span className="fg-tertiary">(optional)</span>
-          </legend>
+        <Fieldset
+          ref={filesRef}
+          gap="control"
+          legend={
+            <span className={FORM_FIELD_LABEL_CLASS}>
+              Files <span className="fg-tertiary">(optional)</span>
+            </span>
+          }
+        >
           {value.referenceFiles.map((file, index) => (
             <div
               key={`${file.rootId}:${file.path}`}
@@ -353,6 +409,7 @@ export function LedgerEntryForm({
                 aria-label={`Line in ${file.path} (optional)`}
                 inputMode="numeric"
                 placeholder="Line"
+                readOnly={saving}
                 value={
                   file.startLine === undefined ? '' : String(file.startLine)
                 }
@@ -373,13 +430,16 @@ export function LedgerEntryForm({
                 variant="ghost"
                 size="sm"
                 aria-label={`Remove ${file.path}`}
-                onClick={() =>
+                disabled={saving}
+                data-ledger-remove
+                onClick={() => {
+                  focusAfterRemove.current = { group: filesRef, index };
                   onChange({
                     referenceFiles: value.referenceFiles.filter(
                       (_existing, position) => position !== index,
                     ),
-                  })
-                }
+                  });
+                }}
               >
                 Remove
               </Button>
@@ -387,7 +447,7 @@ export function LedgerEntryForm({
           ))}
           {value.referenceFiles.length < LEDGER_FORM_LIMITS.referenceFiles &&
             fileSearch}
-        </fieldset>
+        </Fieldset>
       )}
       <div className="flex items-center justify-end gap-2">
         {saveBlockedReason !== null && (

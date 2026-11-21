@@ -34,7 +34,7 @@ export interface OrchestratorSettingsModalProps {
   readonly onAutoArchiveDaysChange: (value: number) => void;
   readonly showSave: boolean;
   readonly saveDisabled: boolean;
-  readonly saveLabel: string;
+  readonly saving: boolean;
   readonly onSave: () => void;
   readonly error?: ReactNode;
   readonly footerError?: ReactNode;
@@ -68,7 +68,7 @@ export function OrchestratorSettingsModal({
   onAutoArchiveDaysChange,
   showSave,
   saveDisabled,
-  saveLabel,
+  saving,
   onSave,
   error,
   footerError,
@@ -143,7 +143,8 @@ export function OrchestratorSettingsModal({
       {showSave && (
         <OrchestratorSettingsFooter
           disabled={saveDisabled}
-          label={saveLabel}
+          label="Save"
+          busy={saving}
           onSave={onSave}
           testId={`${prefix}-settings-save`}
           error={footerError}

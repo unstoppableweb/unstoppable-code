@@ -572,6 +572,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   historySuspended = false,
   chatId,
   group,
+  outputlessAutoResume,
   pendingTimer = false,
   starting = false,
   startingSetup,
@@ -621,6 +622,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   historySuspended?: boolean;
   chatId?: string;
   group: TurnGroup;
+  outputlessAutoResume?: boolean;
   pendingTimer?: boolean;
   /**
    * The turn is a just-submitted first send: until its first visible output
@@ -1945,6 +1947,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       {!hideUserMessage && (
         <ChatMessageItem
           message={group.userMessage}
+          outputlessAutoResume={outputlessAutoResume}
           appliedMemory={appliedMemory}
           chatPendingQuestions={chatPendingQuestions}
           onResetToPoint={userResetHandler}

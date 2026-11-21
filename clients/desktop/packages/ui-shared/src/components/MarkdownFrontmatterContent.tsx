@@ -1,9 +1,11 @@
 import { type JSX } from 'react';
 
 import { Markdown, type MarkdownProps } from './Markdown';
-import { ErrorBanner } from './StatusBlocks';
+import { EmptyStateText, ErrorBanner } from './StatusBlocks';
 import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { DocumentProse } from './DocumentProse';
+import { Divider } from './Surface';
 import {
   FrontmatterBlock,
   visibleFrontmatterEntries,
@@ -26,6 +28,8 @@ export interface MarkdownFrontmatterContentProps {
   } | null;
   /** Text shown when both `frontmatter` is empty and `body.trim()` is empty. */
   readonly emptyText: string;
+  /** Offered on the error banner as `Try again`. */
+  readonly onRetry?: () => void;
 }
 
 /**
@@ -41,6 +45,7 @@ export function MarkdownFrontmatterContent({
   errorDetails,
   content,
   emptyText,
+  onRetry,
 }: MarkdownFrontmatterContentProps): JSX.Element {
   const frontmatterEntries = content
     ? visibleFrontmatterEntries(content.frontmatter)
@@ -49,6 +54,7 @@ export function MarkdownFrontmatterContent({
   return (
     <>
       {loading && (
+        // A spinner, not a measured skeleton: the body's markdown shape is unknown until it loads.
         <DelayedLoadingPlaceholder>
           <CenteredLoadingSpinner spacing="section" />
         </DelayedLoadingPlaceholder>
@@ -57,20 +63,23 @@ export function MarkdownFrontmatterContent({
         errorSource="markdown-frontmatter"
         error={error}
         {...(errorDetails ? { details: errorDetails } : {})}
+        onRetry={onRetry}
       />
       {content && !loading && (
         <div className="flex flex-col gap-4">
           {frontmatterEntries.length > 0 && (
             <FrontmatterBlock frontmatter={content.frontmatter} />
           )}
-          {frontmatterEntries.length > 0 && content.body.trim() && <hr />}
+          {frontmatterEntries.length > 0 && content.body.trim() && <Divider />}
           {content.body.trim() && (
-            <div className="prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 canopy-compact-prose prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5">
+            <DocumentProse variant="archive">
               <Markdown options={markdownOptions}>{content.body}</Markdown>
-            </div>
+            </DocumentProse>
           )}
           {!content.body.trim() && frontmatterEntries.length === 0 && (
-            <p className="text-s fg-secondary text-center py-8">{emptyText}</p>
+            <p className="py-8 text-center text-s">
+              <EmptyStateText title={emptyText} tone="secondary" />
+            </p>
           )}
         </div>
       )}

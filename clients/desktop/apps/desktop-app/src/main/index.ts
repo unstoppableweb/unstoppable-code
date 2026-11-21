@@ -4,6 +4,7 @@ import './lifecycle/build-storage-startup';
 import './local-only/install-egress-guard';
 import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
 import { startWorkEntryAutoDeleteScheduler } from './lib/work-entry-auto-delete';
+import { windowAgentInterfacePort } from './agents/agent-interface-port';
 import { reportStartupStepFailure, runStartupStep } from './lib/startup-step';
 import { replayHookChatPlaceholders } from './lib/hook-chat-placeholders';
 import { BRAND } from '@canopy/brand/current';
@@ -547,6 +548,7 @@ import {
 import { validateId } from './lib/validation';
 import { runRequestedW5Recovery } from './lib/w5-recovery-startup';
 import { admitDesktopW5Host } from './lib/w5-host-admission';
+import { disposeLinuxDaemonStartDiagnostics } from './canopy-runtime/electron-daemon-host';
 import {
   cancelPendingW5FlipHandoff,
   disposeW5FlipHandoff,
@@ -702,6 +704,7 @@ import {
   startCloudProjectSetupSweep,
   stopCloudProjectSetupSweep,
 } from './cloud-projects/project-setup-host';
+import { startProductionUsageAnalyticsOptOutPing } from './usage-analytics-optout/host';
 import {
   disposeProductActivityReporter,
   initializeProductActivityReporter,
@@ -957,6 +960,9 @@ let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
 let disposeLocalModelGatewayPolicySync: (() => void) | null = null;
 let disposeLocalModelGatewayMigration: (() => void) | null = null;
+let usageAnalyticsOptOutPing: ReturnType<
+  typeof startProductionUsageAnalyticsOptOutPing
+> | null = null;
 let childToolsSettlement: ReturnType<typeof startChildToolsSettlement> | null =
   null;
 let disposeProviderPluginBackfill: (() => void) | null = null;
@@ -1696,14 +1702,16 @@ function installE2eChatEventIngestor(): void {
         }
         const { dispatchWorktreeAction } =
           await import('./canopy-tools/worktree-actions');
+        const getWindow = isBotProjectId(input.destination.projectId)
+          ? getAppAdvisorWindow
+          : (): BrowserWindow | null => mainWindow;
         return dispatchWorktreeAction(
           { action: input.action },
           {
             ...input.destination,
             cwd: app.getPath('userData'),
-            getWindow: isBotProjectId(input.destination.projectId)
-              ? getAppAdvisorWindow
-              : (): BrowserWindow | null => mainWindow,
+            getWindow,
+            interfacePort: windowAgentInterfacePort(getWindow),
           },
         );
       },
@@ -2210,7 +2218,10 @@ async function cleanupRuntimeResources(
     return runtimeCleanupPromise;
   }
 
+  // Set before any await: the usage-analytics opt-out ping reads it before
+  // every step, so no new request starts once quit begins.
   appIsQuitting = true;
+  disposeLinuxDaemonStartDiagnostics();
   workspaceStartup.cancel();
   stopPreferencesGenerationStamp();
   stopSettingsWriteRefreshRetries();
@@ -2660,6 +2671,12 @@ async function cleanupRuntimeResources(
       .catch(() => undefined);
     // Unsubscribes from observability and cancels pending signal retries.
     disposeProductActivityReporter();
+    // Scheduling halted when quit began (`appIsQuitting`); this waits for a
+    // request already sent and the marker write after its 2xx, so a relaunch
+    // the same UTC day doesn't count again.
+    await stages.bestEffort('usage-analytics-optout-ping', () =>
+      usageAnalyticsOptOutPing?.stop(),
+    );
     // Drain pending telemetry before observability disposes its sidecars.
     await stages
       .run('telemetry-outbox', () => getTelemetrySyncService().dispose())
@@ -5292,6 +5309,11 @@ void app.whenReady().then(async (): Promise<void> => {
   await initializeStartupUsageDataPolicy();
   observeNativeCrashPolicy();
   startDesktopInstrumentation();
+  // Waits for the policy to settle on the selected context, then sends at
+  // most one anonymous ping per UTC day while Usage analytics is off.
+  usageAnalyticsOptOutPing ??= startProductionUsageAnalyticsOptOutPing(
+    () => appIsQuitting,
+  );
   childToolsSettlement ??= startChildToolsSettlement();
   setCodexGatewayProxyDiagnosticSink((record) => {
     getObservabilityService().recordSessionDiagnostic(record);

@@ -3,10 +3,10 @@
 /**
  * Client-side dismissal for the web data-sharing opt-in hints (CAN-3383).
  *
- * Modeled on `connect-device-cta-dismissal.ts`. A dismissal is keyed by the
- * viewer, the organization, and the feature, so two accounts sharing one
- * browser never inherit each other's choice, and dismissing the feed hint in
- * one organization says nothing about another organization or feature.
+ * A dismissal is keyed by the viewer, the organization, and the feature, so
+ * two accounts sharing one browser never inherit each other's choice, and
+ * dismissing the feed hint in one organization says nothing about another
+ * organization or feature.
  *
  * Everything here is best-effort. Storage access is wrapped in `try/catch`
  * (private mode and sandboxed frames throw) and an unreadable store reads as

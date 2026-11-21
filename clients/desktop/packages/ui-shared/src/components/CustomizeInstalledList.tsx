@@ -1,6 +1,9 @@
 import { Fragment, type JSX, type KeyboardEvent, type ReactNode } from 'react';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
-import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
+import {
+  CUSTOMIZE_ROW_GRID_CLASS,
+  gridRowNeighbor,
+} from '../lib/customize-grid';
 import { Button } from './Button';
 
 export interface CustomizeInstalledListProps {
@@ -20,8 +23,9 @@ function moveFocus(event: KeyboardEvent<HTMLUListElement>): void {
     ),
   );
   const index = rows.findIndex((row) => row === document.activeElement);
-  const next = rows[index + (event.key === 'ArrowDown' ? 1 : -1)];
-  if (index === -1 || !next) return;
+  if (index === -1) return;
+  const next = gridRowNeighbor(rows, index, event.key === 'ArrowDown' ? 1 : -1);
+  if (!next) return;
   event.preventDefault();
   next.focus();
 }

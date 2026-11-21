@@ -35,6 +35,12 @@ import type {
   RemoteControlChatSendPayload,
   RemoteControlEditorFileMentionOption,
 } from '@canopy/protocol/remote-control/shell';
+import { extractIpcErrorMessage } from '@canopy/protocol/app-errors/ipc-rejection';
+import { CHANNEL_UNAVAILABLE_CODE } from '@canopy/protocol/remote-control';
+import {
+  isSendWhileRunning,
+  isSteerTurnId,
+} from '@canopy/protocol/remote-control/shell';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import { isThinkingLevel } from '@canopy/protocol/thinking';
 import {
@@ -46,6 +52,10 @@ import {
   createOrchestratorHandlers,
   type OrchestratorHandlers,
 } from './orchestrator';
+import {
+  createChatRecoveryHandlers,
+  type ChatRecoveryHandlers,
+} from './chat-recovery';
 import { joinRootPath } from './projections';
 import type {
   WireChatCancelResult,
@@ -112,7 +122,13 @@ const DEFAULT_THINKING_UNAVAILABLE = 'Choose a thinking level for this chat.';
 const UNKNOWN_MODEL = "This model isn't available on this computer.";
 const CLOSE_BLOCKED =
   'The chat cannot be closed while work is active or awaiting review.';
+const INVALID_SEND_INTENT = "This message can't be sent as written.";
 const STANDALONE_NOT_FOUND = 'This chat is no longer available.';
+// A computer on an older release refuses `work-entries:delete` from a browser
+// (CAN-7438); updating it is the only fix, so the archive offers no retry.
+// Matches the archived overview's copy for the same case (CAN-5986).
+const STANDALONE_ARCHIVE_HOST_OUTDATED =
+  'Update the desktop app to archive this chat.';
 
 /** Runtime statuses during which a tab may not close (as Portal refuses). */
 const ACTIVE_RUNTIME_STATUSES: ReadonlySet<string> = new Set([
@@ -202,6 +218,16 @@ const isStandaloneSnapshot = reply<{
         typeof chat.projectLocalId === 'string',
     ),
 );
+
+/** The computer does not serve this channel to this controller (an older release). */
+export function isChannelUnavailable(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === CHANNEL_UNAVAILABLE_CODE
+  );
+}
 
 function unsupported(operation: string, message: string): Promise<never> {
   return Promise.reject(new UnsupportedOperationError(operation, message));
@@ -441,6 +467,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
   readonly uploadAttachment: (
     args: CommandMap['chat.attachments.upload']['args'],
   ) => Promise<CommandMap['chat.attachments.upload']['result']>;
+  readonly recovery: ChatRecoveryHandlers;
 } {
   const { channels, randomId } = deps;
   const references = createReferenceRegistry();
@@ -485,6 +512,15 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
     });
     return { commandId, reply };
   };
+
+  // Plan-exit approval and failed-turn retry build their own sends: their
+  // fields come from the computer's transcript and tracked plan, not from
+  // attachments or references this client minted.
+  const recovery = createChatRecoveryHandlers({
+    channels,
+    now: deps.now,
+    chatCommand,
+  });
 
   /** One revisioned chat change, as a receipt. */
   const chatChange = async (
@@ -545,6 +581,28 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
     )
       return null;
     return { projectId: chat.projectLocalId, worktreeId: chat.workEntryId };
+  };
+
+  /**
+   * A standalone chat as the computer's session snapshot lists it. The
+   * snapshot lists live chats only, so an archived chat reads as absent.
+   */
+  const standaloneListing = async (
+    projectLocalId: string,
+    chatId: string,
+  ): Promise<{ readonly workEntryId?: string } | null> => {
+    const snapshot = await channels.invoke(
+      C.desktopSessionSnapshot,
+      isStandaloneSnapshot,
+      {},
+    );
+    return (
+      snapshot.standaloneChats.find(
+        (candidate) =>
+          candidate.localId === chatId &&
+          candidate.projectLocalId === projectLocalId,
+      ) ?? null
+    );
   };
 
   /** Resolve this client's references for a send; unknown ids never reach the computer. */
@@ -630,12 +688,32 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
           reply.error ?? "The computer didn't apply this change.",
         );
 
+  /**
+   * A refusal for a send intent the host would reject, checked before the send
+   * creates a chat or Work Entry so a refused send leaves nothing behind.
+   */
+  const invalidSendIntent = (
+    intent: Pick<
+      RemoteControlChatSendPayload,
+      'sendWhileRunning' | 'steerTurnId'
+    >,
+  ): ShellCommandReceipt | null =>
+    (intent.sendWhileRunning !== undefined &&
+      !isSendWhileRunning(intent.sendWhileRunning)) ||
+    (intent.steerTurnId !== undefined && !isSteerTurnId(intent.steerTurnId))
+      ? refusedReceipt(randomId(), INVALID_SEND_INTENT)
+      : null;
+
   const sendMessage = async (
     target: { readonly projectId: string; readonly worktreeId: string },
     input: {
       readonly chatId: string;
       readonly userMessageId: string;
       readonly text: string;
+      readonly intent: Pick<
+        RemoteControlChatSendPayload,
+        'sendWhileRunning' | 'steerTurnId'
+      >;
       readonly fileReferences: readonly Record<string, unknown>[] | undefined;
       readonly fields: Record<string, unknown>;
     },
@@ -646,6 +724,13 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
       userMessageId: input.userMessageId,
       text: input.text,
       ...input.fields,
+      // Worktree and standalone sends carry the intent unchanged (CAN-7349).
+      ...(input.intent.sendWhileRunning === undefined
+        ? {}
+        : { sendWhileRunning: input.intent.sendWhileRunning }),
+      ...(input.intent.steerTurnId === undefined
+        ? {}
+        : { steerTurnId: input.intent.steerTurnId }),
       ...(input.fileReferences === undefined
         ? {}
         : { fileReferences: input.fileReferences }),
@@ -852,6 +937,8 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
 
   const commands: ShellCommandHandlers = {
     'chat.send': async ({ payload }) => {
+      const invalidIntent = invalidSendIntent(payload);
+      if (invalidIntent !== null) return invalidIntent;
       const attachmentPaths = resolveAttachments(
         payload.cloudAttachments,
         payload.attachmentPaths,
@@ -891,6 +978,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         chatId,
         userMessageId: payload.userMessageId ?? randomId(),
         text: payload.text,
+        intent: payload,
         fileReferences,
         fields: {
           // A worktree send runs on the chat's own model, as Portal's
@@ -1126,6 +1214,8 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
       );
     },
     'standaloneChat.send': async ({ payload }) => {
+      const invalidIntent = invalidSendIntent(payload);
+      if (invalidIntent !== null) return invalidIntent;
       const attachmentPaths = resolveAttachments(
         payload.cloudAttachments,
         undefined,
@@ -1189,6 +1279,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         chatId: payload.chatId,
         userMessageId: payload.userMessageId ?? randomId(),
         text: payload.message,
+        intent: payload,
         fileReferences,
         fields: {
           // Cowork sends carry their model, as Portal's executor sends them.
@@ -1256,6 +1347,76 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
         chatId: payload.chatId,
       });
       return acceptedReceipt(commandId, {});
+    },
+    // A locked archive of the chat's Work Entry (CAN-7438), as the desktop
+    // sidebar's Archive does; restore stays on the computer's Archived and
+    // deleted list. The result matches the retired Portal archive's
+    // (CAN-6419): a durable success, never a queued acceptance.
+    'standaloneChat.archive': async ({ payload }) => {
+      const { chatId, projectLocalId, workEntryId } = payload;
+      const archived = (): ShellCommandReceipt =>
+        acceptedReceipt(
+          randomId(),
+          { chatId, projectLocalId, workEntryId, alreadyArchived: true },
+          chatId,
+        );
+      // The snapshot lists live chats only: an archived chat leaves it, and
+      // its Work Entry shows as a locked item (`state: 'archived'`) in the
+      // project's archived list, keyed by the Work Entry id.
+      const lockedArchive = async (): Promise<boolean> => {
+        const list = await channels.invoke(
+          C.workEntriesListArchived,
+          recordWithArray<{ readonly items: readonly unknown[] }>('items'),
+          { projectLocalId },
+        );
+        return list.items.some(
+          (item) =>
+            isRecord(item) &&
+            item.id === workEntryId &&
+            item.state === 'archived',
+        );
+      };
+      const listed = await standaloneListing(projectLocalId, chatId);
+      if (listed === null) {
+        // Absent: already archived (a retry, or archived on the computer
+        // since the row was read), or gone.
+        return (await lockedArchive().catch(() => false))
+          ? archived()
+          : refusedReceipt(randomId(), STANDALONE_NOT_FOUND);
+      }
+      if (listed.workEntryId !== workEntryId) {
+        // The row now names a restored or rebound Work Entry.
+        return refusedReceipt(randomId(), STANDALONE_NOT_FOUND);
+      }
+      const commandId = randomId();
+      try {
+        await channels.invokeVoid(C.workEntriesDelete, {
+          projectId: projectLocalId,
+          entryId: workEntryId,
+          lockAfterArchive: true,
+        });
+      } catch (error) {
+        if (isChannelUnavailable(error)) {
+          return refusedReceipt(commandId, STANDALONE_ARCHIVE_HOST_OUTDATED);
+        }
+        // The entry may have been archived on the computer after the read
+        // above; the delete then refuses an unknown entry. Answer that as
+        // already archived, never as an error.
+        const archivedMeanwhile = await standaloneListing(
+          projectLocalId,
+          chatId,
+        )
+          .then((row) => (row === null ? lockedArchive() : false))
+          .catch(() => false);
+        if (archivedMeanwhile) return archived();
+        return refusedReceipt(commandId, extractIpcErrorMessage(error));
+      }
+      await channels.invokeVoid(C.desktopSessionSnapshotInvalidate);
+      return acceptedReceipt(
+        commandId,
+        { chatId, projectLocalId, workEntryId },
+        chatId,
+      );
     },
     'standaloneChat.setModel': async ({ payload }) => {
       const target = await standaloneTarget(
@@ -1483,5 +1644,6 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
       subscribe: orchestrator.subscribe,
     },
     uploadAttachment,
+    recovery,
   };
 }

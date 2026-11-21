@@ -53,6 +53,7 @@ import {
 } from './sidebar-item-classes';
 import { Tooltip } from './Tooltip';
 import { ToggleSwitch } from './ToggleSwitch';
+import { useRowToggleClick } from './settings/SettingsRows';
 import { useSidebarHeaderRest } from '../lib/useSidebarHeaderRest';
 
 export function sidebarItemGroupColor(color: SidebarItemGroupColor): string {
@@ -229,12 +230,13 @@ export function SidebarItemGroupHeader({
         <span
           id={`${contentId}-label`}
           className={labelHidden ? 'sr-only' : 'truncate'}
+          title={labelHidden ? undefined : group.name}
         >
           {labelHidden ? `${group.name}, ${countLabel}` : label}
         </span>
         {group.collapsed && !menuOpen && (
           <span
-            className={`ml-auto inline-flex shrink-0 items-center gap-1 ${!readOnly ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden pointer-coarse:hidden' : ''}`}
+            className={`ml-auto inline-flex shrink-0 items-center gap-1 ${!readOnly ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden' : ''}`}
           >
             {status && (
               <span className="inline-flex h-6 w-6 items-center justify-center">
@@ -242,7 +244,9 @@ export function SidebarItemGroupHeader({
               </span>
             )}
             <span
-              className={`${SIDEBAR_ROW_TRAILING_CELL_CLASSNAME} ${labelHidden ? 'w-auto' : ''}`}
+              // On touch the actions show at rest and take the count's place;
+              // the status stays, since it may say the group needs you.
+              className={`${SIDEBAR_ROW_TRAILING_CELL_CLASSNAME} ${labelHidden ? 'w-auto' : ''} ${!readOnly ? 'pointer-coarse:hidden' : ''}`}
               data-testid={`sidebar-item-group-counter${testIdSuffix}`}
               aria-hidden={labelHidden ? true : undefined}
             >
@@ -433,6 +437,32 @@ export function SidebarItemGroupMenu({
   );
 }
 
+/** A switch with its text; a click on the text flips it, as in a Settings row. */
+function EditorSwitchRow({
+  label,
+  onTextPress,
+  children,
+}: {
+  readonly label: string;
+  /** Runs before the field's blur when a press on the text will flip the switch. */
+  readonly onTextPress?: () => void;
+  readonly children: ReactNode;
+}): JSX.Element {
+  const { controlRef, onRowClick } = useRowToggleClick();
+  return (
+    <div
+      className="flex items-center justify-between gap-2"
+      onPointerDown={onTextPress}
+      onClick={onRowClick}
+    >
+      <span className="text-s fg-secondary">{label}</span>
+      <div ref={controlRef} className="flex">
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /** Mount per open session, so Escape can discard the draft without a blur commit. */
 export function SidebarItemGroupEditor({
   group,
@@ -475,6 +505,9 @@ export function SidebarItemGroupEditor({
   );
   const [showName, setShowName] = useState(!group.labelHidden);
   const cancelled = useRef(false);
+  // A press on the Show name text flips the switch, which commits; the name
+  // field's blur in between must not commit the old choice first.
+  const showNameTextPress = useRef(false);
   const initialName = isDefaultSidebarItemGroupName(group.name)
     ? ''
     : group.name;
@@ -589,6 +622,7 @@ export function SidebarItemGroupEditor({
       aria-label="Edit group"
       closeOnSelect={false}
       initialFocusRef={inputRef}
+      keepTouchKeyboardClosed
       anchorRef={anchorRef}
       returnFocusRef={returnFocusRef}
       onOpenChange={(next): void => {
@@ -606,12 +640,19 @@ export function SidebarItemGroupEditor({
       }}
     >
       <div className="flex items-center gap-2 px-2 py-1">
-        <span id={`${inputId}-label`} className="text-s fg-secondary">
+        {/* Not a <label> (the field ratchet), but a click on it still
+            focuses the field. */}
+        <span
+          id={`${inputId}-label`}
+          className="text-s fg-secondary"
+          onClick={(): void => inputRef.current?.focus()}
+        >
           Group name
         </span>
         <RailIconButton
           icon={CloseIcon}
           aria-label="Close group editor"
+          coarsePointerTarget
           onClick={close}
           data-testid="sidebar-item-group-editor-close"
         />
@@ -643,10 +684,11 @@ export function SidebarItemGroupEditor({
             }
           }}
           onBlur={(event): void => {
+            if (showNameTextPress.current) return;
             if (
               event.relatedTarget instanceof HTMLElement &&
               (event.relatedTarget.id === showNameId ||
-                event.relatedTarget.getAttribute('role') === 'menuitem')
+                event.relatedTarget.hasAttribute('data-group-editor-action'))
             )
               return;
             commit();
@@ -659,8 +701,20 @@ export function SidebarItemGroupEditor({
             close();
           }}
         />
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-s fg-secondary">Show name in sidebar</span>
+        <EditorSwitchRow
+          label="Show name in sidebar"
+          onTextPress={
+            canShowName
+              ? (): void => {
+                  showNameTextPress.current = true;
+                  // Cleared after this press's blur has run.
+                  setTimeout(() => {
+                    showNameTextPress.current = false;
+                  }, 0);
+                }
+              : undefined
+          }
+        >
           <ToggleSwitch
             id={showNameId}
             checked={checked}
@@ -672,16 +726,15 @@ export function SidebarItemGroupEditor({
               commit(next);
             }}
           />
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-s fg-secondary">Remove group when empty</span>
+        </EditorSwitchRow>
+        <EditorSwitchRow label="Remove group when empty">
           <ToggleSwitch
             checked={group.keepWhenEmpty !== true}
             label="Remove group when empty"
             dataTestId="sidebar-item-group-remove-when-empty"
             onChange={(next): void => onKeepWhenEmptyChange(!next)}
           />
-        </div>
+        </EditorSwitchRow>
         <div>
           <ColorSwatchPicker
             value={group.color}
@@ -701,6 +754,8 @@ export function SidebarItemGroupEditor({
       {canCreate && (
         <>
           <DropdownMenuItem
+            asButton
+            data-group-editor-action=""
             onClick={(): void => {
               commit();
               onClose(false);
@@ -712,7 +767,10 @@ export function SidebarItemGroupEditor({
           <DropdownMenuDivider />
         </>
       )}
+      {/* Buttons, not menu items: the editor is a dialog, not a menu. */}
       <DropdownMenuItem
+        asButton
+        data-group-editor-action=""
         onClick={(): void => {
           cancelled.current = true;
           onClose(false);

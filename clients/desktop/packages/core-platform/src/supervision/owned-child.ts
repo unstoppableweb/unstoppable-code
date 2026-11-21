@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { readSync } from 'node:fs';
+import { close, readSync } from 'node:fs';
+import { Socket } from 'node:net';
 import { constants } from 'node:os';
 import path from 'node:path';
+import type { Readable } from 'node:stream';
 import type {
   PlatformOperatingSystem,
   PlatformOwnedChild,
@@ -64,6 +66,8 @@ export class OwnedChildError extends Error {
   readonly code: OwnedChildErrorCode;
   readonly reason?: OwnedChildErrorReason;
   nativeDiagnostic?: { readonly stage: string; readonly win32: number };
+  loadDiagnostic?: string;
+  spawnErrno?: string;
 
   constructor(
     code: OwnedChildErrorCode,
@@ -90,6 +94,7 @@ interface OwnedChildNative {
     argv: readonly string[],
     environment: readonly string[],
     stdin: string | null,
+    captureStderr?: boolean,
   ): unknown;
   observe(handle: object): unknown;
   stopGroup(handle: object): unknown;
@@ -103,7 +108,11 @@ interface OwnedChildNative {
 /** Launcher-channel calls; an addon without them still serves `spawn`. */
 interface OwnedChildChannelNative {
   spawnChannel(
-    ...args: [...Parameters<OwnedChildNative['spawn']>, nonce?: string]
+    executable: string,
+    argv: readonly string[],
+    environment: readonly string[],
+    stdin: string | null,
+    captureOrNonce?: boolean | string,
   ): unknown;
   channelRead(handle: object, max: number): unknown;
   channelWrite(handle: object, bytes: Uint8Array): unknown;
@@ -768,8 +777,16 @@ function loadNative(
     throw fail('capability_unavailable', UNSUPPORTED);
   try {
     process.dlopen(module, file);
-  } catch {
-    throw fail('capability_unavailable', UNSUPPORTED, 'load_failed');
+  } catch (error) {
+    const mapped = fail('capability_unavailable', UNSUPPORTED, 'load_failed');
+    const message = field(error, 'message');
+    if (os === 'linux' && typeof message === 'string') {
+      const bytes = Buffer.from(message.split(file).join('<addon>'));
+      let end = Math.min(bytes.length, 1024);
+      while (end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
+      mapped.loadDiagnostic = bytes.subarray(0, end).toString('utf8');
+    }
+    throw mapped;
   }
   if (!isNative(module.exports))
     throw fail('capability_unavailable', UNSUPPORTED);
@@ -842,11 +859,47 @@ function call(run: () => unknown): unknown {
   } catch (error) {
     const code = field(error, 'code');
     const mapped = typeof code === 'string' ? NATIVE_ERRORS[code] : undefined;
-    throw mapped
+    const result = mapped
       ? fail(...mapped)
       : fail('unavailable', LOST, 'native_unknown');
+    if (code === 'ERR_OWNED_CHILD_SPAWN') {
+      const number = field(error, 'errno');
+      if (typeof number === 'number' && Number.isInteger(number)) {
+        const name = Object.entries(constants.errno).find(
+          ([key, value]) => value === number && LAUNCH_ERRNOS.has(key),
+        )?.[0];
+        if (name) result.spawnErrno = name;
+      }
+    }
+    throw result;
   }
 }
+
+// Paired with core-client's closed LAUNCH_ERRNOS. A runtime import here would
+// reverse the platform dependency.
+const LAUNCH_ERRNOS: ReadonlySet<string> = new Set([
+  'ENOENT',
+  'ENOTDIR',
+  'EACCES',
+  'EPERM',
+  'ENOEXEC',
+  'ELOOP',
+  'ENAMETOOLONG',
+  'EMFILE',
+  'ENFILE',
+  'ENOMEM',
+  'EAGAIN',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EPIPE',
+  'EIO',
+  'ENOSPC',
+  'EROFS',
+  'EBUSY',
+  'EEXIST',
+  'ETIMEDOUT',
+  'EINVAL',
+]);
 
 function signalName(value: unknown): string | null {
   if (typeof value !== 'number') return null;
@@ -873,7 +926,7 @@ function nativeRequest(
   os: PlatformOperatingSystem,
   request: SpawnRequest,
   withChannel = false,
-): Parameters<OwnedChildNative['spawn']> {
+): [string, readonly string[], readonly string[], string | null] {
   const { executable, args, environment, stdin } = request;
   const win32 = os === 'win32';
   const strings = (values: unknown): values is string[] =>
@@ -1140,6 +1193,7 @@ function createChild(
   owner: Owner,
   handle: object,
   pid: number,
+  stderr?: Readable,
 ): PlatformOwnedChild {
   const { native } = owner;
   let state: 'owned' | 'committed' | 'released' = 'owned';
@@ -1226,6 +1280,7 @@ function createChild(
 
   const child: PlatformOwnedChild = {
     pid,
+    ...(stderr ? { stderr } : {}),
     exited,
     commit(signal) {
       signal?.throwIfAborted();
@@ -1489,16 +1544,38 @@ function createOwnedChildHost(options: {
     const channelNative = hasChannel(loaded) ? loaded : undefined;
     if (withChannel && !channelNative)
       throw fail('capability_unavailable', UNSUPPORTED);
+    const capture =
+      os === 'linux' &&
+      request.captureStderr === true &&
+      field(loaded, 'stderrCapture') === true;
     const result = retaining(() =>
       withChannel && channelNative
         ? os === 'win32'
           ? channelNative.spawnChannel(...args, randomBytes(16).toString('hex'))
-          : channelNative.spawnChannel(...args)
-        : loaded.spawn(...args),
+          : capture
+            ? channelNative.spawnChannel(...args, true)
+            : channelNative.spawnChannel(...args)
+        : capture
+          ? loaded.spawn(...args, true)
+          : loaded.spawn(...args),
     );
     const handle = delivered(result);
     const pid = Number(field(result, 'pid'));
-    const child = createChild({ native: loaded, custody }, handle, pid);
+    const stderrFd = capture ? field(result, 'stderr') : undefined;
+    let stderr: Readable | undefined;
+    if (
+      typeof stderrFd === 'number' &&
+      Number.isSafeInteger(stderrFd) &&
+      stderrFd >= 0
+    ) {
+      try {
+        stderr = new Socket({ fd: stderrFd, readable: true, writable: false });
+      } catch {
+        // Capture is optional; never turn a successful spawn into a failure.
+        close(stderrFd, () => undefined);
+      }
+    }
+    const child = createChild({ native: loaded, custody }, handle, pid, stderr);
     return withChannel && channelNative
       ? { child, channel: createChannel(channelNative, handle, os) }
       : { child };

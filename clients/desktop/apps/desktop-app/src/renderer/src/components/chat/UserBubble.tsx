@@ -1,3 +1,4 @@
+import { autoResumeIsMarkerOnly } from '@canopy/ui-shared/components/chat';
 import { useSentAttachments } from '@/hooks/useSentAttachments';
 import type { FilePathMentionIndex } from '@/lib/filePathMentionIndex';
 import type { InvocableMentionIndex } from '@/lib/invocableMentionIndex';
@@ -48,6 +49,7 @@ import { LegacyTranscriptSearchContext } from './transcript-search-reveal';
 interface UserBubbleProps {
   receivingContext?: AgentSentReceivingContext;
   message: DisplayMessage;
+  outputlessAutoResume?: boolean;
   /**
    * Worktree-only revert handler. When provided, the bubble renders a
    * "Revert" hover action that opens the confirmation dialog.
@@ -68,6 +70,7 @@ interface UserBubbleProps {
 
 export const UserBubble = memo(function UserBubble({
   message,
+  outputlessAutoResume = false,
   receivingContext: explicitContext,
   onResetToPoint,
   invocableMentionIndex,
@@ -189,21 +192,19 @@ export const UserBubble = memo(function UserBubble({
   // persisted source and metadata, never the prompt's text.
   const isAutoResume = message.userMessageSource === 'auto_resume';
   const autoResume = isAutoResume ? readMessageAutoResume(message) : undefined;
+  const markerOnly = autoResumeIsMarkerOnly(autoResume, outputlessAutoResume);
   const autoResumeMarker = isAutoResume ? (
     <AutoResumeMarker
       autoResume={autoResume}
+      outputless={outputlessAutoResume}
       providerName={autoResume?.providerName}
       timestamp={message.timestamp}
       text={copyText}
-      copyText={
-        autoResume && !autoResume.resendsUserMessage ? copyText : undefined
-      }
+      copyText={markerOnly ? copyText : undefined}
       onJumpToMessage={onJumpToMessage}
     />
   ) : null;
-  if (autoResume && !autoResume.resendsUserMessage) {
-    // A generated nudge: the marker takes the bubble's slot and keeps its
-    // message anchor for jumps, search and turn grouping.
+  if (markerOnly) {
     return (
       <>
         <div

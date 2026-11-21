@@ -14,7 +14,10 @@ export const GUEST_WORK_PRESERVED_COPY =
 export interface GuestModelGateCopyInput {
   /** Display label of the gated model the guest picked. */
   readonly modelLabel: string;
-  /** Product name, resolved by the host at call time. */
+  /**
+   * Product name, resolved by the host at call time. The copy no longer
+   * names the product (CAN-7493); the field stays while hosts still pass it.
+   */
   readonly appName: string;
   /** Defaults to `needs_sign_in`. */
   readonly access?: 'needs_sign_in' | 'needs_sign_in_then_purchase';
@@ -48,19 +51,19 @@ export interface GuestModelGateCopy {
 /**
  * CAN-4703 — copy for the guest model gate.
  *
- * The plain gate says the account is free and, when the host can select one,
- * names the guest model available right now. The purchase variant names both
- * requirements up front, because signing in alone does not unlock that model,
- * and its action says the guest signs in to buy: hosts route it through
- * sign-in straight to checkout. It may still offer a guest model that is
- * usable right now.
+ * The plain gate says the model needs an account and, when the host can
+ * select one, names the guest model available right now. The purchase variant
+ * names both requirements up front, because signing in alone does not unlock
+ * that model, and its action says the guest signs in to buy: hosts route it
+ * through sign-in straight to checkout. It may still offer a guest model that
+ * is usable right now.
  *
- * "Free" describes the account and the guest-allowed model. It never claims
- * the gated model is free to run.
+ * The gate never says "free" (CAN-7493): beside a model it reads as a promise
+ * about usage, and web chats use AI Credits. It also never names the product,
+ * which avoids a/an errors with brand names.
  */
 export function guestModelGateCopy({
   modelLabel,
-  appName,
   access = 'needs_sign_in',
   fallbackLabel,
   subscriptionAlternative = false,
@@ -76,14 +79,14 @@ export function guestModelGateCopy({
       ? undefined
       : {
           sentence: `As a guest you can use ${fallbackLabel} right now.`,
-          action: `Use ${fallbackLabel} (free)`,
+          action: `Use ${fallbackLabel}`,
         };
   const withFallback =
     fallback === undefined ? {} : { fallbackAction: fallback.action };
   const fallbackSentence = fallback?.sentence;
 
   if (access === 'needs_sign_in_then_purchase') {
-    const requirement = `Using ${modelLabel} requires a free ${appName} account and a purchase of AI Credits.`;
+    const requirement = `Using ${modelLabel} requires an account and a purchase of AI Credits.`;
     return {
       title: MODEL_LIBRARY_UNLOCK_COPY.title,
       body: withAlternative(
@@ -96,9 +99,9 @@ export function guestModelGateCopy({
     };
   }
 
-  const accountSentence = `${modelLabel} needs a free ${appName} account.`;
+  const accountSentence = `${modelLabel} needs an account.`;
   return {
-    title: `Sign in free to use ${modelLabel}`,
+    title: `Sign in to use ${modelLabel}`,
     body: withAlternative(
       fallbackSentence === undefined
         ? `${accountSentence} ${GUEST_WORK_PRESERVED_COPY}`

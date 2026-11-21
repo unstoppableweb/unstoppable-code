@@ -153,11 +153,11 @@ export function ChatTab({
   );
   const activeClasses = active
     ? readOnly
-      ? 'bg-fg-primary/[0.06] fg-primary/70'
-      : 'bg-fg-primary/[0.06] fg-primary'
+      ? 'bg-muted fg-primary/70'
+      : 'bg-muted fg-primary'
     : readOnly
-      ? 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary/60'
-      : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary/80';
+      ? 'fg-secondary hover:bg-subtle hover:fg-primary/60'
+      : 'fg-secondary hover:bg-subtle hover:fg-primary/80';
 
   const labelClass = `${maskLabel ? `${REPLAY_MASK_CLASS} ` : ''}${
     readOnly ? 'truncate fg-secondary' : 'truncate'
@@ -185,13 +185,15 @@ export function ChatTab({
         staticPlaceholder
           ? undefined
           : (e): void => {
+              // Keys from the close button keep their own click.
+              if (e.target !== e.currentTarget) return;
               if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 onSelect?.();
               }
             }
       }
-      className={`group relative flex shrink-0 items-center border-r text-xs transition-opacity ${staticPlaceholder ? '' : 'cursor-pointer'} ${
+      className={`focus-ring focus-ring-inset group relative flex shrink-0 items-center border-r text-xs transition-opacity ${staticPlaceholder ? '' : 'cursor-pointer'} ${
         pinned
           ? 'justify-center gap-0 px-2.5 py-3'
           : 'max-w-45 gap-1.5 px-3 py-3'
@@ -236,7 +238,7 @@ export function ChatTab({
               e.stopPropagation();
               onClose?.();
             }}
-            className="focus-ring ml-auto shrink-0 rounded p-0.5 fg-secondary opacity-0 transition-opacity hover:bg-fg-primary/[0.1] hover:fg-primary group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:bg-fg-primary/[0.1] focus-visible:fg-primary focus-visible:opacity-100 pointer-coarse:opacity-100"
+            className="focus-ring relative before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-y-3.25 pointer-coarse:before:-right-3 ml-auto shrink-0 rounded p-0.5 fg-secondary opacity-0 transition-opacity hover:bg-muted hover:fg-primary group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:bg-muted focus-visible:fg-primary focus-visible:opacity-100 pointer-coarse:opacity-100"
             aria-label={closeButtonAriaLabel}
           >
             {closeGlyph}

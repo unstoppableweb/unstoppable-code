@@ -14,6 +14,9 @@ import { TRY_AGAIN_LABEL } from './useRetry';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
 import { Heading } from './Heading';
 import { Tooltip } from './Tooltip';
+import { Surface } from './Surface';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { Skeleton } from './Skeleton';
 
 export interface PipelineTemplatesSectionProps {
   catalog: CuratedPipelineCatalogProps;
@@ -31,7 +34,8 @@ function CatalogStatus({
       liveRegionScope="content"
       actions={
         <NoticeButton
-          disabled={catalog.loading}
+          busy={catalog.loading}
+          busyLabel="Trying again…"
           onClick={catalog.onRefresh}
           data-testid="pipeline-templates-retry"
         >
@@ -42,9 +46,11 @@ function CatalogStatus({
       <span className="break-words">{catalog.error}</span>
     </Notice>
   ) : (
-    <p role="status" className="text-s fg-secondary">
-      Loading workflow templates…
-    </p>
+    <DelayedLoadingPlaceholder slowNote="Still loading workflow templates…">
+      <Skeleton loading label="Loading workflow templates">
+        <TemplateCards cards={SAMPLE_CARDS} />
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
   );
 }
 
@@ -137,40 +143,7 @@ export function PipelineTemplatesSection({
             {keepOpenedCards && !catalogOpen && catalog.error && (
               <CatalogStatus catalog={catalog} />
             )}
-            <ul className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-3">
-              {cards.slice(0, 3).map((row) => (
-                <li
-                  key={row.key}
-                  className="flex min-w-0 flex-col gap-3 rounded-lg ring-1 ring-inset ring-line-base p-3"
-                  data-testid={`pipeline-template-${row.key}`}
-                >
-                  <Stack gap="tight" className="min-w-0">
-                    <Heading
-                      level={3}
-                      variant="title"
-                      truncate
-                      title={row.name}
-                    >
-                      {row.name}
-                    </Heading>
-                    <Tooltip label={row.shortDescription} clamp allowShrink>
-                      <span className="min-w-0 truncate text-xs fg-secondary">
-                        {row.shortDescription}
-                      </span>
-                    </Tooltip>
-                  </Stack>
-                  <Button
-                    size="compact"
-                    className="self-start"
-                    onClick={() => catalog.onSelect(row)}
-                    data-testid={`pipeline-template-use-${row.key}`}
-                    aria-label={`Use template: ${row.name}`}
-                  >
-                    Use template
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            <TemplateCards cards={cards} onUse={catalog.onSelect} />
           </Stack>
         </div>
       )}
@@ -188,10 +161,70 @@ export function PipelineTemplatesSection({
           dataTestId="pipeline-templates-dialog"
         >
           <div className="">
-            <CuratedPipelineCatalog {...catalog} />
+            <CuratedPipelineCatalog {...catalog} hideHeading />
           </div>
         </DialogModal>
       )}
     </>
+  );
+}
+
+type TemplateCardFields = Pick<
+  CuratedPipelineSummary,
+  'key' | 'name' | 'shortDescription'
+>;
+
+/** Sample cards for the measured loading skeleton. */
+const SAMPLE_CARDS: readonly TemplateCardFields[] = [1, 2, 3].map((index) => ({
+  key: `sample-${index}`,
+  name: 'Review pull request',
+  shortDescription: 'Checks a change and reports what to fix.',
+}));
+
+function TemplateCards<Card extends TemplateCardFields>({
+  cards,
+  onUse,
+}: {
+  cards: readonly Card[];
+  /** Omitted for the loading skeleton's sample cards. */
+  onUse?: (card: Card) => void;
+}): JSX.Element {
+  return (
+    // Columns follow the section's own width, not the viewport's.
+    <div className="@container min-w-0">
+      <ul className="grid min-w-0 grid-cols-1 gap-3 @min-[40rem]:grid-cols-3">
+        {cards.slice(0, 3).map((row) => (
+          <Surface
+            as="li"
+            variant="outline"
+            padding="compact"
+            gap="item"
+            key={row.key}
+            className="min-w-0"
+            data-testid={`pipeline-template-${row.key}`}
+          >
+            <Stack gap="tight" className="min-w-0">
+              <Heading level={3} variant="title" truncate title={row.name}>
+                {row.name}
+              </Heading>
+              <Tooltip label={row.shortDescription} clamp allowShrink>
+                <span className="min-w-0 truncate text-xs fg-secondary">
+                  {row.shortDescription}
+                </span>
+              </Tooltip>
+            </Stack>
+            <Button
+              size="compact"
+              className="self-start"
+              onClick={() => onUse?.(row)}
+              data-testid={`pipeline-template-use-${row.key}`}
+              aria-label={`Use template: ${row.name}`}
+            >
+              Use template
+            </Button>
+          </Surface>
+        ))}
+      </ul>
+    </div>
   );
 }

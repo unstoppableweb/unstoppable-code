@@ -114,6 +114,9 @@ function normalizeEntry(value: unknown): UsageLimitedChatEntry | null {
       ? { interruptedUserMessageId: value.interruptedUserMessageId }
       : {}),
     detectedAt: typeof value.detectedAt === 'number' ? value.detectedAt : 0,
+    ...(typeof value.usageResumeAccountEmail === 'string'
+      ? { usageResumeAccountEmail: value.usageResumeAccountEmail }
+      : {}),
     ...(typeof value.resetsAt === 'number' ? { resetsAt: value.resetsAt } : {}),
     resumeReason,
     ...(value.accountProxyAutoResumeSuppressed === true

@@ -587,6 +587,29 @@ const WORKSPACE_REFUSALS: Readonly<Record<string, CatalogHostRefusal>> = {
 
 const MUTATIONS_LATER = 'Catalog mutations are served from CAN-4123 PR4.';
 
+/** The identities a catalog lists; reads no collection config. */
+export function installedCatalogRefs(
+  catalog: CachedPluginCatalog,
+): CatalogSelectionRefs {
+  return {
+    collectionIds: (catalog.collections ?? []).map(
+      (collection) => collection.id,
+    ),
+    skillRefs: catalog.skills.map((skill) => ({
+      sourceId: skill.sourceId,
+      skillName: skill.skillName,
+    })),
+    pluginRefs: catalog.plugins.map((plugin) => ({
+      marketplaceId: plugin.marketplaceId,
+      pluginName: plugin.pluginName,
+    })),
+    mcpServerRefs: catalog.mcpServers.map((server) => ({
+      serverId: server.serverId,
+      configId: server.configId,
+    })),
+  };
+}
+
 export function createDesktopCatalogHost(
   overrides: Partial<DesktopCatalogHostDeps> = {},
 ): CoreCatalogHost {
@@ -778,24 +801,10 @@ export function createDesktopCatalogHost(
         }),
       ),
     ];
-    const refs: CatalogSelectionRefs = {
-      collectionIds: (catalog.collections ?? []).map(
-        (collection) => collection.id,
-      ),
-      skillRefs: catalog.skills.map((skill) => ({
-        sourceId: skill.sourceId,
-        skillName: skill.skillName,
-      })),
-      pluginRefs: catalog.plugins.map((plugin) => ({
-        marketplaceId: plugin.marketplaceId,
-        pluginName: plugin.pluginName,
-      })),
-      mcpServerRefs: catalog.mcpServers.map((server) => ({
-        serverId: server.serverId,
-        configId: server.configId,
-      })),
+    const read: CatalogSnapshotRead = {
+      entries,
+      refs: installedCatalogRefs(catalog),
     };
-    const read: CatalogSnapshotRead = { entries, refs };
     if (catalog.collections === null) read.unreadableKinds = ['collection'];
     return read;
   };

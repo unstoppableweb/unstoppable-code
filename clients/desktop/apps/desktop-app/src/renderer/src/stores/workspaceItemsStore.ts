@@ -18,6 +18,17 @@ import {
   type WorkspacePromptItem,
 } from '@canopy/desktop-shared/types';
 
+/**
+ * Listings per scope, numbered as they are asked for, and the newest one
+ * applied. Listings can overlap (a reload when the window comes back to the
+ * front, the refresh after an import or a delete), and one asked for earlier
+ * can answer later: an answer is applied only when it is newer than the one
+ * shown, so it never brings back a file a later listing no longer has, and a
+ * later listing that fails never discards an earlier one that answered.
+ */
+const askedAttachmentListings = new Map<string, number>();
+const appliedAttachmentListings = new Map<string, number>();
+
 function attachmentsKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
 }
@@ -215,16 +226,21 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
       isCurrent,
     ): Promise<void> => {
       if (isCurrent?.() === false) return;
+      const key = attachmentsKey(projectId, worktreeId);
+      const listing = (askedAttachmentListings.get(key) ?? 0) + 1;
+      askedAttachmentListings.set(key, listing);
       try {
         const items = await window.api.workspaceItems.listAttachments({
           projectId,
           worktreeId,
         });
         if (isCurrent?.() === false) return;
+        if ((appliedAttachmentListings.get(key) ?? 0) > listing) return;
+        appliedAttachmentListings.set(key, listing);
         set((state) => ({
           attachments: {
             ...state.attachments,
-            [attachmentsKey(projectId, worktreeId)]: items,
+            [key]: items,
           },
         }));
       } catch {

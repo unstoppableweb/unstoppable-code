@@ -1,4 +1,5 @@
 import type { AppError } from '@canopy/protocol/app-errors';
+import type { CloneJobSnapshot } from '@canopy/protocol/clone-jobs';
 import type { McpRemovalRecovery } from '@canopy/protocol/mcp-removal';
 import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
@@ -563,6 +564,7 @@ import type {
   ChatInputDeliveryLedger,
   ChatSteeringCapabilities,
   ChatInputDeliveryAction,
+  SendWhileRunning,
   ChatTurnPhase,
   QueuedMessageRetryBlockedReason,
   QueuedMessageWaitingReason,
@@ -570,6 +572,7 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import type { PersistedChatTurnState } from '@canopy/agent-transcript/turn';
 export type { ChatTurnPhase } from '@canopy/protocol/remote-control/shell';
+export type { SendWhileRunning } from '@canopy/protocol/remote-control/shell';
 export type { QueuedMessageWaitingReason } from '@canopy/protocol/remote-control/shell';
 export type { QueuedMessageRetryBlockedReason } from '@canopy/protocol/remote-control/shell';
 export type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
@@ -4956,51 +4959,11 @@ export interface AddWorkspaceFromRemoteRequest {
   jobId?: string;
 }
 
-/** Stage of a tracked clone, as reported by `git clone --progress`. */
-export type CloneJobPhase =
-  | 'starting'
-  | 'counting'
-  | 'compressing'
-  | 'receiving'
-  | 'resolving'
-  | 'checkout'
-  | 'finishing';
-
-export type CloneJobStatus = 'running' | 'cancelling' | 'succeeded' | 'failed';
-
-/**
- * Live state of one Add project clone. Main owns the job; the renderer only
- * projects it. Jobs are in-memory and do not survive an app restart.
- */
-export interface CloneJobSnapshot {
-  id: string;
-  repoName: string;
-  /** Remote URL with any embedded credentials removed. */
-  remoteUrl: string;
-  destinationPath: string | null;
-  status: CloneJobStatus;
-  phase: CloneJobPhase;
-  /** Percent through the current phase when git reports one. */
-  phasePercent: number | null;
-  /** Estimated, monotonic percent through the whole clone (0-100). */
-  percent: number;
-  /** Objects or files processed in the current phase, when reported. */
-  processedCount: number | null;
-  totalCount: number | null;
-  /** Human-readable amount received so far, e.g. `12.34 MiB`. */
-  received: string | null;
-  /** Human-readable transfer rate, e.g. `3.21 MiB/s`. */
-  throughput: string | null;
-  /** Epoch milliseconds. */
-  startedAt: number;
-  /** True once the Add project dialog handed the clone to the sidebar. */
-  background: boolean;
-  /** False once the checkout is complete and the project is being added. */
-  cancellable: boolean;
-  workspaceId: string | null;
-  workspaceName: string | null;
-  error: string | null;
-}
+export type {
+  CloneJobPhase,
+  CloneJobSnapshot,
+  CloneJobStatus,
+} from '@canopy/protocol/clone-jobs';
 
 export interface CreateNewWorkspaceRequest {
   name: string;
@@ -7018,6 +6981,7 @@ export function isPromptSuggestionEventData(
 
 /** A registry entry recorded when a chat hits a provider usage limit. */
 export interface UsageLimitedChatEntry extends UsageLimitedChatTarget {
+  usageResumeAccountEmail?: string;
   /** Exact owning turn captured by the trusted detector, absent on legacy entries. */
   interruptedUserMessageId?: string;
   /** Present only for proxy quota recovery; never resumed by native account changes. */
@@ -7041,6 +7005,13 @@ export interface UsageLimitedChatEntry extends UsageLimitedChatTarget {
   workspaceType?: WorkspaceType;
 }
 
+export interface UsageLimitResumeInterruption {
+  provider: 'claude' | 'codex';
+  accountEmail: string;
+  detectedAt: number;
+  userMessageId: string;
+}
+
 /** Persisted file backing the usage-limited chats registry. */
 export interface UsageLimitedChatsFile {
   version: 1;
@@ -7054,12 +7025,15 @@ export interface UsageLimitedChatGroup {
   workspaceType: 'single-repo' | 'multi-repo' | 'cowork';
   /** Sidebar color (hex) for the workspace badge; absent if not resolvable. */
   workspaceColor?: string;
-  chats: UsageLimitedChatItem[];
+  chats: (UsageLimitedChatItem & {
+    usageResumeInterruption?: UsageLimitResumeInterruption;
+  })[];
 }
 
 /** Request body for `IPC_CHANNELS.listUsageLimitedIdleChats`. */
 export interface ListUsageLimitedIdleChatsRequest {
   provider: AgentProviderType;
+  includeUsageResumeInterruption?: boolean;
   /**
    * Read each listed chat's full transcript to fill `resumePromptKind` and
    * `lastStep`. Only the resume dialog asks; counts and dispatch stay
@@ -7073,6 +7047,7 @@ export type ListUsageLimitedIdleChatsResponse = UsageLimitedChatGroup[];
 /** Request body for `IPC_CHANNELS.resumeUsageLimitedChats`. */
 export interface ResumeUsageLimitedChatsRequest {
   targets: UsageLimitedChatTarget[];
+  requireClearUsageFor?: UsageLimitResumeInterruption;
 }
 /** Response body for `IPC_CHANNELS.resumeUsageLimitedChats`. */
 export interface ResumeUsageLimitedChatsResponse {
@@ -9919,6 +9894,10 @@ export interface ChatSendMessageRequest {
   codexProposalMode?: 'optional' | 'required';
   /** Input mode for this message — 'voice' triggers a system_instruction block guiding the model to tolerate transcription errors. */
   inputMode?: 'typed' | 'voice';
+  /** Send-while-running choice; absent means `queue`. No host reads it yet (CAN-7349). */
+  sendWhileRunning?: SendWhileRunning;
+  /** The turn the user saw running when they chose to steer. No host reads it yet. */
+  steerTurnId?: string;
   /**
    * For multi-repo workspaces: the repo whose checkout the agent should run
    * in. `WORKSPACE_ROOT_REPO_ID` or `undefined` resolves to the workspace
@@ -12321,6 +12300,9 @@ export interface ChatSendMessageCommand {
   planMode?: boolean;
   codexProposalMode?: 'optional' | 'required';
   inputMode?: 'typed' | 'voice';
+  /** Absent means `queue`. Carried untouched; no host reads it yet (CAN-7349). */
+  sendWhileRunning?: SendWhileRunning;
+  steerTurnId?: string;
   fileReferences?: FileReference[];
   attachmentPaths?: string[];
   /** Attach-time prompt treatment cannot be reconstructed from paths. */
@@ -18461,6 +18443,8 @@ export type AutomationAction =
        * chat); `scheduled_send` tags a generic composer-scheduled send.
        */
       purpose?: 'usage_limit_resume' | 'scheduled_send';
+      resumeWhen?: 'provider_usage_clear';
+      usageResumeInterruption?: UsageLimitResumeInterruption;
       /** Informational display label only — execution targets `workspaceId`. */
       workspaceName?: string;
       /** Informational display label only — execution targets `worktreeId`. */
@@ -19012,6 +18996,7 @@ export interface AutomationUpdateRequest {
 /** Request shape for `automations.delete`. */
 export interface AutomationDeleteRequest {
   id: string;
+  pendingUsageLimitResumeOnly?: boolean;
   /**
    * CAN-5782: when this is the last schedule of a workflow page, keep the
    * pipeline as a manual workflow with this schedule's run values, instead of
@@ -27874,6 +27859,9 @@ export const IPC_CHANNELS = {
   projectsLoad: REMOTE_IPC_CHANNELS.projectsLoad,
   projectsSave: REMOTE_IPC_CHANNELS.projectsSave,
   preferencesLoad: REMOTE_IPC_CHANNELS.preferencesLoad,
+  preferencesLoadOnboardingTips:
+    REMOTE_IPC_CHANNELS.preferencesLoadOnboardingTips,
+  preferencesLoadSuggestions: REMOTE_IPC_CHANNELS.preferencesLoadSuggestions,
   preferencesAcknowledgeLoadError: 'preferences:acknowledge-load-error',
   preferencesSave: 'preferences:save',
   preferencesSetPipelineDisabled: 'preferences:set-pipeline-disabled',
@@ -28139,11 +28127,11 @@ export const IPC_CHANNELS = {
   workspaceAddFromFolder: 'workspace:add-from-folder',
   workspaceCheckAddFromFolder: 'workspace:check-add-from-folder',
   workspaceAddFromRemote: REMOTE_IPC_CHANNELS.workspaceAddFromRemote,
-  cloneJobsList: 'clone-jobs:list',
+  cloneJobsList: REMOTE_IPC_CHANNELS.cloneJobsList,
   cloneJobsBackground: 'clone-jobs:background',
-  cloneJobsCancel: 'clone-jobs:cancel',
-  cloneJobsDismiss: 'clone-jobs:dismiss',
-  cloneJobsChanged: 'clone-jobs:changed',
+  cloneJobsCancel: REMOTE_IPC_CHANNELS.cloneJobsCancel,
+  cloneJobsDismiss: REMOTE_IPC_CHANNELS.cloneJobsDismiss,
+  cloneJobsChanged: REMOTE_IPC_CHANNELS.cloneJobsChanged,
   workspaceCreateNew: 'workspace:create-new',
   workspaceConvertType: 'workspace:convert-type',
   workspaceReadDriftSummary: 'workspace:read-drift-summary',
@@ -28174,7 +28162,8 @@ export const IPC_CHANNELS = {
   workspaceSplitTemporaryComplete: 'workspace:split-temporary-complete',
   workspaceReadSettingsData: 'workspace:read-settings-data',
   workspaceReadReadiness: 'workspace:read-readiness',
-  workspaceSetArchiveRetention: 'workspace:set-archive-retention',
+  workspaceSetArchiveRetention:
+    REMOTE_IPC_CHANNELS.workspaceSetArchiveRetention,
   workspaceSetStartPage: 'workspace:set-start-page',
   workspaceSetPrivateMemory: 'workspace:set-private-memory',
   workspacePrivateMemoryChanged: 'workspace:private-memory-changed',
@@ -28281,7 +28270,12 @@ export const IPC_CHANNELS = {
   chatGetTranscriptPage: REMOTE_IPC_CHANNELS.chatGetTranscriptPage,
   chatReadToolOutput: 'chat:read-tool-output',
   chatCancelToolOutput: 'chat:cancel-tool-output',
-  chatReadVisual: 'chat:read-visual',
+  chatReadVisual: REMOTE_IPC_CHANNELS.chatReadVisual,
+  // Delegate transcript reads for Remote Control controllers (CAN-7432). The
+  // local renderer reads the same core operations through `canopy-core:relay`.
+  chatReadDelegationPage: REMOTE_IPC_CHANNELS.chatReadDelegationPage,
+  chatReadDelegationContent: REMOTE_IPC_CHANNELS.chatReadDelegationContent,
+  chatReadDelegationBlocks: REMOTE_IPC_CHANNELS.chatReadDelegationBlocks,
   chatCommand: REMOTE_IPC_CHANNELS.chatCommand,
   chatStateChanged: 'chat:state-changed',
   chatSetStateScopes: 'chat:set-state-scopes',
@@ -28449,7 +28443,7 @@ export const IPC_CHANNELS = {
   workEntriesCreate: REMOTE_IPC_CHANNELS.workEntriesCreate,
   workEntriesUpdate: 'work-entries:update',
   workEntriesReorder: 'work-entries:reorder',
-  workEntriesDelete: 'work-entries:delete',
+  workEntriesDelete: REMOTE_IPC_CHANNELS.workEntriesDelete,
   workEntriesResolveChat: 'work-entries:resolve-chat',
   settingsClaudeAuthStatus: 'settings:claude-auth-status',
   settingsCodexAuthStatus: 'settings:codex-auth-status',
@@ -28546,7 +28540,7 @@ export const IPC_CHANNELS = {
   observabilityLoadUsageMetrics: 'observability:load-usage-metrics',
   observabilityLoadUsageMetricsView: 'observability:load-usage-metrics-view',
   observabilityLoadUsageTabSummary: 'observability:load-usage-tab-summary',
-  observabilityRefreshUsage: REMOTE_IPC_CHANNELS.observabilityRefreshUsage,
+  observabilityRefreshUsage: 'observability:refresh-usage',
   observabilityRecordDesktopInstrumentationInitFailure:
     'observability:record-desktop-instrumentation-init-failure',
   observabilityRecordRendererSummary: 'observability:record-renderer-summary',
@@ -28618,6 +28612,8 @@ export const IPC_CHANNELS = {
   modelRegistryGet: REMOTE_IPC_CHANNELS.modelRegistryGet,
   // Hosted controller read; the portable renderer adapter does not expose it.
   providerUsageLimitsGet: 'provider-usage:limits-get',
+  providerUsageLoad: REMOTE_IPC_CHANNELS.providerUsageLoad,
+  providerUsageRefresh: REMOTE_IPC_CHANNELS.providerUsageRefresh,
   modelRegistryUpdated: 'model-registry:updated',
   aiGatewayModelCatalogRetry: 'ai-gateway-model-catalog:retry',
   harnessAssignmentsLoad: 'model-harness-assignments:load',
@@ -28915,7 +28911,8 @@ export const IPC_CHANNELS = {
   orgProjectsSetupFromFolder: 'org-projects:setup-from-folder',
   orgProjectsMemberCodeEligibility: 'org-projects:member-code-eligibility',
   orgProjectsInspectFolder: 'org-projects:inspect-folder',
-  orgProjectsFindRepositoryOwner: 'org-projects:find-repository-owner',
+  orgProjectsFindRepositoryOwner:
+    REMOTE_IPC_CHANNELS.orgProjectsFindRepositoryOwner,
   orgProjectsCreateMemberCodeProject: 'org-projects:create-member-code-project',
   orgProjectsCreateMemberMultiRepoProject:
     'org-projects:create-member-multi-repo-project',

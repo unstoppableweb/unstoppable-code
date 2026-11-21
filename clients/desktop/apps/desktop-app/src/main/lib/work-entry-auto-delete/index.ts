@@ -41,6 +41,7 @@ import {
 import { getChatStateService } from '../../services/chat-state-service';
 import { getResumeQueue } from '../../services/resume-queue-host';
 import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
+import { outsideStorageAdmission } from '@canopy/execution-engine/node/lib/storage-admission';
 import { createElectronExecutionRuntime } from '../../pipelines/execution-runtime';
 import { getAppAdvisorWatcherService } from '../../app-advisor/watchers';
 import { readAllSidebarItems } from '../sidebar-items';
@@ -76,7 +77,10 @@ import {
 } from '../workspace-target-exclusion';
 import { readArms, writeArms, withArmWriter } from './store';
 import { subscribeAutoDeleteActivity } from './activity';
-import { readDestructiveRecovery } from '../w5-destructive-recovery';
+import {
+  filterBlockingDestructiveRecoveries,
+  readDestructiveRecovery,
+} from '../w5-destructive-recovery';
 
 export interface ArmWorkEntryAutoDeleteInput {
   workspaceId: string;
@@ -185,6 +189,26 @@ async function candidateFor(
   };
 }
 
+/**
+ * The worktree's lifecycle journal slot refuses arming unless it holds a
+ * finished, clean removal of an earlier worktree that reused this ID
+ * (CAN-7478). A journal of this identity, or of no recorded one, still
+ * refuses; an unreadable one throws.
+ */
+async function hasUnfinishedRemoval(
+  candidate: AutoArchiveCandidate,
+): Promise<boolean> {
+  const { workspaceId, targetId, createdAt } = candidate;
+  const journal = await readDestructiveRecovery(workspaceId, targetId);
+  return (
+    journal !== null &&
+    (journal.createdAt === undefined ||
+      journal.createdAt === createdAt ||
+      (await filterBlockingDestructiveRecoveries([journal], targetId, true))
+        .length > 0)
+  );
+}
+
 async function unavailableReason(
   candidate: AutoArchiveCandidate,
   allowRecovery = false,
@@ -192,11 +216,7 @@ async function unavailableReason(
   const { workspaceId, targetId, worktree } = candidate;
   if (isWorkspaceTargetRemovalPending(workspaceId, targetId))
     return 'the worktree is being removed';
-  if (
-    !allowRecovery &&
-    worktree &&
-    (await readDestructiveRecovery(workspaceId, targetId))
-  )
+  if (!allowRecovery && worktree && (await hasUnfinishedRemoval(candidate)))
     return 'the worktree has an unfinished removal or recovery operation';
   if (
     worktree?.healthIssue ||
@@ -891,56 +911,63 @@ export function startWorkEntryAutoDeleteScheduler(): {
   let running: Promise<void> | undefined;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActive = new Set<string>();
-  const run = (): void => {
-    if (stopped) return;
-    pending = true;
-    if (running) return;
-    running = withArmWriter(async () => {
-      while (pending && !stopped) {
-        pending = false;
-        if (!loaded) {
-          loaded = true;
-          const ids = new Set(
-            (await readAllSidebarItems()).items.map((item) => item.id),
+  // Events and requestEvaluation call this from their callers' async context.
+  // Evaluation admits its own writes and must not inherit a caller's storage
+  // admission, which retires once that caller settles (CAN-7480).
+  const run = (): void =>
+    outsideStorageAdmission(() => {
+      if (stopped) return;
+      pending = true;
+      if (running) return;
+      running = withArmWriter(async () => {
+        while (pending && !stopped) {
+          pending = false;
+          if (!loaded) {
+            loaded = true;
+            const ids = new Set(
+              (await readAllSidebarItems()).items.map((item) => item.id),
+            );
+            // Default Bot only: the only Bot until the Bot registry lists the rest.
+            ids.add(APP_ADVISOR_PROJECT_ID);
+            for (const id of ids)
+              for (const arm of await readArms(id))
+                armedKeys.add(keyOf(id, arm.targetId));
+          }
+          for (const key of [...armedKeys]) {
+            const [workspaceId, targetId] = key.split('\0');
+            if (!workspaceId || !targetId) continue;
+            const arm = (await readArms(workspaceId)).find(
+              (arm) => arm.targetId === targetId,
+            );
+            if (arm) await evaluate(workspaceId, arm);
+            else armedKeys.delete(key);
+          }
+          for (const workspaceId of new Set(
+            [...armedKeys].map((key) => key.split('\0')[0]),
+          )) {
+            if (workspaceId) await broadcast(workspaceId);
+          }
+        }
+      })
+        .catch((error: unknown) =>
+          logMainProcessWarn('Auto-delete evaluation failed', error),
+        )
+        .finally(() => {
+          running = undefined;
+          if (stopped) return;
+          if (settleTimer) clearTimeout(settleTimer);
+          const remaining = [...idleSince.values()].map((since) =>
+            Math.max(
+              1,
+              WORK_ENTRY_AUTO_DELETE_SETTLE_MS - (Date.now() - since),
+            ),
           );
-          // Default Bot only: the only Bot until the Bot registry lists the rest.
-          ids.add(APP_ADVISOR_PROJECT_ID);
-          for (const id of ids)
-            for (const arm of await readArms(id))
-              armedKeys.add(keyOf(id, arm.targetId));
-        }
-        for (const key of [...armedKeys]) {
-          const [workspaceId, targetId] = key.split('\0');
-          if (!workspaceId || !targetId) continue;
-          const arm = (await readArms(workspaceId)).find(
-            (arm) => arm.targetId === targetId,
-          );
-          if (arm) await evaluate(workspaceId, arm);
-          else armedKeys.delete(key);
-        }
-        for (const workspaceId of new Set(
-          [...armedKeys].map((key) => key.split('\0')[0]),
-        )) {
-          if (workspaceId) await broadcast(workspaceId);
-        }
-      }
-    })
-      .catch((error: unknown) =>
-        logMainProcessWarn('Auto-delete evaluation failed', error),
-      )
-      .finally(() => {
-        running = undefined;
-        if (stopped) return;
-        if (settleTimer) clearTimeout(settleTimer);
-        const remaining = [...idleSince.values()].map((since) =>
-          Math.max(1, WORK_ENTRY_AUTO_DELETE_SETTLE_MS - (Date.now() - since)),
-        );
-        if (remaining.length) {
-          settleTimer = setTimeout(run, Math.min(...remaining));
-          settleTimer.unref?.();
-        }
-      });
-  };
+          if (remaining.length) {
+            settleTimer = setTimeout(run, Math.min(...remaining));
+            settleTimer.unref?.();
+          }
+        });
+    });
   const activity = (): void => {
     // Session and terminal events are frequent; with nothing armed there is no
     // idle window to reset, so skip the active-target scan entirely.

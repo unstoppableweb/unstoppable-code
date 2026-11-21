@@ -728,8 +728,14 @@ export function handleGlobalShortcutKeyDown(
     // same way its tab-strip "X" button does, not always the chat tab. Acts on
     // whichever panel grid is visible: the normal worktree on the main page or
     // the cowork work entry on the chat page.
+    // Not behind a modal (the media viewer, a confirm): focus sits on one of
+    // its buttons, or falls to the page once its picture is clicked.
     const selection = getVisibleGridSelection();
-    if (!selection) {
+    if (
+      !selection ||
+      isDialogTarget(event.target) ||
+      document.querySelector('[aria-modal="true"]') !== null
+    ) {
       return;
     }
 

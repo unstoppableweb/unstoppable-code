@@ -1,6 +1,7 @@
 export * from './capabilities';
 export * from './canopy-client';
 export * from './shell-commands';
+export * from './chat-recovery-client';
 export * from './terminal-client';
 export * from './billing-client';
 export * from './review-approvals-client';

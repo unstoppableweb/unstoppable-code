@@ -13,18 +13,20 @@ import {
   AttachmentDropZone,
   AttachmentItemRow,
   Button,
+  DelayedLoadingPlaceholder,
   ErrorBanner,
   InlineDeleteConfirm,
   LoadingSpinner,
   RowActionButton,
   RowActionTray,
+  Skeleton,
   Surface,
 } from '@canopy/ui-shared/components';
-import { MentionIcon } from '@canopy/ui-shared/icons';
+import { FileTypeIcon, MentionIcon } from '@canopy/ui-shared/icons';
 import {
   AttachmentIcon,
+  CloseIcon,
   DownloadIcon,
-  EyeIcon,
   FolderIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -84,24 +86,37 @@ export interface AttachmentsSource {
   readonly add?: AttachmentsAdd;
   /** Set while the viewer must sign in before using attachments. */
   readonly guest?: { readonly onSignIn: () => void };
-  readonly preview?: {
-    readonly canPreview: (row: AttachmentListRow) => boolean;
-    readonly open: (row: AttachmentListRow) => void;
+  /** What a row shows at its end, such as the file's size and date. */
+  readonly detail?: (row: AttachmentListRow) => string | undefined;
+  /**
+   * What a click on a row does: a viewer, a preview, the file's own app.
+   * A rejection shows `failureMessage` under the list.
+   */
+  readonly open?: {
+    readonly canOpen: (row: AttachmentListRow) => boolean;
+    readonly run: (row: AttachmentListRow) => void | Promise<void>;
+    readonly failureMessage?: string;
   };
-  readonly mention?: (row: AttachmentListRow) => void;
-  readonly reveal?: {
-    readonly label: string;
-    readonly run: (row: AttachmentListRow) => void;
-  };
-  readonly download?: (row: AttachmentListRow) => Promise<void>;
-  readonly remove?: (row: AttachmentListRow) => Promise<void>;
-  readonly rowIcon?: (row: AttachmentListRow) => ReactNode;
-  readonly showSize?: boolean;
+  /**
+   * The host's own preview while the pointer rests on a row, for a file the
+   * scope cannot open (a read-only folder's document). `overlay` is drawn
+   * once, beside the list.
+   */
   readonly hover?: {
-    readonly onEnter: (row: AttachmentListRow, element: HTMLElement) => void;
+    readonly shows: (row: AttachmentListRow) => boolean;
+    readonly onEnter: (row: AttachmentListRow, anchor: HTMLElement) => void;
     readonly onLeave: () => void;
     readonly overlay: ReactNode;
   };
+  readonly mention?: (row: AttachmentListRow) => void;
+  /** A rejection shows `failureMessage` under the list. */
+  readonly reveal?: {
+    readonly label: string;
+    readonly run: (row: AttachmentListRow) => void | Promise<void>;
+    readonly failureMessage?: string;
+  };
+  readonly download?: (row: AttachmentListRow) => Promise<void>;
+  readonly remove?: (row: AttachmentListRow) => Promise<void>;
   /** Empty-state text for a scope that can't add files. */
   readonly emptyMessage?: string;
 }
@@ -116,9 +131,9 @@ export interface AttachmentsSectionTestIds {
   readonly error: string;
   readonly retry: string;
   readonly row: string;
+  /** The row's open button, where the row opens its file. */
   readonly rowContent?: string;
   readonly rowActions?: string;
-  readonly preview: string;
   readonly mention: string;
   readonly reveal: string;
   readonly download: string;
@@ -146,7 +161,6 @@ export function attachmentsSectionTestIds(
     error: `${prefix}-error`,
     retry: `${prefix}-retry`,
     row: `${prefix}-row`,
-    preview: `${prefix}-preview`,
     mention: `${prefix}-mention`,
     reveal: `${prefix}-reveal`,
     download: `${prefix}-download`,
@@ -167,6 +181,19 @@ export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/** The open button's generic label; the row names the file. */
+function openLabel(row: AttachmentListRow): string {
+  const type = row.mediaType ?? '';
+  if (type.startsWith('image/') || IMAGE_FILENAME.test(row.filename))
+    return 'Open image';
+  if (type.startsWith('video/') || VIDEO_FILENAME.test(row.filename))
+    return 'Open video';
+  return 'Open file';
+}
+
+const IMAGE_FILENAME = /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif|tiff?)$/i;
+const VIDEO_FILENAME = /\.(mp4|mov|m4v|webm)$/i;
 
 /**
  * File drag state for an attachments drop target. Enter and leave fire for
@@ -250,6 +277,68 @@ interface PendingUpload {
 
 let uploadSequence = 0;
 
+/** Where focus goes once the row actions the user was in re-render. */
+type PendingFocus =
+  | { readonly kind: 'delete-button'; readonly rowId: string }
+  | {
+      readonly kind: 'after-delete';
+      readonly rowId: string;
+      readonly index: number;
+    };
+
+/** Whether a row shows any control, so a row without one keeps its size. */
+function rowHasActions(source: AttachmentsSource): boolean {
+  const { mention, reveal, download, remove } = source;
+  return (
+    mention !== undefined ||
+    reveal !== undefined ||
+    download !== undefined ||
+    remove !== undefined
+  );
+}
+
+const SAMPLE_ROWS: readonly AttachmentListRow[] = [
+  { id: 'sample-1', filename: 'design-notes.md', sizeBytes: 4200 },
+  { id: 'sample-2', filename: 'screenshot.png', sizeBytes: 182_000 },
+  { id: 'sample-3', filename: 'requirements.pdf', sizeBytes: 96_000 },
+];
+
+/** The list that has not arrived: real rows from samples, measured. */
+function AttachmentListSkeleton({
+  testId,
+  showDetail,
+}: {
+  readonly testId: string;
+  readonly showDetail: boolean;
+}): JSX.Element {
+  return (
+    <Skeleton loading label="Loading attachments" testId={testId}>
+      <ul className="flex flex-col gap-1">
+        {SAMPLE_ROWS.map((row) => (
+          <AttachmentItemRow
+            key={row.id}
+            as="li"
+            testId={`${testId}-row`}
+            filename={row.filename}
+            icon={
+              <FileTypeIcon
+                filename={row.filename}
+                size="sm"
+                className="shrink-0"
+              />
+            }
+            metadata={
+              showDetail && row.sizeBytes !== undefined
+                ? formatAttachmentSize(row.sizeBytes)
+                : undefined
+            }
+          />
+        ))}
+      </ul>
+    </Skeleton>
+  );
+}
+
 export interface AttachmentsSectionBodyProps {
   readonly source: AttachmentsSource;
   readonly testIds: AttachmentsSectionTestIds;
@@ -266,7 +355,12 @@ export interface AttachmentsSectionBodyProps {
   readonly addTriggerRef?: RefObject<(() => void) | null>;
 }
 
-/** The body of an attachments section: list, drop target, add and actions. */
+/**
+ * The body of an attachments section: the files as rows
+ * (`AttachmentItemRow`), the drop target, add and each file's actions. A
+ * click on a row opens the file where the source can; uploads in flight are
+ * rows after them.
+ */
 export function AttachmentsSectionBody({
   source,
   testIds,
@@ -277,8 +371,15 @@ export function AttachmentsSectionBody({
   const [uploads, setUploads] = useState<readonly PendingUpload[]>([]);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [deletePending, setDeletePending] = useState(false);
+  // Rows whose download is in flight. A ref, not `disabled`, so a second
+  // click is ignored without pulling the focused button out from under it.
+  const downloadingRef = useRef(new Set<string>());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const dropTargetRef = useRef<HTMLDivElement | null>(null);
+  const pendingFocusRef = useRef<PendingFocus | null>(null);
 
   // Mutations have no AbortSignal of their own (a half-applied delete must
   // still land), so completions check that the scope they started in is still
@@ -298,10 +399,18 @@ export function AttachmentsSectionBody({
     setConfirmingId(null);
     setDeletePending(false);
     setActionError(null);
+    setAnnouncement('');
     // Read only by completions, never rendered.
     // eslint-disable-next-line react-hooks/refs
     activationRef.current = next;
   }
+
+  // A new scope drops the previous one's focus intent and download guards.
+  // Declared before the focus effect below, so it runs first.
+  useEffect(() => {
+    pendingFocusRef.current = null;
+    downloadingRef.current = new Set();
+  }, [scopeKey]);
 
   // A body that unmounts (a closed rail, or an account switch remounting the
   // tree) stops its remaining uploads before they start.
@@ -428,24 +537,76 @@ export function AttachmentsSectionBody({
     runUploads([staged], activationRef.current.generation);
   };
 
+  /**
+   * An open or reveal that fails says so under the list, beside the files.
+   * Only the latest one's failure is told: an earlier one that fails after a
+   * later one succeeded would bring back a banner for a done action.
+   */
+  const fileActionRef = useRef(0);
+  const runFileAction = (
+    run: () => void | Promise<void>,
+    failureMessage: string,
+  ): void => {
+    const generation = activationRef.current.generation;
+    fileActionRef.current += 1;
+    const action = fileActionRef.current;
+    setActionError(null);
+    const pending = run();
+    if (pending === undefined) return;
+    void pending.catch((): void => {
+      if (isCurrent(generation) && action === fileActionRef.current) {
+        setActionError(failureMessage);
+      }
+    });
+  };
+
   const handleDownload = (row: AttachmentListRow): void => {
     if (source.download === undefined) return;
+    const downloading = downloadingRef.current;
+    if (downloading.has(row.id)) return;
+    downloading.add(row.id);
     const generation = activationRef.current.generation;
     setActionError(null);
-    void source.download(row).catch((): void => {
-      if (isCurrent(generation)) setActionError('Download failed. Try again.');
-    });
+    void source
+      .download(row)
+      .catch((): void => {
+        if (isCurrent(generation))
+          setActionError('Download failed. Try again.');
+      })
+      .finally((): void => {
+        downloading.delete(row.id);
+      });
+  };
+
+  const rows = load.kind === 'ready' ? load.rows : [];
+
+  const handleCancelDelete = (row: AttachmentListRow): void => {
+    pendingFocusRef.current = { kind: 'delete-button', rowId: row.id };
+    setConfirmingId(null);
   };
 
   const handleDelete = (row: AttachmentListRow): void => {
     if (source.remove === undefined) return;
     const generation = activationRef.current.generation;
+    const index = rows.findIndex((candidate) => candidate.id === row.id);
     setDeletePending(true);
     setActionError(null);
+    setAnnouncement('');
     void source
       .remove(row)
+      .then((): void => {
+        if (!isCurrent(generation)) return;
+        pendingFocusRef.current = {
+          kind: 'after-delete',
+          rowId: row.id,
+          index,
+        };
+        setAnnouncement('Attachment deleted.');
+      })
       .catch((): void => {
-        if (isCurrent(generation)) setActionError('Delete failed. Try again.');
+        if (!isCurrent(generation)) return;
+        pendingFocusRef.current = { kind: 'delete-button', rowId: row.id };
+        setActionError('Delete failed. Try again.');
       })
       .finally((): void => {
         if (!isCurrent(generation)) return;
@@ -454,7 +615,105 @@ export function AttachmentsSectionBody({
       });
   };
 
-  const rows = load.kind === 'ready' ? load.rows : [];
+  // Upload rows come after the files, and a long folder already fills the
+  // list's height: bring newly added uploads (they join the end) into view, and an
+  // upload that has just failed, whose row grows by its Try again. A batch
+  // keeps its order, so a failed row can sit above later ones: the list
+  // scrolls to that row, not to its end.
+  const shownUploadsRef = useRef<{
+    readonly count: number;
+    readonly failed: ReadonlySet<string>;
+    readonly listState: string;
+  }>({ count: 0, failed: new Set(), listState: '' });
+  const uploadCount = uploads.length;
+  const failedUploadKey = uploads
+    .filter((upload) => upload.state === 'error')
+    .map((upload) => upload.localId)
+    .join('\n');
+  // The list reloads after a later upload lands, which rebuilds the list and
+  // resets its scroll: a failed row already brought into view is brought
+  // back once the list is shown again.
+  // A drag over the section shows the drop zone in the list's place, so a
+  // row cannot be scrolled to until the drag ends.
+  const listState = drag.dragging
+    ? 'dragging'
+    : load.kind === 'ready'
+      ? `ready:${String(load.rows.length)}`
+      : load.kind;
+  useEffect(() => {
+    const list = dropTargetRef.current;
+    const shown = shownUploadsRef.current;
+    const failed = failedUploadKey === '' ? [] : failedUploadKey.split('\n');
+    // A failed row counts as shown only once it has been scrolled to.
+    const shownFailed = new Set(failed.filter((id) => shown.failed.has(id)));
+    const relisted = listState !== shown.listState;
+    const target =
+      failed.find((id) => !shownFailed.has(id)) ??
+      (relisted ? failed[failed.length - 1] : undefined);
+    if (list !== null && target !== undefined) {
+      const row = Array.from(
+        list.querySelectorAll<HTMLElement>('[data-upload-id]'),
+      ).find((element) => element.dataset.uploadId === target);
+      if (row !== undefined) {
+        const rowBox = row.getBoundingClientRect();
+        const listBox = list.getBoundingClientRect();
+        if (rowBox.top < listBox.top) {
+          list.scrollTop -= listBox.top - rowBox.top;
+        } else if (rowBox.bottom > listBox.bottom) {
+          list.scrollTop += rowBox.bottom - listBox.bottom;
+        }
+        shownFailed.add(target);
+      }
+    } else if (list !== null && uploadCount > shown.count) {
+      list.scrollTop = list.scrollHeight;
+    }
+    shownUploadsRef.current = {
+      count: uploadCount,
+      failed: shownFailed,
+      listState,
+    };
+  }, [uploadCount, failedUploadKey, listState]);
+
+  // Focus was in the row's actions, which re-render or unmount, so place it
+  // again rather than let it fall to the page. A deleted row waits for the
+  // source to drop it, then focus moves to the row now in its place.
+  useEffect(() => {
+    const pending = pendingFocusRef.current;
+    if (pending === null) return;
+    // Only replace focus the section lost: never pull it back from the
+    // composer or another pane the person moved to meanwhile.
+    const active = document.activeElement;
+    const root = dropTargetRef.current;
+    if (
+      active !== null &&
+      active !== document.body &&
+      root?.contains(active) !== true
+    ) {
+      pendingFocusRef.current = null;
+      return;
+    }
+    const listed = load.kind === 'ready' ? load.rows : [];
+    const index = listed.findIndex((row) => row.id === pending.rowId);
+    const list = listRef.current;
+    if (pending.kind === 'delete-button') {
+      pendingFocusRef.current = null;
+      list?.children
+        .item(index)
+        ?.querySelector<HTMLElement>(`[data-testid="${testIds.delete}"]`)
+        ?.focus();
+      return;
+    }
+    if (index !== -1) return;
+    pendingFocusRef.current = null;
+    const next =
+      list?.children.item(pending.index) ??
+      list?.children.item(pending.index - 1);
+    const target =
+      next?.querySelector<HTMLElement>('button, [role="button"]') ??
+      list ??
+      dropTargetRef.current?.querySelector<HTMLElement>('[role="button"]');
+    target?.focus();
+  }, [load, confirmingId, testIds.delete]);
   // Pending rows are the source of truth for upload activity, so one batch
   // finishing never clears another's.
   const uploadPending = uploads.some((upload) => upload.state !== 'error');
@@ -489,6 +748,7 @@ export function AttachmentsSectionBody({
             ? 'relative min-h-28 flex-1 overflow-y-auto'
             : 'relative min-h-28 max-h-75 overflow-y-auto'
         }
+        ref={dropTargetRef}
         data-testid={testIds.dropzone}
         data-drop-enabled={dropEnabled ? 'true' : 'false'}
         {...drag.handlers}
@@ -500,12 +760,12 @@ export function AttachmentsSectionBody({
         ) : (
           <>
             {load.kind === 'loading' ? (
-              <p
-                className="py-3 text-center text-xs fg-secondary"
-                data-testid={testIds.loading}
-              >
-                Loading attachments…
-              </p>
+              <DelayedLoadingPlaceholder slowNote="Still loading attachments…">
+                <AttachmentListSkeleton
+                  testId={testIds.loading}
+                  showDetail={source.detail !== undefined}
+                />
+              </DelayedLoadingPlaceholder>
             ) : null}
             {load.kind === 'error' ? (
               <div
@@ -527,55 +787,94 @@ export function AttachmentsSectionBody({
             uploads.length === 0 ? (
               <AttachmentDropZone
                 emptyMessage={source.emptyMessage}
+                onAdd={add === undefined ? undefined : openPicker}
                 testId={testIds.empty}
               />
             ) : null}
             {rows.length > 0 || uploads.length > 0 ? (
-              <ul className="flex flex-col gap-1">
-                {rows.map((row) => (
-                  <AttachmentItemRow
-                    key={row.id}
-                    as="li"
-                    testId={testIds.row}
-                    attachmentId={row.domId}
-                    state="ready"
-                    filename={row.filename}
-                    icon={
-                      source.rowIcon?.(row) ?? (
-                        <AttachmentIcon size={14} className="shrink-0" />
-                      )
-                    }
-                    metadata={
-                      source.showSize === true && row.sizeBytes !== undefined
-                        ? formatAttachmentSize(row.sizeBytes)
-                        : undefined
-                    }
-                    contentTestId={testIds.rowContent}
-                    onMouseEnter={
-                      source.hover === undefined
-                        ? undefined
-                        : (event): void =>
-                            source.hover?.onEnter(row, event.currentTarget)
-                    }
-                    onMouseLeave={source.hover?.onLeave}
-                    actions={(nameId): ReactNode => (
-                      <AttachmentRowActions
-                        row={row}
-                        nameId={nameId}
-                        source={source}
-                        testIds={testIds}
-                        confirming={confirmingId === row.id}
-                        deletePending={deletePending}
-                        uploadPending={uploadPending}
-                        mutationsPending={mutationsPending}
-                        onRequestDelete={(): void => setConfirmingId(row.id)}
-                        onCancelDelete={(): void => setConfirmingId(null)}
-                        onConfirmDelete={(): void => handleDelete(row)}
-                        onDownload={(): void => handleDownload(row)}
-                      />
-                    )}
-                  />
-                ))}
+              <ul
+                ref={listRef}
+                tabIndex={-1}
+                aria-label="Attachments"
+                className="flex flex-col gap-1 outline-none"
+              >
+                {rows.map((row) => {
+                  const open = source.open;
+                  const opens = open?.canOpen(row) === true;
+                  const hover = source.hover?.shows(row) === true;
+                  return (
+                    <AttachmentItemRow
+                      key={row.id}
+                      as="li"
+                      testId={testIds.row}
+                      attachmentId={row.domId}
+                      state="ready"
+                      filename={row.filename}
+                      icon={
+                        <FileTypeIcon
+                          filename={row.filename}
+                          size="sm"
+                          className="shrink-0"
+                        />
+                      }
+                      metadata={source.detail?.(row)}
+                      {...(testIds.rowContent === undefined
+                        ? {}
+                        : { contentTestId: testIds.rowContent })}
+                      {...(opens && open !== undefined
+                        ? {
+                            onOpen: (): void =>
+                              runFileAction(
+                                () => open.run(row),
+                                open.failureMessage ??
+                                  'Open failed. Try again.',
+                              ),
+                            openLabel: openLabel(row),
+                          }
+                        : {})}
+                      {...(hover
+                        ? {
+                            onMouseEnter: (event): void =>
+                              source.hover?.onEnter(row, event.currentTarget),
+                            onMouseLeave: source.hover?.onLeave,
+                          }
+                        : {})}
+                      actions={
+                        rowHasActions(source)
+                          ? (nameId): ReactNode => (
+                              <AttachmentRowActions
+                                row={row}
+                                nameId={nameId}
+                                source={source}
+                                testIds={testIds}
+                                confirming={confirmingId === row.id}
+                                deletePending={deletePending}
+                                uploadPending={uploadPending}
+                                mutationsPending={mutationsPending}
+                                onRequestDelete={(): void =>
+                                  setConfirmingId(row.id)
+                                }
+                                onCancelDelete={(): void =>
+                                  handleCancelDelete(row)
+                                }
+                                onConfirmDelete={(): void => handleDelete(row)}
+                                onReveal={(): void => {
+                                  const reveal = source.reveal;
+                                  if (reveal === undefined) return;
+                                  runFileAction(
+                                    () => reveal.run(row),
+                                    reveal.failureMessage ??
+                                      'Reveal failed. Try again.',
+                                  );
+                                }}
+                                onDownload={(): void => handleDownload(row)}
+                              />
+                            )
+                          : undefined
+                      }
+                    />
+                  );
+                })}
                 {uploads.map((upload) => (
                   <PendingUploadRow
                     key={upload.localId}
@@ -597,6 +896,9 @@ export function AttachmentsSectionBody({
           </>
         )}
       </div>
+      <p role="status" className="sr-only">
+        {announcement}
+      </p>
       {guest === undefined && visibleActionError !== null ? (
         <ErrorBanner
           errorSource="attachments-action-error"
@@ -609,6 +911,10 @@ export function AttachmentsSectionBody({
   );
 }
 
+/**
+ * A row's actions, in the tray its end reveals on hover or focus. The
+ * delete confirm takes the tray's place while it asks.
+ */
 function AttachmentRowActions({
   row,
   nameId,
@@ -621,6 +927,7 @@ function AttachmentRowActions({
   onRequestDelete,
   onCancelDelete,
   onConfirmDelete,
+  onReveal,
   onDownload,
 }: {
   readonly row: AttachmentListRow;
@@ -634,18 +941,10 @@ function AttachmentRowActions({
   readonly onRequestDelete: () => void;
   readonly onCancelDelete: () => void;
   readonly onConfirmDelete: () => void;
+  readonly onReveal: () => void;
   readonly onDownload: () => void;
-}): JSX.Element | null {
-  const { preview, mention, reveal, download, remove } = source;
-  if (
-    (preview === undefined || !preview.canPreview(row)) &&
-    mention === undefined &&
-    reveal === undefined &&
-    download === undefined &&
-    remove === undefined
-  ) {
-    return null;
-  }
+}): JSX.Element {
+  const { mention, reveal, download, remove } = source;
   // Session replay records attributes, so labels stay generic and each
   // control names its file through the row's blocked name.
   return (
@@ -667,16 +966,6 @@ function AttachmentRowActions({
         />
       ) : (
         <>
-          {preview !== undefined && preview.canPreview(row) ? (
-            <RowActionButton
-              label="Preview attachment"
-              describedBy={nameId}
-              onClick={(): void => preview.open(row)}
-              testId={testIds.preview}
-            >
-              <EyeIcon size={12} />
-            </RowActionButton>
-          ) : null}
           {mention !== undefined ? (
             <RowActionButton
               label="Mention in chat"
@@ -691,7 +980,7 @@ function AttachmentRowActions({
             <RowActionButton
               label={reveal.label}
               describedBy={nameId}
-              onClick={(): void => reveal.run(row)}
+              onClick={onReveal}
               testId={testIds.reveal}
             >
               <FolderIcon size="sm" />
@@ -741,6 +1030,7 @@ function PendingUploadRow({
     <Surface
       data-testid={testIds.uploadRow}
       data-state={upload.state}
+      data-upload-id={upload.localId}
       as="li"
       variant="group"
       size="small"
@@ -764,6 +1054,8 @@ function PendingUploadRow({
         <span
           id={nameId}
           className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate text-xs fg-primary`}
+          // Safe in replay: the block class drops the element's attributes.
+          title={upload.file.name}
         >
           {upload.file.name}
         </span>
@@ -786,11 +1078,11 @@ function PendingUploadRow({
               testId={testIds.uploadDismiss}
               onClick={onDismiss}
             >
-              <TrashIcon size={12} />
+              <CloseIcon size={12} />
             </RowActionButton>
           </>
         ) : (
-          <span className="shrink-0 text-2xs fg-secondary">
+          <span className="shrink-0 text-2xs tabular-nums fg-secondary">
             {formatAttachmentSize(upload.file.size)}
           </span>
         )}

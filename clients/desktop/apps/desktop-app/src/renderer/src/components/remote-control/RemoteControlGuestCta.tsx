@@ -40,7 +40,7 @@ export function RemoteControlGuestCta({
         className={`flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between ${className}`}
       >
         <p className="text-s fg-secondary">
-          Create a free account to unlock {REMOTE_CONTROL_LABEL}.{' '}
+          Create an account to unlock {REMOTE_CONTROL_LABEL}.{' '}
           {GUEST_WORK_PRESERVED}
         </p>
         <Button

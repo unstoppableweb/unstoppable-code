@@ -1,3 +1,4 @@
+import { dialog } from 'electron';
 import type {
   McpAccountConnectParams,
   McpAccountConnectResult,
@@ -54,10 +55,9 @@ const defaultDeps: CopyToCloudDeps = {
         };
   },
   confirmSecretsLeave: async (request) => {
-    const [{ confirmSecretsLeave }, { dialog }, { getMainWindow }, cloud] =
+    const [{ confirmSecretsLeave }, { getMainWindow }, cloud] =
       await Promise.all([
         import('../mcp/confirm-secrets-leave'),
-        import('electron'),
         import('../lib/main-window-focus'),
         import('../canopy-cloud/client'),
       ]);

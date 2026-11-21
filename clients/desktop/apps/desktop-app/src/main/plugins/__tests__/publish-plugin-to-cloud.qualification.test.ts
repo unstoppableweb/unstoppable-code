@@ -1475,7 +1475,7 @@ describe("a local plugin's cloud copy withholds what a share would block on (CAN
     }
   });
 
-  it('withholds a plugin.json that looks like it holds a secret from a cloud copy, and still blocks a share on it', async () => {
+  it('refuses a cloud copy whose plugin.json looks like it holds a secret, naming the plugin, and still blocks a share on it (CAN-7226)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'publish-plugin-manifest-secret-'));
     try {
       mkdirSync(join(root, '.claude-plugin'), { recursive: true });
@@ -1538,15 +1538,18 @@ describe("a local plugin's cloud copy withholds what a share would block on (CAN
             },
           ],
         });
+      // Leaving the manifest out would ship a plugin that doesn't load.
       const copy = await analyse({ gitIgnored: () => Promise.resolve(null) });
-      expect(copy.summary.state).toBe('ready');
-      expect(copy.summary.withheldMemberFiles).toEqual([
-        {
-          rootName: 'notes',
-          relativePath: '.claude-plugin/plugin.json',
-          reason: 'suspected_secret',
-        },
-      ]);
+      const message =
+        'The plugin "notes" looks like it contains a secret (a private key in .claude-plugin/plugin.json). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.';
+      expect(copy.summary.state).toBe('blocked');
+      expect(copy.summary.withheldMemberFiles ?? []).toEqual([]);
+      expect(copy.summary.blockers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'SUSPECTED_SECRET', message }),
+        ]),
+      );
+      expect(copy.secretRefusal).toBe(message);
       for (const bytes of copy.blobs.values())
         expect(Buffer.from(bytes).toString('utf8')).not.toContain(
           'MIIEowIBAAK',
@@ -2026,6 +2029,29 @@ describe("a local plugin's cloud copy withholds what a share would block on (CAN
     await expect(
       refusal(publishPluginPackageToCloud(TARGET, PKG, SOURCE, deps)),
     ).resolves.toBe('publish-package-blocked');
+    expect(recorded.asked).toEqual([]);
+  });
+
+  it('refuses an analysis that refused a secret-looking SKILL.md or plugin.json with that message, uploading nothing (CAN-7226)', async () => {
+    const message =
+      'The skill "notes" looks like it contains a secret (a password in a URL in skills/notes/SKILL.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.';
+    const { deps, recorded } = fakes({
+      readPackage: () =>
+        Promise.reject(new PackageAnalysisBlockedError(message)),
+    });
+    const error: unknown = await publishPluginPackageToCloud(
+      TARGET,
+      PKG,
+      SOURCE,
+      deps,
+    ).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(CatalogHostRefusedError);
+    expect(error).toMatchObject({ refusal: 'publish-secret-detected' });
+    const cause = error instanceof Error ? error.cause : undefined;
+    expect(cause instanceof Error && cause.message).toBe(message);
     expect(recorded.asked).toEqual([]);
   });
 });

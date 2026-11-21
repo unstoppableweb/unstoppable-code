@@ -105,6 +105,15 @@ export const PipelineDefinitionListParamsSchema = z.strictObject({
     .optional(),
   sources: z.array(PipelineDefinitionSourceSchema).optional(),
   enabled: z.boolean().optional(),
+  /**
+   * `bounded`: read `project` definitions within the unattended-scan bounds
+   * (entries walked, files read, bytes read and parsed), for a caller that
+   * reads a checkout nobody opened, such as the Library's count of other
+   * worktrees' project pipelines (CAN-965). A checkout a bound cuts short
+   * is named in `unavailableSources` and lists no `project` rows. Absent,
+   * project discovery reads the whole pipelines directory.
+   */
+  projectDiscovery: z.enum(['bounded']).optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 

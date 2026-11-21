@@ -461,6 +461,8 @@ function ModelPolicyCard({ detail }: TeamModelPolicySectionProps): JSX.Element {
                 <SettingsConfirmDialog
                   dataTestId="model-policy-review-all-dialog"
                   errorMessage={error?.copy}
+                  // The banner above already records this request failure.
+                  errorRecordingDisabled
                   errorDetails={error?.details}
                   title={
                     pendingReviewIds.length === 1

@@ -1,5 +1,6 @@
 'use client';
 
+import { autoResumeIsMarkerOnly } from '@canopy/ui-shared/components/chat';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   AgentSentTitle,
@@ -218,6 +219,7 @@ export function normalizeChatMessageParts(
  * neutral types come from) and the desktop transcript order.
  */
 export interface ChatMessageViewProps {
+  readonly outputlessAutoResume?: boolean;
   readonly receivingContext?: AgentSentReceivingContext;
   readonly message: RemoteControlChatMessage;
   /** Optional branded app icon threaded to tool/agent parts. */
@@ -456,6 +458,7 @@ const NO_ATTACHMENTS: readonly RemoteControlChatMessageAttachment[] = [];
 
 function ChatMessageViewImpl({
   message,
+  outputlessAutoResume = false,
   receivingContext: explicitContext,
   appIcon,
   turnTimerStampAccessory,
@@ -536,16 +539,18 @@ function ChatMessageViewImpl({
       readChatPromptSource(message) === 'human'
         ? undefined
         : readMessageAutoResume(message);
+    const markerOnly = autoResumeIsMarkerOnly(autoResume, outputlessAutoResume);
     const autoResumeMarker = autoResume ? (
       <AutoResumeMarker
         autoResume={autoResume}
+        outputless={outputlessAutoResume}
         providerName={autoResume.providerName}
         timestamp={message.createdAtMs}
         text={body}
-        copyText={!autoResume.resendsUserMessage ? body : undefined}
+        copyText={markerOnly ? body : undefined}
       />
     ) : null;
-    if (autoResume && !autoResume.resendsUserMessage) {
+    if (markerOnly) {
       return (
         <div
           {...contextMenuTarget}

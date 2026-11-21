@@ -75,13 +75,15 @@ export function ArchivedStateFilterDropdown({
           event.stopPropagation();
           setOpen((prev) => !prev);
         }}
-        aria-label={title}
+        // The dot alone says a filter is on; say it in the name too.
+        aria-label={isActive ? `${title}, filter on` : title}
         aria-expanded={open}
         aria-haspopup="true"
         title={title}
         data-testid={`${testIdPrefix}-trigger`}
         data-active={isActive ? 'true' : 'false'}
         hoverSurface
+        coarsePointerTarget
       />
       {isActive && (
         <Dot

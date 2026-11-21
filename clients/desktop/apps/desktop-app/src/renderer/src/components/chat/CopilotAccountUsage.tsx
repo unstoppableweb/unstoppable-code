@@ -65,9 +65,11 @@ export function CopilotAccountUsage(): JSX.Element {
       }))}
       {...(enabled && failed && !needsConnection
         ? {
-            onRetry: (): void => {
+            onRetry: (): Promise<void> => {
               setRefreshFailed(false);
-              void refresh('copilot').catch(() => setRefreshFailed(true));
+              return refresh('copilot')
+                .then(() => undefined)
+                .catch(() => setRefreshFailed(true));
             },
           }
         : {})}

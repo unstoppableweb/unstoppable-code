@@ -16,6 +16,7 @@ import {
 } from '../canopy-cloud/shared-item-subscriptions';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isUtf8 } from 'node:buffer';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
@@ -51,6 +52,10 @@ import {
   hasPendingSkillReplacement,
 } from './skill-replacement-state';
 import { writeFileAtomically, syncDirectory } from '../lib/atomic-file';
+import { writeFileAtomicallySync } from '@canopy/execution-engine/node/lib/atomic-file';
+import { damagedCopyPath } from '@canopy/execution-engine/node/lib/damaged-copies';
+import { isStorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { normalizeGitHubRepoRef } from '@canopy/execution-engine/plugin-refs';
 import {
   getCustomSkillNameValidationError,
@@ -66,6 +71,7 @@ import { sanitizeName, installSkill } from './installer';
 import { fetchRiskAssessment } from './risk';
 import {
   readLockFile,
+  assertLockWritable,
   addLockEntry,
   removeLockEntry,
   fetchSkillFolderHash,
@@ -104,47 +110,79 @@ function getSkillShareLinksPath(): string {
   return path.join(getSkillsRootDir(), SKILL_SHARE_LINKS_FILE);
 }
 
-function readSkillShareLinks(): Record<string, ShareRemoteMetadata> {
+interface SkillShareLinksRead {
+  links: Record<string, ShareRemoteMetadata>;
+  /**
+   * The bytes read when the file exists but can't be parsed, so its links are
+   * unknown; they are what a write first copies aside.
+   */
+  damagedBytes?: Buffer;
+}
+
+/** A missing store has no links; a file that can't be read at all throws. */
+function readSkillShareLinksFile(): SkillShareLinksRead {
+  let bytes: Buffer;
   try {
-    const parsed: unknown = JSON.parse(
-      fs.readFileSync(getSkillShareLinksPath(), 'utf8'),
-    );
+    bytes = fs.readFileSync(getSkillShareLinksPath());
+  } catch (error) {
+    if (hasFileSystemErrorCode(error, 'ENOENT')) return { links: {} };
+    throw error;
+  }
+  const damaged = { links: {}, damagedBytes: bytes };
+  // Decoding would turn a bad byte into U+FFFD and a rewrite would lose it.
+  if (!isUtf8(bytes)) return damaged;
+  try {
+    const parsed: unknown = JSON.parse(bytes.toString('utf8'));
     if (
       typeof parsed !== 'object' ||
       parsed === null ||
       Array.isArray(parsed)
     ) {
-      throw new Error('Invalid Skill share-link catalog.');
+      return damaged;
     }
     const links: Record<string, ShareRemoteMetadata> = {};
     for (const [localId, value] of Object.entries(parsed)) {
       const remote = parseShareRemoteMetadata(value);
-      if (!remote) throw new Error('Invalid Skill share-link catalog.');
+      if (!remote) return damaged;
       links[localId] = remote;
     }
-    return links;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    throw error;
+    return { links };
+  } catch {
+    return damaged;
   }
 }
 
+/** A damaged store reads as no links, so listing shows no share state. */
+function readSkillShareLinks(): Record<string, ShareRemoteMetadata> {
+  return readSkillShareLinksFile().links;
+}
+
+/**
+ * Durable and atomic. The bytes of a damaged store, as read when it was judged
+ * damaged, are first copied aside durably under an unused name; a lost link
+ * to a private copy is found again by an identical republish.
+ */
 function writeSkillShareLinks(
   links: Record<string, ShareRemoteMetadata>,
+  damagedBytes?: Buffer,
 ): void {
   const filePath = getSkillShareLinksPath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-  fs.writeFileSync(
-    temporaryPath,
-    `${JSON.stringify(links, null, 2)}\n`,
-    'utf8',
-  );
+  if (damagedBytes)
+    writeFileAtomicallySync(damagedCopyPath(filePath), damagedBytes, {
+      durable: true,
+    });
   try {
-    fs.renameSync(temporaryPath, filePath);
+    writeFileAtomicallySync(filePath, `${JSON.stringify(links, null, 2)}\n`, {
+      encoding: 'utf8',
+      durable: true,
+    });
   } catch (error) {
-    fs.rmSync(temporaryPath, { force: true });
-    throw error;
+    if (!isStorageOutcomeUnknownError(error)) throw error;
+    logMainProcessWarn(
+      '[skills] Share links installed, but their folder flush failed',
+      error,
+    );
   }
 }
 
@@ -152,9 +190,9 @@ export function writeSkillRemoteMetadata(
   localId: string,
   remote: ShareRemoteMetadata,
 ): void {
-  const links = readSkillShareLinks();
+  const { links, damagedBytes } = readSkillShareLinksFile();
   links[localId] = { ...remote };
-  writeSkillShareLinks(links);
+  writeSkillShareLinks(links, damagedBytes);
 }
 
 export function clearSkillRemoteMetadataByRemoteId(remoteId: string): number {
@@ -181,14 +219,14 @@ function moveSkillRemoteMetadata(
   delete links[sourceLocalId];
   writeSkillShareLinks(links);
   return (): void => {
-    const rollbackLinks = readSkillShareLinks();
+    const { links: rollbackLinks, damagedBytes } = readSkillShareLinksFile();
     rollbackLinks[sourceLocalId] = remote;
     if (previousDestination) {
       rollbackLinks[destinationLocalId] = previousDestination;
     } else {
       delete rollbackLinks[destinationLocalId];
     }
-    writeSkillShareLinks(rollbackLinks);
+    writeSkillShareLinks(rollbackLinks, damagedBytes);
   };
 }
 
@@ -837,10 +875,12 @@ export async function fetchAvailable(
     // Filter out already installed skills from this source
     const lock = readLockFile();
     const sourceId = deriveSourceId('github', normalizedSource);
+    // An entry whose folder is gone is offered again, so a reinstall repairs it.
     const installedForSource = new Set(
       Object.entries(lock.skills)
         .filter(([, entry]) => entry.sourceId === sourceId)
-        .map(([key]) => parseLockKey(key).skillName),
+        .map(([key]) => parseLockKey(key).skillName)
+        .filter((name) => fs.existsSync(getSkillDir(sourceId, name))),
     );
     const availableSkills = skills.filter(
       (s) => !installedForSource.has(sanitizeName(s.name)),
@@ -891,6 +931,9 @@ export async function installSkills(
     const normalizedSource = `${owner}/${repo}`;
     const sourceId = deriveSourceId('github', normalizedSource);
 
+    // Refuse, or finish a v1 migration, before any skill folder is published.
+    assertLockWritable();
+
     // Ensure source directory exists and write source.json
     const sourceDir = getSourceDir(sourceId);
     fs.mkdirSync(sourceDir, { recursive: true });
@@ -927,6 +970,7 @@ export async function installSkills(
         resolvedBranch,
       );
 
+      // Recorded right after its own publish, before the next download.
       const sanitized = sanitizeName(skill.name);
       addLockEntry(sourceId, sanitized, {
         sourceId,
@@ -1000,23 +1044,35 @@ function removeSkillUnlocked(
     if (!skillDir) {
       return { success: false, error: 'Invalid skill path.' };
     }
+    // A refused lock fails the removal before the folder is deleted.
+    if (!isCustomSourceId(sourceId)) assertLockWritable();
+    const localId = `${sourceId}/${skillName}`;
+    // The link goes first: a store that can't be read or written refuses the
+    // removal before the folder is deleted.
+    const shareLinks = readSkillShareLinksFile().links;
+    const link = shareLinks[localId];
+    const clearsLink =
+      link !== undefined &&
+      !keepsInstalledCloudCopyLink(sourceId, localId, link);
+    if (clearsLink) {
+      delete shareLinks[localId];
+      writeSkillShareLinks(shareLinks);
+    }
     if (fs.existsSync(skillDir)) {
-      fs.rmSync(skillDir, { recursive: true, force: true });
+      try {
+        fs.rmSync(skillDir, { recursive: true, force: true });
+      } catch (error) {
+        if (clearsLink) writeSkillRemoteMetadata(localId, link);
+        throw error;
+      }
     }
     if (!isCustomSourceId(sourceId)) {
       removeLockEntry(sourceId, skillName);
     }
     removeSkillUpdateStatus(sourceId, skillName);
-    const localId = `${sourceId}/${skillName}`;
     // The subscription ledger names every share this copy came from.
     if (isCustomSourceId(sourceId))
       recordSharedItemLocalUninstall({ kind: 'skill', localId });
-    const shareLinks = readSkillShareLinks();
-    const link = shareLinks[localId];
-    if (link && !keepsInstalledCloudCopyLink(sourceId, localId, link)) {
-      delete shareLinks[localId];
-      writeSkillShareLinks(shareLinks);
-    }
 
     // Clean up empty source directory (only source.json remaining)
     const root = path.resolve(getSkillsRootDir());
@@ -2367,14 +2423,12 @@ export async function updateSkill(
 
     const sourceDir = getSourceDir(sourceId);
 
-    // Remove old and reinstall
-    const skillDir = validateSkillPath(sourceId, skillName);
-    if (!skillDir) {
+    // installSkill stages the download and swaps it in, so a failure keeps the old copy.
+    if (!validateSkillPath(sourceId, skillName)) {
       return { success: false, error: 'Invalid skill path.' };
     }
-    if (fs.existsSync(skillDir)) {
-      fs.rmSync(skillDir, { recursive: true, force: true });
-    }
+    // A refused lock fails the update before any file is swapped.
+    assertLockWritable();
 
     await installSkill(
       owner,

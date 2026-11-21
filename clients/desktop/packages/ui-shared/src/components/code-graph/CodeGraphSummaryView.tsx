@@ -1,6 +1,6 @@
 import { Stack } from '../Stack';
 import type { JSX, ReactNode } from 'react';
-import { Button } from '../Button';
+import { LoadingButton } from '../LoadingButton';
 import { LoadingSpinner } from '../LoadingSpinner';
 import {
   SettingsRowsGroup,
@@ -9,6 +9,7 @@ import {
 } from '../settings/SettingsRows';
 import { Notice, NoticeButton } from '../Notice';
 import { StatusLabel } from '../StatusLabel';
+import { Surface } from '../Surface';
 import { EmptyStateRow } from '../StatusBlocks';
 
 /**
@@ -206,10 +207,12 @@ function MetricCard({
   testId?: string;
 }): JSX.Element {
   return (
-    <div className="rounded-lg border bg-base px-3 py-2.5" data-testid={testId}>
-      <div className="text-lg font-semibold fg-primary">{value}</div>
+    <Surface variant="card" padding="compact" data-testid={testId}>
+      <div className="text-lg font-semibold tabular-nums fg-primary">
+        {value}
+      </div>
       <div className="text-xs fg-secondary">{label}</div>
-    </div>
+    </Surface>
   );
 }
 
@@ -279,27 +282,31 @@ function RepositoryRow({
 }): JSX.Element {
   const sha = shortGitHead(repository.gitHead);
   return (
-    <li
-      className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border bg-base px-3 py-2"
+    <Surface
+      as="li"
+      variant="outline"
+      padding="section-compact"
       data-testid={`code-graph-repository-${repository.repoId}`}
     >
-      <div className="min-w-0">
-        <div className="truncate text-s font-medium fg-primary">
-          {repository.name}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="min-w-0">
+          <div className="truncate text-s font-medium fg-primary">
+            {repository.name}
+          </div>
+          <div className="text-xs fg-secondary">
+            Last published {formatTimestamp(repository.lastBuildAt)}
+            {sha ? ` · ${sha}` : ''}
+          </div>
         </div>
-        <div className="text-xs fg-secondary">
-          Last published {formatTimestamp(repository.lastBuildAt)}
-          {sha ? ` · ${sha}` : ''}
-        </div>
+        <span
+          className={`shrink-0 text-xs font-medium ${repositoryStateClassName(
+            repository.state,
+          )}`}
+        >
+          {repositoryStateLabel(repository.state)}
+        </span>
       </div>
-      <span
-        className={`shrink-0 text-xs font-medium ${repositoryStateClassName(
-          repository.state,
-        )}`}
-      >
-        {repositoryStateLabel(repository.state)}
-      </span>
-    </li>
+    </Surface>
   );
 }
 
@@ -362,15 +369,14 @@ function BuildButton({
   testId: string;
 }): JSX.Element {
   return (
-    <Button
+    <LoadingButton
       size="compact"
       onClick={onBuild}
-      disabled={building}
+      loading={building}
       data-testid={testId}
     >
-      {building && <LoadingSpinner decorative />}
       {label}
-    </Button>
+    </LoadingButton>
   );
 }
 
@@ -481,15 +487,23 @@ function SummaryRows({
 
 function RetryButton({
   onRetry,
-  disabled,
+  busy = false,
+  disabled = false,
   testId,
 }: {
   onRetry: () => void;
-  disabled: boolean;
+  busy?: boolean;
+  disabled?: boolean;
   testId: string;
 }): JSX.Element {
   return (
-    <NoticeButton onClick={onRetry} disabled={disabled} data-testid={testId}>
+    <NoticeButton
+      onClick={onRetry}
+      busy={busy}
+      disabled={disabled}
+      busyLabel="Trying again…"
+      data-testid={testId}
+    >
       Try again
     </NoticeButton>
   );
@@ -525,7 +539,7 @@ function ReadinessNotice({
         actions={
           <RetryButton
             onRetry={onRetry}
-            disabled={refreshing}
+            busy={refreshing}
             testId={`${testId}-retry`}
           />
         }
@@ -544,7 +558,7 @@ function ReadinessNotice({
         snapshotState === 'read-error' ? (
           <RetryButton
             onRetry={onRetry}
-            disabled={refreshing}
+            busy={refreshing}
             testId={`${testId}-retry`}
           />
         ) : undefined
@@ -634,17 +648,17 @@ export function CodeGraphSummaryView({
           </Notice>
         )}
         {unreadable && (
-          <Button
+          <LoadingButton
             className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
-            disabled={building}
+            loading={building}
+            loadingLabel="Updating Code Graph…"
             data-testid={`${testId}-build`}
           >
-            {building && <LoadingSpinner />}
-            {building ? 'Updating Code Graph…' : 'Update Code Graph'}
-          </Button>
+            Update Code Graph
+          </LoadingButton>
         )}
       </div>
     );
@@ -780,17 +794,17 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <Button
+          <LoadingButton
             className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
-            disabled={building}
+            loading={building}
+            loadingLabel={buildingLabel}
             data-testid={`${testId}-build`}
           >
-            {building && <LoadingSpinner />}
-            {building ? buildingLabel : buildActionLabel}
-          </Button>
+            {buildActionLabel}
+          </LoadingButton>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
@@ -830,17 +844,17 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <Button
+          <LoadingButton
             className="self-start"
             variant="primary"
             size="compact"
             onClick={onBuild}
-            disabled={building}
+            loading={building}
+            loadingLabel={buildingLabel}
             data-testid={`${testId}-build`}
           >
-            {building && <LoadingSpinner />}
-            {building ? buildingLabel : buildActionLabel}
-          </Button>
+            {buildActionLabel}
+          </LoadingButton>
         </div>
       )}
     </Stack>

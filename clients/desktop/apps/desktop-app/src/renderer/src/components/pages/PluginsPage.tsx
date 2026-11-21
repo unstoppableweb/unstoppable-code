@@ -86,6 +86,7 @@ import { AddSkillsModal, CreateSkillModal } from './SkillsTab';
 import { CollectionModal } from './CollectionsTab';
 import { ErrorBanner } from '../shared';
 import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { McpServerLogo } from '../shared/McpServerLogo';
 import { summarizeLoadErrors } from '@/lib/summarizeLoadErrors';
 import {
@@ -3134,6 +3135,9 @@ export function PluginsPage({
   ]);
   const [agentDeletePending, setAgentDeletePending] = useState(false);
   const [agentDeleteError, setAgentDeleteError] = useState<string | null>(null);
+  // Electron main already recorded the rejection: show it, never record it
+  // a second time from the dialog.
+  const [agentDeleteRecorded, setAgentDeleteRecorded] = useState(false);
   const agentDeleteInFlightRef = useRef(false);
   const selectedEntryForAgentDeleteRef = useRef<string | null>(null);
   useEffect(() => {
@@ -3141,6 +3145,7 @@ export function PluginsPage({
   }, [selectedLocalAgentId]);
   const openAgentDialog = useCallback((dialog: AgentDialog): void => {
     setAgentDeleteError(null);
+    setAgentDeleteRecorded(false);
     setAgentDialog(dialog);
   }, []);
   const handleSaveAgent = useCallback(
@@ -3157,6 +3162,7 @@ export function PluginsPage({
       agentDeleteInFlightRef.current = true;
       setAgentDeletePending(true);
       setAgentDeleteError(null);
+      setAgentDeleteRecorded(false);
       void (async (): Promise<void> => {
         try {
           await removeAgent(agentId);
@@ -3166,7 +3172,9 @@ export function PluginsPage({
             navigateBackFromEntryDetail();
           }
         } catch (error: unknown) {
+          const appError = toAppError(resolveClientAppError(error));
           setAgentDeleteError(extractIpcErrorMessage(error));
+          setAgentDeleteRecorded(appError?.recordedBy !== undefined);
         } finally {
           agentDeleteInFlightRef.current = false;
           setAgentDeletePending(false);
@@ -4550,7 +4558,15 @@ export function PluginsPage({
             message={`Existing chats and workflows that use ${agentDialogTarget.id} will fail until another model is selected.`}
             confirmLabel="Delete agent"
             pending={agentDeletePending}
-            error={agentDeleteError}
+            {...(agentDeleteRecorded
+              ? {
+                  errorMessage: agentDeleteError,
+                  errorRecordingDisabled: true as const,
+                }
+              : {
+                  errorMessage: agentDeleteError,
+                  errorSource: 'plugins-agent-delete',
+                })}
             onCancel={() => {
               if (agentDeletePending) return;
               setAgentDialog(null);

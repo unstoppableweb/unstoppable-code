@@ -50,7 +50,7 @@ export const SIDEBAR_LIST_ICON_CLASSNAME =
  * line.
  */
 export const SIDEBAR_ROW_TRAILING_CELL_CLASSNAME =
-  'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-1 text-2xs fg-quaternary';
+  'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-1 text-2xs tabular-nums fg-quaternary';
 
 /**
  * Where a nav row's trailing shortcut hint ends, so New task's `⌘N` lines up

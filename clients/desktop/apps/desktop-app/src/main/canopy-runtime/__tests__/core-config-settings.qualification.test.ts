@@ -3,10 +3,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CONFIG_GRANTS,
+  CONFIG_WRITABLE_NAMESPACES,
+  ConfigUpdateParamsSchema,
   type CanopyCallerDescriptor,
   type ConfigAppAdvisorValue,
 } from '@canopy/protocol/canopy-core';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
+import { normalizePreferences } from '@canopy/desktop-shared/node/preferences/normalize-preferences';
+import {
+  applyOnboardingTipsUpdate,
+  parseOnboardingTipsState,
+} from '@canopy/protocol/onboarding-tips';
+import {
+  applySuggestionsUpdate,
+  parseSuggestionsState,
+} from '@canopy/protocol/suggestions';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import type { CoreConfigHost } from '../core-config-adapter';
 import { createCoreOperationAdapter } from '../core-operation-adapter';
@@ -43,7 +54,8 @@ function fakeStores(): {
   saves: Array<Partial<PreferencesData>>;
   /** Runs inside the next commit, before its precondition. */
   beforeCommit: { run: () => void };
-  flags: { skillSuggestions: boolean };
+  flags: { skillSuggestions: boolean; preferencesLoadFailed: boolean };
+  reads: { count: number };
 } {
   const stored: {
     preferences: PreferencesData;
@@ -58,9 +70,14 @@ function fakeStores(): {
   };
   const saves: Array<Partial<PreferencesData>> = [];
   const beforeCommit = { run: (): void => undefined };
-  const flags = { skillSuggestions: true };
+  const flags = { skillSuggestions: true, preferencesLoadFailed: false };
+  const reads = { count: 0 };
   const host: Partial<CoreConfigHost> = {
-    readPreferences: () => Promise.resolve({ ...stored.preferences }),
+    readPreferences: () => {
+      reads.count++;
+      return Promise.resolve({ ...stored.preferences });
+    },
+    preferencesLoadFailed: () => Promise.resolve(flags.preferencesLoadFailed),
     savePreferences: (patch, precondition) => {
       beforeCommit.run();
       beforeCommit.run = (): void => undefined;
@@ -77,7 +94,7 @@ function fakeStores(): {
     },
     skillSuggestionsAvailable: () => Promise.resolve(flags.skillSuggestions),
   };
-  return { host, stored, saves, beforeCommit, flags };
+  return { host, stored, saves, beforeCommit, flags, reads };
 }
 
 let root: string;
@@ -338,5 +355,190 @@ describe('core.config settings namespaces on the desktop dispatcher (CAN-6004)',
         false,
       );
     expect(relayAllows('main', 'query', 'core.config.get')).toBe(true);
+  });
+});
+
+describe('read-only onboardingTips and suggestions namespaces (CAN-7434)', () => {
+  const get = (
+    runtime: DesktopCanopyDispatcher,
+    namespace: string,
+    as = READ,
+  ): Promise<{ value: object; revision: number }> =>
+    runtime.query('core.config.get', { namespace }, { caller: as });
+  const DISMISSED_AT = '2026-11-01T10:00:00.000Z';
+
+  it('answers only the tips or suggestions fields, never another preference', async () => {
+    const { host, stored } = fakeStores();
+    stored.preferences = {
+      ...stored.preferences,
+      claudeMaxTurns: 40,
+      onboardingTipsDismissed: { 'worktree-chat': DISMISSED_AT },
+      suggestions: {
+        enabled: false,
+        dismissed: { 'plan-mode-hint': DISMISSED_AT },
+        lastCornerShownAt: DISMISSED_AT,
+      },
+    };
+    const runtime = runtimeWith(host);
+    await expect(get(runtime, 'onboardingTips')).resolves.toMatchObject({
+      namespace: 'onboardingTips',
+      scope: {},
+      enforcedPaths: [],
+      value: { dismissed: { 'worktree-chat': DISMISSED_AT } },
+    });
+    expect((await get(runtime, 'onboardingTips')).value).toEqual({
+      dismissed: { 'worktree-chat': DISMISSED_AT },
+    });
+    expect((await get(runtime, 'suggestions')).value).toEqual({
+      enabled: false,
+      dismissed: { 'plan-mode-hint': DISMISSED_AT },
+      lastCornerShownAt: DISMISSED_AT,
+    });
+  });
+
+  it('answers what preferences:load projects for the same stored preferences, defaults and the legacy switch included', async () => {
+    const { host, stored } = fakeStores();
+    const runtime = runtimeWith(host);
+    const projected = (): PreferencesData =>
+      normalizePreferences(stored.preferences);
+    const defaults = await get(runtime, 'suggestions');
+    expect(defaults.value).toEqual({ enabled: true, dismissed: {} });
+    expect('lastCornerShownAt' in defaults.value).toBe(false);
+    expect((await get(runtime, 'onboardingTips')).value).toEqual({
+      dismissed: {},
+    });
+    expect(parseSuggestionsState(defaults.value)).toEqual(
+      projected().suggestions,
+    );
+    // An older file: no suggestions record, only the retired repeat-task switch.
+    const olderFile: Record<string, unknown> = {
+      ...stored.preferences,
+      repeatTaskAutomationSuggestionsEnabled: false,
+    };
+    delete olderFile.suggestions;
+    stored.preferences = normalizePreferences(olderFile);
+    const folded = await get(runtime, 'suggestions');
+    expect(folded.value).toEqual({ enabled: false, dismissed: {} });
+    expect(parseSuggestionsState(folded.value)).toEqual(
+      projected().suggestions,
+    );
+  });
+
+  it('drops a retired id and a malformed stamp from stored state instead of refusing', async () => {
+    const { host, stored } = fakeStores();
+    const tolerated: Record<string, unknown> = {
+      'worktree-chat': DISMISSED_AT,
+      'retired-tip': DISMISSED_AT,
+      workflows: 12,
+    };
+    const suggestions: Record<string, unknown> = {
+      enabled: true,
+      dismissed: {
+        'plan-mode-hint': DISMISSED_AT,
+        'retired-suggestion': DISMISSED_AT,
+        'skill-share': 'yesterday',
+      },
+      lastCornerShownAt: 'not a time',
+      extra: true,
+    };
+    Object.assign(stored.preferences, {
+      onboardingTipsDismissed: tolerated,
+      suggestions,
+    });
+    const runtime = runtimeWith(host);
+    expect((await get(runtime, 'onboardingTips')).value).toEqual({
+      dismissed: { 'worktree-chat': DISMISSED_AT },
+    });
+    expect((await get(runtime, 'suggestions')).value).toEqual({
+      enabled: true,
+      dismissed: { 'plan-mode-hint': DISMISSED_AT },
+    });
+  });
+
+  it('keeps the revision across equal reads and changes it after a write, which the next read returns', async () => {
+    const { host, stored } = fakeStores();
+    const runtime = runtimeWith(host);
+    const tipsBefore = await get(runtime, 'onboardingTips');
+    expect((await get(runtime, 'onboardingTips')).revision).toBe(
+      tipsBefore.revision,
+    );
+    const now = new Date(DISMISSED_AT);
+    stored.preferences = {
+      ...stored.preferences,
+      onboardingTipsDismissed: applyOnboardingTipsUpdate(
+        stored.preferences.onboardingTipsDismissed,
+        { action: 'dismiss', tipId: 'worktree-chat' },
+        now,
+      ),
+    };
+    const tipsAfter = await get(runtime, 'onboardingTips');
+    expect(tipsAfter.revision).not.toBe(tipsBefore.revision);
+    expect(parseOnboardingTipsState(tipsAfter.value)).toEqual({
+      dismissed: normalizePreferences(stored.preferences)
+        .onboardingTipsDismissed,
+    });
+
+    const suggestionsBefore = await get(runtime, 'suggestions');
+    stored.preferences = {
+      ...stored.preferences,
+      suggestions: applySuggestionsUpdate(
+        stored.preferences.suggestions,
+        { action: 'dismiss', suggestionId: 'plan-mode-hint' },
+        now,
+      ),
+    };
+    const suggestionsAfter = await get(runtime, 'suggestions');
+    expect(suggestionsAfter.revision).not.toBe(suggestionsBefore.revision);
+    expect(parseSuggestionsState(suggestionsAfter.value)).toEqual(
+      normalizePreferences(stored.preferences).suggestions,
+    );
+  });
+
+  it('refuses while preferences could not be loaded, and reads again once that clears', async () => {
+    const { host, stored, flags } = fakeStores();
+    stored.preferences = {
+      ...stored.preferences,
+      onboardingTipsDismissed: { 'worktree-chat': DISMISSED_AT },
+    };
+    flags.preferencesLoadFailed = true;
+    const runtime = runtimeWith(host);
+    for (const namespace of ['onboardingTips', 'suggestions'])
+      await expect(get(runtime, namespace)).rejects.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.config.invalidState',
+        },
+      });
+    flags.preferencesLoadFailed = false;
+    expect((await get(runtime, 'onboardingTips')).value).toEqual({
+      dismissed: { 'worktree-chat': DISMISSED_AT },
+    });
+  });
+
+  it('refuses a caller without the read grant before preferences are read', async () => {
+    const { host, reads } = fakeStores();
+    const runtime = runtimeWith(host);
+    for (const namespace of ['onboardingTips', 'suggestions'])
+      await expect(get(runtime, namespace, WRITE)).rejects.toMatchObject({
+        payload: { kind: 'permission_denied' },
+      });
+    expect(reads.count).toBe(0);
+  });
+
+  it('leaves both namespaces out of core.config.update, so an update naming either is refused at its schema', async () => {
+    const { host } = fakeStores();
+    const runtime = runtimeWith(host);
+    for (const namespace of ['onboardingTips', 'suggestions']) {
+      expect(CONFIG_WRITABLE_NAMESPACES).not.toContain(namespace);
+      const { revision } = await get(runtime, namespace);
+      expect(
+        ConfigUpdateParamsSchema.safeParse({
+          namespace,
+          expectedRevision: revision,
+          patch: { dismissed: {} },
+          _meta: meta(`ro-${namespace}`),
+        }).success,
+      ).toBe(false);
+    }
   });
 });

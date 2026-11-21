@@ -1,4 +1,4 @@
-import { useId, useState, type JSX } from 'react';
+import { useId, useRef, useState, type JSX } from 'react';
 import { FieldError, TextInput } from './Field';
 import { Notice, NoticeButton } from './Notice';
 import { SegmentedControl } from './SegmentedControl';
@@ -73,20 +73,46 @@ function AdjustableWindow({
   disabled: boolean;
 }): JSX.Element {
   const errorId = useId();
-  const [choice, setChoice] = useState<Choice>(
-    state.custom ? 'custom' : `${state.selectedTokens}`,
-  );
-  const [customText, setCustomText] = useState(
-    state.custom ? String(Math.round(state.selectedTokens / 1000)) : '',
-  );
+  const initialChoice = (): Choice =>
+    state.custom ? 'custom' : `${state.selectedTokens}`;
+  const initialCustomText = (): string =>
+    state.custom ? String(Math.round(state.selectedTokens / 1000)) : '';
+  const [choice, setChoice] = useState<Choice>(initialChoice);
+  const [customText, setCustomText] = useState(initialCustomText);
   const [confirmTokens, setConfirmTokens] = useState<number | null>(null);
+  // The error waits for Enter or leaving the field, then follows each edit.
+  const [errorShown, setErrorShown] = useState(false);
+  const lastCustomCommit = useRef<number | null>(null);
+  // A new selection from the host starts the choice over in place, so the
+  // focused segment or field stays mounted and keeps focus.
+  const selection = `${state.selectedTokens}:${String(state.custom)}`;
+  const [seenSelection, setSeenSelection] = useState(selection);
+  if (seenSelection !== selection) {
+    setSeenSelection(selection);
+    setChoice(initialChoice());
+    setCustomText(initialCustomText());
+    setConfirmTokens(null);
+    setErrorShown(false);
+  }
   const customTokens = Number(customText.replace(/[^0-9]/g, '')) * 1000;
   const customInvalid =
     choice === 'custom' &&
     customText.trim() !== '' &&
     (customTokens < state.floorTokens || customTokens > state.maxTokens);
+  const showError = customInvalid && errorShown;
 
   const current = state.appliedTokens ?? state.selectedTokens;
+  const commitCustom = (): void => {
+    if (customText.trim() === '') return;
+    if (customInvalid) {
+      setErrorShown(true);
+      return;
+    }
+    // Enter then leaving the field would otherwise send the same value twice.
+    if (lastCustomCommit.current === customTokens) return;
+    lastCustomCommit.current = customTokens;
+    commit(customTokens, 'custom');
+  };
   const commit = (tokens: number, source: 'preset' | 'custom'): void => {
     // Past Codex's compaction point for the new window, ask first: the next
     // message summarizes earlier ones before it runs.
@@ -151,6 +177,7 @@ function AdjustableWindow({
         ]}
         onChange={(next): void => {
           setChoice(next);
+          lastCustomCommit.current = null;
           if (next !== 'custom') commit(Number(next), 'preset');
           else setConfirmTokens(null);
         }}
@@ -165,30 +192,23 @@ function AdjustableWindow({
             density="compact"
             inputMode="numeric"
             aria-label="Custom context window in thousands of tokens"
-            aria-invalid={customInvalid}
-            {...(customInvalid ? { 'aria-describedby': errorId } : {})}
+            aria-invalid={showError}
+            {...(showError ? { 'aria-describedby': errorId } : {})}
             value={customText}
             placeholder={`${String(state.floorTokens / 1000)}–${String(state.maxTokens / 1000)}`}
             trailing="k tokens"
             disabled={disabled}
             data-testid="codex-context-window-custom-input"
-            onChange={(event): void => setCustomText(event.target.value)}
-            onBlur={(): void => {
-              if (!customInvalid && customText.trim() !== '') {
-                commit(customTokens, 'custom');
-              }
+            onChange={(event): void => {
+              setCustomText(event.target.value);
+              lastCustomCommit.current = null;
             }}
+            onBlur={commitCustom}
             onKeyDown={(event): void => {
-              if (
-                event.key === 'Enter' &&
-                !customInvalid &&
-                customText.trim() !== ''
-              ) {
-                commit(customTokens, 'custom');
-              }
+              if (event.key === 'Enter') commitCustom();
             }}
           />
-          {customInvalid ? (
+          {showError ? (
             <FieldError id={errorId}>
               Use {formatContextWindowTokens(state.floorTokens)} to{' '}
               {formatContextWindowTokens(state.maxTokens)}.
@@ -208,6 +228,7 @@ function AdjustableWindow({
                 variant="secondary"
                 onClick={(): void => {
                   setConfirmTokens(null);
+                  lastCustomCommit.current = null;
                   setChoice(
                     state.custom ? 'custom' : `${state.selectedTokens}`,
                   );
@@ -269,10 +290,10 @@ export function CodexContextWindowControl({
       </div>
     );
   }
-  // A new selection or new bounds starts the control over.
+  // New bounds start the control over; a new selection resets it in place.
   return (
     <AdjustableWindow
-      key={`${state.selectedTokens}:${String(state.custom)}:${state.maxTokens}`}
+      key={state.maxTokens}
       state={state}
       onSelect={onSelect}
       disabled={disabled}

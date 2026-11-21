@@ -1,5 +1,5 @@
 import { CodeBlock } from '../CodeBlock';
-import { memo, type JSX } from 'react';
+import { memo, useEffect, useRef, type JSX } from 'react';
 import { Button } from '../Button';
 import { LoadingSpinner } from '../LoadingSpinner';
 import { Notice, NoticeButton } from '../Notice';
@@ -40,6 +40,20 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
   openLabel = 'View full output',
   loadingLabel = 'Loading output…',
 }: DeferredTextOutputProps): JSX.Element {
+  // Opening, closing and reaching the last page swap or disable the pressed
+  // button, which drops keyboard focus to the page. After a press here, put
+  // focus back on the controls, unless the user has moved it elsewhere.
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const restoreFocus = useRef(false);
+  useEffect(() => {
+    if (!restoreFocus.current || loading) return;
+    restoreFocus.current = false;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    controlsRef.current
+      ?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+      ?.focus({ preventScroll: true });
+  }, [opened, loading, hasPrevious, hasNext]);
   return (
     <div className="text-xs fg-secondary" data-testid="chat-deferred-output">
       {/* A host that already shows the bounded output passes an empty
@@ -58,8 +72,12 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
         </CodeBlock>
       )}
       <div
-        className="flex items-center gap-2 px-2.5 py-1.5 ring-1 ring-inset ring-line-base"
+        ref={controlsRef}
+        className="flex items-center gap-2 border-t px-2.5 py-1.5"
         data-testid="chat-deferred-output-controls"
+        onClickCapture={(): void => {
+          restoreFocus.current = true;
+        }}
       >
         {!opened ? (
           <Button
@@ -76,7 +94,9 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
               variant="ghost"
               size="compact"
               data-testid="chat-tool-output-previous"
-              disabled={loading || !hasPrevious}
+              // aria-disabled while a page loads keeps focus on the pressed button.
+              disabled={!hasPrevious}
+              aria-disabled={loading || undefined}
               onClick={onPrevious}
             >
               Previous
@@ -85,7 +105,9 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
               variant="ghost"
               size="compact"
               data-testid="chat-tool-output-next"
-              disabled={loading || !hasNext}
+              // aria-disabled while a page loads keeps focus on the pressed button.
+              disabled={!hasNext}
+              aria-disabled={loading || undefined}
               onClick={onNext}
             >
               Next

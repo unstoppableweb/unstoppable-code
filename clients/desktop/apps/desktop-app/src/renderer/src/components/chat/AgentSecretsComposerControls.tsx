@@ -3,7 +3,7 @@ import {
   ChatSecretsChip,
   ChatSecretsRestartNotice,
 } from '@canopy/ui-shared/components/chat/ChatSecretsChip';
-import type { ChatAgentSecrets } from '@/hooks/useChatAgentSecrets';
+import type { ComposerAgentSecrets } from '@/hooks/useChatAgentSecrets';
 
 /*
  * The local chat's Secrets chip and Codex's Restart to apply (agent secret
@@ -19,10 +19,10 @@ export function AgentSecretsComposerControl({
   secrets,
   agentName,
 }: {
-  readonly secrets: ChatAgentSecrets;
+  readonly secrets: ComposerAgentSecrets;
   readonly agentName: string;
 }): JSX.Element | null {
-  const { state, revoke, restart } = secrets;
+  const { state, revoke, restart, refresh } = secrets;
   const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
   const onRevoke = (name: string): void => {
@@ -53,6 +53,7 @@ export function AgentSecretsComposerControl({
       ambient={state.ambient}
       agentName={agentName}
       onRestart={(): void => void restart()}
+      {...(refresh === undefined ? {} : { onOpen: refresh })}
       placement="top-right"
     />
   );
@@ -63,7 +64,7 @@ export function AgentSecretsComposerRestartNotice({
   secrets,
   agentName,
 }: {
-  readonly secrets: ChatAgentSecrets;
+  readonly secrets: ComposerAgentSecrets;
   readonly agentName: string;
 }): JSX.Element | null {
   const { state, restart } = secrets;

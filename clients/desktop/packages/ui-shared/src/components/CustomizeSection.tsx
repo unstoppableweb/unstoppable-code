@@ -5,6 +5,7 @@ import {
 } from '../icons/AppIcons';
 import { ControlButton } from './Button';
 import { Heading } from './Heading';
+import { Divider } from './Surface';
 
 export interface CustomizeSectionProps {
   /** Stable DOM id; also the target of `#customize-section-<id>` anchors. */
@@ -43,7 +44,9 @@ export function CustomizeSection({
   const collapsed = collapsible?.collapsed === true;
   const heading = (
     <span className="flex min-w-0 items-center gap-2">
-      <span className="truncate">{title}</span>
+      <span className="truncate" title={title}>
+        {title}
+      </span>
       {count !== undefined && (
         <span
           data-testid={`${domId}-count`}
@@ -61,7 +64,7 @@ export function CustomizeSection({
       aria-labelledby={headingId}
       className="scroll-mt-6"
     >
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b pb-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-2">
         <div className="flex h-7 min-w-0 items-center">
           <Heading
             level={2}
@@ -110,6 +113,7 @@ export function CustomizeSection({
           </p>
         )}
       </div>
+      <Divider />
       <div id={`${domId}-body`} hidden={collapsed}>
         {collapsed ? null : children}
       </div>

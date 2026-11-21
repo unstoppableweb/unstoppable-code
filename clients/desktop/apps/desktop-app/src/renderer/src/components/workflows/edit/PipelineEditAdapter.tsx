@@ -172,6 +172,9 @@ function PipelineNameEditor({
  * run it; Runs is the Runs feed narrowed to it. The shell owns ⌘S, Back and
  * the unsaved-changes prompt.
  */
+const SEND_AS_TARGET_CHANGED =
+  'A schedule’s target changed while saving. Check “Send as” on the send steps, then save again.';
+
 export function PipelineEditAdapter({
   target,
   targetKey,
@@ -343,6 +346,7 @@ export function PipelineEditAdapter({
   const sessionDuplicate = session.duplicate;
   const { agentGranted, saveAll: saveSchedules } = schedules;
   const { save: saveSendAs } = sendAs;
+  const { getSavedPipeline } = session.editor;
   const sessionInfo = session.pipelineInfo;
   const { isRawMode, rawYamlText, setMainView } = session;
   // `schedules: false` is the pipeline.save command's save (CAN-7186): the
@@ -400,15 +404,24 @@ export function PipelineEditAdapter({
         return sentAs;
       }
       if (!withSchedules) return { ok: true };
-      if (latestSendAsTargetKey.current !== sendAsTargetKey) {
-        const message =
-          'A schedule’s target changed while saving. Check “Send as” on the send steps, then save again.';
-        setSaveFailure(message);
-        return { ok: false, message };
+      // Checked again right before each schedule is written, since a
+      // schedule can still change while the save reads preferences.
+      const targetChanged = (): UnsavedChangesSaveResult | null =>
+        latestSendAsTargetKey.current === sendAsTargetKey
+          ? null
+          : { ok: false, message: SEND_AS_TARGET_CHANGED };
+      const changed = targetChanged();
+      if (changed) {
+        setSaveFailure(SEND_AS_TARGET_CHANGED);
+        return changed;
       }
-      const scheduled = await saveSchedules(
-        sessionDirty ? savedInfoRef.current?.name : undefined,
-      );
+      const savedName = sessionDirty ? savedInfoRef.current?.name : undefined;
+      const savedPipeline = sessionDirty ? getSavedPipeline() : null;
+      const scheduled = await saveSchedules({
+        ...(savedName !== undefined ? { savedName } : {}),
+        ...(savedPipeline ? { savedPipeline } : {}),
+        check: targetChanged,
+      });
       if (!scheduled.ok && scheduled.message !== undefined) {
         setSaveFailure(scheduled.message);
         const shown = useNavigationStore.getState().workflowEdit;
@@ -421,6 +434,7 @@ export function PipelineEditAdapter({
     [
       agentGranted,
       askGrant,
+      getSavedPipeline,
       saveSchedules,
       isRawMode,
       rawYamlText,

@@ -15,13 +15,12 @@ import {
   type SkillFileTreeDirectory,
 } from '../lib/skill-files';
 import { useHorizontalOverflowScroll } from '../lib/useHorizontalOverflowScroll';
+import { DocumentProse } from './DocumentProse';
 import { FileTreeRow } from './FileTreeRow';
 import { Markdown } from './Markdown';
+import { OverlayScrollArea } from './OverlayScrollArea';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import { Tooltip } from './Tooltip';
-
-export const SKILL_MARKDOWN_PROSE_CLASS =
-  'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0.5 canopy-compact-prose prose-pre:bg-fg-primary/[0.06] prose-pre:fg-primary/80 prose-code:fg-success prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-a:fg-accent prose-strong:fg-primary prose-li:my-0.5';
 
 export function SkillMarkdownBody({
   markdown,
@@ -32,9 +31,9 @@ export function SkillMarkdownBody({
   options?: ComponentProps<typeof Markdown>['options'];
 }): JSX.Element {
   return (
-    <div className={SKILL_MARKDOWN_PROSE_CLASS}>
+    <DocumentProse variant="archive">
       <Markdown options={options}>{markdown}</Markdown>
-    </div>
+    </DocumentProse>
   );
 }
 
@@ -62,7 +61,7 @@ export function FileTab({
       data-testid={dataTestId}
       data-path={dataPath}
       data-active={active ? 'true' : undefined}
-      className={`group inline-flex shrink-0 items-center rounded-md border text-xs transition-colors ${onClose ? 'pr-1' : ''} ${active ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-secondary/50'}`}
+      className={`group inline-flex shrink-0 items-center rounded-md border text-xs transition-colors ${onClose ? 'pr-1' : ''} ${active ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-muted'}`}
     >
       <RichHoverTooltip
         content={title}
@@ -72,6 +71,7 @@ export function FileTab({
         <ControlButton
           type="button"
           onClick={onSelect}
+          aria-current={active ? 'true' : undefined}
           presentation="skill-file-tab"
           appearance={{ closable: !!onClose }}
         >
@@ -255,6 +255,7 @@ export function SkillFileTree({
           depth={depth}
           isDirectory={false}
           selected={main ? activePath === null : activePath === path}
+          current={main ? activePath === null : activePath === path}
           onClick={() => onSelectFile(path)}
           dataTestId="skill-file-tree-file"
           dataPath={path}
@@ -264,8 +265,12 @@ export function SkillFileTree({
     return rows;
   };
   return (
-    <div className="min-h-0 overflow-y-auto py-1" data-testid="skill-file-tree">
+    <OverlayScrollArea
+      className="min-h-0"
+      contentClassName="py-1"
+      viewportProps={{ 'data-testid': 'skill-file-tree' }}
+    >
       {renderDirectory(tree, 0)}
-    </div>
+    </OverlayScrollArea>
   );
 }

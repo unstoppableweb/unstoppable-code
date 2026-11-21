@@ -3,10 +3,15 @@ import { applyTerminalSettingsSaveRule } from '@canopy/desktop-shared/node/prefe
 import {
   applyOnboardingTipsUpdate,
   normalizeOnboardingTipDismissals,
+  parseOnboardingTipsState,
   parseOnboardingTipsUpdate,
   type OnboardingTipDismissals,
   type OnboardingTipsState,
 } from '@canopy/protocol/onboarding-tips';
+import {
+  parseSuggestionsState,
+  type SuggestionsState,
+} from '@canopy/protocol/suggestions';
 import { isDataSharingOptInFeature } from '@canopy/protocol/canopy-server';
 import { DATA_SHARING_OPT_IN_SCOPES } from '@canopy/ui-shared/lib/data-sharing-features';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
@@ -1096,6 +1101,32 @@ export function registerPreferenceHandlers(): void {
     },
   );
 
+  // Narrow reads for controllers that are not served `preferences:load`
+  // (CAN-7434): projections of the read-only `core.config.get` namespaces.
+  // Tunneled invokes use the same local caller; which controller may invoke
+  // a channel is the host's channel authorization, not this caller.
+  registerIpcHandler<[], OnboardingTipsState>(
+    IPC_CHANNELS.preferencesLoadOnboardingTips,
+    async () => {
+      const state = parseOnboardingTipsState(
+        await readPreferenceConfigNamespace('onboardingTips'),
+      );
+      if (state === null) throw new Error('Invalid onboarding tips state.');
+      return state;
+    },
+  );
+
+  registerIpcHandler<[], SuggestionsState>(
+    IPC_CHANNELS.preferencesLoadSuggestions,
+    async () => {
+      const state = parseSuggestionsState(
+        await readPreferenceConfigNamespace('suggestions'),
+      );
+      if (state === null) throw new Error('Invalid suggestions state.');
+      return state;
+    },
+  );
+
   registerIpcHandler(
     IPC_CHANNELS.preferencesUpdateSuggestions,
     async (_event, request: unknown) => {
@@ -1183,4 +1214,40 @@ export function registerPreferenceHandlers(): void {
       }
     },
   );
+}
+
+/**
+ * A read-only preferences namespace through `core.config.get` on the desktop
+ * dispatcher. Loaded on use, so this module's static graph stays as it was.
+ */
+async function readPreferenceConfigNamespace(
+  namespace: 'onboardingTips' | 'suggestions',
+): Promise<unknown> {
+  const [
+    { CONFIG_GRANTS },
+    { getActiveDesktopRuntime },
+    { LOCAL_DESKTOP_AUTHORITY_ID },
+    { preserveRuntimeCauseError },
+  ] = await Promise.all([
+    import('@canopy/protocol/canopy-core'),
+    import('../canopy-runtime/desktop-runtime'),
+    import('../canopy-runtime/desktop-runtime-identity'),
+    import('../canopy-runtime/runtime-cause-error'),
+  ]);
+  const document = await preserveRuntimeCauseError(
+    getActiveDesktopRuntime().query(
+      'core.config.get',
+      { namespace },
+      {
+        caller: {
+          principalId: 'local-desktop-user',
+          clientInstanceId: 'desktop-main-preferences',
+          authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+          interfaceKind: 'desktop',
+          grants: [CONFIG_GRANTS.read],
+        },
+      },
+    ),
+  );
+  return document.value;
 }

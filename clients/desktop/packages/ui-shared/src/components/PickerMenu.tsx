@@ -17,6 +17,7 @@ import {
   SearchIcon,
 } from '../icons/AppIcons';
 import { Button, DROPDOWN_TRIGGER_INTERACTION_CLASS } from './Button';
+import { COARSE_HIT_AREA_CLASS } from './control-button-shared';
 import { useContextMenuPlacement } from './context-menu-placement';
 import {
   FLOATING_PICKER_GAP,
@@ -146,6 +147,14 @@ export interface PickerTriggerProps extends ButtonHTMLAttributes<HTMLButtonEleme
    * still reads as pointing at the chip.
    */
   wrapperHover?: boolean;
+  /**
+   * Can't be used now but stays focusable (`aria-disabled`, dimmed), so a
+   * tooltip can say why and focus survives a save. The caller swallows the
+   * press and passes `openOnArrowKeys={false}` to its menu.
+   */
+  unavailable?: boolean;
+  /** A 44px-tall hit area on coarse pointers, without changing layout. */
+  coarsePointerTarget?: boolean;
 }
 
 const COMPOSER_PICKER_FIELD = 'h-10 bg-base px-3';
@@ -193,9 +202,9 @@ const PICKER_TRIGGER_HEIGHTS: Record<
   NonNullable<PickerTriggerProps['size']>,
   string
 > = {
-  default: 'h-8 text-xs',
-  compact: 'h-7 text-xs',
-  page: 'h-7 pl-3 pr-2 text-xs aria-expanded:bg-subtle',
+  default: 'h-8 text-xs pointer-coarse:min-h-11',
+  compact: 'h-7 text-xs pointer-coarse:min-h-11',
+  page: 'h-7 pl-3 pr-2 text-xs aria-expanded:bg-subtle pointer-coarse:min-h-11',
   composer: 'h-10 text-xs',
 };
 
@@ -229,6 +238,8 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
       textLead = false,
       textTrail = false,
       wrapperHover = false,
+      unavailable = false,
+      coarsePointerTarget = false,
       ...props
     },
     ref,
@@ -238,7 +249,8 @@ export const PickerTrigger = forwardRef<HTMLButtonElement, PickerTriggerProps>(
         {...props}
         ref={ref}
         type={type}
-        className={`${PICKER_TRIGGER_FOCUS[variant]} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : size === 'composer' ? COMPOSER_PICKER_FIELD : 'h-8 bg-transparent px-2'} ${tone === 'selected' && variant === 'capsule' ? PICKER_TRIGGER_SELECTED_CAPSULE_SHELL : PICKER_TRIGGER_SHELLS[variant]}${
+        aria-disabled={unavailable || props['aria-disabled']}
+        className={`${PICKER_TRIGGER_FOCUS[variant]}${coarsePointerTarget ? ` ${COARSE_HIT_AREA_CLASS}` : ''}${unavailable ? ' cursor-not-allowed opacity-40' : ''} flex min-w-0 items-center text-left disabled:cursor-not-allowed disabled:opacity-40 ${variant === 'capsule' ? PICKER_TRIGGER_HEIGHTS[size] : size === 'composer' ? COMPOSER_PICKER_FIELD : 'h-8 bg-transparent px-2'} ${tone === 'selected' && variant === 'capsule' ? PICKER_TRIGGER_SELECTED_CAPSULE_SHELL : PICKER_TRIGGER_SHELLS[variant]}${
           variant !== 'capsule' || size === 'page'
             ? ''
             : labelOnly
@@ -328,7 +340,22 @@ export const PickerMenuSearchInput = forwardRef<
   // Same px-2 / gap-2 / 16px leading rail as PickerMenuOption so the
   // magnifying glass lines up with row icons and the caret with labels.
   return (
-    <div className="canopy-picker-menu-search-field flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2">
+    <div
+      className="canopy-picker-menu-search-field flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2"
+      onMouseDown={(event): void => {
+        const input = event.currentTarget.querySelector('input');
+        if (
+          !input ||
+          event.target === input ||
+          (event.target instanceof Element && event.target.closest('button'))
+        ) {
+          return;
+        }
+        // A press on the glyph or padding focuses the field instead of nothing.
+        event.preventDefault();
+        input.focus();
+      }}
+    >
       <span
         aria-hidden="true"
         className="canopy-picker-menu-search-icon inline-flex h-4 w-4 shrink-0 items-center justify-center fg-quaternary [&>svg]:!h-4 [&>svg]:!w-4"
@@ -336,10 +363,14 @@ export const PickerMenuSearchInput = forwardRef<
         <SearchIcon />
       </span>
       <input
+        // A query is never prose or a saved credential.
+        spellCheck={false}
+        autoComplete="off"
+        data-1p-ignore=""
         {...props}
         ref={ref}
         type={type}
-        className={`min-w-0 flex-1 border-0 bg-transparent ${textClassName} outline-none fg-primary placeholder:fg-tertiary ${className}`}
+        className={`min-w-0 flex-1 border-0 bg-transparent ${textClassName} pointer-coarse:text-m outline-none fg-primary placeholder:fg-tertiary ${className}`}
       />
       {onClear && props.value ? (
         <Button
@@ -350,7 +381,13 @@ export const PickerMenuSearchInput = forwardRef<
           className="-mr-2"
           aria-label="Clear search"
           onMouseDown={(event): void => event.preventDefault()}
-          onClick={onClear}
+          onClick={(event): void => {
+            const input = event.currentTarget
+              .closest('.canopy-picker-menu-search-field')
+              ?.querySelector('input');
+            onClear();
+            input?.focus();
+          }}
         >
           <CloseIcon size={16} />
         </Button>
@@ -380,6 +417,22 @@ export function menuSearchKeyHandler(
       event.stopPropagation();
       row?.focus();
       row?.scrollIntoView?.({ block: 'nearest' });
+    } else if (event.key === 'Enter') {
+      // Only a typed query picks a row; an empty field opened with the menu
+      // must not switch anything on Enter.
+      const row =
+        event.currentTarget.value.trim() === ''
+          ? null
+          : event.currentTarget
+              .closest('[role="menu"]')
+              ?.querySelector<HTMLElement>(itemSelector);
+      // React events cross the portal, so a loose Enter would reach the
+      // composer under the menu; keep it here as before.
+      event.stopPropagation();
+      if (row) {
+        event.preventDefault();
+        row.click();
+      }
     } else if (event.key !== 'Escape' && event.key !== 'Tab') {
       // Keep typing away from the parent menu's typeahead.
       event.stopPropagation();
@@ -448,9 +501,9 @@ export const PickerMenuTab = forwardRef<HTMLButtonElement, PickerMenuTabProps>(
         type={type}
         data-active={active || undefined}
         data-highlighted={highlighted || undefined}
-        className={`canopy-picker-menu-tab focus-ring relative inline-flex h-8 min-w-0 shrink-0 items-center justify-center whitespace-nowrap px-2 text-xs font-normal transition-colors ${
+        className={`canopy-picker-menu-tab focus-ring relative inline-flex h-8 pointer-coarse:h-11 min-w-0 shrink-0 rounded-md items-center justify-center whitespace-nowrap px-2 text-xs font-normal transition-colors ${
           active ? 'fg-primary' : 'fg-secondary hover:fg-primary'
-        }${highlighted ? ' outline outline-1 outline-[var(--fg-accent)]' : ''} ${className}`}
+        }${highlighted ? ' outline outline-1 outline-[var(--line-accent)]' : ''} ${className}`}
       />
     );
   },
@@ -642,7 +695,7 @@ export const PickerMenuOption = forwardRef<
       data-active={active || undefined}
       data-selected={selected ? 'true' : undefined}
       data-tone={tone === 'primary' ? undefined : tone}
-      className={`canopy-picker-menu-option group/picker-option focus-ring flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left ${textClassName} font-normal transition-colors ${interactionClassName} disabled:cursor-not-allowed disabled:fg-quaternary disabled:opacity-100 disabled:hover:bg-transparent ${
+      className={`canopy-picker-menu-option group/picker-option focus-ring flex min-h-8 pointer-coarse:min-h-11 w-full min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left ${textClassName} font-normal transition-colors ${interactionClassName} disabled:cursor-not-allowed disabled:fg-quaternary disabled:opacity-100 disabled:hover:bg-transparent ${
         accentActive
           ? unavailable
             ? 'cursor-not-allowed opacity-50'
@@ -867,7 +920,7 @@ export function PickerMenuState({
   return (
     <div
       {...props}
-      className={`flex min-h-8 items-center px-2 py-2 text-xs leading-snug fg-tertiary ${className}`}
+      className={`flex min-h-8 items-center px-2 py-2 text-xs leading-snug text-pretty fg-tertiary ${className}`}
     />
   );
 }

@@ -7,6 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -384,6 +385,16 @@ describe('unsupported hosts', () => {
         owned.spawn({ executable: '/bin/true', args: [], environment: {} }),
       );
       expect(error).toEqual(typed('capability_unavailable'));
+      if (host === 'linux' && nativePath === '/bin/sh') {
+        expect(error).toBeInstanceOf(OwnedChildError);
+        if (error instanceof OwnedChildError) {
+          expect(error.loadDiagnostic).toContain('<addon>');
+          expect(error.loadDiagnostic).not.toContain(nativePath);
+          expect(
+            Buffer.byteLength(error.loadDiagnostic ?? ''),
+          ).toBeLessThanOrEqual(1024);
+        }
+      }
     },
   );
 
@@ -410,6 +421,104 @@ describe('unsupported hosts', () => {
 });
 
 posixDescribe(`${os} owned child`, () => {
+  if (linux) {
+    it('reports closed spawn errnos for absent and non-executable roots', async () => {
+      const absent = await rejection(() =>
+        services().spawn({
+          executable: path.join(dir, 'absent-daemon'),
+          args: [],
+          environment: ENV,
+        }),
+      );
+      expect(absent).toMatchObject({
+        code: 'failed_precondition',
+        spawnErrno: 'ENOENT',
+      });
+
+      const deniedPath = path.join(dir, 'non-executable-daemon');
+      writeFileSync(deniedPath, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+      const denied = await rejection(() =>
+        services().spawn({
+          executable: deniedPath,
+          args: [],
+          environment: ENV,
+        }),
+      );
+      expect(denied).toMatchObject({
+        code: 'failed_precondition',
+        spawnErrno: 'EACCES',
+      });
+    });
+
+    it('retains a genuinely unread stderr descriptor through root exit', async () => {
+      const module = { exports: {} };
+      process.dlopen(module, addon);
+      const native: Record<string, (...args: unknown[]) => unknown> =
+        module.exports;
+      const spawned = native.spawn(
+        '/bin/sh',
+        ['/bin/sh', '-c', 'printf "CAPTURE-END\\n" >&2; exit 7'],
+        [],
+        null,
+        true,
+      );
+      const handle = get(spawned, 'handle');
+      if (typeof handle !== 'object' || handle === null)
+        throw new Error('no native handle');
+      fixtures.add(Number(get(spawned, 'pid')));
+      rawCleanups.add(() => native.rollbackSync(handle));
+      const fd = get(spawned, 'stderr');
+      if (typeof fd !== 'number' || !Number.isSafeInteger(fd) || fd < 0)
+        throw new Error('no native stderr descriptor');
+      let closeStderr = (): void => closeSync(fd);
+      rawCleanups.add(() => closeStderr());
+
+      // No Socket (and therefore no libuv read) exists until after root exit.
+      await until(() => get(native.observe(handle), 'state') === 'exited');
+      expect(native.observe(handle)).toEqual({
+        state: 'exited',
+        code: 7,
+        signal: null,
+      });
+      const stderr = new Socket({ fd, readable: true, writable: false });
+      closeStderr = (): void => {
+        stderr.destroy();
+      };
+      expect(stderr.writable).toBe(false);
+      const chunks: Buffer[] = [];
+      const ended = new Promise<void>((resolve, reject) => {
+        stderr.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stderr.once('end', resolve);
+        stderr.once('error', reject);
+      });
+      await ended;
+      expect(Buffer.concat(chunks).toString()).toBe('CAPTURE-END\n');
+      await until(() => native.release(handle) === true);
+    });
+
+    it('returns a read-only stderr stream that drains after root exit', async () => {
+      const child = await services().spawn({
+        executable: '/bin/sh',
+        args: ['-c', 'printf "CAPTURE-END\\n" >&2; exit 7'],
+        environment: ENV,
+        captureStderr: true,
+      });
+      children.add(child);
+      expect(child.stderr).toBeDefined();
+      // Adapter coverage: Socket may buffer before this listener is attached.
+      await expect(child.exited).resolves.toEqual({ code: 7, signal: null });
+      const chunks: Buffer[] = [];
+      const ended = new Promise<void>((resolve, reject) => {
+        child.stderr?.on('data', (chunk: Buffer) => chunks.push(chunk));
+        child.stderr?.once('end', resolve);
+        child.stderr?.once('error', reject);
+      });
+      await ended;
+      expect(Buffer.concat(chunks).toString()).toBe('CAPTURE-END\n');
+      await child.terminate();
+    });
+  }
+
   it('holds an exited root until its TERM-ignoring group is gone', async () => {
     const [child, descendant] = await tree('exit 17');
     await expect(child.exited).resolves.toEqual({ code: 17, signal: null });

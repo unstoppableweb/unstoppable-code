@@ -3,6 +3,7 @@ import { CanopyClientError, type CanopyClient } from '@canopy/core-client';
 import { probeCanopyDaemon } from '@canopy/core-client/node';
 import {
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+  CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   MUTATION_FENCE_GRANTS,
@@ -32,7 +33,8 @@ export const DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID =
 
 /**
  * What the owner session calls on the daemon: the lease, runtime reads, the
- * host request channel and its split-lock fences (CAN-4730 E2-G).
+ * host request channel, its mutation fences (CAN-4730 E2-G) and the
+ * daemon's write activity (CAN-4730 E2 2b).
  */
 export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
   queries: { ...CORE_TRANSPORT_QUERY_DEFINITIONS },
@@ -47,6 +49,7 @@ export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
   streams: {
     'worker.pipeline.hostRequests':
       WORKER_PIPELINE_STREAM_DEFINITIONS['worker.pipeline.hostRequests'],
+    ...CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   },
 };
 type D = typeof ELECTRON_DAEMON_OWNER_DEFINITIONS;

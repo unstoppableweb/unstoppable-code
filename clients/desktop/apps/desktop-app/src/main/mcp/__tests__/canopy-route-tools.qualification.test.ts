@@ -112,6 +112,48 @@ describe('Canopy route tools (CAN-4125)', () => {
     ).toEqual(golden);
   });
 
+  it('leaves room for selected MCP servers in Antigravity chats', () => {
+    for (const route of canopyRouteFixtures().filter(
+      (r) => r.providerType === 'antigravity',
+    )) {
+      const tools = [
+        ...listCanopyRouteTools(route, false),
+        ...listCanopyRouteTools(route, true),
+      ];
+      // agy can drop a large tool even when the combined catalog fits.
+      // Both limits are regression budgets for our side of the wire.
+      expect(Buffer.byteLength(JSON.stringify(tools))).toBeLessThan(32 * 1024);
+      expect(
+        tools
+          .filter((t) => Buffer.byteLength(JSON.stringify(t)) >= 1280)
+          .map((t) => t.name),
+      ).toEqual([]);
+      expect(
+        tools.find((t) => t.name === 'DispatchAction')?.inputSchema,
+      ).toMatchObject({
+        properties: { action: { additionalProperties: true } },
+      });
+      expect(
+        tools.find((t) => t.name === 'SetupWatchers')?.inputSchema,
+      ).toMatchObject({
+        properties: {
+          watchers: {
+            items: {
+              properties: {
+                target: {
+                  additionalProperties: true,
+                  properties: {
+                    runOn: { type: 'string', enum: ['local', 'cloud'] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+  });
+
   // set_work_entry_auto_delete removes the caller's whole work entry, so a
   // managed delegate never lists it even though its listing falls back to the
   // terminal set; root chats in worktrees, Cowork and Orchestrator do.

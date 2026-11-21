@@ -20,6 +20,8 @@ import type {
   WorktreeRecoveryFinishResult,
   CatalogInvocableRow,
   CatalogInvocablesListParams,
+  CoreChatVisualReadResult,
+  CoreChatVisualReference,
 } from '@canopy/protocol/canopy-core';
 import type {
   WorkEntryAutoDeleteWorkspaceSnapshot,
@@ -64,6 +66,7 @@ import type {
   RemoteControlWorktreeBranchesListPayload,
   RemoteControlWorktreeBranchesListResult,
   RemoteControlChatInputDeliveryPayload,
+  RemoteControlProviderUsageProjection,
   RemoteControlProviderUsageRefreshPayload,
 } from '@canopy/protocol/remote-control/shell';
 import type {
@@ -105,7 +108,9 @@ import type {
   OrgProjectCatalogSnapshot,
   OrgProjectPreference,
   OrgProjectSetupProgress,
+  OrgRepositoryOwnerLookup,
 } from '@canopy/protocol/org-projects';
+import type { PortableCloneJob } from '@canopy/protocol/clone-jobs';
 import type {
   WorkspaceContext,
   WorkspaceContextState,
@@ -201,6 +206,10 @@ import type {
   ScriptActionsQueryMap,
 } from '@canopy/protocol/script-actions';
 import type {
+  ChatRecoveryCommandMap,
+  ChatRecoveryQueryMap,
+} from './chat-recovery-client';
+import type {
   DomainEventMap,
   DomainEventName,
   SubscriptionFilter,
@@ -272,6 +281,29 @@ export interface ChatAttachmentDeleteArgs {
   readonly attachmentId: string;
 }
 
+/** One byte range of one chat visual (`chat.readVisual`). */
+export interface ChatReadVisualArgs {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly chatId: string;
+  /** The message holding the visual's `tool_result` block. */
+  readonly messageId: string;
+  readonly toolUseId: string;
+  /**
+   * The full reference on the owning `tool_result` block, as the transcript
+   * holds it (read-only); the computer checks it against the visual.
+   */
+  readonly reference: Readonly<Omit<CoreChatVisualReference, 'heights'>> & {
+    readonly heights?: ReadonlyArray<readonly [number, number]>;
+  };
+  /** Raw byte offset, 0 to `reference.byteLength`. */
+  readonly offset: number;
+  /** Raw bytes to read, 1 to 1,048,576. */
+  readonly limit: number;
+  /** An archived worktree chat; it names the scope's own worktree. */
+  readonly archivedContainerId?: string;
+}
+
 /**
  * A person's answer to a paired computer's RequestSecrets form, for
  * `chat.secretRequest.settle`. The values go only to the computer's session
@@ -301,6 +333,7 @@ export type TerminalShellSpawnArgs = Omit<
  */
 export interface QueryMap
   extends
+    ChatRecoveryQueryMap,
     ScriptActionsQueryMap,
     OnboardingTipsQueryMap,
     SuggestionsQueryMap,
@@ -397,6 +430,16 @@ export interface QueryMap
     args: RemoteControlChatHistoryRequest;
     result: RemoteControlChatHistoryChunk;
   };
+  /**
+   * One raw byte range of a chat visual on the paired computer (CAN-7432),
+   * checked there against the reference's hash, size and archive scope.
+   * `data` is the base64 of exactly `length` bytes from `offset`. Served by
+   * clients whose capabilities report `chatVisuals`.
+   */
+  'chat.readVisual': {
+    args: ChatReadVisualArgs;
+    result: CoreChatVisualReadResult;
+  };
   /** Read one tracked plan's detail (Plans section, markdown viewer). */
   'plan.get': {
     args: RemoteControlPlanGetPayload;
@@ -476,6 +519,32 @@ export interface QueryMap
       readonly repositories?: boolean;
     };
     result: OrgProjectCatalogSnapshot;
+  };
+  /**
+   * The organization project that holds a repository, by its remote URL,
+   * from the host's cached catalog (CAN-7433). `{ kind: 'none' }` when no
+   * organization the host's account belongs to holds it. Takes no host path.
+   */
+  'orgProjects.findRepositoryOwner': {
+    args: { readonly remoteUrl: string };
+    result: OrgRepositoryOwnerLookup;
+  };
+  /**
+   * The host's Add project clone jobs (CAN-7433), with no remote URL or host
+   * path. Gated by `CanopyCapabilities.cloneJobs`.
+   */
+  'cloneJobs.list': {
+    args: Record<string, never>;
+    result: readonly PortableCloneJob[];
+  };
+  /**
+   * The host's curated provider quota projection (CAN-7433): plan usage with
+   * no audit rows, credentials or raw provider responses. `workspaceLocalId`
+   * only selects the host. Gated by `CanopyCapabilities.providerQuotas`.
+   */
+  'providerUsage.get': {
+    args: { readonly workspaceLocalId?: string };
+    result: RemoteControlProviderUsageProjection;
   };
   /**
    * Personal projects this host can bring into a team (CAN-3706). Gated by
@@ -562,6 +631,13 @@ export interface PersistChatTabSettingsArgs {
   readonly settings: ChatTabSettings;
 }
 
+/** `workspace.setArchiveRetention`: one code project's deletion retention. */
+export interface WorkspaceArchiveRetentionArgs {
+  readonly workspaceId: string;
+  /** Whole days a deleted Work Entry is kept before it is purged. */
+  readonly archiveRetentionDays: number;
+}
+
 export type WorkspaceCreateResult =
   | {
       readonly status: 'completed';
@@ -616,6 +692,7 @@ export type BackgroundTaskStopOutcome =
 
 export interface CommandMap
   extends
+    ChatRecoveryCommandMap,
     ScriptActionsCommandMap,
     OnboardingTipsCommandMap,
     SuggestionsCommandMap,
@@ -626,11 +703,27 @@ export interface CommandMap
     args: { readonly projectId: string; readonly worktreeId: string };
     result: ManagedDelegationExtendLifetimeLimitResult;
   };
-  /** Refresh the current provider account on the explicitly selected host. */
+  /**
+   * Refresh the current provider account on the explicitly selected host and
+   * answer its fresh quota projection (CAN-7433).
+   */
   'providerUsage.refresh': {
     args: RemoteControlProviderUsageRefreshPayload & {
       readonly workspaceLocalId?: string;
     };
+    result: RemoteControlProviderUsageProjection;
+  };
+  /**
+   * Cancel one running clone job: git stops and its partial checkout is
+   * removed. A no-op for an unknown or finished job. Gated by `cloneJobs`.
+   */
+  'cloneJobs.cancel': {
+    args: { readonly jobId: string };
+    result: void;
+  };
+  /** Forget one finished clone job on the host. Gated by `cloneJobs`. */
+  'cloneJobs.dismiss': {
+    args: { readonly jobId: string };
     result: void;
   };
   'repoRules.apply': {
@@ -754,6 +847,15 @@ export interface CommandMap
   };
   'workspace.update': {
     args: RemoteControlWorkspaceUpdatePayload;
+    result: void;
+  };
+  /**
+   * Saves a code project's deletion retention days (CAN-7438). Gated by
+   * `workspaceArchiveRetention`. Leaves the project's auto-archive settings
+   * unchanged. A host refusal rejects with the host's message.
+   */
+  'workspace.setArchiveRetention': {
+    args: WorkspaceArchiveRetentionArgs;
     result: void;
   };
   'workspace.delete': {

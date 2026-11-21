@@ -51,6 +51,7 @@ export function BranchPickerOptionContent({
   const provenance = getBranchProvenanceBadge(branch);
   const provenanceLabel =
     provenance === 'local' ? LOCAL_BRANCH_TOOLTIP : REMOTE_BRANCH_TOOLTIP;
+  const displayName = branch.isRemote ? `origin/${branch.name}` : branch.name;
   return (
     <>
       <PickerMenuOptionLeading>
@@ -60,8 +61,8 @@ export function BranchPickerOptionContent({
         />
       </PickerMenuOptionLeading>
       <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>
-          {branch.isRemote ? `origin/${branch.name}` : branch.name}
+        <PickerMenuOptionLabel title={displayName}>
+          {displayName}
         </PickerMenuOptionLabel>
       </PickerMenuOptionContent>
       {selected ? (
@@ -103,9 +104,9 @@ export function WorktreePickerOptionContent({
         <BranchIcon size="md" />
       </PickerMenuOptionLeading>
       <PickerMenuOptionContent>
-        <PickerMenuOptionLabel>{label}</PickerMenuOptionLabel>
+        <PickerMenuOptionLabel title={label}>{label}</PickerMenuOptionLabel>
         {description ? (
-          <PickerMenuOptionDescription>
+          <PickerMenuOptionDescription title={description}>
             {description}
           </PickerMenuOptionDescription>
         ) : null}

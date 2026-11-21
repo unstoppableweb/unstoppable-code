@@ -148,6 +148,9 @@ export function Disclosure({
         ) : null}
         <span
           className={variant === 'box' ? 'min-w-0 flex-1 truncate' : 'min-w-0'}
+          title={
+            variant === 'box' && typeof label === 'string' ? label : undefined
+          }
         >
           {label}
           {!open && hint ? (
@@ -260,12 +263,12 @@ export const RailSectionHeaderFrame = forwardRef<
           <ChevronDownMediumIcon
             data-testid={chevronTestId}
             size="md"
-            className={`shrink-0 ${projects ? 'translate-y-0.5 ' : ''}transition-[transform,opacity] group-hover/rail-section:opacity-100 group-focus-within/rail-section:opacity-100 ${
+            className={`shrink-0 ${projects ? 'translate-y-0.5 ' : ''}transition-[transform,opacity] group-hover/rail-section:opacity-100 group-focus-within/rail-section:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100 ${
               returnToRows
                 ? 'rotate-180 opacity-100'
                 : expanded === false
                   ? '-rotate-90 opacity-100'
-                  : 'opacity-0'
+                  : 'opacity-0 pointer-coarse:opacity-100'
             }`}
           />
         </button>
@@ -492,7 +495,7 @@ const DISCLOSURE_TOGGLE_CLASS: Readonly<
   'sidebar-group':
     'focus-ring flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded text-left text-s font-normal fg-quaternary hover:fg-secondary group-focus-within/sidebar-item:fg-secondary pointer-coarse:h-11',
   'sidebar-row':
-    'focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary',
+    'focus-ring flex h-7 w-full items-center gap-1.5 rounded-row px-1.5 text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary pointer-coarse:h-11',
   tree: "focus-ring pointer-coarse:relative pointer-coarse:before:absolute pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:-left-5.5 pointer-coarse:before:-right-1.5 pointer-coarse:before:content-[''] inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm fg-secondary hover:fg-primary",
   'tree-icon':
     'focus-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11 flex rounded-sm fg-tertiary hover:fg-primary',
@@ -502,9 +505,9 @@ const DISCLOSURE_TOGGLE_CLASS: Readonly<
   'usage-account':
     "group focus-ring flex flex-col gap-1.5 rounded-sm text-left text-xs pointer-coarse:min-h-11 pointer-coarse:min-w-11 after:absolute after:inset-0 after:rounded-md after:content-['']",
   'reverted-turn':
-    'focus-ring flex w-full items-center gap-2 rounded-md border bg-fg-primary/[0.02] px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]',
+    'focus-ring flex w-full items-center gap-2 rounded-md border px-3 py-1.5 text-left text-xs fg-secondary transition-colors hover:bg-subtle pointer-coarse:min-h-11',
   'tool-count':
-    'focus-ring w-fit rounded-md text-xs font-medium fg-secondary transition-colors hover:fg-primary',
+    'focus-ring w-fit rounded-md text-xs font-medium fg-secondary transition-colors hover:fg-primary pointer-coarse:min-h-11',
   summary: SUMMARY_TOGGLE_CLASS,
   'summary-wrapping': `${SUMMARY_TOGGLE_CLASS} basis-full @min-[32rem]/turn-files:basis-0`,
 };

@@ -335,6 +335,10 @@ export function toUpdateTrackedPlanRequest(
       ? { dismissedAt: args.dismissedAt }
       : {}),
     ...(args.hidden !== undefined ? { hidden: args.hidden } : {}),
+    ...(args.chatId !== undefined ? { chatId: args.chatId } : {}),
+    ...(args.initiationSource === 'user'
+      ? { initiationSource: 'user' as const }
+      : {}),
   };
   if (args.source !== undefined) {
     const source = trackedPlanSource(args.source);

@@ -9,13 +9,13 @@ export type NotificationDetailsTone = 'error' | 'info' | 'success' | 'warning';
 function messageToneClasses(tone: NotificationDetailsTone | undefined): string {
   switch (tone) {
     case 'error':
-      return 'border-red-500/20 bg-red-500/[0.04]';
+      return 'border-line-destructive bg-destructive-subtle';
     case 'success':
-      return 'border-green-500/20 bg-green-500/[0.04]';
+      return 'border-line-positive bg-success-subtle';
     case 'warning':
-      return 'border-amber-500/20 bg-amber-500/[0.04]';
+      return 'border-line-attention bg-warning-subtle';
     case 'info':
-      return 'border-blue-500/20 bg-blue-500/[0.04]';
+      return 'bg-info-subtle';
     default:
       return '';
   }
@@ -39,7 +39,7 @@ export interface NotificationDetailsDialogProps {
   readonly slotGap?: SpaceRole;
   /** Test ID on the dialog card; the message box gets `<id>-body`. */
   readonly dataTestId?: string;
-  /** Move focus into the dialog and return it to the opener on close. */
+  /** Move focus into the dialog and return it to the opener on close (default: true). */
   readonly trapFocus?: boolean;
 }
 
@@ -59,7 +59,7 @@ export function NotificationDetailsDialog({
   trailing,
   slotGap,
   dataTestId,
-  trapFocus,
+  trapFocus = true,
 }: NotificationDetailsDialogProps): JSX.Element {
   return (
     <DialogModal
@@ -78,7 +78,11 @@ export function NotificationDetailsDialog({
           data-testid={
             dataTestId === undefined ? undefined : `${dataTestId}-body`
           }
-          className={`${blockFromReplay ? REPLAY_BLOCK_CLASS : ''} overflow-y-auto whitespace-pre-wrap rounded-lg border p-4 text-s fg-primary/90 ${messageToneClasses(tone)}`}
+          // Focusable, so Safari keyboard users can scroll long output.
+          tabIndex={0}
+          role="region"
+          aria-label="Message"
+          className={`${blockFromReplay ? REPLAY_BLOCK_CLASS : ''} focus-ring focus-ring-inset overflow-y-auto whitespace-pre-wrap rounded-lg border p-4 text-s fg-primary/90 ${messageToneClasses(tone)}`}
           style={{ maxHeight: '60vh' }}
         >
           {/* Git rewrites progress lines with a bare \r, which CSS does not

@@ -152,23 +152,27 @@ export function FloatingChatWindow({
         )}
         {onNewChat && (
           <TitlebarIconButton
+            coarsePointerTarget
             icon={EditBigIcon}
             aria-label="New chat"
             onClick={onNewChat}
           />
         )}
         <TitlebarIconButton
+          coarsePointerTarget
           icon={ExternalIcon}
           aria-label="Open full window"
           onClick={onExpand}
         />
         <TitlebarIconButton
+          coarsePointerTarget
           icon={MinusIcon}
           aria-label="Minimize"
           onClick={onMinimize}
         />
         {onClose && (
           <TitlebarIconButton
+            coarsePointerTarget
             icon={CloseMediumIcon}
             aria-label="Close"
             onClick={onClose}
@@ -187,7 +191,7 @@ export function FloatingChatWindow({
       />
       {/* The desktop panel is a native view, which clips everything outside
           its bounds. Its host draws `shadow-xl` behind it (the outer ring and
-          drop shadow, on the same 16px CSS corners as this frame); this draws
+          drop shadow, on the same 20px CSS corners as this frame); this draws
           the same `shadow-xl` inside, where only its inner ring shows, so
           together the panel wears the design system's whole shadow. The web
           card wears `shadow-xl` on the frame itself. */}

@@ -160,6 +160,25 @@ import {
   validateAutomationTrigger,
 } from '@canopy/desktop-shared/lib/automations';
 import {
+  USAGE_RESUME_EXPIRY_MS,
+  USAGE_RESUME_NOT_PENDING,
+} from '@canopy/desktop-shared/lib/usage-limit-resume-outlook';
+import {
+  desktopUsageResumeGate,
+  findUsageResumeEntry,
+  isUsageResumeAction,
+  matchesUsageResumeBinding,
+  qualifyUsageResumeChecks,
+  USAGE_RESUME_EXPIRED,
+  USAGE_RESUME_INELIGIBLE,
+  usageResumeBinding,
+  usageResumeExpired,
+  usageResumeTarget,
+  type UsageResumeCheck,
+  type UsageResumeDecision,
+  type UsageResumeQualification,
+} from './usage-limit-resume-gate';
+import {
   accountMayRunIn,
   authorizeBackgroundExecution,
   automationActionDestination,
@@ -1222,6 +1241,18 @@ function isPersistedActivity(value: unknown): value is ScheduledActivity {
   if (!isRecord(value.action) || validateAutomationAction(value.action)) {
     return false;
   }
+  if (
+    value.action.resumeWhen === 'provider_usage_clear' &&
+    (!isRecord(value.schedule) ||
+      value.schedule.kind !== 'one_time' ||
+      value.ifCommand !== undefined ||
+      value.dependencies !== undefined ||
+      value.installedFrom !== undefined ||
+      value.agentScheduledSend !== undefined ||
+      value.sharedPipelineReview !== undefined ||
+      value.targetRequirement !== undefined)
+  )
+    return false;
   if (!isValidIsoString(value.createdAt)) return false;
   if (!isValidIsoString(value.updatedAt)) return false;
   if (value.lastRunAt !== undefined && !isValidIsoString(value.lastRunAt)) {
@@ -1551,6 +1582,31 @@ function nextRunForEnabledActivity(
     activity,
     Number.isFinite(passed) && passed > now.getTime() ? new Date(passed) : now,
   );
+}
+
+interface DueAutomationRun {
+  activityId: string;
+  runId: string;
+  enabledIntentRevision: number;
+  releaseTarget: () => void;
+}
+
+interface DueUsageResumeCheck extends UsageResumeCheck {
+  activity: ScheduledActivity;
+  snapshot: string;
+  scheduledFor: string;
+  editToken: object | undefined;
+}
+
+function capUsageResumeSchedule<Schedule extends ScheduledActivity['schedule']>(
+  schedule: Schedule,
+  createdAt: number,
+): Schedule {
+  if (schedule.kind !== 'one_time') return schedule;
+  const expiry = createdAt + USAGE_RESUME_EXPIRY_MS;
+  return Date.parse(schedule.runAt) > expiry
+    ? { ...schedule, runAt: new Date(expiry).toISOString() }
+    : schedule;
 }
 
 function defaultPluginSelections(
@@ -1948,6 +2004,7 @@ export class AutomationsService {
   private ifCommandAbortHandlers: Set<() => void> = new Set();
   private cancellableRuns = new Map<string, IfCommandAbortController>();
   private enabledIntentRevisions = new Map<string, number>();
+  private usageResumeEditTokens = new WeakMap<ScheduledActivity, object>();
   private readonly archive = getAutomationRunArchive();
   private pendingArchiveWrites: Promise<void>[] = [];
   private archiveMaintenance: Promise<void> = Promise.resolve();
@@ -3150,6 +3207,50 @@ export class AutomationsService {
             };
           }
         }
+        let action = normalizeAutomationAction(request.action);
+        const gated = isUsageResumeAction(action);
+        if (isUsageResumeAction(action)) {
+          if (trusted.agentScheduledSend)
+            return { ok: false, error: USAGE_RESUME_INELIGIBLE };
+          const target = usageResumeTarget(action);
+          const entry = findUsageResumeEntry(
+            await desktopUsageResumeGate.readRegistry(),
+            target,
+          );
+          const binding = usageResumeBinding(entry);
+          if (
+            !binding ||
+            binding.detectedAt > Date.now() ||
+            (action.usageResumeInterruption &&
+              !matchesUsageResumeBinding(
+                action.usageResumeInterruption,
+                binding,
+              ))
+          ) {
+            return { ok: false, error: USAGE_RESUME_INELIGIBLE };
+          }
+          const existing = file.activities.find(
+            (candidate) =>
+              candidate.enabled &&
+              firesLocally(candidate) &&
+              candidate.action.type === 'worktree_session_prompt' &&
+              candidate.action.purpose === 'usage_limit_resume' &&
+              isDeepStrictEqual(usageResumeTarget(candidate.action), target) &&
+              (isUsageResumeAction(candidate.action)
+                ? matchesUsageResumeBinding(
+                    candidate.action.usageResumeInterruption,
+                    binding,
+                  )
+                : binding.detectedAt <= Date.parse(candidate.createdAt)),
+          );
+          if (existing)
+            return {
+              ok: true,
+              activity: cloneActivity(existing),
+              created: false,
+            };
+          action = { ...action, usageResumeInterruption: binding };
+        }
         const now = new Date();
         const timestamp = now.toISOString();
         const dependencies = request.dependencies
@@ -3160,8 +3261,10 @@ export class AutomationsService {
           id: randomUUID(),
           name: request.name.trim(),
           enabled: request.enabled !== false,
-          schedule: request.schedule,
-          action: normalizeAutomationAction(request.action),
+          schedule: gated
+            ? capUsageResumeSchedule(request.schedule, now.getTime())
+            : request.schedule,
+          action,
           ...(request.targetRequirement
             ? { targetRequirement: request.targetRequirement }
             : {}),
@@ -3260,7 +3363,12 @@ export class AutomationsService {
         file.activities.push(activity);
         // CAN-7285: an install owns the bundled pipeline it saved.
         claimInstalledPipeline(file.activities, activity);
-        await this.persistAndNotify(file);
+        try {
+          await this.persistAndNotify(file);
+        } catch (error) {
+          if (gated) file.activities.pop();
+          throw error;
+        }
         if (scheduledPipeline !== undefined)
           markSharedWorkflowPage(file.activities, scheduledPipeline);
         registerAutomationInstall(activity);
@@ -3348,6 +3456,38 @@ export class AutomationsService {
       // CAN-6183: the server record is authoritative for a cloud schedule,
       // and a location this version doesn't know is never rewritten here.
       if (!firesLocally(activity)) return locationRefusal(activity);
+      const usageResumeAction = isUsageResumeAction(activity.action)
+        ? activity.action
+        : undefined;
+      const requestedAction = request.action;
+      if (usageResumeAction) {
+        if (
+          (request.schedule && request.schedule.kind !== 'one_time') ||
+          (requestedAction &&
+            (requestedAction.type !== 'worktree_session_prompt' ||
+              requestedAction.purpose === 'scheduled_send' ||
+              !isDeepStrictEqual(
+                usageResumeTarget(requestedAction),
+                usageResumeTarget(usageResumeAction),
+              ))) ||
+          request.ifCommand?.trim() ||
+          request.dependencies ||
+          request.targetRequirement ||
+          request.installedFrom ||
+          trusted.regeneratesOwnedPipeline
+        ) {
+          return {
+            ok: false,
+            error:
+              'A pending usage check cannot change its chat or become another kind of automation.',
+          };
+        }
+      } else if (requestedAction && isUsageResumeAction(requestedAction)) {
+        return {
+          ok: false,
+          error: 'Create a new schedule to wait for provider usage to clear.',
+        };
+      }
       // Only session prompts carry the agent sender; other types would drop it.
       if (
         activity.agentScheduledSend &&
@@ -3389,8 +3529,17 @@ export class AutomationsService {
       }
       const turnsOn = request.enabled === true && !activity.enabled;
       let effectiveEnabled = request.enabled ?? activity.enabled;
-      const normalizedRequestedAction = request.action
-        ? normalizeAutomationAction(request.action)
+      const normalizedRequestedAction = requestedAction
+        ? usageResumeAction &&
+          requestedAction.type === 'worktree_session_prompt'
+          ? {
+              ...requestedAction,
+              purpose: usageResumeAction.purpose,
+              resumeWhen: usageResumeAction.resumeWhen,
+              usageResumeInterruption:
+                usageResumeAction.usageResumeInterruption,
+            }
+          : normalizeAutomationAction(requestedAction)
         : undefined;
       // CAN-6065: retargeting is refused where a create is.
       const retargetedPipeline =
@@ -3634,7 +3783,12 @@ export class AutomationsService {
           );
         }
         if (request.schedule !== undefined)
-          activity.schedule = request.schedule;
+          activity.schedule = usageResumeAction
+            ? capUsageResumeSchedule(
+                request.schedule,
+                Date.parse(activity.createdAt),
+              )
+            : request.schedule;
         if (normalizedRequestedAction !== undefined) {
           const clearsSharedPipelineReview = sharedPipelineBindingChanged(
             activity.action,
@@ -3700,6 +3854,7 @@ export class AutomationsService {
           throw error;
         }
         regeneration.written = true;
+        if (usageResumeAction) this.usageResumeEditTokens.set(activity, {});
         if (startsTargeting !== undefined)
           markSharedWorkflowPage(file.activities, startsTargeting);
         // CAN-7285: an update that saved a new bundled pipeline owns it; one
@@ -3743,6 +3898,11 @@ export class AutomationsService {
     if (!isRecord(request) || typeof request.id !== 'string') {
       return { ok: false, error: 'Automation id is required.' };
     }
+    if (
+      request.pendingUsageLimitResumeOnly !== undefined &&
+      typeof request.pendingUsageLimitResumeOnly !== 'boolean'
+    )
+      return { ok: false, error: 'Invalid pending resume delete condition.' };
     return this.enqueueMutation(async () => {
       const file = await this.ensureFile();
       if (authorize) {
@@ -3758,6 +3918,16 @@ export class AutomationsService {
       const requested = file.activities.find(
         (entry) => entry.id === request.id,
       );
+      if (
+        request.pendingUsageLimitResumeOnly &&
+        (!requested ||
+          requested.action.type !== 'worktree_session_prompt' ||
+          requested.action.purpose !== 'usage_limit_resume' ||
+          requested.schedule.kind !== 'one_time' ||
+          isActivityRunning(file, request.id) ||
+          !nextRunForEnabledActivity(requested, file, new Date()))
+      )
+        return { ok: false, error: USAGE_RESUME_NOT_PENDING };
       const workflowPipelineId =
         request.workflow === true && requested !== undefined
           ? scheduledUserPipelineId(requested)
@@ -3855,6 +4025,12 @@ export class AutomationsService {
       } catch (error) {
         if (successor !== undefined && storedSuccessor !== undefined) {
           file.activities[file.activities.indexOf(successor)] = storedSuccessor;
+        }
+        if (
+          storedSuccessor !== undefined ||
+          request.pendingUsageLimitResumeOnly ||
+          isUsageResumeAction(activity.action)
+        ) {
           file.activities.splice(index, 0, activity);
           file.recentRuns = storedRuns;
           await handoff?.undo();
@@ -3980,6 +4156,16 @@ export class AutomationsService {
           error: 'Activity not found.',
           failure: { stage: 'not_found' },
         };
+      if (isUsageResumeAction(activity.action)) {
+        const error = new Error(
+          'A pending usage check cannot become a workflow.',
+        );
+        return {
+          ok: false,
+          error: error.message,
+          failure: { stage: 'save', cause: error },
+        };
+      }
       if (isActivityRunning(file, activityId))
         return {
           ok: false,
@@ -4396,14 +4582,10 @@ export class AutomationsService {
     this.dueCheckRequested = false;
     try {
       const now = new Date();
+      const usageChecks: DueUsageResumeCheck[] = [];
       const due = await this.enqueueMutation(async () => {
         const file = await this.ensureFile();
-        const dueRuns: Array<{
-          activityId: string;
-          runId: string;
-          enabledIntentRevision: number;
-          releaseTarget: () => void;
-        }> = [];
+        const dueRuns: DueAutomationRun[] = [];
         const initialRunsToArchive: ScheduledActivityRun[] = [];
         let changed = false;
         try {
@@ -4427,6 +4609,24 @@ export class AutomationsService {
             if (hasRunForOccurrence(file, activity.id, scheduledFor)) {
               this.advanceAfterSkippedOrDuplicate(activity, scheduledFor, now);
               changed = true;
+              continue;
+            }
+            if (isUsageResumeAction(activity.action)) {
+              const createdAt = Date.parse(activity.createdAt);
+              if (
+                usageResumeExpired(createdAt, now.getTime()) ||
+                (!isActivityRunning(file, activity.id) &&
+                  !isWorktreeSessionPromptTargetBusy(activity.action))
+              ) {
+                usageChecks.push({
+                  activity,
+                  snapshot: JSON.stringify(activity),
+                  action: { ...activity.action },
+                  createdAt,
+                  scheduledFor,
+                  editToken: this.usageResumeEditTokens.get(activity),
+                });
+              }
               continue;
             }
             if (
@@ -4507,15 +4707,12 @@ export class AutomationsService {
         }
       });
 
-      for (const entry of due) {
-        void this.finishRun(
-          entry.activityId,
-          entry.runId,
-          entry.enabledIntentRevision,
-          false,
-        )
-          .catch(() => undefined)
-          .finally(entry.releaseTarget);
+      this.dispatchDueRuns(due);
+      if (usageChecks.length > 0) {
+        const qualified = await qualifyUsageResumeChecks(usageChecks);
+        this.dispatchDueRuns(
+          await this.applyUsageResumeChecks(usageChecks, qualified),
+        );
       }
       this.lastDueCheckFailureKey = null;
     } catch (error) {
@@ -4535,6 +4732,148 @@ export class AutomationsService {
         void this.runDueCheck().catch(() => undefined);
       }
     }
+  }
+
+  private dispatchDueRuns(runs: DueAutomationRun[]): void {
+    for (const entry of runs) {
+      void this.finishRun(
+        entry.activityId,
+        entry.runId,
+        entry.enabledIntentRevision,
+        false,
+      )
+        .catch(() => undefined)
+        .finally(entry.releaseTarget);
+    }
+  }
+
+  private async applyUsageResumeChecks(
+    checks: DueUsageResumeCheck[],
+    qualifications: UsageResumeQualification[],
+  ): Promise<DueAutomationRun[]> {
+    return this.enqueueMutation(async () => {
+      const file = await this.ensureFile();
+      const decisions = new Map(
+        qualifications.map((qualification) => [
+          qualification.check,
+          qualification,
+        ]),
+      );
+      const entries = qualifications.some(
+        ({ checkedRegistry, check }) =>
+          checkedRegistry && !usageResumeExpired(check.createdAt, Date.now()),
+      )
+        ? await desktopUsageResumeGate.readRegistry().catch(() => undefined)
+        : undefined;
+      const now = new Date();
+      const originalRuns = file.recentRuns;
+      const replacements = new Map<number, ScheduledActivity>();
+      const newRuns: ScheduledActivityRun[] = [];
+      const due: DueAutomationRun[] = [];
+      try {
+        for (const check of checks) {
+          const qualification = decisions.get(check);
+          if (!qualification) continue;
+          const index = file.activities.indexOf(check.activity);
+          const activity = file.activities[index];
+          if (
+            !activity ||
+            !activity.enabled ||
+            !firesLocally(activity) ||
+            activity.schedule.kind !== 'one_time' ||
+            !isUsageResumeAction(activity.action) ||
+            this.usageResumeEditTokens.get(activity) !== check.editToken ||
+            JSON.stringify(activity) !== check.snapshot ||
+            nextRunForEnabledActivity(activity, file, now) !==
+              check.scheduledFor ||
+            Date.parse(check.scheduledFor) > now.getTime()
+          )
+            continue;
+          const expired = usageResumeExpired(check.createdAt, now.getTime());
+          const decision: UsageResumeDecision = expired
+            ? { kind: 'stop', reason: USAGE_RESUME_EXPIRED }
+            : qualification.decision;
+          if (
+            !expired &&
+            (isActivityRunning(file, activity.id) ||
+              isWorktreeSessionPromptTargetBusy(activity.action) ||
+              (qualification.checkedRegistry &&
+                (!entries ||
+                  !isDeepStrictEqual(
+                    qualification.entry,
+                    findUsageResumeEntry(
+                      entries,
+                      usageResumeTarget(activity.action),
+                    ),
+                  ))))
+          )
+            continue;
+
+          const candidate = cloneActivity(activity);
+          if (decision.kind === 'defer') {
+            candidate.schedule = {
+              ...activity.schedule,
+              runAt: decision.runAt,
+            };
+            candidate.nextRunAt = decision.runAt;
+            candidate.updatedAt = now.toISOString();
+          } else {
+            const trigger = triggerForScheduledOccurrence(
+              activity,
+              check.scheduledFor,
+              now,
+            );
+            const run = this.createRun(candidate, check.scheduledFor, trigger);
+            if (decision.kind === 'stop') {
+              run.status = 'failure';
+              run.error = decision.reason;
+              run.completedAt = now.toISOString();
+              this.applyRunResult(candidate, run);
+            } else {
+              let releaseTarget: () => void;
+              try {
+                releaseTarget = reserveAutomationTargetStart(activity.action);
+              } catch {
+                continue;
+              }
+              due.push({
+                activityId: activity.id,
+                runId: run.id,
+                enabledIntentRevision:
+                  this.enabledIntentRevisions.get(activity.id) ?? 0,
+                releaseTarget,
+              });
+            }
+            newRuns.push(run);
+            this.advanceAfterScheduledDispatch(
+              candidate,
+              check.scheduledFor,
+              now,
+            );
+          }
+          replacements.set(index, activity);
+          file.activities[index] = candidate;
+        }
+        if (replacements.size === 0) return due;
+        file.recentRuns = trimRecentRuns(
+          [...newRuns].reverse().concat(originalRuns),
+        );
+        await this.persistAndNotify(file);
+      } catch (error) {
+        for (const [index, activity] of replacements)
+          file.activities[index] = activity;
+        file.recentRuns = originalRuns;
+        due.forEach(({ releaseTarget }) => releaseTarget());
+        throw error;
+      }
+      for (const run of newRuns) {
+        await this.archive.appendRun(run).catch((error) => {
+          logMainProcessError('Failed to archive usage resume run', error);
+        });
+        if (run.status === 'failure') this.notifyRunWatchers(run);
+      }
+      return due;
+    });
   }
 
   /** Local dedupe identity for a due-check failure; never sent to telemetry. */
@@ -5903,23 +6242,32 @@ export class AutomationsService {
               entry.chatId === target.chatId,
           );
           const createdAt = Date.parse(activity.createdAt);
+          const gate = isUsageResumeAction(action)
+            ? action.usageResumeInterruption
+            : undefined;
           if (
             !current ||
             (current.resumeReason && current.resumeReason !== 'usage_limit') ||
             !Number.isFinite(createdAt) ||
             current.detectedAt > createdAt ||
-            activity.agentScheduledSend
+            activity.agentScheduledSend ||
+            (isUsageResumeAction(action) &&
+              !matchesUsageResumeBinding(gate, usageResumeBinding(current)))
           )
-            throw new Error(
-              'This scheduled resume no longer matches an eligible interruption.',
-            );
+            throw new Error(USAGE_RESUME_INELIGIBLE);
           const { handleResumeUsageLimitedChats } =
             await import('../ipc/usage-limited-chats');
           const userMessageId = `automation-${runId}`;
           const result = await handleResumeUsageLimitedChats(
             { targets: [target] },
             this.surfaces.getMainWindow,
-            userMessageId,
+            gate
+              ? {
+                  userMessageId,
+                  interruption: gate,
+                  requireClearUsage: background,
+                }
+              : userMessageId,
           );
           if (result.resumedCount !== 1)
             throw new Error('The scheduled resume could not be dispatched.');
@@ -7165,7 +7513,16 @@ export class AutomationsService {
             ? parsed.updatedAt
             : new Date().toISOString(),
         activities: Array.isArray(parsed.activities)
-          ? parsed.activities.filter(isPersistedActivity).map(cloneActivity)
+          ? parsed.activities.filter(isPersistedActivity).map((record) => {
+              const activity = cloneActivity(record);
+              if (activity.enabled && isUsageResumeAction(activity.action)) {
+                activity.schedule = capUsageResumeSchedule(
+                  activity.schedule,
+                  Date.parse(activity.createdAt),
+                );
+              }
+              return activity;
+            })
           : [],
         recentRuns: Array.isArray(parsed.recentRuns)
           ? trimRecentRuns(

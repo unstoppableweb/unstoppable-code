@@ -1,4 +1,7 @@
-import type { CanopyErrorPayload } from '@canopy/protocol/canopy-core';
+import {
+  isUnknownKeyedWriteOutcome,
+  type CanopyErrorPayload,
+} from '@canopy/protocol/canopy-core';
 import {
   CoreCoworkRequestError,
   type CoreCoworkInvoker,
@@ -16,6 +19,16 @@ const INVALID_REPLY: CanopyErrorPayload = {
   retry: { kind: 'never' },
 };
 
+/**
+ * A reply the web core sent after the call was dispatched but this app can't
+ * read: the call may have been applied.
+ */
+export class CloudReplyUnreadableError extends CoreCoworkRequestError {
+  constructor() {
+    super(INVALID_REPLY);
+  }
+}
+
 /** One web core call; a refusal or an unreadable reply rejects with its payload. */
 export async function requestCloud<Result>(
   invoker: CoreCoworkInvoker,
@@ -26,7 +39,7 @@ export async function requestCloud<Result>(
   const reply = await invoker.request(method, params);
   if (!reply.ok) throw new CoreCoworkRequestError(reply.error);
   const parsed = schema.safeParse(reply.value);
-  if (!parsed.success) throw new CoreCoworkRequestError(INVALID_REPLY);
+  if (!parsed.success) throw new CloudReplyUnreadableError();
   return parsed.data;
 }
 
@@ -38,4 +51,14 @@ export function cloudErrorOf(error: unknown): CanopyErrorPayload {
     message: error instanceof Error ? error.message : String(error),
     retry: { kind: 'same_request' },
   };
+}
+
+/**
+ * Whether a keyed call that failed may have been applied (CAN-7196): no reply
+ * came, the reply couldn't be read, or the web core's answer says so.
+ */
+export function isOutcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof CoreCoworkRequestError)) return true;
+  if (error instanceof CloudReplyUnreadableError) return true;
+  return isUnknownKeyedWriteOutcome(error.payload);
 }

@@ -2,6 +2,7 @@
 
 import { SearchField, type SearchFieldProps } from './SearchField';
 import { Skeleton } from './Skeleton';
+import { isCoarsePointerNow } from './useMediaQuery';
 import {
   forwardRef,
   useCallback,
@@ -543,7 +544,9 @@ export function PickList<T>({
   const moveActive = (key: string): void => setMoved({ key, query });
 
   useEffect(() => {
-    if (autoFocus) inputRef.current?.focus({ preventScroll: true });
+    // Focusing on touch would open the keyboard before the user asks.
+    if (autoFocus && !isCoarsePointerNow())
+      inputRef.current?.focus({ preventScroll: true });
   }, [autoFocus, inputRef]);
 
   const handleKeys = usePickListKeys({

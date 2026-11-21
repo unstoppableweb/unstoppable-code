@@ -1,5 +1,9 @@
 import { isScopeRevisionedLive } from './revisioned';
-import { isPlanProposal } from '@canopy/desktop-shared/plan-review';
+import {
+  isPlanProposal,
+  PLAN_EXIT_APPROVAL_MESSAGE,
+  PLAN_PROPOSAL_APPROVAL_MESSAGE,
+} from '@canopy/desktop-shared/plan-review';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { worktreeKey } from '../utils';
 import {
@@ -176,7 +180,7 @@ async function approveResolvedPlanExit(
         type: 'chat.send_message',
         chatId: target.targetChatId,
         userMessageId: implementation.userMessageId,
-        text: 'Approved. Implement the plan.',
+        text: PLAN_PROPOSAL_APPROVAL_MESSAGE,
         planReviewApproval: { requestId, planId, revisionNumber },
         trackedPlanImplementation: implementation,
       },
@@ -222,7 +226,9 @@ async function approveResolvedPlanExit(
   );
   scheduleIdleChatUnload();
 
-  const text = proposal ? 'Approved. Implement the plan.' : 'Approved';
+  const text = proposal
+    ? PLAN_PROPOSAL_APPROVAL_MESSAGE
+    : PLAN_EXIT_APPROVAL_MESSAGE;
   const planId = target.tab.trackedPlanId;
   const revisionNumber = target.tab.latestRevisionNumber;
   const sendUntracked = (): void => {

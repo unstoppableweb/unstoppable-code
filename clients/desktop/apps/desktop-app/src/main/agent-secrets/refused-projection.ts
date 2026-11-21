@@ -185,6 +185,8 @@ const CANOPY_STAMPS = {
     fallbackModelLabel: 'label',
   } satisfies Census<CodexAccountModelAccessFailure>,
   canopy_provider_error_details: PROVIDER_TEXT,
+  // Delivery adds it after the commit; the history read still shows the visual.
+  canopy_tool_visuals: "stripped: a visual reference carries the agent's title",
   canopy_persisted_messages: 'stripped: the chat messages themselves',
 } as const satisfies Fields;
 

@@ -3,7 +3,8 @@
 // rebuild that can't read a config fail Collection list reads until a
 // reconcile reads every config. This drives the real store, catalog service
 // and desktop dispatcher on a data root the suite owns, with that fault, and
-// pins which reads fail typed, which keep working, and the picker residual.
+// pins which reads fail typed and which keep working. The Remote Control
+// picker's catalog fails too, so the picker shows its load error (CAN-7473).
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -217,6 +218,25 @@ function loadIndexChannel(): Promise<unknown> {
   return Promise.resolve(handler({ sender: { id: 1 } }));
 }
 
+function pluginCatalogChannel(): Promise<unknown> {
+  const handler = handlers.get('plugin-catalog:list');
+  if (!handler) throw new Error('no plugin-catalog:list handler');
+  return Promise.resolve(
+    handler({ sender: { id: 1 } }, { projectId: 'golden-ws' }),
+  );
+}
+
+function pickerCollectionIds(catalog: unknown): unknown {
+  if (
+    typeof catalog !== 'object' ||
+    catalog === null ||
+    !('collections' in catalog) ||
+    !Array.isArray(catalog.collections)
+  )
+    return catalog;
+  return catalog.collections.map((row: { id: string }) => row.id).sort();
+}
+
 const ids = (entries: { entryId: string }[]): string[] =>
   entries.map((entry) => entry.entryId).sort();
 
@@ -245,6 +265,11 @@ beforeAll(async () => {
   const { registerCollectionHandlers } =
     await import('../collections/collection-handlers');
   registerCollectionHandlers();
+  const { registerEditorMenuHandlers } = await import('../ipc/editor-menus');
+  registerEditorMenuHandlers({
+    dispatcher,
+    resolveCaller: () => caller(['core.catalog.read']),
+  });
 });
 
 afterAll(async () => {
@@ -301,17 +326,14 @@ describe("Collection reads while the index can't be read (CAN-4170)", () => {
     await expect(listRemoteControlCollections()).rejects.toThrow();
   });
 
-  // The named residual (CAN-7473): the picker keeps its other sections and
-  // lists no collections until it has a load error state.
-  it('still lists skills and plugins in the Remote Control picker catalog', async () => {
+  it('fails the Remote Control picker catalog and the Orchestrator settings view, never listing no collections (CAN-7473)', async () => {
     const { buildPluginCatalog } =
       await import('../services/plugin-catalog-service');
-    const catalog = await buildPluginCatalog();
-    expect({
-      collections: catalog.collections,
-      skills: catalog.skills.map((skill) => skill.skillName),
-      plugins: catalog.plugins.map((plugin) => plugin.pluginName),
-    }).toEqual({ collections: [], skills: ['deploy'], plugins: ['linter'] });
+    const { readAppAdvisorSettingsView } =
+      await import('../app-advisor/settings-view');
+    await expect(buildPluginCatalog()).rejects.toThrow();
+    await expect(pluginCatalogChannel()).rejects.toThrow();
+    await expect(readAppAdvisorSettingsView()).rejects.toThrow();
   });
 
   it('fails the inventory sync reader and marks the capability inventory partial', async () => {
@@ -342,10 +364,12 @@ describe("Collection reads while the index can't be read (CAN-4170)", () => {
       picker: (await buildPluginCatalog()).collections
         .map((row) => row.id)
         .sort(),
+      pickerChannel: pickerCollectionIds(await pluginCatalogChannel()),
     }).toEqual({
       snapshot: [collectionEntryId(ID_A), collectionEntryId(ID_B)].sort(),
       channel: [ID_A, ID_B].sort(),
       picker: [ID_A, ID_B].sort(),
+      pickerChannel: [ID_A, ID_B].sort(),
     });
     await expect(
       selectionUpdate([collectionEntryId(ID_A), SKILL_ID]),

@@ -32,9 +32,9 @@ const CHEVRON_SLOT_CLASS: Readonly<
   Record<SidebarSectionToggleSection, string>
 > = {
   chats:
-    'flex shrink-0 transition-opacity group-hover/chats:opacity-100 group-focus-within/chats:opacity-100',
+    'flex shrink-0 transition-opacity group-hover/chats:opacity-100 group-focus-within/chats:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100',
   workspaces:
-    'flex shrink-0 translate-y-0.5 transition-opacity group-hover/workspaces:opacity-100 group-focus-within/workspaces:opacity-100',
+    'flex shrink-0 translate-y-0.5 transition-opacity group-hover/workspaces:opacity-100 group-focus-within/workspaces:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100',
 };
 
 /**

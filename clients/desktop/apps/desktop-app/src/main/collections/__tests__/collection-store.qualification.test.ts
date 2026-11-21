@@ -193,6 +193,10 @@ async function names(store: Store): Promise<string[]> {
   );
 }
 
+// Cases given a 30 s timeout load the store (one also the MCP inventory)
+// afresh after jest.resetModules(): 0.5 to 2 s locally, several times that on
+// a loaded CI runner, past Jest's 5 s default.
+
 // Own the data roots: never seed or delete files in an inherited directory.
 const inheritedDirs = {
   CANOPY_DATA_DIR: process.env.CANOPY_DATA_DIR,
@@ -591,7 +595,7 @@ describe('bundles_legacy conversion', () => {
     const restarted = await loadStore();
     expect(await names(restarted)).toEqual(['Legacy']);
     expect(readFileSync(configPath(ID_A), 'utf8')).toBe(converted);
-  });
+  }, 30_000);
 
   test('a deleted converted collection is not read back from its bundle', async () => {
     seedBundle(ID_A, {
@@ -617,7 +621,7 @@ describe('bundles_legacy conversion', () => {
     expect(result.warnings).toContain(
       `Collection "${ID_A}" could not be loaded.`,
     );
-  });
+  }, 30_000);
 });
 
 describe('mutation admission, rollback and invalidation', () => {

@@ -83,6 +83,12 @@ export interface PipelineDefinitionSourceContext {
    * this owner instead of the selected navigation context.
    */
   readonly owner?: string;
+  /**
+   * A list's `projectDiscovery`: `bounded` asks the project source to stay
+   * within its unattended-scan bounds and to fail when one cuts it short,
+   * so the source is reported unavailable rather than listed in part.
+   */
+  readonly projectDiscovery?: 'bounded';
 }
 
 /**
@@ -770,6 +776,9 @@ export function createPipelineDefinitionService(
               signal,
               sources: port.sources.filter((source) => requested.has(source)),
               ...(params.query?.trim() ? { query: params.query } : {}),
+              ...(params.projectDiscovery
+                ? { projectDiscovery: params.projectDiscovery }
+                : {}),
             });
           } catch (error) {
             if (!port.optional)

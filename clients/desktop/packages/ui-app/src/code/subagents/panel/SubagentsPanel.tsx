@@ -901,6 +901,7 @@ export function SubagentsPanel({
           anchorRef={rootTriggerRef}
           placement="bottom-left"
           interaction="menu"
+          aria-label={SUBAGENTS_ROOT_PICKER_LABEL}
           data-testid="subagents-root-menu"
         >
           <SubagentsRootPickerMenu
@@ -937,6 +938,7 @@ export function SubagentsPanel({
           anchorRef={levelsTriggerRef}
           placement="bottom-left"
           interaction="menu"
+          aria-label={SUBAGENTS_LEVELS_MENU_LABEL}
           data-testid="subagents-levels-menu"
         >
           <SubagentsLevelsMenu

@@ -1011,7 +1011,7 @@ export function ArchivedContainerView({
               title="Delete permanently: remove this item and its retained history for good"
             >
               <TrashPermanentlyIcon size="sm" aria-hidden="true" />
-              Permanent
+              Delete permanently
             </HeaderActionButton>
           )}
           <HeaderActionButton

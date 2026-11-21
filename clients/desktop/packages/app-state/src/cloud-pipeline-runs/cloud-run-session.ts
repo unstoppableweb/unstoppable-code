@@ -29,7 +29,7 @@ import type {
   CoreCoworkStream,
 } from '../core-cowork/invoker';
 import { isTerminalCloudRun } from './cloud-runs-store';
-import { cloudErrorOf, requestCloud } from './request';
+import { cloudErrorOf, isOutcomeUnknown, requestCloud } from './request';
 
 /**
  * One open cloud run (CAN-6326): its detail, live over the web core's
@@ -126,6 +126,11 @@ export interface CloudPipelineRunSessionState {
   readonly pending: Readonly<Partial<Record<CloudPipelineRunControl, true>>>;
   /** The last control's refusal, in the cloud's words. */
   readonly controlError: string | null;
+  /**
+   * A control of this run may have been applied though it failed (CAN-7196):
+   * set while any of its keyed calls is unknown, cleared only by a result.
+   */
+  readonly controlUnknown: boolean;
   readonly cost: CloudPipelineRunCost;
   /**
    * The child runs its `run-pipeline` steps started (CAN-6868), by
@@ -201,22 +206,6 @@ export interface UnsettledIds {
  */
 export type CloudRunControlKeys = Map<string, UnsettledIds>;
 
-/** Kinds after which the web core may have recorded the call anyway. */
-const UNCERTAIN_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
-  'unavailable',
-  'deadline_exceeded',
-  // A call cut off by its deadline: the client closes it as `cancelled`.
-  'cancelled',
-  'internal',
-]);
-
-function isUncertainOutcome(payload: CanopyErrorPayload): boolean {
-  return (
-    payload.retry.kind === 'same_idempotency_key' ||
-    UNCERTAIN_KINDS.has(payload.kind)
-  );
-}
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -263,6 +252,7 @@ export function createCloudPipelineRunSession({
     log: null,
     pending: {},
     controlError: null,
+    controlUnknown: false,
     cost: { view: null, unavailable: false },
     children: {},
   }));
@@ -664,6 +654,14 @@ export function createCloudPipelineRunSession({
     }
   };
 
+  /** This session's keyed calls whose outcome is unknown. */
+  const unknownKeys = new Set<string>();
+  const markUnknown = (key: string, unknown: boolean): void => {
+    if (unknown) unknownKeys.add(key);
+    else unknownKeys.delete(key);
+    store.setState({ controlUnknown: unknownKeys.size > 0 });
+  };
+
   /**
    * A keyed call. Its ids are kept while its outcome is unknown, so sending
    * the same control again replays it instead of acting twice (a second
@@ -676,7 +674,11 @@ export function createCloudPipelineRunSession({
     options: { readonly newExecution?: boolean } = {},
   ): Promise<Result> => {
     const key = `${method}\u0000${JSON.stringify(params)}`;
-    const ids = unsettled.get(key) ?? {
+    // Ids already kept mean an earlier send of this call ended unknown: it
+    // stays unknown whatever this one is answered (CAN-7196), so only a
+    // result drops them.
+    const earlier = unsettled.get(key);
+    const ids = earlier ?? {
       requestId: randomId(),
       ...(options.newExecution === true ? { newExecutionId: randomId() } : {}),
     };
@@ -684,9 +686,12 @@ export function createCloudPipelineRunSession({
     try {
       const result = await send(ids);
       unsettled.delete(key);
+      markUnknown(key, false);
       return result;
     } catch (error) {
-      if (!isUncertainOutcome(cloudErrorOf(error))) unsettled.delete(key);
+      const unknown = earlier !== undefined || isOutcomeUnknown(error);
+      if (!unknown) unsettled.delete(key);
+      markUnknown(key, unknown);
       throw error;
     }
   };

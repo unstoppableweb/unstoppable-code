@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type {
   CanopyCloudAccountPublicState,
@@ -207,11 +211,17 @@ export interface PublicShareLanding {
   installing: boolean;
   installError: string;
   /**
-   * The `installError` main already recorded, so its banner records nothing;
-   * empty when the failure was not recorded there.
+   * The `installError` already recorded, by main or by the uninstall
+   * confirmation that awaited it, so its banner records nothing; empty when
+   * the failure was not recorded there.
    */
   recordedInstallError: string;
   uninstalling: boolean;
+  /**
+   * Electron main already recorded the rejection that failed the last
+   * uninstall, so the confirmation that shows it records nothing.
+   */
+  uninstallErrorRecorded: boolean;
   /**
    * Progress label while a packaged install transfers dependencies
    * (`Installing 2 of 5 dependencies…`), otherwise empty.
@@ -575,6 +585,7 @@ export function usePublicShareLanding(
   const [installError, setInstallError] = useState('');
   const [recordedInstallError, setRecordedInstallError] = useState('');
   const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallErrorRecorded, setUninstallErrorRecorded] = useState(false);
   const uninstallInFlightRef = useRef(false);
   const [installProgress, setInstallProgress] = useState('');
   const [installStatus, setInstallStatus] = useState('');
@@ -743,6 +754,8 @@ export function usePublicShareLanding(
     setVerificationError('');
     setNeedsRefresh(false);
     setInstallError('');
+    setRecordedInstallError('');
+    setUninstallErrorRecorded(false);
     setInstallProgress('');
     setInstallStatus('');
     setAgentReadiness(null);
@@ -945,7 +958,10 @@ export function usePublicShareLanding(
     const isCurrent = (): boolean =>
       recovery.active && generation === reviewGenerationRef.current;
     setVerificationError('');
-    if (!deferred) setInstallError('');
+    if (!deferred) {
+      setInstallError('');
+      setRecordedInstallError('');
+    }
     setDetecting(true);
     void detectInstalled(
       reviewed,
@@ -1089,6 +1105,7 @@ export function usePublicShareLanding(
         // reported from `completeInstallReview`, once something actually
         // exists locally.
         setInstallError('');
+        setRecordedInstallError('');
         const installedAutomation = installedRef.current;
         let staleActivity: ScheduledActivity | undefined;
         if (
@@ -1134,6 +1151,7 @@ export function usePublicShareLanding(
         setInstallStatus(status);
       };
       setInstallError('');
+      setRecordedInstallError('');
       const reconcileFailedPackageValidation = async (): Promise<void> => {
         // Exact-package validation can detach a stale ledger record before a
         // later download fails. Preserve a republished share's older target only
@@ -2032,16 +2050,23 @@ export function usePublicShareLanding(
     uninstallInFlightRef.current = true;
     setUninstalling(true);
     setInstallError('');
+    setRecordedInstallError('');
+    setUninstallErrorRecorded(false);
+    // The uninstall confirmation awaiting this shows and records its own
+    // failure, so the landing's banner records none of these.
+    const fail = (message: string): false => {
+      setRecordedInstallError(message);
+      setInstallError(message);
+      return false;
+    };
     try {
       if (installed.entity === 'skill') {
         const result = await window.skills.removeSkill(
           installed.sourceId,
           installed.skillName,
         );
-        if (!result.success) {
-          setInstallError(result.error ?? 'Failed to uninstall the skill.');
-          return false;
-        }
+        if (!result.success)
+          return fail(result.error ?? 'Failed to uninstall the skill.');
         window.dispatchEvent(new Event(SKILLS_CHANGED_EVENT));
       } else if (installed.entity === 'automation') {
         // Explicit branch: without it the `else` below falls through to
@@ -2052,10 +2077,8 @@ export function usePublicShareLanding(
           id: installed.activityId,
           workflow: true,
         });
-        if (!result.ok) {
-          setInstallError(result.error || 'Failed to remove the automation.');
-          return false;
-        }
+        if (!result.ok)
+          return fail(result.error || 'Failed to remove the automation.');
       } else if (installed.entity === 'agent') {
         if (snapshot?.entity !== 'agent') return false;
         if (snapshot.sourceRemoteId) {
@@ -2077,10 +2100,8 @@ export function usePublicShareLanding(
         await window.collections.deleteCollection(installed.collectionId);
       } else {
         const result = await window.pipelines.delete(installed.pipelineId);
-        if (!result.success) {
-          setInstallError(result.error ?? 'Failed to uninstall the workflow.');
-          return false;
-        }
+        if (!result.success)
+          return fail(result.error ?? 'Failed to uninstall the workflow.');
       }
       if (reviewGeneration !== reviewGenerationRef.current) return false;
       if (
@@ -2111,12 +2132,14 @@ export function usePublicShareLanding(
       if (reviewGeneration !== reviewGenerationRef.current) return false;
       if (error instanceof InstalledStateUnverifiedError)
         setVerificationError(error.message);
-      setInstallError(
+      setUninstallErrorRecorded(
+        toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+      );
+      return fail(
         error instanceof Error
           ? error.message
           : 'Failed to uninstall this share.',
       );
-      return false;
     } finally {
       uninstallInFlightRef.current = false;
       setUninstalling(false);
@@ -2168,6 +2191,7 @@ export function usePublicShareLanding(
     installError,
     recordedInstallError,
     uninstalling,
+    uninstallErrorRecorded,
     installProgress,
     installStatus,
     agentReadiness,

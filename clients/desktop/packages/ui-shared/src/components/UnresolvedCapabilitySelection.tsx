@@ -14,6 +14,7 @@ export function UnresolvedCapabilitySelection({
   if (!capabilities?.length) return null;
   return (
     <div
+      role="group"
       className="flex flex-wrap items-center gap-2 px-4 pt-3 text-xs fg-secondary"
       aria-label="Selected for this chat"
       data-testid="unresolved-capability-selection"

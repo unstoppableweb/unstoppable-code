@@ -15,7 +15,7 @@ import {
   type Ref,
   type RefObject,
 } from 'react';
-import { focusableWithin } from '../lib/focusable';
+import { focusableWithin, openingFocusTarget } from '../lib/focusable';
 import { focusMenuRow } from '../lib/input-modality';
 import { suppressNextClick } from '../lib/suppress-next-click';
 import {
@@ -113,6 +113,11 @@ export interface FloatingMenuProps extends Omit<
    * applied only after the portaled surface has its resolved position.
    */
   readonly initialFocusRef?: RefObject<HTMLElement | null>;
+  /**
+   * On a coarse pointer, open on the first control that is not a text field
+   * when `initialFocusRef` names one, so the touch keyboard stays closed.
+   */
+  readonly keepTouchKeyboardClosed?: boolean;
   /** Pointer-opened submenus preserve focus until keyboard activation. */
   readonly focusOnOpen?: boolean;
   /**
@@ -475,6 +480,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
       closeOnSelect = true,
       nested = false,
       initialFocusRef,
+      keepTouchKeyboardClosed = false,
       focusOnOpen = true,
       interaction = 'menu',
       trapFocus = false,
@@ -881,7 +887,23 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
         return;
       }
       if (initialFocusRef?.current) {
-        initialFocusRef.current.focus();
+        // On touch, focusing a text field pops the keyboard over the menu, so
+        // land on the menu itself and let the user tap the field. Any other
+        // target (an option, a selected day) keeps its focus. A menu that
+        // opts in lands on its first control that is not a text field.
+        const target = initialFocusRef.current;
+        const typesText =
+          target.matches('input, textarea') || target.isContentEditable;
+        const coarse =
+          menuRef.current.ownerDocument.defaultView?.matchMedia?.(
+            '(pointer: coarse)',
+          ).matches === true;
+        const opening = keepTouchKeyboardClosed
+          ? openingFocusTarget(target, focusableWithin(menuRef.current))
+          : typesText && coarse
+            ? menuRef.current
+            : target;
+        opening?.focus();
         focusedForOpenRef.current = true;
         return;
       }
@@ -920,6 +942,7 @@ export const FloatingMenu = forwardRef<HTMLDivElement, FloatingMenuProps>(
     }, [
       focusOnOpen,
       initialFocusRef,
+      keepTouchKeyboardClosed,
       interaction,
       open,
       passive,

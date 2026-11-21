@@ -18,7 +18,7 @@ export function SkillPublisherProvenance({
         href={publisher.sourceUrl}
         target="_blank"
         rel="noopener noreferrer"
-        className="self-start"
+        className="relative pointer-coarse:before:absolute pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:inset-x-0 pointer-coarse:before:content-[''] self-start"
       >
         View source
       </TextLink>

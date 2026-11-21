@@ -1,6 +1,7 @@
 import { Stack } from './Stack';
 import { useId, type JSX, type ReactNode } from 'react';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
+import { Divider } from './Surface';
 
 export interface PluginConnectionRouteSectionProps {
   /** Names the route, such as "<App> MCP server" or "Provider connections". */
@@ -28,8 +29,9 @@ export function PluginConnectionRouteSection({
     <section
       aria-labelledby={headingId}
       data-testid={dataTestId}
-      className="flex min-w-0 flex-col gap-4 border-t pt-4"
+      className="flex min-w-0 flex-col gap-4"
     >
+      <Divider />
       <Stack gap="tight" className="min-w-0 max-w-2xl">
         <PluginDetailSectionHeading id={headingId}>
           {title}

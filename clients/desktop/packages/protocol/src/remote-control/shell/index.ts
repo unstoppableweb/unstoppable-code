@@ -140,6 +140,7 @@ import type {
   ChatInputDeliveryAction,
   ChatInputDeliveryView,
   ChatSteeringCapabilities,
+  SendWhileRunning,
 } from './input-delivery';
 import type {
   ChatTurnPhase,
@@ -168,6 +169,13 @@ export {
   orderedSettingsHeldChanges,
 } from './turn-phase';
 export {
+  CHAT_STEER_BLOCKED_REASONS,
+  SEND_WHILE_RUNNING_CHOICES,
+  STEER_TURN_ID_MAX_LENGTH,
+  isChatSteerBlockedReason,
+  isSendWhileRunning,
+  isSteerTurnId,
+  resolveSendWhileRunning,
   parseInputDeliveryViews,
   parseChatWatcherFiredInfo,
   parseChatAgentSentInfo,
@@ -240,7 +248,7 @@ export type JsonValue =
 // ---------------------------------------------------------------------------
 
 /**
- * Persisted lifecycle of a `PortalSession` row in the server database. A
+ * Lifecycle of a Remote Control session as reported on the wire. A
  * session is created in `pending_auth`, transitions to `active` once the user
  * has typed the matching pairing code in their browser, and ends in
  * `inactive` once the user (or local Canopy) terminates it.
@@ -296,7 +304,6 @@ export type RemoteControlCommandType =
   | 'portal.chat.send'
   | 'portal.chat.cancel'
   | 'portal.chat.cancel_turn'
-  | 'portal.chat.retry_failure'
   | 'portal.watcher.delete'
   | 'portal.chat.mark_read'
   | 'portal.chat.set_unread'
@@ -491,7 +498,6 @@ export const REMOTE_CONTROL_COMMAND_TYPES = [
   'portal.chat.send',
   'portal.chat.cancel',
   'portal.chat.cancel_turn',
-  'portal.chat.retry_failure',
   'portal.watcher.delete',
   'portal.chat.mark_read',
   'portal.chat.set_unread',
@@ -824,7 +830,7 @@ export const REMOTE_CONTROL_EVENT_TYPES = [
 // ---------------------------------------------------------------------------
 
 /**
- * Closed set of `PortalCachedEntity` types projected by the server's state
+ * Closed set of cached-entity types projected by the server's state
  * cache. Local Canopy emits these inside `portal.state.snapshot` and
  * `portal.state.delta` envelopes; the browser portal hydrates its UI from
  * the cached rows.
@@ -1052,9 +1058,9 @@ export type RemoteControlSelectionTarget =
 /**
  * Wire shape of a queued command row as returned by the long-poll endpoint.
  *
- * - `id` is the UUID command id (`PortalCommand.externalId`) referenced by
+ * - `id` is the UUID command id (the command's external id) referenced by
  *   `RemoteControlEventEnvelope.commandId` for completion/failure correlation.
- * - `sequence` is the numeric `PortalCommand.id` cursor used by local Canopy
+ * - `sequence` is the numeric, monotonic command cursor used by local Canopy
  *   to long-poll with `?after=<sequence>` and to resume after restart.
  * - `expiresAt` is server-assigned and tells local Canopy when to drop the
  *   command if it has not started executing yet.
@@ -1277,16 +1283,6 @@ export const REMOTE_CONTROL_CAPABILITY_WORKTREE_CHAT_SUMMARIES_SCOPE =
   'worktree_chat_summaries_scope' as const;
 
 /**
- * Capability for the strict sidebar Activity inventory (CAN-390): the desktop
- * honors `includeChatSummaries` on `worktree_chat_summaries` state requests,
- * rejecting rather than degrading a partial list, and projects
- * `lastMessageRole`. Older desktops announce only the scope and would
- * silently ignore the flag, so browsers gate Activity on this instead.
- */
-export const REMOTE_CONTROL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY =
-  'sidebar_activity_inventory' as const;
-
-/**
  * Capability for the App Advisor remote-view surface (CAN-2562). Desktops
  * announce it once they ship the `portal.app_advisor.*` adapter; browsers
  * gate the App Advisor overlay trigger on it so older desktops never receive
@@ -1481,8 +1477,32 @@ export const REMOTE_CONTROL_CAPABILITY_CHAT_CREATE_TAB_SETTINGS =
 export const REMOTE_CONTROL_CAPABILITY_CHAT_PLAN_REVIEW =
   'chat_plan_review_v1' as const;
 
+/**
+ * Plan sources whose pending review the desktop projects to Remote Control.
+ * An OpenCode proposal is approved by its atomic `planReviewApproval` send;
+ * a Claude, Codex or Ollama plan exit through the review sequence desktop
+ * runs (`chat.resolvePlanExit` in the portable adapter). Cursor (desktop
+ * itself refuses to approve it) and Antigravity stay unprojected. Older
+ * parsers drop a source they don't know.
+ */
+export const REMOTE_CONTROL_PLAN_REVIEW_SOURCES = [
+  'opencode',
+  'claude',
+  'codex',
+  'ollama',
+] as const;
+
+export type RemoteControlPlanReviewSource =
+  (typeof REMOTE_CONTROL_PLAN_REVIEW_SOURCES)[number];
+
+export function isRemoteControlPlanReviewSource(
+  value: unknown,
+): value is RemoteControlPlanReviewSource {
+  return REMOTE_CONTROL_PLAN_REVIEW_SOURCES.some((source) => source === value);
+}
+
 export interface RemoteControlChatPlanReview extends ChatPlanReviewApproval {
-  source: 'opencode';
+  source: RemoteControlPlanReviewSource;
 }
 
 /** Desktop accepts and validates the server-only command `origin`. */
@@ -1493,9 +1513,12 @@ export const REMOTE_CONTROL_CAPABILITY_COMMAND_ORIGIN =
 export const REMOTE_CONTROL_CAPABILITY_CHAT_CANCEL_TURN =
   'chat_cancel_turn' as const;
 
-/** Host-authorized, idempotent recovery of the current terminal failure. */
-export const REMOTE_CONTROL_CAPABILITY_CHAT_RETRY_FAILURE =
-  'chat_retry_failure_v1' as const;
+/**
+ * Desktop honours `sendWhileRunning` and `steerTurnId` on worktree and
+ * standalone sends (CAN-7349). Defined, not announced.
+ */
+export const REMOTE_CONTROL_CAPABILITY_CHAT_SEND_STEER_INTENT =
+  'chat_send_steer_intent_v1' as const;
 
 export interface RemoteControlAssetReadRange {
   offset?: number;
@@ -2162,6 +2185,10 @@ export interface RemoteControlChatSendPayload {
   selectedRepoId?: string;
   /** Absent means manual for compatibility with older hosts. */
   modelSelectionMode?: 'auto';
+  /** Absent means `queue`. Only send to a host advertising steer intent (CAN-7349). */
+  sendWhileRunning?: SendWhileRunning;
+  /** The turn the user saw running. */
+  steerTurnId?: string;
 }
 
 export interface RemoteControlChatCancelPayload {
@@ -2186,18 +2213,6 @@ export interface RemoteControlChatCancelTurnResult {
   ok: true;
   outcome: 'stop_requested' | 'turn_not_active';
 }
-
-/** No prompt or host paths cross this boundary; the host reads its transcript. */
-export type RemoteControlChatRetryFailurePayload =
-  RemoteControlChatCancelPayload & {
-    turnId: string;
-    failedMessageId: string;
-  } & ({ action: 'check' } | { action: 'retry'; idempotencyKey: string });
-
-/** Availability is advisory; the host repeats every guard at acceptance. */
-export type RemoteControlChatRetryFailureResult =
-  | { available: boolean }
-  | { outcome: 'applied' | 'already_applied'; userMessageId: string };
 
 /** Address one host-owned queued message for a worktree chat. */
 export interface RemoteControlChatQueueEntryPayload extends RemoteControlChatCancelPayload {
@@ -3941,7 +3956,7 @@ export interface RemoteControlStandaloneChatSendPayload extends SidebarItemGroup
   projectLocalId?: string;
   /** Service-layer alias for `projectLocalId`; retained for local callers. */
   projectId?: string;
-  /** Local id of the standalone chat thread (matches `PortalSession.chatLocalId`). */
+  /** Local id of the standalone chat thread on the paired desktop. */
   chatId: string;
   userMessageId?: string;
   fileReferences?: RemoteControlChatFileReference[];
@@ -3959,6 +3974,10 @@ export interface RemoteControlStandaloneChatSendPayload extends SidebarItemGroup
   modelConfig?: RemoteControlAgentModelConfig;
   /** How the user composed this turn; drives voice-specific presentation. */
   inputMode?: 'typed' | 'voice';
+  /** Absent means `queue` (CAN-7349). */
+  sendWhileRunning?: SendWhileRunning;
+  /** The turn the user saw running. */
+  steerTurnId?: string;
   /**
    * Optional provider override for this turn.
    *
@@ -4192,6 +4211,10 @@ export interface RemoteControlPlanUpdatePayload extends Omit<
   approvedAt?: string | null;
   dismissedAt?: string | null;
   hidden?: boolean;
+  /** The chat whose review decision this records, as desktop sends it. */
+  chatId?: string;
+  /** Only a person's review decision is recorded from a controller. */
+  initiationSource?: 'user';
 }
 
 export type RemoteControlPlanDeletePayload = Omit<
@@ -5616,7 +5639,6 @@ export interface RemoteControlCommandPayloadMap {
   'portal.chat.send': RemoteControlChatSendPayload;
   'portal.chat.cancel': RemoteControlChatCancelPayload;
   'portal.chat.cancel_turn': RemoteControlChatCancelTurnPayload;
-  'portal.chat.retry_failure': RemoteControlChatRetryFailurePayload;
   'portal.watcher.delete': RemoteControlWatcherDeletePayload;
   'portal.chat.mark_read': RemoteControlChatMarkReadPayload;
   'portal.chat.set_unread': RemoteControlChatSetUnreadPayload;
@@ -5972,7 +5994,7 @@ export interface RemoteControlCommandResultPayload<TResponse = unknown> {
  *
  * - `commandId` — UUID of the originating command (mirror of
  *   `RemoteControlEventEnvelope.commandId`).
- * - `sequenceNumber` — `PortalCommand.id` cursor of the originating command,
+ * - `sequenceNumber` — numeric `sequence` cursor of the originating command,
  *   so the browser can drop completion events for commands it issued before
  *   the last reload.
  * - `result` — IPC return value of the command, when one was produced.
@@ -8276,6 +8298,7 @@ export interface RemoteControlChatMessage {
   errorMessage?: string;
   /** Tool / thinking blocks; must not erase `text` content. */
   parts?: RemoteControlChatPart[];
+  hasAgentActivity?: true;
   createdAtMs: number;
   updatedAtMs?: number;
   /** Files the user attached to this message (user rows only). */
@@ -8593,7 +8616,7 @@ export const REMOTE_CONTROL_HISTORY_CHUNK_TURNS_MAX = 100;
 /**
  * Typed shell state returned by `GET /api/portal/sessions/[sessionId]/state`.
  *
- * The route projects raw `PortalCachedEntity` rows (and, where applicable,
+ * The route projects raw cached-entity rows (and, where applicable,
  * `RemoteControlChatMessage` rows) into this shape so the browser can render the
  * portal shell without parsing untyped protocol JSON. Empty arrays / records
  * are returned for sections that have not been hydrated yet.
@@ -9751,7 +9774,7 @@ export type RemoteControlWorkspaceLayout = 'tree' | 'flat';
  *
  * This is the single sanctioned place where `type` informs placement, and it
  * exists only so version-skewed producers keep working: a desktop build that
- * predates `layout`, or a `PortalCachedEntity` row written before it, carries
+ * predates `layout`, or a cached-entity row written before it, carries
  * no field, and `type === 'cowork' ? 'flat' : 'tree'` reproduces exactly what
  * those rows used to do. Call it at ingestion boundaries so everything
  * downstream reads a concrete `layout` — do NOT call it inside a placement

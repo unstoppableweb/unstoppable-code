@@ -16,7 +16,7 @@
 // save.
 // ---------------------------------------------------------------------------
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { getSharedRunCommentsFilePath } from './paths';
@@ -96,7 +96,39 @@ export function sharedRunCommentKey(target: {
   return `${target.projectId}/${target.worktreeId}/${target.chatId}`;
 }
 
-function normalizeCount(value: unknown): number {
+// Fixed namespace UUID for Canopy shared-run idempotency keys (CAN-395).
+const SHARED_RUN_NAMESPACE_UUID = '6f8d3a1e-2b7c-4c9a-9f1e-5a2b3c4d5e6f';
+
+/**
+ * Deterministic RFC 4122 UUIDv5 for a shared run, derived from the session
+ * identity `(projectId, worktreeId, chatId)`. Re-sharing the same session (or
+ * retrying after a timeout) reproduces the same key so the server-side
+ * `(createdByUserId, clientLocalRunId)` idempotency upsert refreshes the
+ * existing grant instead of creating duplicates. It is also the run's
+ * `publicationId` in `core.publication.comment.*`.
+ */
+export function sharedRunIdempotencyKey(
+  projectId: string,
+  worktreeId: string,
+  chatId: string,
+): string {
+  const name = `${projectId}\n${worktreeId}\n${chatId}`;
+  const namespaceBytes = Buffer.from(
+    SHARED_RUN_NAMESPACE_UUID.replace(/-/g, ''),
+    'hex',
+  );
+  const digest = createHash('sha1')
+    .update(namespaceBytes)
+    .update(name, 'utf8')
+    .digest();
+  const bytes = digest.subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50; // version 5
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function normalizeCount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : 0;
@@ -367,18 +399,30 @@ export async function recordPolledCommentRevision(
 }
 
 /**
- * Mark a run's comments seen up to `commentRevision`, clearing the unread
- * count. Never moves the seen marker backwards.
+ * Mark a run's comments seen up to `commentRevision`. Never moves the seen
+ * marker backwards. Clears the unread count only when the seen marker covers
+ * the latest poll; otherwise the count stays, since a false unread is safer
+ * than a hidden one.
  */
 export async function markSharedRunCommentsSeen(
-  target: { projectId: string; worktreeId: string; chatId: string },
+  publicationId: string,
   commentRevision: number,
+  signal?: AbortSignal,
+  onStart?: () => void,
 ): Promise<SharedRunCommentEntry | null> {
+  // Resolved inside the queue, so a pending registration or poll lands first.
   return enqueueMutation(async () => {
-    const key = sharedRunCommentKey(target);
+    // A call cancelled while it waited writes nothing.
+    signal?.throwIfAborted();
+    onStart?.();
     const state = await readState();
     const index = state.entries.findIndex(
-      (entry) => sharedRunCommentKey(entry) === key,
+      (entry) =>
+        sharedRunIdempotencyKey(
+          entry.projectId,
+          entry.worktreeId,
+          entry.chatId,
+        ) === publicationId,
     );
     const existing = index === -1 ? undefined : state.entries[index];
     if (!existing) {
@@ -395,7 +439,12 @@ export async function markSharedRunCommentsSeen(
         existing.lastPolledCommentRevision,
         seen,
       ),
-      unreadCommentCount: 0,
+      // Only a mark that covers the latest poll clears the badge; a late one
+      // keeps the count, since a false unread is safer than a hidden one.
+      unreadCommentCount:
+        seen >= existing.lastPolledCommentRevision
+          ? 0
+          : existing.unreadCommentCount,
     };
     await writeState({
       ...state,

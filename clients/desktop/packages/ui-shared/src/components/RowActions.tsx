@@ -122,6 +122,11 @@ export interface InlineDeleteConfirmProps {
    * can supply `Archive?` when deletion archives the container.
    */
   readonly confirmLabel?: string;
+  /**
+   * Confirm-button label while `deleting`. Defaults to `Deleting…`; pair
+   * `Archive?` with `Archiving…`.
+   */
+  readonly pendingLabel?: string;
   readonly confirmTestId?: string;
   readonly cancelTestId?: string;
   /** Kept for callers. Both buttons draw the shared `Button` focus ring. */
@@ -132,6 +137,7 @@ export interface InlineDeleteConfirmProps {
 /**
  * Compact confirmation controls intended to replace a row's action tray: the
  * solid destructive confirm and a ghost Cancel, both 28px `compact` capsules.
+ * Escape inside them cancels.
  */
 export function InlineDeleteConfirm({
   onConfirm,
@@ -139,12 +145,21 @@ export function InlineDeleteConfirm({
   deleting,
   disabled = false,
   confirmLabel = 'Delete?',
+  pendingLabel = 'Deleting…',
   confirmTestId,
   cancelTestId,
   autoFocusConfirm = false,
 }: InlineDeleteConfirmProps): JSX.Element {
   return (
-    <span className="flex items-center gap-0.5">
+    // The span only routes Escape from the buttons inside it; it is not a control.
+    <span
+      className="flex items-center gap-0.5"
+      onKeyDown={(event): void => {
+        if (event.key !== 'Escape' || deleting) return;
+        event.stopPropagation();
+        onCancel();
+      }}
+    >
       <Button
         variant="destructive"
         size="compact"
@@ -156,7 +171,7 @@ export function InlineDeleteConfirm({
         disabled={deleting || disabled}
         data-testid={confirmTestId}
       >
-        {deleting ? '...' : confirmLabel}
+        {deleting ? pendingLabel : confirmLabel}
       </Button>
       <Button
         variant="ghost"
@@ -165,6 +180,7 @@ export function InlineDeleteConfirm({
           event.stopPropagation();
           onCancel();
         }}
+        disabled={deleting}
         data-testid={cancelTestId}
       >
         Cancel

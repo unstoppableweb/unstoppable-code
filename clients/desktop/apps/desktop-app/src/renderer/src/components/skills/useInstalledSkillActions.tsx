@@ -7,6 +7,8 @@ import type {
   InstalledSkillInfo,
   SharedSkillDetail,
 } from '@canopy/desktop-shared/types/skills';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useShareAccess } from '@/hooks/useShareAccess';
 import { useWorkspaceContextReset } from '@/hooks/useWorkspaceContextReset';
 import { SHARE_SKILL_GATE_CONTEXT } from '@/lib/share-gate-context';
@@ -159,6 +161,9 @@ export function useInstalledSkillActions({
   } | null>(null);
   const [removingKey, setRemovingKey] = useState<string | null>(null);
   const [removalError, setRemovalError] = useState<string | null>(null);
+  // Electron main already recorded the failure: show it, never record it a
+  // second time from the dialog.
+  const [removalErrorRecorded, setRemovalErrorRecorded] = useState(false);
   const [checking, setChecking] = useState(false);
   const [backgroundChecking, setBackgroundChecking] = useState(false);
   const backgroundChecks = useRef(0);
@@ -187,6 +192,7 @@ export function useInstalledSkillActions({
     setSharingSkill(null);
     setPendingRemoval(null);
     setRemovalError(null);
+    setRemovalErrorRecorded(false);
     updateScope.current += 1;
     updateBusy.current = false;
     setChecking(false);
@@ -359,6 +365,7 @@ export function useInstalledSkillActions({
     if (removingKey === key) return;
     setRemovingKey(key);
     setRemovalError(null);
+    setRemovalErrorRecorded(false);
     try {
       const result = await window.skills.removeSkill(
         pendingRemoval.sourceId,
@@ -376,6 +383,9 @@ export function useInstalledSkillActions({
       }
     } catch (err) {
       setRemovalError(err instanceof Error ? err.message : String(err));
+      setRemovalErrorRecorded(
+        toAppError(resolveClientAppError(err))?.recordedBy !== undefined,
+      );
     } finally {
       setRemovingKey(null);
     }
@@ -415,13 +425,22 @@ export function useInstalledSkillActions({
           confirmLabel={pendingRemoval.custom ? 'Delete' : 'Remove'}
           pendingLabel={pendingRemoval.custom ? 'Deleting…' : 'Removing…'}
           pending={pendingRemovalBusy}
-          error={removalError}
+          {...(removalErrorRecorded
+            ? {
+                errorMessage: removalError,
+                errorRecordingDisabled: true as const,
+              }
+            : {
+                errorMessage: removalError,
+                errorSource: 'installed-skill-remove',
+              })}
           dataTestId="skill-delete-confirm-modal"
           confirmTestId="skill-delete-confirm"
           onCancel={() => {
             if (pendingRemovalBusy) return;
             setPendingRemoval(null);
             setRemovalError(null);
+            setRemovalErrorRecorded(false);
           }}
           onConfirm={() => void confirmRemoval()}
         />
@@ -441,6 +460,7 @@ export function useInstalledSkillActions({
     canRemove,
     requestRemove: (skill): void => {
       setRemovalError(null);
+      setRemovalErrorRecorded(false);
       setPendingRemoval({
         sourceId: skill.sourceId,
         name: skill.name,

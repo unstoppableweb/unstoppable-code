@@ -23,6 +23,7 @@ import type {
   FileReference,
   ScheduledActivity,
   ThinkingLevel,
+  UsageLimitResumeInterruption,
 } from '@canopy/desktop-shared/types';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -153,6 +154,12 @@ export interface FormState {
   attachmentPromptContexts?: ChatAttachmentPromptContext[];
   inputMode?: 'typed' | 'voice';
   purpose?: 'usage_limit_resume' | 'scheduled_send';
+  /**
+   * A usage-limit watcher's guard (CAN-7483). Preserved verbatim so a form
+   * save never turns a usage check into an ordinary timed resume.
+   */
+  resumeWhen?: 'provider_usage_clear';
+  usageResumeInterruption?: UsageLimitResumeInterruption;
   /**
    * True when the original session-prompt payload came from the chat composer
    * or usage-limit flow. Kept independently of `actionType` so a Run-in mode
@@ -499,6 +506,15 @@ export function activityToFormState(activity: ScheduledActivity): FormState {
             : { inputMode: 'typed' as const }),
           ...(activity.action.purpose
             ? { purpose: activity.action.purpose }
+            : {}),
+          ...(activity.action.resumeWhen
+            ? { resumeWhen: activity.action.resumeWhen }
+            : {}),
+          ...(activity.action.usageResumeInterruption
+            ? {
+                usageResumeInterruption:
+                  activity.action.usageResumeInterruption,
+              }
             : {}),
         }
       : {}),
@@ -1109,6 +1125,75 @@ function modelAliasPreferenceField(
   return typeof value === 'string' ? value : undefined;
 }
 
+/**
+ * Why a model alias can't run with the preferences a run would use:
+ * `unconfigured` when it has neither a choice nor a default, and the other
+ * kinds when a choice is set but can't be used.
+ */
+export interface ModelAliasBlock {
+  readonly alias: PipelineModelAlias;
+  readonly kind:
+    | 'unconfigured'
+    | 'missing_base'
+    | 'missing_plugin_collection'
+    | 'missing_agent'
+    | 'agent_model';
+}
+
+/** The first of `aliases` that `preferences` leave unable to run, if any. */
+export function findModelAliasBlock(
+  aliases: readonly PipelineModelAlias[],
+  preferences: Readonly<Record<string, unknown>> | undefined,
+  pluginCollectionIds: ReadonlySet<string>,
+): ModelAliasBlock | undefined {
+  for (const alias of aliases) {
+    // Own keys only: an alias named like an Object property isn't set.
+    const preference: unknown =
+      preferences !== undefined &&
+      Object.prototype.hasOwnProperty.call(preferences, alias.id)
+        ? preferences[alias.id]
+        : undefined;
+    const mode = modelAliasPreferenceField(preference, 'mode');
+    if (!preference || mode === 'reset') {
+      if (!alias.defaults) return { alias, kind: 'unconfigured' };
+      continue;
+    }
+    if (mode === 'inline') {
+      const base = modelAliasPreferenceField(preference, 'base');
+      if (!base || base.trim().length === 0)
+        return { alias, kind: 'missing_base' };
+      const pluginCollectionId = modelAliasPreferenceField(
+        preference,
+        'plugin_collection_id',
+      );
+      // Trimmed, as the executor reads it.
+      if (
+        pluginCollectionId &&
+        !pluginCollectionIds.has(pluginCollectionId.trim())
+      )
+        return { alias, kind: 'missing_plugin_collection' };
+      continue;
+    }
+    const agentId = modelAliasPreferenceField(preference, 'agent_id');
+    if (mode === 'agent' && (!agentId || agentId.trim().length === 0))
+      return { alias, kind: 'missing_agent' };
+    if (
+      mode === 'agent' &&
+      agentId &&
+      typeof preference === 'object' &&
+      preference !== null
+    ) {
+      // Trimmed, as the write validator and the executor read it.
+      const parsed = parsePipelineAgentAliasRoute({
+        agent_id: agentId.trim(),
+        base: Reflect.get(preference, 'base'),
+      });
+      if (!parsed.ok) return { alias, kind: 'agent_model' };
+    }
+  }
+  return undefined;
+}
+
 /** The reason the picked pipeline's model aliases block a save, if any. */
 export function getPipelineModelAliasBlockingError(
   state: FormState,
@@ -1120,54 +1205,24 @@ export function getPipelineModelAliasBlockingError(
   ) {
     return undefined;
   }
-
-  const preferences = state.modelAliasPreferences;
-  const pluginCollectionIds = new Set(state.pipelinePluginCollectionIds ?? []);
-
-  for (const alias of state.pipelineModelAliases) {
-    const preference: unknown = preferences?.[alias.id];
-    const mode = modelAliasPreferenceField(preference, 'mode');
-    const label = alias.name || alias.id;
-    if (!alias.defaults && (!preference || mode === 'reset')) {
+  const block = findModelAliasBlock(
+    state.pipelineModelAliases,
+    state.modelAliasPreferences,
+    new Set((state.pipelinePluginCollectionIds ?? []).map((id) => id.trim())),
+  );
+  if (block === undefined) return undefined;
+  const label = block.alias.name || block.alias.id;
+  switch (block.kind) {
+    case 'unconfigured':
+    case 'missing_base':
       return `Configure the ${label} model alias before saving this automation.`;
-    }
-    if (!preference || mode === 'reset') {
-      continue;
-    }
-    if (mode === 'inline') {
-      const base = modelAliasPreferenceField(preference, 'base');
-      if (!base || base.trim().length === 0) {
-        return `Configure the ${label} model alias before saving this automation.`;
-      }
-      const pluginCollectionId = modelAliasPreferenceField(
-        preference,
-        'plugin_collection_id',
-      );
-      if (pluginCollectionId && !pluginCollectionIds.has(pluginCollectionId)) {
-        return `Choose an existing plugin collection for the ${label} model alias.`;
-      }
-      continue;
-    }
-    const agentId = modelAliasPreferenceField(preference, 'agent_id');
-    if (mode === 'agent' && (!agentId || agentId.trim().length === 0)) {
+    case 'missing_plugin_collection':
+      return `Choose an existing plugin collection for the ${label} model alias.`;
+    case 'missing_agent':
       return `Choose an agent for the ${label} model alias before saving this automation.`;
-    }
-    if (
-      mode === 'agent' &&
-      agentId &&
-      typeof preference === 'object' &&
-      preference !== null
-    ) {
-      const parsed = parsePipelineAgentAliasRoute({
-        agent_id: agentId,
-        base: Reflect.get(preference, 'base'),
-      });
-      if (!parsed.ok)
-        return `Choose a concrete model for the ${label} model alias.`;
-    }
+    case 'agent_model':
+      return `Choose a concrete model for the ${label} model alias.`;
   }
-
-  return undefined;
 }
 
 function getFilteredModelAliasPreferences(
@@ -1361,6 +1416,10 @@ export function buildAction(state: FormState): {
           : {}),
         ...(state.inputMode ? { inputMode: state.inputMode } : {}),
         ...(state.purpose ? { purpose: state.purpose } : {}),
+        ...(state.resumeWhen ? { resumeWhen: state.resumeWhen } : {}),
+        ...(state.usageResumeInterruption
+          ? { usageResumeInterruption: state.usageResumeInterruption }
+          : {}),
       });
     case 'pipeline_execution_resume':
       return {

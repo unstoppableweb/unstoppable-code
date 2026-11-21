@@ -1,6 +1,6 @@
 /** Host adapter for the shared Orchestrator settings dialog. */
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { Stack } from '@canopy/ui-shared/components';
+import { ErrorState, Stack } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import {
   useOptionalCanopyClient,
@@ -43,20 +43,28 @@ export function AppAdvisorSettingsModal({
   );
   const [prefs, setPrefs] = useState<PreferencesData | null>(null);
   const [prefsError, setPrefsError] = useState(false);
+  // Each Try again reads once more; the failure stays shown while it runs.
+  const [prefsAttempt, setPrefsAttempt] = useState(0);
+  const [prefsRetrying, setPrefsRetrying] = useState(false);
   useEffect(() => {
     let cancelled = false;
     void window.api
       .loadPreferences({ view: 'persisted' })
       .then((loaded) => {
-        if (!cancelled) setPrefs(loaded);
+        if (cancelled) return;
+        setPrefsRetrying(false);
+        setPrefsError(false);
+        setPrefs(loaded);
       })
       .catch(() => {
-        if (!cancelled) setPrefsError(true);
+        if (cancelled) return;
+        setPrefsRetrying(false);
+        setPrefsError(true);
       });
     return (): void => {
       cancelled = true;
     };
-  }, []);
+  }, [prefsAttempt]);
   function savePreferences(patch: Partial<PreferencesData>): void {
     if (!prefs) return;
     saveAppAdvisorPreferencePatch(prefs, patch, setPrefs);
@@ -97,11 +105,21 @@ export function AppAdvisorSettingsModal({
               }
             />
           </Stack>
+        ) : prefsError ? (
+          <ErrorState
+            space="panel"
+            message="Couldn't load preferences."
+            onRetry={(): void => {
+              setPrefsRetrying(true);
+              setPrefsAttempt((attempt) => attempt + 1);
+            }}
+            retrying={prefsRetrying}
+            testId="app-advisor-preferences-load-error"
+            retryTestId="app-advisor-preferences-load-retry"
+          />
         ) : (
           <div className="py-8 text-center text-s fg-secondary">
-            {prefsError
-              ? 'Preferences are unavailable.'
-              : 'Loading preferences...'}
+            Loading preferences...
           </div>
         )
       }
@@ -117,7 +135,7 @@ export function AppAdvisorSettingsModal({
       onAutoArchiveDaysChange={draft.setAutoArchiveDays}
       showSave={draft.isDirty || draft.saveError !== null}
       saveDisabled={draft.saving || !draft.isDirty}
-      saveLabel={draft.saving ? 'Saving...' : 'Save'}
+      saving={draft.saving}
       onSave={() => void draft.save()}
       footerError={
         <DesktopErrorBanner

@@ -292,13 +292,15 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
             disabled={disabled}
             autoComplete="off"
             spellCheck={false}
+            data-1p-ignore
+            data-lpignore="true"
             onChange={(event): void => onValueChange(event.target.value)}
             onKeyDown={handleKeyDown}
             className={`h-full min-w-0 flex-1 appearance-none truncate bg-transparent pointer-coarse:text-m outline-none placeholder:fg-tertiary disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:appearance-none [&::-webkit-search-decoration]:appearance-none ${inputClassName}`}
           />
           {hasCount ? (
             <span
-              className="shrink-0 whitespace-nowrap text-xs tabular-nums fg-tertiary"
+              className="pointer-events-none shrink-0 whitespace-nowrap text-xs tabular-nums fg-tertiary"
               data-search-field-count=""
             >
               {count}
@@ -309,7 +311,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(
           ) : null}
           {shortcut !== undefined && !hasValue ? (
             <span
-              className={`flex shrink-0 items-center ${SHORTCUT_INSET_CLASS[size]}`}
+              className={`pointer-events-none flex shrink-0 items-center ${SHORTCUT_INSET_CLASS[size]}`}
             >
               <Kbd shortcut={shortcut} nest={SHORTCUT_NEST[size]} aria-hidden />
             </span>

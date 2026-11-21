@@ -377,13 +377,7 @@ function renderNode(
         <Control key={key} plugin={node.press.plugin} name={node.key}>
           <Button
             className={TREE_BUTTON_PLACEMENT}
-            variant={
-              node.variant === 'plain'
-                ? node.dim
-                  ? 'ghost'
-                  : 'ghost'
-                : node.variant
-            }
+            variant={node.variant === 'plain' ? 'ghost' : node.variant}
             onClick={(): void =>
               host.onCommand({
                 kind: 'press',

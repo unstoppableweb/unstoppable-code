@@ -18,6 +18,7 @@ import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import { FileDiff } from '../../icons/AppIcons';
 import { DisclosureToggle } from '../Disclosure';
 import { OverlayScrollArea } from '../OverlayScrollArea';
+import { HAIRLINE_INSET_RING_CLASS } from '../../lib/row-chips';
 
 /** Git rows the list renders by index, so a long list mounts only those in view. */
 export interface TurnChangedFileRows {
@@ -237,7 +238,7 @@ function SummaryToggle({
     >
       <span
         aria-hidden="true"
-        className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
+        className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
       >
         <FileDiff size="md" />
       </span>
@@ -315,7 +316,7 @@ export function TurnFilesSummaryView({
       }}
       onPointerLeave={(): void => setHeaderHovered(false)}
       onPointerCancel={(): void => setHeaderHovered(false)}
-      className={`@container/turn-files cursor-default select-none overflow-hidden rounded-xl border bg-base ${singleOutput ? `group/turn-file relative isolate grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 pl-3 pr-1 py-3 before:pointer-events-none before:absolute before:inset-1 before:-z-10 before:rounded-lg before:content-[''] ${headerHovered ? 'before:bg-subtle' : ''}` : ''}`}
+      className={`@container/turn-files cursor-default select-none overflow-hidden rounded-xl bg-base ${HAIRLINE_INSET_RING_CLASS} ring-line-base ${singleOutput ? `group/turn-file relative isolate grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 pl-3 pr-1 py-3 before:pointer-events-none before:absolute before:inset-1 before:-z-10 before:rounded-lg before:content-[''] ${headerHovered ? 'before:bg-subtle' : ''}` : ''}`}
     >
       <div className={singleOutput ? 'contents' : 'p-1'}>
         <div
@@ -338,7 +339,7 @@ export function TurnFilesSummaryView({
           {singleOutput && (
             <span
               aria-hidden="true"
-              className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
+              className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
             >
               <FileDiff size="md" />
             </span>
@@ -349,7 +350,7 @@ export function TurnFilesSummaryView({
             >
               <span
                 aria-hidden="true"
-                className="flex size-9 shrink-0 items-center justify-center rounded-md bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
+                className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
               >
                 <FileDiff size="md" />
               </span>

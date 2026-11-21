@@ -1,8 +1,9 @@
 /**
  * A cloud chat's attachments in the activity rail (CAN-6175 R8d), through the
  * same shared section body as a local chat's. The rows are the selected tab's
- * chat's attachments, listed by the web core; add uploads through main as the
- * composer does (R6), save goes through main to a path the user picks,
+ * chat's attachments, listed by the web core, each with its file type, name
+ * and size; add uploads through main as the composer does (R6), save goes
+ * through main to a path the user picks,
  * delete goes to the web core, and mention attaches the file to the next
  * message. Nothing reads or writes this computer's attachment folder.
  */
@@ -16,13 +17,13 @@ import {
 import {
   AttachmentsSectionBody,
   attachmentsSectionTestIds,
+  formatAttachmentSize,
   type AttachmentListLoad,
   type AttachmentListRow,
   type AttachmentsSource,
 } from '@canopy/ui-app/attachments';
 import { HeaderActionButton } from '@canopy/ui-shared/components';
 import { AttachmentIcon as CentralAttachmentIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import {
   PanelSection,
   type CollapsedIconColor,
@@ -197,10 +198,10 @@ export function CloudAttachmentsSection(
     return {
       scopeKey: chatId,
       load,
-      showSize: true,
-      rowIcon: (row) => (
-        <FileTypeIcon filename={row.filename} size="sm" className="shrink-0" />
-      ),
+      detail: (row): string | undefined =>
+        row.sizeBytes === undefined
+          ? undefined
+          : formatAttachmentSize(row.sizeBytes),
       add: {
         kind: 'upload',
         upload: (file: File): Promise<void> =>

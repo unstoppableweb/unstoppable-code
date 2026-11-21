@@ -1,0 +1,354 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`shared-container recipient view state (CAN-6501 golden) answers unsupported when the server predates recoverable removal 1`] = `
+{
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/.well-known/<ns>",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/.well-known/<ns>",
+    },
+  ],
+  "result": {
+    "listDismissed": {
+      "resolved": {
+        "unsupported": true,
+      },
+    },
+    "restore": {
+      "resolved": {
+        "reason": "unsupported",
+        "restored": false,
+      },
+    },
+  },
+  "signals": 0,
+}
+`;
+
+exports[`shared-container recipient view state (CAN-6501 golden) cleans up locally when the hosted dismiss fails 1`] = `
+{
+  "after": {
+    "accepted": true,
+    "replicaBytes": false,
+    "replicaIndexed": false,
+    "runConsent": {
+      "allowedAt": "2026-11-01T12:00:00.000Z",
+      "publisherUserId": "00000000-0000-4000-8000-00000000b001",
+    },
+    "runEnvironment": false,
+  },
+  "failed": {
+    "rejected": "HTTP 500: Internal error",
+  },
+  "pushes": [
+    [
+      "shared-containers:replica-changed",
+      {
+        "containerId": "00000000-0000-4000-8000-00000000c002",
+        "purged": "container",
+      },
+    ],
+  ],
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c002/dismiss?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+  ],
+  "signals": 0,
+}
+`;
+
+exports[`shared-container recipient view state (CAN-6501 golden) dismisses an accepted container: hosted grant and local records 1`] = `
+{
+  "after": {
+    "accepted": false,
+    "replicaBytes": false,
+    "replicaIndexed": false,
+    "runConsent": null,
+    "runEnvironment": false,
+  },
+  "before": {
+    "accepted": true,
+    "replicaBytes": true,
+    "replicaIndexed": true,
+    "runConsent": {
+      "allowedAt": "2026-11-01T12:00:00.000Z",
+      "publisherUserId": "00000000-0000-4000-8000-00000000b001",
+    },
+    "runEnvironment": true,
+  },
+  "dismissedAgain": {
+    "resolved": {
+      "dismissed": true,
+    },
+  },
+  "dismissedOnce": {
+    "resolved": {
+      "dismissed": true,
+    },
+  },
+  "other": {
+    "accepted": true,
+    "replicaBytes": true,
+    "replicaIndexed": true,
+    "runConsent": {
+      "allowedAt": "2026-11-01T12:00:00.000Z",
+      "publisherUserId": "00000000-0000-4000-8000-00000000b001",
+    },
+    "runEnvironment": true,
+  },
+  "pushes": [
+    [
+      "shared-containers:replica-changed",
+      {
+        "containerId": "00000000-0000-4000-8000-00000000c001",
+        "purged": "container",
+      },
+    ],
+    [
+      "shared-containers:replica-changed",
+      {
+        "containerId": "00000000-0000-4000-8000-00000000c001",
+        "purged": "container",
+      },
+    ],
+  ],
+  "refusals": {
+    "invalidId": {
+      "rejected": "Invalid containerId: must be lowercase alphanumeric with hyphens",
+    },
+    "invalidOrganization": {
+      "rejected": "Invalid organizationId: must be lowercase alphanumeric with hyphens",
+    },
+  },
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c001/dismiss?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "DELETE",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c001/dismiss?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+  ],
+  "signals": 2,
+  "signalsAfterFirst": 1,
+}
+`;
+
+exports[`shared-container recipient view state (CAN-6501 golden) lists dismissed containers from the hosted service 1`] = `
+{
+  "listed": {
+    "resolved": {
+      "containers": [
+        {
+          "access": "organization",
+          "backend": "desktop",
+          "capabilities": [
+            "VIEW",
+          ],
+          "containerType": "CODE_WORKTREE",
+          "createdAt": "2026-11-01T12:00:00.000Z",
+          "dismissedAt": "2026-11-01T12:00:00.000Z",
+          "id": "00000000-0000-4000-8000-00000000c002",
+          "organizationId": "00000000-0000-4000-8000-00000000a001",
+          "organizationName": "Example Org",
+          "owner": {
+            "name": "Example Publisher",
+            "userId": "00000000-0000-4000-8000-00000000b001",
+          },
+          "ownerUserId": "00000000-0000-4000-8000-00000000b001",
+          "revision": 1,
+          "title": "Golden container",
+          "updatedAt": "2026-11-01T12:00:00.000Z",
+        },
+      ],
+      "nextCursor": "eyJ2IjoxLCJ0cyI6IjIwMjYtMTEtMDFUMTI6MDA6MDAuMDAwWiIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBkMDAyIn0",
+    },
+  },
+  "paged": {
+    "resolved": {
+      "containers": [
+        {
+          "access": "organization",
+          "backend": "desktop",
+          "capabilities": [
+            "VIEW",
+          ],
+          "containerType": "CODE_WORKTREE",
+          "createdAt": "2026-11-01T12:00:00.000Z",
+          "dismissedAt": "2026-11-01T12:00:00.000Z",
+          "id": "00000000-0000-4000-8000-00000000c001",
+          "organizationId": "00000000-0000-4000-8000-00000000a001",
+          "organizationName": "Example Org",
+          "owner": {
+            "name": "Example Publisher",
+            "userId": "00000000-0000-4000-8000-00000000b001",
+          },
+          "ownerUserId": "00000000-0000-4000-8000-00000000b001",
+          "revision": 1,
+          "title": "Golden container",
+          "updatedAt": "2026-11-01T12:00:00.000Z",
+        },
+      ],
+      "nextCursor": null,
+    },
+  },
+  "refusals": {
+    "invalidOrganization": {
+      "rejected": "Invalid organizationId: must be lowercase alphanumeric with hyphens",
+    },
+    "missingRequest": {
+      "rejected": "Expected a shared-container listing request.",
+    },
+  },
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/api/v1/shared-containers/dismissed?organizationId=00000000-0000-4000-8000-00000000a001&limit=1",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/api/v1/shared-containers/dismissed?organizationId=00000000-0000-4000-8000-00000000a001&limit=1",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/api/v1/shared-containers/dismissed?organizationId=00000000-0000-4000-8000-00000000a001&cursor=eyJ2IjoxLCJ0cyI6IjIwMjYtMTEtMDFUMTI6MDA6MDAuMDAwWiIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBkMDAyIn0&limit=50",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "GET",
+      "path": "/api/v1/shared-containers/dismissed",
+    },
+  ],
+  "signals": 0,
+  "unauthorized": {
+    "rejected": "HTTP 401: Unauthorized",
+  },
+}
+`;
+
+exports[`shared-container recipient view state (CAN-6501 golden) refuses every recipient view channel while shared containers are disabled 1`] = `
+{
+  "refusals": {
+    "dismiss": {
+      "rejected": "Shared containers are disabled.",
+    },
+    "listDismissed": {
+      "rejected": "Shared containers are disabled.",
+    },
+    "restore": {
+      "rejected": "Shared containers are disabled.",
+    },
+  },
+  "requests": [],
+}
+`;
+
+exports[`shared-container recipient view state (CAN-6501 golden) restores a dismissed container as a pending invitation 1`] = `
+{
+  "acceptedAfterRestore": false,
+  "failed": {
+    "rejected": "HTTP 500: Internal error",
+  },
+  "notRestorable": {
+    "resolved": {
+      "reason": "not-restorable",
+      "restored": false,
+    },
+  },
+  "pushes": [],
+  "refusals": {
+    "invalidId": {
+      "rejected": "Invalid containerId: must be lowercase alphanumeric with hyphens",
+    },
+  },
+  "replayed": {
+    "resolved": {
+      "container": {
+        "access": "organization",
+        "backend": "desktop",
+        "capabilities": [
+          "VIEW",
+        ],
+        "containerType": "CODE_WORKTREE",
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "id": "00000000-0000-4000-8000-00000000c001",
+        "organizationId": "00000000-0000-4000-8000-00000000a001",
+        "organizationName": "Example Org",
+        "owner": {
+          "name": "Example Publisher",
+          "userId": "00000000-0000-4000-8000-00000000b001",
+        },
+        "ownerUserId": "00000000-0000-4000-8000-00000000b001",
+        "revision": 1,
+        "title": "Golden container",
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+      },
+      "restored": true,
+    },
+  },
+  "requests": [
+    {
+      "authorization": "Bearer <api key>",
+      "method": "POST",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c001/restore?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "POST",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c001/restore?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "POST",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c002/restore?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+    {
+      "authorization": "Bearer <api key>",
+      "method": "POST",
+      "path": "/api/v1/shared-containers/00000000-0000-4000-8000-00000000c003/restore?organizationId=00000000-0000-4000-8000-00000000a001",
+    },
+  ],
+  "restored": {
+    "resolved": {
+      "container": {
+        "access": "organization",
+        "backend": "desktop",
+        "capabilities": [
+          "VIEW",
+        ],
+        "containerType": "CODE_WORKTREE",
+        "createdAt": "2026-11-01T12:00:00.000Z",
+        "id": "00000000-0000-4000-8000-00000000c001",
+        "organizationId": "00000000-0000-4000-8000-00000000a001",
+        "organizationName": "Example Org",
+        "owner": {
+          "name": "Example Publisher",
+          "userId": "00000000-0000-4000-8000-00000000b001",
+        },
+        "ownerUserId": "00000000-0000-4000-8000-00000000b001",
+        "revision": 1,
+        "title": "Golden container",
+        "updatedAt": "2026-11-01T12:00:00.000Z",
+      },
+      "restored": true,
+    },
+  },
+  "signals": 2,
+  "signalsAfterRestore": 1,
+}
+`;

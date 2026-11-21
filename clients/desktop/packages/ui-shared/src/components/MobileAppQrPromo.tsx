@@ -9,6 +9,7 @@ import {
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
 import { SegmentedControl } from './SegmentedControl';
+import { Surface } from './Surface';
 import {
   DEFAULT_MOBILE_APP_PROMO_DESCRIPTION,
   defaultMobileAppPromoHeading,
@@ -117,7 +118,7 @@ export function MobileAppQrPromo({
           is unreliable for phone cameras. Skipped entirely when generation
           failed for this store — the badges below still work. */}
       {selected.qrSrc && (
-        <div className="rounded-lg bg-white p-2">
+        <Surface variant="pairing-code">
           <img
             data-testid="mobile-app-qr"
             data-store={selected.store}
@@ -128,7 +129,7 @@ export function MobileAppQrPromo({
             className="h-36 w-36"
             draggable={false}
           />
-        </div>
+        </Surface>
       )}
 
       {/* One badge, matching the toggle. The popover has already asked the

@@ -1,15 +1,18 @@
 import type { JSX, ReactNode } from 'react';
-import { Button } from './Button';
+import { LoadingButton } from './LoadingButton';
 import { Surface } from './Surface';
 
 export function OrchestratorSettingsFooter({
   disabled,
+  busy = false,
   error,
   label,
   onSave,
   testId,
 }: {
   disabled: boolean;
+  /** The save is running: the spinner sits inside the button at its width. */
+  busy?: boolean;
   error?: ReactNode;
   label: string;
   onSave: () => void;
@@ -24,15 +27,17 @@ export function OrchestratorSettingsFooter({
     >
       {error}
       <div className="flex items-center justify-end">
-        <Button
+        <LoadingButton
           variant="primary"
           size="compact"
-          disabled={disabled}
+          loading={busy}
+          loadingLabel="Saving…"
+          disabled={disabled && !busy}
           onClick={onSave}
           data-testid={testId}
         >
           {label}
-        </Button>
+        </LoadingButton>
       </div>
     </Surface>
   );

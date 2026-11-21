@@ -3,6 +3,7 @@ import { lstat, opendir, readFile, realpath, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { normalizePipelineScopes } from '@canopy/execution-engine/pipelines/scope';
 import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 import { isPathInside } from '../lib/path-safety';
 import { measureSerializedBytes } from '../lib/serialized-size-budget';
@@ -71,6 +72,19 @@ export interface DiscoverProjectPipelinesLimits {
    */
   maxSerializedBytes: number;
 }
+
+/**
+ * The bounds every unattended scan of a checkout uses: the cloud inventory
+ * sync across worktrees, and a core listing that asks for `bounded` project
+ * discovery (the Workflows Library's other-worktree count, CAN-965).
+ */
+export const UNATTENDED_PROJECT_DISCOVERY_LIMITS: DiscoverProjectPipelinesLimits =
+  {
+    maxEntries: 5_000,
+    maxFiles: 200,
+    maxBytes: 4 * 1024 * 1024,
+    maxSerializedBytes: 4 * 1024 * 1024,
+  };
 
 export interface BoundedProjectPipelineDiscovery {
   pipelines: PipelineInfo[];
@@ -174,9 +188,18 @@ async function enumerateYamlFiles(
   return { files, truncated: false, visited };
 }
 
+/**
+ * `full` runs each document through `normalizePipeline`, rejecting any it
+ * refuses. `scope` reads only the declared scopes, for a listing: full
+ * normalization expands static matrices, so a size-bounded document could
+ * still cost a lot of synchronous work (CAN-965).
+ */
+type DiscoveryValidation = 'full' | 'scope';
+
 async function discover(
   cwd: string,
   limits: DiscoverProjectPipelinesLimits | undefined,
+  validation: DiscoveryValidation = 'full',
 ): Promise<ProjectPipelineDiscovery> {
   const pipelines: PipelineInfo[] = [];
   const existingFilePaths: string[] = [];
@@ -280,9 +303,12 @@ async function discover(
             continue;
           }
         }
-        const normalized = normalizePipeline(pipeline, {
-          defaultShell: getDefaultShellTypeForCurrentProcess(),
-        });
+        const normalized =
+          validation === 'scope'
+            ? { scope: normalizePipelineScopes(pipeline.scope, 'Pipeline') }
+            : normalizePipeline(pipeline, {
+                defaultShell: getDefaultShellTypeForCurrentProcess(),
+              });
         if (limits) {
           // Unattended: metadata must be bounded strings. A name that is
           // not one is a pipeline the summary cannot carry, so it is
@@ -384,6 +410,23 @@ export async function discoverProjectPipelinesBounded(
     ),
     truncated: discovered.truncated,
   };
+}
+
+/**
+ * Bounded discovery that writes nothing and does no normalization work: no
+ * share-link metadata is attached or reconciled, so a read of a checkout
+ * nobody opened (the Library's count of other worktrees' project pipelines,
+ * CAN-965) never moves a published workflow's saved binding, and only each
+ * document's declared scopes are validated, so no static matrix is
+ * expanded. Rows carry no author-side share link, and a document that
+ * parses with valid scopes is listed even where a run would refuse it.
+ */
+export async function readProjectPipelinesWithinBounds(
+  cwd: string,
+  limits: DiscoverProjectPipelinesLimits,
+): Promise<BoundedProjectPipelineDiscovery> {
+  const { pipelines, truncated } = await discover(cwd, limits, 'scope');
+  return { pipelines, truncated };
 }
 
 export async function loadProjectPipelineFromDisk(

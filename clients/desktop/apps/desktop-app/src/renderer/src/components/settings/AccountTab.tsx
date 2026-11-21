@@ -101,7 +101,7 @@ function LlmProviderSection({
         <ProviderAuthPanel provider="claude" layout="row" />
         <ProviderAuthPanel provider="codex" layout="row" />
         {window.platform === 'darwin' && antigravityReleased && (
-          <GoogleSubscriptionConnection />
+          <GoogleSubscriptionConnection placement="row" />
         )}
         {/* Released Copilot and OpenCode are provider rows too (and render
             nothing while unsupported on this computer). */}

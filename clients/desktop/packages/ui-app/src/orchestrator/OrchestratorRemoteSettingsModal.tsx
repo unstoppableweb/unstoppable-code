@@ -8,6 +8,7 @@ import {
 import {
   AppAdvisorProjectAgentAccessControl,
   ErrorBanner,
+  ErrorState,
   SettingsSelect,
   ThinkingLevelControl,
   ThinkingLevelProviderHint,
@@ -56,13 +57,20 @@ export function OrchestratorRemoteSettingsModal({
       formLayout="flow"
       contentReady={settings !== null}
       loading={
-        !settings ? (
+        settings ? null : draft.loadingError ? (
+          <ErrorState
+            space="panel"
+            message={`Couldn't load ${ORCHESTRATOR_LABEL} settings.`}
+            onRetry={draft.reload}
+            retrying={draft.reloading}
+            testId="remote-control-app-advisor-settings-load-error"
+            retryTestId="remote-control-app-advisor-settings-load-retry"
+          />
+        ) : (
           <div className="py-8 text-center text-s fg-secondary">
-            {draft.loadingError
-              ? `${ORCHESTRATOR_LABEL} settings are unavailable.`
-              : 'Loading settings...'}
+            Loading settings...
           </div>
-        ) : null
+        )
       }
       defaults={
         settings ? (
@@ -165,7 +173,7 @@ export function OrchestratorRemoteSettingsModal({
       onAutoArchiveDaysChange={draft.setAutoArchiveDays}
       showSave={draft.isDirty || draft.saveError !== null}
       saveDisabled={draft.saving || !draft.isDirty}
-      saveLabel={draft.saving ? 'Saving…' : 'Save'}
+      saving={draft.saving}
       onSave={() => void draft.handleSave()}
       error={
         draft.saveError !== null ? (

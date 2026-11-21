@@ -99,6 +99,7 @@ import {
   registerSecretsEnvInjector,
 } from '@canopy/execution-engine/pipelines/config-paths';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+import { controllerRemoteUrl } from '../remote-control/host/controller-remote-urls';
 const caller: CanopyCallerDescriptor = {
   principalId: 'local-desktop-user',
   clientInstanceId: 'source-golden',
@@ -537,3 +538,41 @@ it.each(['single', 'multi'] as const)(
     }
   },
 );
+
+// CAN-7082: a controller sees a repository's remote with its
+// credential redacted, and can send that URL back as a repository add. The add
+// matches the stored canopy.json entry by host and path (remoteUrlsMatch), so
+// it writes nothing: canopy.json and the local bindings keep the stored
+// credential byte-for-byte.
+it('leaves a credentialed canopy.json entry byte-identical when a controller adds it back redacted', async () => {
+  const member = repo('credentialed-member');
+  const target = { mode: 'existing', worktreeId: 'task' };
+  const secret = 'tok-0123456789';
+  const stored = `https://user:${secret}@example.invalid/org/cred.git?private_token=${secret}`;
+  await ipc(IPC_CHANNELS.workspaceApplySourceChanges, {
+    workspaceId: 'multi',
+    target,
+    repoAdds: [
+      { repoId: 'cred', repoName: 'Cred', repoPath: member, remoteUrl: stored },
+    ],
+  });
+  await settleDetachedWork();
+  const manifestPath = join(
+    data,
+    'workspaces/multi/worktrees/task/canopy.json',
+  );
+  const bindingsPath = join(data, 'workspaces/multi/workspace.json');
+  const manifestBefore = readFileSync(manifestPath, 'utf8');
+  const bindingsBefore = readFileSync(bindingsPath, 'utf8');
+  expect(manifestBefore).toContain(stored);
+  const seen = controllerRemoteUrl(stored);
+  expect(seen).toBe('https://example.invalid/org/cred.git');
+  await ipc(IPC_CHANNELS.workspaceApplySourceChanges, {
+    workspaceId: 'multi',
+    target,
+    repoAdds: [{ repoId: 'cred', repoName: 'Cred', remoteUrl: seen }],
+  });
+  await settleDetachedWork();
+  expect(readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+  expect(readFileSync(bindingsPath, 'utf8')).toBe(bindingsBefore);
+}, 30_000);

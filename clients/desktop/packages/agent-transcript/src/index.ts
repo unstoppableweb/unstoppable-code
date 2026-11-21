@@ -49,3 +49,4 @@ export {
   remoteControlChatMessageAttachmentsFromPaths,
 } from './remote-control/message-attachments';
 export * from './lib/child-tool-liveness';
+export * from './lib/usage-limit-resume-prompt';

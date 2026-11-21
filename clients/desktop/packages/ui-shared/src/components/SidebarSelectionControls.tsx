@@ -109,12 +109,14 @@ export function SidebarSelectionToolbar({
       inert={!visible}
     >
       <DropdownMenuSurface
-        role="toolbar"
+        // A group, not a toolbar: its buttons are plain Tab stops, with no
+        // arrow-key roving.
+        role="group"
         aria-label="Selection actions"
         padding="none"
         className="w-full"
       >
-        <div className="flex h-9 items-center gap-px px-1">
+        <div className="flex h-9 items-center gap-px px-1 pointer-coarse:h-11">
           <span className="min-w-0 flex-1 truncate pl-1.5 text-xs tabular-nums fg-secondary">
             {visible ? count : lastCount} selected
           </span>
@@ -127,6 +129,7 @@ export function SidebarSelectionToolbar({
               aria-haspopup="menu"
               aria-expanded={moreOpen}
               tone="secondary"
+              coarsePointerTarget
               onClick={(): void => setMoreOpen((open) => !open)}
             />
           )}
@@ -135,6 +138,7 @@ export function SidebarSelectionToolbar({
               icon={PinIcon}
               aria-label={pin.label}
               tone="secondary"
+              coarsePointerTarget
               disabled={pin.disabled}
               onClick={(): void => pin.onSelect?.()}
             />
@@ -144,6 +148,7 @@ export function SidebarSelectionToolbar({
               icon={ArchiveIcon}
               aria-label={archive.label}
               tone="secondary"
+              coarsePointerTarget
               disabled={archive.disabled}
               onClick={(): void => archive.onSelect?.()}
             />
@@ -152,6 +157,7 @@ export function SidebarSelectionToolbar({
             icon={CloseIcon}
             aria-label="Cancel selection"
             tone="secondary"
+            coarsePointerTarget
             onClick={onCancel}
           />
         </div>

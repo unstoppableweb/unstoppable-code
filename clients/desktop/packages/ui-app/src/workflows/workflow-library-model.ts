@@ -171,6 +171,12 @@ export interface WorkflowLibraryRow {
   readonly sourceLabel?: string;
   /** The suffix names a person, so session replay masks it. */
   readonly sourceIsPerson?: boolean;
+  /**
+   * After the suffix: the worktree a project pipeline was read from
+   * (CAN-965), whose copy is the one that runs. A user-authored title, so
+   * session replay masks it.
+   */
+  readonly sourceDetail?: string;
   /** Third line in warning ink: `Failed the last 3 runs`. */
   readonly attention?: string;
   readonly lastRun?: WorkflowLastRun;
@@ -299,6 +305,42 @@ export const WORKFLOW_LIBRARY_SORT_LABELS: Readonly<
 
 export const WORKFLOW_LIBRARY_PAGE_SIZE = 25;
 
+/**
+ * Where the Library reads project pipelines from (CAN-965). Project
+ * pipelines are files in a checkout, so the list holds the selected
+ * worktree's copies only.
+ */
+export type WorkflowLibraryProjectScope =
+  | { readonly kind: 'no-worktree' }
+  | {
+      readonly kind: 'worktree';
+      readonly projectName: string;
+      readonly worktreeName: string;
+      /** `false` once the list is loaded and holds no project pipeline. */
+      readonly hasProjectPipelines: boolean;
+    };
+
+/** The scope line with no worktree selected. */
+export const WORKFLOW_LIBRARY_NO_WORKTREE_SCOPE =
+  'Project pipelines appear after you select a worktree.';
+
+/**
+ * The other-worktree hint before its project name: project pipelines that
+ * other worktrees of the project hold and the selected one does not.
+ * `complete: false` when some worktree couldn't be read, so the count is a
+ * lower bound.
+ */
+export function describeOtherWorktreePipelines(
+  count: number,
+  complete = true,
+): string {
+  const noun =
+    count === 1
+      ? '1 project pipeline in another worktree of'
+      : `${String(count)} project pipelines in other worktrees of`;
+  return complete ? noun : `At least ${noun}`;
+}
+
 function matchesStatus(
   row: WorkflowLibraryRow,
   status: WorkflowLibraryStatusFilter,
@@ -331,6 +373,7 @@ function matchesQuery(row: WorkflowLibraryRow, query: string): boolean {
     row.summary,
     row.searchText ?? '',
     row.sourceLabel ?? '',
+    row.sourceDetail ?? '',
     row.projectName ?? '',
   ]
     .join('\n')

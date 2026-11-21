@@ -19,6 +19,7 @@ import {
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
   type PipelineDefinition,
+  type PipelineDefinitionListResult,
 } from '@canopy/protocol/canopy-core';
 import {
   GOLDEN_BUNDLED_PIPELINE_ID,
@@ -34,8 +35,16 @@ import {
   sharedPipelineReadError,
   sharedPipelineRows,
 } from '../../pipelines/core-pipeline-definition-sources';
-import { getPipelineLocalMetadataFilePath } from '../../lib/paths';
+import {
+  getPipelineLocalMetadataFilePath,
+  getProjectPipelineShareLinksFilePath,
+  getWorktreeDir,
+} from '../../lib/paths';
+import { writeProjectPipelineRemoteMetadata } from '../../pipelines/pipeline-service';
 import * as resourceLanes from '../../pipelines/resource-lanes';
+import * as installContext from '../../pipelines/pipeline-install-context';
+import * as sidebarItems from '../../lib/sidebar-items';
+import * as normalizeModule from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { createCorePipelineDefinitionAdapter } from '../../canopy-runtime/core-pipeline-definition-adapter';
 import {
   createPipelineGoldenWorld,
@@ -361,6 +370,162 @@ describe('core pipeline definitions on the desktop', () => {
       });
     } finally {
       rmSync(link);
+    }
+  });
+
+  it('lists project definitions within the unattended bounds when asked, and names a checkout that exceeds them unavailable (CAN-965)', async () => {
+    const list = (
+      projectDiscovery?: 'bounded',
+    ): Promise<PipelineDefinitionListResult> =>
+      dispatcher().query(
+        'core.pipeline.definition.list',
+        {
+          scope,
+          sources: ['project'],
+          limit: 500,
+          ...(projectDiscovery ? { projectDiscovery } : {}),
+        },
+        { caller },
+      );
+    // A bounded listing never projects the sidebar, whose reads may persist
+    // cleanup or prepare checkouts: it resolves the checkout from the
+    // project's own records.
+    // Nor does it normalize documents, whose static matrices would expand:
+    // a listing validates only the declared scopes.
+    const sidebarRead = jest.spyOn(sidebarItems, 'readAllSidebarItems');
+    const normalize = jest.spyOn(normalizeModule, 'normalizePipeline');
+    const bounded = await list('bounded');
+    expect(sidebarRead).not.toHaveBeenCalled();
+    expect(normalize).not.toHaveBeenCalled();
+    sidebarRead.mockRestore();
+    normalize.mockRestore();
+    expect(bounded.unavailableSources).toEqual([]);
+    expect(bounded.items.map((item) => item.definitionId)).toEqual([
+      GOLDEN_PROJECT_PIPELINE_ID,
+    ]);
+
+    // The owner can change while the checkout is read: rows are returned
+    // only if it can still see the project afterwards.
+    const changed = jest
+      .spyOn(installContext, 'projectPipelinesVisible')
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    try {
+      expect((await list('bounded')).items).toEqual([]);
+    } finally {
+      changed.mockRestore();
+    }
+
+    // More files than an unattended scan reads: the bounded listing names
+    // the source unavailable instead of listing part of it, and the
+    // ordinary listing still reads every file.
+    const pipelinesDir = `${world.worktreePath}/.canopy/pipelines`;
+    const extra = Array.from(
+      { length: 200 },
+      (_, index) =>
+        `${pipelinesDir}/bulk-${String(index).padStart(3, '0')}.yaml`,
+    );
+    const template = readFileSync(
+      `${pipelinesDir}/golden-project.yaml`,
+      'utf8',
+    );
+    for (const file of extra) writeFileSync(file, template);
+    try {
+      const cut = await list('bounded');
+      expect(cut.unavailableSources).toEqual(['project']);
+      expect(cut.items).toEqual([]);
+
+      // An owner that loses the project mid-scan is never told it was cut.
+      const lost = jest
+        .spyOn(installContext, 'projectPipelinesVisible')
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false);
+      try {
+        const hidden = await list('bounded');
+        expect(hidden.unavailableSources).toEqual([]);
+        expect(hidden.items).toEqual([]);
+      } finally {
+        lost.mockRestore();
+      }
+      const full = await list();
+      expect(full.unavailableSources).toEqual([]);
+      expect(full.items).toHaveLength(extra.length + 1);
+
+      // A project the selected owner can't see lists nothing and is not
+      // read, so a bounded listing never discloses that it is over a bound.
+      const hidden = jest
+        .spyOn(installContext, 'projectPipelinesVisible')
+        .mockResolvedValue(false);
+      try {
+        const invisible = await list('bounded');
+        expect(invisible.unavailableSources).toEqual([]);
+        expect(invisible.items).toEqual([]);
+      } finally {
+        hidden.mockRestore();
+      }
+    } finally {
+      for (const file of extra) rmSync(file);
+    }
+  });
+
+  it('never reads a bounded checkout that is a link out of its project (CAN-965)', async () => {
+    // A link at a worktree's path (one a worktree join leaves behind, say)
+    // may point at another workspace's checkout: a bounded listing refuses
+    // it rather than list that checkout's pipelines.
+    const linked = getWorktreeDir(GOLDEN_WORKSPACE_ID, 'linked-worktree');
+    symlinkSync(world.worktreePath, linked);
+    try {
+      const listed = await dispatcher().query(
+        'core.pipeline.definition.list',
+        {
+          scope: {
+            workspaceId: GOLDEN_WORKSPACE_ID,
+            worktreeId: 'linked-worktree',
+          },
+          sources: ['project'],
+          projectDiscovery: 'bounded',
+        },
+        { caller },
+      );
+      expect(listed.items).toEqual([]);
+      expect(listed.unavailableSources).toEqual(['project']);
+    } finally {
+      rmSync(linked);
+    }
+  });
+
+  it('writes nothing for a bounded listing, not even a share-link move a symlink would cause (CAN-965)', async () => {
+    const pipelinesDir = `${world.worktreePath}/.canopy/pipelines`;
+    const published = `${pipelinesDir}/golden-project.yaml`;
+    const linksFile = getProjectPipelineShareLinksFilePath();
+    const savedLinks = existsSync(linksFile)
+      ? readFileSync(linksFile)
+      : undefined;
+    expect(
+      writeProjectPipelineRemoteMetadata(published, {
+        remoteId: 'remote-can-965',
+        contentHash: 'hash-can-965',
+        shareScope: 'team',
+        sharedAt: '2026-11-19T12:00:00.000Z',
+      }),
+    ).toEqual({ success: true });
+    // Same file identity under a name discovery visits first: reconciliation
+    // would read it as a rename and move the published binding to it.
+    const alias = `${pipelinesDir}/alias.yaml`;
+    symlinkSync(published, alias);
+    const before = readFileSync(linksFile, 'utf8');
+    try {
+      const listed = await dispatcher().query(
+        'core.pipeline.definition.list',
+        { scope, sources: ['project'], projectDiscovery: 'bounded' },
+        { caller },
+      );
+      expect(listed.unavailableSources).toEqual([]);
+      expect(readFileSync(linksFile, 'utf8')).toBe(before);
+    } finally {
+      rmSync(alias);
+      if (savedLinks) writeFileSync(linksFile, savedLinks);
+      else rmSync(linksFile);
     }
   });
 

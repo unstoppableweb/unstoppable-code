@@ -108,7 +108,9 @@ export function WorktreeInfoDialog({
         titleId={`${formId}-title`}
         dataTestId={testIds?.dialog}
         trapFocus
-        {...(mode === 'label' ? { initialFocusRef: labelInputRef } : {})}
+        {...(mode === 'label'
+          ? { initialFocusRef: labelInputRef, keepTouchKeyboardClosed: true }
+          : {})}
         {...(returnFocusRef ? { restoreFocusRef: returnFocusRef } : {})}
       >
         <form
@@ -202,6 +204,7 @@ export function PipelinePickerDialog({
   notice,
 }: PipelinePickerDialogProps): JSX.Element {
   const [running, setRunning] = useState(false);
+  const [runFailed, setRunFailed] = useState(false);
   const titleId = useId();
   const close = running ? (): void => undefined : onClose;
   return (
@@ -218,16 +221,23 @@ export function PipelinePickerDialog({
       >
         <div className="flex flex-col gap-4 pt-3">
           {notice}
+          {entries.length === 0 && (
+            <p className="text-s fg-secondary">No workflows to dispatch.</p>
+          )}
           <Stack gap="tight">
             {entries.map((entry) => (
               <ListRow
                 key={entry.id}
                 disabled={entry.disabled === true || running}
                 onClick={() => {
+                  setRunFailed(false);
                   const result = onRun(entry.id);
                   if (result instanceof Promise) {
                     setRunning(true);
-                    void result.then(onClose, () => setRunning(false));
+                    void result.then(onClose, () => {
+                      setRunning(false);
+                      setRunFailed(true);
+                    });
                   } else {
                     onClose();
                   }
@@ -239,6 +249,13 @@ export function PipelinePickerDialog({
               </ListRow>
             ))}
           </Stack>
+          {runFailed && (
+            <ErrorBanner
+              errorSource="pipeline-picker-dialog"
+              className=""
+              error="Couldn't start the workflow. Try again."
+            />
+          )}
           <div className="flex justify-end">
             <Button size="compact" onClick={close} disabled={running}>
               Cancel

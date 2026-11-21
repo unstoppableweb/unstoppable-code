@@ -225,6 +225,39 @@ export function usageLimitMessage(resetsLabel?: string): string {
 }
 
 /**
+ * The usage-limit notice's copy for a resume that waits on provider usage
+ * (CAN-7483). Only hosts that can schedule a resume use it; the Remote
+ * Control mirror keeps {@link usageLimitMessage} and {@link resumeAtLabel}.
+ * A pending check names when it looks again, never a promised send.
+ */
+export const USAGE_LIMIT_RESUME_COPY = {
+  /** The message when the provider gave no reset time. */
+  unknownReset: (providerName: string): string =>
+    `${providerName} didn't say when it resets.`,
+  /** The Resume action when the reset time is unknown. */
+  resumeWhenBack: (providerName: string): string =>
+    `Resume when ${providerName} is back`,
+  /** A timed resume is pending. */
+  scheduled: (timeLabel: string): string =>
+    `This chat resumes automatically at ${timeLabel}.`,
+  /** A usage check is pending; the time is the next check. */
+  checking: (timeLabel: string, providerName: string): string =>
+    `We'll check again at ${timeLabel} and resume this chat once ${providerName} is back.`,
+  cancel: 'Cancel resume',
+  canceled: 'Resume canceled.',
+  cancelFailed: "Couldn't cancel the resume. Try again.",
+  noLongerPending: 'The resume is no longer pending.',
+  scheduleFailed: "Couldn't schedule the resume. Try again.",
+  resumeFailed: "Couldn't resume this chat. Try again.",
+  /** Usage for the interrupted account can't be read, so nothing waits. */
+  unreadable: (providerName: string): string =>
+    `Couldn't check ${providerName} usage for the account this chat used. Sign in to that account again, or continue with another provider.`,
+  /** The check stopped after its seven-day limit. */
+  expired: (providerName: string): string =>
+    `${providerName} usage didn't clear within 7 days, so this chat wasn't resumed. Resume it again, or continue with another provider.`,
+} as const;
+
+/**
  * A row's status and outcome lines. A row's outcome otherwise comes from
  * {@link staysOn} or {@link switchesTo}; the current source's limit is the
  * dialog's subtitle, not a row line.

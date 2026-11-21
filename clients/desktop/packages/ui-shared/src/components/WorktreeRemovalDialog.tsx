@@ -143,6 +143,7 @@ export function WorktreeRemovalDialog({
                   </span>
                 }
                 surfaceClassName="w-72"
+                showOnPress
                 dataTestId={automationId('worktree-removal-retention-detail')}
                 triggerWrapperClassName="inline-flex h-5 shrink-0 items-center align-middle"
               >

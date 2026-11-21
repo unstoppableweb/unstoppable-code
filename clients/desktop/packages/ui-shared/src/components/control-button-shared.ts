@@ -12,7 +12,6 @@ import type {
 } from './TitlebarIconButton';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
 import { COMPOSER_PROMPT_ROW_CLASS } from './chat/ComposerPrompt';
-import { sidebarNavIconItemClassName } from './sidebar-item-classes';
 import type { CancelActionButtonTone } from './CancelableActionButton';
 import type { ComposerSendButtonTapTarget } from './ComposerSendButton';
 import {
@@ -21,8 +20,11 @@ import {
 } from '../lib/row-chips';
 import type { FieldButtonNest } from './field-button-nest';
 import {
+  SIDEBAR_ITEM_IDLE_CLASSNAME,
+  SIDEBAR_ITEM_SELECTED_CLASSNAME,
   SIDEBAR_ROW_GRID_CLASSNAME,
   SIDEBAR_ROW_TEXT_INSET_CLASSNAME,
+  sidebarNavIconItemClassName,
 } from './sidebar-item-classes';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
@@ -55,9 +57,6 @@ const BASE =
 const MUTED_DISABLED =
   'disabled:bg-muted disabled:fg-tertiary disabled:opacity-100';
 
-const CREATABLE_FIELD_CLASS =
-  'min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 w-full bg-transparent text-s fg-primary text-wrap placeholder:text-pretty placeholder:fg-tertiary outline-none shadow-field transition-shadow focus-visible:shadow-field-focus disabled:cursor-not-allowed disabled:bg-disabled disabled:fg-disabled';
-
 export const FIELD_EDGE_CLASS = 'shadow-field transition-shadow';
 
 export const FIELD_INVALID_CLASS =
@@ -69,6 +68,15 @@ const SELECT_OPEN_EDGE_CLASS =
 export const BUTTON_PRESS_CLASS = 'duration-150 active:scale-97';
 
 export const DROPDOWN_TRIGGER_INTERACTION_CLASS = `${BUTTON_PRESS_CLASS} ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS}`;
+
+/**
+ * A 44px-tall hit area on coarse pointers, centred on a control of any
+ * height, without changing its layout. It extends only vertically, so
+ * controls side by side on one line never share a hit area. The control
+ * must not clip its overflow.
+ */
+export const COARSE_HIT_AREA_CLASS =
+  "relative pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:top-1/2 pointer-coarse:before:h-11 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']";
 
 export const CHIP_SHAPE_CLASS =
   'inline-block max-w-full rounded-sm canopy-inline-chip-geometry no-underline';
@@ -133,6 +141,12 @@ export const FIELD_SURFACE_CLASS = `w-full bg-transparent text-s pointer-coarse:
 
 export const FIELD_CLASS = `min-h-9 rounded-lg px-3 py-2 pointer-coarse:min-h-11 ${FIELD_SURFACE_CLASS}`;
 
+const PICKER_FIELD_CLASS = `${FIELD_CLASS.replace('transition-shadow', 'transition-[box-shadow,transform,scale]')} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${SELECT_OPEN_EDGE_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:pointer-events-none disabled:cursor-not-allowed`;
+
+// A 28px icon control grows to 44px on a coarse pointer.
+const COARSE_ICON_HIT_CLASS =
+  "pointer-coarse:before:absolute pointer-coarse:before:-inset-2 pointer-coarse:before:content-['']";
+
 const COMPOSER_TOOLBAR_ACTIVE_TONES: Record<
   ChatComposerToolbarChipActiveTone,
   string
@@ -186,13 +200,26 @@ export const AGENT_SENT_TITLE_CLASS =
 export const AGENT_SENT_INLINE_TITLE_CLASS =
   'flex min-w-0 items-center gap-1.5 whitespace-nowrap fg-tertiary';
 
-export const TILE_CLASS =
+/** A message's 64px tile, with the corner 6px inside the bubble's. */
+const MESSAGE_TILE_CLASS =
   'relative size-16 shrink-0 overflow-hidden rounded-md bg-secondary';
 
+/** The media viewer's 48px strip tile, on the message tile's corner. */
+const VIEWER_THUMBNAIL_CLASS =
+  'relative block size-12 shrink-0 overflow-hidden rounded-md bg-secondary transition-opacity';
+
+/**
+ * The box of every attachment tile, whether it is pressable or a named
+ * picture: a message's row (`more`, `file`, `image`) and the media viewer's
+ * strip, whose item on screen carries a ring 2px outside its edge while the
+ * others dim until hovered.
+ */
 export const TILE_PRESENTATION_CLASS = {
-  more: 'flex items-center justify-center text-xs fg-secondary hover:fg-primary',
-  file: 'flex flex-col justify-between p-1.5 text-left',
-  image: 'block',
+  more: `${MESSAGE_TILE_CLASS} flex items-center justify-center text-xs fg-secondary hover:fg-primary`,
+  file: `${MESSAGE_TILE_CLASS} flex flex-col justify-between p-1.5 text-left`,
+  image: `${MESSAGE_TILE_CLASS} block`,
+  thumbnail: `${VIEWER_THUMBNAIL_CLASS} opacity-60 hover:opacity-100`,
+  'thumbnail-current': `${VIEWER_THUMBNAIL_CLASS} ring-2 ring-fg-primary ring-offset-2 ring-offset-transparent`,
 };
 
 const TILE_PRESS_CLASS = `transition-[scale] ${BUTTON_PRESS_CLASS}`;
@@ -201,7 +228,7 @@ export const ARCHIVED_ROW_ACTIONS_RESERVE_WIDE =
   '@min-[36rem]/archived-list:pr-8';
 
 const OVERVIEW_ROW_BODY_BASE_CLASS_NAME =
-  'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors';
+  'flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors pointer-coarse:self-stretch';
 
 export function archivedOverviewRowClassName(
   actionsReserve: 'reveal' | 'inline',
@@ -216,10 +243,10 @@ export const CAPABILITY_TILE_CELL_CLASS =
 
 export const TRIGGER_CLASS = `flex flex-col rounded-lg border bg-card px-4 pt-3.25 pb-4 text-left no-underline supports-[grid-template-rows:subgrid]:grid-cols-1 supports-[grid-template-rows:subgrid]:gap-y-0 ${CAPABILITY_TILE_CELL_CLASS}`;
 
-export const INTERACTIVE_CLASS = `focus-ring ${TRIGGER_CLASS} transition-colors hover:bg-fg-primary/[0.04]`;
+export const INTERACTIVE_CLASS = `focus-ring ${TRIGGER_CLASS} transition-colors hover:bg-subtle`;
 
 export const ROW_TRIGGER_CLASS =
-  'focus-ring flex min-w-0 flex-1 rounded-sm text-left no-underline';
+  'focus-ring flex min-w-0 flex-1 rounded-sm text-left no-underline pointer-coarse:min-h-11';
 
 export function ledgerStatusPillClassName(status: LedgerStatus): string {
   return `shrink-0 ${statusBadgeClassName(PILL_TONES[ledgerStatusTone(status)])}`;
@@ -303,18 +330,28 @@ export const RAIL_INSET_CLASSES = {
 /** Presentations for specialized shared widget controls. */
 export const SHARED_CONTROL_RECIPES = {
   'disclosure-inline':
-    'focus-ring inline-flex max-w-full items-center gap-1 rounded-md py-0.5 pr-1 text-left text-xs font-medium fg-secondary hover:fg-primary',
+    // On touch the ::before grows the 22px line to a 46px target without moving it.
+    "focus-ring relative inline-flex max-w-full items-center gap-1 rounded-md py-0.5 pr-1 text-left text-xs font-medium fg-secondary hover:fg-primary pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-3 pointer-coarse:before:content-['']",
   // A section heading that folds its section: it keeps the heading's own type
-  // and takes a quiet fill on hover, chevron and title together.
+  // and takes a quiet fill on hover, chevron and title together. The fill
+  // reaches 12px left of the chevron through -ml-3, so the heading measures
+  // 12px less than the button and the cap allows those 12px back. A -mr-3 or
+  // max-w-full would squeeze the title to "Ins…" (CAN-7494).
   'section-heading-toggle':
-    'focus-ring inline-flex min-w-0 max-w-full items-center gap-2 rounded-md px-3 py-1 text-left hover:bg-subtle',
+    "focus-ring relative -ml-3 inline-flex min-w-0 max-w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-3 text-left hover:bg-subtle pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-2 pointer-coarse:before:content-['']",
   'disclosure-box':
     'focus-ring flex w-full items-center gap-2 rounded-lg px-4 py-3 text-left text-s font-medium fg-primary hover:bg-subtle',
   'archived-chat-row':
     'flex min-w-0 flex-1 items-center gap-2 self-stretch rounded-md py-2 pl-2 text-left focus:outline-none',
-  'clickable-name': 'text-left group',
+  'clickable-name':
+    'focus-ring group rounded-sm text-left pointer-coarse:min-h-11',
+  // An attachment row's open target: its icon, name and metadata, on the
+  // row's 8px corner. Touch rows wrap the actions under it at full width.
+  'attachment-row-open':
+    'focus-ring block w-full rounded-md px-2 py-1.5 text-left pointer-coarse:px-0 pointer-coarse:py-0',
+  // Dots sit 5px apart, so the coarse hit area grows only into that gap.
   'dag-job-dot':
-    'inline-flex h-3 w-3 shrink-0 cursor-pointer items-center justify-center rounded-full transition-transform hover:scale-125',
+    "focus-ring relative inline-flex h-3 w-3 shrink-0 cursor-pointer items-center justify-center rounded-full transition-transform hover:scale-125 before:absolute before:content-[''] pointer-coarse:before:-inset-0.5",
   'floating-chat-menu':
     'focus-ring -ml-1.5 flex h-7 min-w-0 items-center gap-1 rounded-md pl-2 pr-1.5 fg-tertiary transition-colors hover:bg-subtle hover:fg-primary aria-expanded:bg-subtle aria-expanded:fg-primary',
   'markdown-copy':
@@ -326,32 +363,35 @@ export const SHARED_CONTROL_RECIPES = {
   'sidebar-group-rail':
     'group/group-rail flex h-full w-2 items-stretch justify-center py-1 pointer-coarse:pointer-events-none',
   'skill-file-close':
-    'focus-ring rounded p-0.5 fg-secondary opacity-60 transition-opacity hover:fg-primary hover:bg-base group-hover:opacity-100',
+    "focus-ring relative rounded p-0.5 fg-secondary opacity-60 transition-opacity hover:fg-primary hover:bg-base group-hover:opacity-100 pointer-coarse:opacity-100 pointer-coarse:before:absolute pointer-coarse:before:-inset-x-1 pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:content-['']",
   'toast-keyboard-open': 'sr-only pointer-events-none',
   'workspace-layout-option': 'option text-xs',
   'agent-block-output':
-    'w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary',
+    'focus-ring focus-ring-inset w-full border-t px-2.5 py-1 text-left text-3xs font-medium fg-secondary hover:fg-secondary pointer-coarse:min-h-11',
   'collapsed-turn-disclosure':
     "focus-ring focus-ring-stretched flex flex-shrink-0 items-center gap-3 text-left before:absolute before:inset-0 before:content-['']",
+  // The press of an activatable project catalog row: its `::before` covers
+  // the row, so the row presses while its actions stay separate controls.
+  'project-catalog-row-press':
+    "focus-ring focus-ring-stretched focus-ring-inset flex min-w-0 max-w-full cursor-pointer text-left before:absolute before:inset-0 before:rounded-sm before:content-[''] aria-disabled:cursor-not-allowed",
   'attachment-open':
     'focus-ring inline-flex min-w-0 items-center gap-1 rounded-sm hover:fg-primary',
   'attachment-download':
-    'focus-ring ml-0.5 inline-flex shrink-0 items-center rounded-sm hover:fg-primary',
+    "focus-ring relative ml-0.5 inline-flex shrink-0 items-center rounded-sm hover:fg-primary before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-y-3.5",
   'file-deliverable-open':
     'focus-ring flex min-w-0 flex-1 items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-secondary',
   'approval-path':
     'flex min-w-0 max-w-full items-center gap-1 rounded bg-fg-primary/[0.06] px-1.5 py-0.5 text-left font-mono text-2xs fg-primary/80 transition-colors hover:bg-fg-primary/[0.1]',
   'approval-allow-menu':
-    'rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent-strong transition-colors hover:bg-accent-subtle/80',
+    'rounded-r border-l border-line-accent/20 bg-accent-subtle px-1.5 py-1.5 fg-accent-strong transition-colors hover:bg-accent-subtle/80 pointer-coarse:min-h-11 pointer-coarse:min-w-11',
   'approval-deny-menu':
-    'rounded-r px-1.5 py-1.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80',
+    'rounded-r px-1.5 py-1.5 fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80 pointer-coarse:min-h-11 pointer-coarse:min-w-11',
   'subagent-lineage': 'min-w-0 truncate hover:fg-primary hover:underline',
   'subagent-chat-row':
     'min-w-0 flex-1 truncate text-left fg-primary focus-ring',
   'subagent-workflow-row':
     'min-w-0 flex-1 truncate text-left font-medium fg-primary focus-ring',
-  'ledger-file':
-    'focus-ring inline-flex max-w-full items-center gap-1 rounded-md bg-subtle px-2 py-1 font-mono text-2xs fg-secondary hover:bg-secondary hover:fg-primary',
+  'ledger-file': `focus-ring inline-flex max-w-full items-center gap-1 rounded-md bg-fg-primary/[0.06] px-2 py-1 font-mono text-2xs fg-secondary transition-colors hover:bg-fg-primary/[0.1] hover:fg-primary relative pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-[3px] pointer-coarse:before:content-['']`,
   'panel-collapsed-tab': 'canopy-panel-collapsed-tab',
   'panel-tab-close': 'canopy-panel-tab-close',
   'panel-tab-edge-count': 'canopy-panel-tab-edge-count',
@@ -359,7 +399,7 @@ export const SHARED_CONTROL_RECIPES = {
   'settings-select-row':
     'focus-ring -mx-2 -my-3 box-content flex min-h-10 min-w-0 flex-1 items-center justify-between gap-6 rounded-md px-2 py-3 text-left transition-colors hover:bg-subtle focus-visible:bg-subtle disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent',
   'activity-action-card': ({ attached }: { attached: boolean }) =>
-    `electron-no-drag focus-ring flex min-h-11 select-none w-full touch-manipulation items-center gap-3 bg-tertiary p-3 text-left fg-primary ${attached ? 'rounded-t-lg rounded-b-none' : 'rounded-lg shadow-sm'} transition-[background-color,transform,scale] duration-150 enabled:hover:bg-[var(--bg-activity-card-hover)] active:scale-99`,
+    `electron-no-drag focus-ring flex min-h-11 select-none w-full touch-manipulation items-center gap-3 bg-tertiary p-3 text-left fg-primary ${attached ? 'rounded-t-lg rounded-b-none' : 'rounded-lg shadow-sm'} transition-[transform,scale] duration-150 enabled:hover:bg-[var(--bg-activity-card-hover)] active:scale-99`,
   'table-filter-toggle': ({
     disabled,
     toggleMode,
@@ -367,7 +407,7 @@ export const SHARED_CONTROL_RECIPES = {
     disabled: boolean;
     toggleMode: 'unsupported' | 'supported';
   }) =>
-    `flex w-full min-w-0 items-center gap-2 text-left ${disabled ? 'cursor-not-allowed' : ''} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`,
+    `focus-ring focus-ring-inset flex w-full min-w-0 items-center gap-2 rounded-sm text-left ${disabled ? 'cursor-not-allowed' : ''} ${toggleMode === 'unsupported' ? 'opacity-70' : ''}`,
   'panel-section-disclosure':
     'flex min-w-0 items-center gap-3 text-left focus-ring w-full rounded-sm',
   'ledger-composer-prompt': ({
@@ -377,7 +417,9 @@ export const SHARED_CONTROL_RECIPES = {
     disabled: boolean;
     page: boolean;
   }) =>
-    `focus-ring min-w-0 flex-1 truncate rounded-full bg-subtle px-4 py-2 text-left fg-tertiary ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-secondary'} ${page ? 'text-s' : 'text-xs'}`,
+    // It truncates, which would clip a hit area drawn outside it, so on
+    // coarse pointers it grows to 44px instead.
+    `focus-ring min-w-0 flex-1 truncate rounded-full bg-subtle px-4 py-2 pointer-coarse:min-h-11 text-left fg-tertiary transition-colors ${disabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-secondary'} ${page ? 'text-s' : 'text-xs'}`,
   'ledger-in-place': ({
     extent,
   }: {
@@ -388,14 +430,14 @@ export const SHARED_CONTROL_RECIPES = {
       container: 'max-w-full',
       'flush-owner': 'min-w-0 max-w-[calc(100%+0.5rem)]',
     }[extent];
-    return `focus-ring -mx-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${extentClass}`;
+    return `focus-ring -mx-1 inline-flex items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-transparent ${COARSE_HIT_AREA_CLASS} ${extentClass}`;
   },
   'dag-scroll': ({ isLeft }: { isLeft: boolean }) =>
-    `absolute inset-y-0 ${isLeft ? 'left-0' : 'right-0'} z-10 flex w-5 items-center ${isLeft ? 'justify-start bg-gradient-to-r' : 'justify-end bg-gradient-to-l'} from-base to-transparent`,
+    `focus-ring absolute inset-y-0 ${isLeft ? 'left-0' : 'right-0'} z-10 flex w-5 pointer-coarse:w-8 items-center ${isLeft ? 'justify-start bg-gradient-to-r' : 'justify-end bg-gradient-to-l'} from-base to-transparent`,
   'approval-allow': ({ ruleScopes }: { ruleScopes: boolean }) =>
-    `${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent-strong transition-colors hover:bg-accent-subtle/80`,
+    `${ruleScopes ? 'rounded-l' : 'rounded'} bg-accent-subtle px-3 py-1.5 text-xs font-medium fg-accent-strong transition-colors hover:bg-accent-subtle/80 pointer-coarse:min-h-11`,
   'approval-deny': ({ split }: { split: boolean }) =>
-    `${split ? 'rounded-l' : 'rounded'} px-3 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80`,
+    `${split ? 'rounded-l' : 'rounded'} px-3 py-1.5 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary/80 pointer-coarse:min-h-11`,
   'agent-frame-activate': ({ needsClick }: { needsClick: boolean }) =>
     `focus-ring focus-ring-inset absolute inset-0 bg-transparent ${
       needsClick ? 'cursor-pointer' : 'cursor-default'
@@ -470,7 +512,7 @@ export const SHARED_CONTROL_RECIPES = {
         : 'gap-1 rounded-md px-1.5 py-0.5 text-2xs'
     } ${isActive ? 'fg-primary' : 'fg-secondary hover:fg-primary'}`,
   'skill-file-tab': ({ closable }: { closable: boolean }) =>
-    `focus-ring max-w-48 truncate rounded-md py-1 font-medium ${closable ? 'pl-2.5 pr-1' : 'px-2.5'}`,
+    `focus-ring max-w-48 truncate rounded-md py-1 pointer-coarse:py-3 font-medium ${closable ? 'pl-2.5 pr-1' : 'px-2.5'}`,
   'skill-file-tree': ({
     presentation,
     open,
@@ -479,8 +521,8 @@ export const SHARED_CONTROL_RECIPES = {
     open: boolean;
   }) =>
     presentation === 'detail'
-      ? 'focus-ring mr-1 shrink-0 rounded-md border p-1.5 fg-secondary'
-      : `focus-ring shrink-0 rounded-md border p-1.5 transition-colors ${open ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-secondary/50'}`,
+      ? `focus-ring relative mr-1 shrink-0 rounded-md border p-1.5 fg-secondary ${COARSE_ICON_HIT_CLASS}`
+      : `focus-ring relative shrink-0 rounded-md border p-1.5 transition-colors ${COARSE_ICON_HIT_CLASS} ${open ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-muted'}`,
   'github-repository-option': ({ unavailable }: { unavailable: boolean }) =>
     `focus-ring flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left transition-colors ${unavailable ? 'fg-tertiary cursor-not-allowed' : 'hover:bg-secondary/30 fg-primary'}`,
   'plan-approval-start': COMPOSER_PROMPT_ROW_CLASS,
@@ -490,7 +532,7 @@ export const SHARED_CONTROL_RECIPES = {
     'focus-ring rounded-sm whitespace-nowrap transition-colors hover:fg-secondary',
   'ask-user-choice': `group/option flex min-h-9 w-full cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2 pointer-coarse:py-3 text-left text-s fg-primary outline-none hover:bg-subtle focus-visible:bg-subtle has-[:focus-visible]:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled has-[:disabled]:cursor-not-allowed has-[:disabled]:fg-disabled pointer-coarse:min-h-11`,
   'diff-file-choice': ({ selected }: { selected: boolean }) =>
-    `flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${selected ? 'border-l-2 border-line-accent bg-accent/[0.08] fg-primary pl-1.5' : 'fg-primary/80 hover:bg-fg-primary/[0.06]'}`,
+    `focus-ring focus-ring-inset flex w-full items-center gap-1.5 rounded-md px-2 py-1 pointer-coarse:min-h-11 text-xs transition-colors ${selected ? 'border-l-2 border-line-accent bg-accent/[0.08] fg-primary pl-1.5' : 'fg-primary/80 hover:bg-fg-primary/[0.06]'}`,
   'archived-container-item': ({
     rowSized,
     size,
@@ -500,10 +542,8 @@ export const SHARED_CONTROL_RECIPES = {
     size: 'item' | 'compact' | 'row';
     selected: boolean;
   }) =>
-    `focus-ring flex pr-1.5 ${rowSized ? 'h-8 rounded-row' : 'h-7 rounded-md'} w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left ${size === 'item' ? 'text-s leading-snug' : 'text-xs'} transition-colors ${
-      selected
-        ? 'bg-fg-primary/[0.08] fg-primary'
-        : 'fg-secondary hover:bg-fg-primary/[0.04] hover:fg-primary'
+    `focus-ring flex pr-1.5 ${rowSized ? 'h-8 rounded-row' : 'h-7 rounded-md'} pointer-coarse:min-h-11 w-full items-center ${SIDEBAR_ROW_GRID_CLASSNAME} text-left ${size === 'item' ? 'text-s leading-snug' : 'text-xs'} transition-colors ${
+      selected ? SIDEBAR_ITEM_SELECTED_CLASSNAME : SIDEBAR_ITEM_IDLE_CLASSNAME
     }`,
   'cancel-action': ({ tone }: { tone: CancelActionButtonTone }) =>
     `electron-no-drag focus-ring flex h-6 w-8 items-center justify-center rounded-full transition-colors ${TONE_CLASS_NAMES[tone]}`,
@@ -523,8 +563,8 @@ export const SHARED_CONTROL_RECIPES = {
     `${BASE} ${
       showArmed ? CAPSULE_SIZE[tapTarget] : ROUND_SIZE[tapTarget]
     } bg-accent enabled:hover:bg-accent/90 disabled:opacity-40`,
-  'creatable-picker-field': `${CREATABLE_FIELD_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:cursor-not-allowed`,
-  'picker-field': `${FIELD_CLASS.replace('transition-shadow', 'transition-[box-shadow,transform,scale]')} ${DROPDOWN_TRIGGER_INTERACTION_CLASS} ${SELECT_OPEN_EDGE_CLASS} flex cursor-pointer items-center pr-9 text-left disabled:pointer-events-none disabled:cursor-not-allowed`,
+  'creatable-picker-field': PICKER_FIELD_CLASS,
+  'picker-field': PICKER_FIELD_CLASS,
   'inline-mention': INLINE_CHIP_CLASS,
   'merge-queue-trigger': ({
     tone,
@@ -542,7 +582,7 @@ export const SHARED_CONTROL_RECIPES = {
     touchTargets: boolean;
   }) =>
     `focus-ring flex ${
-      touchTargets ? 'min-h-11' : 'h-7'
+      touchTargets ? 'min-h-11' : 'h-7 pointer-coarse:min-h-11'
     } min-w-0 items-center gap-1.5 rounded-row ${
       firstInRow ? `${SIDEBAR_ROW_TEXT_INSET_CLASSNAME} pr-1.5` : 'px-1.5'
     } text-left text-s font-normal fg-tertiary hover:bg-subtle hover:fg-primary`,
@@ -694,7 +734,7 @@ export const SHARED_CONTROL_RECIPES = {
           ? wideTrigger
             ? 'h-8 min-w-8 max-w-full justify-center gap-1 rounded-full px-2.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
             : 'h-8 w-8 justify-center rounded-full pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-          : 'gap-1 rounded-md px-1.5 py-0.5'
+          : 'gap-1 rounded-md px-1.5 py-0.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11'
     }${weeklyRing ? '' : ' hover:bg-subtle'}`,
   'usage-indicator-action': ({ band }: { band: boolean }) =>
     `flex w-full items-center justify-between gap-2 text-left ${USAGE_QUIET_ACTION_CLASS} ${USAGE_TOUCH_FLOOR_CLASS} ${
@@ -732,14 +772,13 @@ export const SHARED_CONTROL_RECIPES = {
               : 'w-8'
         }`
       : `h-7 rounded-lg ${wide ? 'w-9 gap-0.5' : 'w-7'}`;
-    return `focus-ring flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${toneClassName} ${geometryClassName} ${constrainLabel ? 'max-w-48' : ''}`;
+    return `focus-ring flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:opacity-40 ${toneClassName} ${geometryClassName} ${CAPSULE_TOUCH_FLOOR_CLASS} ${constrainLabel ? 'max-w-48' : ''}`;
   },
   'message-attachment-tile': ({
     kind,
   }: {
     kind: keyof typeof TILE_PRESENTATION_CLASS;
-  }) =>
-    `focus-ring ${TILE_PRESS_CLASS} ${TILE_CLASS} ${TILE_PRESENTATION_CLASS[kind]}`,
+  }) => `focus-ring ${TILE_PRESS_CLASS} ${TILE_PRESENTATION_CLASS[kind]}`,
   'subagent-ancestor': ({ workflowPhase }: { workflowPhase: boolean }) =>
     workflowPhase
       ? 'shrink-0 hover:fg-primary hover:underline'
@@ -813,7 +852,7 @@ export const SHARED_CONTROL_RECIPES = {
     stretched: boolean;
     extent: 'content' | 'fill' | 'remaining';
   }) =>
-    `focus-ring rounded-sm transition-colors hover:fg-primary group ${STEP_ROW_TEXT_CLASS} flex min-w-0 max-w-full items-center gap-2 py-1${hasIcon ? ' min-h-8' : ''} text-left${stretched ? ` ${STRETCHED_TOGGLE_CLASS}` : ''} ${{ content: '', fill: 'w-full', remaining: 'flex-1' }[extent]}`,
+    `focus-ring rounded-sm transition-colors hover:fg-primary group ${STEP_ROW_TEXT_CLASS} flex min-w-0 max-w-full items-center gap-2 py-1${hasIcon ? ' min-h-8' : ''} pointer-coarse:min-h-11 text-left${stretched ? ` ${STRETCHED_TOGGLE_CLASS}` : ''} ${{ content: '', fill: 'w-full', remaining: 'flex-1' }[extent]}`,
   'cost-row-open': ({
     density,
     selected,
@@ -822,5 +861,5 @@ export const SHARED_CONTROL_RECIPES = {
     selected: boolean;
   }) => costRowClasses(density, selected, true),
   'ledger-status-trigger': ({ status }: { status: LedgerStatus }) =>
-    `focus-ring ${ledgerStatusPillClassName(status)} disabled:cursor-not-allowed disabled:opacity-40`,
+    `focus-ring ${ledgerStatusPillClassName(status)} ${COARSE_HIT_AREA_CLASS} aria-disabled:cursor-not-allowed aria-disabled:opacity-40 disabled:cursor-not-allowed disabled:opacity-40`,
 } as const;

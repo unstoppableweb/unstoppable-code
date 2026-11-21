@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useEffect,
   useRef,
   useState,
   type JSX,
@@ -9,9 +10,11 @@ import {
 } from 'react';
 import { CheckIcon, CloseIcon, InfoIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { Dot } from './Badge';
 import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
+import { OverlayScrollArea } from './OverlayScrollArea';
 import { RichHoverTooltip } from './RichHoverTooltip';
 import {
   unitCountLabel,
@@ -143,13 +146,7 @@ function StatusMark({
     case undefined:
       return null;
     case 'pending':
-      return (
-        <span
-          aria-label="Not started"
-          role="img"
-          className="h-1.5 w-1.5 rounded-full bg-fg-quaternary/50"
-        />
-      );
+      return <Dot tone="pending" label="Not started" />;
     case 'running':
       return <LoadingSpinner sizePx={14} />;
     case 'done':
@@ -261,6 +258,7 @@ function ConfirmSummary({
                   </span>
                 }
                 surfaceClassName="w-72"
+                showOnPress
                 triggerWrapperClassName="inline-flex h-5 items-center align-middle"
               >
                 <Button
@@ -296,23 +294,25 @@ function ExcludedRows({
       <Heading level={3} variant="label" id={`${testId}-excluded-heading`}>
         Not included ({excluded.length})
       </Heading>
-      <ul className="flex max-h-40 flex-col gap-2 overflow-y-auto">
-        {excluded.map((row) => (
-          <li
-            key={row.key}
-            className="flex min-w-0 items-start gap-2"
-            data-testid={`${testId}-excluded-row`}
-            data-row-key={row.key}
-          >
-            <RowIdentity
-              projectName={row.projectName}
-              label={row.label}
-              branchName={row.branchName}
-              reason={row.reason}
-            />
-          </li>
-        ))}
-      </ul>
+      <OverlayScrollArea viewportClassName="max-h-40">
+        <ul className="flex flex-col gap-2">
+          {excluded.map((row) => (
+            <li
+              key={row.key}
+              className="flex min-w-0 items-start gap-2"
+              data-testid={`${testId}-excluded-row`}
+              data-row-key={row.key}
+            >
+              <RowIdentity
+                projectName={row.projectName}
+                label={row.label}
+                branchName={row.branchName}
+                reason={row.reason}
+              />
+            </li>
+          ))}
+        </ul>
+      </OverlayScrollArea>
     </section>
   );
 }
@@ -388,6 +388,12 @@ export function SidebarBatchRemovalDialog({
   onDone,
 }: SidebarBatchRemovalDialogProps): JSX.Element {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const doneRef = useRef<HTMLButtonElement | null>(null);
+  // Confirm unmounts with the confirm phase; Done takes focus so it never
+  // falls to the page behind the modal.
+  useEffect(() => {
+    if (phase === 'results') doneRef.current?.focus();
+  }, [phase]);
   const [keepBranch, setKeepBranch] = useState(DEFAULT_KEEP_LOCAL_BRANCH);
   const titleId = `${testId}-title`;
   const verb = mode === 'archive' ? 'Archive' : 'Delete';
@@ -427,6 +433,10 @@ export function SidebarBatchRemovalDialog({
         onClose={close}
       >
         <div className="flex flex-col gap-4" data-phase={phase}>
+          {/* The results title changes as rows finish; read it out. */}
+          <p role="status" className="sr-only">
+            {phase === 'results' ? title : ''}
+          </p>
           {phase === 'confirm' && (
             <ConfirmSummary
               mode={mode}
@@ -439,46 +449,48 @@ export function SidebarBatchRemovalDialog({
             />
           )}
           {count > 0 && (
-            <ul
-              className="flex max-h-64 flex-col gap-2 overflow-y-auto text-s"
-              aria-label={
-                phase === 'confirm'
-                  ? `${capitalize(unitLabel.plural)} to ${mode}`
-                  : 'Results'
-              }
-              data-testid={`${testId}-rows`}
-            >
-              {orderedRows.map((row) => (
-                <li
-                  key={row.key}
-                  className="flex min-w-0 items-start gap-2"
-                  data-testid={`${testId}-row`}
-                  data-row-key={row.key}
-                  data-status={row.status}
-                >
-                  {row.status !== undefined && (
-                    <span className="inline-flex h-5 w-4 shrink-0 items-center justify-center">
-                      <StatusMark status={row.status} />
-                    </span>
-                  )}
-                  <RowIdentity
-                    projectName={row.projectName}
-                    label={row.label}
-                    branchName={row.branchName}
-                    reason={
-                      row.status === 'failed' || row.status === 'skipped'
-                        ? row.reason
-                        : undefined
-                    }
-                    trailing={
-                      phase === 'confirm' && row.localWork ? (
-                        <LocalWorkBadge localWork={row.localWork} />
-                      ) : undefined
-                    }
-                  />
-                </li>
-              ))}
-            </ul>
+            <OverlayScrollArea viewportClassName="max-h-64">
+              <ul
+                className="flex flex-col gap-2 text-s"
+                aria-label={
+                  phase === 'confirm'
+                    ? `${capitalize(unitLabel.plural)} to ${mode}`
+                    : 'Results'
+                }
+                data-testid={`${testId}-rows`}
+              >
+                {orderedRows.map((row) => (
+                  <li
+                    key={row.key}
+                    className="flex min-w-0 items-start gap-2"
+                    data-testid={`${testId}-row`}
+                    data-row-key={row.key}
+                    data-status={row.status}
+                  >
+                    {row.status !== undefined && (
+                      <span className="inline-flex h-5 w-4 shrink-0 items-center justify-center">
+                        <StatusMark status={row.status} />
+                      </span>
+                    )}
+                    <RowIdentity
+                      projectName={row.projectName}
+                      label={row.label}
+                      branchName={row.branchName}
+                      reason={
+                        row.status === 'failed' || row.status === 'skipped'
+                          ? row.reason
+                          : undefined
+                      }
+                      trailing={
+                        phase === 'confirm' && row.localWork ? (
+                          <LocalWorkBadge localWork={row.localWork} />
+                        ) : undefined
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            </OverlayScrollArea>
           )}
           {phase === 'confirm' && excluded.length > 0 && (
             <ExcludedRows excluded={excluded} testId={testId} />
@@ -510,6 +522,7 @@ export function SidebarBatchRemovalDialog({
             )}
             {phase === 'results' && (
               <Button
+                ref={doneRef}
                 variant="primary"
                 size="lg"
                 className="ml-auto"

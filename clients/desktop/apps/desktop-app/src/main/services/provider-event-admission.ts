@@ -2,8 +2,16 @@
  * What canonical admission of one provider event proved about its tool
  * blocks, returned after the event's commit is durable. Internal to main:
  * the Portal projection turns it into a part's occurrence and output locator,
- * and nothing here (no body, artifact reference or host path) is serialized.
+ * and nothing here (no body or host path) is serialized. A committed visual's
+ * reference alone also rides the event's `chat:event` delivery, as the history
+ * read already serves it.
  */
+import type { PersistedVisualReference } from '@canopy/agent-transcript/types';
+import {
+  CANOPY_TOOL_VISUALS_FIELD,
+  type RuntimeToolVisual,
+} from '@canopy/agent-transcript/remote-control/runtime-chat-projection';
+import type { ChatCoreMutation } from '@canopy/desktop-shared/types';
 import type {
   ChatPickupVerdict,
   ProviderEventIngestOutcome,
@@ -38,7 +46,69 @@ export interface ToolOccurrenceAdmission {
   readonly result?: CanonicalBlockAddress & {
     /** Stored apart, or longer than the Portal preview before shortening. */
     readonly needsRead: boolean;
+    /** The visual this commit promoted for the result, as stored. */
+    readonly visual?: PersistedVisualReference;
   };
+}
+
+/**
+ * Add to each admitted result the visual reference its committed row stores.
+ * The commit record publishes each upserted row as stored, after visual
+ * promotion; a row stored apart (`blocksRef`) is skipped, and its visual shows
+ * once the history read returns it.
+ */
+export function withCommittedToolVisuals(
+  tools: readonly ToolOccurrenceAdmission[],
+  chatId: string,
+  mutations: readonly ChatCoreMutation[],
+): ToolOccurrenceAdmission[] {
+  return tools.map((tool) => {
+    const result = tool.result;
+    if (!result) return tool;
+    const row = mutations.find(
+      (mutation) =>
+        mutation.type === 'message.upserted' &&
+        mutation.chatId === chatId &&
+        mutation.message.id === result.rowId,
+    );
+    if (row?.type !== 'message.upserted' || row.message.blocksRef) return tool;
+    const block = row.message.blocks[result.blockOrdinal];
+    return block?.type === 'tool_result' && block.visualRef
+      ? { ...tool, result: { ...result, visual: block.visualRef } }
+      : tool;
+  });
+}
+
+/**
+ * The event as delivered on `chat:event`: the provider's data with the visuals
+ * its commit stored, keyed by each result's source token. Any value the
+ * provider data carried under the field is dropped, so only main names one.
+ */
+export function withDeliveredToolVisuals(
+  data: unknown,
+  result: ProviderEventIngestResult,
+): unknown {
+  if (!isEventRecord(data)) return data;
+  const visuals: RuntimeToolVisual[] = [];
+  if (result.outcome === 'applied')
+    for (const tool of result.admission?.tools ?? [])
+      if (tool.result?.visual)
+        visuals.push({
+          sourceToken: tool.sourceToken,
+          messageId: tool.result.rowId,
+          visual: tool.result.visual,
+        });
+  if (visuals.length === 0 && !(CANOPY_TOOL_VISUALS_FIELD in data)) return data;
+  const rest = Object.fromEntries(
+    Object.entries(data).filter(([key]) => key !== CANOPY_TOOL_VISUALS_FIELD),
+  );
+  return visuals.length > 0
+    ? { ...rest, [CANOPY_TOOL_VISUALS_FIELD]: visuals }
+    : rest;
+}
+
+function isEventRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export interface ProviderEventAdmission {

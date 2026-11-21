@@ -64,7 +64,11 @@ export interface PipelineEditorControllerAdapter {
    * Shows a pipeline core saved for an agent as the editor's saved state, and
    * as what Discard restores (CAN-5822).
    */
-  adoptSaved: (savedPipeline: Pipeline, info: PipelineInfo) => void;
+  adoptSaved: (
+    savedPipeline: Pipeline,
+    info: PipelineInfo,
+    shown?: Pipeline,
+  ) => void;
 }
 
 /**

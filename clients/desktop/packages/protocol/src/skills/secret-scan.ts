@@ -181,6 +181,52 @@ export function packagedSkillSecretMessage(
 }
 
 /**
+ * Why a plugin's cloud copy stopped for its own plugin.json (CAN-7226). The
+ * plugin is named as sharing names a skill, and a name that looks like a
+ * secret is never shown.
+ */
+export function pluginSecretMessage(finding: SharedSkillSecretFinding): string {
+  if (finding.nameRule !== undefined)
+    return `This plugin's name looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.nameRule)}). Rename the plugin, then share again.`;
+  // As for a skill, a placeholder in an authorization header is still
+  // refused (CAN-7314), so that rule's advice is to drop the value.
+  const nextStep =
+    finding.rule === 'auth_header'
+      ? 'Remove the header line, or say which header to send without writing its value'
+      : 'Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}';
+  return `The plugin "${finding.skillName}" looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.rule)} in ${finding.file}). ${nextStep}, then share again.`;
+}
+
+/** A skill or plugin a package file belongs to, as a share names it. */
+export interface PackageFileOwner {
+  readonly kind: 'skill' | 'plugin';
+  /** The skill or plugin name; one that looks like a secret is never passed. */
+  readonly name: string;
+}
+
+/**
+ * Why a share stopped for a file whose own name looks like a secret
+ * (CAN-7476). The name would travel in the package, so it is never shown.
+ */
+export function packageFileNameSecretMessage(
+  owner: PackageFileOwner,
+  rule: SecretRuleId,
+): string {
+  return `A file in the ${owner.kind} "${owner.name}" has a name that looks like it contains a secret (${sharedSkillSecretRuleLabel(rule)}). Rename the file, then share again.`;
+}
+
+/**
+ * Why a share stopped for a JSON file too deeply nested to check for a
+ * hidden secret (CAN-7476).
+ */
+export function packageFileUncheckedMessage(
+  owner: PackageFileOwner,
+  file: string,
+): string {
+  return `The ${owner.kind} "${owner.name}" has a file, ${file}, that is nested too deeply to check for secrets. Simplify it, then share again.`;
+}
+
+/**
  * Why installing a shared template stopped. The installer can't edit the
  * template, so it points them to whoever shared it, and a name that looks
  * like a secret is never shown.

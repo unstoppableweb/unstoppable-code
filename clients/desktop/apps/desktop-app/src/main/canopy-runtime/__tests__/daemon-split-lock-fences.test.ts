@@ -2,6 +2,7 @@
 import type {
   CoreMutationFencePublishParams,
   CoreMutationFencePublishResult,
+  CoreMutationFenceWrite,
 } from '@canopy/protocol/canopy-core';
 import { useFakeSplitLockKeys } from '../../__tests__/split-lock-key-fixture';
 import {
@@ -16,6 +17,7 @@ import {
   createSplitLockFencePublisher,
   installSplitLockFencePublisher,
   MUTATION_FENCE_ACK_TIMEOUT_MS,
+  type FenceActivityFrame,
   type FenceOwnerClient,
   type FenceOwnerSession,
   type SplitLockFencePublisherOptions,
@@ -30,6 +32,11 @@ import {
 const mockOwnerSession = jest.fn();
 let mockOwnerLifetime = new AbortController();
 let mockOwnerUnavailable = false;
+const mockTouch = jest.fn<Promise<void>, unknown[]>(() => Promise.resolve());
+jest.mock('../../lib/workspace-activity', () => ({
+  touchWorkspaceTarget: (...args: unknown[]): Promise<void> =>
+    mockTouch(...args),
+}));
 jest.mock('../electron-daemon-owner', () => ({
   daemonOwnerLifetime: (): AbortSignal => mockOwnerLifetime.signal,
   getDaemonOwnerSession: (): unknown => mockOwnerSession(),
@@ -41,9 +48,29 @@ type Answer = 'ack' | 'hang' | 'fail';
 
 interface FakeOwner {
   readonly sent: CoreMutationFencePublishParams[];
+  /** The schema revision each publish in `sent` asked for. */
+  readonly revisions: Array<number | undefined>;
   readonly session: FenceOwnerSession;
-  /** How the owner answers; failNext refuses that many publishes first. */
-  readonly state: { answer: Answer; failNext: number };
+  /**
+   * How the owner answers; failNext refuses that many publishes first, and
+   * busyNext refuses that many as busy. `writes` rides on each Auto Delete ack.
+   * olderDaemon answers as a daemon that predates revision 2, refusing the
+   * unknown `revision` param.
+   */
+  readonly state: {
+    answer: Answer;
+    failNext: number;
+    busyNext: number;
+    writes: CoreMutationFenceWrite[];
+    olderDaemon: boolean;
+  };
+  /** Each activity stream opened, in order, and whether it was closed. */
+  readonly streams: Array<{
+    readonly onFrame: (frame: FenceActivityFrame) => void;
+    closed: boolean;
+  }>;
+  /** Delivers a frame on the stream opened last. */
+  frame(frame: FenceActivityFrame): void;
   /** Acknowledges every publish left hanging, in order. */
   ackHanging(): void;
   /** The owner lease was replaced: every registration issues again. */
@@ -54,21 +81,43 @@ interface FakeOwner {
 
 function fakeOwner(): FakeOwner {
   const sent: CoreMutationFencePublishParams[] = [];
-  const state: { answer: Answer; failNext: number } = {
+  const revisions: Array<number | undefined> = [];
+  const state: FakeOwner['state'] = {
     answer: 'ack',
     failNext: 0,
+    busyNext: 0,
+    writes: [],
+    olderDaemon: false,
   };
+  const streams: FakeOwner['streams'] = [];
   const hanging: Array<() => void> = [];
   const registrations: Array<
     (lease: unknown, client: FenceOwnerClient) => void | Promise<void>
   > = [];
   const client: FenceOwnerClient = {
     instruction: (_name, params) => {
-      sent.push(params);
-      const result: CoreMutationFencePublishResult = {
-        acknowledged: true,
-        epoch: params.epoch,
-      };
+      const { revision, ...body } = params;
+      sent.push(body);
+      revisions.push(revision);
+      const result: CoreMutationFencePublishResult =
+        state.writes.length > 0 &&
+        params.fenced.some((fenced) => fenced.hold === 'autoDelete')
+          ? { acknowledged: true, epoch: params.epoch, writes: state.writes }
+          : { acknowledged: true, epoch: params.epoch };
+      if (state.olderDaemon && 'revision' in params)
+        return Promise.reject(
+          Object.assign(new Error('Unknown property: revision.'), {
+            payload: { kind: 'invalid_argument' },
+          }),
+        );
+      if (state.busyNext > 0) {
+        state.busyNext -= 1;
+        return Promise.reject(
+          Object.assign(new Error('A file change is still running.'), {
+            payload: { code: 'core.mutationFence.busy' },
+          }),
+        );
+      }
       if (state.failNext > 0) {
         state.failNext -= 1;
         return Promise.reject(new Error('The daemon refused the publish.'));
@@ -81,6 +130,15 @@ function fakeOwner(): FakeOwner {
         });
       return Promise.resolve(result);
     },
+    openStream: (_name, _params, { onFrame }) => {
+      const stream = { onFrame, closed: false };
+      streams.push(stream);
+      return Promise.resolve({
+        close: () => {
+          stream.closed = true;
+        },
+      });
+    },
   };
   const lifetime = new AbortController();
   const issueQuietly = (
@@ -88,7 +146,10 @@ function fakeOwner(): FakeOwner {
   ): Promise<void> => Promise.resolve(issue({}, client)).catch(() => undefined);
   return {
     sent,
+    revisions,
     state,
+    streams,
+    frame: (frame) => streams.at(-1)?.onFrame(frame),
     ackHanging: () => {
       for (const ack of hanging.splice(0)) ack();
     },
@@ -659,6 +720,282 @@ describe('archive and Auto Delete holds (CAN-4730 E2 2a)', () => {
     );
     expect(ran).toEqual(['archive', 'deleted']);
     expect(owner.sent).toEqual([]);
+  });
+});
+
+describe('daemon write activity (CAN-4730 E2 2b)', () => {
+  let touched: CoreMutationFenceWrite[];
+  const write = (worktreeId: string, at: number): CoreMutationFenceWrite => ({
+    workspaceId: 'project-1',
+    worktreeId,
+    at,
+  });
+  /** A connected publisher already observing the owner's session. */
+  /** How recording a reported write as activity goes; resolves by default. */
+  let record: () => Promise<void> = () => Promise.resolve();
+  const listening = (): void => {
+    touched = [];
+    const publisher = createSplitLockFencePublisher({
+      ownerPossible: () => true,
+      ownerSession: () => Promise.resolve(owner.session),
+      isOwnerUnavailable: () => false,
+      locks: getSplitLockedWorktrees,
+      ackTimeoutMs: 50,
+      onActivity: (reported) => {
+        touched.push(reported);
+        return record();
+      },
+      now: () => 5_000,
+    });
+    publisher.observe(owner.session);
+    disconnect = connectSplitLockFences(publisher);
+  };
+  afterEach(() => {
+    record = (): Promise<void> => Promise.resolve();
+    resetWorkspaceTargetExclusionsForTests();
+  });
+
+  it("opens the activity stream on the owner's lease and counts each reported write on its worktree, never later than this app's clock", async () => {
+    listening();
+    await settle();
+    expect(owner.streams).toHaveLength(1);
+    owner.frame({ kind: 'item', item: write('wt-1', 4_000) });
+    owner.frame({ kind: 'item', item: write('wt-2', 9_000_000_000_000) });
+    expect(touched).toEqual([write('wt-1', 4_000), write('wt-2', 5_000)]);
+    // The same lease keeps its stream; one that ended opens again.
+    await owner.newLease();
+    expect(owner.streams).toHaveLength(1);
+    owner.frame({ kind: 'end' });
+    expect(owner.streams[0].closed).toBe(true);
+    await owner.newLease();
+    expect(owner.streams).toHaveLength(2);
+  });
+
+  it('skips an Auto Delete whose ack names a write not counted yet, counting it, so nothing is deleted, and deletes on the next try', async () => {
+    listening();
+    await settle();
+    owner.state.writes = [write('wt-1', 4_500)];
+    owner.sent.length = 0;
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-1',
+        recording(ran, 'deleted'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    await settle();
+    expect(ran).toEqual([]);
+    expect(touched).toEqual([write('wt-1', 4_500)]);
+    expect(bodies()).toEqual([
+      { kind: 'change', fenced: [held('wt-1', 'autoDelete')], released: [] },
+      { kind: 'change', fenced: [], released: [held('wt-1', 'autoDelete')] },
+    ]);
+    // Counted now: the next sweep's deletion goes ahead.
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-1',
+      recording(ran, 'deleted'),
+    );
+    expect(ran).toEqual(['deleted']);
+    // A write already reported on the stream holds nothing back.
+    owner.frame({ kind: 'item', item: write('wt-2', 4_800) });
+    owner.state.writes = [write('wt-2', 4_800)];
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-2',
+      recording(ran, 'deleted wt-2'),
+    );
+    expect(ran).toEqual(['deleted', 'deleted wt-2']);
+  });
+
+  it("never holds Auto Delete back for good on a write time ahead of this app's clock", async () => {
+    listening();
+    await settle();
+    const ahead = 9_000_000_000_000;
+    owner.state.writes = [write('wt-1', ahead)];
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-1',
+        recording(ran, 'deleted'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    expect(touched).toEqual([write('wt-1', 5_000)]);
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-1',
+      recording(ran, 'deleted'),
+    );
+    expect(ran).toEqual(['deleted']);
+  });
+
+  it('skips an Auto Delete the daemon refuses as busy, sending no snapshot after it, and releases its lease', async () => {
+    listening();
+    await settle();
+    owner.sent.length = 0;
+    owner.state.busyNext = 1;
+    const ran: string[] = [];
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-1',
+        recording(ran, 'deleted'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    await settle();
+    expect(ran).toEqual([]);
+    expect(bodies()).toEqual([
+      { kind: 'change', fenced: [held('wt-1', 'autoDelete')], released: [] },
+      { kind: 'change', fenced: [], released: [held('wt-1', 'autoDelete')] },
+    ]);
+  });
+
+  it('publishes at schema revision 2 every time, so a daemon that predates it refuses the publish and nothing is deleted', async () => {
+    listening();
+    await acquireSplitLock('project-1', 'wt-split');
+    releaseSplitLock('project-1', 'wt-split');
+    const ran: string[] = [];
+    await withWorkspaceTargetAutoArchiveLease(
+      'project-1',
+      'wt-1',
+      recording(ran, 'deleted'),
+    );
+    await settle();
+    expect(ran).toEqual(['deleted']);
+    expect(owner.sent.length).toBeGreaterThanOrEqual(5);
+    expect(owner.revisions).toEqual(owner.sent.map(() => 2));
+    owner.state.olderDaemon = true;
+    await expect(
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-2',
+        recording(ran, 'deleted wt-2'),
+      ),
+    ).rejects.toBeInstanceOf(WorkspaceTargetAutoArchiveExcludedError);
+    expect(ran).toEqual(['deleted']);
+  });
+
+  it("holds Auto Delete back while a reported write's activity fails to record, and deletes only once it is recorded", async () => {
+    record = (): Promise<void> =>
+      Promise.reject(new Error('The activity write failed.'));
+    listening();
+    await settle();
+    owner.frame({ kind: 'item', item: write('wt-1', 4_500) });
+    await settle();
+    owner.state.writes = [write('wt-1', 4_500)];
+    const ran: string[] = [];
+    const attempt = (): Promise<void> =>
+      withWorkspaceTargetAutoArchiveLease(
+        'project-1',
+        'wt-1',
+        recording(ran, 'deleted'),
+      );
+    await expect(attempt()).rejects.toBeInstanceOf(
+      WorkspaceTargetAutoArchiveExcludedError,
+    );
+    await settle();
+    expect(ran).toEqual([]);
+    // Recording works again: that sweep records the write and skips, the
+    // next one deletes.
+    record = (): Promise<void> => Promise.resolve();
+    await expect(attempt()).rejects.toBeInstanceOf(
+      WorkspaceTargetAutoArchiveExcludedError,
+    );
+    await settle();
+    await attempt();
+    expect(ran).toEqual(['deleted']);
+  });
+
+  it('keeps one activity stream across lease issues and looks at the session, when the session hands out a wrapper of the issued client', async () => {
+    const issued = owner.session.client;
+    // As the owner session does: a stable wrapper around the client a
+    // lease issue receives, never the same object.
+    const wrapped: FenceOwnerClient = {
+      instruction: (name, params) => issued.instruction(name, params),
+      openStream: (name, params, options) =>
+        issued.openStream(name, params, options),
+    };
+    const session: FenceOwnerSession = {
+      signal: owner.session.signal,
+      lease: owner.session.lease,
+      client: wrapped,
+    };
+    const publisher = createSplitLockFencePublisher({
+      ownerPossible: () => true,
+      ownerSession: () => Promise.resolve(session),
+      isOwnerUnavailable: () => false,
+      locks: getSplitLockedWorktrees,
+      recheckMs: 5,
+    });
+    const stop = new AbortController();
+    const watching = publisher.keepObserved(stop.signal);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await owner.newLease();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(owner.streams).toHaveLength(1);
+      expect(owner.streams[0].closed).toBe(false);
+    } finally {
+      stop.abort();
+      await watching;
+    }
+  });
+
+  it('opens an ended activity stream again while the owner is watched, and closes it at quit, opening none after', async () => {
+    const publisher = createSplitLockFencePublisher({
+      ownerPossible: () => true,
+      ownerSession: () => Promise.resolve(owner.session),
+      isOwnerUnavailable: () => false,
+      locks: getSplitLockedWorktrees,
+      recheckMs: 10,
+    });
+    const stop = new AbortController();
+    const watching = publisher.keepObserved(stop.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(owner.streams).toHaveLength(1);
+    owner.frame({ kind: 'end' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(owner.streams).toHaveLength(2);
+    stop.abort();
+    await watching;
+    expect(owner.streams.every((stream) => stream.closed)).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(owner.streams).toHaveLength(2);
+  });
+
+  it('records each write the installed publisher hears as activity on its worktree', async () => {
+    const lifetime = new AbortController();
+    mockOwnerLifetime = new AbortController();
+    mockOwnerUnavailable = false;
+    mockOwnerSession.mockReset();
+    mockOwnerSession.mockResolvedValue({
+      signal: lifetime.signal,
+      client: owner.session.client,
+      lease: {
+        register: (
+          _key: string,
+          issue: (lease: unknown, client: FenceOwnerClient) => unknown,
+        ): (() => void) => {
+          void Promise.resolve(issue({}, owner.session.client)).catch(
+            () => undefined,
+          );
+          return (): void => undefined;
+        },
+      },
+    });
+    mockTouch.mockClear();
+    const stopInstalled = installSplitLockFencePublisher();
+    try {
+      await settle();
+      expect(owner.streams).toHaveLength(1);
+      owner.frame({ kind: 'item', item: write('wt-1', 1_000) });
+      expect(mockTouch).toHaveBeenCalledWith('project-1', 'wt-1', 1_000);
+    } finally {
+      stopInstalled();
+      lifetime.abort();
+    }
   });
 });
 

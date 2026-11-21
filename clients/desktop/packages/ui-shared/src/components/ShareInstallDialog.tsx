@@ -141,6 +141,7 @@ export function ShareInstallDialog({
         {description !== undefined && description !== '' && (
           <p
             data-testid="share-install-description"
+            title={description}
             className="line-clamp-3 text-s fg-secondary"
           >
             {description}
@@ -162,24 +163,24 @@ export function ShareInstallDialog({
             {inputs}
           </div>
         )}
-        {blocker !== undefined && blocker !== null && blocker !== '' && (
-          <p
-            data-testid="share-install-blocker"
-            role="status"
-            className="text-s fg-secondary"
-          >
-            {blocker}
-          </p>
-        )}
-        {status !== undefined && status !== null && status !== '' && (
-          <p
-            data-testid={statusTestId}
-            role="status"
-            className="text-s fg-secondary"
-          >
-            {status}
-          </p>
-        )}
+        {/* Each region is mounted before its text arrives, so assistive technology announces it; `contents` adds no gap while empty. */}
+        <div role="status" className="contents">
+          {blocker !== undefined && blocker !== null && blocker !== '' && (
+            <p
+              data-testid="share-install-blocker"
+              className="text-s fg-secondary"
+            >
+              {blocker}
+            </p>
+          )}
+        </div>
+        <div role="status" className="contents">
+          {status !== undefined && status !== null && status !== '' && (
+            <p data-testid={statusTestId} className="text-s fg-secondary">
+              {status}
+            </p>
+          )}
+        </div>
         {(primary !== undefined || menu !== undefined) && (
           <div className="flex items-center justify-end gap-2 pt-1">
             {menu}

@@ -1,5 +1,6 @@
 import { type JSX } from 'react';
 import { Fact, FactList } from './FactList';
+import { Surface } from './Surface';
 
 function formatFrontmatterValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
@@ -41,11 +42,11 @@ export function FrontmatterBlock({
   if (entries.length === 0) return <></>;
 
   return (
-    <div
+    <Surface
+      variant="group"
+      padding="default"
       data-selectable
-      className={`rounded-lg border bg-secondary/30 px-4 py-3${
-        className ? ` ${className}` : ''
-      }`}
+      className={className}
     >
       <FactList size="s" labelMono labelTone="secondary">
         {entries.map(([key, value]) => (
@@ -54,6 +55,6 @@ export function FrontmatterBlock({
           </Fact>
         ))}
       </FactList>
-    </div>
+    </Surface>
   );
 }

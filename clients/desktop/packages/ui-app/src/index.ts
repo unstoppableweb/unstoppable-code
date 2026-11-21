@@ -581,6 +581,11 @@ export {
   PendingProjectRows,
   type SidebarPendingProject,
 } from './code/shell/PendingProjectRow';
+export {
+  pendingCloneRowsVisible,
+  pendingProjectsFromCloneJobs,
+  type PendingCloneJobActions,
+} from './code/shell/pendingProjectsFromCloneJobs';
 export { useProjectListPagination } from './code/shell/sidebar/useProjectListPagination';
 export {
   CHATS_SECTION_VISIBLE_ENTRIES,
@@ -1045,6 +1050,10 @@ export {
   type RemoteControlPluginsLocalItemsSeam,
   type RemoteControlPluginsPickerProps,
 } from './code/composer/RemoteControlPluginsPicker';
+export {
+  pluginCatalogFailureAfterLoad,
+  pluginCatalogLoadingAfterLoad,
+} from './code/composer/plugin-catalog-load-scope';
 export {
   MoveProjectToOrganizationDialog,
   moveProjectToOrganizationErrorMessage,

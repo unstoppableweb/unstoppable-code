@@ -4,6 +4,7 @@ import {
   SidebarMachinePicker,
 } from '@/components/remote-access/SidebarMachinePicker';
 import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
+import { useProviderAvailability } from '@/hooks/useProviderAvailability';
 import { useCanopyCloudAccountState } from '@/hooks/useCanopyCloudAccountState';
 import { isGuestAccount } from '@/hooks/useIsGuestCredential';
 import { useSubscriptionStatus } from '@/hooks/useSubscriptionStatus';
@@ -13,6 +14,16 @@ import { useCloudAccountAvailable } from '@/lib/cloud-account';
 import { GUEST_SIGN_IN_CTA_LABEL } from '@/lib/guest-cta-copy';
 import { openAuthenticatedCloudPageReported } from '@/lib/openAuthenticatedCloudPage';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
+import { useAiCreditsBannerStore } from '@/stores/aiCreditsBannerStore';
+import {
+  getRendererBillingLaneFactsVersion,
+  subscribeRendererBillingLaneFacts,
+} from '@/stores/billingLaneRuntime';
+import { personalGatewaySwitch } from '@/stores/chat/defaults';
+import {
+  getRendererModelFactsVersion,
+  subscribeRendererModelFacts,
+} from '@/stores/modelPolicyRuntime';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { NavigationPage } from '@/stores/navigationStore';
@@ -23,6 +34,16 @@ import {
   useLiveRemoteControllers,
   useRemoteControlStatusUi,
 } from '../remote-access/remote-control-status';
+import {
+  accountUsageLimits,
+  buildDesktopGatewaySource,
+  DESKTOP_SUBSCRIPTION_SOURCES,
+  desktopProviderConnection,
+} from '../chat/providerChoice/providerChoiceFacts';
+import {
+  isOtherBillingSourceReady,
+  type AnyProviderSourceFacts,
+} from '@canopy/app-state/provider-choice';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import {
   computeAiCreditsAlertLevel,
@@ -65,6 +86,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type JSX,
   type ReactNode,
 } from 'react';
@@ -84,6 +106,99 @@ import { UpdatePrompt } from './UpdatePrompt';
  */
 function syncPausedExplanation(): string {
   return `Activity you share hasn't reached ${brandText.appName} in over 6 hours. It's saved on this device and will upload automatically. If this continues, check your internet connection or open Settings → Privacy.`;
+}
+
+/**
+ * Whether a source other than AI Credits can carry this account's work now,
+ * from the same connection facts the composer's provider list builds: a
+ * signed-in Claude or Codex subscription that isn't at its usage limit, or a
+ * Personal AI gateway whose key this computer holds with a model to send.
+ * Reads the shared, cached auth and lane reads, and adds no IPC. A read still
+ * settling counts as not ready.
+ */
+function useDesktopOtherBillingSourceReady(): boolean {
+  const availability = useProviderAvailability();
+  const usageLimitByChat = useAiCreditsBannerStore((s) => s.usageLimitByChat);
+  const gatewayEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
+  );
+  const laneFactsVersion = useSyncExternalStore(
+    subscribeRendererBillingLaneFacts,
+    getRendererBillingLaneFactsVersion,
+    getRendererBillingLaneFactsVersion,
+  );
+  const modelFactsVersion = useSyncExternalStore(
+    subscribeRendererModelFacts,
+    getRendererModelFactsVersion,
+    getRendererModelFactsVersion,
+  );
+  return useMemo(() => {
+    const limits = accountUsageLimits(
+      Object.values(usageLimitByChat),
+      null,
+      Date.now(),
+    );
+    const sources: AnyProviderSourceFacts[] = DESKTOP_SUBSCRIPTION_SOURCES.map(
+      (source): AnyProviderSourceFacts => ({
+        source,
+        connection: desktopProviderConnection(
+          availability[source],
+          limits[source] ?? null,
+        ),
+        connectable: true,
+        runsTargetModel: false,
+      }),
+    );
+    if (gatewayEnabled) {
+      // The gateway's models are listed only once this computer holds its
+      // key, so a held key is also a configured gateway.
+      const gateway = personalGatewaySwitch();
+      sources.push(
+        buildDesktopGatewaySource({
+          configured: gateway.keyHeld,
+          keyHeld: gateway.keyHeld,
+          chatOnGateway: false,
+          ...(gateway.unavailableReason !== undefined
+            ? { blockedReason: gateway.unavailableReason }
+            : {}),
+        }),
+      );
+    }
+    return isOtherBillingSourceReady(sources);
+    // The gateway facts live in renderer singletons; their versions say when
+    // to re-read them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    availability,
+    usageLimitByChat,
+    gatewayEnabled,
+    laneFactsVersion,
+    modelFactsVersion,
+  ]);
+}
+
+/**
+ * The personal AI Credits row. Its own component so the connection facts are
+ * read only while the menu is open (the menu mounts its rows only then).
+ */
+function AccountMenuAiCreditsRow({
+  balanceCredits,
+  onSelect,
+}: {
+  readonly balanceCredits: number | null;
+  readonly onSelect: () => void;
+}): JSX.Element | null {
+  const otherBillingSourceReady = useDesktopOtherBillingSourceReady();
+  return (
+    <BalanceSurface
+      density="row"
+      balanceCredits={balanceCredits}
+      onSelect={onSelect}
+      otherBillingSourceReady={otherBillingSourceReady}
+      // A signed-in person can always buy for their own wallet.
+      canPurchase
+    />
+  );
 }
 
 export interface SidebarAccountMenuProps {
@@ -421,9 +536,11 @@ export function SidebarAccountMenu({
                 image={accountInfo.image ?? null}
               />
             ) : null;
+          // At a zero balance with another billing source ready the row is
+          // left out; Settings › Billing and the Usage page's Manage still
+          // open AI Credits billing.
           const aiCreditsRow = subscription.aiCreditsVisible && canSignOut && (
-            <BalanceSurface
-              density="row"
+            <AccountMenuAiCreditsRow
               balanceCredits={aiCreditsBalance}
               onSelect={() =>
                 handleItemClick(() =>

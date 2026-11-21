@@ -819,9 +819,8 @@ export class CanopyAppDriver {
   }
 
   workspaceSettingsButton(name) {
-    return this.workspaceHeader(name).getByLabel(`Settings for ${name}`, {
-      exact: true,
-    });
+    // Not exact: a settings warning appends ", needs attention".
+    return this.workspaceHeader(name).getByLabel(`Settings for ${name}`);
   }
 
   async openSettings() {

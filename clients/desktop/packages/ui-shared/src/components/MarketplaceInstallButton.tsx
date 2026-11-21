@@ -77,10 +77,8 @@ function GroupedMarketplaceInstall({
           <DropdownMenuItem
             key={provider}
             data-testid={`${testId}-${provider.toLowerCase()}`}
-            onClick={() => {
-              setOpen(false);
-              onAdd(listing);
-            }}
+            // FloatingMenu closes on select and returns focus to the trigger.
+            onClick={() => onAdd(listing)}
           >
             {provider}
           </DropdownMenuItem>

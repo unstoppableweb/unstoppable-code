@@ -521,11 +521,12 @@ describe('Session replay records no desktop cloud chat content (CAN-5975)', () =
             message="Remove it?"
             confirmLabel="Remove"
             errorMessage={`Failed: /Users/x/${SECRET}`}
+            errorSource="test"
             onConfirm={noop}
             onCancel={noop}
           />
         ),
-        false,
+        true,
       ],
       'a string ErrorState': [
         () => <ErrorState message={`Failed: /Users/x/${SECRET}`} />,

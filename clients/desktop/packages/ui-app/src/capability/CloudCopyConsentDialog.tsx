@@ -6,7 +6,8 @@ import {
   DialogModal,
   ErrorBanner,
   Heading,
-  LoadingSpinner,
+  LoadingButton,
+  OverlayScrollArea,
 } from '@canopy/ui-shared/components';
 import { CapabilityPackageDependencies } from '../sharing/capability-package/CapabilityPackageDependencies';
 import {
@@ -146,6 +147,7 @@ export function CloudCopyConsentDialog({
   const action = replacing ? 'Update cloud copy' : 'Add to cloud';
 
   const add = async (): Promise<void> => {
+    if (adding) return;
     setAdding(true);
     setError(null);
     try {
@@ -191,17 +193,18 @@ export function CloudCopyConsentDialog({
             <Button variant="ghost" disabled={adding} onClick={onClose}>
               Cancel
             </Button>
-            <Button
+            <LoadingButton
               variant="primary"
-              disabled={!ready || adding}
+              disabled={!ready}
+              loading={adding}
+              loadingLabel={replacing ? 'Updating…' : 'Adding…'}
               onClick={(): void => {
                 void add();
               }}
               data-testid="cloud-copy-consent-add"
             >
-              {adding ? <LoadingSpinner decorative /> : null}
               {action}
-            </Button>
+            </LoadingButton>
           </div>
         </div>
       }
@@ -249,17 +252,19 @@ export function CloudCopyConsentDialog({
             <Heading level={4} variant="title">
               Sent
             </Heading>
-            <ul className="flex max-h-48 flex-col gap-0.5 overflow-y-auto text-xs">
-              {sent.map((path) => (
-                <li
-                  key={path}
-                  className="break-all fg-secondary"
-                  data-testid="cloud-copy-consent-sent-item"
-                >
-                  {path}
-                </li>
-              ))}
-            </ul>
+            <OverlayScrollArea className="max-h-48">
+              <ul data-selectable className="flex flex-col gap-0.5 text-xs">
+                {sent.map((path) => (
+                  <li
+                    key={path}
+                    className="break-all fg-secondary"
+                    data-testid="cloud-copy-consent-sent-item"
+                  >
+                    {path}
+                  </li>
+                ))}
+              </ul>
+            </OverlayScrollArea>
           </div>
         )}
         {subject.kind === 'skill' && offerKeepInStep && (

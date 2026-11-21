@@ -23,6 +23,7 @@ import { ProgressRing, type ProgressTone } from './Progress';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { InlineMeasuredSkeleton } from './Skeleton';
 import { ControlButton, Button } from './Button';
+import { BusyLabel } from './BusyLabel';
 
 import { DisclosureChevron, DisclosureToggle } from './Disclosure';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
@@ -254,9 +255,10 @@ export interface UsageIndicatorAccountSummaryProps {
   }>;
   /**
    * Fetches the account's usage again. Offered only when the last read
-   * failed; the host refreshes on its own as the popover opens.
+   * failed; the host refreshes on its own as the popover opens. Return the
+   * request's promise to show the retry as busy until it settles.
    */
-  onRetry?: () => void;
+  onRetry?: () => void | Promise<void>;
   /**
    * Account settings the popover cannot show, as a labelled action. Omit it
    * when the host's "See detailed breakdown" already leads to the same place.
@@ -464,6 +466,14 @@ export function UsageIndicatorAccountSummary({
   disclosure,
   icon,
 }: UsageIndicatorAccountSummaryProps): JSX.Element {
+  const [retrying, setRetrying] = useState(false);
+  const handleRetry = (): void => {
+    if (retrying || !onRetry) return;
+    const request = onRetry();
+    if (!(request instanceof Promise)) return;
+    setRetrying(true);
+    void request.finally(() => setRetrying(false));
+  };
   const card = detail !== undefined;
   const folds = card ? disclosure : undefined;
   const ordered = folds
@@ -504,10 +514,14 @@ export function UsageIndicatorAccountSummary({
       {onRetry && (
         <Button
           variant="link"
-          onClick={onRetry}
+          onClick={handleRetry}
+          aria-busy={retrying || undefined}
+          aria-disabled={retrying || undefined}
           data-testid="usage-indicator-retry"
         >
-          Try again
+          <BusyLabel busy={retrying} busyText="Trying again…">
+            Try again
+          </BusyLabel>
         </Button>
       )}
     </p>

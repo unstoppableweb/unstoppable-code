@@ -11,6 +11,7 @@ import {
   trackPreferencesAuthoritySave,
 } from '../approvals/rule-revisions';
 import { resolveAvailableModel } from './model-availability';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile, stat } from 'node:fs/promises';
 import { trackDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
 import { dirname } from 'node:path';
@@ -86,11 +87,33 @@ function slotFilePath(filePath: string, slot: PreferencesDocumentSlot): string {
       return createPreferencesGenerationPath(filePath);
   }
 }
+/**
+ * What one stored-choice read saw: the state of every journal read it made
+ * and the raw primary document text the repository read (before any journal
+ * overlay). Scoped to that read's async context, so saves and other reads
+ * running at the same time are never recorded here.
+ */
+interface StoredChoiceReadObservation {
+  journal: Array<'readable' | 'unreadable'>;
+  primaryText: string | null;
+}
+const storedChoiceReadObservation =
+  new AsyncLocalStorage<StoredChoiceReadObservation>();
+
 function createDesktopPreferencesDocument(): PreferencesDocumentPort {
+  const observation = storedChoiceReadObservation.getStore();
   const filePath = getPreferencesFilePath();
   const document: PreferencesDocumentPort = {
     key: filePath,
-    readText: (slot) => readFile(slotFilePath(filePath, slot), 'utf8'),
+    readText: async (slot) => {
+      const text = await readFile(slotFilePath(filePath, slot), 'utf8');
+      // The raw text, before the journal overlay can rewrite a malformed
+      // section into a well-formed one.
+      if (slot === 'primary' && observation !== undefined) {
+        observation.primaryText = text;
+      }
+      return text;
+    },
     exists: (slot) =>
       stat(slotFilePath(filePath, slot))
         .then(() => true)
@@ -130,25 +153,119 @@ function createDesktopPreferencesDocument(): PreferencesDocumentPort {
   };
   return withUsageDataConsentJournal(
     document,
-    createUsageDataConsentJournal(filePath),
+    createUsageDataConsentJournal(filePath, (status) => {
+      observation?.journal.push(status);
+    }),
   );
 }
 
-function createUsageDataConsentJournal(filePath: string): ConsentJournal {
+type UsageDataDenialJournalRead =
+  | { kind: 'readable'; denied: readonly UsageDataKey[] }
+  | { kind: 'unreadable' };
+
+async function readUsageDataDenialJournal(
+  journalPath: string,
+): Promise<UsageDataDenialJournalRead> {
+  try {
+    const value: unknown = JSON.parse(await readFile(journalPath, 'utf8'));
+    if (
+      !Array.isArray(value) ||
+      value.some((key) => !USAGE_DATA_KEYS.some((known) => known === key))
+    )
+      return { kind: 'unreadable' };
+    return {
+      kind: 'readable',
+      denied: USAGE_DATA_KEYS.filter((key) => value.includes(key)),
+    };
+  } catch (error) {
+    // A missing journal means nothing was revoked.
+    return isMissingFileError(error)
+      ? { kind: 'readable', denied: [] }
+      : { kind: 'unreadable' };
+  }
+}
+
+export type StoredProductAnalyticsChoice =
+  | 'allowed'
+  | 'denied'
+  | 'unconfirmed'
+  | 'denial-journal-unreadable';
+
+/**
+ * The member's stored Usage analytics choice, from one authority read of the
+ * preferences (the repository's `readAuthority`: after any save in flight,
+ * without recovery writes) that also reports the state of the write-ahead
+ * revocation journal that same read saw. While the journal can't be read,
+ * every usage-data key reads as denied, which says nothing about the member's
+ * own choice, so that is its own `denial-journal-unreadable` answer and never
+ * a `denied`. `unconfirmed` is every other case where no saved choice is
+ * proven: a latched recovery, an unreadable file, a read that never reached
+ * the journal, and a saved value that is present but not a boolean or a
+ * usage-data section that isn't an object (the repository normalizes those to
+ * the default, on), judged on the saved text before any journal denial is
+ * applied, so a journal denial never repairs one. A missing file is a fresh
+ * install, whose default is allowed, and so is a field that is absent.
+ */
+export async function readStoredProductAnalyticsChoice(): Promise<StoredProductAnalyticsChoice> {
+  const observation: StoredChoiceReadObservation = {
+    journal: [],
+    primaryText: null,
+  };
+  const read = await storedChoiceReadObservation.run(observation, () =>
+    preferencesRepository.readAuthority(),
+  );
+  if (observation.journal.includes('unreadable')) {
+    return 'denial-journal-unreadable';
+  }
+  // Every read of the document reads the journal; none leaves it unknown.
+  if (read.authority === 'unreadable' || observation.journal.length === 0) {
+    return 'unconfirmed';
+  }
+  // Judged on the saved text before the journal overlay, which can rewrite a
+  // malformed section into a well-formed one. A malformed section proves no
+  // choice, even when the journal denies a key; only once the saved section
+  // is well formed does the overlaid value decide.
+  if (
+    read.authority === 'ok' &&
+    !holdsWellFormedProductAnalyticsChoice(observation.primaryText)
+  ) {
+    return 'unconfirmed';
+  }
+  return read.preferences.usageData.productAnalytics ? 'allowed' : 'denied';
+}
+
+/**
+ * Whether the saved `usageData.productAnalytics`, in the raw document text the
+ * authority read saw (before the journal overlay), is a boolean or absent,
+ * rather than a value that normalization replaced with the default.
+ */
+function holdsWellFormedProductAnalyticsChoice(text: string | null): boolean {
+  if (text === null) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.preferences)) return false;
+  const usageData = parsed.preferences.usageData;
+  if (usageData === undefined) return true;
+  if (!isRecord(usageData)) return false;
+  const choice = usageData.productAnalytics;
+  return choice === undefined || typeof choice === 'boolean';
+}
+
+function createUsageDataConsentJournal(
+  filePath: string,
+  onRead?: (status: 'readable' | 'unreadable') => void,
+): ConsentJournal {
   const journalPath = createUsageDataDenialsPath(filePath);
   return {
     async read(): Promise<readonly UsageDataKey[]> {
-      try {
-        const value: unknown = JSON.parse(await readFile(journalPath, 'utf8'));
-        if (
-          !Array.isArray(value) ||
-          value.some((key) => !USAGE_DATA_KEYS.some((known) => known === key))
-        )
-          return USAGE_DATA_KEYS;
-        return USAGE_DATA_KEYS.filter((key) => value.includes(key));
-      } catch (error) {
-        return isMissingFileError(error) ? [] : USAGE_DATA_KEYS;
-      }
+      const journal = await readUsageDataDenialJournal(journalPath);
+      onRead?.(journal.kind);
+      // An unreadable journal denies every usage-data flow.
+      return journal.kind === 'unreadable' ? USAGE_DATA_KEYS : journal.denied;
     },
     write: async (denied): Promise<void> => {
       await createPreferencesFolderDurably(filePath);

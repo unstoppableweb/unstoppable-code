@@ -19,6 +19,7 @@ import type {
 import {
   REMOTE_COMMAND_CHANNELS,
   REMOTE_EVENT_CHANNELS,
+  REMOTE_MEMBER_CHANNELS,
   REMOTE_QUERY_CHANNELS,
   remoteOperationChannelUse,
   type RemoteCapabilityRequirement,
@@ -169,12 +170,26 @@ function boolRequirements(
   );
 }
 
+/**
+ * Whether an operation can reach an authorized channel. A branch with its own
+ * gate counts only when the operation has no other channel: that gate is
+ * judged by the branch alone, so a gated branch never keeps the operation's
+ * own gate on (the transcripts member's block reads, CAN-7432).
+ */
 function usable(
   entry: RemoteOperationChannels,
   authorized: ReadonlySet<string>,
 ): boolean {
+  const own = remoteOperationChannelUse({
+    ...entry,
+    branches: (entry.branches ?? []).filter(
+      (branch) => boolRequirements(branch.requires).length === 0,
+    ),
+  });
+  const ownNeeded = [...own.invoke, ...own.listen];
   const use = remoteOperationChannelUse(entry);
-  const needed = [...use.invoke, ...use.listen];
+  const needed =
+    ownNeeded.length > 0 ? ownNeeded : [...use.invoke, ...use.listen];
   return (
     needed.length === 0 || needed.some((channel) => authorized.has(channel))
   );
@@ -195,11 +210,30 @@ export function capabilityLimitForChannels(
     ...Object.values(REMOTE_QUERY_CHANNELS),
     ...Object.values(REMOTE_COMMAND_CHANNELS),
     ...Object.values(REMOTE_EVENT_CHANNELS),
+    ...Object.values(REMOTE_MEMBER_CHANNELS),
   ];
-  for (const entry of entries) {
-    const reachable = usable(entry, authorized);
-    for (const key of boolRequirements(entry.requires)) {
+  const gate = (
+    requires: readonly RemoteCapabilityRequirement[] | undefined,
+    reachable: boolean,
+  ): void => {
+    for (const key of boolRequirements(requires)) {
       gated.set(key, (gated.get(key) ?? false) || reachable);
+    }
+  };
+  for (const entry of entries) {
+    gate(entry.requires, usable(entry, authorized));
+    // A branch's own gate is reachable through the branch's channels alone
+    // (`delegationBlockReads` on the transcripts member, CAN-7432). A branch
+    // with no channel is answered locally and says nothing about reach, so
+    // it is left to the gate's other operations.
+    for (const branch of entry.branches ?? []) {
+      if (branch.requires === undefined) continue;
+      const needed = [...(branch.invoke ?? []), ...(branch.listen ?? [])];
+      if (needed.length === 0) continue;
+      gate(
+        branch.requires,
+        needed.some((channel) => authorized.has(channel)),
+      );
     }
   }
   const limit: Record<string, boolean> = {};

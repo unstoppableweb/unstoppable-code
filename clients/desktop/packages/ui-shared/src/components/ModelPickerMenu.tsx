@@ -289,6 +289,12 @@ export interface ModelBillingPreference {
 }
 
 export interface ModelPickerMenuProps {
+  /**
+   * The viewer can't spend anything yet (a signed-out visitor exploring the
+   * catalog): rows name no billing, neither the credits tag nor the detail's
+   * Billing line. The account and payment ask comes at Send (CAN-7493).
+   */
+  readonly hideBilling?: boolean;
   readonly triggerControlProps?: {
     readonly id: string;
     readonly 'aria-describedby': string | undefined;
@@ -652,6 +658,7 @@ function runnableHarnessLabel(harness: string): string | undefined {
 function ModelRowDetail({
   option,
   usesAiCredits = false,
+  hideBilling = false,
   harness,
   showsHarness = false,
   lockHint,
@@ -660,6 +667,8 @@ function ModelRowDetail({
   readonly lockHint?: string;
   readonly option: ModelCatalogOption;
   readonly usesAiCredits?: boolean;
+  /** See `ModelPickerMenuProps.hideBilling`. */
+  readonly hideBilling?: boolean;
   /** Execution harness for this row. */
   readonly harness?: string;
   /** The row shows its harness icon, so the tooltip must name it too. */
@@ -689,12 +698,13 @@ function ModelRowDetail({
   if (harness && harnessLabel) {
     rows.push({ label: 'Harness', value: harnessLabel, glyph: harness });
   }
-  if (option.funding)
+  // A visitor exploring the catalog spends nothing yet: no Billing line.
+  if (!hideBilling && option.funding)
     rows.push({
       label: 'Billing',
       value: option.funding === 'org-gateway' ? 'AI gateway' : 'AI Credits',
     });
-  else if (usesAiCredits)
+  else if (!hideBilling && usesAiCredits)
     // CAN-5213: a credits route says so even when the row's tag gives way to
     // an availability cue.
     rows.push({ label: 'Billing', value: 'AI Credits' });
@@ -954,6 +964,7 @@ function coerceProvider(
 }
 
 export function ModelPickerMenu({
+  hideBilling = false,
   triggerControlProps,
   catalog,
   currentModel,
@@ -2616,7 +2627,9 @@ export function ModelPickerMenu({
         leadingFavorite={
           harnessTabs?.leadingFavorites && option.id !== autoModeOption?.id
         }
+        hideBilling={hideBilling}
         usesAiCredits={
+          !hideBilling &&
           funding !== 'org-gateway' &&
           !managedAccount &&
           (credits ||
@@ -3060,7 +3073,7 @@ export function ModelPickerMenu({
             <nav
               aria-label="Model harnesses"
               hidden={pickerChrome ? Boolean(modelSearch) : undefined}
-              className={`flex min-h-0 shrink-0 flex-col border-r overflow-hidden transition-opacity duration-150 ${pickerChrome ? '-ml-1 w-[calc(2.75rem+0.5px)] self-stretch bg-card [.dark_&]:bg-secondary' : 'h-full w-12'} ${modelSearch ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
+              className={`flex min-h-0 shrink-0 flex-col border-r overflow-hidden transition-opacity duration-150 ${pickerChrome ? '-ml-1 w-[calc(2.75rem+var(--border-hairline))] self-stretch bg-card [.dark_&]:bg-secondary' : 'h-full w-12'} ${modelSearch ? 'pointer-events-none opacity-0' : 'opacity-100'}`}
             >
               <OverlayScrollArea
                 className="min-h-0 flex-1"
@@ -3803,6 +3816,7 @@ function ModelPickerOption({
   leadingFavorite = false,
   usesAiCredits = option.source === 'ai-gateway' &&
     option.funding !== 'org-gateway',
+  hideBilling = false,
   extraChargeMarker = false,
   billingPreference,
   billingFallback = true,
@@ -3833,6 +3847,8 @@ function ModelPickerOption({
   readonly onBillingOpenChange?: (open: boolean) => void;
   readonly billingMenuActive?: boolean;
   readonly usesAiCredits?: boolean;
+  /** See `ModelPickerMenuProps.hideBilling`. */
+  readonly hideBilling?: boolean;
   /** Single-list rows mark AI Credits-only models with `$`, not a label. */
   readonly extraChargeMarker?: boolean;
   readonly option: ModelCatalogOption;
@@ -4133,6 +4149,7 @@ function ModelPickerOption({
             <ModelRowDetail
               option={option}
               usesAiCredits={usesAiCredits}
+              hideBilling={hideBilling}
               harness={staticHarness ?? currentHarness}
               showsHarness={trailingHarnessSlot}
               lockHint={lock?.hint}

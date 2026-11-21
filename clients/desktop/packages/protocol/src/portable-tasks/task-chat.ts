@@ -784,7 +784,13 @@ export const queueItemSchema = z.strictObject({
   ]),
   canSteer: z.boolean(),
   waitingReason: z
-    .enum(['turn', 'setup', 'steer_unavailable', 'background_work'])
+    .enum([
+      'turn',
+      'setup',
+      'steer_unavailable',
+      'background_work',
+      'settings_change',
+    ])
     .optional(),
   enqueuedAt: IsoDateTime,
 });

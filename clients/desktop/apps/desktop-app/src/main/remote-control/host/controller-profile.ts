@@ -13,6 +13,7 @@ import {
   BROWSER_CONTROLLER_CHANNELS,
   HOSTED_CONTROLLER_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
+  browserInvocationAllowed,
   hostedInvocationAllowed,
 } from '@canopy/protocol/remote-control/channels';
 import {
@@ -78,6 +79,8 @@ export function controllerMayUseChannel(
  * argument policy of generic dispatch channels, so `chat:command` can start
  * chats and send messages but never answer approvals, archive or reset work.
  * Browser and mobile file reads use the same scoped-read policy as hosted controllers.
+ * Browsers also pass their own argument policies (`browserInvocationAllowed`):
+ * the repository owner lookup takes exactly `{ remoteUrl }` (CAN-7433).
  * No controller of any kind may answer a Mod's composer request, and a Mod
  * surface command whose kind cannot be read is refused (CAN-7436).
  */
@@ -100,6 +103,7 @@ export function controllerMayInvoke(
     !controllerMaySendSurfaceCommand(nestedKind(args, 'command'))
   )
     return false;
+  if (kind === 'browser') return browserInvocationAllowed(channel, args);
   return kind !== 'hosted' || hostedInvocationAllowed(channel, args);
 }
 

@@ -24,6 +24,7 @@ import {
 } from './owned-automations-scenario.mjs';
 import { perfettoTraceEvents } from './perfetto-trace.mjs';
 import { w5StoreScenarios } from './w5-store-scenario.mjs';
+import { attachmentsScenarios } from './attachments-scenario.mjs';
 import {
   padRetainedWorktreeRow,
   retainedIdleRates,
@@ -22184,6 +22185,7 @@ const SCENARIOS = {
     prepare: prepareCodeReviewRegistry,
     run: (context) => runCodeReviewRegistryCleanup(context, { trace: true }),
   },
+  ...attachmentsScenarios({ recordTask, recordFrameWindow, openMainPage }),
   // CAN-5532 W5 store arms; run them with `--w5-store` or `--w5-store-arms`.
   'w5-store-startup': {
     prepare: W5_STORE.prepare,

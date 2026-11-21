@@ -97,7 +97,7 @@ const SURFACE_SHELL_CLASS_NAMES: Record<DropdownMenuSurfaceShell, string> = {
     ' canopy-picker-menu canopy-model-picker-shell relative flex flex-col w-92',
   'model-picker-highlight':
     ' canopy-picker-menu canopy-model-picker-shell canopy-model-picker-highlight-selection relative flex flex-col w-92',
-  'model-browser': ' h-76 max-h-[calc(100vh-16px)] w-92',
+  'model-browser': ' h-76 max-h-[calc(100dvh-16px)] w-92',
   bare: '',
 };
 
@@ -125,8 +125,9 @@ export interface DropdownMenuItemProps extends ButtonHTMLAttributes<HTMLButtonEl
    * Raises the row to the 44px touch-target floor. For menus opened from a
    * coarse-pointer surface; the default 32px row is sized for a mouse. A
    * minimum, so the fixed height and centered content are otherwise unchanged.
+   * `'coarse'` raises it only on a coarse pointer, for menus shared with mouse.
    */
-  touchTarget?: boolean;
+  touchTarget?: boolean | 'coarse';
   status?: DropdownMenuItemStatus;
   alert?: DropdownMenuItemAlert;
 }
@@ -297,8 +298,8 @@ export const DropdownMenuItem = forwardRef<
       : `${ITEM_TONE_CLASS_NAMES[tone]}${expanded ? ' bg-subtle' : ''}`;
   const presentationClassName =
     presentation === 'composer-overflow'
-      ? `flex min-h-11 w-full items-center gap-2.5 px-3 text-left text-s transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'fg-primary' : 'fg-secondary'}`
-      : `canopy-dropdown-menu-item outline-none ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget ? 'min-h-11' : ''}`;
+      ? `flex min-h-11 w-full items-center gap-2.5 px-3 rounded-md text-left text-s transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 ${selected ? 'fg-primary' : 'fg-secondary'}`
+      : `canopy-dropdown-menu-item outline-none ${geometryClassName} text-left ${textClassName} font-normal transition-colors focus-visible:bg-subtle disabled:cursor-not-allowed disabled:fg-disabled disabled:opacity-100 disabled:hover:bg-transparent ${surfaceClassName} ${status ? ITEM_STATUS_CLASS_NAMES[status] : ''} ${touchTarget === 'coarse' ? 'pointer-coarse:min-h-11' : touchTarget ? 'min-h-11' : ''}`;
   return (
     <button
       ref={ref}

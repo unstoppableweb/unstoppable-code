@@ -51,7 +51,12 @@ export function ProjectListPagination({
           presentation="project-list-page"
           appearance={{ firstInRow: true, touchTargets: !!touchTargets }}
           data-testid="sidebar-projects-show-more"
-          aria-label={`Show more projects (${remainingCount} remaining)`}
+          // The name starts with the visible words, so voice control finds it.
+          aria-label={
+            compactLabels
+              ? `More: show more projects (${remainingCount} remaining)`
+              : `Show more projects (${remainingCount} remaining)`
+          }
           onClick={() => {
             restoreFocus.current = true;
             onShowMore();
@@ -73,7 +78,7 @@ export function ProjectListPagination({
           presentation="project-list-page"
           appearance={{ firstInRow: !showMore, touchTargets: !!touchTargets }}
           data-testid="sidebar-projects-show-less"
-          aria-label="Show fewer projects"
+          aria-label={compactLabels ? 'Less: show fewer projects' : undefined}
           onClick={() => {
             restoreFocus.current = true;
             onShowLess();

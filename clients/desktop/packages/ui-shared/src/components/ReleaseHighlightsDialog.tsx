@@ -93,7 +93,13 @@ export function ReleaseHighlightsDialog({
       // releases and short windows.
       scrollableBody={false}
     >
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain">
+      <div
+        // Focusable, so Safari keyboard users can scroll a long release.
+        tabIndex={0}
+        role="region"
+        aria-label="Release highlights"
+        className="focus-ring focus-ring-inset flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain"
+      >
         {entry.headline ? (
           <p
             className="text-s fg-secondary"

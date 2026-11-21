@@ -142,11 +142,26 @@ export function PrLabelBadge({
 }: PrLabelBadgeProps): JSX.Element {
   const rgb = parseHex(color);
   return (
-    <Tooltip label={description} clamp disabled={!description} replayBlock>
+    <Tooltip
+      label={description}
+      clamp
+      disabled={!description}
+      replayBlock
+      showOnTouch
+    >
       <span
         data-testid={dataTestId}
         style={rgb ? computeLabelColors(rgb) : undefined}
-        className={`${PILL_BASE} ${rgb ? 'canopy-pr-label' : 'border bg-muted fg-secondary'}`}
+        // The tooltip alone shows the description, so keyboards need a stop;
+        // a labelled image, as HelpHint does, carries it to screen readers.
+        {...(description
+          ? {
+              role: 'img',
+              tabIndex: 0,
+              'aria-label': `${name}: ${description}`,
+            }
+          : {})}
+        className={`${PILL_BASE} ${rgb ? 'canopy-pr-label' : 'border bg-muted fg-secondary'}${description ? ' focus-ring' : ''}`}
       >
         {name}
       </span>

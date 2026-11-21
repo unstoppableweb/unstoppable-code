@@ -13,7 +13,7 @@ import {
   CoreCoworkRequestError,
   type CoreCoworkInvoker,
 } from '../core-cowork/invoker';
-import { requestCloud } from './request';
+import { isOutcomeUnknown, requestCloud } from './request';
 
 /**
  * Starting a cloud run from a browser (CAN-6341, plan CP-39), over the
@@ -67,14 +67,6 @@ export type CloudPipelineRunLaunchOutcome =
       readonly uncertain: boolean;
     };
 
-/** Kinds after which the web core may have recorded the start. */
-const UNCERTAIN_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
-  'unavailable',
-  'deadline_exceeded',
-  'cancelled',
-  'internal',
-]);
-
 export const CLOUD_RUN_START_UNCERTAIN =
   "Couldn't confirm the cloud run started. Try again; it won't start twice.";
 export const CLOUD_RUN_SIGN_IN = 'Sign in to run workflows in the cloud.';
@@ -110,26 +102,34 @@ function refusalMessage(payload: CanopyErrorPayload): string {
     : `${payload.message} ${refusals.join(' ')}`;
 }
 
-function refusalOf(error: unknown): CloudPipelineRunLaunchOutcome {
+/**
+ * A failed start or preflight, in the dialog's words. Only the keyed start
+ * may have been recorded: the preflight is a read after a start that recorded
+ * nothing, so its failure is always a refusal (CAN-7470).
+ */
+function refusalOf(
+  error: unknown,
+  options: { readonly keyed: boolean },
+): CloudPipelineRunLaunchOutcome {
   const payload = payloadOf(error);
-  if (
-    payload === null ||
-    UNCERTAIN_KINDS.has(payload.kind) ||
-    payload.retry.kind === 'same_idempotency_key'
-  )
+  // No answer, an unreadable one, or one that may have been recorded
+  // (CAN-7196): the shared keyed-write check decides, so every cloud surface
+  // agrees.
+  if (options.keyed && (payload === null || isOutcomeUnknown(error)))
     return {
       kind: 'refused',
       message: CLOUD_RUN_START_UNCERTAIN,
       uncertain: true,
     };
   if (
+    payload === null ||
     payload.kind === 'capability_unavailable' ||
     payload.kind === 'unauthenticated'
   )
     return {
       kind: 'refused',
       message:
-        payload.kind === 'unauthenticated'
+        payload?.kind === 'unauthenticated'
           ? CLOUD_RUN_SIGN_IN
           : CLOUD_RUN_UNAVAILABLE,
       uncertain: false,
@@ -178,7 +178,7 @@ export async function launchCloudPipelineRun(
     };
   } catch (error) {
     if (payloadOf(error)?.code !== CLOUD_MODEL_UNCONFIRMED_CODE)
-      return refusalOf(error);
+      return refusalOf(error, { keyed: true });
   }
   try {
     const preflight = await requestCloud(
@@ -194,6 +194,6 @@ export async function launchCloudPipelineRun(
       preflight,
     };
   } catch (error) {
-    return refusalOf(error);
+    return refusalOf(error, { keyed: false });
   }
 }

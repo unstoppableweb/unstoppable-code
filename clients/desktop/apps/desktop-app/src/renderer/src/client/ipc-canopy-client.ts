@@ -310,6 +310,8 @@ function createNormalDesktopCapabilities(
     // The local cost store keeps every chat's full breakdown.
     sessionBreakdown: true,
     providerQuotas: true,
+    // Add project clone jobs over `clone-jobs:*` (CAN-7433).
+    cloneJobs: true,
     // Claude/Codex/Cursor/Copilot sign-in and execution run in desktop main,
     // so the provider-choice list can offer them here.
     subscriptionProviders: true,

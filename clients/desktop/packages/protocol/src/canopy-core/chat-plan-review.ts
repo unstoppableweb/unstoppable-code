@@ -45,3 +45,27 @@ export type TrackedPlanImplementation = TrackedPlanImplementationInput &
     | { outcome?: never; endedAt?: never }
     | { outcome: 'completed' | 'failed' | 'cancelled'; endedAt: string }
   );
+
+/** Explicit review mode wins over the legacy Codex and OpenCode source fallbacks. */
+export function isPlanProposal(
+  value:
+    | {
+        reviewMode?: unknown;
+        source?: unknown;
+      }
+    | null
+    | undefined,
+): boolean {
+  return value?.reviewMode !== undefined
+    ? value.reviewMode === 'proposal'
+    : value?.source === 'codex' || value?.source === 'opencode';
+}
+
+/**
+ * The message an approved plan proposal starts its implementation turn with.
+ * Desktop and Remote Control send the same text.
+ */
+export const PLAN_PROPOSAL_APPROVAL_MESSAGE = 'Approved. Implement the plan.';
+
+/** The message an approved plain plan exit starts its implementation turn with. */
+export const PLAN_EXIT_APPROVAL_MESSAGE = 'Approved';

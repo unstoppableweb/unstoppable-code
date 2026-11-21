@@ -20,6 +20,13 @@ export interface DialogFormFieldProps {
   /** Id of the control the label names. */
   readonly htmlFor?: string;
   /**
+   * Id of the label, for a control that names itself with `aria-labelledby`
+   * instead of `htmlFor`: a button that opens a picker and shows its value.
+   * A `<label for>` would replace the button's text as its name and open the
+   * picker when the label is clicked.
+   */
+  readonly labelId?: string;
+  /**
    * Help text under the field. The control `htmlFor` names takes it in its
    * `aria-describedby` on its own when it is a shared field (`TextInput`,
    * `TextArea`, `Select`, `SettingsSelect`).
@@ -45,6 +52,7 @@ export interface DialogFormFieldProps {
 export function DialogFormField({
   label,
   htmlFor,
+  labelId,
   description,
   error,
   errorId,
@@ -70,11 +78,17 @@ export function DialogFormField({
   return (
     <div className="flex flex-col gap-1.5" data-testid={dataTestId}>
       {htmlFor ? (
-        <label htmlFor={htmlFor} className={FORM_FIELD_LABEL_CLASS}>
+        <label
+          id={labelId}
+          htmlFor={htmlFor}
+          className={FORM_FIELD_LABEL_CLASS}
+        >
           {label}
         </label>
       ) : (
-        <span className={FORM_FIELD_LABEL_CLASS}>{label}</span>
+        <span id={labelId} className={FORM_FIELD_LABEL_CLASS}>
+          {label}
+        </span>
       )}
       <DialogFormFieldContext.Provider value={fieldDescription}>
         <div className="flex min-w-0">{children}</div>

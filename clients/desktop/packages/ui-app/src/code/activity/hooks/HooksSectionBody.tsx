@@ -3,7 +3,7 @@
 import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { CompletedRunSurface } from '@canopy/ui-shared/components';
-import { useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   Stack,
   HeaderActionButton,
@@ -356,6 +356,15 @@ export function HooksSectionBody({
     setEnlargedKey(null);
   }, [identityKey]);
 
+  // Cancel unmounts the card, so focus goes back to the Run that opened it.
+  const runButtons = useRef(new Map<string, HTMLButtonElement>());
+  const [returnFocusKey, setReturnFocusKey] = useState<string | null>(null);
+  useEffect((): void => {
+    if (returnFocusKey === null) return;
+    runButtons.current.get(returnFocusKey)?.focus();
+    setReturnFocusKey(null);
+  }, [returnFocusKey]);
+
   const runEntry = (entry: HooksSectionEntry): void => {
     if (onRun === undefined) return;
     setConfirmingKey(null);
@@ -428,7 +437,10 @@ export function HooksSectionBody({
               </div>
             }
             onConfirm={(): void => runEntry(entry)}
-            onCancel={(): void => setConfirmingKey(null)}
+            onCancel={(): void => {
+              setConfirmingKey(null);
+              setReturnFocusKey(key);
+            }}
           />
         </div>
       );
@@ -476,6 +488,10 @@ export function HooksSectionBody({
               onClick={(): void => setConfirmingKey(key)}
               title={entry.runDisabledTitle}
               dataTestId="activity-hooks-run"
+              buttonRef={(button): void => {
+                if (button) runButtons.current.set(key, button);
+                else runButtons.current.delete(key);
+              }}
               icon={runIcon(entry)}
             />
           )}

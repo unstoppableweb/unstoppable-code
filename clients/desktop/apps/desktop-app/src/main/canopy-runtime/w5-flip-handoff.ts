@@ -1,4 +1,11 @@
+import { toCanopyClientError } from '@canopy/core-client';
+import {
+  canopyLaunchDetails,
+  canopyDaemonRefusal,
+} from '@canopy/core-client/node';
+import { getLinuxDaemonStartDiagnostics } from './electron-daemon-host';
 import { w5FailureDiagnostics } from '@canopy/core-runtime/node/w5/error-diagnostics';
+import { W5AuthorityUnreachableError } from '@canopy/core-runtime/node/w5/file-store';
 import type { BackgroundServiceHandoffFailure } from '@canopy/desktop-shared/lib/background-service-status';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { installDesktopW5FileStore } from '../lib/w5-commit-log-file-store';
@@ -100,15 +107,27 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
         if (failure.reason === 'cancelled') noteElectronW5Handoff('cancelled');
         else
           noteElectronW5Handoff('degraded', handoffFailureCode(failure.reason));
-        if (failure.reason !== 'cancelled')
+        if (failure.reason !== 'cancelled') {
+          const launchError =
+            failure.underlying instanceof W5AuthorityUnreachableError
+              ? (failure.underlying.cause ?? failure.underlying)
+              : (failure.underlying ?? failure);
+          const facts = getLinuxDaemonStartDiagnostics()?.handoff({
+            stage: failure.stage,
+            errorKind: toCanopyClientError(launchError).payload.kind,
+            refusal: canopyDaemonRefusal(launchError) ?? undefined,
+            ...canopyLaunchDetails(launchError),
+          });
           logMainProcessWarn(
             'W5 startup handoff failed; workspace records are read-only',
             {
               reason: failure.reason,
               detail: failure.detail,
               ...w5FailureDiagnostics(failure),
+              ...facts,
             },
           );
+        }
         throw failure;
       },
     );

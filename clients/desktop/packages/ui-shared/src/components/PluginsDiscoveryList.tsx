@@ -16,7 +16,10 @@ import {
   type PluginsDiscoverySection,
 } from '../lib/plugins-discovery-sections';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
-import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
+import {
+  CUSTOMIZE_ROW_GRID_CLASS,
+  gridRowNeighbor,
+} from '../lib/customize-grid';
 import type { MarketplaceEntryShareStates } from '../lib/marketplace-share';
 import type { InstalledEntryStatusStates } from '../lib/installed-item-status';
 import {
@@ -32,6 +35,8 @@ import {
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
 import { Heading } from './Heading';
+import { EmptyStateText } from './StatusBlocks';
+import { Divider } from './Surface';
 
 /**
  * Sectioned discovery grid for the capability marketplace.
@@ -190,7 +195,7 @@ const PluginsEntryCard = memo(function PluginsEntryCard({
       actions={
         installed && entry.updateAvailable ? (
           <TableActionButton
-            label="Update available · Click to view update"
+            label={`View update for ${entry.name}`}
             testId={`plugins-update-available-${entry.id}`}
             onClick={() => onSelect(entry)}
           >
@@ -330,58 +335,65 @@ function PluginsDiscoverySectionView({
             </Heading>
             {section.headerActions}
           </div>
-        ) : section.headerActions ? (
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b pb-2">
-            <Heading level={2} variant="section">
-              {headingContent}
-            </Heading>
-            {section.headerActions}
-          </div>
         ) : (
-          <div className="border-b pb-2">
-            <Heading level={2} variant="section">
-              {headingContent}
-            </Heading>
-          </div>
+          <>
+            {section.headerActions ? (
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-2">
+                <Heading level={2} variant="section">
+                  {headingContent}
+                </Heading>
+                {section.headerActions}
+              </div>
+            ) : (
+              <div className="pb-2">
+                <Heading level={2} variant="section">
+                  {headingContent}
+                </Heading>
+              </div>
+            )}
+            <Divider />
+          </>
         ))}
       {entries.length === 0 && section.emptyMessage !== undefined && (
         <p
           data-testid={`plugins-section-empty-${section.id}`}
-          className="py-10 text-center text-s fg-secondary"
+          className="py-10 text-center text-s"
         >
-          {section.emptyMessage}
+          <EmptyStateText title={section.emptyMessage} tone="secondary" />
         </p>
       )}
-      <ul
-        data-testid={`plugins-section-body-${section.id}`}
-        className={`${nested ? 'pt-1' : 'pt-3'} ${CUSTOMIZE_ROW_GRID_CLASS}`}
-      >
-        {entries.map((entry) =>
-          renderEntry ? (
-            <BoundEntry
-              key={entry.id}
-              entry={entry}
-              renderEntry={renderEntry}
-            />
-          ) : (
-            <PluginsEntryCard
-              key={entry.id}
-              entry={entry}
-              selected={entry.id === selectedEntryId}
-              onSelect={onSelectEntry}
-              onAdd={onAddEntry}
-              entryShareStates={entryShareStates}
-              onShare={onShareEntry}
-              onConnect={onConnectEntry}
-              onOpenEntryId={onOpenEntryId}
-              McpServerLogoComponent={McpServerLogoComponent}
-              showEntryType={section.showEntryTypes === true}
-              hrefForEntry={hrefForEntry}
-              entryStatus={entryStatus}
-            />
-          ),
-        )}
-      </ul>
+      {entries.length > 0 && (
+        <ul
+          data-testid={`plugins-section-body-${section.id}`}
+          className={`${nested ? 'pt-1' : 'pt-3'} ${CUSTOMIZE_ROW_GRID_CLASS}`}
+        >
+          {entries.map((entry) =>
+            renderEntry ? (
+              <BoundEntry
+                key={entry.id}
+                entry={entry}
+                renderEntry={renderEntry}
+              />
+            ) : (
+              <PluginsEntryCard
+                key={entry.id}
+                entry={entry}
+                selected={entry.id === selectedEntryId}
+                onSelect={onSelectEntry}
+                onAdd={onAddEntry}
+                entryShareStates={entryShareStates}
+                onShare={onShareEntry}
+                onConnect={onConnectEntry}
+                onOpenEntryId={onOpenEntryId}
+                McpServerLogoComponent={McpServerLogoComponent}
+                showEntryType={section.showEntryTypes === true}
+                hrefForEntry={hrefForEntry}
+                entryStatus={entryStatus}
+              />
+            ),
+          )}
+        </ul>
+      )}
     </section>
   );
 }
@@ -422,8 +434,11 @@ export function PluginsDiscoveryList({
         (entry) => entry === document.activeElement,
       );
       if (index === -1) return;
-      const delta = event.key === 'ArrowDown' ? 1 : -1;
-      const next = entries[index + delta];
+      const next = gridRowNeighbor(
+        entries,
+        index,
+        event.key === 'ArrowDown' ? 1 : -1,
+      );
       if (!next) return;
       event.preventDefault();
       next.focus();
@@ -434,7 +449,9 @@ export function PluginsDiscoveryList({
 
   if (populated.length === 0) {
     return (
-      <p className="py-10 text-center text-s fg-secondary">{emptyMessage}</p>
+      <p className="py-10 text-center text-s">
+        <EmptyStateText title={emptyMessage} tone="secondary" />
+      </p>
     );
   }
 

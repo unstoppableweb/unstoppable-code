@@ -219,6 +219,18 @@ function StatusLayoutItemSkeleton({
 }
 
 /** A pull request of typical length, for the loading card's shape. */
+const SAMPLE_REPOSITORY: GitHubRepositoryPreview = {
+  kind: 'repository',
+  owner: 'owner',
+  repository: 'repository',
+  fullName: 'owner/repository',
+  url: 'https://github.com/owner/repository',
+  description: 'A one-line description of what the repository holds',
+  private: false,
+  archived: false,
+  updatedAt: new Date(0).toISOString(),
+};
+
 function sampleItem(itemNumber: number): GitHubItemPreview {
   return {
     kind: 'item',
@@ -269,6 +281,32 @@ export function GitHubReferencePreviewCard({
     itemNumber !== undefined
   ) {
     return <StatusLayoutItemSkeleton itemNumber={itemNumber} />;
+  }
+  if (view.status === 'loading' && layout !== 'status') {
+    // The classic card with sample data of the reference's kind (a number
+    // names an issue or pull request, none a repository), measured into a
+    // skeleton, so the card keeps its size when the preview arrives.
+    return (
+      <Skeleton
+        loading
+        label="Loading preview"
+        testId="github-reference-preview-skeleton"
+      >
+        <GitHubReferencePreviewCard
+          label={label}
+          view={{
+            status: 'ready',
+            preview:
+              itemNumber === undefined
+                ? SAMPLE_REPOSITORY
+                : sampleItem(itemNumber),
+            checkedAt: 0,
+            stale: false,
+          }}
+          layout="classic"
+        />
+      </Skeleton>
+    );
   }
   if (view.status !== 'ready') {
     return (

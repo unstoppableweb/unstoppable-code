@@ -4,6 +4,7 @@ import { Button } from './Button';
 import { Disclosure } from './Disclosure';
 import { SettingsRowsRow } from './settings/SettingsRows';
 import { Stack } from './Stack';
+import { Surface } from './Surface';
 import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
@@ -61,10 +62,11 @@ export function PrivateMemoryCard({
 }: PrivateMemoryCardProps): JSX.Element {
   const switchId = useId();
   return (
-    <div
+    <Surface
+      variant={surface === 'card' ? 'outline' : 'section'}
+      padding={surface === 'card' ? 'default' : 'none'}
       data-testid={dataTestId}
       data-managed={managed ? 'true' : undefined}
-      className={surface === 'card' ? 'rounded-lg border p-4' : ''}
     >
       <Stack gap="inline">
         <SettingsRowsRow
@@ -98,7 +100,7 @@ export function PrivateMemoryCard({
           testId={`${dataTestId}-error`}
         />
       </Stack>
-    </div>
+    </Surface>
   );
 }
 

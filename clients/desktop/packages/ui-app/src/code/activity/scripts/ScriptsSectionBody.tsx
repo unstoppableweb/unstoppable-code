@@ -3,7 +3,7 @@
 import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { CompletedRunSurface } from '@canopy/ui-shared/components';
-import { useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   Stack,
   ActivityItemRow,
@@ -395,6 +395,9 @@ export function ScriptsSectionBody({
   const groupStoppable =
     onListOrphanGroup !== undefined && onForceStopOrphanGroup !== undefined;
 
+  // Guards only the gap before the host shows the run as active (web relay):
+  // desktop's onRun settles when the script ends, so the key must not wait.
+  const pendingRuns = useRef(new Set<string>());
   useEffect((): void => {
     setConfirmingKey(null);
     setError(null);
@@ -406,17 +409,47 @@ export function ScriptsSectionBody({
     setRemovingKey(null);
     setBusyKey(null);
     setNotice(null);
+    pendingRuns.current.clear();
   }, [identityKey]);
 
+  useEffect((): void => {
+    for (const entry of entries) {
+      const run = runs[entry.script.scriptKey];
+      if (entry.runDisabled || (run !== undefined && isActive(run.status))) {
+        pendingRuns.current.delete(`${identityKey}/${entry.script.scriptKey}`);
+      }
+    }
+  }, [entries, runs, identityKey]);
+  // Cancel unmounts the card, so focus goes back to the Run that opened it.
+  const runButtons = useRef(new Map<string, HTMLButtonElement>());
+  const [returnFocusKey, setReturnFocusKey] = useState<string | null>(null);
+  useEffect((): void => {
+    if (returnFocusKey === null) return;
+    runButtons.current.get(returnFocusKey)?.focus();
+    setReturnFocusKey(null);
+  }, [returnFocusKey]);
+  const runButtonRef =
+    (scriptKey: string) =>
+    (button: HTMLButtonElement | null): void => {
+      if (button) runButtons.current.set(scriptKey, button);
+      else runButtons.current.delete(scriptKey);
+    };
   const runEntry = (entry: ScriptsSectionEntry): void => {
     if (onRun === undefined) return;
+    const key = `${identityKey}/${entry.script.scriptKey}`;
+    if (pendingRuns.current.has(key)) return;
+    pendingRuns.current.add(key);
     setConfirmingKey(null);
     setError(null);
-    void onRun(entry).catch((cause: unknown) => {
-      setError(
-        cause instanceof Error ? cause.message : 'Script execution failed',
-      );
-    });
+    void onRun(entry)
+      .catch((cause: unknown) => {
+        setError(
+          cause instanceof Error ? cause.message : 'Script execution failed',
+        );
+      })
+      .finally((): void => {
+        pendingRuns.current.delete(key);
+      });
   };
   const completedRuns = Object.entries(runs).filter(
     ([, run]) => !isActive(run.status),
@@ -584,6 +617,42 @@ export function ScriptsSectionBody({
   };
   const rows = buildRows(entries, groupWorkspaceLifecycles);
 
+  const renderRunConfirmation = (
+    entry: ScriptsSectionEntry,
+    label: string,
+  ): JSX.Element => (
+    <RunConfirmationCard
+      prompt={
+        <>
+          Run <span className="font-medium">{label}</span>?
+        </>
+      }
+      details={
+        entry.script.command ? (
+          // Script command lines can carry arguments and secrets.
+          <Surface variant="inset" className="overflow-hidden">
+            <CodeBlock
+              variant="command"
+              inset="compact"
+              size="2xs"
+              wrap="words"
+              tone="secondary"
+              replay="block"
+              className="max-h-20"
+            >
+              {entry.script.command}
+            </CodeBlock>
+          </Surface>
+        ) : undefined
+      }
+      onConfirm={(): void => runEntry(entry)}
+      onCancel={(): void => {
+        setConfirmingKey(null);
+        setReturnFocusKey(entry.script.scriptKey);
+      }}
+    />
+  );
+
   const renderEntry = (
     entry: ScriptsSectionEntry,
     labelOverride?: string,
@@ -622,7 +691,7 @@ export function ScriptsSectionBody({
               size="compact"
               iconOnly
               onClick={(): void => setEnlargedKey(key)}
-              aria-label="Enlarge output"
+              aria-label={`Enlarge ${label} output`}
             >
               <ExternalIcon size={14} />
             </Button>
@@ -670,7 +739,7 @@ export function ScriptsSectionBody({
                 size="compact"
                 iconOnly
                 onClick={(): void => setEnlargedKey(key)}
-                aria-label="Enlarge output"
+                aria-label={`Enlarge ${label} output`}
               >
                 <ExternalIcon size={14} />
               </Button>
@@ -697,33 +766,7 @@ export function ScriptsSectionBody({
     if (confirmingKey === key) {
       return (
         <div key={key} data-testid="activity-scripts-entry">
-          <RunConfirmationCard
-            prompt={
-              <>
-                Run <span className="font-medium">{label}</span>?
-              </>
-            }
-            details={
-              entry.script.command ? (
-                // Script command lines can carry arguments and secrets.
-                <Surface variant="inset" className="overflow-hidden">
-                  <CodeBlock
-                    variant="command"
-                    inset="compact"
-                    size="2xs"
-                    wrap="words"
-                    tone="secondary"
-                    replay="block"
-                    className="max-h-20"
-                  >
-                    {entry.script.command}
-                  </CodeBlock>
-                </Surface>
-              ) : undefined
-            }
-            onConfirm={(): void => runEntry(entry)}
-            onCancel={(): void => setConfirmingKey(null)}
-          />
+          {renderRunConfirmation(entry, label)}
         </div>
       );
     }
@@ -750,6 +793,7 @@ export function ScriptsSectionBody({
             }
             disabled={entry.runDisabled}
             dataTestId="activity-scripts-run"
+            buttonRef={runButtonRef(key)}
             icon={
               entry.script.interactive ? (
                 <TerminalBorderedIcon
@@ -806,47 +850,56 @@ export function ScriptsSectionBody({
                   className="group text-xs"
                   data-testid="activity-scripts-entry"
                 >
-                  <div
-                    className={
-                      compact
-                        ? `flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
-                        : 'flex items-center gap-2 px-2.5 py-2'
-                    }
-                  >
-                    {details.length > 0 && (
-                      <HeaderActionButton
-                        iconOnly
-                        onClick={(): void =>
-                          setExpandedLifecycles((previous) =>
-                            toggle(previous, group.lifecycle),
-                          )
-                        }
-                        aria-expanded={expanded}
-                        aria-label={`${expanded ? 'Collapse' : 'Expand'} project ${group.lifecycle} scripts`}
-                        // The 28px control overhangs the row's text line
-                        // rather than growing it.
-                        className="-my-1.5"
-                      >
-                        <ChevronIcon open={expanded} />
-                      </HeaderActionButton>
-                    )}
-                    <span
-                      className={`min-w-0 flex-1 truncate ${compact ? 'fg-primary' : 'font-medium fg-primary/80'}`}
+                  {confirmingKey === group.entry.script.scriptKey ? (
+                    renderRunConfirmation(group.entry, group.entry.script.label)
+                  ) : (
+                    <div
+                      className={
+                        compact
+                          ? `flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME}`
+                          : 'flex items-center gap-2 px-2.5 py-2'
+                      }
                     >
-                      {group.entry.script.label}
-                    </span>
-                    {renderWorkspaceLifecycleInfoButton?.(group)}
-                    {onRun && (
-                      <ExecutionActionButton
-                        label="Run"
-                        ariaLabel={`Run ${group.entry.script.label}`}
-                        variant="default"
-                        onClick={(): void => runEntry(group.entry)}
-                        disabled={group.entry.runDisabled}
-                        dataTestId="activity-scripts-run"
-                      />
-                    )}
-                  </div>
+                      {details.length > 0 && (
+                        <HeaderActionButton
+                          iconOnly
+                          onClick={(): void =>
+                            setExpandedLifecycles((previous) =>
+                              toggle(previous, group.lifecycle),
+                            )
+                          }
+                          aria-expanded={expanded}
+                          aria-label={`Project ${group.lifecycle} scripts`}
+                          // The 28px control overhangs the row's text line
+                          // rather than growing it.
+                          className="-my-1.5"
+                        >
+                          <ChevronIcon open={expanded} />
+                        </HeaderActionButton>
+                      )}
+                      <span
+                        className={`min-w-0 flex-1 truncate ${compact ? 'fg-primary' : 'font-medium fg-primary/80'}`}
+                      >
+                        {group.entry.script.label}
+                      </span>
+                      {renderWorkspaceLifecycleInfoButton?.(group)}
+                      {onRun && (
+                        <ExecutionActionButton
+                          label="Run"
+                          ariaLabel={`Run ${group.entry.script.label}`}
+                          variant="default"
+                          onClick={(): void =>
+                            group.entry.confirmBeforeRun
+                              ? setConfirmingKey(group.entry.script.scriptKey)
+                              : runEntry(group.entry)
+                          }
+                          disabled={group.entry.runDisabled}
+                          dataTestId="activity-scripts-run"
+                          buttonRef={runButtonRef(group.entry.script.scriptKey)}
+                        />
+                      )}
+                    </div>
+                  )}
                   {expanded && (
                     <>
                       {compact ? null : <Divider />}
@@ -886,8 +939,13 @@ export function ScriptsSectionBody({
                 data-testid="activity-scripts-repo-toggle"
               >
                 <ChevronIcon open={expanded} />
-                <span className="flex-1">{group.repoName}</span>
-                <span className="text-3xs font-normal fg-secondary/60">
+                <span
+                  className="min-w-0 flex-1 truncate"
+                  title={group.repoName}
+                >
+                  {group.repoName}
+                </span>
+                <span className="text-2xs font-normal fg-tertiary tabular-nums">
                   {group.entries.length} scripts
                 </span>
               </ControlButton>
@@ -904,11 +962,7 @@ export function ScriptsSectionBody({
       </div>
       {error !== null && (
         <div>
-          <Notice
-            errorSource="scripts-section-body"
-            intent="destructive"
-            role="none"
-          >
+          <Notice errorSource="scripts-section-body" intent="destructive">
             {error}
           </Notice>
         </div>
@@ -959,12 +1013,12 @@ export function ScriptsSectionBody({
                 stack
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
                     {
                       <HeaderActionButton
                         iconOnly
                         onClick={(): void => setEnlargedKey(scriptKey)}
-                        aria-label="Enlarge output"
+                        aria-label={`Enlarge ${run.label} output`}
                         // The 28px control overhangs the card's text line
                         // rather than growing it.
                         className="-my-1.5"
@@ -972,9 +1026,14 @@ export function ScriptsSectionBody({
                         <ExternalIcon size={14} />
                       </HeaderActionButton>
                     }
-                    <span className={`font-medium ${color}`}>{run.label}</span>
+                    <span
+                      className={`min-w-0 truncate font-medium ${color}`}
+                      title={run.label}
+                    >
+                      {run.label}
+                    </span>
                   </div>
-                  <span className="text-3xs fg-secondary">
+                  <span className="text-3xs tabular-nums fg-secondary">
                     {run.lostFrom === 'unrecorded'
                       ? status
                       : `${status} · ${Math.round(run.durationMs / 1000)}s`}
@@ -1208,7 +1267,7 @@ function OrphanGroupStopDialog({
             <span className={`truncate font-mono ${REPLAY_BLOCK_CLASS}`}>
               {member.command}
             </span>
-            <span className="ml-auto fg-secondary">
+            <span className="ml-auto tabular-nums fg-secondary">
               Started {new Date(member.startedAt).toLocaleTimeString()}
             </span>
           </li>

@@ -6,6 +6,7 @@ import type {
   ExternalAgentComputer,
   ExternalAgentComputerConnectOutcome,
 } from '@canopy/protocol/external-agents';
+import { createAppError } from '@canopy/protocol/app-errors';
 import type { ExternalAgentComputersClient } from '@canopy/app-core';
 import {
   Badge,
@@ -18,6 +19,7 @@ import {
   NoticeButton,
   Tooltip,
 } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import {
   SettingsGroup,
   SettingsRow,
@@ -75,7 +77,7 @@ function connectFailureMessage(status: ConnectFailure, name: string): string {
     case 'capacity':
       return 'Your agents are using every connection right now. Try again in a moment.';
     case 'plan_required':
-      return 'Remote Control needs a Pro plan.';
+      return "Remote Control isn't available for this account.";
     case 'failed':
       return `Couldn’t connect ${name}.`;
   }
@@ -135,6 +137,14 @@ export function ExternalAgentComputersSection({
     const result = await client.remove(removing.remoteId);
     setRemoveBusy(false);
     if (!result.ok) {
+      recordSurfacedError({
+        chokePoint: 'notice',
+        surface: 'inline',
+        identifier: 'external-agent-computer-remove',
+        // A structured error reaches the handler each time, so repeats count
+        // instead of being dropped as duplicate text sightings.
+        error: createAppError('app.unexpected'),
+      });
       setRemoveError(`Couldn’t remove ${removing.name}. Try again.`);
       return;
     }
@@ -304,6 +314,8 @@ export function ExternalAgentComputersSection({
           busyLabel="Removing…"
           busy={removeBusy}
           errorMessage={removeError}
+          // confirmRemove records this failure.
+          errorRecordingDisabled
           destructive
           onConfirm={(): void => void confirmRemove()}
           onCancel={(): void => setRemoving(null)}

@@ -87,6 +87,7 @@ import {
   readChatExcerpt,
 } from '../../canopy-tools/session-runtime';
 import { buildDelegateDeferredToolsGuidance } from '../../canopy-tools/prompting';
+import { windowAgentInterfacePort } from '../agent-interface-port';
 import { rootChatAddressPrompt } from '@canopy/desktop-shared/lib/chat-address-prompt';
 import type { ProjectChatAddress } from '@canopy/desktop-shared/lib/project-discovery';
 import type { BotChatAddress } from '@canopy/desktop-shared/lib/bot-discovery';
@@ -787,6 +788,7 @@ function delegateRuntime(
             chatId: scope.chatId,
             cwd: scope.parentCwd,
             getWindow: scope.getWindow,
+            interfacePort: windowAgentInterfacePort(scope.getWindow),
             allowedActionTypes: [...DELEGATE_SCRIPT_ACTION_TYPES],
           },
         }

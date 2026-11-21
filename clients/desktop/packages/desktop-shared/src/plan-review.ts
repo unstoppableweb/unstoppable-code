@@ -1,17 +1,8 @@
-/** Explicit review mode wins over the legacy Codex and OpenCode source fallbacks. */
-export function isPlanProposal(
-  value:
-    | {
-        reviewMode?: unknown;
-        source?: unknown;
-      }
-    | null
-    | undefined,
-): boolean {
-  return value?.reviewMode !== undefined
-    ? value.reviewMode === 'proposal'
-    : value?.source === 'codex' || value?.source === 'opencode';
-}
+export {
+  isPlanProposal,
+  PLAN_EXIT_APPROVAL_MESSAGE,
+  PLAN_PROPOSAL_APPROVAL_MESSAGE,
+} from '@canopy/protocol/canopy-core';
 
 export const CURSOR_PLAN_EXECUTION_UNAVAILABLE =
   'Cursor plan execution is unavailable.';

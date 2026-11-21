@@ -37,6 +37,13 @@ export interface UninstallConfirmDialogProps {
   readonly confirmLabel?: string;
   /** Confirm button label while the removal is in flight. */
   readonly busyLabel?: string;
+  /** Static kebab-case name of the removal, such as `uninstall-skill`. */
+  readonly errorSource?: string;
+  /**
+   * The host already shows and records this removal's failure on the same
+   * screen, so the dialog shows it without recording it again.
+   */
+  readonly errorRecordingDisabled?: boolean;
   readonly dataTestId?: string;
   readonly confirmTestId?: string;
   readonly cancelTestId?: string;
@@ -56,6 +63,8 @@ export function UninstallConfirmDialog({
   confirmTestId = 'uninstall-confirm-dialog-confirm',
   cancelTestId = 'uninstall-confirm-dialog-cancel',
   restoreFocusRef,
+  errorSource,
+  errorRecordingDisabled = false,
 }: UninstallConfirmDialogProps): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +99,11 @@ export function UninstallConfirmDialog({
       busy={busy}
       destructive
       focusCancel
-      errorMessage={error}
+      {...(errorRecordingDisabled
+        ? { errorMessage: error, errorRecordingDisabled: true as const }
+        : errorSource === undefined
+          ? { errorMessage: error }
+          : { errorMessage: error, errorSource })}
       dataTestId={dataTestId}
       confirmTestId={confirmTestId}
       cancelTestId={cancelTestId}

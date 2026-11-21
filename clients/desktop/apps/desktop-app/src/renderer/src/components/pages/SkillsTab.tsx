@@ -29,6 +29,8 @@ import { TryItLaunch, TryItPrimaryCta } from '../plugins/TryItPrimaryCta';
 import { tryItMenuItem } from '../plugins/tryItMenuItem';
 import { sharedSkillDetailHeader } from '../plugins/sharedResourceDetailHeaders';
 import { buildTryItPrompt } from '@canopy/protocol/try-it';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   CUSTOM_SKILL_SOURCE_ID,
   lookupInstalledSharedSkill,
@@ -2363,6 +2365,9 @@ export function SharedSkillDetailModal({
   // Rechecks after any skill install, update, or uninstall, and on retry.
   const [installCheckCount, setInstallCheckCount] = useState(0);
   const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  // Electron main already recorded the removal's failure: the dialog shows
+  // it, never records it a second time.
+  const [uninstallRecorded, setUninstallRecorded] = useState(false);
   const [parsed, setParsed] = useState<{
     frontmatter: Record<string, unknown>;
     body: string;
@@ -2520,10 +2525,15 @@ export function SharedSkillDetailModal({
 
   const handleUninstallInstalled = async (): Promise<string | null> => {
     if (!installed) return null;
-    const result = await window.skills.removeSkill(
-      CUSTOM_SKILL_SOURCE_ID,
-      installed.skillName,
-    );
+    setUninstallRecorded(false);
+    const result = await window.skills
+      .removeSkill(CUSTOM_SKILL_SOURCE_ID, installed.skillName)
+      .catch((error: unknown): never => {
+        setUninstallRecorded(
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+        );
+        throw error;
+      });
     if (!result.success)
       return result.error ?? 'Failed to uninstall the skill.';
     await notifySkillsChanged();
@@ -2633,6 +2643,9 @@ export function SharedSkillDetailModal({
   );
   const uninstallDialog = confirmingUninstall && installed && (
     <UninstallConfirmDialog
+      {...(uninstallRecorded
+        ? { errorRecordingDisabled: true as const }
+        : { errorSource: 'skills-tab-uninstall' })}
       title="Uninstall this skill?"
       message={
         <>
@@ -2647,7 +2660,10 @@ export function SharedSkillDetailModal({
       dataTestId="shared-skill-detail-uninstall-dialog"
       confirmTestId="shared-skill-detail-uninstall-confirm"
       onConfirm={handleUninstallInstalled}
-      onCancel={() => setConfirmingUninstall(false)}
+      onCancel={() => {
+        setConfirmingUninstall(false);
+        setUninstallRecorded(false);
+      }}
       onUninstalled={() => setConfirmingUninstall(false)}
     />
   );

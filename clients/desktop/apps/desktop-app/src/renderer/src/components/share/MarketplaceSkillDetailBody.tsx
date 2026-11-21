@@ -383,6 +383,7 @@ function BodyActions({
                   landing.manage(onNavigate);
                 }}
                 onUninstall={landing.uninstall}
+                uninstallErrorRecorded={landing.uninstallErrorRecorded}
               />
             )}
           </>

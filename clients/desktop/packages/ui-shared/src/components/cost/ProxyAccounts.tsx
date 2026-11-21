@@ -6,6 +6,7 @@ import type {
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { COST_NOT_PRICED_LABEL, formatCostAmount } from './cost-format';
 import { ValueRow, ValueRows } from '../settings/ValueRows';
+import { Tooltip } from '../Tooltip';
 
 // Account-proxy accounts on cost surfaces (CAN-4021). Labels are often
 // emails, so session replay blocks them.
@@ -80,9 +81,14 @@ export function ProxyAccountNames({
   const names = accounts.map(proxyAccountName).join(', ');
   return (
     <span data-testid={testId} className="min-w-0 truncate">
-      <span className={REPLAY_BLOCK_CLASS} title={names}>
-        {`${accounts.length} accounts`}
-      </span>
+      {/* The names show on hover and are read with the row; no tab stop,
+          since callers render this inside a row button. */}
+      <Tooltip label={names} replayBlock>
+        <span className={REPLAY_BLOCK_CLASS}>
+          {`${accounts.length} accounts`}
+          <span className="sr-only">{`: ${names}`}</span>
+        </span>
+      </Tooltip>
       <span className="fg-tertiary">
         {' '}
         via account proxy · switched accounts

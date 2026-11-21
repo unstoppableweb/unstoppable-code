@@ -5,6 +5,7 @@
 // first (C2a scaffold, CAN-3763; behavior in CAN-3766); secure files and paths
 // are C2b/C2b2 members; child supervision is C2c; power is CAN-5066; the
 // host-supplied Trash member is CAN-4101.
+import type { Readable } from 'node:stream';
 
 export type PlatformOperatingSystem = 'darwin' | 'win32' | 'linux';
 
@@ -414,6 +415,8 @@ export interface PlatformSupervisionServices {
 export interface PlatformOwnedChild {
   /** The actual root PID, for correlation only; never authority to signal. */
   readonly pid: number;
+  /** Linux-only optional read end of the daemon root's stderr pipe. */
+  readonly stderr?: Readable;
   /** Resolves when root exit is observed; termination may still be pending. */
   readonly exited: Promise<{
     readonly code: number | null;
@@ -443,6 +446,8 @@ export interface PlatformOwnedChildServices {
      * Refused on Windows, where the launcher passes no startup claim.
      */
     readonly stdin?: string;
+    /** Linux-only, capability-gated; other hosts retain their existing stdio. */
+    readonly captureStderr?: boolean;
   }): Promise<PlatformOwnedChild>;
 }
 

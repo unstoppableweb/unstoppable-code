@@ -29,6 +29,7 @@ import { OverlayScrollArea } from '../OverlayScrollArea';
 import { SegmentedControl } from '../SegmentedControl';
 import { TextLink } from '../TextLink';
 import { useChatAppName } from '../chat-look';
+import { isCoarsePointerNow } from '../useMediaQuery';
 import { ComposerIconButton } from './ComposerIconButton';
 import { COMPOSER_PROMPT_HEADER_CLASS } from './ComposerPrompt';
 
@@ -647,7 +648,8 @@ export function SecretRequestPrompt({
   };
 
   useEffect(() => {
-    firstFieldRef.current?.focus();
+    // Focusing on touch would open the keyboard before the user asks.
+    if (!isCoarsePointerNow()) firstFieldRef.current?.focus();
   }, []);
 
   const notice = readOnlyHint
@@ -1008,6 +1010,12 @@ export function SecretRequestPrompt({
                                 mono
                                 autoComplete="off"
                                 spellCheck={false}
+                                // Browsers ignore autocomplete="off" on a
+                                // password field; keep password managers from
+                                // saving an agent's key as a site login.
+                                data-1p-ignore
+                                data-lpignore="true"
+                                data-bwignore
                                 disabled={locked}
                                 value={value}
                                 ref={

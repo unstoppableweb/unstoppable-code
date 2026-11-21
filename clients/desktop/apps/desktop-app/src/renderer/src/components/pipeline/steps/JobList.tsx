@@ -6,12 +6,14 @@ import {
   type DragOverEvent,
   type DragStartEvent,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
 import {
   SortableContext,
+  sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
@@ -78,6 +80,9 @@ export function JobList({
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
   );
 
   const handleDragStart = useCallback((event: DragStartEvent): void => {

@@ -17,7 +17,8 @@ import { connectMockCloudAccount } from './seeders/connectMockCloudAccount.mjs';
 // values again; the person provides two canary values (one of 5
 // characters), which go only in core.chat.secretRequest.submit with a fresh
 // submission id, never in another web core request nor anywhere in the app
-// data directory. While the flag is on, the window's web core requests
+// data directory. The Secrets chip lists the chat's secrets and revokes them
+// over the web core. While the flag is on, the window's web core requests
 // announce secret_requests, so a send lets Agentic Core offer the tools.
 // ---------------------------------------------------------------------------
 
@@ -113,6 +114,27 @@ test('a cloud chat asks for secrets on desktop and no value leaves the submit', 
     });
     expect(submits[0].submissionId).toMatch(UUID);
     expect(cloud.world.state.answers).toEqual([]);
+
+    // The Secrets chip lists the chat's secrets over the web core
+    // (core.chat.secret.list), names only, and Revoke takes one away there
+    // (core.chat.secret.revoke).
+    const chip = window.getByTestId('chat-secrets-chip');
+    await expect(chip).toContainText('2 secrets', { timeout: 30_000 });
+    await chip.click();
+    const popover = window.getByTestId('chat-secrets-popover');
+    await expect(popover).toContainText('DEPLOY_TOKEN');
+    await expect(popover).toContainText('SHORT_PIN');
+    await expect(popover).not.toContainText(CANARY);
+    await popover.getByRole('button', { name: 'Revoke SHORT_PIN' }).click();
+    await expect(popover).not.toContainText('SHORT_PIN');
+    expect(
+      cloud.calls.filter((call) => call.method === 'core.chat.secret.revoke'),
+    ).toHaveLength(1);
+    expect(cloud.world.state.secrets.map((secret) => secret.name)).toEqual([
+      'DEPLOY_TOKEN',
+    ]);
+    await window.keyboard.press('Escape');
+    await expect(chip).toContainText('1 secret');
 
     // A send from the window announces that it can answer secret requests.
     const composer = window

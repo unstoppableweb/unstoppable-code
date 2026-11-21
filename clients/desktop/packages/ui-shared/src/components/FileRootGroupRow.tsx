@@ -1,4 +1,6 @@
 import type { JSX, KeyboardEvent } from 'react';
+import { ChevronDownIcon } from '../icons/ChevronDownIcon';
+import { ChevronRightIcon } from '../icons/ChevronRightIcon';
 import { FileTreeRow } from './FileTreeRow';
 
 export interface FileRootGroupRowProps {
@@ -46,9 +48,11 @@ export function FileRootGroupRow({
         data-testid={dataTestId}
         className="focus-ring flex items-center gap-1 rounded-md px-2 py-0.5 text-2xs fg-secondary transition-colors hover:bg-fg-primary/[0.06] hover:fg-primary"
       >
-        <span className="w-3 shrink-0 text-3xs" aria-hidden="true">
-          {expanded ? '▼' : '▶'}
-        </span>
+        {expanded ? (
+          <ChevronDownIcon size={12} aria-hidden className="shrink-0" />
+        ) : (
+          <ChevronRightIcon size={12} aria-hidden className="shrink-0" />
+        )}
         {label}
       </button>
     );

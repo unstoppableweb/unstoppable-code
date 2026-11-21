@@ -1,9 +1,10 @@
-import { type HTMLAttributes, type JSX, type ReactNode } from 'react';
+import { useRef, type HTMLAttributes, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useBackdropDismiss, useModalFocusTrap } from './DialogModal';
 import { useOverlayEscape } from './useOverlayEscape';
 
 // Pure display slide-in drawer shell. Mirrors DialogModal's scrim,
-// Escape-stack, and backdrop-click conventions. No Electron, no
+// Escape-stack, focus, and backdrop-click conventions. No Electron, no
 // window.api, no Next router or stores referenced from this module.
 
 interface SheetProps {
@@ -47,6 +48,23 @@ export function Sheet({
   useOverlayEscape(open, (): void => {
     if (closeOnEscape) onClose();
   });
+  // A modal sheet keeps DialogModal's focus contract: Tab stays inside and
+  // focus returns to the opener. Focus lands on the panel itself, not its
+  // first control: a drawer that leads with a field would otherwise open
+  // the phone keyboard with it. The next Tab reaches the first control.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  useModalFocusTrap(panelRef, {
+    enabled: open,
+    focusSurface: true,
+    initialFocusRef: undefined,
+    restoreFocusRef: undefined,
+    restoreFocusWhen: undefined,
+    containment: 'window',
+    ownerDocument: undefined,
+  });
+  const backdropDismiss = useBackdropDismiss(
+    closeOnBackdrop ? onClose : undefined,
+  );
 
   if (!open) return <></>;
 
@@ -55,16 +73,15 @@ export function Sheet({
   const panelAnimation = isLeft
     ? 'animate-slide-in-left'
     : 'animate-slide-in-right';
-  const edgeClass = isLeft
-    ? 'border-r rounded-r-2xl'
-    : 'border-l rounded-l-2xl';
+  // The panel shadow draws the edge ring; a second edge line doubled it.
+  const edgeClass = isLeft ? 'rounded-r-2xl' : 'rounded-l-2xl';
   // Pad the panel's own outer edge (the one flush with the screen) and its
   // bottom by the device safe-area insets so drawer content clears a notch or
   // home indicator (CAN-1206). `env(safe-area-inset-*)` is 0 on non-notch
   // devices and desktop, so this is a no-op outside mobile. `overscroll-contain`
   // stops a scroll that reaches the drawer's top/bottom from chaining to the
   // page behind the backdrop.
-  const safeAreaClass = `overscroll-contain pb-[env(safe-area-inset-bottom)] ${
+  const safeAreaClass = `overscroll-contain pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] ${
     isLeft
       ? 'pl-[env(safe-area-inset-left)]'
       : 'pr-[env(safe-area-inset-right)]'
@@ -74,14 +91,16 @@ export function Sheet({
     <div
       data-canopy-browser-native-overlay="true"
       className={`fixed inset-0 z-drawer flex ${justifyClass} bg-overlay-scrim animate-fade-in`}
-      onClick={closeOnBackdrop ? onClose : undefined}
+      {...backdropDismiss}
     >
       <div
+        ref={panelRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={ariaLabel}
         data-testid={dataTestId}
-        className={`${panelAnimation} ${widthClassName} ${edgeClass} ${safeAreaClass} flex h-full flex-col overflow-y-auto bg-base shadow-xl ${className}`}
+        className={`${panelAnimation} ${widthClassName} ${edgeClass} ${safeAreaClass} flex h-full flex-col overflow-y-auto bg-base shadow-xl outline-none ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}
@@ -156,6 +175,14 @@ const PANE_SHEET_PADDING_CLASS = {
   readout: 'p-3',
 } as const;
 
+// A field's 10px corner plus the inset, so a field at the sheet's edge nests
+// in its corner; a readout holds text, so it keeps the menu's 12px.
+const PANE_SHEET_RADIUS_CLASS = {
+  toolbar: 'rounded-xl',
+  controls: 'rounded-[calc(var(--radius-row)+0.5rem)]',
+  readout: 'rounded-lg',
+} as const;
+
 /**
  * A modeless panel docked to one edge of a pane, over the pane's content and
  * nothing else: a canvas's selected-node detail, a preview's find bar; or,
@@ -183,7 +210,7 @@ export function PaneSheet({
     <div
       {...rest}
       role={role}
-      className={`flex min-w-0 flex-col overflow-auto rounded-lg bg-quaternary fg-primary shadow-xl ${
+      className={`flex min-w-0 flex-col overflow-auto ${PANE_SHEET_RADIUS_CLASS[padding]} bg-quaternary fg-primary shadow-xl ${
         PANE_SHEET_PLACEMENT_CLASS[placement]
       } ${startClass} ${width === 'search' ? 'w-90' : ''} ${
         PANE_SHEET_PADDING_CLASS[padding]

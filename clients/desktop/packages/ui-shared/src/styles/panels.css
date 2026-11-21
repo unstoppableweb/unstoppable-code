@@ -864,8 +864,10 @@
   user-select: none;
 }
 
-.canopy-panel-tab:hover {
-  color: var(--fg-primary);
+@media (hover: hover) {
+  .canopy-panel-tab:hover {
+    color: var(--fg-primary);
+  }
 }
 
 .canopy-panel-tab[data-active='true'] {
@@ -1047,9 +1049,11 @@
   pointer-events: auto;
 }
 
-.canopy-panel-tab-close:hover {
-  background: var(--bg-subtle);
-  color: var(--fg-primary);
+@media (hover: hover) {
+  .canopy-panel-tab-close:hover {
+    background: var(--bg-subtle);
+    color: var(--fg-primary);
+  }
 }
 
 /* Fill tabs (`data-tab-style='fill'`, early access): Chrome-style tiles.
@@ -1210,8 +1214,10 @@
   min-width: 96px;
 }
 
-.canopy-panel-tab:hover:where([data-tab-style='fill'] *) {
-  background: var(--bg-subtle);
+@media (hover: hover) {
+  .canopy-panel-tab:hover:where([data-tab-style='fill'] *) {
+    background: var(--bg-subtle);
+  }
 }
 
 .canopy-panel-tab[data-active='true']:where([data-tab-style='fill'] *) {
@@ -1748,9 +1754,11 @@
   }
 }
 
-.canopy-panel-collapsed-tab:hover {
-  background: var(--bg-subtle);
-  color: var(--fg-primary);
+@media (hover: hover) {
+  .canopy-panel-collapsed-tab:hover {
+    background: var(--bg-subtle);
+    color: var(--fg-primary);
+  }
 }
 
 .canopy-panel-collapsed-tab:focus-visible {
@@ -1788,8 +1796,9 @@
  * scale from its top-left corner (`useFlipBox`), not by animating its box. */
 .canopy-panel-drop-overlay-box {
   position: absolute;
-  border: 0.5px solid var(--line-focus);
-  border-radius: 4px;
+  border: var(--border-hairline) solid var(--line-focus);
+  /* Snapped to an edge, the box meets the group card's corner. */
+  border-radius: var(--inset-card-radius, 10px);
   background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
   transform-origin: top left;
 }
@@ -1887,8 +1896,9 @@
 .canopy-panel-root-drop-overlay {
   position: absolute;
   z-index: 110; /* z-exception: root drop preview stacks only within its panel grid */
-  border: 0.5px solid var(--line-focus);
-  border-radius: 4px;
+  border: var(--border-hairline) solid var(--line-focus);
+  /* Snapped to an edge, the box meets the group card's corner. */
+  border-radius: var(--inset-card-radius, 10px);
   background: color-mix(in srgb, var(--fg-accent) 18%, transparent);
   pointer-events: none;
 }
@@ -1995,9 +2005,11 @@
   transform: translateY(-0.4px);
 }
 
-.canopy-panel-tab-edge-count:hover {
-  background: var(--bg-subtle);
-  color: var(--fg-primary);
+@media (hover: hover) {
+  .canopy-panel-tab-edge-count:hover {
+    background: var(--bg-subtle);
+    color: var(--fg-primary);
+  }
 }
 
 /* The ⌄ after `+`: the same shared 28px control (the `panelTabStrip`
@@ -2035,7 +2047,7 @@
 
 .canopy-panel-tab-list-root[data-unread]::after {
   scale: 1;
-  transition: scale 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: scale 180ms cubic-bezier(0, 0, 0.2, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2221,9 +2233,11 @@
   display: none;
 }
 
-.canopy-panel-tab-list-close:hover {
-  background: var(--bg-muted);
-  color: var(--fg-primary);
+@media (hover: hover) {
+  .canopy-panel-tab-list-close:hover {
+    background: var(--bg-muted);
+    color: var(--fg-primary);
+  }
 }
 
 .canopy-panel-tab-list-close:active {

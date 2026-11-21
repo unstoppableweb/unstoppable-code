@@ -199,6 +199,7 @@ export function InstalledItemStatusPicker({
         variant="ghost"
         size="compact"
         touchArea="contained"
+        readOnlyAppearance
         data-testid={testId}
         data-status={status}
         aria-label={label}
@@ -223,7 +224,9 @@ export function InstalledItemStatusPicker({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-busy={busy || undefined}
-        disabled={busy}
+        // `aria-disabled`, not `disabled`: focus returns here after a pick,
+        // and a disabled button would drop it to the page.
+        aria-disabled={busy || undefined}
         onClick={(): void => setOpen((value) => !value)}
       >
         {busy ? (

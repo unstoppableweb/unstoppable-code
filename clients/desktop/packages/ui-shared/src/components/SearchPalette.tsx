@@ -51,8 +51,10 @@ export function SearchPaletteLayout<T extends string>({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 border-b">{field}</div>
+      {/* 384px tall, but it gives way when the card is capped (a phone in
+          landscape) so the scope tabs below stay on screen. */}
       <div
-        className="flex h-96 shrink-0 flex-col overscroll-contain"
+        className="flex h-96 min-h-0 shrink flex-col overscroll-contain"
         data-testid={resultsTestId}
       >
         {children}

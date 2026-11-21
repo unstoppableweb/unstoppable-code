@@ -1,8 +1,12 @@
 /**
  * Attachments activity card — exposes the worktree's existing attachment
  * directory (storage unchanged: `workspaces/{ws}/attachments/{worktreeId}`
- * for code workspaces, the brand-managed attachments dir for cowork) with
- * import, reveal-in-finder, delete, and @-mention actions.
+ * for code workspaces, the brand-managed attachments dir for cowork) as the
+ * shared section body's rows: each file's type icon, name, size and date. A
+ * click opens the file (an image or a video in the in-app viewer, a known
+ * document in its default app); each row reveals @-mention,
+ * reveal-in-finder and delete actions, and the section imports by picker
+ * and drop. No file's picture is read for the list.
  */
 import {
   useCallback,
@@ -25,20 +29,27 @@ import {
   type DesktopFilesGuestGate,
 } from '@/hooks/useDesktopFilesGuestGate';
 import { HeaderActionButton } from '@canopy/ui-shared/components';
+import { formatByteSize } from '@canopy/ui-shared/lib';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
+import {
+  OPEN_EXTERNAL_FILE_FAILED,
+  REVEAL_FILE_FAILED,
+} from '@/lib/file-reveal';
 import { AttachmentIcon as CentralAttachmentIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { AttachmentPreviewPopover } from '@/components/shared/AttachmentPreviewPopover';
+import { useDesktopMediaViewer } from '@/components/shared/useDesktopMediaViewer';
+import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import {
   PanelSection,
   type CollapsedIconColor,
   useActivitySectionChrome,
 } from '@/components/shared/panel-section';
-import { FileTypeIcon } from '@canopy/ui-shared/icons';
-import { useAttachmentHover } from '@/hooks/useAttachmentHover';
 import {
   ATTACHMENT_IMPORT_ERROR_MESSAGE,
   createClipboardAttachments,
 } from '@/lib/chatAttachments';
+import { PREVIEWABLE_IMAGE_FILENAME, VIDEO_FILENAME } from '@/lib/file-type';
 import { dataTransferHasFiles } from '@/lib/terminal-file-drop';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useWorkspaceItemsStore } from '@/stores/workspaceItemsStore';
@@ -54,6 +65,29 @@ import {
 } from './workspace-items-shared';
 
 const EMPTY_ATTACHMENTS: readonly WorkspaceAttachmentItem[] = [];
+
+/**
+ * Documents a row click may hand to their default app. A click opens only
+ * these: another file there could be a script, an app or a bare executable,
+ * which its default app (Terminal, for a `.command` or an extensionless
+ * binary) runs. Any other file shows its preview card on hover, whose Open
+ * action is a deliberate second step, as every attachment row's was.
+ */
+const OPENS_IN_DEFAULT_APP =
+  /\.(pdf|txt|md|markdown|rtf|csv|tsv|json|ya?ml|xml|log|docx?|xlsx?|pptx?|odt|ods|odp|pages|numbers|key|epub|mp3|m4a|wav|aiff?|flac|ogg|opus|aac|heic|heif|tiff?|psd|ai|eps|sketch|fig|zip)$/i;
+
+function attachmentKind(filename: string): 'image' | 'video' | 'file' {
+  if (PREVIEWABLE_IMAGE_FILENAME.test(filename)) return 'image';
+  if (VIDEO_FILENAME.test(filename)) return 'video';
+  return 'file';
+}
+
+/** Whether a click on a writable folder's row opens its file. */
+function opensOnClick(filename: string): boolean {
+  return (
+    attachmentKind(filename) !== 'file' || OPENS_IN_DEFAULT_APP.test(filename)
+  );
+}
 
 const TEST_IDS = attachmentsSectionTestIds('workspace-attachments', {
   row: 'workspace-attachments-item',
@@ -173,8 +207,8 @@ function AuthenticatedAttachmentsSection({
 }: ActivitySectionRenderProps & {
   readonly gate: DesktopFilesGuestGate;
 }): JSX.Element {
-  // Read-only scopes (the shared-container recipient) list the published
-  // attachments without import, drop, mention, reveal or delete.
+  // Read-only scopes (the shared-container recipient) list and open the
+  // published attachments without import, drop, mention, reveal or delete.
   const readOnly = useWorkspaceIsReadOnly();
   const key = `${projectId}/${worktreeId}`;
   const frameless = useActivitySectionChrome() === 'frameless';
@@ -187,6 +221,16 @@ function AuthenticatedAttachmentsSection({
     collapsedIconColor: count > 0 ? ('amber' as const) : ('muted' as const),
   };
   const addToast = useGitHubStore((state) => state.addToast);
+  // Images and videos open in the in-app viewer, with the folder's other
+  // media beside them.
+  // A read-only folder's files may not be handed to another app.
+  const mediaViewer = useDesktopMediaViewer(
+    { projectId, worktreeId },
+    { canOpenExternal: !readOnly },
+  );
+  const openMediaViewer = mediaViewer.open;
+  // A read-only folder's document cannot be opened where it is (see `open`
+  // below), so resting on its row shows its preview.
   const {
     hoveredPath,
     anchorRef,
@@ -295,6 +339,14 @@ function AuthenticatedAttachmentsSection({
     );
     const pathOf = (row: AttachmentListRow): string | undefined =>
       byFilename.get(row.id)?.absolutePath;
+    // A read-only folder's videos are read through the shared copy's byte
+    // reader, which serves its repositories only, so there the viewer holds
+    // its images; a video row there opens nothing.
+    const media = attachments.filter((attachment) =>
+      readOnly
+        ? attachmentKind(attachment.filename) === 'image'
+        : attachmentKind(attachment.filename) !== 'file',
+    );
     return {
       scopeKey: key,
       load: {
@@ -307,28 +359,86 @@ function AuthenticatedAttachmentsSection({
           }),
         ),
       },
-      rowIcon: (row) => (
-        <FileTypeIcon filename={row.filename} size="sm" className="shrink-0" />
-      ),
-      hover: {
-        onEnter: (row, element): void => {
-          const absolutePath = pathOf(row);
-          if (absolutePath !== undefined) {
-            handleMouseEnter(absolutePath, element);
+      detail: (row): string | undefined => {
+        const attachment = byFilename.get(row.id);
+        if (attachment === undefined) return undefined;
+        const size = formatByteSize(attachment.sizeBytes);
+        // A shared container's copy carries no creation time: the row then
+        // shows the size alone, not "Invalid Date".
+        const created = new Date(attachment.createdAt);
+        if (Number.isNaN(created.getTime())) return size;
+        const date = created.toLocaleDateString(undefined, {
+          month: 'short',
+          day: 'numeric',
+          ...(created.getFullYear() === new Date().getFullYear()
+            ? {}
+            : { year: 'numeric' }),
+        });
+        return `${size} · ${date}`;
+      },
+      // A document that a click does not open shows its preview on hover:
+      // every document of a read-only folder, and elsewhere any file that
+      // is not a known document type.
+      ...(readOnly || attachments.some((item) => !opensOnClick(item.filename))
+        ? {
+            hover: {
+              shows: (row: AttachmentListRow): boolean =>
+                attachmentKind(row.filename) === 'file' &&
+                (readOnly || !opensOnClick(row.filename)),
+              onEnter: (row: AttachmentListRow, anchor: HTMLElement): void => {
+                const absolutePath = pathOf(row);
+                if (absolutePath !== undefined) {
+                  handleMouseEnter(absolutePath, anchor);
+                }
+              },
+              onLeave: handleMouseLeave,
+              overlay: hoveredPath ? (
+                <AttachmentPreviewPopover
+                  absolutePath={hoveredPath}
+                  filename={hoveredAttachment?.filename}
+                  sizeBytes={hoveredAttachment?.sizeBytes}
+                  anchorRef={anchorRef}
+                  onMouseEnter={popoverMouseEnter}
+                  onMouseLeave={popoverMouseLeave}
+                />
+              ) : null,
+            },
           }
+        : {}),
+      // Images and videos open in the in-app viewer; known document types
+      // in their default app (OPENS_IN_DEFAULT_APP). A read-only folder (a shared container's sealed copy)
+      // may not hand a file to another app, and the app's file viewer has
+      // no root for that folder to read it through, so there only media
+      // opens; a document shows its preview on hover instead.
+      open: {
+        canOpen: (row): boolean =>
+          byFilename.has(row.id) &&
+          (readOnly
+            ? attachmentKind(row.filename) === 'image'
+            : opensOnClick(row.filename)),
+        run: (row): void | Promise<void> => {
+          const attachment = byFilename.get(row.id);
+          if (attachment === undefined) return undefined;
+          if (attachmentKind(attachment.filename) === 'file') {
+            return window.api
+              .openExternalFile({ absolutePath: attachment.absolutePath })
+              .catch((error: unknown): never => {
+                reportClientAppError(error);
+                throw error;
+              });
+          }
+          openMediaViewer(
+            media.map((item) => ({
+              absolutePath: item.absolutePath,
+              name: item.filename,
+              kind:
+                attachmentKind(item.filename) === 'video' ? 'video' : 'image',
+            })),
+            media.findIndex((item) => item.filename === attachment.filename),
+          );
+          return undefined;
         },
-        onLeave: handleMouseLeave,
-        overlay: hoveredPath ? (
-          <AttachmentPreviewPopover
-            absolutePath={hoveredPath}
-            filename={hoveredAttachment?.filename}
-            sizeBytes={hoveredAttachment?.sizeBytes}
-            createdAt={hoveredAttachment?.createdAt}
-            anchorRef={anchorRef}
-            onMouseEnter={popoverMouseEnter}
-            onMouseLeave={popoverMouseLeave}
-          />
-        ) : null,
+        failureMessage: OPEN_EXTERNAL_FILE_FAILED,
       },
       ...(readOnly
         ? { emptyMessage: 'No attachments' }
@@ -346,15 +456,21 @@ function AuthenticatedAttachmentsSection({
             },
             reveal: {
               label: 'Reveal in Finder',
-              run: (row: AttachmentListRow): void => {
+              run: (row: AttachmentListRow): void | Promise<void> => {
                 const absolutePath = pathOf(row);
-                if (absolutePath === undefined) return;
-                void window.api.showInFinder({
-                  absolutePath,
-                  projectId,
-                  worktreeId,
-                });
+                if (absolutePath === undefined) return undefined;
+                return window.api
+                  .showInFinder({
+                    absolutePath,
+                    projectId,
+                    worktreeId,
+                  })
+                  .catch((error: unknown): never => {
+                    reportClientAppError(error);
+                    throw error;
+                  });
               },
+              failureMessage: REVEAL_FILE_FAILED,
             },
             remove: (row: AttachmentListRow): Promise<void> =>
               useWorkspaceItemsStore
@@ -378,6 +494,7 @@ function AuthenticatedAttachmentsSection({
     hoveredPath,
     importFiles,
     key,
+    openMediaViewer,
     popoverMouseEnter,
     popoverMouseLeave,
     projectId,
@@ -418,6 +535,7 @@ function AuthenticatedAttachmentsSection({
         testIds={TEST_IDS}
         fill={frameless}
       />
+      {mediaViewer.viewer}
     </PanelSection>
   );
 }

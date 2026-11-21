@@ -198,9 +198,9 @@ export interface WorkspaceSectionHeaderProps {
   onOptions?: (event: MouseEvent<HTMLButtonElement>) => void;
   /**
    * Optional delete-workspace button handler. Button is hidden when omitted
-   * (the browser Remote Control only supplies it behind the destructive-actions
-   * flag). Rendered with destructive styling; the host is responsible for the
-   * confirmation dialog.
+   * (a host supplies it only where it can delete the workspace). Rendered
+   * with destructive styling; the host is responsible for the confirmation
+   * dialog.
    */
   onDelete?: () => void;
   /**
@@ -690,10 +690,16 @@ export function WorkspaceSectionHeader({
         title={label}
         data-testid={`workspace-backend-pip${testIdSuffix}`}
         data-backend={backend}
+        // Hides with the counter on hover, but stays on touch: it is the
+        // only local or cloud marker there.
         className={`inline-flex shrink-0 items-center fg-tertiary ${
           defersPointerHoverActions
             ? 'pointer-fine:group-hover/sidebar-item:hidden pointer-fine:group-focus-within/sidebar-item:hidden pointer-fine:workspace-header-actions-focused:hidden'
-            : onDelete || onSettings || onAdd || showCollapseChevron
+            : onDelete ||
+                onSettings ||
+                onOptions ||
+                onAdd ||
+                showCollapseChevron
               ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden'
               : ''
         }`}
@@ -804,6 +810,22 @@ export function WorkspaceSectionHeader({
             if (event.detail > 0) clearPointerFocus();
           }}
           disabled={nameTogglesCollapse && !computedCanToggle}
+          // The keyboard path to the right-click menu, as rows have: with the
+          // options button hidden on fine pointers it is the only one.
+          onKeyDown={(event): void => {
+            if (
+              !hasContextMenu ||
+              !(
+                event.key === 'ContextMenu' ||
+                (event.shiftKey && event.key === 'F10')
+              )
+            )
+              return;
+            event.preventDefault();
+            const bounds = event.currentTarget.getBoundingClientRect();
+            contextMenuReturnFocusRef.current = event.currentTarget;
+            setContextMenu({ x: bounds.left, y: bounds.bottom });
+          }}
           {...(primaryButtonDataAttrs ?? {})}
           presentation="workspace-header-primary"
           appearance={{
@@ -898,7 +920,11 @@ export function WorkspaceSectionHeader({
                 revealOnItemHover={!hasSettingsWarning && !forceShowControls}
                 coarsePointerTarget
                 tone="neutral"
-                aria-label={`Settings for ${displayName}`}
+                aria-label={
+                  hasSettingsWarning
+                    ? `Settings for ${displayName}, needs attention`
+                    : `Settings for ${displayName}`
+                }
                 tooltipLabel="Settings"
               />
               {hasSettingsWarning && (

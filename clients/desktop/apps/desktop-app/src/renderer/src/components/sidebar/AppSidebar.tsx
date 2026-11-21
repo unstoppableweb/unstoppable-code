@@ -97,6 +97,7 @@ import {
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useResourceMonitorStore } from '@/stores/resourceMonitorStore';
 import { subscribePreferencesUpdated } from '@/lib/preferences-events';
+import { useMemoryReportStore } from '@/stores/memoryReportStore';
 import { shouldSubscribeResourceMonitor } from '../sidebar-resource-monitor';
 import { useAppBottomStatusHost } from '@/hooks/useAppBottomStatusHost';
 import {
@@ -2481,6 +2482,9 @@ export function AppSidebar({
   const [isResizing, setIsResizing] = useState(false);
 
   const [showDiagnosticsPill, setShowDiagnosticsPill] = useState(true);
+  const setMemoryDiagnosticsEnabled = useMemoryReportStore(
+    (state) => state.setDiagnosticsEnabled,
+  );
   const [worktreeDiffStatsStyle, setWorktreeDiffStatsStyle] =
     useState<WorktreeDiffStatsStyle>('short');
   const [workersTerminalMode, setWorkersTerminalMode] = useState(false);
@@ -2644,6 +2648,8 @@ export function AppSidebar({
       .loadPreferences()
       .then((prefs) => {
         setShowDiagnosticsPill(prefs.showDiagnosticsPill);
+        // Seeds the Resources popover's Memory report row before it can open.
+        setMemoryDiagnosticsEnabled(prefs.memoryDiagnosticsEnabled);
         setWorktreeDiffStatsStyle(prefs.worktreeDiffStatsStyle ?? 'short');
         setWorkersTerminalMode(hasClaudeWorkerTerminalMode(prefs));
         setPreferencesLoaded(true);
@@ -2656,16 +2662,17 @@ export function AppSidebar({
         setWorkersTerminalMode(true);
         setPreferencesLoaded(true);
       });
-  }, []);
+  }, [setMemoryDiagnosticsEnabled]);
 
   useEffect(() => {
     const unsubscribe = subscribePreferencesUpdated((prefs) => {
       setShowDiagnosticsPill(prefs.showDiagnosticsPill);
+      setMemoryDiagnosticsEnabled(prefs.memoryDiagnosticsEnabled);
       setWorktreeDiffStatsStyle(prefs.worktreeDiffStatsStyle ?? 'short');
       setWorkersTerminalMode(hasClaudeWorkerTerminalMode(prefs));
     });
     return unsubscribe;
-  }, []);
+  }, [setMemoryDiagnosticsEnabled]);
 
   useEffect(() => {
     if (

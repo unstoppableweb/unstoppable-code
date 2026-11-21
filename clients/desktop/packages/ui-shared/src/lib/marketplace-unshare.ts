@@ -57,11 +57,21 @@ export type MarketplaceUnshareFailureReason =
 
 export class MarketplaceUnshareError extends Error {
   readonly reason: MarketplaceUnshareFailureReason;
+  /**
+   * The thrower already recorded the underlying failure, so the confirmation
+   * shows its message without recording the same attempt again.
+   */
+  readonly alreadyReported: boolean;
 
-  constructor(reason: MarketplaceUnshareFailureReason, message?: string) {
+  constructor(
+    reason: MarketplaceUnshareFailureReason,
+    message?: string,
+    options?: { readonly alreadyReported?: boolean },
+  ) {
     super(message ?? `Unshare failed: ${reason}`);
     this.name = 'MarketplaceUnshareError';
     this.reason = reason;
+    this.alreadyReported = options?.alreadyReported ?? false;
   }
 }
 

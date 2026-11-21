@@ -7,7 +7,7 @@ export interface SourceInfoButtonProps {
   onClick: () => void;
   /** Accessible label — caller supplies the entry label. */
   ariaLabel: string;
-  /** Native tooltip. Defaults to "Source info". */
+  /** Tooltip label. Defaults to "Source info". */
   title?: string;
   /** Test ID hook for automation. */
   dataTestId?: string;

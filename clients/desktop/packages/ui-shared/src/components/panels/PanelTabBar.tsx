@@ -397,7 +397,6 @@ export function PanelChatTabQuestionMarker({
     <span
       role="img"
       aria-label="Question waiting"
-      title="Question waiting"
       data-testid={`panel-tab-question-${chatId}`}
       className={`inline-flex shrink-0 items-center justify-center ${SIDEBAR_INDICATOR_COLORS.warning}`}
     >
@@ -1049,6 +1048,9 @@ function PanelTabBarComponent({
       event.preventDefault();
       const delta = event.key === 'ArrowLeft' ? -1 : 1;
       focusTabAt((index + delta + tabs.length) % tabs.length);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusTabAt(event.key === 'Home' ? 0 : tabs.length - 1);
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       onSelectTab(groupId, tabs[index].panelId);
@@ -1610,6 +1612,7 @@ function PanelTabBarComponent({
             ref={unpinnedStripRef}
             className="canopy-panel-tab-strip"
             role="tablist"
+            aria-label="Tabs"
             aria-orientation="horizontal"
             data-testid={`panel-tab-strip-${groupId}`}
           >

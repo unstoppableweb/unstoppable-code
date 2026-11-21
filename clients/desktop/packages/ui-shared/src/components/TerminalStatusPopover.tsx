@@ -70,7 +70,10 @@ export function TerminalStatusPopover({
                 <div className="flex items-center gap-1.5 text-xs">
                   <Dot tone={row.dotTone} />
                   {/* The label can be a user-assigned terminal or group name. */}
-                  <span className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}>
+                  <span
+                    className={`truncate fg-primary ${REPLAY_MASK_CLASS}`}
+                    title={row.label}
+                  >
                     {row.label}
                   </span>
                   <span className={`ml-auto shrink-0 ${row.statusClass}`}>

@@ -291,6 +291,7 @@ export function InviteRecipientSection({
               member.userId === members.selectedMember?.userId
             }
             onSelect={onSelectMember}
+            listLabel="Teammates"
             renderRow={(member) => (
               // A teammate's name: replay records a same-size box. The row
               // button around it stays recorded so its click is too.

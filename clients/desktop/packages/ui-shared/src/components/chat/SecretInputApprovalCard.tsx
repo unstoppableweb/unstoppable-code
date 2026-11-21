@@ -15,6 +15,7 @@ import type {
   SecretInputApprovalPrompt,
 } from '@canopy/protocol/approvals';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
+import { surfaceClassName } from '../Surface';
 import { Button } from '../Button';
 import { FormField } from '../FormField';
 import { TextInput } from '../Field';
@@ -104,7 +105,11 @@ export const SecretInputApprovalCard = memo(function SecretInputApprovalCard({
       aria-labelledby={titleId}
       aria-describedby={pending.description ? descriptionId : undefined}
       tabIndex={-1}
-      className="flex flex-col gap-3 rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
+      // A pending-input form: the neutral group box (docs/design/surfaces.md).
+      className={surfaceClassName({
+        variant: 'group',
+        className: 'flex flex-col gap-3 px-4 py-3',
+      })}
     >
       <div>
         <div id={titleId} className="text-s font-medium fg-primary">

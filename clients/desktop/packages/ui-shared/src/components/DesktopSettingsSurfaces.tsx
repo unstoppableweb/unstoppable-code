@@ -107,7 +107,7 @@ export function WorkerCardSurface({
 }): JSX.Element {
   const treatment = modal
     ? 'min-h-0 flex-1 rounded-none border-0 bg-transparent'
-    : `rounded-xl border bg-card/60${highlighted ? ' border-line-accent ring-2 ring-line-accent/60' : ''}`;
+    : `rounded-xl border bg-card/60${highlighted ? ' border-transparent ring-1 ring-line-accent' : ''}`;
   return (
     <div
       {...props}
@@ -136,7 +136,7 @@ export function McpScopeControlFrame(
   return (
     <div
       {...props}
-      className="inline-flex items-center gap-1 rounded-full bg-base p-1 ring-1 ring-inset ring-line-base"
+      className="inline-flex items-center gap-1 rounded-full bg-base p-1 ring-[length:var(--border-hairline)] ring-inset ring-line-base"
     />
   );
 }

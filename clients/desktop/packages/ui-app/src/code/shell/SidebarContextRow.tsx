@@ -84,6 +84,12 @@ export interface SidebarContextOrgScopedActions {
     readonly organizationId: string;
     readonly balanceCredits: number | null;
     readonly refresh: () => void;
+    /**
+     * A billing source other than AI Credits can carry the viewer's work
+     * now, so a zero pool needs no purchase and the row is left out. The
+     * same fact the account menu's row reads. Defaults to `false`.
+     */
+    readonly otherBillingSourceReady?: boolean;
   };
 }
 
@@ -879,6 +885,10 @@ function ContextCreditsMenuItem({
       density="row"
       balanceCredits={current?.balanceCredits ?? null}
       onSelect={onSelect}
+      // No purchase fact reaches this row (an ADMIN sees the pool but only
+      // its OWNER funds it, and purchase grants are the billing page's), so
+      // a zero pool keeps its pill rather than offering Buy credits.
+      otherBillingSourceReady={current?.otherBillingSourceReady === true}
       data-testid={testId}
     />
   );

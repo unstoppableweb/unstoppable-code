@@ -21,7 +21,7 @@ import {
   type LedgerThread,
 } from '../../lib/ledger-threads';
 import { Button } from '../Button';
-import { LoadingSpinner } from '../LoadingSpinner';
+import { BusyLabel } from '../BusyLabel';
 import { ErrorBanner } from '../StatusBlocks';
 import { LedgerEntryThread } from './LedgerEntryThread';
 import type { LedgerEntryPostContext } from './LedgerEntryPost';
@@ -287,22 +287,21 @@ function LoadMoreFooter({
         className="self-stretch"
         error={loadMoreError}
       />
-      {loadingMore ? (
-        <span className="flex items-center gap-2 py-1.5 text-xs fg-secondary">
-          <LoadingSpinner tone="secondary" decorative />
-          Loading more entries…
-        </span>
-      ) : (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          data-testid={loadMoreTestId}
-          onClick={onLoadMore}
-        >
+      {/* The button stays mounted and focusable while loading
+          (aria-disabled, not disabled), so keyboard focus stays on it. */}
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        data-testid={loadMoreTestId}
+        aria-disabled={loadingMore || undefined}
+        aria-busy={loadingMore}
+        onClick={loadingMore ? undefined : onLoadMore}
+      >
+        <BusyLabel busy={loadingMore} busyText="Showing more entries…">
           {loadMoreError === null ? 'Show more entries' : 'Try again'}
-        </Button>
-      )}
+        </BusyLabel>
+      </Button>
     </div>
   );
 }

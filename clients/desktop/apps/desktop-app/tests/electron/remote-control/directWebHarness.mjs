@@ -5,6 +5,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { closeCanopy, launchCanopy } from '../launchCanopy.mjs';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import { seedDemoWorkspaces } from '../demoWorkspaces.mjs';
@@ -203,10 +204,30 @@ async function startSignedInDesktop({ relay, seeded, env, userDataDir }) {
       .first()
       .waitFor({ state: 'visible', timeout: 30_000 });
 
-    const saved = await window.evaluate(
-      (apiKey) => window.api.saveCanopyCloudApiKey({ apiKey }),
-      seeded.apiKey,
-    );
+    // Relaunch keeps this user-data directory. The app's startup account
+    // refresh writes the stored account while this save validates the seeded
+    // key, so saveManualCanopyCloudAccount returns superseded ("changed while
+    // the API key was being validated"). That is the product's own try-again
+    // outcome; retry only that error.
+    const supersededApiKeySave =
+      /changed while the API key was being validated/;
+    let saved = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      saved = await window.evaluate(
+        (apiKey) => window.api.saveCanopyCloudApiKey({ apiKey }),
+        seeded.apiKey,
+      );
+      if (saved?.status?.authenticated) break;
+      const error = saved?.status?.error;
+      if (
+        attempt === 3 ||
+        typeof error !== 'string' ||
+        !supersededApiKeySave.test(error)
+      ) {
+        break;
+      }
+      await delay(attempt * 250);
+    }
     if (!saved?.status?.authenticated) {
       throw new Error(`saveCanopyCloudApiKey failed: ${JSON.stringify(saved)}`);
     }

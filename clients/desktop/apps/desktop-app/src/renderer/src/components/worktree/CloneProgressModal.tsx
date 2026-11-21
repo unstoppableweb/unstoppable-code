@@ -20,8 +20,8 @@ import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { formatElapsed } from '@/lib/pipelineTiming';
 import { announceBackgroundCloneOutcomes } from '@/lib/cloneJobOutcomes';
+import { backgroundCloneJobs } from '@canopy/protocol/clone-jobs';
 import {
-  backgroundCloneJobs,
   cloneJobHeadline,
   summarizeCloneJobs,
   useCloneJobsStore,

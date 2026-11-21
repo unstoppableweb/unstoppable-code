@@ -1,7 +1,6 @@
-import { Button } from './Button';
 import type { JSX } from 'react';
-import { CognitionIcon } from '../icons/CognitionIcon';
 import { ActionTooltip } from './ActionTooltip';
+import { ToggleSwitch } from './ToggleSwitch';
 
 export interface DeferredPluginsControlProps {
   allowed: boolean;
@@ -25,20 +24,14 @@ export function DeferredPluginsControl({
             : 'Prevent this chat from discovering or enabling deferred skills, plugins, and MCP servers.'
         }
       >
-        <Button
-          variant="ghost"
+        <ToggleSwitch
           size="sm"
-          iconOnly
-          role="switch"
-          aria-checked={allowed}
-          aria-label="Allow deferred plugins for this chat"
-          onClick={() => onChange(!allowed)}
+          checked={allowed}
           disabled={disabled}
-          data-testid="chat-plugins-deferred-tools-toggle"
-          data-active={allowed ? 'true' : 'false'}
-        >
-          <CognitionIcon size="sm" aria-hidden="true" />
-        </Button>
+          label="Allow deferred plugins for this chat"
+          onChange={onChange}
+          dataTestId="chat-plugins-deferred-tools-toggle"
+        />
       </ActionTooltip>
       <span
         className="truncate text-2xs fg-secondary"

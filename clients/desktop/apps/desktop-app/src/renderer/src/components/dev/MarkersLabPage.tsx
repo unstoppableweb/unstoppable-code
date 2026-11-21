@@ -67,6 +67,7 @@ const DOT_TONES: readonly { tone: DotTone; meaning: string }[] = [
   { tone: 'working', meaning: 'Working' },
   { tone: 'success', meaning: 'Connected' },
   { tone: 'danger', meaning: 'Offline' },
+  { tone: 'pending', meaning: 'Not started' },
 ];
 const DOT_SIZES: readonly DotSize[] = ['regular', 'large'];
 const GLYPH_SIZES: readonly StatusGlyphSize[] = [12, 14, 20];

@@ -37,6 +37,12 @@ const BADGE_ALT_TEXT: Record<MobileAppStore, string> = {
   'google-play': 'Get it on Google Play',
 };
 
+// The artwork's own size, so the badge reserves its width before it loads.
+const BADGE_SIZE: Record<MobileAppStore, { width: number; height: number }> = {
+  'apple-app-store': { width: 120, height: 40 },
+  'google-play': { width: 564, height: 168 },
+};
+
 export interface StoreBadgeLinkProps {
   link: MobileAppStoreLink;
   activation: StoreBadgeActivation;
@@ -56,6 +62,7 @@ export function StoreBadgeLink({
     <img
       src={link.badgeSrc}
       alt={alt}
+      {...BADGE_SIZE[link.store]}
       className="h-12 w-auto"
       draggable={false}
     />

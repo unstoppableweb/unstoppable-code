@@ -212,19 +212,23 @@ const isNameTaken = (error: unknown): boolean =>
 function cloudRefusal(error: unknown): CatalogHostRefusedError {
   if (error instanceof CatalogHostRefusedError) return error;
   return new CatalogHostRefusedError(
-    error instanceof PackageAnalysisBlockedError
-      ? 'publish-package-blocked'
-      : error instanceof ShareOperationError &&
-          error.kind === 'dependency-review'
-        ? 'publish-package-stale'
-        : isNameTaken(error)
-          ? 'publish-name-taken'
-          : error instanceof CanopyCloudClientError && error.status === 409
-            ? 'publish-revision-moved'
-            : error instanceof CanopyCloudClientError &&
-                (error.status === 400 || error.status === 413)
-              ? 'publish-source-unsupported'
-              : 'publish-remote-unavailable',
+    // A SKILL.md or plugin.json that looks like it holds a secret is named
+    // (CAN-7226); any other blocked analysis keeps its own reason.
+    error instanceof PackageAnalysisBlockedError && error.secretDetected
+      ? 'publish-secret-detected'
+      : error instanceof PackageAnalysisBlockedError
+        ? 'publish-package-blocked'
+        : error instanceof ShareOperationError &&
+            error.kind === 'dependency-review'
+          ? 'publish-package-stale'
+          : isNameTaken(error)
+            ? 'publish-name-taken'
+            : error instanceof CanopyCloudClientError && error.status === 409
+              ? 'publish-revision-moved'
+              : error instanceof CanopyCloudClientError &&
+                  (error.status === 400 || error.status === 413)
+                ? 'publish-source-unsupported'
+                : 'publish-remote-unavailable',
     error,
   );
 }

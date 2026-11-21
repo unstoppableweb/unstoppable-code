@@ -1,4 +1,11 @@
+import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
 import type { ShareOperationResult } from '@canopy/protocol/sharing';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  PUBLICATION_GRANTS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
 import { toShareOperationResult } from '../sharing/share-operation-result';
 import {
   IPC_CHANNELS,
@@ -25,10 +32,13 @@ import {
 import { getSharedRunAutoUpdater } from '../services/shared-run-auto-updater';
 import { readSharedRunMetadata } from '../lib/chat-tabs-reader';
 import {
-  markSharedRunCommentsSeen,
+  normalizeCount,
   readSharedRunCommentEntry,
   registerSharedRunForComments,
+  sharedRunIdempotencyKey,
 } from '../lib/shared-run-comments-registry';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import {
   createRunCommentThread,
   getSharedRun,
@@ -133,7 +143,57 @@ export async function unshareRunForWindow(
   return unshareRun(request);
 }
 
-export function registerRunsHandlers(): void {
+/**
+ * `runs:comments:markSeen` as a projection of
+ * `core.publication.comment.markSeen` (CAN-4169): a run nobody watches reads
+ * as nothing seen and nothing unread, and a failed write rejects with its
+ * own error, as before the move.
+ */
+async function markRunCommentsSeenForIpc(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>,
+  caller: CanopyCallerDescriptor,
+  request: MarkRunCommentsSeenRequest,
+): Promise<MarkRunCommentsSeenResponse> {
+  validateSessionRef(request);
+  try {
+    const { seenRevision, unreadCount } = await dispatcher.instruction(
+      'core.publication.comment.markSeen',
+      {
+        publicationId: sharedRunIdempotencyKey(
+          request.projectId,
+          request.worktreeId,
+          request.chatId,
+        ),
+        throughRevision: normalizeCount(request.commentRevision),
+      },
+      {
+        caller: { ...caller, grants: [PUBLICATION_GRANTS.write] },
+        metadata: { idempotencyKey: randomUUID() },
+      },
+    );
+    return {
+      lastSeenCommentRevision: seenRevision,
+      unreadCommentCount: unreadCount,
+    };
+  } catch (error) {
+    if (!(error instanceof CanopyOperationError)) throw error;
+    if (error.payload.kind === 'not_found')
+      return { lastSeenCommentRevision: 0, unreadCommentCount: 0 };
+    // A Node errno error may come from another realm, which instanceof misses.
+    if (
+      error.payload.kind === 'internal' &&
+      (error.runtimeCause instanceof Error ||
+        types.isNativeError(error.runtimeCause))
+    )
+      throw error.runtimeCause;
+    throw error;
+  }
+}
+
+export function registerRunsHandlers(
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>,
+  resolveCaller: DesktopIpcCallerResolver,
+): void {
   registerIpcHandler<[ShareRunRequest], ShareOperationResult<ShareRunResponse>>(
     IPC_CHANNELS.runsShare,
     (_event, request) => shareRunForWindow(request),
@@ -236,16 +296,7 @@ export function registerRunsHandlers(): void {
 
   registerIpcHandler<[MarkRunCommentsSeenRequest], MarkRunCommentsSeenResponse>(
     IPC_CHANNELS.runsCommentsMarkSeen,
-    async (_event, request) => {
-      validateSessionRef(request);
-      const updated = await markSharedRunCommentsSeen(
-        request,
-        request.commentRevision,
-      );
-      return {
-        lastSeenCommentRevision: updated?.lastSeenCommentRevision ?? 0,
-        unreadCommentCount: updated?.unreadCommentCount ?? 0,
-      };
-    },
+    (event, request) =>
+      markRunCommentsSeenForIpc(dispatcher, resolveCaller(event), request),
   );
 }

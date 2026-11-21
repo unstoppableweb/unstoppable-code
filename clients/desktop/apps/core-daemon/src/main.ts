@@ -52,6 +52,7 @@ import { DAEMON_WORKER_READY, readDaemonWorkerHandoff } from './worker-handoff';
 import { startCanopyDaemonWorker } from './worker-process';
 import { runRequestedCodexMcpLauncher } from './codex-mcp-launcher-entry';
 import { runRequestedExecutionHostShell } from '@canopy/core-platform/execution-host/shell';
+import { absorbClosedStderr } from './stderr-closure';
 
 declare const __CANOPY_DAEMON_BUILD_VERSION__: string | undefined;
 declare const __CANOPY_DAEMON_SECURE_DIR_NAMES__:
@@ -214,6 +215,7 @@ async function main(lifetime: DaemonLifetime): Promise<DaemonOutcome> {
     // before its separate ordinary launch; recovery cannot publish readiness.
     return { code: 0, message: '' };
   }
+  absorbClosedStderr(process.stderr, os);
   const migration = prepareDaemonMigration({
     requested: parsed.migrationChannel === true,
     os,

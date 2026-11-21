@@ -79,9 +79,11 @@ export function CursorAccountUsage(): JSX.Element | null {
       }))}
       {...(failed && !needsConnection && errorKind !== 'unsupported'
         ? {
-            onRetry: (): void => {
+            onRetry: (): Promise<void> => {
               setRefreshFailed(false);
-              void refresh('cursor').catch(() => setRefreshFailed(true));
+              return refresh('cursor')
+                .then(() => undefined)
+                .catch(() => setRefreshFailed(true));
             },
           }
         : {})}

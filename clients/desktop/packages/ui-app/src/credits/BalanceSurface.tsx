@@ -24,7 +24,9 @@ import { useCreditsPurchase } from './CreditsPurchaseProvider';
  * - `row`: one line naming AI Credits. In a menu (`frame: 'menu'`, the
  *   default) it is the account menu's and the organization switcher's row,
  *   with the balance in a pill tinted by its headroom; selecting it opens the
- *   wallet's billing. In a list (`frame: 'list'`) it is the Usage page's row,
+ *   wallet's billing. At a zero balance it is left out when another billing
+ *   source is ready, and otherwise offers the purchase to a viewer who can
+ *   buy. In a list (`frame: 'list'`) it is the Usage page's row,
  *   with the host's balance line and Manage.
  * - `card`: the wallet's headline balance with its purchase control, the
  *   credits used this period, then the automatic top-up and activity the
@@ -47,6 +49,18 @@ export interface BalanceSurfaceMenuRowProps {
   /** Opens the wallet's billing. */
   readonly onSelect: () => void;
   readonly selected?: boolean;
+  /**
+   * A billing source other than AI Credits can carry the viewer's work now,
+   * so a zero balance needs no purchase and the row is left out. The host
+   * derives it from its own connection facts (`isOtherBillingSourceReady`).
+   * Defaults to `false`.
+   */
+  readonly otherBillingSourceReady?: boolean;
+  /**
+   * The viewer may buy credits for this wallet: a zero balance then offers
+   * the purchase in place of the pill. Defaults to `false`.
+   */
+  readonly canPurchase?: boolean;
   readonly 'data-testid'?: string;
 }
 
@@ -97,7 +111,7 @@ export type BalanceSurfaceProps =
   | BalanceSurfaceListRowProps
   | BalanceSurfaceCardProps;
 
-export function BalanceSurface(props: BalanceSurfaceProps): JSX.Element {
+export function BalanceSurface(props: BalanceSurfaceProps): JSX.Element | null {
   switch (props.density) {
     case 'card':
       return <BalanceCard {...props} />;
@@ -109,6 +123,8 @@ export function BalanceSurface(props: BalanceSurfaceProps): JSX.Element {
           balanceCredits={props.balanceCredits}
           onSelect={props.onSelect}
           selected={props.selected}
+          otherBillingSourceReady={props.otherBillingSourceReady}
+          canPurchase={props.canPurchase}
           data-testid={props['data-testid']}
         />
       );

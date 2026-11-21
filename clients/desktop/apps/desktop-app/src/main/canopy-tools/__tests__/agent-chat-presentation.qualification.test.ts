@@ -37,6 +37,7 @@ import {
   setSessionInterfaceToolRegistry,
 } from '../../agents/interface-tool-binding';
 import { openShareDialog } from '../sharing-runtime';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import type { WorktreeActionRuntime } from '../worktree-actions';
 
 const routeRequest = jest.mocked(routeRendererToolRequest);
@@ -54,6 +55,7 @@ function runtime(): WorktreeActionRuntime & { getWindow: jest.Mock } {
     chatId: 'chat-1',
     cwd: '/worktrees/proj/wt',
     getWindow: jest.fn((): null => null),
+    interfacePort: windowAgentInterfacePort(() => null),
   };
 }
 

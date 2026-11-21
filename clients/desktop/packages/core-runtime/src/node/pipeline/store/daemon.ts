@@ -17,4 +17,8 @@ export {
   pipelineAssetsDir,
   pipelineAssetsManifestPath,
   type DaemonPipelineAssetEnvironmentOptions,
+  createDaemonPipelineInstallJournalEnvironment,
+  DaemonInstallJournalWriteRefusedError,
+  type DaemonInstallJournalRefusal,
+  type DaemonPipelineInstallJournalEnvironmentOptions,
 } from './daemon-assets';

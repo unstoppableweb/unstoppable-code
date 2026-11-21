@@ -22,7 +22,9 @@ import {
   AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE,
   AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
 } from '../lib/pipeline-package-display';
+import { Badge } from './Badge';
 import { Heading } from './Heading';
+import { Surface } from './Surface';
 
 export interface AutomationDefinitionSummaryProps {
   automation: SharedAutomationDocument;
@@ -286,8 +288,8 @@ export function AutomationDefinitionSummary({
         <Heading level={2} variant="title">
           What it does
         </Heading>
-        <div className="rounded-xl border bg-card p-4 text-s">
-          <Stack gap="item">
+        <Surface variant="card" padding="default">
+          <div className="flex flex-col gap-3 text-s">
             <Stack gap="tight">
               <p className="font-medium">{actionLabel(action)}</p>
               <div>
@@ -323,8 +325,8 @@ export function AutomationDefinitionSummary({
                 {prompt || 'No prompt text.'}
               </CodeBlock>
             )}
-          </Stack>
-        </div>
+          </div>
+        </Surface>
       </Stack>
 
       {hasNeeds && (
@@ -332,73 +334,70 @@ export function AutomationDefinitionSummary({
           <Heading level={2} variant="title">
             What it needs
           </Heading>
-          <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 text-s">
-            {plugins.length > 0 && (
-              <Stack gap="tight">
-                <p className="text-xs font-medium fg-secondary">Plugins</p>
-                <Stack as="ul" gap="tight">
-                  {plugins.map(
-                    (ref): JSX.Element => (
-                      <li key={JSON.stringify(ref)}>{pluginLabel(ref)}</li>
-                    ),
-                  )}
+          <Surface variant="card" padding="default">
+            <div className="flex flex-col gap-3 text-s">
+              {plugins.length > 0 && (
+                <Stack gap="tight">
+                  <p className="text-xs font-medium fg-secondary">Plugins</p>
+                  <Stack as="ul" gap="tight">
+                    {plugins.map(
+                      (ref): JSX.Element => (
+                        <li key={JSON.stringify(ref)}>{pluginLabel(ref)}</li>
+                      ),
+                    )}
+                  </Stack>
                 </Stack>
-              </Stack>
-            )}
-            {pipelineNames.length > 0 && (
-              <Stack gap="tight" data-testid="automation-summary-pipelines">
-                <p className="text-xs font-medium fg-secondary">
-                  Pipelines included
-                </p>
-                <Stack as="ul" gap="tight">
-                  {pipelineNames.map(
-                    (name, index): JSX.Element => (
-                      <li key={`${String(index)}:${name}`}>{name}</li>
-                    ),
-                  )}
+              )}
+              {pipelineNames.length > 0 && (
+                <Stack gap="tight" data-testid="automation-summary-pipelines">
+                  <p className="text-xs font-medium fg-secondary">
+                    Pipelines included
+                  </p>
+                  <Stack as="ul" gap="tight">
+                    {pipelineNames.map(
+                      (name, index): JSX.Element => (
+                        <li key={`${String(index)}:${name}`}>{name}</li>
+                      ),
+                    )}
+                  </Stack>
                 </Stack>
-              </Stack>
-            )}
-            {inputKeys.length > 0 && (
-              <Stack gap="tight">
-                <p className="text-xs font-medium fg-secondary">
-                  Inputs you provide at install
+              )}
+              {inputKeys.length > 0 && (
+                <Stack gap="tight">
+                  <p className="text-xs font-medium fg-secondary">
+                    Inputs you provide at install
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {inputKeys.map(
+                      (key): JSX.Element => (
+                        <Badge key={key}>{key}</Badge>
+                      ),
+                    )}
+                  </div>
+                </Stack>
+              )}
+              {automation.hasRunCondition && (
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid="automation-summary-run-condition"
+                >
+                  {automation.runCondition
+                    ? 'The author gated this with a run condition you can review when installing.'
+                    : 'The author gated this with a run condition; the command stays on their machine.'}
                 </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {inputKeys.map(
-                    (key): JSX.Element => (
-                      <span
-                        key={key}
-                        className="rounded-full border px-2 py-0.5 text-xs"
-                      >
-                        {key}
-                      </span>
-                    ),
-                  )}
-                </div>
-              </Stack>
-            )}
-            {automation.hasRunCondition && (
-              <p
-                className="text-xs fg-secondary"
-                data-testid="automation-summary-run-condition"
-              >
-                {automation.runCondition
-                  ? 'The author gated this with a run condition you can review when installing.'
-                  : 'The author gated this with a run condition; the command stays on their machine.'}
-              </p>
-            )}
-            {distributionMode !== undefined && (
-              <p
-                className="text-xs fg-secondary"
-                data-testid="automation-summary-distribution"
-              >
-                {distributionMode === 'package'
-                  ? AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE
-                  : AUTOMATION_PACKAGE_DEPENDENCIES_EXCLUDED_NOTE}
-              </p>
-            )}
-          </div>
+              )}
+              {distributionMode !== undefined && (
+                <p
+                  className="text-xs fg-secondary"
+                  data-testid="automation-summary-distribution"
+                >
+                  {distributionMode === 'package'
+                    ? AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE
+                    : AUTOMATION_PACKAGE_DEPENDENCIES_EXCLUDED_NOTE}
+                </p>
+              )}
+            </div>
+          </Surface>
         </Stack>
       )}
     </Stack>

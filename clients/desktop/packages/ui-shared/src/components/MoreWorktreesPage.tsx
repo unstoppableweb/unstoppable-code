@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useEffect,
   useId,
   useMemo,
   useRef,
@@ -33,6 +34,7 @@ import { Heading } from './Heading';
 import { PageColumn } from './PageColumn';
 import { PageHeader } from './PageHeader';
 import { PageSearchField, PageSearchRow } from './PageSearchRow';
+import { SearchEmptyState } from './SearchField';
 import { Skeleton } from './Skeleton';
 import { Stack } from './Stack';
 import { Surface } from './Surface';
@@ -181,8 +183,10 @@ export function MoreWorktreesPage({
     (item) => (tab === 'all' || item.state === tab) && matches(item, needle),
   );
   return (
-    <div
-      className="h-full min-h-0 overflow-y-auto bg-card"
+    <Surface
+      variant="panel"
+      extent="parent"
+      className="min-h-0 overflow-y-auto"
       data-testid={`${testIdPrefix}-page`}
     >
       <PageColumn width="content" as="main">
@@ -232,16 +236,25 @@ export function MoreWorktreesPage({
               {emptyMessage ??
                 `${unitLabelPlural} you hide, archive or delete show up here.`}
             </div>
+          ) : visible.length === 0 && needle !== '' ? (
+            <SearchEmptyState
+              title={
+                <>
+                  No {unitLabelPlural.toLowerCase()} match &ldquo;
+                  {query.trim()}&rdquo;
+                </>
+              }
+              actionLabel="Clear search"
+              onAction={(): void => setQuery('')}
+              testId={`${testIdPrefix}-no-matches`}
+              actionTestId={`${testIdPrefix}-clear-search`}
+            />
           ) : visible.length === 0 ? (
             <div
               className="py-6 text-center text-s fg-secondary"
               data-testid={`${testIdPrefix}-no-matches`}
             >
-              {needle === '' ? (
-                'Nothing here'
-              ) : (
-                <>No worktrees match &ldquo;{query.trim()}&rdquo;</>
-              )}
+              Nothing here
             </div>
           ) : (
             SECTIONS.map(({ state, title: sectionTitle }) => {
@@ -277,7 +290,7 @@ export function MoreWorktreesPage({
           )}
         </Stack>
       </PageColumn>
-    </div>
+    </Surface>
   );
 }
 
@@ -292,13 +305,43 @@ function MoreWorktreeCard({
   const insertions = item.insertions ?? 0;
   const deletions = item.deletions ?? 0;
   const hasChanges = insertions > 0 || deletions > 0;
+  const busy = item.progressLabel !== undefined;
+  const cardRef = useRef<HTMLElement>(null);
+  // Whether focus was last inside the card, menu portal included (React
+  // focus events bubble through portals).
+  const focusInsideRef = useRef(false);
+  useEffect(() => {
+    // The actions unmount while busy; focus inside them would fall to the
+    // page, so keep it on the card.
+    const active = document.activeElement;
+    if (
+      busy &&
+      focusInsideRef.current &&
+      (active === null || active === document.body)
+    ) {
+      cardRef.current?.focus();
+    }
+  }, [busy]);
   return (
     <Surface
+      ref={cardRef}
       variant="card"
       padding="compact"
+      tabIndex={-1}
+      focusRing
+      onFocus={(): void => {
+        focusInsideRef.current = true;
+      }}
+      onBlur={(event): void => {
+        // Any blur that leaves the card clears it, a blur to nothing too.
+        const next = event.relatedTarget;
+        if (!(next instanceof Node && event.currentTarget.contains(next))) {
+          focusInsideRef.current = false;
+        }
+      }}
       data-testid={item.testId ?? `${testIdPrefix}-item-${item.id}`}
       data-state={item.state}
-      aria-busy={item.progressLabel === undefined ? undefined : true}
+      aria-busy={busy ? true : undefined}
       className={CARD_CONTAINER_CLASS_NAME}
     >
       <div className="flex items-center gap-3">
@@ -315,7 +358,10 @@ function MoreWorktreeCard({
         <Stack gap="tight" className="min-w-0 flex-1">
           <span className="flex min-w-0 items-center text-s fg-primary">
             {/* User-authored names stay out of session replay. */}
-            <span className={`truncate ${REPLAY_MASK_CLASS}`}>
+            <span
+              className={`truncate ${REPLAY_MASK_CLASS}`}
+              title={item.title}
+            >
               {item.title}
             </span>
           </span>
@@ -324,6 +370,7 @@ function MoreWorktreeCard({
               {item.branch !== undefined && (
                 <span
                   className={`truncate ${REPLAY_MASK_CLASS} ${item.running === true ? 'canopy-text-shimmer' : ''}`}
+                  title={item.branch}
                 >
                   {item.branch}
                 </span>
@@ -335,31 +382,37 @@ function MoreWorktreeCard({
                 </span>
               )}
               {item.note !== undefined && (
-                <span className="truncate">{item.note}</span>
+                <span className="truncate" title={item.note}>
+                  {item.note}
+                </span>
               )}
             </span>
           )}
           {/* Narrow cards: the date and restore countdown sit under the title. */}
-          <span className="flex min-w-0 items-center gap-1.5 text-xs fg-tertiary @min-[30rem]/more-card:hidden">
+          <span className="flex min-w-0 items-center gap-1.5 text-xs tabular-nums fg-tertiary @min-[30rem]/more-card:hidden">
             <span className="shrink-0">{item.date}</span>
             {item.restoreNote !== undefined && (
-              <span className="truncate">{item.restoreNote}</span>
+              <span className="truncate" title={item.restoreNote}>
+                {item.restoreNote}
+              </span>
             )}
           </span>
         </Stack>
         <span className="flex shrink-0 items-center gap-5">
-          <span className="hidden flex-col items-end gap-0.5 text-xs fg-tertiary @min-[30rem]/more-card:flex">
+          <span className="hidden flex-col items-end gap-0.5 text-xs tabular-nums fg-tertiary @min-[30rem]/more-card:flex">
             <span>{item.date}</span>
             {item.restoreNote !== undefined && <span>{item.restoreNote}</span>}
           </span>
-          {item.progressLabel !== undefined ? (
-            <span
-              role="status"
-              className="w-28 text-right text-xs fg-secondary"
-            >
-              {item.progressLabel}
-            </span>
-          ) : (
+          {/* Always mounted, so the label is announced when it appears. */}
+          <span
+            role="status"
+            className={
+              busy ? 'w-28 text-right text-xs fg-secondary' : 'sr-only'
+            }
+          >
+            {item.progressLabel}
+          </span>
+          {busy ? null : (
             <MoreWorktreeActions item={item} testIdPrefix={testIdPrefix} />
           )}
         </span>
@@ -457,24 +510,24 @@ function PrimaryAction({
   readonly action: MoreWorktreePrimaryAction;
   readonly testId: string;
 }): JSX.Element {
+  const unavailable = action.unavailableReason !== undefined;
+  // An unavailable action stays focusable (`aria-disabled`), so a keyboard
+  // reaches the tooltip that says why.
   const button = (
     <Button
       variant="secondary"
       size="compact"
       className="flex-1"
       onClick={action.onClick}
-      disabled={action.disabled}
+      disabled={unavailable ? undefined : action.disabled}
+      aria-disabled={unavailable ? true : undefined}
       data-testid={testId}
     >
       {action.label}
     </Button>
   );
   if (action.unavailableReason === undefined) return button;
-  return (
-    <Tooltip label={action.unavailableReason}>
-      <span className="flex flex-1">{button}</span>
-    </Tooltip>
-  );
+  return <Tooltip label={action.unavailableReason}>{button}</Tooltip>;
 }
 
 /** Plain cards of the real shape, so the bars sit where the cards will. */

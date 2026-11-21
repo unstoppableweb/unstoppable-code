@@ -80,6 +80,8 @@ function handleUnpaintedRowKeyDown(doc: Document, event: KeyboardEvent): void {
   paintRow(row, container);
 }
 
+const touchPointerByDocument = new WeakMap<Document, boolean>();
+
 /**
  * Starts recording input modality for `doc`. Idempotent; call it from a mount
  * effect of any component whose focus handler reads `wasFocusVisible`, so the
@@ -109,6 +111,15 @@ export function trackInputModality(doc: Document): void {
     },
     true,
   );
+  for (const type of ['pointerdown', 'pointermove'] as const) {
+    doc.addEventListener(
+      type,
+      (event: PointerEvent): void => {
+        touchPointerByDocument.set(doc, event.pointerType === 'touch');
+      },
+      true,
+    );
+  }
   for (const type of POINTER_EVENTS) {
     doc.addEventListener(
       type,
@@ -118,6 +129,15 @@ export function trackInputModality(doc: Document): void {
       true,
     );
   }
+}
+
+/**
+ * Whether the last pointer in `doc` was a finger. A tap is followed by the
+ * browser's emulated `mouseenter`, which a hover-only tooltip must ignore;
+ * reads `false` until `trackInputModality(doc)` has run.
+ */
+export function lastPointerWasTouch(doc: Document | undefined): boolean {
+  return doc !== undefined && touchPointerByDocument.get(doc) === true;
 }
 
 /**

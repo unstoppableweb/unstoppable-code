@@ -89,7 +89,7 @@ const CALENDAR_EVENT_APPEARANCE = {
 /** Paint and geometry for host-specific compound controls. */
 export const DESKTOP_CONTROL_RECIPES = {
   'diff-folder':
-    'flex w-max min-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]',
+    'focus-ring focus-ring-inset flex w-max min-w-full items-center gap-1.5 rounded-md px-2 py-1 pointer-coarse:min-h-11 text-xs fg-secondary transition-colors hover:bg-fg-primary/[0.04]',
   'diff-file': ({
     fullPath,
     selected,
@@ -97,7 +97,7 @@ export const DESKTOP_CONTROL_RECIPES = {
     fullPath: boolean;
     selected: boolean;
   }) =>
-    `flex ${fullPath ? 'w-full min-w-0' : 'w-max min-w-full'} items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors ${
+    `focus-ring focus-ring-inset flex ${fullPath ? 'w-full min-w-0' : 'w-max min-w-full'} items-center gap-1.5 rounded-md px-2 py-1 pointer-coarse:min-h-11 text-xs transition-colors ${
       selected
         ? 'bg-accent/[0.08] fg-primary'
         : 'fg-primary/80 hover:bg-fg-primary/[0.06]'
@@ -280,7 +280,9 @@ export const DESKTOP_CONTROL_RECIPES = {
   // New Customize's status-line "Sign in" and "Try again": plain text; only the
   // triangle beside it carries the warning color (Sergii's QA).
   'customize-row-sign-in':
-    'focus-ring rounded font-medium fg-primary hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60',
+    "focus-ring relative rounded font-medium fg-primary hover:underline before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-x-2 disabled:cursor-not-allowed disabled:no-underline disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:no-underline aria-disabled:opacity-60",
+  'mcp-row-attention':
+    'focus-ring focus-ring-inset inline-flex shrink-0 items-center justify-center gap-1 rounded-sm fg-warning pointer-coarse:min-h-6 pointer-coarse:min-w-6',
   'customize-row-action-menu': `focus-ring flex w-7 shrink-0 items-center justify-center fg-secondary transition-colors hover:fg-primary ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} aria-expanded:fg-primary`,
   'worktree-open-menu': (split: boolean) =>
     `focus-ring flex items-center transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${
@@ -303,7 +305,7 @@ export const DESKTOP_CONTROL_RECIPES = {
         : 'hover:bg-destructive-subtle hover:fg-destructive'
     }`,
   'worktree-apply': (standalone: boolean) =>
-    `focus-ring inline-flex items-center gap-2 ${standalone ? 'rounded-md' : 'rounded-l-md'} bg-info px-3 py-1.5 text-xs font-medium fg-emphasis disabled:opacity-60`,
+    `focus-ring inline-flex items-center gap-2 ${standalone ? 'rounded-full' : 'rounded-l-full'} bg-info px-3 py-1.5 pointer-coarse:min-h-11 text-xs font-medium fg-emphasis disabled:opacity-60`,
   'worktree-apply-menu':
-    'focus-ring rounded-r-md border-l border-fg-emphasis/20 bg-info px-2 py-1.5 fg-emphasis disabled:opacity-60',
+    'focus-ring rounded-r-full border-l border-fg-emphasis/20 bg-info px-2 py-1.5 pointer-coarse:min-h-11 pointer-coarse:min-w-11 fg-emphasis disabled:opacity-60',
 } as const;

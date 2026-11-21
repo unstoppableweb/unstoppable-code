@@ -1925,6 +1925,7 @@ function CustomizeTabSectionsBody(
                       }
                       testId={`customize-row-health-${entry.id}`}
                       checkedLabel={checkedLabel}
+                      announce={busy && !discoveryEnabled}
                     />
                   ),
                 inlineAction: pending?.authorizationUrl ? (

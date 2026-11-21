@@ -3,6 +3,7 @@
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   ActivityItemDensityContext,
+  DEFAULT_MENU_ROW_STYLE,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuRowStyleProvider,
@@ -197,21 +198,24 @@ function AddMenu({
         aria-label="Add"
         className="w-56"
       >
-        {rows.map((row) => (
-          <DropdownMenuItem
-            key={row.key}
-            data-testid={`activity-card-row-${row.key}`}
-            onClick={(): void => {
-              setOpen(false);
-              onChoose(row);
-            }}
-          >
-            <DropdownMenuItemIcon tone="tertiary">
-              {row.icon}
-            </DropdownMenuItemIcon>
-            <span className="min-w-0 flex-1 truncate">{row.title}</span>
-          </DropdownMenuItem>
-        ))}
+        {/* The card's row style reaches through the portal; reset it. */}
+        <DropdownMenuRowStyleProvider value={DEFAULT_MENU_ROW_STYLE}>
+          {rows.map((row) => (
+            <DropdownMenuItem
+              key={row.key}
+              data-testid={`activity-card-row-${row.key}`}
+              onClick={(): void => {
+                setOpen(false);
+                onChoose(row);
+              }}
+            >
+              <DropdownMenuItemIcon tone="tertiary">
+                {row.icon}
+              </DropdownMenuItemIcon>
+              <span className="min-w-0 flex-1 truncate">{row.title}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuRowStyleProvider>
       </FloatingMenu>
     </>
   );

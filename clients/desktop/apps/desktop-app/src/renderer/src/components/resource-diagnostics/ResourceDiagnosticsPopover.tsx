@@ -21,7 +21,7 @@ import {
   type ResourceDiagnosticsSortColumn,
   type ResourceDiagnosticsSortState,
 } from './sortState';
-import { ModelProviderIcon, RailIconButton } from '@canopy/ui-shared';
+import { RailIconButton } from '@canopy/ui-shared';
 import {
   Button,
   DataTableBody,
@@ -36,16 +36,7 @@ import {
   DisclosureChevron,
   DisclosureToggle,
 } from '@canopy/ui-shared/components';
-import {
-  ChatIcon,
-  ChipSimpleIcon,
-  GlobeIcon,
-  PlayIcon,
-  SettingsIcon,
-  TerminalIcon,
-  WorkflowIcon,
-} from '@canopy/ui-shared/icons/AppIcons';
-import { BrandLogo } from '@/components/BrandLogo';
+import { SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 interface ResourceDiagnosticsPopoverProps {
   snapshot: ResourceMonitorSnapshot | null;
@@ -81,20 +72,18 @@ const GROUP_PRIORITY: Record<ResourceGroupId, number> = {
 const ELECTRON_PROCESS_LABEL_PREFIX = 'Electron ';
 
 /**
- * Each source's glyph in its 12px slot. Lucide glyphs draw at the compact
- * 14px step; the logos draw at 12px.
+ * Rows carry no source glyph: most rows share a source, so the glyphs did not
+ * tell rows apart. The source leads each name's details instead. A row with
+ * children carries its chevron after its name, so every name, and the footer
+ * labels, start at the same edge; children indent under their parent.
  */
-const SOURCE_GLYPHS: Readonly<Record<ResourceGroupId, JSX.Element>> = {
-  app: <BrandLogo size={12} aria-hidden />,
-  browser: <GlobeIcon size="sm" />,
-  codex: <ModelProviderIcon provider="codex" size="xs" />,
-  claude: <ModelProviderIcon provider="claude" size="xs" />,
-  chat: <ChatIcon size="sm" />,
-  pipelines: <WorkflowIcon size="sm" />,
-  terminal: <TerminalIcon size="sm" />,
-  scripts: <PlayIcon size="sm" />,
-  other: <ChipSimpleIcon size="sm" />,
-};
+const TREE_INDENT_PX = 12;
+/**
+ * Deeper rows stop indenting: the chevron follows the name inside the
+ * clipped Name cell, so unbounded indentation could push it out of reach.
+ * Past this depth the name truncates instead, and the chevron stays.
+ */
+const TREE_INDENT_MAX_DEPTH = 4;
 
 /**
  * Sources whose processes the app runs for itself (Electron and the commands
@@ -630,136 +619,158 @@ export function ResourceDiagnosticsPopover({
   // so the controls' container opts out.
   return (
     <div
-      className="electron-no-drag flex flex-col gap-2"
+      className="electron-no-drag flex flex-col"
       data-testid="resource-diagnostics-popover-content"
     >
-      <div className="flex shrink-0 items-center gap-3">
-        <Heading level={3} variant="title" truncate className="min-w-0 flex-1">
-          Resources
-        </Heading>
-        {snapshot && (
-          <span
-            className="flex gap-2 text-xs tabular-nums fg-tertiary"
-            data-testid="resource-diagnostics-popover-totals"
+      <div className="flex min-h-0 flex-col gap-2">
+        <div className="flex shrink-0 items-center gap-3">
+          <Heading
+            level={3}
+            variant="title"
+            truncate
+            className="min-w-0 flex-1"
           >
-            <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
-            <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
-          </span>
-        )}
-        <RailIconButton
-          icon={SettingsIcon}
-          hoverSurface
-          aria-label="Open performance settings"
-          tooltipLabel="Performance settings"
-          data-testid="resource-diagnostics-popover-settings"
-          onClick={handleOpenPerformanceSettings}
-          // The glyph, not the button, meets the 12px content inset.
-          inset="tight-end"
-        />
-      </div>
-
-      <div className="min-h-0">
-        {loading && <p className="text-xs fg-tertiary">Measuring resources…</p>}
-
-        {!loading && !snapshot && error && (
-          <ErrorBanner
-            errorSource="resource-diagnostics-popover"
-            className=""
-            error="Resource metrics unavailable"
+            Resources
+          </Heading>
+          {snapshot && (
+            <span
+              className="flex gap-2 text-xs tabular-nums fg-tertiary"
+              data-testid="resource-diagnostics-popover-totals"
+            >
+              <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
+              <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
+            </span>
+          )}
+          <RailIconButton
+            icon={SettingsIcon}
+            hoverSurface
+            aria-label="Open performance settings"
+            tooltipLabel="Performance settings"
+            data-testid="resource-diagnostics-popover-settings"
+            onClick={handleOpenPerformanceSettings}
+            // The glyph, not the button, meets the 12px content inset.
+            inset="tight-end"
           />
-        )}
+        </div>
 
-        {!loading && !snapshot && !error && (
-          <EmptyStateRow title="No resource samples yet." />
-        )}
+        {/* The rows and the footer rows share one 36px rhythm with a hairline
+          between them, so they sit flush: no gap, no section padding. A
+          table row draws its hairline inside its 36px; a footer row's
+          section border takes the hairline's space, so the row gives it
+          back. */}
+        <div className="flex min-h-0 flex-col">
+          <div className="min-h-0">
+            {loading && (
+              <p className="text-xs fg-tertiary">Measuring resources…</p>
+            )}
 
-        {snapshot && (
-          <Stack gap="inline">
-            {error && (
+            {!loading && !snapshot && error && (
               <ErrorBanner
-                errorSource="resource-diagnostics-popover-error"
+                errorSource="resource-diagnostics-popover"
                 className=""
                 error="Resource metrics unavailable"
-                testId="resource-diagnostics-popover-error"
               />
             )}
 
-            {rows.length === 0 ? (
+            {!loading && !snapshot && !error && (
               <EmptyStateRow title="No resource samples yet." />
-            ) : (
-              <DataTableFrame
-                caption="Resource usage"
-                layout="fixed"
-                maxHeight="20rem"
-              >
-                <DataTableHead sticky>
-                  <DataTableHeaderCell width="3.5rem" labelHidden>
-                    Source
-                  </DataTableHeaderCell>
-                  <SortHeader
-                    label="Name"
-                    column="name"
-                    sort={sort}
-                    onClick={handleHeaderClick}
-                    align="start"
-                  />
-                  <SortHeader
-                    label="CPU"
-                    column="cpu"
-                    sort={sort}
-                    onClick={handleHeaderClick}
-                    align="end"
-                    width="5rem"
-                  />
-                  <SortHeader
-                    label="Memory"
-                    column="memory"
-                    sort={sort}
-                    onClick={handleHeaderClick}
-                    align="end"
-                    width="6.5rem"
-                  />
-                </DataTableHead>
-                <DataTableBody>
-                  {rows.map((row) => (
-                    <ResourceRow
-                      key={row.id}
-                      row={row}
-                      expanded={expanded.has(row.id)}
-                      onToggle={toggleExpanded}
-                      onNavigate={handleNavigateToWorktree}
-                    />
-                  ))}
-                </DataTableBody>
-              </DataTableFrame>
             )}
-          </Stack>
-        )}
-      </div>
 
-      {snapshot && (
-        <Surface
-          variant="section"
-          boundary="top"
-          padding="section-top-tight"
-          className="shrink-0"
-          data-testid="resource-diagnostics-popover-app-totals"
-        >
-          <div className="flex items-center gap-3 text-xs">
-            <span className="flex w-5 shrink-0 items-center" aria-hidden="true">
-              {SOURCE_GLYPHS.app}
-            </span>
-            <span className="min-w-0 flex-1 truncate fg-secondary">
-              App processes
-            </span>
-            <span className="flex gap-2 tabular-nums fg-secondary">
-              <span>{formatCpuPercent(appManagedTotals.cpuPercent)}% CPU</span>
-              <span>{formatMemoryBytes(appManagedTotals.memoryRssBytes)}</span>
-            </span>
+            {snapshot && (
+              <Stack gap="inline">
+                {error && (
+                  <ErrorBanner
+                    errorSource="resource-diagnostics-popover-error"
+                    className=""
+                    error="Resource metrics unavailable"
+                    testId="resource-diagnostics-popover-error"
+                  />
+                )}
+
+                {rows.length === 0 ? (
+                  <EmptyStateRow title="No resource samples yet." />
+                ) : (
+                  <DataTableFrame
+                    caption="Resource usage"
+                    layout="fixed"
+                    appearance="plain"
+                    // The 28px header and ten 36px rows: the list stops between rows,
+                    // never partway through one.
+                    maxHeight="24.25rem"
+                  >
+                    <DataTableHead sticky>
+                      {/* CPU fits its widest sort label; Memory is 8px wider
+                      than its widest value, so the numbers stand clear of
+                      CPU's. The totals row below repeats these widths. */}
+                      <SortHeader
+                        label="Name"
+                        column="name"
+                        sort={sort}
+                        onClick={handleHeaderClick}
+                        align="start"
+                      />
+                      <SortHeader
+                        label="CPU"
+                        column="cpu"
+                        sort={sort}
+                        onClick={handleHeaderClick}
+                        align="end"
+                        width="3.5rem"
+                      />
+                      <SortHeader
+                        label="Memory"
+                        column="memory"
+                        sort={sort}
+                        onClick={handleHeaderClick}
+                        align="end"
+                        width="6rem"
+                      />
+                    </DataTableHead>
+                    <DataTableBody>
+                      {rows.map((row) => (
+                        <ResourceRow
+                          key={row.id}
+                          row={row}
+                          expanded={expanded.has(row.id)}
+                          onToggle={toggleExpanded}
+                          onNavigate={handleNavigateToWorktree}
+                        />
+                      ))}
+                    </DataTableBody>
+                  </DataTableFrame>
+                )}
+              </Stack>
+            )}
           </div>
-        </Surface>
-      )}
 
+          {snapshot && (
+            <Surface
+              variant="section"
+              boundary="top"
+              className="shrink-0"
+              data-testid="resource-diagnostics-popover-app-totals"
+            >
+              {/* A row like the table's: the label in a name's ink where names
+              start, the totals in the numbers' ink under the CPU (3.5rem
+              column) and Memory (6rem column, less the plain table's 8px
+              end inset) values. */}
+              <div className="flex h-[calc(2.25rem_-_var(--border-hairline))] items-center text-s fg-secondary">
+                <span className="min-w-0 flex-1 truncate fg-primary">
+                  App processes
+                </span>
+                <span className="w-14 shrink-0 text-right tabular-nums">
+                  {formatCpuPercent(appManagedTotals.cpuPercent)}%
+                  <span className="sr-only"> CPU</span>
+                </span>
+                <span className="w-22 shrink-0 text-right tabular-nums">
+                  {formatMemoryBytes(appManagedTotals.memoryRssBytes)}
+                  <span className="sr-only"> memory</span>
+                </span>
+              </div>
+            </Surface>
+          )}
+        </div>
+      </div>
       <MemoryReportFooter onClose={onClose} />
     </div>
   );
@@ -769,14 +780,20 @@ export function ResourceDiagnosticsPopover({
  * Creates a memory report, and opens the newest one's folder, while memory
  * diagnostics are on in Performance settings. The report's confirmation and
  * progress overlay are app-wide, so starting one closes this popover.
+ *
+ * The row reads the store's last known setting, so after the first read the
+ * popover opens with it in place; each open refreshes it.
  */
 function MemoryReportFooter({
   onClose,
 }: {
   onClose: () => void;
 }): JSX.Element | null {
-  const [enabled, setEnabled] = useState(false);
   const [revealFailed, setRevealFailed] = useState(false);
+  const enabled = useMemoryReportStore((state) => state.diagnosticsEnabled);
+  const setEnabled = useMemoryReportStore(
+    (state) => state.setDiagnosticsEnabled,
+  );
   const lastReport = useMemoryReportStore((state) => state.lastReport);
   const setLastReport = useMemoryReportStore((state) => state.setLastReport);
   const reportBusy = useMemoryReportStore(
@@ -794,24 +811,27 @@ function MemoryReportFooter({
         setEnabled(status.enabled);
         setLastReport(status.lastReport);
       } catch {
-        // Without a status the footer stays hidden.
+        // Without a status the row keeps its last known state.
       }
     })();
     return (): void => {
       active = false;
     };
-  }, [setLastReport]);
+  }, [setEnabled, setLastReport]);
 
-  if (!enabled) return null;
+  if (enabled !== true) return null;
   return (
     <Surface
-      variant="section"
+      // An action band, not another data row: it meets the popover's edges
+      // through its 12px inset and pads its content by the same 12px, so
+      // the buttons sit as far below its edge as above the popover's.
+      variant="popover-footer"
       boundary="top"
-      padding="section-top-tight"
-      className="shrink-0"
+      padding="compact"
+      className="-mx-3 -mb-3 shrink-0"
       data-testid="resource-diagnostics-popover-memory-report"
     >
-      <div className="flex flex-col gap-2 text-xs">
+      <div className="flex flex-col gap-2">
         {revealFailed && (
           <ErrorBanner
             errorSource="memory-report-footer"
@@ -819,38 +839,40 @@ function MemoryReportFooter({
             error="Couldn't open the folder"
           />
         )}
-        <div className="flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate fg-secondary">
+        <div className="flex items-center gap-2 text-s fg-secondary">
+          <span className="min-w-0 flex-1 truncate fg-primary">
             Memory report
           </span>
-          {lastReport ? (
+          <span className="flex shrink-0 items-center gap-2">
+            {lastReport ? (
+              <Button
+                size="compact"
+                variant="secondary"
+                data-testid="resource-diagnostics-popover-open-report"
+                onClick={() => {
+                  void revealReport(lastReport.reportId).then((revealed) => {
+                    setRevealFailed(!revealed);
+                  });
+                }}
+              >
+                Open folder
+              </Button>
+            ) : null}
             <Button
               size="compact"
               variant="secondary"
-              data-testid="resource-diagnostics-popover-open-report"
+              disabled={reportBusy}
+              data-testid="resource-diagnostics-popover-create-report"
+              // The row's label names the report, so the action can stay short.
+              aria-label="Create memory report"
               onClick={() => {
-                void revealReport(lastReport.reportId).then((revealed) => {
-                  setRevealFailed(!revealed);
-                });
+                onClose();
+                void requestReport();
               }}
             >
-              Open folder
+              Create
             </Button>
-          ) : null}
-          <Button
-            size="compact"
-            variant="secondary"
-            disabled={reportBusy}
-            data-testid="resource-diagnostics-popover-create-report"
-            // The row's label names the report, so the action can stay short.
-            aria-label="Create memory report"
-            onClick={() => {
-              onClose();
-              void requestReport();
-            }}
-          >
-            Create
-          </Button>
+          </span>
         </div>
       </div>
     </Surface>
@@ -912,68 +934,60 @@ function ResourceRow({
       onNavigate(navigationTarget);
     }
   };
-  const sourceIcon = (
-    <span className="flex h-3 w-3 items-center justify-center fg-tertiary">
-      {SOURCE_GLYPHS[process.groupId]}
-    </span>
-  );
   return (
     <DataTableRow
       data-testid={`resource-row-${process.id}`}
       onActivate={clickable ? handleClick : undefined}
       activateOnSpace
     >
-      <DataTableCell>
-        {row.hasChildren ? (
-          // The source icon turns into the disclosure toggle on hover.
-          <DisclosureToggle
-            variant="tree-icon"
-            open={expanded}
-            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${displayLabel}`}
-            data-testid={`resource-row-toggle-${process.id}`}
-            onClick={(event): void => {
-              event.stopPropagation();
-              onToggle(row.id);
-            }}
+      <DataTableCell overflow="truncate">
+        <div
+          className="flex min-w-0 items-center gap-1"
+          style={{
+            paddingLeft:
+              Math.min(depth, TREE_INDENT_MAX_DEPTH) * TREE_INDENT_PX,
+          }}
+        >
+          <Tooltip
+            label={
+              <span className="flex flex-col">
+                <span>{displayLabel}</span>
+                <span className="fg-secondary">{details}</span>
+                {clickable ? (
+                  <span className="fg-secondary">Open worktree</span>
+                ) : null}
+              </span>
+            }
+            delay="long"
+            allowShrink
+            className="min-w-0"
+            contentClassName="max-w-80 whitespace-normal wrap-anywhere"
           >
-            <span className="group-hover:hidden group-focus-visible:hidden group-focus-visible-inside:hidden">
-              {sourceIcon}
-            </span>
-            <span className="hidden group-hover:flex group-focus-visible:flex group-focus-visible-inside:flex">
+            <div className="min-w-0 truncate">
+              <span className="fg-primary">{displayLabel}</span>
+              <span className="sr-only">, {details}</span>
+            </div>
+          </Tooltip>
+          {/* After the name, so rows that expand keep the names' edge. */}
+          {row.hasChildren ? (
+            <DisclosureToggle
+              variant="tree"
+              open={expanded}
+              aria-label={`${expanded ? 'Collapse' : 'Expand'} ${displayLabel}`}
+              data-testid={`resource-row-toggle-${process.id}`}
+              onClick={(event): void => {
+                event.stopPropagation();
+                onToggle(row.id);
+              }}
+            >
               <DisclosureChevron
                 direction={expanded ? 'down' : 'right'}
                 size="xs"
                 animated
               />
-            </span>
-          </DisclosureToggle>
-        ) : (
-          <span aria-hidden="true" className="flex">
-            {sourceIcon}
-          </span>
-        )}
-      </DataTableCell>
-      <DataTableCell overflow="truncate">
-        <Tooltip
-          label={
-            <span className="flex flex-col">
-              <span>{displayLabel}</span>
-              <span className="fg-secondary">{details}</span>
-              {clickable ? (
-                <span className="fg-secondary">Open worktree</span>
-              ) : null}
-            </span>
-          }
-          delay="long"
-          allowShrink
-          className="w-full"
-          contentClassName="max-w-80 whitespace-normal wrap-anywhere"
-        >
-          <div className="min-w-0 truncate" style={{ paddingLeft: depth * 12 }}>
-            <span className="fg-primary">{displayLabel}</span>
-            <span className="sr-only">, {details}</span>
-          </div>
-        </Tooltip>
+            </DisclosureToggle>
+          ) : null}
+        </div>
       </DataTableCell>
       <DataTableCell align="right">
         {formatCpuPercent(process.cpuPercent)}%

@@ -84,7 +84,7 @@ export function mcpRequirementUnknown(server: {
  * state. Callers add the surface and ink.
  */
 export const MCP_ROW_ACTION_CLASS_NAME =
-  'focus-ring inline-flex items-center rounded-md px-2 py-1 text-2xs font-medium transition-colors disabled:opacity-60';
+  "focus-ring relative inline-flex items-center rounded-md px-2 py-1 text-2xs font-medium transition-colors disabled:opacity-60 pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-2.5 pointer-coarse:before:content-['']";
 
 /**
  * The shared badge tone for an auth status. An expired sign-in that refreshes

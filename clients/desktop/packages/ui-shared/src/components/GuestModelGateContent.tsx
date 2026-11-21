@@ -6,6 +6,7 @@ import {
 } from './guestModelGate';
 import { Button } from './Button';
 import { LoadingSpinner } from './LoadingSpinner';
+import { ErrorBanner } from './StatusBlocks';
 
 /** Refusals without a display label retain their existing generic copy. */
 export type GuestModelGateSubject =
@@ -65,11 +66,12 @@ export function GuestModelGateContent({
       >
         {copy.body}
       </div>
-      {error && (
-        <div role="status" data-testid={`${dataTestId}-fallback-blocked`}>
-          {error}
-        </div>
-      )}
+      <ErrorBanner
+        className=""
+        errorSource="guest-model-gate"
+        error={error}
+        testId={`${dataTestId}-fallback-blocked`}
+      />
       {status && (
         <div
           role="status"

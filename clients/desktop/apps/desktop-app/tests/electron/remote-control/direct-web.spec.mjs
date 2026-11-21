@@ -14,7 +14,7 @@
 // Chrome DevTools reaches the SharedWorker only to shorten the five-minute
 // hidden-tab timer.
 import { execFileSync } from 'node:child_process';
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   mkdtempSync,
@@ -239,19 +239,24 @@ function ownerState(page) {
 
 async function waitForOwnerState(page, predicate, label) {
   let last = null;
-  await expect
-    .poll(
-      async () => {
-        last = await ownerState(page);
-        return last !== null && predicate(last);
-      },
-      {
-        ...POLL,
-        timeout: 60_000,
-        message: () => `${label}; last=${JSON.stringify(last)}`,
-      },
-    )
-    .toBe(true);
+  try {
+    await expect
+      .poll(
+        async () => {
+          last = await ownerState(page);
+          return last !== null && predicate(last);
+        },
+        {
+          ...POLL,
+          timeout: 60_000,
+        },
+      )
+      .toBe(true);
+  } catch (cause) {
+    // expect.poll does not call a function `message`, so a failure would
+    // print that function's source. Attach the browser's last owner state.
+    throw new Error(`${label}; last=${JSON.stringify(last)}`, { cause });
+  }
   return last;
 }
 
@@ -843,6 +848,66 @@ test('composer menus: the open chat’s / and @ menus and its Plugins picker are
   expect(primary.remoteControlRequests).toEqual([]);
 });
 
+test('chat visuals: a visual shown in a live turn runs in the frame the web serves, read over direct', async () => {
+  test.setTimeout(240_000);
+  // CAN-7432: the page reads the visual's bytes from the computer
+  // (`chat:read-visual`) and loads them into the shell served at
+  // `/api/v1/chat-visual-frame`, whose policy lets the visual's script run.
+  // The turn holds its reply on a barrier, so the visual must reach the open
+  // page from the live tool result, with no reload or history read.
+  const marker = `Canopy-CDIRECTVISUAL${randomBytes(4).toString('hex')}`;
+  const reply = `Direct visual reply ${randomBytes(3).toString('hex')}`;
+  const ran = `Visual ran ${randomBytes(3).toString('hex')}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+    llm: {
+      steps: [
+        {
+          toolCalls: [
+            {
+              name: 'mcp__canopy__ShowVisual',
+              input: {
+                title: 'Direct visual',
+                height: 120,
+                html: `<p id="ran">Waiting</p><script>document.getElementById('ran').textContent = ${JSON.stringify(ran)};</script>`,
+              },
+            },
+          ],
+          stopReason: 'tool_use',
+        },
+        {
+          text: reply,
+          stopReason: 'end_turn',
+          waitFor: 'reply',
+          barrierTimeoutMs: 120_000,
+        },
+      ],
+    },
+  });
+  const page = primary.page;
+  await openWorktree(page);
+  await openNewChat(page);
+  await composer(page).click();
+  await page.keyboard.type(`[${marker}] Show a visual over direct.`);
+  await page.keyboard.press('Enter');
+
+  await expect
+    .poll(() => mockBarrierWaiting(marker, 'reply'), POLL)
+    .toBeGreaterThan(0);
+  // The served shell takes the agent document by message and runs it in its
+  // own sandboxed child frame, while the turn is still running.
+  const shell = page.locator('iframe[src="/api/v1/chat-visual-frame"]').first();
+  await expect(shell).toBeAttached({ timeout: 60_000 });
+  await expect(
+    shell.contentFrame().locator('iframe').contentFrame().locator('#ran'),
+  ).toHaveText(ran, { timeout: 60_000 });
+  await expect(page.getByText(reply)).toHaveCount(0);
+
+  await releaseMockBarrier(marker, 'reply');
+  await expect(page.getByText(reply).first()).toBeVisible({ timeout: 60_000 });
+  expect(primary.remoteControlRequests).toEqual([]);
+  openChatReply = reply;
+});
+
 test('existing desktop chats: a chat started on the desktop lists in its worktree with its transcript over direct', async () => {
   test.setTimeout(240_000);
   const seeded = await registerChatReply('SEEDED');
@@ -1191,6 +1256,122 @@ test('the desktop refuses a paired browser session’s forbidden invokes and nev
   }
 });
 
+test('tips and suggestions: a browser session reads them through the narrow channels and its writes reach only those fields', async () => {
+  // CAN-7434: the browser never gets preferences:load (the refusal case
+  // above), so it reads tips and suggestions through their narrow channels.
+  test.setTimeout(180_000);
+  const link = await openDesktopPairingLink();
+  const secret = /&secret=([A-Za-z0-9_-]{43})$/.exec(link)[1];
+  const controller = await pairTestBrowserController({
+    relay,
+    userExternalId: await externalIdOf(userA.userId),
+    hostDeviceId: desktop.deviceId,
+    proofSecret: new Uint8Array(Buffer.from(secret, 'base64url')),
+  });
+  const storedPreferences = () =>
+    desktop.window.evaluate(async () => {
+      const preferences = await window.api.loadPreferences();
+      return {
+        tips: preferences.onboardingTipsDismissed,
+        suggestions: preferences.suggestions,
+        chatDetail: preferences.chatDetail,
+      };
+    });
+  const original = await storedPreferences();
+  let transport = null;
+  try {
+    const session = await controller.openSession();
+    transport = session.transport;
+    const readTips = async () => {
+      const read = await settle(
+        transport.invoke('preferences:load-onboarding-tips'),
+      );
+      expect(read.ok, read.message).toBe(true);
+      return read.value;
+    };
+    const readSuggestions = async () => {
+      const read = await settle(
+        transport.invoke('preferences:load-suggestions'),
+      );
+      expect(read.ok, read.message).toBe(true);
+      return read.value;
+    };
+
+    // Only the tips or suggestions state, never another preference.
+    const tips = await readTips();
+    expect(Object.keys(tips)).toEqual(['dismissed']);
+    expect(tips.dismissed).toEqual(original.tips);
+    const suggestions = await readSuggestions();
+    expect(
+      Object.keys(suggestions).every((key) =>
+        ['enabled', 'dismissed', 'lastCornerShownAt'].includes(key),
+      ),
+    ).toBe(true);
+    expect(suggestions.enabled).toBe(original.suggestions.enabled);
+    expect(suggestions.dismissed).toEqual(original.suggestions.dismissed);
+
+    // Malformed writes are refused and save nothing.
+    for (const [channel, payload] of [
+      ['preferences:update-onboarding-tips', { action: 'dismiss', tipId: 'x' }],
+      ['preferences:update-onboarding-tips', { chatDetail: 'compact' }],
+      ['preferences:update-suggestions', { action: 'dismiss' }],
+      [
+        'preferences:update-suggestions',
+        { action: 'set-enabled', enabled: false, chatDetail: 'compact' },
+      ],
+    ]) {
+      const refused = await settle(transport.invoke(channel, payload));
+      expect(refused.ok, `${channel} ${JSON.stringify(payload)}`).toBe(false);
+    }
+    expect(await storedPreferences()).toEqual(original);
+
+    // A tip dismissal written over direct shows in the next narrow read and
+    // leaves every other preference as it was.
+    const dismissed = await settle(
+      transport.invoke('preferences:update-onboarding-tips', {
+        action: 'dismiss',
+        tipId: 'worktree-chat',
+      }),
+    );
+    expect(dismissed.ok, dismissed.message).toBe(true);
+    expect(typeof (await readTips()).dismissed['worktree-chat']).toBe('string');
+
+    // The suggestions master switch round-trips the same way. A suggestion
+    // dismissal has no write that undoes it (Settings snapshots never carry
+    // `suggestions`), so the test flips the switch, which it can restore.
+    const toggled = await settle(
+      transport.invoke('preferences:update-suggestions', {
+        action: 'set-enabled',
+        enabled: !original.suggestions.enabled,
+      }),
+    );
+    expect(toggled.ok, toggled.message).toBe(true);
+    expect((await readSuggestions()).enabled).toBe(
+      !original.suggestions.enabled,
+    );
+
+    const after = await storedPreferences();
+    expect(after.chatDetail).toBe(original.chatDetail);
+    expect(after.suggestions.dismissed).toEqual(original.suggestions.dismissed);
+  } finally {
+    if (transport !== null)
+      await settle(
+        transport.invoke('preferences:update-suggestions', {
+          action: 'set-enabled',
+          enabled: original.suggestions.enabled,
+        }),
+      );
+    await desktop.window.evaluate(async (dismissedTips) => {
+      await window.api.savePreferences({
+        onboardingTipsDismissed: dismissedTips,
+      });
+    }, original.tips);
+    controller.stop();
+    await forgetController(controller.device.identity.deviceId);
+  }
+  expect(await storedPreferences()).toEqual(original);
+});
+
 // ---------------------------------------------------------------------------
 // Connection owner lifecycle (production worker loading, browser crypto)
 // ---------------------------------------------------------------------------
@@ -1432,6 +1613,55 @@ test('inventory: the synced desktop inventory and the Marketplace serve over dir
       )
       .toBe('synced');
     const inventory = (await readInventory()).body;
+
+    // Named by the paired computer's relay device, the read returns that
+    // computer's inventory even when another device synced more recently
+    // (CAN-7441). The decoy is synced last, so the account-level fallback
+    // would return it: only the relay install join can pass.
+    const decoyId = randomUUID();
+    const decoyUrl = `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/desktop-app/desktop-inventory/documents?clientDeviceId=${encodeURIComponent(decoyId)}`;
+    const decoyPayload = { items: [] };
+    const decoySeed = await fetch(decoyUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${userA.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        clientDeviceId: decoyId,
+        clientName: 'Decoy computer',
+        documents: [
+          {
+            kind: 'installed_items',
+            scopeKey: '',
+            contentHash: createHash('sha256')
+              .update(JSON.stringify(decoyPayload))
+              .digest('hex'),
+            capturedAt: new Date().toISOString(),
+            payload: decoyPayload,
+          },
+        ],
+      }),
+    });
+    expect(decoySeed.status).toBe(200);
+    try {
+      const scoped = await page.evaluate(async (relayDeviceId) => {
+        const response = await fetch(
+          `/api/account/desktop-inventory?relayDeviceId=${encodeURIComponent(relayDeviceId)}`,
+        );
+        return { status: response.status, body: await response.json() };
+      }, desktop.deviceId);
+      expect(scoped.status).toBe(200);
+      expect(scoped.body.device?.clientDeviceId).toBe(
+        inventory.device.clientDeviceId,
+      );
+    } finally {
+      const decoyCleanup = await fetch(decoyUrl, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${userA.apiKey}` },
+      });
+      expect(decoyCleanup.ok).toBe(true);
+    }
     const installedItems = inventory.documents.find(
       (document) => document.kind === 'installed_items',
     );

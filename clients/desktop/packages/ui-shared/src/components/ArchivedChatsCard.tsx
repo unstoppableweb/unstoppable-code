@@ -176,7 +176,7 @@ export function ArchivedChatsCard({
         <DropdownMenuLabel>
           Archived {CHAT_UNIT_LABEL.toLowerCase()}s
         </DropdownMenuLabel>
-        <div className="max-h-80 overflow-y-auto">
+        <div className="max-h-80 overflow-y-auto overscroll-contain">
           {items.map((item) => (
             <ArchivedChatsCardRow
               key={item.id}

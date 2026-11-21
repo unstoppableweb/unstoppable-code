@@ -1,15 +1,25 @@
 import { ControlButton } from './Button';
 import { Stack, type SpaceRole } from './Stack';
-import { Children, type JSX, type ReactNode } from 'react';
+import {
+  Children,
+  useRef,
+  type JSX,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import type { ShareAudience } from '@canopy/protocol/sharing';
-import { CheckIcon } from '../icons/CheckIcon';
 import { Lock } from '../icons/AppIcons';
 import {
   type SelectableShareAudience,
   shareAudienceLabel,
 } from '../lib/share-audience-label';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { ChoiceMark } from './Choice';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { DisplayAvatar } from './DisplayAvatar';
-import { SearchField } from './SearchField';
+import { Fieldset } from './Fieldset';
+import { OverlayScrollArea } from './OverlayScrollArea';
+import { SearchEmptyState, SearchField } from './SearchField';
 import {
   SegmentedControl,
   type SegmentedControlOption,
@@ -31,7 +41,7 @@ export {
  * - `ShareAudienceSelector`: the Team/Organization/Public selector,
  *   parameterized by the audiences a resource offers.
  * - `OrgTeamPicker`: the searchable team or organization list, with round
- *   initials avatars and a check-circle selection indicator.
+ *   initials avatars and a radio selection mark.
  * - `SharedTargetPicker`: the generic list `OrgTeamPicker` specializes, for
  *   targets that are not a team or organization (e.g. invitable members).
  *
@@ -176,6 +186,7 @@ export function ShareScopeSelector<T extends string>({
       label={legend}
       semantics="radio"
       width="content"
+      touchTarget
       value={value}
       disabled={disabled}
       onChange={onChange}
@@ -185,22 +196,30 @@ export function ShareScopeSelector<T extends string>({
     />
   );
   return (
-    <fieldset className="block text-s" data-testid={dataTestId}>
-      <legend className="block pb-1.5 font-medium fg-primary">{legend}</legend>
-      {contentGap === undefined ? (
-        <>
-          {optionsRow}
-          {children}
-        </>
-      ) : (
-        <Stack gap={contentGap}>
-          <div>{optionsRow}</div>
-          {Children.map(children, (child) => (
-            <div className="empty:hidden">{child}</div>
-          ))}
-        </Stack>
-      )}
-    </fieldset>
+    // `role="none"`: the segmented control is the named radiogroup, so the
+    // fieldset's own group would announce the same name twice.
+    <Fieldset
+      role="none"
+      gap="control"
+      data-testid={dataTestId}
+      legend={<span className="text-s font-medium fg-primary">{legend}</span>}
+    >
+      <div className="text-s">
+        {contentGap === undefined ? (
+          <>
+            {optionsRow}
+            {children}
+          </>
+        ) : (
+          <Stack gap={contentGap}>
+            <div>{optionsRow}</div>
+            {Children.map(children, (child) => (
+              <div className="empty:hidden">{child}</div>
+            ))}
+          </Stack>
+        )}
+      </div>
+    </Fieldset>
   );
 }
 
@@ -411,6 +430,8 @@ export interface SharedTargetPickerProps<T> {
    * `${dataTestId}-option-${getKey(item)}`.
    */
   dataTestId?: string;
+  /** Accessible name of the results, a radio group: `Teams`. */
+  listLabel?: string;
 }
 
 export function SharedTargetPicker<T>({
@@ -431,7 +452,38 @@ export function SharedTargetPicker<T>({
   getAvatarLabel,
   targetSubject = 'person',
   dataTestId,
+  listLabel,
 }: SharedTargetPickerProps<T>): JSX.Element {
+  const listRef = useRef<HTMLUListElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const selectedIndex = items.findIndex(isSelected);
+  // One Tab stop; arrows move to the next result and choose it, as in a radio group.
+  const onListKeyDown = (event: KeyboardEvent<HTMLUListElement>): void => {
+    const step =
+      event.key === 'ArrowDown' || event.key === 'ArrowRight'
+        ? 1
+        : event.key === 'ArrowUp' || event.key === 'ArrowLeft'
+          ? -1
+          : 0;
+    const radios = Array.from(
+      listRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ??
+        [],
+    );
+    const current = radios.findIndex((radio) => radio === event.target);
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? radios.length - 1
+          : step === 0 || current === -1
+            ? -1
+            : (current + step + radios.length) % radios.length;
+    const item = items[next];
+    if (next === -1 || item === undefined) return;
+    event.preventDefault();
+    radios[next].focus();
+    onSelect(item);
+  };
   return (
     <Stack gap="inline" data-testid={dataTestId}>
       {/*
@@ -442,13 +494,19 @@ export function SharedTargetPicker<T>({
         box entirely.
       */}
       <SearchField
+        ref={searchRef}
         value={searchValue}
         onValueChange={onSearchChange}
         placeholder={placeholder}
         aria-label={placeholder}
         disabled={disabled}
       />
-      {loading && <p className="text-xs fg-secondary">{loadingLabel}</p>}
+      {loading && (
+        // A spinner, not a measured skeleton: rows are host-rendered and have no sample to measure.
+        <DelayedLoadingPlaceholder slowNote={loadingLabel}>
+          <CenteredLoadingSpinner />
+        </DelayedLoadingPlaceholder>
+      )}
       <ErrorBanner
         errorSource="shared-target-picker"
         className=""
@@ -457,7 +515,20 @@ export function SharedTargetPicker<T>({
       {!loading &&
         !error &&
         items.length === 0 &&
-        (emptyContent ?? <p className="text-xs fg-secondary">{emptyLabel}</p>)}
+        (emptyContent ??
+          (searchValue.trim() === '' ? (
+            <p className="text-xs fg-secondary">{emptyLabel}</p>
+          ) : (
+            <SearchEmptyState
+              title={emptyLabel}
+              actionLabel="Clear search"
+              onAction={() => {
+                // The button unmounts with the empty state; keep focus in the dialog.
+                onSearchChange('');
+                searchRef.current?.focus();
+              }}
+            />
+          )))}
       {!loading && !error && items.length > 0 && (
         /*
           Deliberately unboxed: no border, no fill, no radius of its own. The
@@ -465,36 +536,56 @@ export function SharedTargetPicker<T>({
           selection indicator, so a one-result list reads as one selectable
           person rather than as a filled input.
         */
-        <ul className="-mx-1 max-h-56 grid grid-cols-1 content-start gap-0.5 overflow-y-auto px-1">
-          {items.map((item) => {
-            const key = getKey(item);
-            const selected = isSelected(item);
-            const avatarLabel = getAvatarLabel?.(item);
-            return (
-              <li key={key}>
-                <ControlButton
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => onSelect(item)}
-                  aria-pressed={selected}
-                  data-testid={
-                    dataTestId === undefined
-                      ? undefined
-                      : `${dataTestId}-option-${key}`
-                  }
-                  presentation="share-scope-option"
-                  appearance={{ selected }}
-                >
-                  {avatarLabel !== undefined && (
-                    <TargetAvatar label={avatarLabel} subject={targetSubject} />
-                  )}
-                  <span className="min-w-0 flex-1">{renderRow(item)}</span>
-                  <SelectionIndicator selected={selected} />
-                </ControlButton>
-              </li>
-            );
-          })}
-        </ul>
+        <OverlayScrollArea className="-mx-1 max-h-56" contentClassName="px-1">
+          <ul
+            ref={listRef}
+            role="radiogroup"
+            aria-label={listLabel}
+            onKeyDown={onListKeyDown}
+            className="grid grid-cols-1 content-start gap-0.5"
+          >
+            {items.map((item, index) => {
+              const key = getKey(item);
+              const selected = isSelected(item);
+              const avatarLabel = getAvatarLabel?.(item);
+              return (
+                <li key={key} role="none">
+                  <ControlButton
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => onSelect(item)}
+                    role="radio"
+                    aria-checked={selected}
+                    tabIndex={
+                      index === (selectedIndex === -1 ? 0 : selectedIndex)
+                        ? 0
+                        : -1
+                    }
+                    data-testid={
+                      dataTestId === undefined
+                        ? undefined
+                        : `${dataTestId}-option-${key}`
+                    }
+                    presentation="share-scope-option"
+                    appearance={{ selected }}
+                  >
+                    {avatarLabel !== undefined && (
+                      <TargetAvatar
+                        label={avatarLabel}
+                        subject={targetSubject}
+                      />
+                    )}
+                    <span className="min-w-0 flex-1">{renderRow(item)}</span>
+                    <SelectionIndicator
+                      selected={selected}
+                      disabled={disabled}
+                    />
+                  </ControlButton>
+                </li>
+              );
+            })}
+          </ul>
+        </OverlayScrollArea>
       )}
     </Stack>
   );
@@ -510,13 +601,13 @@ export interface OrgTeamPickerCopy {
 
 const ORG_TEAM_PICKER_COPY: Record<OrgTeamPickerKind, OrgTeamPickerCopy> = {
   team: {
-    placeholder: 'Search teams…',
-    loading: 'Loading teams…',
+    placeholder: 'Search teams',
+    loading: 'Still loading teams…',
     empty: 'No teams found.',
   },
   organization: {
-    placeholder: 'Search organizations…',
-    loading: 'Loading organizations…',
+    placeholder: 'Search organizations',
+    loading: 'Still loading organizations…',
     empty: 'No organizations found.',
   },
 };
@@ -593,6 +684,7 @@ export function OrgTeamPicker<T extends ShareTarget = ShareTarget>({
       getAvatarLabel={(item) => item.name}
       targetSubject="group"
       dataTestId={dataTestId}
+      listLabel={kind === 'team' ? 'Teams' : 'Organizations'}
     />
   );
 }
@@ -614,24 +706,25 @@ function TargetAvatar({
 }
 
 /**
- * The trailing pick state: an empty circle that fills with a check. It is
- * what makes an unselected row legible as a *choice* rather than as static
- * text, which is the whole reason the list gave up its box.
+ * The trailing pick state, the shared radio mark. It is what makes an
+ * unselected row legible as a *choice* rather than as static text, which is
+ * the whole reason the list gave up its box.
  */
-function SelectionIndicator({ selected }: { selected: boolean }): JSX.Element {
+function SelectionIndicator({
+  selected,
+  disabled,
+}: {
+  selected: boolean;
+  disabled: boolean;
+}): JSX.Element {
   return (
     <span
       aria-hidden="true"
       data-selected={selected ? 'true' : 'false'}
       data-testid="shared-target-picker-selection-indicator"
-      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors ${
-        selected ? 'bg-accent fg-emphasis' : 'ring-1 ring-line-selected/40'
-      }`}
+      className="flex shrink-0"
     >
-      {/* Rendered only when selected: there is no `fg-transparent` token, and
-          hiding the glyph behind a color would be one theme change away from
-          a check mark on every unselected row. */}
-      {selected && <CheckIcon size="sm" />}
+      <ChoiceMark kind="radio" checked={selected} disabled={disabled} />
     </span>
   );
 }

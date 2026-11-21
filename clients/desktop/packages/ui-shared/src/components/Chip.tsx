@@ -33,6 +33,12 @@ export interface ChipProps {
    */
   'aria-describedby'?: string;
   /**
+   * Makes the action a menu or popover trigger: announced as expanded or
+   * collapsed in place of `aria-pressed`.
+   */
+  'aria-expanded'?: boolean;
+  'aria-haspopup'?: 'dialog' | 'menu' | 'listbox';
+  /**
    * Help text shown in the shared `Tooltip` on hover or keyboard focus, never
    * as a native `title`. The chip then sits in the tooltip's wrapper, so
    * `className` flex participation (`flex-1`, `shrink`) applies inside it.
@@ -67,8 +73,9 @@ const SELECTED_INTERACTIVE_CLASS =
 // Disabled, the chip stays the click target, so a click is swallowed rather
 // than handed to a clickable row behind it, like a disabled `Button`.
 const DISABLED_CLASS = 'cursor-not-allowed opacity-40';
+// On a coarse pointer the 24px chip reaches a 44px tall hit area.
 const MAIN_CLASS =
-  'focus-ring inline-flex h-full min-w-0 items-center gap-1 rounded-md text-left';
+  "focus-ring relative inline-flex h-full min-w-0 items-center gap-1 rounded-md text-left before:absolute before:inset-0 before:content-[''] pointer-coarse:before:-inset-y-2.5";
 // On a coarse pointer the 18px remove button reaches a 30px hit area.
 const REMOVE_CLASS =
   "relative before:absolute before:content-[''] pointer-coarse:before:-inset-1.5 focus-ring inline-flex size-4.5 shrink-0 items-center justify-center rounded-sm fg-tertiary hover:bg-muted hover:fg-primary data-[forced-state=hover]:bg-muted data-[forced-state=hover]:fg-primary";
@@ -88,6 +95,8 @@ export function Chip({
   removeLabel,
   disabled = false,
   'aria-describedby': describedBy,
+  'aria-expanded': expanded,
+  'aria-haspopup': hasPopup,
   title,
   className,
   forcedState,
@@ -149,7 +158,9 @@ export function Chip({
           type="button"
           data-chip-main=""
           data-testid={actionTestId}
-          aria-pressed={selected}
+          aria-pressed={expanded === undefined ? selected : undefined}
+          aria-expanded={expanded}
+          aria-haspopup={hasPopup}
           aria-describedby={describedBy}
           className={`${MAIN_CLASS} ${startPadding} ${endPadding}`}
           onClick={onClick}

@@ -165,6 +165,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     projectsLoad: 'tunnel',
     projectsSave: 'tunnel',
     preferencesLoad: 'tunnel',
+    preferencesLoadOnboardingTips: 'tunnel',
+    preferencesLoadSuggestions: 'tunnel',
     preferencesAcknowledgeLoadError: 'tunnel',
     preferencesSave: 'tunnel',
     preferencesSetPipelineDisabled: 'tunnel',
@@ -513,6 +515,14 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     chatReadToolOutput: 'tunnel',
     chatCancelToolOutput: 'tunnel',
     chatReadVisual: 'tunnel',
+    // Delegate transcript reads that exist for controllers (CAN-7432): a
+    // compatibility projection over `core.chat.transcript.page`,
+    // `core.chat.content.read` and `core.chat.transcript.blocks.page`,
+    // narrowed to delegation targets. The local renderer reads through
+    // `canopy-core:relay` and never calls them.
+    chatReadDelegationPage: 'tunnel',
+    chatReadDelegationContent: 'tunnel',
+    chatReadDelegationBlocks: 'tunnel',
     chatCommand: 'tunnel',
     chatStateChanged: 'tunnel',
     chatQueueUpdated: 'tunnel',
@@ -882,6 +892,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     fileSaveContent: 'tunnel',
     modelRegistryGet: 'tunnel',
     providerUsageLimitsGet: 'tunnel',
+    // The curated quota projection and its refresh (CAN-7433).
+    providerUsageLoad: 'tunnel',
+    providerUsageRefresh: 'tunnel',
     modelRegistryUpdated: 'tunnel',
     aiGatewayModelCatalogRetry: 'tunnel',
     harnessAssignmentsLoad: 'tunnel',

@@ -17,7 +17,11 @@ import {
 } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
-import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
+import {
+  lastPointerWasTouch,
+  trackInputModality,
+  wasFocusVisible,
+} from '../lib/input-modality';
 import { isImeComposing, useTooltipEscape } from './tooltip-escape';
 import { useTooltipHandoff } from './tooltip-handoff';
 import { escapeStartedInBoundary } from './useOverlayEscape';
@@ -154,6 +158,13 @@ interface RichHoverTooltipProps {
   focusOpenDelay?: number;
   /** Block pointer-triggered tooltips while content scrolls under a stationary cursor. */
   suppressPointerHover?: boolean;
+  /**
+   * Open when the trigger is pressed (a click, a tap or Enter), for an info
+   * button whose only job is to show this content. A tap neither hovers nor,
+   * on iOS, focuses. Not supported with `deferUntilInteraction`: the deferred
+   * wrapper does not forward it.
+   */
+  showOnPress?: boolean;
   /**
    * Width classes for the tooltip surface (`w-max`, `min-w-*`, `max-w-*`).
    * Defaults to the multi-line surface's 180px–320px band; consumers can pass
@@ -449,6 +460,7 @@ function RichHoverTooltipController({
   handoffMotion = 'jump',
   focusOpenDelay = openDelay,
   suppressPointerHover = false,
+  showOnPress = false,
   surfaceClassName,
   surfacePadding = 'default',
   surfaceWidth,
@@ -564,7 +576,12 @@ function RichHoverTooltipController({
 
   const showPointerTooltip = useCallback((): void => {
     pointerInsideRef.current = true;
-    if (suppressPointerHover) return;
+    // A tap's emulated mouseenter is not a hover.
+    if (
+      suppressPointerHover ||
+      lastPointerWasTouch(triggerRef.current?.ownerDocument)
+    )
+      return;
     pointerHoverRef.current = true;
     showTooltipAfter(handoff.pointerOpenDelay(openDelay));
   }, [handoff, openDelay, showTooltipAfter, suppressPointerHover]);
@@ -1041,6 +1058,14 @@ function RichHoverTooltipController({
       onFocus={handleTriggerFocus}
       onBlur={handleBlur}
       onKeyDown={handleTriggerKeyDown}
+      onClick={
+        showOnPress
+          ? (): void => {
+              escapeDismissedRef.current = false;
+              showTooltipAfter(0);
+            }
+          : undefined
+      }
     >
       {trigger}
       {surface}

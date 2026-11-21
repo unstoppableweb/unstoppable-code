@@ -93,6 +93,12 @@ export interface CanopyCapabilities {
   /** Host publishes current provider account quotas and accepts refresh. Default-deny. */
   readonly providerQuotas?: boolean;
   /**
+   * Host lists its Add project clone jobs and accepts cancel and dismiss for
+   * them (`cloneJobs.*`, CAN-7433). Hosts that leave it unset show no pending
+   * clone rows. Default-deny.
+   */
+  readonly cloneJobs?: boolean;
+  /**
    * Host can connect and run subscription providers (Claude, Codex, Cursor,
    * Copilot) for this chat, so the provider-choice list offers them. A host
    * without it shows those rows as available in the desktop app. Nothing is
@@ -306,8 +312,24 @@ export interface CanopyCapabilities {
    * the app.
    */
   readonly desktopDownload?: boolean;
-  /** Paired host can approve an app-owned proposal with its message. Default-deny. */
+  /**
+   * Paired host can approve a pending plan review: an OpenCode proposal with
+   * its atomic approval message, or a Claude/Codex/Ollama plan exit through
+   * `chat.resolvePlanExit`. Optional and default-deny for unconfigured and
+   * configured-but-unavailable hosts. Direct Remote Control sets it; desktop
+   * renders its own approval bar and cloud chats leave it unset.
+   */
   readonly planProposalReview?: boolean;
+  /**
+   * Host can check and retry a failed worktree chat turn through
+   * `chat.checkFailedTurnRetry` / `chat.retryFailedTurn`, and pushes
+   * automatic-retry state as `chat.transientRetry`. Optional and
+   * default-deny: unset is the confirmed default for unconfigured and
+   * configured-but-unavailable hosts, and shared UI then offers no Retry.
+   * Direct Remote Control sets it; desktop renders its own failure notice
+   * and cloud chats leave it unset.
+   */
+  readonly chatFailureRetry?: boolean;
   /**
    * Host serves the External agents (MCP) pages through
    * `CanopyClient.externalAgents`; absent is default-deny.
@@ -414,12 +436,16 @@ export interface CanopyCapabilities {
    * Host creates a worktree chat with a New Task's model, provider and plugin
    * selections, and keeps Auto mode on that chat's first send. Optional and
    * default-deny: without it, a New Task sends its first message without a
-   * chat id and the host creates the chat from that send's settings. Remote
-   * Control sets it from the paired desktop's `chat_create_tab_settings`
-   * announcement.
+   * chat id and the host creates the chat from that send's settings. Direct
+   * Remote Control sets it: the paired desktop's `chat.create_tab` command
+   * carries those settings.
    */
   readonly chatCreateTabSettings?: boolean;
-  /** Host atomically commits plugin selections and their deferred-loading policy. Default-deny. */
+  /**
+   * Host atomically commits plugin selections and their deferred-loading
+   * policy (`chat.patch_tab_settings`). Optional and default-deny; direct
+   * Remote Control sets it, and the plugin selections stay usable without it.
+   */
   readonly deferredPluginPolicy?: boolean;
   /** Host can list and download durable cowork deliverables. Default-deny. */
   readonly chatDeliverables?: boolean;
@@ -607,6 +633,13 @@ export interface CanopyCapabilities {
   readonly worktreeRemoval?: WorktreeRemovalCapability;
   /** Absent unless the host supports retained archive and delete transitions. */
   readonly worktreeRetention?: 'archive-or-delete';
+  /**
+   * The host saves a code project's deletion retention days
+   * (`workspace.setArchiveRetention`, CAN-7438). Optional and default-deny:
+   * without it the shared project settings dialog shows no retention field.
+   * Cowork projects save retention through their own project update.
+   */
+  readonly workspaceArchiveRetention?: boolean;
   /**
    * How the worktree removal confirmation words a removal. Absent keeps the
    * row kind's own copy (a session's chats, a checkout removed from disk).

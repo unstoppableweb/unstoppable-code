@@ -1548,7 +1548,7 @@ export function WorkEntryRowMenuItems({
           <DropdownMenuItemIcon>
             <ListChecks />
           </DropdownMenuItemIcon>
-          Select item
+          Select multiple
         </DropdownMenuItem>
       )}
       {beforeRemoval}

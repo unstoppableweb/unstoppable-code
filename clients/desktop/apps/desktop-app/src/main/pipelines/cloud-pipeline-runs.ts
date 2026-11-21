@@ -33,6 +33,7 @@ import {
   composeCanopyInstructionRegistries,
   composeCanopyQueryRegistries,
   type CanopyCallerDescriptor,
+  isUnknownKeyedWriteOutcome,
   type CanopyErrorPayload,
   type CanopyInstructionDefinitionMap,
   type CanopyQueryDefinitionMap,
@@ -448,15 +449,6 @@ function refusalMessage(payload: CanopyErrorPayload): string {
     : `${payload.message} ${refusals.join(' ')}`;
 }
 
-/** Kinds after which the web core may have recorded the start. */
-const UNCERTAIN_KINDS: ReadonlySet<CanopyErrorPayload['kind']> = new Set([
-  'unavailable',
-  'deadline_exceeded',
-  // A call cut off by its deadline: the client closes it as `cancelled`.
-  'cancelled',
-  'internal',
-]);
-
 /**
  * Where an agent's cloud run goes when it isn't a run with no project
  * (CAN-6354): the calling chat's project, and its task for a worktree chat.
@@ -468,25 +460,37 @@ export interface CloudRunAgentDestination {
   readonly repoId?: string;
 }
 
+/**
+ * A failed start or model preflight, in the Run dialog's terms. Only the
+ * keyed start may have been recorded: the preflight is a read after a start
+ * that recorded nothing, so its failure is always a refusal (CAN-7470).
+ */
 function failure(
   error: unknown,
-  destination?: CloudRunAgentDestination,
+  {
+    destination,
+    keyed,
+  }: {
+    readonly destination?: CloudRunAgentDestination;
+    readonly keyed: boolean;
+  },
 ): CloudPipelineRunStartResult {
   const payload = payloadOf(error);
   // A task's cloud worktree still being set up recorded nothing: the Run
   // dialog sends the same start again shortly (CAN-6869).
   if (payload?.code === CLOUD_RUN_WORKTREE_PREPARING_CODE)
     return refused('cloud_worktree_preparing', payload.message);
-  // No payload, an outcome that may have been recorded, or one the web core
-  // says to retry with the same key: the Run dialog keeps the launch's key.
-  if (
-    payload === null ||
-    UNCERTAIN_KINDS.has(payload.kind) ||
-    payload.retry.kind === 'same_idempotency_key'
-  )
+  // No payload, or an outcome that may have been recorded (CAN-7196): the
+  // Run dialog keeps the launch's key.
+  if (keyed && (payload === null || isUnknownKeyedWriteOutcome(payload)))
     return refused(
       'cloud_start_uncertain',
       "Couldn't confirm the cloud run started. Try again; it won't start twice.",
+    );
+  if (payload === null)
+    return refused(
+      'cloud_unavailable',
+      "Cloud runs aren't available right now. Run on this computer, or try again later.",
     );
   // A destination the web core doesn't run cloud runs in yet is refused with
   // its own reason, not as cloud runs being unavailable.
@@ -849,7 +853,7 @@ async function startCloudRun(
     };
   } catch (error) {
     if (payloadOf(error)?.code !== CLOUD_MODEL_UNCONFIRMED_CODE)
-      return failure(error, destination);
+      return failure(error, { destination, keyed: true });
   }
   // The cloud model preflight reads shared and curated workflows only: a
   // project workflow is in the task's pushed branch, which the preflight
@@ -864,6 +868,6 @@ async function startCloudRun(
       await source.preflight({ definitionId, owner }),
     );
   } catch (error) {
-    return failure(error);
+    return failure(error, { keyed: false });
   }
 }

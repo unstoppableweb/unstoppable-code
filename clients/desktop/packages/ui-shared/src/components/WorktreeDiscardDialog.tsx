@@ -7,7 +7,7 @@ import {
   worktreeDiscardCopy,
   type WorktreeDiscardPathRow,
 } from '../lib/worktree-discard-copy';
-import { ConfirmDialog } from './ConfirmDialog';
+import { ConfirmDialog, type ConfirmDialogErrorProps } from './ConfirmDialog';
 
 export const WORKTREE_DISCARD_DIALOG_TEST_ID = 'worktree-discard-dialog';
 
@@ -54,17 +54,19 @@ export function WorktreeDiscardPathList({
   );
 }
 
-export interface WorktreeDiscardDialogProps {
+interface WorktreeDiscardDialogBaseProps {
   readonly worktreeName: string;
   readonly description: WorktreeDiscardDescription;
   readonly busy: boolean;
-  /** Why the last attempt didn't run; the dialog stays open. */
-  readonly errorMessage: string | null;
   readonly onConfirm: () => void;
   /** Omitted when the ordinary removal isn't the way back: no Retry then. */
   readonly onRetry?: () => void;
   readonly onCancel: () => void;
 }
+
+/** `errorMessage` is why the last attempt didn't run; the dialog stays open. */
+export type WorktreeDiscardDialogProps = WorktreeDiscardDialogBaseProps &
+  ConfirmDialogErrorProps;
 
 /**
  * CAN-5336: confirms the permanent discard of a worktree whose ordinary
@@ -78,10 +80,10 @@ export function WorktreeDiscardDialog({
   worktreeName,
   description,
   busy,
-  errorMessage,
   onConfirm,
   onRetry,
   onCancel,
+  ...errorProps
 }: WorktreeDiscardDialogProps): JSX.Element {
   const copy = worktreeDiscardCopy(description);
   return (
@@ -123,7 +125,7 @@ export function WorktreeDiscardDialog({
       busy={busy}
       destructive
       confirmDisabled={description.status !== 'discardable'}
-      errorMessage={errorMessage}
+      {...errorProps}
       secondaryAction={
         onRetry
           ? {

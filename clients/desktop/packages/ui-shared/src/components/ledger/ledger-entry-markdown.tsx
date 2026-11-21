@@ -4,6 +4,7 @@ import type { ComponentPropsWithoutRef, JSX } from 'react';
 import type { MarkdownOptions } from '../markdown-render';
 import {
   TRANSCRIPT_MARKDOWN_OPTIONS,
+  TRANSCRIPT_PROSE_CLASS,
   markdownOptions,
 } from '../markdown-render';
 import { Markdown } from '../MarkdownClient';
@@ -33,7 +34,9 @@ export function LedgerEntryMarkdown({
   return (
     <div
       data-testid={testId}
-      className={`prose prose-sm dark:prose-invert max-w-none break-words ${density === 'page' ? 'text-s' : 'text-xs'} leading-5`}
+      // The transcript's prose maps the typography plugin onto the house
+      // tokens; the Ledger only sets its own text size.
+      className={`${TRANSCRIPT_PROSE_CLASS} ${density === 'page' ? 'text-s' : 'text-xs'} leading-5`}
     >
       <Markdown options={LEDGER_ENTRY_MARKDOWN_OPTIONS}>{content}</Markdown>
     </div>

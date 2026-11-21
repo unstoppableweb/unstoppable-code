@@ -170,7 +170,7 @@ export interface DotProps {
 /**
  * A 6px marker (8px `large` in a leading icon slot): unread (blue), waiting
  * on you (orange), filter on (grey), working or connected (green), offline or
- * failed (red).
+ * failed (red), not started yet (faint grey).
  */
 export function Dot({
   tone,

@@ -11,6 +11,7 @@ import {
   type CloudForkOutcome,
   type CloudSendReceiptOutcome,
   type CloudSendSupersedeOutcome,
+  type CloudChatSecret,
   type CloudTabModel,
   type WebCoreAttachmentFile,
   type WebCoreChatBackendCore,
@@ -322,6 +323,23 @@ export function readAheadWebCoreScope(scope: {
 }): WebCoreReadAhead | null {
   webCoreChatBackend();
   return core?.readAhead(scope) ?? null;
+}
+
+/** The secrets a cloud chat's agent holds, for its Secrets chip. */
+export function listWebCoreChatSecrets(
+  chatId: string,
+): Promise<CloudChatSecret[]> {
+  webCoreChatBackend();
+  return core?.listChatSecrets(chatId) ?? Promise.resolve([]);
+}
+
+/** Revokes one of a cloud chat's secrets; false when it was already gone. */
+export function revokeWebCoreChatSecret(
+  chatId: string,
+  name: string,
+): Promise<boolean> {
+  webCoreChatBackend();
+  return core?.revokeChatSecret(chatId, name) ?? Promise.resolve(false);
 }
 
 /** Uploads a file the composer attaches to a web core chat (CAN-6175 R6). */

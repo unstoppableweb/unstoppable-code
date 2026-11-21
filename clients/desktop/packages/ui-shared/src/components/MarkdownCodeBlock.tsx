@@ -15,8 +15,16 @@ const copiedTimers = new WeakMap<
   ReturnType<typeof setTimeout>
 >();
 
+function announce(button: HTMLButtonElement, message: string): void {
+  const status = button
+    .closest('.markdown-code-copy-host')
+    ?.querySelector('[data-copy-status]');
+  if (status) status.textContent = message;
+}
+
 function setCopied(button: HTMLButtonElement, copied: boolean): void {
   const label = copied ? 'Copied' : 'Copy';
+  announce(button, copied ? 'Copied' : '');
   // Accessible name only: hover help comes from the rich Tooltip wrapper, so
   // no native `title` is written here either.
   button.setAttribute('aria-label', label);
@@ -35,10 +43,11 @@ function handleCopy(event: MouseEvent<HTMLButtonElement>): void {
     button.closest('.markdown-code-copy-host')?.querySelector('pre')
       ?.textContent ?? '';
   void (async (): Promise<void> => {
-    if (!(await copyTextToClipboard(code))) return;
+    const copied = await copyTextToClipboard(code);
     const activeTimer = copiedTimers.get(button);
     if (activeTimer !== undefined) clearTimeout(activeTimer);
-    setCopied(button, true);
+    if (copied) setCopied(button, true);
+    else announce(button, "Couldn't copy the code");
     copiedTimers.set(
       button,
       setTimeout((): void => {
@@ -74,6 +83,7 @@ export function MarkdownCodeBlock({
           />
         </Tooltip>
       </span>
+      <span className="sr-only" aria-live="polite" data-copy-status />
       <pre
         {...props}
         tabIndex={props.tabIndex ?? 0}

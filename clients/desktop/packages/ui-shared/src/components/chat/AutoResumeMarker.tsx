@@ -126,6 +126,7 @@ export interface AutoResumeMarkerProps {
   readonly appName?: string;
   /** Provider display name for a usage-limit resume, when known. */
   readonly providerName?: string;
+  readonly outputless?: boolean;
   /** Generated nudges retain the prompt row's copy action without a bubble. */
   readonly copyText?: string;
   readonly onJumpToMessage?: (element: HTMLElement) => void;
@@ -143,18 +144,30 @@ export const AutoResumeMarker = memo(function AutoResumeMarker({
   text,
   appName,
   providerName,
+  outputless = false,
   copyText,
   onJumpToMessage,
 }: AutoResumeMarkerProps): JSX.Element {
   const contextAppName = useChatAppName();
   const time = formatAutoResumeTime(timestamp);
-  const headline = autoResumeHeadline(
-    autoResume,
-    time,
-    appName ?? contextAppName,
-    providerName,
-  );
-  const attribution = autoResumeAttribution(autoResume, text);
+  const tried =
+    outputless &&
+    autoResume?.reason === 'usage_limit' &&
+    autoResume.resendsUserMessage;
+  const triedHeadline = providerName
+    ? `Tried to resume after ${providerName} usage limit`
+    : 'Tried to resume after a usage limit';
+  const headline = tried
+    ? `${triedHeadline}${time ? ` · ${time}` : ''}`
+    : autoResumeHeadline(
+        autoResume,
+        time,
+        appName ?? contextAppName,
+        providerName,
+      );
+  const attribution = tried
+    ? 'Sent automatically · no response'
+    : autoResumeAttribution(autoResume, text);
   const handleJump = (event: MouseEvent<HTMLDivElement>): void => {
     if (!onJumpToMessage) return;
     const target = event.target;

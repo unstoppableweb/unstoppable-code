@@ -19,10 +19,22 @@
  *
  * Neither layer takes a `className` that restyles: geometry, type and color
  * are named props, so every table keeps one look.
+ *
+ * A table inside a floating surface (a popover) takes the `plain`
+ * appearance instead, the menu geometry rather than a card nested in the
+ * surface: no card or header band, and hairlines under the header and
+ * between rows that stop where the text does. Rows bleed 8px into the
+ * surface's 12px inset, so their text lines up with the surface's other
+ * content and an activatable row's hover fill sits 4px from the surface edge
+ * with the row radius, like a menu row. Its rows scroll in an
+ * `OverlayScrollArea`, so the scrollbar takes no width.
  */
 import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
+import { OverlayScrollArea } from './OverlayScrollArea';
 import { Tooltip } from './Tooltip';
 import {
+  createContext,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -52,7 +64,10 @@ export type DataTableTone = 'primary' | 'secondary' | 'tertiary' | 'success';
  * (descriptions and other prose).
  */
 export type DataTableOverflow = 'nowrap' | 'truncate' | 'wrap';
-/** The narrowest viewport at which a column shows; below it, it is hidden. */
+/**
+ * The narrowest window (or, with `breakpoints="container"`, the narrowest
+ * table) at which a column shows; below it, it is hidden.
+ */
 export type DataTableBreakpoint = 'sm' | 'md' | 'lg' | 'xl';
 export type DataTableSortDirection = 'asc' | 'desc';
 export type DataTableVerticalAlign = 'middle' | 'top';
@@ -61,6 +76,27 @@ export type DataTableVerticalAlign = 'middle' | 'top';
  * placeholder, `mask` replaces the characters.
  */
 export type DataTableReplay = 'block' | 'mask';
+
+/**
+ * `card` is the framed card. `plain` drops the card and header band and
+ * draws its hairlines only as wide as the text, for a table inside a
+ * floating surface.
+ */
+export type DataTableAppearance = 'card' | 'plain';
+
+const DataTableAppearanceContext = createContext<DataTableAppearance>('card');
+
+/**
+ * Side insets. `plain` keeps the 12px gap between columns, and 8px at the
+ * table's ends to undo the frame's bleed into the surface inset.
+ */
+const CELL_INSET_CLASS: Record<DataTableAppearance, string> = {
+  card: 'px-3',
+  plain: 'pl-3 first:pl-2 last:pr-2',
+};
+
+/** A plain header row's height, where the scroll fade starts under it. */
+const PLAIN_HEAD_HEIGHT_PX = 28;
 
 const REPLAY_CLASS: Record<DataTableReplay, string> = {
   block: REPLAY_BLOCK_CLASS,
@@ -98,6 +134,65 @@ const SHOW_FROM_CLASS: Record<DataTableBreakpoint, string> = {
   xl: 'hidden xl:table-cell',
 };
 
+/**
+ * `showFrom` against the table's own width (`breakpoints="container"`). A
+ * table is narrower than the window around it, so the scale is its own:
+ * sm 36rem, md 42rem, lg 48rem, xl 60rem.
+ */
+const SHOW_FROM_CONTAINER_CLASS: Record<DataTableBreakpoint, string> = {
+  sm: 'hidden @[36rem]/data-table:table-cell',
+  md: 'hidden @[42rem]/data-table:table-cell',
+  lg: 'hidden @[48rem]/data-table:table-cell',
+  xl: 'hidden @[60rem]/data-table:table-cell',
+};
+
+/** The inverse of `showFrom`, for in-cell text that stands in for a column. */
+const HIDE_FROM_CLASS: Record<DataTableBreakpoint, string> = {
+  sm: 'sm:hidden',
+  md: 'md:hidden',
+  lg: 'lg:hidden',
+  xl: 'xl:hidden',
+};
+
+const HIDE_FROM_CONTAINER_CLASS: Record<DataTableBreakpoint, string> = {
+  sm: '@[36rem]/data-table:hidden',
+  md: '@[42rem]/data-table:hidden',
+  lg: '@[48rem]/data-table:hidden',
+  xl: '@[60rem]/data-table:hidden',
+};
+
+/**
+ * What a column's `showFrom` measures: the window (`viewport`, the default)
+ * or the table's own width (`container`), for a table that can sit in a card
+ * narrower than the window.
+ */
+export type DataTableBreakpoints = 'viewport' | 'container';
+
+const DataTableBreakpointsContext =
+  createContext<DataTableBreakpoints>('viewport');
+
+function useShowFromClass(
+  showFrom: DataTableBreakpoint | undefined,
+): string | undefined {
+  const breakpoints = useContext(DataTableBreakpointsContext);
+  if (showFrom === undefined) return undefined;
+  return breakpoints === 'container'
+    ? SHOW_FROM_CONTAINER_CLASS[showFrom]
+    : SHOW_FROM_CLASS[showFrom];
+}
+
+/**
+ * The class that hides in-cell text from a breakpoint on, measured the way
+ * the surrounding table measures `showFrom`. Use it on a line that repeats a
+ * column's value while that column (`showFrom` the same breakpoint) is hidden.
+ */
+export function useDataTableHideFrom(breakpoint: DataTableBreakpoint): string {
+  const breakpoints = useContext(DataTableBreakpointsContext);
+  return breakpoints === 'container'
+    ? HIDE_FROM_CONTAINER_CLASS[breakpoint]
+    : HIDE_FROM_CLASS[breakpoint];
+}
+
 const VERTICAL_ALIGN_CLASS: Record<DataTableVerticalAlign, string> = {
   middle: 'align-middle',
   // Cells keep py-1 for middle rows. Here the larger padding centers a one-line
@@ -127,6 +222,8 @@ export interface DataTableFrameProps {
    * default) sizes columns to their content.
    */
   readonly layout?: 'auto' | 'fixed';
+  /** `plain` for a table inside a floating surface; see the file comment. */
+  readonly appearance?: DataTableAppearance;
   /**
    * The narrowest the table may get, as a CSS length. Narrower than this the
    * card scrolls sideways instead of squeezing the columns.
@@ -137,6 +234,12 @@ export interface DataTableFrameProps {
    * scroll inside the card; pair it with a sticky header.
    */
   readonly maxHeight?: string;
+  /**
+   * What the cells' `showFrom` measures. `viewport` (the default) is the
+   * window; `container` is the table's own width, for a table that can sit
+   * in a card narrower than the window.
+   */
+  readonly breakpoints?: DataTableBreakpoints;
   /**
    * The card fills the rest of a flex column and its rows scroll inside it;
    * pair it with a sticky header.
@@ -174,8 +277,10 @@ function readFrameOverflow(frame: HTMLElement): FrameOverflow {
 export function DataTableFrame({
   caption,
   layout = 'auto',
+  appearance = 'card',
   minWidth,
   maxHeight,
+  breakpoints = 'viewport',
   fill = false,
   scrollRef,
   busy,
@@ -204,6 +309,62 @@ export function DataTableFrame({
       frame.removeEventListener('scroll', update);
     };
   }, [frameRef]);
+  const table = (
+    <table
+      aria-busy={busy === true ? true : undefined}
+      style={minWidth === undefined ? undefined : { minWidth }}
+      className={joinClasses(
+        'w-full border-collapse text-s',
+        layout === 'fixed' && 'table-fixed',
+      )}
+    >
+      {caption === undefined ? null : (
+        <caption className="sr-only">{caption}</caption>
+      )}
+      <DataTableAppearanceContext.Provider value={appearance}>
+        <DataTableBreakpointsContext.Provider value={breakpoints}>
+          {children}
+        </DataTableBreakpointsContext.Provider>
+      </DataTableAppearanceContext.Provider>
+    </table>
+  );
+  if (appearance === 'plain') {
+    // The bleed into the surface inset is the primitive's own geometry; the
+    // cells' end insets give it back, so text keeps the surface's 12px.
+    return (
+      <div
+        data-testid={testId}
+        className={joinClasses(
+          '-mx-2 min-w-0',
+          breakpoints === 'container' && '@container/data-table',
+          fill && 'flex min-h-0 flex-1 flex-col',
+          className,
+        )}
+      >
+        <OverlayScrollArea
+          viewportRef={frameRef}
+          className={fill ? 'min-h-0 flex-1' : undefined}
+          // A focused row scrolls clear of a pinned header, as in the card.
+          viewportClassName={
+            fill
+              ? 'h-full [&:has(thead.sticky)]:scroll-pt-7'
+              : '[&:has(thead.sticky)]:scroll-pt-7'
+          }
+          viewportProps={
+            maxHeight === undefined ? undefined : { style: { maxHeight } }
+          }
+          // The viewport ends 4px inside the surface (the 8px bleed into its
+          // 12px inset); the rail moves out to the surface edge, so the thumb
+          // rides the edge instead of covering the last column's values.
+          railClassName="-right-1"
+          edgeFadeSize={16}
+          edgeFadeTopInset={PLAIN_HEAD_HEIGHT_PX}
+        >
+          {table}
+        </OverlayScrollArea>
+      </div>
+    );
+  }
   const scrollable = overflow !== 'none';
   // The card and the scroller are two boxes: the fade mask on the card would
   // also erase its hairline border. The border is the card's own, inside its
@@ -214,6 +375,7 @@ export function DataTableFrame({
       data-testid={testId}
       className={joinClasses(
         'min-w-0 overflow-hidden rounded-xl border border-line-base bg-base bg-clip-padding',
+        breakpoints === 'container' && '@container/data-table',
         fill && 'flex min-h-0 flex-1 flex-col',
         className,
       )}
@@ -227,23 +389,13 @@ export function DataTableFrame({
         style={maxHeight === undefined ? undefined : { maxHeight }}
         className={joinClasses(
           'data-table-scroll focus-ring focus-ring-inset overflow-x-auto rounded-xl',
+          // A focused row scrolls clear of a sticky header band.
+          '[&:has(>table>thead.sticky)]:scroll-pt-8',
           (maxHeight !== undefined || fill) && 'overflow-y-auto',
           fill && 'min-h-0 flex-1',
         )}
       >
-        <table
-          aria-busy={busy === true ? true : undefined}
-          style={minWidth === undefined ? undefined : { minWidth }}
-          className={joinClasses(
-            'w-full border-collapse text-s',
-            layout === 'fixed' && 'table-fixed',
-          )}
-        >
-          {caption === undefined ? null : (
-            <caption className="sr-only">{caption}</caption>
-          )}
-          {children}
-        </table>
+        {table}
       </div>
     </div>
   );
@@ -272,6 +424,8 @@ export interface DataTableHeadProps {
 }
 
 const HEAD_ROW_CLASS = 'h-8 bg-secondary text-xs font-medium fg-secondary';
+const PLAIN_HEAD_ROW_CLASS =
+  'data-table-plain-head h-7 text-xs font-medium fg-tertiary';
 
 /** The header band; an optional group row sits above the column labels. */
 export function DataTableHead({
@@ -279,13 +433,20 @@ export function DataTableHead({
   sticky = false,
   children,
 }: DataTableHeadProps): JSX.Element {
+  const appearance = useContext(DataTableAppearanceContext);
+  // A plain header draws no band, but pinned it must still hide the rows
+  // scrolling under it, so it takes the floating surface's own fill.
+  let stickyClassName: string | undefined;
+  if (sticky) {
+    stickyClassName =
+      appearance === 'plain'
+        ? 'sticky top-0 z-1 bg-quaternary'
+        : 'sticky top-0 z-1';
+  }
   return (
     // Column labels are known before the rows: inside a `Skeleton` the band
     // draws as itself and only the values become bars.
-    <thead
-      {...SKELETON_KEEP}
-      className={sticky ? 'sticky top-0 z-1' : undefined}
-    >
+    <thead {...SKELETON_KEEP} className={stickyClassName}>
       {groups !== undefined && groups.length > 0 ? (
         <tr className={`${HEAD_ROW_CLASS} border-b border-line-base`}>
           {groups.map((group, index) => (
@@ -300,7 +461,13 @@ export function DataTableHead({
           ))}
         </tr>
       ) : null}
-      <tr className={HEAD_ROW_CLASS}>{children}</tr>
+      <tr
+        className={
+          appearance === 'plain' ? PLAIN_HEAD_ROW_CLASS : HEAD_ROW_CLASS
+        }
+      >
+        {children}
+      </tr>
     </thead>
   );
 }
@@ -329,6 +496,8 @@ export interface DataTableHeaderCellProps {
   readonly tooltip?: string;
   /** Makes the label a sort button. */
   readonly sort?: DataTableHeaderSort;
+  /** A help glyph after the label, kept outside the sort button. */
+  readonly hint?: ReactNode;
   readonly testId?: string;
   readonly children: ReactNode;
 }
@@ -346,13 +515,16 @@ export function DataTableHeaderCell({
   labelHidden = false,
   tooltip,
   sort,
+  hint,
   testId,
   children,
 }: DataTableHeaderCellProps): JSX.Element {
+  const appearance = useContext(DataTableAppearanceContext);
   const className = joinClasses(
-    'whitespace-nowrap px-3 font-medium',
+    'whitespace-nowrap font-medium',
+    CELL_INSET_CLASS[appearance],
     TEXT_ALIGN_CLASS[align],
-    showFrom !== undefined && SHOW_FROM_CLASS[showFrom],
+    useShowFromClass(showFrom),
   );
   const style =
     width === undefined && minWidth === undefined
@@ -361,15 +533,22 @@ export function DataTableHeaderCell({
   if (sort === undefined) {
     return (
       <th scope="col" data-testid={testId} style={style} className={className}>
-        <Tooltip label={tooltip} disabled={!tooltip}>
-          {labelHidden ? <span className="sr-only">{children}</span> : children}
-        </Tooltip>
+        <span className="inline-flex items-center gap-1">
+          <Tooltip label={tooltip} disabled={!tooltip}>
+            {labelHidden ? (
+              <span className="sr-only">{children}</span>
+            ) : (
+              children
+            )}
+          </Tooltip>
+          {hint}
+        </span>
       </th>
     );
   }
   const { direction } = sort;
   let arrowClassName =
-    'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100';
+    'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100';
   if (direction === 'asc') {
     arrowClassName = 'fg-primary';
   } else if (direction === 'desc') {
@@ -383,26 +562,29 @@ export function DataTableHeaderCell({
       style={style}
       className={className}
     >
-      <Tooltip label={tooltip} disabled={!tooltip}>
-        <button
-          type="button"
-          data-testid={sort.testId}
-          data-sort-direction={direction ?? 'none'}
-          onClick={sort.onToggle}
-          className={joinClasses(
-            'focus-ring group inline-flex items-center gap-1 rounded-sm font-medium hover:fg-primary',
-            align === 'right' && 'flex-row-reverse',
-            direction !== null && 'fg-primary',
-          )}
-        >
-          {children}
-          <ArrowUpIcon
-            size="xs"
-            aria-hidden="true"
-            className={`shrink-0 ${arrowClassName}`}
-          />
-        </button>
-      </Tooltip>
+      <span className="inline-flex items-center gap-1">
+        <Tooltip label={tooltip} disabled={!tooltip}>
+          <button
+            type="button"
+            data-testid={sort.testId}
+            data-sort-direction={direction ?? 'none'}
+            onClick={sort.onToggle}
+            className={joinClasses(
+              "focus-ring group relative inline-flex items-center gap-1 rounded-sm font-medium before:absolute before:inset-0 before:content-[''] hover:fg-primary pointer-coarse:before:-inset-y-3",
+              align === 'right' && 'flex-row-reverse',
+              direction !== null && 'fg-primary',
+            )}
+          >
+            {children}
+            <ArrowUpIcon
+              size="xs"
+              aria-hidden="true"
+              className={`shrink-0 ${arrowClassName}`}
+            />
+          </button>
+        </Tooltip>
+        {hint}
+      </span>
     </th>
   );
 }
@@ -503,7 +685,11 @@ function isRowTarget(
   return control === null || !currentTarget.contains(control);
 }
 
-/** A 36px body row with a hairline above it. */
+/**
+ * A 36px body row with a hairline above it. A plain row's hairline spans
+ * only the text (`.data-table-plain-row` in canopy-tokens-core.css) and its
+ * fill takes the row radius.
+ */
 export function DataTableRow({
   onActivate,
   activateOnSpace = false,
@@ -515,13 +701,19 @@ export function DataTableRow({
   children,
   ...attributes
 }: DataTableRowProps): JSX.Element {
+  const appearance = useContext(DataTableAppearanceContext);
   const interactive = onActivate !== undefined;
   let tabIndex: number | undefined;
   if (interactive) tabIndex = 0;
   else if (focusable) tabIndex = -1;
+  // A plain row's fill sits on its cells, which carry the row radius.
   let fillClassName = '';
-  if (selected) fillClassName = 'bg-muted';
-  else if (interactive) fillClassName = 'hover:bg-subtle';
+  if (selected)
+    fillClassName = appearance === 'plain' ? '*:bg-muted' : 'bg-muted';
+  else if (interactive) {
+    fillClassName =
+      appearance === 'plain' ? 'hover:*:bg-subtle' : 'hover:bg-subtle';
+  }
   return (
     <tr
       {...attributes}
@@ -532,6 +724,15 @@ export function DataTableRow({
         onActivate === undefined
           ? undefined
           : (event): void => {
+              // A drag that selected text is not a click on the row.
+              const row = event.currentTarget;
+              const selection = row.ownerDocument.getSelection();
+              if (
+                selection?.isCollapsed === false &&
+                selection.containsNode(row, true)
+              ) {
+                return;
+              }
               if (isRowTarget(event)) onActivate();
             }
       }
@@ -551,7 +752,12 @@ export function DataTableRow({
             }
       }
       className={joinClasses(
-        'group h-9 border-t border-line-base',
+        appearance === 'plain'
+          ? 'data-table-plain-row group h-9 *:first:rounded-l-row *:last:rounded-r-row'
+          : 'group h-9 border-t border-line-base',
+        appearance === 'plain' &&
+          interactive &&
+          'data-table-plain-row-activatable',
         VERTICAL_ALIGN_CLASS[verticalAlign],
         interactive && 'focus-ring focus-ring-inset cursor-pointer',
         dimmed && 'opacity-55',
@@ -564,7 +770,7 @@ export function DataTableRow({
 }
 
 export interface DataTableCellProps extends DataTableAttributes {
-  /** `right` for numbers, which also take tabular figures. */
+  /** `right` for numbers. Every cell takes tabular figures. */
   readonly align?: DataTableAlign;
   readonly tone?: DataTableTone;
   readonly overflow?: DataTableOverflow;
@@ -591,21 +797,30 @@ export function DataTableCell({
   children,
   ...attributes
 }: DataTableCellProps): JSX.Element {
+  const appearance = useContext(DataTableAppearanceContext);
   const className = joinClasses(
-    'px-3 py-1 font-normal',
+    'py-1 font-normal tabular-nums',
+    CELL_INSET_CLASS[appearance],
     TEXT_ALIGN_CLASS[align],
-    align === 'right' && 'tabular-nums',
     TONE_CLASS[tone],
     OVERFLOW_CLASS[overflow],
-    showFrom !== undefined && SHOW_FROM_CLASS[showFrom],
+    useShowFromClass(showFrom),
     replay !== undefined && REPLAY_CLASS[replay],
   );
+  // Cut-off plain text keeps its full value in a native title.
+  const title =
+    attributes.title ??
+    (overflow === 'truncate' &&
+    (typeof children === 'string' || typeof children === 'number')
+      ? String(children)
+      : undefined);
   if (rowHeader) {
     // A header spanning several rows heads them all; `scope="row"` would
     // claim only the first, so the table's own header algorithm decides.
     return (
       <th
         {...attributes}
+        title={title}
         scope={rowSpan !== undefined && rowSpan > 1 ? undefined : 'row'}
         colSpan={colSpan}
         rowSpan={rowSpan}
@@ -618,6 +833,7 @@ export function DataTableCell({
   return (
     <td
       {...attributes}
+      title={title}
       colSpan={colSpan}
       rowSpan={rowSpan}
       className={className}
@@ -800,6 +1016,8 @@ export interface DataTableProps<T> {
   readonly verticalAlign?: DataTableVerticalAlign;
   readonly layout?: 'auto' | 'fixed';
   readonly minWidth?: string;
+  /** What the columns' `showFrom` measures; see {@link DataTableFrameProps}. */
+  readonly breakpoints?: DataTableBreakpoints;
   readonly stickyHeader?: boolean;
   /**
    * Root test id. Derived ids: `-empty` on the empty line, `-loading` on the
@@ -860,6 +1078,7 @@ export function DataTable<T>({
   verticalAlign,
   layout,
   minWidth,
+  breakpoints,
   stickyHeader,
   testId,
   className,
@@ -910,6 +1129,7 @@ export function DataTable<T>({
   if (loading) {
     body = <DataTableSkeletonRows columns={columns} rows={loadingRows} />;
   } else if (sortedRows.length === 0) {
+    // Without a label the caller owns the empty state outside the table.
     if (emptyLabel !== undefined) {
       body = (
         <DataTableEmptyRow
@@ -962,6 +1182,7 @@ export function DataTable<T>({
       caption={caption}
       layout={layout}
       minWidth={minWidth}
+      breakpoints={breakpoints}
       busy={loading}
       testId={testId}
       className={loading ? undefined : className}
@@ -976,6 +1197,21 @@ export function DataTable<T>({
             showFrom={column.showFrom}
             labelHidden={column.headerHidden}
             tooltip={column.tooltip}
+            hint={
+              column.headerHint ? (
+                <Tooltip label={column.headerHint} showOnPress>
+                  <span
+                    tabIndex={0}
+                    aria-label={column.headerHint}
+                    role="img"
+                    data-testid={derivedTestId(testId, `hint-${column.key}`)}
+                    className="focus-ring relative inline-flex rounded-sm fg-tertiary before:absolute before:-inset-0.5 before:content-[''] pointer-coarse:before:-inset-y-4"
+                  >
+                    <IconCircleQuestionmark size={12} />
+                  </span>
+                </Tooltip>
+              ) : undefined
+            }
             sort={
               sortable && column.sortValue !== undefined
                 ? {
@@ -986,24 +1222,7 @@ export function DataTable<T>({
                 : undefined
             }
           >
-            {column.headerHint ? (
-              <span className="inline-flex items-center gap-1">
-                {column.header}
-                <Tooltip label={column.headerHint}>
-                  <span
-                    tabIndex={0}
-                    aria-label={column.headerHint}
-                    role="img"
-                    data-testid={derivedTestId(testId, `hint-${column.key}`)}
-                    className="focus-ring inline-flex rounded-sm fg-tertiary"
-                  >
-                    <IconCircleQuestionmark size={12} />
-                  </span>
-                </Tooltip>
-              </span>
-            ) : (
-              column.header
-            )}
+            {column.header}
           </DataTableHeaderCell>
         ))}
       </DataTableHead>
@@ -1033,8 +1252,9 @@ export function CsvPreviewTable({
   readonly header: readonly string[] | null;
   readonly rows: readonly (readonly string[])[];
 }): JSX.Element {
+  // Separate borders: a collapsed border on a sticky header cell scrolls away.
   return (
-    <table className="w-full border-collapse text-xs">
+    <table className="w-full border-separate border-spacing-0 text-xs">
       {header && (
         <thead className="sticky top-0 bg-base">
           <tr>

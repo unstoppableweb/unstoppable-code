@@ -71,7 +71,7 @@ export function GoogleSubscriptionRow({
                 ? 'Reconnect'
                 : connected
                   ? 'Refresh models'
-                  : 'Sign in'}
+                  : 'Connect account'}
           </Button>
           {connected && !disconnected ? (
             // This withdraws app access only, never the shared native login.

@@ -1,3 +1,4 @@
+import { outputlessPersistedAutoResumes } from '@canopy/ui-shared/components/chat';
 import {
   TranscriptTurnSection,
   TranscriptReadingColumn,
@@ -308,6 +309,7 @@ function sameMessageOrder(
 
 interface StickyUserMessageHeaderProps {
   group: TurnGroup;
+  outputlessAutoResume: boolean;
   onResetToPoint?: (userMessageId: string) => Promise<void>;
   appliedMemory?: AppliedOrgMemoryTurn;
   chatPendingQuestions: PendingQuestion[];
@@ -390,6 +392,7 @@ function useAgentArtifactProjection(
  */
 const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
   group,
+  outputlessAutoResume,
   onResetToPoint,
   appliedMemory,
   chatPendingQuestions,
@@ -557,6 +560,7 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
       <StickyPromptBacking>
         <ChatMessageItem
           message={group.userMessage}
+          outputlessAutoResume={outputlessAutoResume}
           appliedMemory={appliedMemory}
           chatPendingQuestions={chatPendingQuestions}
           onResetToPoint={onResetToPoint}
@@ -971,6 +975,13 @@ export function ChatMessageList({
   const [retainedInteractionKeys, setRetainedInteractionKeys] = useState<
     ReadonlySet<string>
   >(() => new Set());
+  const outputlessResumes = useMemo(() => {
+    const partialTurns = new Set(
+      transcriptTurns?.filter((turn) => turn.before).map((turn) => turn.id),
+    );
+    if (startingTurnUserMessageId) partialTurns.add(startingTurnUserMessageId);
+    return outputlessPersistedAutoResumes(messages, partialTurns);
+  }, [messages, startingTurnUserMessageId, transcriptTurns]);
   const framedMessages = useMemo(() => {
     const placedMessages = placeSafetyDenialReceipts(
       omitRecoveredCreditHoldArtifacts(omitLegacySetupAnnotations(messages)),
@@ -3057,6 +3068,7 @@ export function ChatMessageList({
           historySuspended={turnLoading}
           chatId={chatId}
           group={item}
+          outputlessAutoResume={outputlessResumes.has(item.userMessage.id)}
           pendingTimer={item.timerMessage.id === pendingTurnTimerId}
           starting={item.userMessage.id === startingTurnUserMessageId}
           startingSetup={
@@ -3102,6 +3114,7 @@ export function ChatMessageList({
       ) : (
         <ChatMessageItem
           message={item.message}
+          outputlessAutoResume={outputlessResumes.has(item.message.id)}
           forceSearchExpanded={
             (searchSelection?.renderMessageId ?? searchSelection?.messageId) ===
             item.message.id
@@ -3182,6 +3195,9 @@ export function ChatMessageList({
         {stickyGroup && (
           <StickyUserMessageHeader
             group={stickyGroup}
+            outputlessAutoResume={outputlessResumes.has(
+              stickyGroup.userMessage.id,
+            )}
             onResetToPoint={stickyResetHandler(stickyGroup)}
             appliedMemory={memoryByMessageId?.[stickyGroup.userMessage.id]}
             chatPendingQuestions={chatPendingQuestions}

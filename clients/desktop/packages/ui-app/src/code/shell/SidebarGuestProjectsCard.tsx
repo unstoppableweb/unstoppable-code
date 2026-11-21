@@ -46,7 +46,7 @@ export function SidebarGuestProjectsCard({
             size="sm"
             className="max-w-full"
           >
-            Create a free account
+            Create an account
           </ButtonLink>
         </div>
       </Surface>

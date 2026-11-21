@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { stableStringify } from '@canopy/protocol/plans';
 import type { CanopyHandlerContext } from '../../runtime/types';
 
-/** Keyed outcomes this worker keeps for replay; the oldest are dropped. */
+/** Keyed outcomes this worker keeps for replay; the oldest settled outcomes are dropped. */
 export const MAX_KEYED_OUTCOMES = 512;
 
 /**
@@ -26,6 +26,8 @@ export class KeyedOutcomes<T> {
     string,
     { fingerprint: string; outcome: Promise<T> }
   >();
+
+  private readonly settled = new WeakSet<Promise<T>>();
 
   run(
     context: CanopyHandlerContext,
@@ -53,11 +55,22 @@ export class KeyedOutcomes<T> {
       )
         this.outcomes.delete(id);
     });
-    while (this.outcomes.size > (this.options.max ?? MAX_KEYED_OUTCOMES)) {
-      const oldest = this.outcomes.keys().next().value;
-      if (oldest === undefined) break;
-      this.outcomes.delete(oldest);
-    }
+    const settle = (): void => {
+      this.settled.add(outcome);
+      this.trim();
+    };
+    outcome.then(settle, settle);
+    this.trim();
     return outcome;
+  }
+
+  // A pending outcome is never dropped, or its key would forget its params
+  // while the work still runs; the map can exceed max until outcomes settle.
+  private trim(): void {
+    for (const [id, entry] of this.outcomes) {
+      if (this.outcomes.size <= (this.options.max ?? MAX_KEYED_OUTCOMES))
+        return;
+      if (this.settled.has(entry.outcome)) this.outcomes.delete(id);
+    }
   }
 }

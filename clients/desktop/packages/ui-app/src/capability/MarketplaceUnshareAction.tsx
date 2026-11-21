@@ -84,7 +84,14 @@ export function useMarketplaceUnshare({
 }: UseMarketplaceUnshareOptions): MarketplaceUnshare {
   const [isOpen, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // `refused`: the server explained why it would not delete (the page is out
+  // of date, or shared collections still use it), a state to act on rather
+  // than a failure to record. `alreadyReported`: the adapter recorded it.
+  const [error, setError] = useState<{
+    readonly message: string;
+    readonly refused: boolean;
+    readonly alreadyReported: boolean;
+  } | null>(null);
   const [completed, setCompleted] = useState(false);
   // A ref, not state: a second confirm in the same frame must not send a
   // second delete before `pending` re-renders the trigger disabled.
@@ -118,14 +125,14 @@ export function useMarketplaceUnshare({
       (reason: unknown) => {
         inFlight.current = false;
         setPending(false);
-        setError(
-          marketplaceUnshareErrorMessage(
-            kind,
-            reason instanceof MarketplaceUnshareError
-              ? reason.reason
-              : 'unknown',
-          ),
-        );
+        const failure =
+          reason instanceof MarketplaceUnshareError ? reason.reason : 'unknown';
+        setError({
+          message: marketplaceUnshareErrorMessage(kind, failure),
+          refused: failure !== 'unknown',
+          alreadyReported:
+            reason instanceof MarketplaceUnshareError && reason.alreadyReported,
+        });
       },
     );
   }, [kind, onUnshare, onUnshared]);
@@ -154,7 +161,15 @@ export function useMarketplaceUnshare({
         confirmLabel={MARKETPLACE_UNSHARE_LABEL}
         busyLabel={MARKETPLACE_UNSHARE_BUSY_LABEL}
         busy={pending}
-        errorMessage={error}
+        {...(error?.refused || error?.alreadyReported
+          ? {
+              errorMessage: error.message,
+              errorRecordingDisabled: true as const,
+            }
+          : {
+              errorMessage: error?.message ?? null,
+              errorSource: 'marketplace-unshare',
+            })}
         destructive
         restoreFocusRef={restoreFocusRef}
         onConfirm={confirm}

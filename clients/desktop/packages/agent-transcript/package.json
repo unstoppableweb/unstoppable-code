@@ -17,6 +17,8 @@
     "./lib/command-read-display": "./src/lib/command-read-display.ts",
     "./lib/plan-tool-input": "./src/lib/plan-tool-input.ts",
     "./lib/delegation-card-state": "./src/lib/delegation-card-state.ts",
+    "./lib/message-agent-activity": "./src/lib/message-agent-activity.ts",
+    "./lib/turn-boundary": "./src/lib/turn-boundary.ts",
     "./lib/visual-ref": "./src/lib/visual-ref.ts"
   },
   "dependencies": {

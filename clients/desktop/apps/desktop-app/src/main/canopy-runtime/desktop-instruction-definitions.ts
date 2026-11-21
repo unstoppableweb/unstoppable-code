@@ -10,6 +10,7 @@ import {
   CORE_CATALOG_PUBLISH_INSTRUCTION_DEFINITIONS,
   CORE_INTEGRATION_MCP_ACCOUNT_INSTRUCTION_DEFINITIONS,
   CORE_CHAT_QUESTION_INSTRUCTION_DEFINITIONS,
+  CORE_CATALOG_COLLECTION_INSTRUCTION_DEFINITIONS,
   CORE_CHAT_TRANSFER_INSTRUCTION_DEFINITIONS,
   CORE_MEMORY_INSTRUCTION_DEFINITIONS,
   CORE_MEMORY_MAINTENANCE_INSTRUCTION_DEFINITIONS,
@@ -20,6 +21,7 @@ import {
   CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
   CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
   CORE_PLAN_INSTRUCTION_DEFINITIONS,
+  CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
   CORE_REVIEW_INSTRUCTION_DEFINITIONS,
   type WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
@@ -68,6 +70,12 @@ const {
 } = CORE_REVIEW_INSTRUCTION_DEFINITIONS;
 void reviewCreate;
 void reviewResolve;
+// Local collections (CAN-4170 PR 3b); import joins in PR 4.
+const {
+  'core.catalog.entry.import': collectionImport,
+  ...CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS
+} = CORE_CATALOG_COLLECTION_INSTRUCTION_DEFINITIONS;
+void collectionImport;
 
 /**
  * The desktop dispatcher's instructions: the composed registry, which carries
@@ -88,8 +96,9 @@ void reviewResolve;
  * deferred tools load (CAN-5995), the ShowVisual staging write
  * (CAN-5996), the managed delegation controls (CAN-6291), the MCP
  * account connect (CAN-6176 PR 4a), the worktree setup cancel (CAN-4097),
- * the tracked-plan writes (CAN-4165 PR 3b-2) and the code review state
- * writes (CAN-4167 PR 2c), this dispatcher only.
+ * the tracked-plan writes (CAN-4165 PR 3b-2), the code review state
+ * writes (CAN-4167 PR 2c) and the shared-run comment seen marker (CAN-4169
+ * PR 2), this dispatcher only.
  * Composing throws on a name two maps define, so a registry that later
  * gains one of these fails at startup instead of serving two definitions.
  */
@@ -126,6 +135,8 @@ export const DESKTOP_INSTRUCTION_DEFINITIONS =
     CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
     CORE_PLAN_LIFECYCLE_INSTRUCTION_DEFINITIONS,
     CORE_REVIEW_STATE_INSTRUCTION_DEFINITIONS,
+    CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
+    CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS,
   );
 
 export type DesktopInstructionDefinitions =

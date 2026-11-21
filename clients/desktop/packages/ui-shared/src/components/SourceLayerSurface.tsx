@@ -3,12 +3,12 @@ import type { JSX, ReactNode } from 'react';
 const LAYER_SURFACE = {
   script: {
     base: 'flex flex-col gap-1 rounded border px-2 py-1.5',
-    active: 'border-line-positive bg-success/[0.05]',
+    active: 'border-line-positive bg-success-subtle',
     inherited: 'bg-base/50',
   },
   detail: {
     base: 'rounded-lg border p-3 text-xs',
-    active: 'border-line-positive bg-success/[0.06]',
+    active: 'border-line-positive bg-success-subtle',
     inherited: 'bg-fg-primary/[0.02]',
   },
 } as const;

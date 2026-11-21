@@ -40,6 +40,7 @@ export type AutomaticCallId =
   | 'telemetry.active-use-signal'
   | 'telemetry.anonymous-id'
   | 'telemetry.sync'
+  | 'telemetry.usage-analytics-optout'
   | 'dictation.speech-model-update';
 
 export const AUTOMATIC_CALLS = {
@@ -82,6 +83,8 @@ export const AUTOMATIC_CALLS = {
   'telemetry.anonymous-id': 'off',
   // Telemetry sync to the hosted service.
   'telemetry.sync': 'off',
+  // The daily anonymous "Usage analytics is off" ping (CAN-6069).
+  'telemetry.usage-analytics-optout': 'off',
   // Launch download of a newer Linux dictation speech model to replace an
   // installed older one. The first download, and a download from the
   // Dictation settings, stay user-initiated.

@@ -10,7 +10,6 @@ import {
   REMOTE_CONTROL_CAPABILITY_CLAUDE_MOD_SURFACE,
   REMOTE_CONTROL_CAPABILITY_PIPELINE_CONTENT,
   REMOTE_CONTROL_PIPELINE_CONTENT_PAGE_MAX_CHARS,
-  REMOTE_CONTROL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY,
   REMOTE_CONTROL_CAPABILITY_PIPELINE_DISPATCH,
   REMOTE_CONTROL_CAPABILITY_PIPELINE_RUN_CHAT_LINKS,
   REMOTE_CONTROL_CAPABILITY_WORKTREE_RETENTION,
@@ -217,20 +216,12 @@ describe('changed-files paging contract compatibility', () => {
 });
 
 describe('Portal terminal failure recovery contract', () => {
-  it('carries the capability-gated retry request', () => {
-    const command = 'portal.chat.retry_failure';
-    expect(REMOTE_CONTROL_COMMAND_TYPES).toContain(command);
-    expect(REMOTE_CONTROL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
-    const request: RemoteControlCommandPayloadMap[typeof command] = {
-      projectId: 'project-1',
-      worktreeId: 'worktree-1',
-      chatId: 'chat-1',
-      turnId: 'prompt-1',
-      failedMessageId: 'failure-1',
-      action: 'retry',
-      idempotencyKey: 'retry-1',
-    };
-    expect(JSON.parse(JSON.stringify(request))).toEqual(request);
+  it('no longer carries the retired retry command (CAN-7435)', () => {
+    // Retry is the portable `chat.retryFailedTurn` client operation over
+    // `chat:command`; no peer is told the Portal command exists.
+    expect(REMOTE_CONTROL_COMMAND_TYPES).not.toContain(
+      'portal.chat.retry_failure',
+    );
   });
 });
 
@@ -2073,12 +2064,6 @@ describe('portal protocol contract', () => {
       // Read-only browsing is never a destructive operation.
       expect(REMOTE_CONTROL_DESTRUCTIVE_COMMAND_TYPES.has(command)).toBe(false);
     }
-  });
-
-  it('announces the strict sidebar Activity inventory behind its own capability', () => {
-    expect(REMOTE_CONTROL_CAPABILITY_SIDEBAR_ACTIVITY_INVENTORY).toBe(
-      'sidebar_activity_inventory',
-    );
   });
 
   it('announces the invocable inventory commands behind one capability', () => {

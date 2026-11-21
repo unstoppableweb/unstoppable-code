@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { CloneJobSnapshot } from '@canopy/desktop-shared/types';
+import { backgroundCloneJobs } from '@canopy/protocol/clone-jobs';
 
 /**
  * Renderer projection of main's Add project clone jobs. Main owns the jobs;
@@ -32,17 +33,6 @@ export const useCloneJobsStore = create<CloneJobsState>((set, get) => ({
   open: (): void => set({ isOpen: true }),
   close: (): void => set({ isOpen: false }),
 }));
-
-/**
- * Clones handed off by the Add project dialog, including finished jobs until
- * main removes them: a succeeded job is dismissed automatically once its
- * outcome is announced, a failed one when the user dismisses it.
- */
-export function backgroundCloneJobs(
-  jobs: readonly CloneJobSnapshot[],
-): CloneJobSnapshot[] {
-  return jobs.filter((job) => job.background);
-}
 
 export interface CloneJobsSummary {
   label: string;

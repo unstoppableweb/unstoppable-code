@@ -55,7 +55,9 @@ export function RunBadgePopover({
             {rows.map((row) => (
               <div key={row.id} className="flex items-center gap-1.5 text-xs">
                 <Dot tone={row.dotTone} />
-                <span className="truncate fg-primary">{row.label}</span>
+                <span className="truncate fg-primary" title={row.label}>
+                  {row.label}
+                </span>
                 <span className={`ml-auto shrink-0 ${row.statusClass}`}>
                   {row.statusText}
                 </span>

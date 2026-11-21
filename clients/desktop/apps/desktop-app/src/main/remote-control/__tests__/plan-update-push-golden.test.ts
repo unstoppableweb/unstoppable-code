@@ -254,6 +254,11 @@ afterAll(async () => {
   const access = await import('../../canopy-runtime/desktop-runtime-access');
   access.setDesktopCanopyRuntime(null);
   await dispatcher.shutdown();
+  // A plan usage event brought up the observability service: flush it into
+  // this file's data root before the env is restored (CAN-7485).
+  await (await import('../../observability'))
+    .peekObservabilityService()
+    ?.dispose();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;
   rmSync(root, { recursive: true, force: true });

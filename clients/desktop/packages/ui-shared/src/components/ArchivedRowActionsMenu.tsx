@@ -171,7 +171,6 @@ export function ArchivedRowActionsMenu({
           <DropdownMenuItem
             tone="destructive"
             disabled={busy}
-            title="Delete permanently"
             data-testid={`${testIdPrefix}-delete`}
             onClick={() => {
               setOpen(false);
@@ -181,7 +180,7 @@ export function ArchivedRowActionsMenu({
             <DropdownMenuItemIcon>
               <TrashPermanentlyIcon />
             </DropdownMenuItemIcon>
-            Permanent
+            Delete permanently
           </DropdownMenuItem>
         </ActionMenuRowStyle>
       </FloatingMenu>

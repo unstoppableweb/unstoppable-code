@@ -28,7 +28,11 @@ import {
   PullRequestCheckStatusMarker,
   type PullRequestSectionCheckStatus,
 } from '../pull-requests/PullRequestCheckStatusMarker';
-import { ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  CheckIcon,
+  ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
+  CloseIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 
 // ---------------------------------------------------------------------------
 // CAN-1528 — the desktop `PullRequestSection` presentational core, extracted
@@ -244,10 +248,22 @@ function CreationProgressFeed({
                       {repo.repoName}
                     </span>
                     {repo.currentPhase === 'done' && (
-                      <span className="text-3xs fg-success">{'✓'}</span>
+                      <span
+                        role="img"
+                        aria-label="Created"
+                        className="inline-flex fg-success"
+                      >
+                        <CheckIcon size="xs" />
+                      </span>
                     )}
                     {repo.currentPhase === 'error' && (
-                      <span className="text-3xs fg-destructive">{'✗'}</span>
+                      <span
+                        role="img"
+                        aria-label="Failed"
+                        className="inline-flex fg-destructive"
+                      >
+                        <CloseIcon size="xs" />
+                      </span>
                     )}
                   </div>
                   <div className="pl-2">
@@ -366,12 +382,12 @@ export function PullRequestRepoDetail({
         )}
       </div>
 
-      <p className="text-xs fg-secondary">{s.title}</p>
+      <p className="text-xs text-pretty fg-secondary">{s.title}</p>
 
       {/* Checks */}
       {s.checkDetails.length > 0 && (
         <Stack gap="tight">
-          <p className="text-3xs font-semibold fg-secondary">
+          <p className="text-3xs font-semibold tabular-nums fg-secondary">
             Checks (
             {
               s.checkDetails.filter(
@@ -384,8 +400,12 @@ export function PullRequestRepoDetail({
             className={
               framelessChecks
                 ? 'grid grid-cols-1 content-start gap-1 pr-1'
-                : 'max-h-70 grid grid-cols-1 content-start gap-1 overflow-y-auto pr-1'
+                : 'max-h-70 grid grid-cols-1 content-start gap-1 overflow-y-auto pr-1 focus-ring'
             }
+            // Only the capped list scrolls, so only it takes keyboard focus.
+            {...(framelessChecks
+              ? {}
+              : { tabIndex: 0, role: 'region', 'aria-label': 'Checks' })}
           >
             {sortedChecks.map((check: PullRequestSectionCheckDetail, index) => (
               <div
@@ -394,7 +414,9 @@ export function PullRequestRepoDetail({
               >
                 <span className="flex min-w-0 items-center gap-1.5">
                   <PullRequestCheckStatusMarker status={check.status} />
-                  <span className="truncate fg-primary/80">{check.name}</span>
+                  <span className="truncate fg-primary/80" title={check.name}>
+                    {check.name}
+                  </span>
                 </span>
                 {check.detailsUrl && (
                   <TextLink
@@ -403,6 +425,7 @@ export function PullRequestRepoDetail({
                     rel="noopener noreferrer"
                     variant="quiet"
                     className="shrink-0"
+                    aria-label={`View ${check.name} on GitHub`}
                   >
                     view &rarr;
                   </TextLink>
@@ -567,10 +590,10 @@ export function PullRequestSectionBody({
                       {repo.repoName}
                     </span>
                     {creationGroup.currentPhase === 'done' && (
-                      <span className="text-3xs fg-success">{'✓'}</span>
+                      <CheckIcon size="xs" className="fg-success" />
                     )}
                     {creationGroup.currentPhase === 'error' && (
-                      <span className="text-3xs fg-destructive">{'✗'}</span>
+                      <CloseIcon size="xs" className="fg-destructive" />
                     )}
                     <Badge tone={creationStatus.tone}>
                       {creationStatus.label}
@@ -593,12 +616,15 @@ export function PullRequestSectionBody({
                   <ControlButton
                     onClick={() => toggleRepo(repo.repoId)}
                     presentation="repository-disclosure"
+                    aria-expanded={expandedRepos.has(repo.repoId)}
                   >
                     <AppCatalogChevronRightMediumIcon
                       size="sm"
                       className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                     />
-                    <span className="truncate">{repo.repoName}</span>
+                    <span className="truncate" title={repo.repoName}>
+                      {repo.repoName}
+                    </span>
                     {repo.status && (
                       <PullRequestStateBadge
                         state={repo.status.state}
@@ -615,6 +641,7 @@ export function PullRequestSectionBody({
                       size="xs"
                       className="shrink-0"
                       onClick={(e) => e.stopPropagation()}
+                      aria-label={`${repo.repoName} pull request on GitHub`}
                     >
                       GitHub &rarr;
                     </TextLink>
@@ -644,8 +671,18 @@ export function PullRequestSectionBody({
             .flatMap((s): string[] =>
               s.phase === 'error' && s.error && !s.repoName ? [s.error] : [],
             )
-            .map((error, i) => (
-              <div key={`error-${i}`} className="pt-1 max-h-32 overflow-auto">
+            .map((error, i, errors) => (
+              <div
+                key={`error-${i}`}
+                className="pt-1 max-h-32 overflow-auto focus-ring"
+                tabIndex={0}
+                role="region"
+                aria-label={
+                  errors.length > 1
+                    ? `Error details ${i + 1} of ${errors.length}`
+                    : 'Error details'
+                }
+              >
                 <p className="whitespace-pre-wrap break-words">
                   <StatusLabel size="2xs">{error}</StatusLabel>
                 </p>
@@ -660,12 +697,15 @@ export function PullRequestSectionBody({
                 <ControlButton
                   onClick={() => toggleRepo(repo.repoId)}
                   presentation="repository-disclosure"
+                  aria-expanded={expandedRepos.has(repo.repoId)}
                 >
                   <AppCatalogChevronRightMediumIcon
                     size="sm"
                     className={`flex-shrink-0 transition-transform ${expandedRepos.has(repo.repoId) ? 'rotate-90' : ''}`}
                   />
-                  <span className="truncate">{repo.repoName}</span>
+                  <span className="truncate" title={repo.repoName}>
+                    {repo.repoName}
+                  </span>
                   {repo.status && (
                     <PullRequestStateBadge
                       state={repo.status.state}
@@ -682,6 +722,7 @@ export function PullRequestSectionBody({
                     size="xs"
                     className="shrink-0"
                     onClick={(e) => e.stopPropagation()}
+                    aria-label={`${repo.repoName} pull request on GitHub`}
                   >
                     GitHub &rarr;
                   </TextLink>

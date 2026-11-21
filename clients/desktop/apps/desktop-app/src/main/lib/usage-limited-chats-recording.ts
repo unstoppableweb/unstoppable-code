@@ -17,6 +17,7 @@ export interface BuildUsageLimitedEntryInput {
   provider: AgentProviderType;
   detectedAt: number;
   interruptedUserMessageId?: string;
+  usageResumeAccountEmail?: string;
   resetsAt?: number;
   accountProxyConnectionId?: string;
   resumeReason?: AccountChangeResumeReason;
@@ -43,6 +44,9 @@ export function buildUsageLimitedEntry(
       ? { accountProxyConnectionId: input.accountProxyConnectionId }
       : {}),
     detectedAt: input.detectedAt,
+    ...(input.usageResumeAccountEmail
+      ? { usageResumeAccountEmail: input.usageResumeAccountEmail }
+      : {}),
     ...(input.interruptedUserMessageId
       ? { interruptedUserMessageId: input.interruptedUserMessageId }
       : {}),

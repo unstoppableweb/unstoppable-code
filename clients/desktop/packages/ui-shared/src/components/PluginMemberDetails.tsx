@@ -5,6 +5,7 @@ import type {
   RemoteControlPluginCatalogMemberInventory,
 } from '@canopy/protocol/remote-control/shell';
 import { Heading } from './Heading';
+import { Surface } from './Surface';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
 
 export interface PluginMemberDetailsProps {
@@ -46,36 +47,36 @@ function MemberSection({
       </div>
       {note}
       {rows.length === 0 ? (
-        <p className="rounded-lg border px-3 py-2 text-xs fg-secondary">
-          No members
-        </p>
+        <p className="text-xs fg-secondary">No members</p>
       ) : (
-        <ul className="divide-y rounded-lg border">
-          {rows.map((row) => (
-            <li key={row.key} className="px-3 py-2">
-              <p
-                className={
-                  row.code
-                    ? 'font-mono text-xs font-medium fg-primary'
-                    : 'text-s font-medium fg-primary'
-                }
-              >
-                {row.name}
-              </p>
-              {row.description && (
+        <Surface variant="outline">
+          <ul className="divide-y">
+            {rows.map((row) => (
+              <li key={row.key} className="px-3 py-2">
                 <p
                   className={
                     row.code
-                      ? 'font-mono text-xs fg-secondary'
-                      : 'text-xs fg-secondary'
+                      ? 'font-mono text-xs font-medium fg-primary'
+                      : 'text-s font-medium fg-primary'
                   }
                 >
-                  {row.description}
+                  {row.name}
                 </p>
-              )}
-            </li>
-          ))}
-        </ul>
+                {row.description && (
+                  <p
+                    className={
+                      row.code
+                        ? 'font-mono text-xs fg-secondary'
+                        : 'text-xs fg-secondary'
+                    }
+                  >
+                    {row.description}
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Surface>
       )}
     </section>
   );

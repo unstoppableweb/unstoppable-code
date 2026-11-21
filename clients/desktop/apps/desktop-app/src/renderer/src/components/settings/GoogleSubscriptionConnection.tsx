@@ -2,14 +2,25 @@ import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { brand } from '@/lib/brand';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
-import { Button, GoogleSubscriptionRow } from '@canopy/ui-shared/components';
+import {
+  Button,
+  GoogleSubscriptionRow,
+  SettingsRowsGroup,
+  SettingsRowsSection,
+} from '@canopy/ui-shared/components';
 import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { type InlineFailure } from '@/lib/inline-app-error';
 import { AuthLoginModal } from './AuthLoginModal';
 
-export function GoogleSubscriptionConnection(): JSX.Element {
+interface GoogleSubscriptionConnectionProps {
+  readonly placement?: 'section' | 'row';
+}
+
+export function GoogleSubscriptionConnection({
+  placement = 'section',
+}: GoogleSubscriptionConnectionProps = {}): JSX.Element {
   const connected = useModelCatalogStore((state) =>
     Boolean(state.snapshot?.antigravity?.length),
   );
@@ -192,75 +203,84 @@ export function GoogleSubscriptionConnection(): JSX.Element {
           : `Antigravity CLI ${runtime.version}: not installed`;
   const runtimeFailure =
     runtimeError ?? (inProgress ? undefined : runtime?.error);
+  const row = (
+    <GoogleSubscriptionRow
+      connected={connected && !disconnected}
+      disconnected={disconnected}
+      appName={brand.displayName}
+      busy={busy || loading}
+      onDisconnect={(): void => {
+        void changeConnection(true);
+      }}
+      onReconnect={(): void => {
+        void changeConnection(false);
+      }}
+      onSignIn={(): void => setSignIn(true)}
+      onRefresh={(): void => {
+        void refresh();
+      }}
+      runtime={
+        runtimeLabel || runtimeFailure ? (
+          <div
+            data-testid="antigravity-runtime"
+            className="flex flex-col gap-2"
+          >
+            {runtimeLabel ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p role="status" className="text-xs fg-secondary">
+                  {runtimeLabel}
+                </p>
+                {installing ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-testid="antigravity-runtime-cancel"
+                    onClick={cancelInstall}
+                  >
+                    Cancel
+                  </Button>
+                ) : runtime?.supported && !runtime.managed && !inProgress ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    data-testid="antigravity-runtime-install"
+                    onClick={(): void => {
+                      void installRuntime();
+                    }}
+                  >
+                    {`Install managed ${runtime.version}`}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {runtimeFailure ? (
+              <DesktopErrorBanner
+                errorSource="antigravity-runtime-install"
+                error={runtimeFailure}
+              />
+            ) : null}
+          </div>
+        ) : undefined
+      }
+      error={
+        error ? (
+          <DesktopErrorBanner
+            errorSource="google-subscription-connection"
+            error={error.error}
+          />
+        ) : undefined
+      }
+    />
+  );
   return (
     <>
-      <GoogleSubscriptionRow
-        connected={connected && !disconnected}
-        disconnected={disconnected}
-        appName={brand.displayName}
-        busy={busy || loading}
-        onDisconnect={(): void => {
-          void changeConnection(true);
-        }}
-        onReconnect={(): void => {
-          void changeConnection(false);
-        }}
-        onSignIn={(): void => setSignIn(true)}
-        onRefresh={(): void => {
-          void refresh();
-        }}
-        runtime={
-          runtimeLabel || runtimeFailure ? (
-            <div
-              data-testid="antigravity-runtime"
-              className="flex flex-col gap-2"
-            >
-              {runtimeLabel ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <p role="status" className="text-xs fg-secondary">
-                    {runtimeLabel}
-                  </p>
-                  {installing ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      data-testid="antigravity-runtime-cancel"
-                      onClick={cancelInstall}
-                    >
-                      Cancel
-                    </Button>
-                  ) : runtime?.supported && !runtime.managed && !inProgress ? (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      data-testid="antigravity-runtime-install"
-                      onClick={(): void => {
-                        void installRuntime();
-                      }}
-                    >
-                      {`Install managed ${runtime.version}`}
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-              {runtimeFailure ? (
-                <DesktopErrorBanner
-                  errorSource="antigravity-runtime-install"
-                  error={runtimeFailure}
-                />
-              ) : null}
-            </div>
-          ) : undefined
-        }
-        error={
-          error ? (
-            <DesktopErrorBanner
-              errorSource="google-subscription-connection"
-              error={error.error}
-            />
-          ) : undefined
-        }
-      />
+      {placement === 'row' ? (
+        row
+      ) : (
+        <SettingsRowsSection>
+          <SettingsRowsGroup>{row}</SettingsRowsGroup>
+        </SettingsRowsSection>
+      )}
       {signIn ? (
         <AuthLoginModal
           provider="antigravity"

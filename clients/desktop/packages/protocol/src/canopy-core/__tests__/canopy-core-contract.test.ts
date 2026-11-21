@@ -9,6 +9,12 @@ import {
   CoreIntegrationSchema,
   LINEAR_INTEGRATION_ID,
 } from '../core/integration/operations';
+import {
+  CORE_FEEDBACK_INSTRUCTION_DEFINITIONS,
+  CORE_FEEDBACK_QUERY_DEFINITIONS,
+  CoreFeedbackSubmitParamsSchema,
+  CoreFeedbackTurnUpdateParamsSchema,
+} from '../core/feedback';
 import { z } from 'zod';
 
 import {
@@ -3363,5 +3369,254 @@ describe('core.chat.events revision 5 agent_work.changed (CAN-6746)', () => {
         item({ ...changed, backgroundWork: { liveTaskCount: 1 } }),
       ).success,
     ).toBe(false);
+  });
+});
+
+describe('core.feedback.* contract (CAN-4171 B2)', () => {
+  const rate = CORE_FEEDBACK_INSTRUCTION_DEFINITIONS['core.feedback.turn.rate'];
+  const update =
+    CORE_FEEDBACK_INSTRUCTION_DEFINITIONS['core.feedback.turn.update'];
+  const remove =
+    CORE_FEEDBACK_INSTRUCTION_DEFINITIONS['core.feedback.turn.delete'];
+  const submit = CORE_FEEDBACK_INSTRUCTION_DEFINITIONS['core.feedback.submit'];
+  const list = CORE_FEEDBACK_QUERY_DEFINITIONS['core.feedback.turn.list'];
+  // The rating the CAN-4171 capture golden sends.
+  const RATE = {
+    clientUserMessageId: 'msg-1-1795150000000',
+    clientChatId: 'chat-golden',
+    rating: 'down',
+    provider: 'claude',
+    model: 'claude-golden',
+    eventType: 'worktree_chat',
+    chatMode: 'canopy',
+    projectId: 'project-golden',
+    worktreeId: 'worktree-golden',
+  };
+  const FEEDBACK_ID = '2d0b9e3a-4f5c-4a7b-8c8d-9e0f1a2b3c4d';
+  const MEMORY = {
+    kind: 'memory_fact',
+    organizationExternalId: '11111111-1111-4111-8111-111111111111',
+    searchId: '22222222-2222-4222-8222-222222222222',
+    factId: '33333333-3333-4333-8333-333333333333',
+  };
+  // The catalog renders a union as oneOf, so at most one branch may match.
+  const matchingBranches = (
+    schema: { options: readonly z.ZodType[] },
+    value: unknown,
+  ): number =>
+    schema.options.filter((option) => option.safeParse(value).success).length;
+
+  it('defines the five operations with their kinds, idempotency and grants, outside the shared registries', () => {
+    expect(Object.keys(CORE_FEEDBACK_INSTRUCTION_DEFINITIONS).sort()).toEqual([
+      'core.feedback.submit',
+      'core.feedback.turn.delete',
+      'core.feedback.turn.rate',
+      'core.feedback.turn.update',
+    ]);
+    expect(Object.keys(CORE_FEEDBACK_QUERY_DEFINITIONS)).toEqual([
+      'core.feedback.turn.list',
+    ]);
+    for (const definition of [rate, update, remove]) {
+      expect(definition.kind).toBe('instruction');
+      expect(definition.idempotency).toBe('inherent');
+      expect(definition.requiredGrants).toEqual(['core.feedback.write']);
+    }
+    expect(submit.idempotency).toBe('keyed');
+    expect(submit.requiredGrants).toEqual(['core.feedback.write']);
+    expect(list.kind).toBe('query');
+    expect(list.idempotency).toBe('inherent');
+    expect(list.requiredGrants).toEqual(['core.feedback.read']);
+    for (const name of [
+      ...Object.keys(CORE_FEEDBACK_INSTRUCTION_DEFINITIONS),
+      ...Object.keys(CORE_FEEDBACK_QUERY_DEFINITIONS),
+    ]) {
+      expect(name in CANOPY_INSTRUCTION_DEFINITIONS).toBe(false);
+      expect(name in CANOPY_QUERY_DEFINITIONS).toBe(false);
+    }
+    // Only the standard error kinds: no typed code crosses.
+    for (const definition of [rate, update, remove, list])
+      expect(
+        definition.error.safeParse({
+          kind: 'unavailable',
+          message: 'redacted',
+          code: 'core.feedback.anything',
+          retry: { kind: 'same_request' },
+        }).success,
+      ).toBe(false);
+    expect(
+      submit.error.safeParse({
+        kind: 'unavailable',
+        message: 'redacted',
+        retry: { kind: 'same_idempotency_key' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts the golden rating and refuses bad ratings, ids and caller authority in turn.rate params', () => {
+    expect(rate.params.parse(RATE)).toEqual(RATE);
+    expect(
+      rate.params.safeParse({
+        clientUserMessageId: 'm',
+        clientChatId: 'c',
+        rating: 'up',
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { ...RATE, rating: 'meh' },
+      { ...RATE, clientUserMessageId: '' },
+      { ...RATE, clientUserMessageId: 'x'.repeat(129) },
+      { ...RATE, clientChatId: '' },
+      { ...RATE, accountId: 'account-a' },
+      { ...RATE, apiKey: 'fake' },
+      { ...RATE, workOwner: { kind: 'organization', id: 'org' } },
+    ])
+      expect(rate.params.safeParse(bad).success).toBe(false);
+  });
+
+  it('answers recorded or queued from turn.rate, with the id only once recorded', () => {
+    for (const result of [
+      { recorded: true, queued: false, feedbackId: FEEDBACK_ID },
+      { recorded: false, queued: true },
+      { recorded: false, queued: false },
+    ])
+      expect(rate.result.parse(result)).toEqual(result);
+    // A queued rating has no hosted id yet: neither an empty nor a real one.
+    for (const feedbackId of ['', FEEDBACK_ID])
+      expect(
+        rate.result.safeParse({ recorded: false, queued: true, feedbackId })
+          .success,
+      ).toBe(false);
+    expect(
+      rate.result.safeParse({ recorded: true, queued: true }).success,
+    ).toBe(false);
+  });
+
+  it('needs a shared reason or a bounded comment in turn.update, and an optional id', () => {
+    for (const params of [
+      { clientUserMessageId: 'm', reason: 'got-stuck' },
+      { clientUserMessageId: 'm', comment: 'x'.repeat(4000) },
+      {
+        clientUserMessageId: 'm',
+        feedbackId: FEEDBACK_ID,
+        reason: 'other',
+        comment: 'note',
+      },
+    ])
+      expect(update.params.safeParse(params).success).toBe(true);
+    for (const params of [
+      { clientUserMessageId: 'm' },
+      { clientUserMessageId: 'm', feedbackId: FEEDBACK_ID },
+      { clientUserMessageId: 'm', reason: 'wrong-answer' },
+      { clientUserMessageId: 'm', comment: 'x'.repeat(4001) },
+      { clientUserMessageId: 'm', reason: 'other', expectedRevision: 1 },
+    ])
+      expect(update.params.safeParse(params).success).toBe(false);
+    for (const params of [
+      { clientUserMessageId: 'm', reason: 'other', comment: 'note' },
+      { clientUserMessageId: 'm', comment: 'note' },
+    ])
+      expect(matchingBranches(CoreFeedbackTurnUpdateParamsSchema, params)).toBe(
+        1,
+      );
+    expect(update.result.parse({ recorded: false, queued: true })).toEqual({
+      recorded: false,
+      queued: true,
+    });
+  });
+
+  it('clears by message id in turn.delete', () => {
+    expect(remove.params.safeParse({ clientUserMessageId: 'm' }).success).toBe(
+      true,
+    );
+    expect(
+      remove.params.safeParse({
+        clientUserMessageId: 'm',
+        feedbackId: FEEDBACK_ID,
+      }).success,
+    ).toBe(true);
+    expect(remove.params.safeParse({ feedbackId: FEEDBACK_ID }).success).toBe(
+      false,
+    );
+    expect(remove.result.parse({ cleared: true })).toEqual({ cleared: true });
+  });
+
+  it('lists rows without comment text in turn.list, a queued row without an id', () => {
+    expect(list.params.safeParse({ clientChatId: 'chat' }).success).toBe(true);
+    for (const params of [
+      {},
+      { clientChatId: 'chat', cursor: 'x' },
+      { clientChatId: 'chat', limit: 10 },
+    ])
+      expect(list.params.safeParse(params).success).toBe(false);
+    const at = '2026-11-19T00:00:00.000Z';
+    const queued = {
+      clientUserMessageId: 'msg-1',
+      rating: 'down',
+      reason: 'got-stuck',
+      hasComment: true,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const recorded = {
+      feedbackId: FEEDBACK_ID,
+      clientUserMessageId: 'msg-2',
+      rating: 'up',
+      hasComment: false,
+      createdAt: at,
+      updatedAt: at,
+    };
+    expect(list.result.parse({ feedback: [queued, recorded] })).toEqual({
+      feedback: [queued, recorded],
+    });
+    for (const row of [
+      { ...queued, feedbackId: '' },
+      { ...recorded, comment: 'text' },
+    ])
+      expect(list.result.safeParse({ feedback: [row] }).success).toBe(false);
+  });
+
+  it('takes memory_fact feedback only in submit, with a rating or a comment, and answers recorded', () => {
+    for (const params of [
+      { ...MEMORY, rating: 'like' },
+      { ...MEMORY, comment: 'stale' },
+      { ...MEMORY, rating: 'dislike', comment: 'x'.repeat(2000) },
+    ])
+      expect(submit.params.safeParse(params).success).toBe(true);
+    for (const params of [
+      MEMORY,
+      { ...MEMORY, rating: 'up' },
+      { ...MEMORY, comment: 'x'.repeat(2001) },
+      { ...MEMORY, organizationExternalId: 'not-a-uuid', rating: 'like' },
+      { ...MEMORY, searchId: 'search-1', rating: 'like' },
+      { ...MEMORY, factId: 'fact-1', rating: 'like' },
+      { ...MEMORY, comment: '   ' },
+      { ...MEMORY, rating: 'like', comment: ' ' },
+      { ...MEMORY, kind: 'product', rating: 'like' },
+      { ...MEMORY, rating: 'like', title: 'Bug' },
+      { ...MEMORY, rating: 'like', diagnosticsArtifactId: 'artifact' },
+    ])
+      expect(submit.params.safeParse(params).success).toBe(false);
+    expect(submit.result.parse({ recorded: false })).toEqual({
+      recorded: false,
+    });
+    for (const params of [
+      { ...MEMORY, rating: 'like', comment: 'stale' },
+      { ...MEMORY, comment: 'stale' },
+    ])
+      expect(matchingBranches(CoreFeedbackSubmitParamsSchema, params)).toBe(1);
+    // A duplicate submission answers the original row, so the client converges.
+    const original = {
+      recorded: false,
+      feedback: {
+        rating: 'dislike',
+        comment: 'stale',
+        createdAt: '2026-11-19T00:00:00.000Z',
+      },
+    };
+    expect(submit.result.parse(original)).toEqual(original);
+    for (const feedback of [{}, { rating: 'up', createdAt: 'now' }])
+      expect(
+        submit.result.safeParse({ recorded: true, feedback }).success,
+      ).toBe(false);
   });
 });

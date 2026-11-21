@@ -52,6 +52,12 @@ export interface TryItSignInNoticeProps {
    * composer (CAN-5218), which the user sends. Defaults to `send`.
    */
   continuation?: 'send' | 'select';
+  /**
+   * The `sign-in` state's body says the capability needs AI Credits as well
+   * as an account, for a host whose chats only run on credits. Defaults to
+   * `false`, which keeps the account-only copy.
+   */
+  needsCredits?: boolean;
   signIn?: TryItSignInAction;
   createAccount?: TryItSignInAction;
   /** Retries the signed-in continuation, never authentication. */
@@ -89,11 +95,9 @@ function AuthControl({
     );
   }
   if (disabled) {
-    // No href, so neither activation nor middle-click can navigate.
+    // ButtonLink drops the href when disabled, so nothing can navigate.
     return (
       <ButtonLink
-        role="link"
-        aria-disabled="true"
         href=""
         disabled
         variant={variant}
@@ -192,6 +196,7 @@ export function TryItSignInNotice({
   retry = 'authentication',
   errorMessage,
   continuation = 'send',
+  needsCredits = false,
   signIn,
   createAccount,
   onRetryContinuation,
@@ -229,19 +234,23 @@ export function TryItSignInNotice({
           )}
         </>
       ) : undefined;
+    // Names no price and no provider: the host sells credits after sign-in.
+    const creditsBody = `${capabilityName} needs an account and AI Credits.`;
     return promptSaved ? (
       <Notice
         {...common}
         title={`Sign in to use ${capabilityName}`}
         actions={actions}
       >
-        {selectOnly
-          ? 'Your prompt stays in the composer. Send it after you sign in.'
-          : 'Your prompt is saved so you can continue after sign-in.'}
+        {needsCredits
+          ? creditsBody
+          : selectOnly
+            ? 'Your prompt stays in the composer. Send it after you sign in.'
+            : 'Your prompt is saved so you can continue after sign-in.'}
       </Notice>
     ) : (
       <Notice {...common} actions={actions}>
-        Sign in to use {capabilityName}.
+        {needsCredits ? creditsBody : <>Sign in to use {capabilityName}.</>}
       </Notice>
     );
   }

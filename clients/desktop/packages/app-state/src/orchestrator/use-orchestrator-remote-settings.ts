@@ -1,5 +1,6 @@
 'use client';
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -34,6 +35,9 @@ interface RemoteSettingsState {
   readonly autoArchiveDays: number;
   readonly setAutoArchiveDays: Dispatch<SetStateAction<number>>;
   readonly loadingError: boolean;
+  /** Reads the settings again after a failed load (CAN-7473). */
+  readonly reload: () => void;
+  readonly reloading: boolean;
   readonly saveError: string | null;
   readonly saving: boolean;
   readonly savingProjectAgentAccess: boolean;
@@ -78,6 +82,13 @@ export function useOrchestratorRemoteSettings(
     DEFAULT_RETENTION_DAYS,
   );
   const [loadingError, setLoadingError] = useState(false);
+  // Each Try again reads once more; the failure stays shown while it runs.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [reloading, setReloading] = useState(false);
+  const reload = useCallback((): void => {
+    setReloading(true);
+    setLoadAttempt((attempt) => attempt + 1);
+  }, []);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savingProjectAgentAccess, setSavingProjectAgentAccess] =
@@ -88,10 +99,12 @@ export function useOrchestratorRemoteSettings(
     void onLoad()
       .then((loaded) => {
         if (cancelled) return;
+        setReloading(false);
         if (!loaded) {
           setLoadingError(true);
           return;
         }
+        setLoadingError(false);
         setSettings(loaded);
         setSavedInstructions(loaded.instructions);
         setRetentionDays(retentionDraft(loaded.archiveRetentionDays));
@@ -107,12 +120,14 @@ export function useOrchestratorRemoteSettings(
         );
       })
       .catch(() => {
-        if (!cancelled) setLoadingError(true);
+        if (cancelled) return;
+        setReloading(false);
+        setLoadingError(true);
       });
     return (): void => {
       cancelled = true;
     };
-  }, [onLoad]);
+  }, [onLoad, loadAttempt]);
 
   const selectedModel = useMemo(
     () =>
@@ -240,6 +255,8 @@ export function useOrchestratorRemoteSettings(
     autoArchiveDays,
     setAutoArchiveDays,
     loadingError,
+    reload,
+    reloading,
     saveError,
     saving,
     savingProjectAgentAccess,

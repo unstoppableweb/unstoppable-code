@@ -1,8 +1,11 @@
+import { BrowserWindow } from 'electron';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import { catalogContentRevision } from '@canopy/core-runtime/node/catalog';
 import { KeyedOutcomes } from '@canopy/core-runtime/node/operations';
 import {
   CONFIG_GIT_NAMESPACE,
+  CONFIG_ONBOARDING_TIPS_NAMESPACE,
+  CONFIG_SUGGESTIONS_NAMESPACE,
   CONFIG_WRITABLE_NAMESPACES,
   ConfigAccountProxyValueSchema,
   ConfigAgentValueSchema,
@@ -11,7 +14,9 @@ import {
   ConfigLedgerValueSchema,
   ConfigMemoryValueSchema,
   ConfigNavigationValueSchema,
+  ConfigOnboardingTipsValueSchema,
   ConfigProfileValueSchema,
+  ConfigSuggestionsValueSchema,
   type ConfigAppAdvisorValue,
   type ConfigGetResult,
   type ConfigGitValue,
@@ -22,7 +27,9 @@ import {
   MAX_MANAGED_DELEGATION_DEPTH,
   normalizeManagedDelegationMaxDepth,
 } from '@canopy/protocol/delegation/discovery';
+import { normalizeOnboardingTipDismissals } from '@canopy/protocol/onboarding-tips';
 import { resolvePrContentInstructions } from '@canopy/protocol/pull-requests';
+import { normalizeSuggestionsState } from '@canopy/protocol/suggestions';
 import { MAX_ARCHIVE_RETENTION_DAYS } from '@canopy/desktop-shared/lib/archive-retention';
 import { resolveCommitMessageInstructions } from '@canopy/desktop-shared/lib/commit-message-generator';
 import {
@@ -42,6 +49,12 @@ import type { DesktopDomainAdapter } from './desktop-runtime';
 export interface CoreConfigHost {
   readGit(): Promise<ConfigGitValue>;
   readPreferences(): Promise<PreferencesData>;
+  /**
+   * Whether the last preferences read served defaults or a recovered copy
+   * because the stored file could not be read. Checked after a read, which is
+   * what records the failure.
+   */
+  preferencesLoadFailed(): Promise<boolean>;
   /**
    * The window's preferences save. `precondition` runs inside its commit with
    * the stored preferences, projected as reads see them, and throws to refuse
@@ -123,6 +136,15 @@ const desktopConfigHost: CoreConfigHost = {
   },
   readPreferences: async () =>
     (await import('../lib/preferences-store')).readPreferencesFile(),
+  // The load error clears once the app shell acknowledges it; a failed
+  // recovery stays latched until restart and reads still serve defaults.
+  preferencesLoadFailed: async () => {
+    const store = await import('../lib/preferences-store');
+    return (
+      store.peekPreferencesLoadError() !== null ||
+      store.arePreferencesUnconfirmed()
+    );
+  },
   savePreferences: async (patch, precondition) => {
     const [{ savePreferencesPatch }, { projectPreferencesForRuntime }] =
       await Promise.all([
@@ -140,15 +162,11 @@ const desktopConfigHost: CoreConfigHost = {
       ).readAppAdvisorWorkspaceSettings(),
     ),
   saveAppAdvisorSettings: async (patch, precondition) => {
-    const [
-      { saveAppAdvisorWorkspaceSettings },
-      { BrowserWindow },
-      { sendToWindow },
-    ] = await Promise.all([
-      import('../lib/app-advisor-workspace'),
-      import('electron'),
-      import('../lib/window-send'),
-    ]);
+    const [{ saveAppAdvisorWorkspaceSettings }, { sendToWindow }] =
+      await Promise.all([
+        import('../lib/app-advisor-workspace'),
+        import('../lib/window-send'),
+      ]);
     const saved = await saveAppAdvisorWorkspaceSettings(patch, (current) =>
       precondition(appAdvisorValue(current)),
     );
@@ -417,6 +435,49 @@ const reused = (): CanopyOperationError =>
     retry: { kind: 'never' },
   });
 
+type ReadOnlyPreferenceNamespace =
+  | typeof CONFIG_ONBOARDING_TIPS_NAMESPACE
+  | typeof CONFIG_SUGGESTIONS_NAMESPACE;
+
+function isReadOnlyPreferenceNamespace(
+  namespace: string,
+): namespace is ReadOnlyPreferenceNamespace {
+  return (
+    namespace === CONFIG_ONBOARDING_TIPS_NAMESPACE ||
+    namespace === CONFIG_SUGGESTIONS_NAMESPACE
+  );
+}
+
+/**
+ * The tips or suggestions state (CAN-7434), normalized as the full
+ * preferences projection normalizes it, so stored data that projection
+ * tolerates (a retired id, a malformed stamp) is dropped rather than refused.
+ * A read that served defaults or a recovered copy refuses instead, so a
+ * dismissed tip or suggestion never reappears from an unreadable file.
+ */
+async function readOnlyPreferenceValue(
+  host: CoreConfigHost,
+  namespace: ReadOnlyPreferenceNamespace,
+): Promise<ConfigValue> {
+  const preferences = await host.readPreferences();
+  if (await host.preferencesLoadFailed())
+    throw unavailable(
+      `The ${namespace} settings are unavailable because preferences could not be loaded.`,
+    );
+  if (namespace === CONFIG_ONBOARDING_TIPS_NAMESPACE)
+    return ConfigOnboardingTipsValueSchema.parse({
+      dismissed: normalizeOnboardingTipDismissals(
+        preferences.onboardingTipsDismissed,
+      ),
+    });
+  return ConfigSuggestionsValueSchema.parse(
+    normalizeSuggestionsState(
+      preferences.suggestions,
+      preferences.repeatTaskAutomationSuggestionsEnabled,
+    ),
+  );
+}
+
 async function readNamespace(
   host: CoreConfigHost,
   namespace: string,
@@ -425,6 +486,11 @@ async function readNamespace(
     return documentOf(
       namespace,
       ConfigGitValueSchema.parse(await host.readGit()),
+    );
+  if (isReadOnlyPreferenceNamespace(namespace))
+    return documentOf(
+      namespace,
+      await readOnlyPreferenceValue(host, namespace),
     );
   if (!isWritableNamespace(namespace)) throw notServed(namespace);
   if (namespace === 'appAdvisor')
@@ -481,7 +547,8 @@ async function updateNamespace(
 
 /**
  * `core.config.get` and `core.config.update` on the desktop dispatcher, global
- * scope only: the read-only `git` namespace (CAN-5992) and the writable
+ * scope only: the read-only `git` namespace (CAN-5992), the read-only
+ * `onboardingTips` and `suggestions` namespaces (CAN-7434), and the writable
  * namespaces (CAN-6004). An update names the revision it read and is checked
  * against the stored settings inside the commit that writes them.
  */

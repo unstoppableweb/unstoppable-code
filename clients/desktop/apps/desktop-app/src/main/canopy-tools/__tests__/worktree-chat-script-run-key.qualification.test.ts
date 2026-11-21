@@ -7,6 +7,7 @@ import type * as ScriptOutputModule from '../../mcp/script-output';
 import type * as ScriptExecutionModule from '../../lib/script-execution';
 import type * as ScriptEventsModule from '../../lib/script-events';
 import { randomUUID } from 'node:crypto';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -336,6 +337,7 @@ async function runScript(
     chatId,
     cwd: join(mockRoot, 'checkout'),
     getWindow: (): null => null,
+    interfacePort: windowAgentInterfacePort(() => null),
     ...(chat.authorize ? { authorizeScriptCommand: chat.authorize } : {}),
   };
   const parsed = desktopLegacyActionFamily.parse({

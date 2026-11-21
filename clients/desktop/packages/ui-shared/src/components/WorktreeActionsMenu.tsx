@@ -273,6 +273,7 @@ export const WorktreeActionsMenu = forwardRef<
           tone={action.tone}
           hoverSurface
           revealOnItemHover={!open && !alwaysVisible}
+          coarsePointerTarget
           aria-label={action.label}
           tooltipLabel={action.tooltip}
           disabled={action.disabled}
@@ -292,25 +293,33 @@ export const WorktreeActionsMenu = forwardRef<
         />
       )}
       {itemCount > 0 && (
-        <RailIconButton
-          ref={setTriggerRef}
-          icon={MoreHorizontalIcon}
-          hoverSurface
-          revealOnItemHover={!open && !alwaysVisible}
-          coarsePointerTarget
-          visibility={hideTriggerForFinePointer ? 'coarse-pointer' : 'all'}
-          aria-label="More actions"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-controls={open ? menuId : undefined}
-          data-worktree-actions-trigger="true"
-          {...triggerDataAttributes}
-          data-testid={triggerTestId}
-          onClick={(event) => {
-            event.stopPropagation();
-            handleOpenChange(!open);
-          }}
-        />
+        // RailIconButton sits in a tooltip wrapper, so the wrapper is what
+        // leaves fine pointers; a hidden button alone would keep the chip's
+        // 2px gap and push the last hover action 4px off the row's edge.
+        <span
+          className={
+            hideTriggerForFinePointer ? 'flex pointer-fine:hidden' : 'contents'
+          }
+        >
+          <RailIconButton
+            ref={setTriggerRef}
+            icon={MoreHorizontalIcon}
+            hoverSurface
+            revealOnItemHover={!open && !alwaysVisible}
+            coarsePointerTarget
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-controls={open ? menuId : undefined}
+            data-worktree-actions-trigger="true"
+            {...triggerDataAttributes}
+            data-testid={triggerTestId}
+            onClick={(event) => {
+              event.stopPropagation();
+              handleOpenChange(!open);
+            }}
+          />
+        </span>
       )}
       {open && pointerAnchor ? (
         <FloatingMenuPointAnchor

@@ -93,7 +93,11 @@ export function ShareActionButton({
     </Button>
   );
   if (disabled && disabledReason) {
-    return <Tooltip label={disabledReason}>{button}</Tooltip>;
+    return (
+      <Tooltip label={disabledReason} showOnTouch>
+        {button}
+      </Tooltip>
+    );
   }
   // A labeled button already reads `Share`; a redundant tooltip adds noise.
   if (labeled) return button;

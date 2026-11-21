@@ -3021,6 +3021,30 @@ export async function handleCloudRequest(request, response, url) {
     return true;
   }
 
+  if (method === 'POST' && pathname === '/api/v1/canopy/desktop-auth/token') {
+    // The desktop sign-in's code exchange (its loopback flow). A runner that
+    // answers the browser step itself, such as the release-like perf
+    // scenarios, which start as the mock's guest, signs a production bundle
+    // in here as a real account: any authorization code is accepted. The key
+    // names the same account `GET /account` reports, so a later account
+    // refresh keeps the signed-in state.
+    const body = await readJsonBody(request);
+    if (typeof body?.code !== 'string' || body.code.length === 0) {
+      jsonResponse(response, 400, { error: 'code is required.' });
+      return true;
+    }
+    jsonResponse(response, 200, {
+      token: 'csk_desktop_auth_e2e',
+      userApiKey: { id: 'desktop-auth-key-e2e' },
+      account: CLOUD_ACCOUNT,
+      capabilities: CLOUD_CAPABILITIES,
+      organizations: [],
+      teams: [],
+      enforcedSettings: [],
+    });
+    return true;
+  }
+
   if (method === 'POST' && pathname === '/api/v1/canopy/auth-link') {
     if (!hasValidAuth(request)) {
       jsonResponse(response, 401, { error: 'Invalid API key.' });

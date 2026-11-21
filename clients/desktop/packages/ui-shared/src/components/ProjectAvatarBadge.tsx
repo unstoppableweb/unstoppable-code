@@ -98,7 +98,8 @@ export function ProjectAvatarBadge({
         data-testid={`workspace-owner-avatar${testIdSuffix}`}
         // Never forced `visible`: that would show through a hidden ancestor
         // (the app behind Settings is `visibility: hidden`).
-        className={`absolute inset-0 h-4 w-4 ${WORKSPACE_GLYPH_RADIUS_CLASS} object-cover ${
+        // The shared avatar's hairline edge, so a pale logo keeps its shape.
+        className={`absolute inset-0 h-4 w-4 ${WORKSPACE_GLYPH_RADIUS_CLASS} object-cover outline-solid outline-[length:var(--border-hairline)] -outline-offset-[length:var(--border-hairline)] outline-line-base ${
           loaded ? '' : 'invisible'
         }`}
         onLoad={(): void => {

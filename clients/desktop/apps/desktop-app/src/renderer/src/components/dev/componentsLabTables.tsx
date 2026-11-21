@@ -88,6 +88,16 @@ const RUN_COLUMNS: ReadonlyArray<DataTableColumn<RunRow>> = [
   },
 ];
 
+/** The run columns with `showFrom`, for the breakpoint specimens. */
+const RESPONSIVE_RUN_COLUMNS: ReadonlyArray<DataTableColumn<RunRow>> =
+  RUN_COLUMNS.map((column) =>
+    column.key === 'trigger'
+      ? { ...column, showFrom: 'md' }
+      : column.key === 'started'
+        ? { ...column, showFrom: 'sm' }
+        : column,
+  );
+
 interface StatRow {
   readonly person: string;
   readonly chats: number;
@@ -276,6 +286,22 @@ export function TablesSpecimen(): JSX.Element {
         hint="A button inside is the keyboard path"
       >
         <RowsWithOwnControl />
+      </SpecimenPanel>
+      <SpecimenPanel
+        title="Container breakpoints"
+        hint="showFrom measures the table, not the window: Trigger from 42rem, Started from 36rem"
+      >
+        {['28rem', '48rem'].map((width) => (
+          <div key={width} style={{ width }}>
+            <DataTable<RunRow>
+              columns={RESPONSIVE_RUN_COLUMNS}
+              rows={RUNS}
+              rowKey={(row) => row.name}
+              breakpoints="container"
+              caption={`Workflow runs at ${width}`}
+            />
+          </div>
+        ))}
       </SpecimenPanel>
       <SpecimenPanel title="Empty and loading">
         <DataTable<RunRow>

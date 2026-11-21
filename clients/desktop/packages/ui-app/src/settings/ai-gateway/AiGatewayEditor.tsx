@@ -405,6 +405,7 @@ function ConfiguredAiGateway({
           busy={saving}
           dataTestId="ai-gateway-remove-confirm"
           errorMessage={error?.copy}
+          errorSource="ai-gateway-remove"
           errorDetails={error?.details}
           restoreFocusRef={setupRef}
           onCancel={() => {

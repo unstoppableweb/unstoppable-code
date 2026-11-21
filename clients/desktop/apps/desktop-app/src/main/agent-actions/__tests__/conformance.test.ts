@@ -10,6 +10,7 @@ import {
   resetDesktopApprovalBrokerForTests,
 } from '../../approvals/approval-broker';
 import { windowApprovalPort } from '../../approvals/prompt-bridge';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { resetDesktopChatWaitsForTest } from '../../chat-waits/desktop-chat-waits';
 import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
@@ -743,6 +744,7 @@ function makeDesktopHost(world: ConformanceWorld): {
       chatId: world.current.chatId,
       cwd: '/conformance/worktree',
       getWindow: () => null,
+      interfacePort: windowAgentInterfacePort(() => null),
     },
     worktreeWatcherRuntime: {
       projectId: world.current.workspaceId,

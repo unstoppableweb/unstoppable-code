@@ -1,4 +1,6 @@
+import { Badge } from './Badge';
 import { ListRowFrame } from './ListRow';
+import { NOTICE_TRAY_SURFACE_CLASS } from './Notice';
 import type { ComponentPropsWithRef, JSX, ReactNode } from 'react';
 
 export function UnresolvedCollectionMember(
@@ -95,10 +97,8 @@ export function PipelineDetailTag({
   readonly kind: 'trigger' | 'scope';
   readonly children: ReactNode;
 }): JSX.Element {
-  const tone =
-    kind === 'trigger' ? 'bg-info-subtle fg-info' : 'bg-secondary fg-secondary';
   return (
-    <span className={`rounded px-2 py-1 text-xs ${tone}`}>{children}</span>
+    <Badge tone={kind === 'trigger' ? 'info' : 'neutral'}>{children}</Badge>
   );
 }
 
@@ -120,7 +120,7 @@ export function PackageProblemTray(
   return (
     <div
       {...props}
-      className="overflow-hidden rounded-xl bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ring-line-secondary"
+      className={`overflow-hidden rounded-xl ${NOTICE_TRAY_SURFACE_CLASS}`}
     />
   );
 }

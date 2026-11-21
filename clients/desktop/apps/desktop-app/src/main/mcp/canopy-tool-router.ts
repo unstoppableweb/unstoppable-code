@@ -4,6 +4,10 @@ import {
 } from '../agent-secrets/request-secrets';
 import { agentSecretUseTools } from '../agent-secrets/secret-tool-runtime';
 import {
+  windowAgentInterfacePort,
+  type AgentInterfacePort,
+} from '../agents/agent-interface-port';
+import {
   isAgentSecretRequestsEnabled,
   isRunWithSecretsSupported,
 } from '../agent-secrets/feature-gate';
@@ -819,6 +823,10 @@ export class CanopyToolRouter {
       CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS[surface].includes(
         'ask_user_question',
       );
+    // The worktree-action runtime's window and its interface port share one
+    // accessor.
+    const getWindow: AgentInterfacePort['legacyWindow'] = () =>
+      this.options.interfaceRequests.legacyWindow();
     return {
       ...(route.cwd &&
       chatVisualsEligible({
@@ -1041,7 +1049,8 @@ export class CanopyToolRouter {
               ...(isCoworkWorkspace(route.projectId)
                 ? { executionScope: 'directory' as const }
                 : {}),
-              getWindow: () => this.options.interfaceRequests.legacyWindow(),
+              getWindow,
+              interfacePort: windowAgentInterfacePort(getWindow),
             },
           }
         : {}),

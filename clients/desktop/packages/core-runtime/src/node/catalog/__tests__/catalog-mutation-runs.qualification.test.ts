@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CatalogEntryPublishResultSchema,
+  CatalogCollectionDeleteResultSchema,
   CatalogEntryUnpublishResultSchema,
   CatalogPluginInstallResultSchema,
   CatalogSkillCustomSaveResultSchema,
@@ -344,6 +345,18 @@ describe('catalog mutation receipts (CAN-4123)', () => {
       'core.catalog.entry.unpublish': {
         schema: CatalogEntryUnpublishResultSchema,
         result: { publicationId: id },
+      },
+      'core.catalog.entry.upsert': {
+        boundedBy:
+          'collection-entry-handlers: refuses a collection too large to record before writing it',
+      },
+      'core.catalog.entry.delete': {
+        schema: CatalogCollectionDeleteResultSchema,
+        result: {
+          kind: 'collection',
+          entryId: `collection:${'f'.repeat(128)}`,
+          deleted: true,
+        },
       },
       'core.catalog.skill.updates.check': {
         boundedBy:

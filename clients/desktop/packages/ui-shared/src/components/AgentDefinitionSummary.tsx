@@ -4,6 +4,8 @@ import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
 import { Fact, FactList } from './FactList';
 import { Heading } from './Heading';
+import { EmptyStateText } from './StatusBlocks';
+import { Surface } from './Surface';
 
 export interface AgentDefinitionSummaryPlugin {
   key: string;
@@ -36,8 +38,8 @@ export function AgentDefinitionSummary({
   return (
     <Stack gap="section" data-testid="agent-definition-summary">
       {baseModel !== undefined && (
-        <div className="rounded-xl border bg-card p-4 text-s sm:p-5">
-          <FactList layout="stacked" size="inherit">
+        <Surface variant="card" padding="default">
+          <FactList layout="stacked" size="s">
             <Fact
               label={
                 <span className="text-xs font-medium fg-secondary">
@@ -48,7 +50,7 @@ export function AgentDefinitionSummary({
               {describeAgentBaseModel(baseModel)}
             </Fact>
           </FactList>
-        </div>
+        </Surface>
       )}
 
       <Stack as="section" gap="inline">
@@ -73,16 +75,20 @@ export function AgentDefinitionSummary({
           {pluginsLabel}
         </Heading>
         {plugins.length === 0 ? (
-          <p className="text-s fg-secondary">{pluginsEmptyLabel}</p>
+          <p className="text-s">
+            <EmptyStateText title={pluginsEmptyLabel} tone="secondary" />
+          </p>
         ) : (
           <Stack as="ul" gap="inline">
             {plugins.map((plugin) => (
-              <li
+              <Surface
+                as="li"
                 key={plugin.key}
-                className="rounded-lg border bg-card px-4 py-3 text-s"
+                variant="card"
+                padding="compact"
               >
-                {plugin.label}
-              </li>
+                <span className="text-s">{plugin.label}</span>
+              </Surface>
             ))}
           </Stack>
         )}

@@ -153,10 +153,17 @@ export function countUnreadComments(
   // newest-N window, or `ownCommentsOnly` describes the wrong comments and the
   // renderer (which suppresses its OS notification on that flag) either
   // swallows a real reviewer comment or notifies the user about their own.
-  const newestComments = detail.commentThreads
-    .flatMap((thread) => thread.comments)
-    .sort((a, b) => commentTimestamp(a) - commentTimestamp(b))
-    .slice(-unreadCount);
+  //
+  // Scan only as far as the revisions above the seen marker: after a partial
+  // markSeen the carried count still includes comments the user has read.
+  const authorWindow = Math.min(unreadCount, revisionDelta);
+  const newestComments =
+    authorWindow === 0
+      ? []
+      : detail.commentThreads
+          .flatMap((thread) => thread.comments)
+          .sort((a, b) => commentTimestamp(a) - commentTimestamp(b))
+          .slice(-authorWindow);
   const ownCommentsOnly =
     unreadCount > 0 &&
     detail.viewerUserId !== null &&

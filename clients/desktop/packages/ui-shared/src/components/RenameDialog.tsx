@@ -19,6 +19,7 @@ import { Button } from './Button';
 import { DialogModal } from './DialogModal';
 import { DialogFormField } from './DialogFormField';
 import { TextInput } from './Field';
+import { LoadingSpinner } from './LoadingSpinner';
 
 export interface RenameDialogProps {
   readonly title: string;
@@ -187,6 +188,13 @@ export function RenameDialog({
             shortcut={busy ? undefined : formatChord(DIALOG_CONFIRM_CHORD)}
             data-testid={submitTestId}
           >
+            {busy && (
+              <LoadingSpinner
+                className="shrink-0"
+                dataTestId="rename-dialog-spinner"
+                decorative
+              />
+            )}
             {submitLabel}
           </Button>
         </div>

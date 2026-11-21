@@ -52,6 +52,16 @@ import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
   findPackageFileCredentialRule,
   findPackageTextCredentialRule,
+  packagedSkillSecretMessage,
+  packageFileNameSecretMessage,
+  packageFileUncheckedMessage,
+  pluginSecretMessage,
+  scanSharedSkillForSecrets,
+  sharedSkillSecretMessage,
+  sharedSkillSecretRuleLabel,
+  type PackageFileOwner,
+  type SharedSkillFile,
+  type SharedSkillSecretFinding,
 } from '@canopy/protocol/skills';
 import { hashPipelinePackageYaml } from '@canopy/execution-engine/node/pipelines/package-contract';
 import { assignStepIds } from '@canopy/execution-engine/pipelines/normalize-pipeline';
@@ -74,13 +84,30 @@ import {
 import { expandPipelineAssetPath } from './pipeline-assets';
 import {
   SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
+  findSharedTextCredentialRule,
   parseSharedContainerDefinitionDocument,
   sharedContainerCredentialErrorField,
   sharedContainerCredentialErrorNextStep,
   type SharedContainerDefinitionKind,
+  type SharedTextCredentialRule,
 } from '@canopy/protocol/shared-containers';
 
 const ANALYSIS_TTL_MS = 15 * 60 * 1_000;
+/** How a blocker shows an invocation token that looks like a secret. */
+const REDACTED_INVOCATION = '[redacted invocation]';
+/** How a blocker shows a name that looks like a secret. */
+const REDACTED_NAME = '[redacted name]';
+/** How a blocker shows a path that looks like a secret. */
+const REDACTED_PATH = '[redacted path]';
+/** How a blocker names a definition of each kind, never by its own name. */
+const DEFINITION_KIND_LABEL: Readonly<
+  Record<CapabilityPackageDefinitionKind, string>
+> = {
+  pipeline_definition: 'A pipeline',
+  automation_definition: 'An automation',
+  agent_definition: 'An agent',
+  hook_definition: 'A hook',
+};
 const DENIED_BASENAME =
   /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|credentials.*|secrets.*|token.*|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|p12|pfx|key))$/i;
 
@@ -474,6 +501,12 @@ export interface CapabilityPackageAnalysisInternal {
     /** The path was absent when analyzed; its creation makes this stale. */
     missing?: true;
   }>;
+  /**
+   * A cloud copy's refusal of a SKILL.md or plugin.json that looks like it
+   * holds a secret, as the person reads it (CAN-7226): the publish answers
+   * with it. Never the matched text.
+   */
+  secretRefusal?: string;
 }
 
 /** Pipeline-named alias kept for existing callers. */
@@ -584,7 +617,12 @@ function classifyInvocation(
   | { kind: 'ambiguous' }
   | { kind: 'ignored'; dismissed: boolean }
   | { kind: 'unresolved'; dismissible: boolean } {
-  const dismissible = origin === 'prompt' || origin === 'body';
+  // A token that looks like a secret is never dismissible, and a stored
+  // dismissal of one is ignored: a dismissal keeps the token and turns it
+  // into a publisher note the package uploads (CAN-7476).
+  const dismissible =
+    (origin === 'prompt' || origin === 'body') &&
+    findSharedTextCredentialRule(token.value) === null;
   if (isExplicitPathInvocationToken(token)) {
     return { kind: 'ignored', dismissed: false };
   }
@@ -1015,6 +1053,285 @@ interface CollectMemberFilesOptions {
   data?: boolean;
   /** Whether git ignores an absolute path; withheld as `git_ignored`. */
   isIgnored?: (absolutePath: string) => boolean;
+  /**
+   * A share or a cloud copy (CAN-7226, CAN-7476): files are also read with
+   * the stricter shared check, and a path that looks like a secret is never
+   * shown. A SKILL.md or plugin.json it catches is refused through
+   * `refuse`. A supporting file it catches is withheld when `withhold` is
+   * set (a cloud copy) and blocks otherwise (a share).
+   */
+  sharedProfile?: { refuse: (message: string) => void };
+}
+
+const TEXT_ESCAPE =
+  /\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2})|\/)/g;
+
+/**
+ * A copy of text with its `\uXXXX`, `\UXXXXXXXX`, `\xNN` and `\/` escapes
+ * decoded, or null when it has none. YAML double-quoted strings and many
+ * config formats decode these, so an escaped key could hide a credential
+ * from the raw text. The copy is only checked, never kept or uploaded
+ * (CAN-7226). An escape that names no character, such as `\U00110000`, is
+ * malformed and stays as written.
+ */
+function escapeDecodedCopy(text: string): string | null {
+  let decodedAny = false;
+  const decoded = text.replace(
+    TEXT_ESCAPE,
+    (
+      escape: string,
+      four: string | undefined,
+      eight: string | undefined,
+      two: string | undefined,
+    ): string => {
+      const hex = four ?? eight ?? two;
+      const codePoint = hex === undefined ? 0x2f : Number.parseInt(hex, 16);
+      if (codePoint > 0x10ffff) return escape;
+      decodedAny = true;
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  return decodedAny ? decoded : null;
+}
+
+/** The rule text's escape-decoded copy trips with the shared check, or null. */
+function escapeDecodedSecretRule(
+  text: string,
+): SharedTextCredentialRule | null {
+  const decoded = escapeDecodedCopy(text);
+  return decoded === null ? null : findSharedTextCredentialRule(decoded);
+}
+
+/**
+ * The rule a JSON text trips with the shared check once decoded, or null;
+ * null too for text that isn't JSON. It names the rule only, never the
+ * text. An escape such as `\/` or `\u0070` hides a credential from the raw
+ * text, so the decoded text is checked whole, then each key, each string
+ * value and each key beside its primitive value (CAN-7226). Text too deeply
+ * nested to re-serialize can't be checked, so it reads as `unreadable`. The
+ * walk is iterative, and the file was already capped at
+ * PIPELINE_PACKAGE_MAX_FILE_BYTES.
+ */
+function decodedJsonSecretRule(
+  text: string,
+): SharedTextCredentialRule | 'unreadable' | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  let decoded: string;
+  try {
+    decoded = JSON.stringify(parsed);
+  } catch {
+    return 'unreadable';
+  }
+  const whole = findSharedTextCredentialRule(decoded);
+  if (whole !== null) return whole;
+  const pending: unknown[] = [parsed];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      const rule = findSharedTextCredentialRule(value);
+      if (rule !== null) return rule;
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push(item);
+    } else if (typeof value === 'object' && value !== null) {
+      for (const [key, item] of Object.entries(value)) {
+        const keyRule = findSharedTextCredentialRule(key);
+        if (keyRule !== null) return keyRule;
+        if (
+          typeof item === 'string' ||
+          typeof item === 'number' ||
+          typeof item === 'boolean'
+        ) {
+          const pairRule =
+            findSharedTextCredentialRule(`${key}: ${String(item)}`) ??
+            findSharedTextCredentialRule(`${key}=${String(item)}`);
+          if (pairRule !== null) return pairRule;
+        }
+        pending.push(item);
+      }
+    }
+  }
+  return null;
+}
+
+/** A name that looks like a secret, as a blocker may show it. */
+function shownSecretName(value: string): string {
+  return findSharedTextCredentialRule(value) === null ? value : REDACTED_NAME;
+}
+
+/** A path that looks like a secret, as a blocker may show it. */
+function shownSecretPath(value: string): string {
+  return findSharedTextCredentialRule(value) === null ? value : REDACTED_PATH;
+}
+
+/**
+ * A message that would show a value looking like a secret, with its details
+ * hidden. It covers every message, so a site that interpolates a raw name or
+ * path never reaches the dialog or Remote Control (CAN-7476).
+ */
+function withoutSecretDetails(message: string): string {
+  const rule = findSharedTextCredentialRule(message);
+  return rule === null
+    ? message
+    : `Part of this package looks like it contains a secret (${sharedSkillSecretRuleLabel(rule)}), so the details are hidden. Rename it, then share again.`;
+}
+
+/**
+ * A blocker whose subject, path or message looks like a secret, with each
+ * redacted. A share's dialog and Remote Control show these (CAN-7476).
+ */
+function withSecretPathsRedacted(blocker: PendingBlocker): PendingBlocker {
+  return {
+    ...blocker,
+    message: withoutSecretDetails(blocker.message),
+    ...(blocker.subject === undefined
+      ? {}
+      : { subject: shownSecretPath(blocker.subject) }),
+    ...(blocker.relativePath === undefined
+      ? {}
+      : { relativePath: shownSecretPath(blocker.relativePath) }),
+  };
+}
+
+/**
+ * The last check over every name and path a package carries or its summary
+ * shows, and the job and step names blockers are located at (CAN-7476). A
+ * value that looks like a secret is redacted in place and blocks: one blocker
+ * for names and one for paths, each listing every kind of field hit and the
+ * rule, never a value. The checks before it cover the cases they know; this
+ * one catches any field they miss.
+ */
+function blockSecretShapedNames(
+  manifest: PipelinePackageManifestV1,
+  summary: {
+    packagedPipelines?: PipelinePackagePackagedPipeline[];
+    withheldFiles?: PipelinePackageWithheldFile[];
+    withheldMemberFiles?: CapabilityPackageWithheldMemberFile[];
+    dismissedReferences?: PipelinePackageReferenceDismissal[];
+  },
+  locations: ReadonlyArray<{ jobId?: string; stepId?: string }>,
+): PendingBlocker[] {
+  const hits = new Map<
+    string,
+    { kinds: string[]; rule: SharedTextCredentialRule }
+  >();
+  const check = (
+    kind: string,
+    value: string,
+    redact: (shown: string) => void,
+    isPath = false,
+  ): void => {
+    const rule = findSharedTextCredentialRule(value);
+    if (rule === null) return;
+    const shown = isPath ? REDACTED_PATH : REDACTED_NAME;
+    redact(shown);
+    const hit = hits.get(shown);
+    if (hit === undefined) hits.set(shown, { kinds: [kind], rule });
+    else if (!hit.kinds.includes(kind)) hit.kinds.push(kind);
+  };
+  // An id built from a key or asset id carries it too, so ids are checked
+  // wherever they appear.
+  const ids = (list: string[]): void =>
+    list.forEach((id, index) => check('id', id, (v) => (list[index] = v)));
+  for (const resource of manifest.resources) {
+    check('id', resource.id, (v) => (resource.id = v));
+    ids(resource.dependencyResourceIds);
+    check('name', resource.displayName, (v) => (resource.displayName = v));
+    check(
+      'source label',
+      resource.sourceLabel,
+      (v) => (resource.sourceLabel = v),
+    );
+    resource.invocationKeys.forEach((key, index) =>
+      check('invocation key', key, (v) => (resource.invocationKeys[index] = v)),
+    );
+    if (resource.pipelineKey !== undefined)
+      check(
+        'pipeline key',
+        resource.pipelineKey,
+        (v) => (resource.pipelineKey = v),
+      );
+    if (resource.assetId !== undefined)
+      check('asset id', resource.assetId, (v) => (resource.assetId = v));
+    for (const value of Object.values(resource.installedItemRef ?? {}))
+      if (typeof value === 'string')
+        check('installed item', value, () => delete resource.installedItemRef);
+    for (const tree of resource.trees) {
+      check('folder name', tree.rootName, (v) => (tree.rootName = v));
+      for (const entry of tree.entries)
+        check('file path', entry.path, (v) => (entry.path = v), true);
+    }
+  }
+  // Each location is replaced, not written, so one shared with a blocker or
+  // another note stays as it was.
+  const steps = (list: Array<{ jobId: string; stepId: string }>): void =>
+    list.forEach((step, index) => {
+      const shown = { ...step };
+      check('step name', step.jobId, (v) => (shown.jobId = v));
+      check('step name', step.stepId, (v) => (shown.stepId = v));
+      list[index] = shown;
+    });
+  for (const requirement of manifest.environmentRequirements) {
+    steps(requirement.affectedSteps);
+    check('requirement name', requirement.id, (v) => (requirement.id = v));
+    check(
+      'requirement name',
+      requirement.displayName,
+      (v) => (requirement.displayName = v),
+    );
+    check(
+      'requirement name',
+      requirement.setupHint,
+      (v) => (requirement.setupHint = v),
+    );
+  }
+  for (const binding of manifest.bindings) {
+    ids(binding.resourceIds);
+    if ('jobId' in binding) {
+      check('job name', binding.jobId, (v) => (binding.jobId = v));
+      check('step name', binding.stepId, (v) => (binding.stepId = v));
+    }
+  }
+  for (const note of manifest.publisherNotes ?? []) {
+    check('publisher note', note.label, (v) => (note.label = v));
+    steps(note.affectedSteps);
+  }
+  for (const pipeline of summary.packagedPipelines ?? []) {
+    check('id', pipeline.resourceId, (v) => (pipeline.resourceId = v));
+    check('pipeline key', pipeline.key, (v) => (pipeline.key = v));
+    check('pipeline name', pipeline.name, (v) => (pipeline.name = v));
+  }
+  for (const file of summary.withheldFiles ?? []) {
+    check('pipeline key', file.pipelineKey, (v) => (file.pipelineKey = v));
+    check('asset id', file.assetId, (v) => (file.assetId = v));
+    check('file path', file.relativePath, (v) => (file.relativePath = v), true);
+  }
+  for (const file of summary.withheldMemberFiles ?? []) {
+    check('folder name', file.rootName, (v) => (file.rootName = v));
+    check('file path', file.relativePath, (v) => (file.relativePath = v), true);
+  }
+  for (const reference of summary.dismissedReferences ?? [])
+    check('pipeline reference', reference.token, (v) => (reference.token = v));
+  // Redacted where blockers show them, once they are grouped.
+  for (const location of locations)
+    for (const value of [location.jobId, location.stepId])
+      if (value !== undefined) check('step name', value, () => undefined);
+  return [...hits].map(([shown, { kinds, rule }]) => {
+    const label = sharedSkillSecretRuleLabel(rule);
+    const [kind = ''] = kinds;
+    return {
+      code: 'SUSPECTED_SECRET',
+      subject: shown,
+      message:
+        kinds.length === 1
+          ? `${/^[aeiou]/.test(kind) ? 'An' : 'A'} ${kind} in this package looks like it contains a secret (${label}). Rename it, then share again.`
+          : `${shown === REDACTED_PATH ? 'Paths' : 'Names'} in this package look like they contain a secret (${kinds.join(', ')}; ${label}). Rename them, then share again.`,
+    };
+  });
 }
 
 async function collectMemberFiles(
@@ -1027,7 +1344,23 @@ async function collectMemberFiles(
   budget: CollectionBudget,
   options: CollectMemberFilesOptions = {},
 ): Promise<{ entries: PipelinePackageFileEntry[]; texts: string[] }> {
-  const { withhold, data, isIgnored } = options;
+  const { data, isIgnored, sharedProfile } = options;
+  // A path that itself looks like a secret, such as a file or skill folder
+  // named after a token, is never shown by a cloud copy, just as the
+  // scanner redacts it (CAN-7226).
+  const shownPath = (relativePath: string): string =>
+    sharedProfile !== undefined &&
+    findSharedTextCredentialRule(relativePath) !== null
+      ? '[redacted path]'
+      : relativePath;
+  const withhold: CollectMemberFilesOptions['withhold'] =
+    options.withhold === undefined
+      ? undefined
+      : (file): void =>
+          options.withhold?.({
+            ...file,
+            relativePath: shownPath(file.relativePath),
+          });
   const sourceRoot = path.resolve(descriptor.sourceRoot);
   const memberRoot = path.resolve(sourceRoot, descriptor.memberPath);
   const exportRoot = descriptor.exportRoot
@@ -1072,6 +1405,85 @@ async function collectMemberFiles(
     (normalized === memberRoot || isPrimarySkillFile(normalized))
       ? undefined
       : withhold;
+  // A plugin's skill is its SKILL.md, so a cloud copy never leaves one out.
+  const isPluginSkillFile = (normalized: string): boolean =>
+    descriptor.runtimeKind === 'plugin_fragment' &&
+    path.basename(normalized).toLowerCase() === 'skill.md';
+  /**
+   * A cloud copy's refusal of a SKILL.md the shared check catches, in the
+   * words a share uses, or null (CAN-7226). The name comes from the skill's
+   * folder, and one that looks like a secret is never shown.
+   */
+  const skillFileRefusal = (
+    normalized: string,
+    relativePath: string,
+    text: string,
+  ): string | null => {
+    if (sharedProfile === undefined || data === true) return null;
+    const decoded = escapeDecodedCopy(text);
+    const scanned = (file: string): SharedSkillFile[] => [
+      { path: file, text },
+      ...(decoded === null ? [] : [{ path: file, text: decoded }]),
+    ];
+    if (
+      descriptor.runtimeKind === 'standalone_skill' &&
+      isPrimarySkillFile(normalized)
+    ) {
+      const finding = scanSharedSkillForSecrets({
+        skillName: descriptor.rootName,
+        files: scanned('SKILL.md'),
+      });
+      return finding === null ? null : sharedSkillSecretMessage(finding);
+    }
+    if (!isPluginSkillFile(normalized)) return null;
+    const finding = scanSharedSkillForSecrets({
+      skillName: path.basename(path.dirname(normalized)),
+      files: scanned(relativePath),
+    });
+    if (finding !== null) return packagedSkillSecretMessage(finding);
+    // A folder above the skill that looks like a secret would travel in the
+    // package path, and a SKILL.md can't be left out, so it's refused.
+    const pathRule = findSharedTextCredentialRule(relativePath);
+    return pathRule === null
+      ? null
+      : packagedSkillSecretMessage({
+          skillName: '[redacted name]',
+          file: '[redacted path]',
+          rule: pathRule,
+          nameRule: pathRule,
+        });
+  };
+  const refuseSecret = (relativePath: string, message: string): void => {
+    const shown = shownPath(relativePath);
+    blockers.push({
+      code: 'SUSPECTED_SECRET',
+      message,
+      subject: shown,
+      relativePath: shown,
+    });
+    sharedProfile?.refuse(message);
+  };
+  // The skill or plugin a share names in its messages, never by a name that
+  // looks like a secret (CAN-7476).
+  const owner: PackageFileOwner = {
+    kind: descriptor.runtimeKind === 'plugin_fragment' ? 'plugin' : 'skill',
+    name:
+      findSharedTextCredentialRule(descriptor.rootName) === null
+        ? descriptor.rootName
+        : '[redacted name]',
+  };
+  /** Why a share stopped for a supporting file: the rule and the file. */
+  const memberFileSecretMessage = (
+    relativePath: string,
+    rule: SharedTextCredentialRule | 'unreadable',
+  ): string => {
+    const file = shownPath(relativePath);
+    if (rule === 'unreadable') return packageFileUncheckedMessage(owner, file);
+    const finding = { skillName: owner.name, file, rule };
+    return owner.kind === 'plugin'
+      ? pluginSecretMessage(finding)
+      : sharedSkillSecretMessage(finding);
+  };
   const sourcePathIsSafe = async (normalized: string): Promise<boolean> => {
     const withhold = withholdFor(normalized);
     const relativeToSource = path.relative(sourceRoot, normalized);
@@ -1246,10 +1658,30 @@ async function collectMemberFiles(
     const sourceText = new TextDecoder('utf-8', { fatal: false }).decode(
       sourceBytes,
     );
+    // A plugin copy without its plugin.json would not load, so a cloud copy
+    // refuses one the shared check catches, naming the plugin, escapes
+    // decoded too, even for a key the generated manifest drops (CAN-7226).
+    const manifestScan = (text: string): SharedSkillSecretFinding | null =>
+      scanSharedSkillForSecrets({
+        skillName: descriptor.rootName,
+        files: [{ path: relativePath, text }],
+      });
+    const decodedSource =
+      sharedProfile === undefined ? null : escapeDecodedCopy(sourceText);
+    const manifestFinding =
+      sharedProfile === undefined
+        ? null
+        : (manifestScan(sourceText) ??
+          (decodedSource === null ? null : manifestScan(decodedSource)));
+    if (manifestFinding !== null) {
+      refuseSecret(relativePath, pluginSecretMessage(manifestFinding));
+      return;
+    }
     if (findPackageFileCredentialRule(sourceBytes) !== null) {
-      // A cloud copy leaves it out like any member file, and the copy is
-      // named from the plugin's key; a share still blocks.
-      const withholdManifest = withholdFor(normalized);
+      // A share blocks, and so does a cloud copy: leaving the manifest out
+      // would ship a plugin that doesn't load.
+      const withholdManifest =
+        sharedProfile === undefined ? withholdFor(normalized) : undefined;
       if (withholdManifest) {
         releaseFile(relativePath, stat.size);
         withholdManifest({ relativePath, reason: 'suspected_secret' });
@@ -1297,9 +1729,25 @@ async function collectMemberFiles(
         : {}),
       ...(await declaredComponentPaths(sourceManifest, relativePath)),
     };
-    const bytes = new TextEncoder().encode(
-      `${JSON.stringify(identity, null, 2)}\n`,
-    );
+    const identityText = `${JSON.stringify(identity, null, 2)}\n`;
+    const bytes = new TextEncoder().encode(identityText);
+    // What uploads is this generated manifest, whose strings are decoded, so
+    // an escape such as `\/` can't hide a credential the source scan missed.
+    const identityFinding =
+      sharedProfile === undefined ? null : manifestScan(identityText);
+    if (identityFinding !== null) {
+      refuseSecret(relativePath, pluginSecretMessage(identityFinding));
+      return;
+    }
+    if (findPackageFileCredentialRule(bytes) !== null) {
+      blockers.push({
+        code: 'SUSPECTED_SECRET',
+        message: 'A dependency file may contain a credential.',
+        subject: relativePath,
+        relativePath,
+      });
+      return;
+    }
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     blobs.set(sha256, bytes);
     entries.push({
@@ -1468,6 +1916,27 @@ async function collectMemberFiles(
       });
       return;
     }
+    // A file whose own path looks like a secret is left out of a cloud copy
+    // and blocks a share, whatever it holds, since the path would travel in
+    // the package (CAN-7476). A SKILL.md a copy can't do without is refused
+    // by its name instead.
+    const pathRule =
+      sharedProfile === undefined || isPluginSkillFile(normalized)
+        ? null
+        : findSharedTextCredentialRule(relativePath);
+    if (pathRule !== null) {
+      if (withhold) {
+        withhold({ relativePath, reason: 'suspected_secret' });
+        return;
+      }
+      blockers.push({
+        code: 'SUSPECTED_SECRET',
+        message: packageFileNameSecretMessage(owner, pathRule),
+        subject: shownPath(relativePath),
+        relativePath: shownPath(relativePath),
+      });
+      return;
+    }
     if (!reserveFile(relativePath, stat.size)) return;
     const bytes = new Uint8Array(await fs.readFile(normalized));
     if (detectPipelinePackageNativeExecutable(bytes) !== null) {
@@ -1490,17 +1959,35 @@ async function collectMemberFiles(
       return;
     }
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    if (findPackageFileCredentialRule(bytes) !== null) {
-      if (withhold) {
+    const skillRefusal = skillFileRefusal(normalized, relativePath, text);
+    if (skillRefusal !== null) {
+      refuseSecret(relativePath, skillRefusal);
+      return;
+    }
+    const contentRule =
+      findPackageFileCredentialRule(bytes) ??
+      (sharedProfile === undefined
+        ? null
+        : (findSharedTextCredentialRule(text) ??
+          decodedJsonSecretRule(text) ??
+          escapeDecodedSecretRule(text)));
+    if (contentRule !== null) {
+      if (
+        withhold &&
+        !(sharedProfile !== undefined && isPluginSkillFile(normalized))
+      ) {
         releaseFile(relativePath, stat.size);
         withhold({ relativePath, reason: 'suspected_secret' });
         return;
       }
       blockers.push({
         code: 'SUSPECTED_SECRET',
-        message: 'A dependency file may contain a credential.',
-        subject: relativePath,
-        relativePath,
+        message:
+          sharedProfile === undefined
+            ? 'A dependency file may contain a credential.'
+            : memberFileSecretMessage(relativePath, contentRule),
+        subject: shownPath(relativePath),
+        relativePath: shownPath(relativePath),
       });
       return;
     }
@@ -1552,10 +2039,14 @@ async function collectMemberFiles(
           ? agentRef.split(':', 2)
           : [descriptor.rootName, agentRef];
         if (qualifiedPlugin !== descriptor.rootName || !agentName) {
+          const secretRule = findSharedTextCredentialRule(agentRef);
           blockers.push({
             code: 'UNRESOLVED_INVOCATION',
-            message: `Transitive agent ${agentRef} could not be resolved.`,
-            subject: agentRef,
+            message:
+              secretRule === null
+                ? `Transitive agent ${agentRef} could not be resolved.`
+                : `A transitive agent that looks like a secret (${sharedSkillSecretRuleLabel(secretRule)}) could not be resolved.`,
+            subject: secretRule === null ? agentRef : REDACTED_INVOCATION,
             origin: 'transitive',
           });
           continue;
@@ -1677,13 +2168,15 @@ async function collectFileAsset(
 ): Promise<PipelinePackageResource | undefined> {
   const { blockers } = context;
   const subject = `${asset.pipelineKey}/${asset.assetId}`;
+  const shownAsset = shownSecretName(asset.assetId);
+  const shownSource = shownSecretPath(asset.sourcePath);
   const home = path.resolve(homedir);
   const expanded = expandPipelineAssetPath(asset.sourcePath, home);
   if (expanded === undefined || !isPathStrictlyInside(home, expanded)) {
     blockers.push({
       code: 'ASSET_PATH_OUTSIDE_HOME',
       subject,
-      message: `Asset "${asset.assetId}" in "${pipelineName}" points at ${asset.sourcePath}. Asset folders must be inside your home folder, written as an absolute path or starting with ~.`,
+      message: `Asset "${shownAsset}" in "${pipelineName}" points at ${shownSource}. Asset folders must be inside your home folder, written as an absolute path or starting with ~.`,
     });
     return undefined;
   }
@@ -1704,7 +2197,7 @@ async function collectFileAsset(
       blockers.push({
         code: 'ASSET_OVERLAPS_LOCAL_STATE',
         subject,
-        message: `Asset "${asset.assetId}" in "${pipelineName}" (${asset.sourcePath}) overlaps its local_state entry ${declaredLocalState}. Keep shared assets and per-runner state in separate folders.`,
+        message: `Asset "${shownAsset}" in "${pipelineName}" (${shownSource}) overlaps its local_state entry ${shownSecretPath(declaredLocalState)}. Keep shared assets and per-runner state in separate folders.`,
       });
       return undefined;
     }
@@ -1727,7 +2220,7 @@ async function collectFileAsset(
       blockers.push({
         code: 'MISSING_REQUIRED_ASSET',
         subject,
-        message: `Asset "${asset.assetId}" in "${pipelineName}" has no folder at ${asset.sourcePath}. Create it, or mark the asset as not required.`,
+        message: `Asset "${shownAsset}" in "${pipelineName}" has no folder at ${shownSource}. Create it, or mark the asset as not required.`,
       });
     } else {
       withheldFiles.push({
@@ -1743,7 +2236,7 @@ async function collectFileAsset(
     blockers.push({
       code: 'ASSET_PATH_OUTSIDE_HOME',
       subject,
-      message: `Asset "${asset.assetId}" in "${pipelineName}" resolves outside your home folder. Asset folders must be inside your home folder.`,
+      message: `Asset "${shownAsset}" in "${pipelineName}" resolves outside your home folder. Asset folders must be inside your home folder.`,
     });
     return undefined;
   }
@@ -1832,7 +2325,7 @@ async function collectAutomationPipelines(
       blockers.push({
         code: 'DUPLICATE_PIPELINE_KEY',
         subject: pipeline.pipelineKey,
-        message: `"${existing.name}" and "${pipeline.name}" would travel under the same key, ${pipeline.pipelineKey}. Rename one of the pipeline files.`,
+        message: `"${shownSecretName(existing.name)}" and "${shownSecretName(pipeline.name)}" would travel under the same key, ${shownSecretName(pipeline.pipelineKey)}. Rename one of the pipeline files.`,
       });
       continue;
     }
@@ -1843,7 +2336,7 @@ async function collectAutomationPipelines(
       blockers.push({
         code: 'MISSING_DEPENDENCY_SOURCE',
         subject: entry.name,
-        message: `"${entry.name}" could not be read, so it can't be included.`,
+        message: `"${shownSecretName(entry.name)}" could not be read, so it can't be included.`,
       });
     }
   }
@@ -1886,11 +2379,13 @@ async function collectAutomationPipelines(
         stripControlCharacters(pipeline.rawContent),
       )
     ) {
+      // A name that looks like a secret is never shown (CAN-7476).
+      const shownName = shownSecretName(name);
       blockers.push({
         code: 'SUSPECTED_SECRET',
-        subject: name,
+        subject: shownName,
         relativePath: AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
-        message: `"${name}" may contain a credential. Move it into a secret and reference it as \${{ secrets.NAME }}.`,
+        message: `"${shownName}" may contain a credential. Move it into a secret and reference it as \${{ secrets.NAME }}.`,
       });
       continue;
     }
@@ -1913,7 +2408,7 @@ async function collectAutomationPipelines(
       if (asset.pipelineKey !== key) continue;
       const resource = await collectFileAsset(
         asset,
-        name,
+        shownSecretName(name),
         homedir,
         context,
         collected.withheldFiles,
@@ -2143,10 +2638,14 @@ async function analyzeCapabilityPackageOnce(
         continue;
       }
       if (decision.kind === 'unresolved') {
+        const secretRule = findSharedTextCredentialRule(invocation);
         blockers.push({
           code: 'UNRESOLVED_INVOCATION',
-          message: `Required invocation ${invocation} could not be resolved.`,
-          subject: invocation,
+          message:
+            secretRule === null
+              ? `Required invocation ${invocation} could not be resolved.`
+              : `A required invocation that looks like a secret (${sharedSkillSecretRuleLabel(secretRule)}) could not be resolved.`,
+          subject: secretRule === null ? invocation : REDACTED_INVOCATION,
           origin: 'direct',
           provider,
           ...location,
@@ -2195,11 +2694,31 @@ async function analyzeCapabilityPackageOnce(
     }))
     .sort((left, right) => compareCodeUnits(left.id, right.id))) {
     const { candidate, id } = definition;
+    // A definition's name and identity travel in the package, so one that
+    // looks like a secret blocks before anything else reads it (CAN-7476).
+    const nameRule =
+      findSharedTextCredentialRule(candidate.displayName) ??
+      findSharedTextCredentialRule(candidate.identity) ??
+      (candidate.sourceLabel === undefined
+        ? null
+        : findSharedTextCredentialRule(candidate.sourceLabel));
+    if (nameRule !== null) {
+      blockers.push({
+        code: 'SUSPECTED_SECRET',
+        message: `${DEFINITION_KIND_LABEL[candidate.kind]} has a name that looks like it contains a secret (${sharedSkillSecretRuleLabel(nameRule)}). Rename it, then share again.`,
+        subject: REDACTED_NAME,
+      });
+      continue;
+    }
+    // Never reached with a secret-shaped name above; kept so no blocker
+    // below can show one (CAN-7476).
+    const shownName = shownSecretName(candidate.displayName);
+    const shownIdentity = shownSecretName(candidate.identity);
     if (definitionIds.has(id)) {
       blockers.push({
         code: 'INVALID_PACKAGE',
-        message: `${candidate.displayName} is listed more than once.`,
-        subject: candidate.identity,
+        message: `${shownName} is listed more than once.`,
+        subject: shownIdentity,
       });
       continue;
     }
@@ -2217,18 +2736,18 @@ async function analyzeCapabilityPackageOnce(
       blockers.push({
         code: 'SUSPECTED_SECRET',
         message:
-          `${candidate.displayName} may contain a credential in ${sharedContainerCredentialErrorField(credentialError) ?? 'a field'}. ${sharedContainerCredentialErrorNextStep(credentialError) ?? ''}`.trimEnd(),
-        subject: candidate.identity,
+          `${shownName} may contain a credential in ${sharedContainerCredentialErrorField(credentialError) ?? 'a field'}. ${sharedContainerCredentialErrorNextStep(credentialError) ?? ''}`.trimEnd(),
+        subject: shownIdentity,
       });
       continue;
     }
     if (!parsed.ok || parsed.value.kind !== candidate.kind) {
       blockers.push({
         code: 'INVALID_PACKAGE',
-        message: `${candidate.displayName} is not a valid portable definition${
+        message: `${shownName} is not a valid portable definition${
           parsed.ok ? '.' : `: ${parsed.errors.join('; ')}`
         }`,
-        subject: candidate.identity,
+        subject: shownIdentity,
       });
       continue;
     }
@@ -2239,7 +2758,7 @@ async function analyzeCapabilityPackageOnce(
         if (request.required && !request.unconfirmed)
           blockers.push({
             code: 'MISSING_DEPENDENCY_SOURCE',
-            message: `Required ${request.provider} dependency ${request.key} of ${candidate.displayName} could not be resolved.`,
+            message: `Required ${request.provider} dependency ${request.key} of ${shownName} could not be resolved.`,
             subject: request.key,
           });
         continue;
@@ -2280,10 +2799,14 @@ async function analyzeCapabilityPackageOnce(
           continue;
         }
         if (decision.kind === 'unresolved') {
+          const secretRule = findSharedTextCredentialRule(invocation);
           blockers.push({
             code: 'UNRESOLVED_INVOCATION',
-            message: `Required invocation ${invocation} in ${candidate.displayName} could not be resolved.`,
-            subject: invocation,
+            message:
+              secretRule === null
+                ? `Required invocation ${invocation} in ${shownName} could not be resolved.`
+                : `A required invocation in ${shownName} that looks like a secret (${sharedSkillSecretRuleLabel(secretRule)}) could not be resolved.`,
+            subject: secretRule === null ? invocation : REDACTED_INVOCATION,
             origin: 'direct',
             provider,
             ...(decision.dismissible
@@ -2295,7 +2818,7 @@ async function analyzeCapabilityPackageOnce(
         if (decision.kind === 'ambiguous') {
           blockers.push({
             code: 'AMBIGUOUS_INVOCATION',
-            message: `Required invocation ${invocation} in ${candidate.displayName} is ambiguous.`,
+            message: `Required invocation ${invocation} in ${shownName} is ambiguous.`,
             subject: invocation,
             origin: 'direct',
             provider,
@@ -2322,6 +2845,8 @@ async function analyzeCapabilityPackageOnce(
   >();
   /** A packaged member git could not check: the summary says so. */
   let gitIgnoreUnchecked = false;
+  /** The first refusal a cloud copy's shared check made, for the publish. */
+  let secretRefusal: string | undefined;
   const sourceStats: CapabilityPackageAnalysisInternal['sourceStats'] = [];
   const sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'] =
     [];
@@ -2453,7 +2978,7 @@ async function analyzeCapabilityPackageOnce(
     if (!descriptor) {
       blockers.push({
         code: 'MISSING_DEPENDENCY_SOURCE',
-        message: `The source for ${entry.displayName} is unavailable.`,
+        message: `The source for ${shownSecretName(entry.displayName)} is unavailable.`,
         subject: entry.invocationKey,
       });
       continue;
@@ -2469,19 +2994,27 @@ async function analyzeCapabilityPackageOnce(
     if (gitAnswer === null || gitAnswer?.checked === false)
       gitIgnoreUnchecked = true;
     const isIgnored = gitAnswer?.isIgnored;
+    // A share and a cloud copy both read members with the shared check
+    // (CAN-7476). Only a cloud copy withholds; a share blocks instead.
+    const sharedProfile = {
+      refuse: (message: string): void => {
+        secretRefusal ??= message;
+      },
+    };
+    const memberBlockers: PendingBlocker[] = [];
     const collected =
       descriptor.sourceVisibility === 'builtin'
         ? { entries: [], texts: [] }
         : await collectMemberFiles(
             descriptor,
             provider,
-            blockers,
+            memberBlockers,
             blobs,
             sourceStats,
             sourceDirectories,
             collectionBudget,
             cloudCopy === undefined
-              ? {}
+              ? { sharedProfile }
               : {
                   withhold: ({ relativePath, reason }): void => {
                     withheldMemberFiles.set(
@@ -2490,8 +3023,12 @@ async function analyzeCapabilityPackageOnce(
                     );
                   },
                   ...(isIgnored === undefined ? {} : { isIgnored }),
+                  sharedProfile,
                 },
           );
+    // A member path that looks like a secret never reaches a blocker, which
+    // a share's dialog and Remote Control show (CAN-7476).
+    blockers.push(...memberBlockers.map(withSecretPathsRedacted));
     discoveredText.push(...collected.texts);
     collectedByKey.set(key, { target, files: collected.entries });
     const dependencies = dependencyKeys.get(key) ?? new Set<string>();
@@ -2568,10 +3105,14 @@ async function analyzeCapabilityPackageOnce(
         continue;
       }
       if (decision.kind === 'unresolved') {
+        const secretRule = findSharedTextCredentialRule(invocation);
         blockers.push({
           code: 'UNRESOLVED_INVOCATION',
-          message: `Transitive invocation ${invocation} could not be resolved.`,
-          subject: invocation,
+          message:
+            secretRule === null
+              ? `Transitive invocation ${invocation} could not be resolved.`
+              : `A transitive invocation that looks like a secret (${sharedSkillSecretRuleLabel(secretRule)}) could not be resolved.`,
+          subject: secretRule === null ? invocation : REDACTED_INVOCATION,
           origin: 'transitive',
           provider,
           occurrenceResourceKeys: [key],
@@ -2854,7 +3395,10 @@ async function analyzeCapabilityPackageOnce(
       environmentRequirements.some((existing) => existing.id === requirement.id)
     )
       continue;
-    environmentRequirements.push(requirement);
+    environmentRequirements.push({
+      ...requirement,
+      affectedSteps: requirement.affectedSteps.map((step) => ({ ...step })),
+    });
   }
   if (
     discoveredText.some((text) => /(?:^|\s)gh(?:\s|$)/m.test(text)) &&
@@ -2877,32 +3421,37 @@ async function analyzeCapabilityPackageOnce(
       setupHint: 'Connect GitHub in Settings.',
     });
   }
-  const publisherNotesWithSources = Array.from(
+  // A token that looks like a secret can't be dismissed, and is never
+  // emitted as a publisher note or a dismissal either (CAN-7476).
+  const dismissedInvocationValues = Array.from(
     suppressedInvocations.values(),
-  ).map((dismissed) => {
-    const note: PipelinePackagePublisherNote = {
-      id: `not-a-command-${createHash('sha256')
-        .update(`${dismissed.provider}\0${dismissed.token}`)
-        .digest('hex')
-        .slice(0, 20)}`,
-      kind: 'not_a_command',
-      label: dismissed.token,
-      affectedSteps: Array.from(
-        new Map(
-          [
-            ...dismissed.occurrences,
-            ...Array.from(dismissed.resourceKeys).flatMap(
-              occurrencesForResourceKey,
-            ),
-          ].map((occurrence) => [
-            `${occurrence.jobId}\0${occurrence.stepId}`,
-            occurrence,
-          ]),
-        ).values(),
-      ),
-    };
-    return { dismissed, note };
-  });
+  ).filter(({ token }) => findSharedTextCredentialRule(token) === null);
+  const publisherNotesWithSources = dismissedInvocationValues.map(
+    (dismissed) => {
+      const note: PipelinePackagePublisherNote = {
+        id: `not-a-command-${createHash('sha256')
+          .update(`${dismissed.provider}\0${dismissed.token}`)
+          .digest('hex')
+          .slice(0, 20)}`,
+        kind: 'not_a_command',
+        label: dismissed.token,
+        affectedSteps: Array.from(
+          new Map(
+            [
+              ...dismissed.occurrences,
+              ...Array.from(dismissed.resourceKeys).flatMap(
+                occurrencesForResourceKey,
+              ),
+            ].map((occurrence) => [
+              `${occurrence.jobId}\0${occurrence.stepId}`,
+              occurrence,
+            ]),
+          ).values(),
+        ),
+      };
+      return { dismissed, note };
+    },
+  );
   const publisherNotes = publisherNotesWithSources.map(({ note }) => note);
   const publisherNoteSources = Object.fromEntries(
     publisherNotesWithSources.map(({ dismissed, note }) => {
@@ -3003,18 +3552,58 @@ async function analyzeCapabilityPackageOnce(
         message,
       })),
     );
-  blockers.push(...(input.hostBlockers ?? []));
-  const expiresAt = new Date(Date.now() + ANALYSIS_TTL_MS).toISOString();
-  const finalizedBlockers = finalizeBlockers(
-    blockers,
-    occurrencesForResourceKey,
+  blockers.push(
+    ...(input.hostBlockers ?? []).map((blocker) => ({
+      ...blocker,
+      occurrences: blocker.occurrences.map((step) => ({ ...step })),
+    })),
   );
+  const expiresAt = new Date(Date.now() + ANALYSIS_TTL_MS).toISOString();
   const dismissedReferences = uniqueReferenceDismissals([
     ...(input.dismissedReferences ?? []).filter(
       (dismissal) => dismissal.kind !== 'pipeline_reference',
     ),
     ...(pipelineReferences?.dismissedReferences ?? []),
-  ]);
+  ]).map((reference) => ({ ...reference }));
+  const withheldMemberList = [...withheldMemberFiles.values()];
+  const nameBlockers = blockSecretShapedNames(
+    manifest,
+    {
+      ...(automationPipelines ?? {}),
+      withheldMemberFiles: withheldMemberList,
+      dismissedReferences,
+    },
+    blockers.flatMap((blocker) => [
+      blocker,
+      ...(blocker.occurrences ?? []),
+      ...(blocker.occurrenceResourceKeys ?? []).flatMap(
+        occurrencesForResourceKey,
+      ),
+    ]),
+  );
+  blockers.push(...nameBlockers);
+  if (nameBlockers[0] !== undefined) secretRefusal ??= nameBlockers[0].message;
+  const finalizedBlockers = finalizeBlockers(
+    blockers.map(withSecretPathsRedacted),
+    occurrencesForResourceKey,
+  );
+  // A blocker's location names a job and step, which come from the
+  // pipeline's keys; the final check blocked on any that looks like a secret.
+  const hideSteps = (located: { jobId?: string; stepId?: string }): void => {
+    for (const field of ['jobId', 'stepId'] as const) {
+      const value = located[field];
+      if (value !== undefined && findSharedTextCredentialRule(value) !== null)
+        located[field] = REDACTED_NAME;
+    }
+  };
+  for (const blocker of finalizedBlockers) {
+    hideSteps(blocker);
+    blocker.occurrences = blocker.occurrences.map((step) => {
+      const shown = { ...step };
+      hideSteps(shown);
+      return shown;
+    });
+  }
   return {
     summary: {
       analysisId: randomUUID(),
@@ -3022,7 +3611,7 @@ async function analyzeCapabilityPackageOnce(
       pipelineContentHash: manifest.pipelineContentHash,
       manifest,
       blockers: finalizedBlockers,
-      dismissedInvocations: Array.from(suppressedInvocations.values()).map(
+      dismissedInvocations: dismissedInvocationValues.map(
         ({ provider, token }) => ({ provider, token }),
       ),
       ...(dismissedReferences.length > 0 ? { dismissedReferences } : {}),
@@ -3032,9 +3621,9 @@ async function analyzeCapabilityPackageOnce(
       ...(automationPipelines && automationPipelines.withheldFiles.length > 0
         ? { withheldFiles: automationPipelines.withheldFiles }
         : {}),
-      ...(withheldMemberFiles.size > 0
+      ...(withheldMemberList.length > 0
         ? {
-            withheldMemberFiles: [...withheldMemberFiles.values()].sort(
+            withheldMemberFiles: withheldMemberList.sort(
               (a, b) =>
                 a.rootName.localeCompare(b.rootName) ||
                 a.relativePath.localeCompare(b.relativePath),
@@ -3071,6 +3660,9 @@ async function analyzeCapabilityPackageOnce(
     blobs,
     sourceStats,
     sourceDirectories,
+    ...(secretRefusal === undefined
+      ? {}
+      : { secretRefusal: withoutSecretDetails(secretRefusal) }),
   };
 }
 

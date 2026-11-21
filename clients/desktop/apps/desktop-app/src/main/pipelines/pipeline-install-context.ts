@@ -544,6 +544,27 @@ export async function authorizeProjectPipelineRequest(
   return { projectId, owner };
 }
 
+/**
+ * Whether the selected owner may see project `projectId`'s pipelines,
+ * decided from the project's saved owner alone, before any checkout is read
+ * (CAN-965): the context check {@link authorizeProjectPipelineRequest} makes
+ * for each file. It reads only the project's own config, never the sidebar
+ * projection, so it changes nothing. Always true without resource contexts.
+ */
+export async function projectPipelinesVisible(
+  projectId: string,
+  executionContext?: string,
+): Promise<boolean> {
+  if (!pipelineResourceContextEnabled()) return true;
+  try {
+    const owner = await readProjectPipelineOwner(projectId);
+    await assertPipelineContext({ owner }, undefined, executionContext);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Discovery must not disclose project metadata before owner authorization. */
 export async function filterProjectPipelineContexts<
   T extends { id: string; filePath?: string },

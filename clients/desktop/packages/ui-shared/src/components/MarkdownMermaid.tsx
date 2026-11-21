@@ -669,11 +669,16 @@ function MarkdownMermaidComponent({
               <Button
                 variant="ghost"
                 size="sm"
-                aria-disabled={clipboardUnavailable !== undefined || undefined}
+                // A running export keeps the focused button focusable.
+                aria-disabled={
+                  clipboardUnavailable !== undefined ||
+                  pending !== null ||
+                  undefined
+                }
                 aria-describedby={
                   clipboardUnavailable ? clipboardReasonId : undefined
                 }
-                disabled={!canExport}
+                disabled={!canExport && pending === null}
                 aria-busy={pending === 'copy' || undefined}
                 data-testid="mermaid-copy-image"
                 onClick={copyImage}
@@ -690,7 +695,8 @@ function MarkdownMermaidComponent({
             <Button
               variant="ghost"
               size="sm"
-              disabled={!canExport}
+              aria-disabled={pending !== null || undefined}
+              disabled={!canExport && pending === null}
               aria-busy={pending === 'png' || undefined}
               data-testid="mermaid-save-png"
               onClick={() => save('png')}
@@ -791,7 +797,7 @@ function MarkdownMermaidComponent({
       {svg && !codeOpen ? (
         <div
           ref={diagramArea}
-          className="max-h-128 overflow-auto"
+          className="focus-ring focus-ring-inset max-h-128 overflow-auto"
           tabIndex={0}
           aria-label="Diagram scroll area"
           data-owns-context-menu

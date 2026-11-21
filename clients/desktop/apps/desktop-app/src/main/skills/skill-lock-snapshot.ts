@@ -1,4 +1,5 @@
 import { promises as fs } from 'fs';
+import { skillLockMigrationSettled } from './lock-file';
 import { getSkillsLockFilePath } from './paths';
 
 /**
@@ -28,6 +29,8 @@ export function skillLockEntryString(
  * or any version other than 2 (including 1) is unreadable, never empty.
  */
 export async function readSkillLockSnapshot(): Promise<SkillLockSnapshot> {
+  // A started v1 migration commits before revisions are read (CAN-4483).
+  await skillLockMigrationSettled();
   let text: string;
   try {
     text = await fs.readFile(getSkillsLockFilePath(), 'utf8');

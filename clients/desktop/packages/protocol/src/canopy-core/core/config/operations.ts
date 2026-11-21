@@ -11,7 +11,12 @@ import {
   defineCanopyQuery,
   defineCanopyQueryRegistry,
 } from '../../definitions';
+import {
+  ONBOARDING_TIP_IDS,
+  type OnboardingTipsState,
+} from '../../../onboarding-tips';
 import { PROFILE_ROLES } from '../../../plugin-catalog';
+import { SUGGESTION_IDS, type SuggestionsState } from '../../../suggestions';
 import { THINKING_LEVELS } from '../../../thinking';
 import {
   inherentOperationErrorSchema,
@@ -65,6 +70,51 @@ export const ConfigGitValueSchema = z.strictObject({
   commitMessage: z.strictObject({ instructions: z.string() }),
 });
 export type ConfigGitValue = z.output<typeof ConfigGitValueSchema>;
+
+/**
+ * A schema's output that must stay assignable to and from the shared state
+ * type it carries, so neither definition drifts from the other.
+ */
+type MutuallyAssignable<
+  Value extends State,
+  State extends Reverse,
+  Reverse = Value,
+> = Value;
+
+/**
+ * The read-only onboarding tips namespace a desktop core serves (CAN-7434):
+ * only the shared dismissals, so a controller can read them without the rest
+ * of the preferences. Written through `preferences:update-onboarding-tips`.
+ */
+export const CONFIG_ONBOARDING_TIPS_NAMESPACE = 'onboardingTips';
+
+/** `value` of the `onboardingTips` namespace: when each dismissed tip was dismissed. */
+export const ConfigOnboardingTipsValueSchema = z.strictObject({
+  dismissed: z.partialRecord(z.enum(ONBOARDING_TIP_IDS), z.string()),
+});
+export type ConfigOnboardingTipsValue = MutuallyAssignable<
+  z.output<typeof ConfigOnboardingTipsValueSchema>,
+  OnboardingTipsState
+>;
+
+/**
+ * The read-only suggestions namespace a desktop core serves (CAN-7434): the
+ * master switch, the dismissals and the corner cap's last stamp. Written
+ * through `preferences:update-suggestions`.
+ */
+export const CONFIG_SUGGESTIONS_NAMESPACE = 'suggestions';
+
+/** `value` of the `suggestions` namespace. */
+export const ConfigSuggestionsValueSchema = z.strictObject({
+  enabled: z.boolean(),
+  dismissed: z.partialRecord(z.enum(SUGGESTION_IDS), z.string()),
+  /** Absent until a corner suggestion has shown. */
+  lastCornerShownAt: z.string().optional(),
+});
+export type ConfigSuggestionsValue = MutuallyAssignable<
+  z.output<typeof ConfigSuggestionsValueSchema>,
+  SuggestionsState
+>;
 
 /** Config reads; outside `CORE_QUERY_DEFINITIONS` for the same reason as the catalog's. */
 export const CORE_CONFIG_QUERY_DEFINITIONS = defineCanopyQueryRegistry('core', {

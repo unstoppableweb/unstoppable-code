@@ -1463,6 +1463,14 @@ export function peekProviderAccountIdentity(
   };
 }
 
+export function peekUsageResumeAuthProbeFailed(
+  provider: AuthObservedProvider,
+): boolean {
+  const cache =
+    provider === 'claude' ? claudeAuthStatusCache : codexAuthStatusCache;
+  return cache?.status.probeFailed === true;
+}
+
 /** How a provider's cached login is authenticated. */
 export type ProviderBillingAccountKind = NonNullable<
   AgentProviderAuthStatus['accountKind']

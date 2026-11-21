@@ -621,6 +621,29 @@ export function validateAutomationAction(action: unknown): string | null {
   if (!isPlainObject(action)) {
     return 'Action must be an object.';
   }
+  if (
+    action.resumeWhen !== undefined ||
+    action.usageResumeInterruption !== undefined
+  ) {
+    if (
+      action.type !== 'worktree_session_prompt' ||
+      action.purpose !== 'usage_limit_resume' ||
+      action.resumeWhen !== 'provider_usage_clear'
+    )
+      return 'A provider usage check requires a chat resume action.';
+    const binding = action.usageResumeInterruption;
+    if (
+      binding !== undefined &&
+      (!isPlainObject(binding) ||
+        (binding.provider !== 'claude' && binding.provider !== 'codex') ||
+        !isNonEmptyString(binding.accountEmail) ||
+        !isNonEmptyString(binding.userMessageId) ||
+        typeof binding.detectedAt !== 'number' ||
+        !Number.isFinite(binding.detectedAt) ||
+        binding.detectedAt <= 0)
+    )
+      return 'The provider usage check has an invalid interruption.';
+  }
   if (action.sidebarGroupName !== undefined) {
     if (
       action.type !== 'app_advisor_prompt' &&
@@ -1406,6 +1429,17 @@ export function validateAutomationCreateRequest(input: unknown): string | null {
   if (scheduleError) return scheduleError;
   const actionError = validateAutomationActionForWrite(input.action);
   if (actionError) return actionError;
+  if (
+    isPlainObject(input.action) &&
+    input.action.resumeWhen === 'provider_usage_clear' &&
+    (!isPlainObject(input.schedule) ||
+      input.schedule.kind !== 'one_time' ||
+      input.ifCommand !== undefined ||
+      input.dependencies !== undefined ||
+      input.targetRequirement !== undefined ||
+      input.installedFrom !== undefined)
+  )
+    return 'A provider usage check requires a local one-time schedule without other conditions.';
   const ifCommandError = validateAutomationIfCommand(input.ifCommand);
   if (ifCommandError) return ifCommandError;
   const installedFromError = validateAutomationInstalledFrom(

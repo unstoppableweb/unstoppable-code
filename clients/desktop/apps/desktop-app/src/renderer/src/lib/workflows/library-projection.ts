@@ -99,6 +99,13 @@ export interface LibraryProjectionInput {
   readonly locale?: string;
   /** Project of the list's working directory, for project pipelines. */
   readonly currentProjectId?: string;
+  /**
+   * The selected worktree (CAN-965): its copies of project pipelines are the
+   * ones listed and the ones that run. A project row shows its name only when
+   * the row's file is in this checkout, so rows still listed from the
+   * previous worktree during a switch are never labelled with the new one.
+   */
+  readonly currentWorktree?: { readonly name: string; readonly cwd: string };
   /** `getAutomationNextRun`: the renderer-authoritative next occurrence. */
   readonly nextRun: (activity: ScheduledActivity, now: Date) => Date | null;
   readonly projectName: (projectId: string) => string | undefined;
@@ -244,6 +251,13 @@ function pipelineActions(
   return actions;
 }
 
+/** `filePath` is in the checkout at `cwd` (either path separator). */
+function isInsideCheckout(cwd: string, filePath: string | undefined): boolean {
+  if (!filePath) return false;
+  const root = cwd.replace(/[\\/]+$/, '');
+  return filePath.startsWith(`${root}/`) || filePath.startsWith(`${root}\\`);
+}
+
 function projectPipelineRow(
   pipeline: PipelineInfo,
   input: LibraryProjectionInput,
@@ -301,6 +315,11 @@ function projectPipelineRow(
     enabled: !input.disabledPipelineIds.has(pipeline.id),
     ...(projectId
       ? { projectId, projectName: input.projectName(projectId) }
+      : {}),
+    ...(pipeline.source === 'project' &&
+    input.currentWorktree &&
+    isInsideCheckout(input.currentWorktree.cwd, pipeline.filePath)
+      ? { sourceDetail: input.currentWorktree.name }
       : {}),
     actions: pipelineActions(pipeline, manual),
     ...(manual

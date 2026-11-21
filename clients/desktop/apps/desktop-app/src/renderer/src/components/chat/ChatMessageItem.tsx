@@ -23,6 +23,7 @@ import type { FilePathMentionIndex } from '@/lib/filePathMentionIndex';
 
 export const ChatMessageItem = memo(function ChatMessageItem({
   message,
+  outputlessAutoResume,
   receivingContext,
   turnExpanded = false,
   streaming = false,
@@ -43,6 +44,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   blockKeyOffset = 0,
 }: {
   message: DisplayMessage;
+  outputlessAutoResume?: boolean;
   receivingContext?: AgentSentReceivingContext;
   turnExpanded?: boolean;
   streaming?: boolean;
@@ -165,6 +167,7 @@ export const ChatMessageItem = memo(function ChatMessageItem({
     return (
       <UserBubble
         message={message}
+        outputlessAutoResume={outputlessAutoResume}
         receivingContext={receivingContext}
         appliedMemory={appliedMemory}
         onResetToPoint={onResetToPoint}

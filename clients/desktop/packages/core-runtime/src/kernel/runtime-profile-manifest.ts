@@ -8,6 +8,7 @@ import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+  CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   CORE_W5_RECOVERY_INSTRUCTIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
   CORE_WORKSPACE_COMMAND_INSTRUCTION_DEFINITIONS,
@@ -79,6 +80,9 @@ const CATALOG = {
     ...WORKER_SCRIPT_STREAM_DEFINITIONS,
     // The generation queue stream the daemon's code-graph module composes (CAN-5628).
     ...WORKER_CODE_GRAPH_STREAM_DEFINITIONS,
+    // Admission only: the daemon's write activity for its owner (CAN-4730
+    // E2 2b); the daemon installs this, never Electron, and no interface.
+    ...CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   },
 };
 

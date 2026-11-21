@@ -2,6 +2,7 @@
 
 import { CodeBlock } from '../CodeBlock';
 import { Badge } from '../Badge';
+import { surfaceClassName } from '../Surface';
 import {
   memo,
   useCallback,
@@ -870,7 +871,11 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
       aria-labelledby={titleId}
       aria-describedby={pending.description ? descriptionId : undefined}
       tabIndex={-1}
-      className="flex flex-col gap-3 rounded-lg border border-line-attention/30 bg-warning/[0.06] px-4 py-3"
+      // A pending-input form: the neutral group box (docs/design/surfaces.md).
+      className={surfaceClassName({
+        variant: 'group',
+        className: 'flex flex-col gap-3 px-4 py-3',
+      })}
     >
       <div className="flex flex-col gap-1.5">
         <div>

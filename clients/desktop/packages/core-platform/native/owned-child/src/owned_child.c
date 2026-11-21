@@ -465,7 +465,7 @@ static char **copy_vector(napi_env env, napi_value value, size_t minimum) {
 // CLOEXEC_DEFAULT, Linux with a closefrom action after the dup2 actions.
 static int prepare_spawn(posix_spawnattr_t *attrs,
                          posix_spawn_file_actions_t *actions, int stdin_fd,
-                         int channel_fd) {
+                         int channel_fd, int stderr_fd) {
   sigset_t defaults, mask;
   sigfillset(&defaults);
   sigemptyset(&mask);
@@ -491,8 +491,11 @@ static int prepare_spawn(posix_spawnattr_t *attrs,
             posix_spawn_file_actions_adddup2(actions, channel_fd, CHANNEL_FD));
   failed = failed || posix_spawn_file_actions_addopen(actions, 1, "/dev/null",
                                                       O_WRONLY, 0);
-  failed = failed || posix_spawn_file_actions_addopen(actions, 2, "/dev/null",
-                                                      O_WRONLY, 0);
+  failed = failed ||
+           (stderr_fd >= 0
+                ? posix_spawn_file_actions_adddup2(actions, stderr_fd, 2)
+                : posix_spawn_file_actions_addopen(actions, 2, "/dev/null",
+                                                   O_WRONLY, 0));
 #ifndef __APPLE__
   failed = failed || posix_spawn_file_actions_addclosefrom_np(
                          actions, channel_fd >= 0 ? CHANNEL_FD + 1 : 3);
@@ -576,6 +579,20 @@ static bool raise_fd(int *fd) {
   return true;
 }
 
+#ifdef __linux__
+// A capture failure is optional: the caller falls back to /dev/null.
+static bool open_stderr_capture(int fds[2]) {
+  if (pipe2(fds, O_CLOEXEC) != 0) return false;
+  if (!raise_fd(&fds[0]) || !raise_fd(&fds[1])) {
+    close(fds[0]);
+    close(fds[1]);
+    fds[0] = fds[1] = -1;
+    return false;
+  }
+  return true;
+}
+#endif
+
 // fds[0] stays with the parent, nonblocking; fds[1] becomes the child's fd 3.
 // Both ends are CLOEXEC, so no other spawn in this process inherits either.
 static bool open_channel(int fds[2]) {
@@ -656,7 +673,8 @@ static napi_value fail_undelivered(napi_env env, instance *inst,
 
 // Wraps a fresh record; on failure the child is rolled back here, since no
 // handle can be returned for it.
-static napi_value make_handle(napi_env env, instance *inst, record *item) {
+static napi_value make_handle(napi_env env, instance *inst, record *item,
+                              int stderr_fd) {
   napi_value handle, result;
   token *tok = malloc(sizeof *tok);
   bool ok = tok && napi_create_object(env, &handle) == napi_ok &&
@@ -671,26 +689,39 @@ static napi_value make_handle(napi_env env, instance *inst, record *item) {
        napi_set_named_property(env, result, "handle", handle) == napi_ok &&
        napi_set_named_property(env, result, "pid", make_int(env, item->pid)) ==
            napi_ok;
+  if (ok && stderr_fd >= 0)
+    ok = napi_set_named_property(env, result, "stderr",
+                                 make_int(env, stderr_fd)) == napi_ok;
   free(tok);
   if (ok) {
     item->delivered = true;
     return result;
   }
+  if (stderr_fd >= 0) close(stderr_fd);
   return fail_undelivered(env, inst, item);
 }
 
 static napi_value spawn_record(napi_env env, napi_callback_info info,
                                bool channel) {
-  size_t argc = 4;
-  napi_value argv[4];
+  size_t argc = 5;
+  napi_value argv[5];
   void *data = NULL;
   if (napi_get_cb_info(env, info, &argc, argv, NULL, &data) != napi_ok ||
-      argc != 4 || !data) {
+      (argc != 4 && argc != 5) || !data) {
     throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
     return NULL;
   }
   napi_valuetype stdin_type = napi_undefined;
   napi_typeof(env, argv[3], &stdin_type);
+  bool capture_stderr = false;
+  if (argc == 5 &&
+      napi_get_value_bool(env, argv[4], &capture_stderr) != napi_ok) {
+    throw_code(env, "ERR_OWNED_CHILD_ARGUMENT", "Owned child call is invalid.");
+    return NULL;
+  }
+#ifndef __linux__
+  capture_stderr = false;
+#endif
   char *executable = copy_string(env, argv[0]);
   char **args = copy_vector(env, argv[1], 1);
   char **environment = copy_vector(env, argv[2], 0);
@@ -711,6 +742,7 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
   record *item = valid ? calloc(1, sizeof *item) : NULL;
   int fds[2] = {-1, -1};
   int pair[2] = {-1, -1};
+  int stderr_pipe[2] = {-1, -1};
   pid_t pid = 0;
   int spawn_error = -1;
   int version = 0;
@@ -720,11 +752,16 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
 #endif
   bool started = false;
   if (item && (!input || open_pipe(fds)) && (!channel || open_channel(pair))) {
+#ifdef __linux__
+    // Diagnostics must not consume descriptors needed for the handoff. A
+    // capture failure leaves both ends absent and fd 2 mapped to /dev/null.
+    if (capture_stderr) open_stderr_capture(stderr_pipe);
+#endif
     posix_spawnattr_t attrs;
     posix_spawn_file_actions_t actions;
     if (posix_spawnattr_init(&attrs) == 0) {
       if (posix_spawn_file_actions_init(&actions) == 0) {
-        if (!prepare_spawn(&attrs, &actions, fds[0], pair[1]))
+        if (!prepare_spawn(&attrs, &actions, fds[0], pair[1], stderr_pipe[1]))
           spawn_error =
               posix_spawn(&pid, executable, &actions, &attrs, args, environment);
         posix_spawn_file_actions_destroy(&actions);
@@ -733,6 +770,10 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
     }
     // The child end lives only in the child.
     if (pair[1] >= 0) close(pair[1]);
+    if (stderr_pipe[1] >= 0) {
+      close(stderr_pipe[1]);
+      stderr_pipe[1] = -1;
+    }
     if (fds[0] >= 0) close(fds[0]);
     // A channel root is read while still suspended, so even an immediate
     // exec changes its pidversion; peer evidence must match this one. It is
@@ -757,16 +798,32 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
     close(fds[0]);
     close(fds[1]);
   }
+  if (stderr_pipe[1] >= 0) close(stderr_pipe[1]);
   free(executable);
   free_vector(args);
   free_vector(environment);
   free(input);
   if (spawn_error != 0 || pid <= 1) {
     if (pair[0] >= 0) close(pair[0]);
+    if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
     free(item);
-    throw_code(env, valid ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_ARGUMENT",
-               valid ? "Owned child could not be started."
-                     : "Owned child call is invalid.");
+#ifdef __linux__
+    if (valid && spawn_error > 0) {
+      napi_value message, error, number;
+      napi_create_string_utf8(env, "Owned child could not be started.",
+                              NAPI_AUTO_LENGTH, &message);
+      napi_create_error(env, NULL, message, &error);
+      napi_create_string_utf8(env, "ERR_OWNED_CHILD_SPAWN", NAPI_AUTO_LENGTH,
+                              &message);
+      napi_set_named_property(env, error, "code", message);
+      napi_create_int32(env, spawn_error, &number);
+      napi_set_named_property(env, error, "errno", number);
+      napi_throw(env, error);
+    } else
+#endif
+      throw_code(env, valid ? "ERR_OWNED_CHILD_SPAWN" : "ERR_OWNED_CHILD_ARGUMENT",
+                 valid ? "Owned child could not be started."
+                       : "Owned child call is invalid.");
     return NULL;
   }
   instance *inst = data;
@@ -782,8 +839,11 @@ static napi_value spawn_record(napi_env env, napi_callback_info info,
 #endif
   item->next = inst->head;
   inst->head = item;
-  if (!started) return fail_undelivered(env, inst, item);
-  return make_handle(env, inst, item);
+  if (!started) {
+    if (stderr_pipe[0] >= 0) close(stderr_pipe[0]);
+    return fail_undelivered(env, inst, item);
+  }
+  return make_handle(env, inst, item, stderr_pipe[0]);
 }
 
 // spawn(executable, argv, envPairs, stdin | null) -> { handle, pid }
@@ -1330,7 +1390,7 @@ static napi_value connect_linux_launcher(napi_env env, napi_callback_info info) 
   instance *inst = data;
   item->next = inst->head;
   inst->head = item;
-  return make_handle(env, inst, item);
+  return make_handle(env, inst, item, -1);
 }
 #endif
 
@@ -1575,5 +1635,8 @@ NAPI_MODULE_INIT() {
   if (napi_define_properties(env, exports, sizeof methods / sizeof *methods,
                              methods) != napi_ok)
     return NULL;
+#ifdef __linux__
+  napi_set_named_property(env, exports, "stderrCapture", make_bool(env, true));
+#endif
   return exports;
 }

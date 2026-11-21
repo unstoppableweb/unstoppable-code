@@ -37,6 +37,8 @@ import {
   HOSTED_IPC_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
 } from '@canopy/protocol/remote-control/channels';
+import { toPortableCloneJobs } from '@canopy/protocol/clone-jobs';
+import { REPOSITORY_CLONE_FAILURE_MESSAGE } from '@canopy/protocol/remote-control/shell';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { ClaudeModsUpdate } from '@canopy/protocol/claude-mods';
 import type {
@@ -53,7 +55,12 @@ import type {
   RemoteControlPairingEvent,
   RemoteControlState,
 } from '@canopy/desktop-shared/types';
-import { validateChatCommandRequest } from '../../ipc/chat-state';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  serveChatDelegationRead,
+  validateChatCommandRequest,
+  type ChatDelegationCoreRead,
+} from '../../ipc/chat-state';
 import {
   stopExactChatTurn,
   type ExactChatTurnStopDeps,
@@ -1431,6 +1438,108 @@ describe('browser controller channels', () => {
     expect(host.bridge.invokes).toEqual([channel]);
   });
 
+  it('serves the narrow tips and suggestions reads and their writes to browsers, never preferences:load', async () => {
+    // CAN-7434: the browser reads only the tips or suggestions state and
+    // writes only those fields; every preference stays desktop-only.
+    const channels = [
+      IPC_CHANNELS.preferencesLoadOnboardingTips,
+      IPC_CHANNELS.preferencesLoadSuggestions,
+      IPC_CHANNELS.preferencesUpdateOnboardingTips,
+      IPC_CHANNELS.preferencesUpdateSuggestions,
+    ];
+    for (const channel of channels) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(
+      IPC_CHANNELS.preferencesLoad,
+    );
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of channels) {
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(host.bridge.invokes).toEqual([]);
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(
+      await invokeCode(fromBrowser.rpc, IPC_CHANNELS.preferencesLoad),
+    ).toBe('remote_channel_unavailable');
+    for (const channel of channels) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+    }
+    expect(host.bridge.invokes).toEqual(channels);
+  });
+
+  it.each([
+    ['work-entries:delete', IPC_CHANNELS.workEntriesDelete],
+    [
+      'workspace:set-archive-retention',
+      IPC_CHANNELS.workspaceSetArchiveRetention,
+    ],
+  ])(
+    'serves %s to browsers and refuses mobile and hosted controllers',
+    async (name, channel) => {
+      // Web archive and retention over direct Remote Control (CAN-7438): a
+      // direct browser session is only ever to the account's own computer,
+      // so the browser controller profile is the authorization. Mobile and
+      // hosted controllers are refused before the desktop handler runs.
+      expect(channel).toBe(name);
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+      const hub = new Hub();
+      const browser = addController(hub, 'browser');
+      const phone = addController(hub, 'mobile');
+      const host = await createHost(hub, {
+        settings: {
+          pairedControllers: [
+            pinned(browser, 'browser'),
+            pinned(phone, 'mobile'),
+          ],
+        },
+      });
+      const fromPhone = await control(host, phone);
+      await hello(fromPhone.rpc, {
+        version: VERSION,
+        controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+      expect(host.bridge.invokes).toEqual([]);
+      const fromBrowser = await control(host, browser);
+      await hello(fromBrowser.rpc, {
+        version: VERSION,
+        controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+      expect(host.bridge.invokes).toEqual([channel]);
+    },
+  );
+
   it('serves Personal project conversion to browsers only, never the session-owned team steps', async () => {
     // Listing, converting and reading a run's status (CAN-7440). Conversion
     // runs as the computer's signed-in account and deletes nothing; the
@@ -1491,6 +1600,491 @@ describe('browser controller channels', () => {
       expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
     }
     expect(host.bridge.invokes).toEqual(invoked);
+  });
+
+  it('serves chat visuals and delegate transcript reads to browsers (CAN-7432)', async () => {
+    // Read only and browser-only: mobile and hosted agents get none of them.
+    // The watcher list stays off the browser list until the browser can
+    // project it.
+    const delegationReads = [
+      IPC_CHANNELS.chatReadDelegationPage,
+      IPC_CHANNELS.chatReadDelegationContent,
+      IPC_CHANNELS.chatReadDelegationBlocks,
+    ];
+    const invoked = [IPC_CHANNELS.chatReadVisual, ...delegationReads];
+    expect(invoked).toEqual([
+      'chat:read-visual',
+      'chat:read-delegation-page',
+      'chat:read-delegation-content',
+      'chat:read-delegation-blocks',
+    ]);
+    for (const channel of invoked) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(
+      IPC_CHANNELS.appAdvisorWatchersList,
+    );
+    expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(
+      IPC_CHANNELS.appAdvisorWatchersChanged,
+    );
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of invoked) {
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(host.bridge.invokes).toEqual([]);
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of invoked) {
+      expect(await invokeCode(fromBrowser.rpc, channel)).toBe('ok');
+    }
+    expect(host.bridge.invokes).toEqual(invoked);
+  });
+
+  it('reads delegate transcripts only for delegation targets and replies with a reason only', async () => {
+    const target = {
+      kind: 'delegation',
+      chatId: 'chat-1',
+      delegationId: 'delegation-1',
+      runGeneration: 2,
+    };
+    const base = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+      target,
+    };
+    const content = {
+      ...base,
+      messageId: 'message-1',
+      blockOrdinal: 3,
+      field: 'output',
+      offset: 0,
+      limit: 65_536,
+    };
+    const blocks = { ...base, messageId: 'message-1', limit: 64 };
+    const scope = {
+      workspaceId: 'project-1',
+      worktreeId: 'worktree-1',
+      chatId: 'chat-1',
+    };
+    const reads: ChatDelegationCoreRead[] = [];
+    const read = (request: ChatDelegationCoreRead): Promise<unknown> => {
+      reads.push(request);
+      return Promise.resolve({ served: reads.length });
+    };
+    expect(
+      await serveChatDelegationRead(
+        'page',
+        { ...base, archivedContainerId: 'worktree-1', cursor: 'next' },
+        read,
+      ),
+    ).toStrictEqual({ ok: true, value: { served: 1 } });
+    expect(
+      await serveChatDelegationRead(
+        'content',
+        { ...content, fieldSource: 'logical' },
+        read,
+      ),
+    ).toStrictEqual({ ok: true, value: { served: 2 } });
+    expect(
+      await serveChatDelegationRead(
+        'blocks',
+        { ...blocks, firstBlockOrdinal: 4 },
+        read,
+      ),
+    ).toStrictEqual({ ok: true, value: { served: 3 } });
+    expect(reads).toStrictEqual([
+      {
+        operation: 'core.chat.transcript.page',
+        params: {
+          scope,
+          archivedContainerId: 'worktree-1',
+          target,
+          cursor: 'next',
+        },
+      },
+      {
+        operation: 'core.chat.content.read',
+        params: {
+          scope,
+          target,
+          messageId: 'message-1',
+          blockOrdinal: 3,
+          field: 'output',
+          fieldSource: 'logical',
+          offset: 0,
+          limit: 65_536,
+        },
+      },
+      {
+        operation: 'core.chat.transcript.blocks.page',
+        params: {
+          scope,
+          target,
+          messageId: 'message-1',
+          firstBlockOrdinal: 4,
+          limit: 64,
+          projection: 'bounded-v1',
+        },
+      },
+    ]);
+
+    const refused: Array<['page' | 'content' | 'blocks', unknown]> = [
+      ['page', { ...base, target: { kind: 'primary', chatId: 'chat-1' } }],
+      [
+        'content',
+        { ...content, target: { kind: 'primary', chatId: 'chat-1' } },
+      ],
+      ['page', { ...base, target: { ...target, chatId: 'chat-2' } }],
+      ['page', { ...base, archivedContainerId: 'worktree-2' }],
+      ['page', { ...base, standaloneHistory: true }],
+      ['page', { ...base, target: { ...target, extra: true } }],
+      ['content', { ...content, limit: 65_537 }],
+      ['content', { ...content, fieldSource: 'stored' }],
+      ['blocks', { ...blocks, limit: 513 }],
+      ['page', { ...base, cursor: 'c'.repeat(2049) }],
+      ['blocks', { ...blocks, firstBlockOrdinal: 0, cursor: 'next' }],
+      ['page', null],
+    ];
+    for (const [kind, value] of refused) {
+      await expect(serveChatDelegationRead(kind, value, read)).rejects.toThrow(
+        'Delegation transcript read request is invalid.',
+      );
+    }
+    expect(reads).toHaveLength(3);
+
+    const failing = (error: Error) => (): Promise<unknown> =>
+      Promise.reject(error);
+    expect(
+      await serveChatDelegationRead(
+        'page',
+        base,
+        failing(
+          new CanopyOperationError({
+            kind: 'failed_precondition',
+            code: 'core.chat.transcript.page.staleCursor',
+            message: 'Stale cursor at /Users/someone/chat.jsonl',
+            retry: { kind: 'never' },
+          }),
+        ),
+      ),
+    ).toStrictEqual({ ok: false, reason: 'stale' });
+    expect(
+      await serveChatDelegationRead(
+        'blocks',
+        blocks,
+        failing(
+          new CanopyOperationError({
+            kind: 'capability_unavailable',
+            message: 'Transcript block reads are unavailable.',
+            retry: { kind: 'never' },
+          }),
+        ),
+      ),
+    ).toStrictEqual({ ok: false, reason: 'unavailable' });
+    expect(
+      await serveChatDelegationRead(
+        'content',
+        content,
+        failing(new Error('ENOENT: /Users/someone/.canopy/chat.jsonl')),
+      ),
+    ).toStrictEqual({ ok: false, reason: 'failed' });
+  });
+
+  it('serves pending clones, quotas and the owner lookup to browsers only (CAN-7433)', async () => {
+    const ownerLookup = IPC_CHANNELS.orgProjectsFindRepositoryOwner;
+    const remoteUrl = { remoteUrl: 'https://github.com/acme/app.git' };
+    // Each new browser invoke, with the arguments the portable adapter sends.
+    const invoked: readonly (readonly [string, readonly unknown[]])[] = [
+      [IPC_CHANNELS.cloneJobsList, []],
+      [IPC_CHANNELS.cloneJobsCancel, ['job-1']],
+      [IPC_CHANNELS.cloneJobsDismiss, ['job-1']],
+      [IPC_CHANNELS.providerUsageLoad, []],
+      [IPC_CHANNELS.providerUsageRefresh, [{ provider: 'claude' }]],
+      [ownerLookup, [remoteUrl]],
+    ];
+    for (const [channel] of invoked) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    expect(BROWSER_CONTROLLER_CHANNELS).toContain(
+      IPC_CHANNELS.cloneJobsChanged,
+    );
+    // Mobile already lists and receives clone jobs; nothing else here.
+    const mobileRefused = [
+      IPC_CHANNELS.cloneJobsCancel,
+      IPC_CHANNELS.cloneJobsDismiss,
+      ownerLookup,
+      IPC_CHANNELS.providerUsageLoad,
+      IPC_CHANNELS.providerUsageRefresh,
+    ];
+    const browserRefused = [
+      IPC_CHANNELS.cloneJobsBackground,
+      IPC_CHANNELS.observabilityLoadSnapshot,
+      IPC_CHANNELS.observabilityRefreshUsage,
+    ];
+    for (const channel of browserRefused)
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+
+    const invokeWith = async (
+      rpc: RpcPeer,
+      channel: string,
+      args: readonly unknown[],
+    ): Promise<string> => {
+      try {
+        await rpc.request(REMOTE_METHODS.invoke, { channel, args });
+        return 'ok';
+      } catch (error) {
+        return error instanceof RpcRemoteError
+          ? (error.code ?? error.message)
+          : 'failed';
+      }
+    };
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of mobileRefused)
+      expect(await invokeWith(fromPhone.rpc, channel, [remoteUrl])).toBe(
+        'remote_channel_unavailable',
+      );
+    expect(host.bridge.invokes).toEqual([]);
+
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const [channel, args] of invoked)
+      expect([
+        channel,
+        await invokeWith(fromBrowser.rpc, channel, args),
+      ]).toEqual([channel, 'ok']);
+    for (const channel of browserRefused)
+      expect(await invokeWith(fromBrowser.rpc, channel, [])).toBe(
+        'remote_channel_unavailable',
+      );
+    // The owner lookup takes exactly `{ remoteUrl }` from a browser: never
+    // a host path, and nothing beside or instead of the URL.
+    const refusedLookups: readonly (readonly unknown[])[] = [
+      [{ path: '/Users/someone/code/app' }],
+      [{ path: '/Users/someone/code/app', ...remoteUrl }],
+      [{ ...remoteUrl, extra: true }],
+      [remoteUrl, remoteUrl],
+      [],
+      [{ remoteUrl: 42 }],
+      [{ remoteUrl: '' }],
+      [{ remoteUrl: '   ' }],
+      [{ remoteUrl: `https://github.com/${'a'.repeat(2048)}` }],
+      ['https://github.com/acme/app.git'],
+    ];
+    for (const args of refusedLookups)
+      expect(await invokeWith(fromBrowser.rpc, ownerLookup, args)).toBe(
+        'remote_channel_unavailable',
+      );
+    expect(host.bridge.invokes).toEqual(invoked.map(([channel]) => channel));
+  });
+
+  it('blanks clone destinations for browsers only (CAN-7433)', async () => {
+    // The `CloneJobSnapshot` wire shape: a running job carries `error: null`.
+    const job = {
+      id: 'job-1',
+      repoName: 'app',
+      remoteUrl: 'https://token@github.com/acme/app.git',
+      destinationPath: '/Users/someone/code/app',
+      status: 'running',
+      phase: 'receiving',
+      phasePercent: 40,
+      percent: 35,
+      processedCount: 400,
+      totalCount: 1000,
+      received: '12.34 MiB',
+      throughput: '3.21 MiB/s',
+      startedAt: 1_700_000_000_000,
+      background: true,
+      cancellable: true,
+      workspaceId: null,
+      workspaceName: null,
+      error: null,
+    };
+    // A Cancel whose cleanup fails names the folder in `error`.
+    const cleanupFailed = {
+      ...job,
+      id: 'job-2',
+      status: 'failed',
+      error:
+        "Couldn't remove the incomplete clone at /Users/someone/code/app. Remove it manually.",
+    };
+    // Free text outside the safe clone messages never reaches a browser.
+    const unknownFailure = {
+      ...job,
+      id: 'job-3',
+      status: 'failed',
+      error: "fatal: could not create work tree dir '/Users/someone/code/'",
+    };
+    const jobs = [job, cleanupFailed, unknownFailure];
+    const forController = jobs.map((entry) => ({
+      ...entry,
+      remoteUrl: '',
+    }));
+    // A browser receives only the snapshot's known fields, so a field this
+    // build does not know (here `hostOnly`) is never sent to one.
+    const hostJobs = jobs.map((entry) => ({
+      ...entry,
+      hostOnly: '/Users/someone/code/app',
+    }));
+    for (const kind of ['browser', 'mobile'] as const) {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResult: kind === 'browser' ? hostJobs : jobs,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      const expected =
+        kind === 'browser'
+          ? [
+              { ...forController[0], destinationPath: null },
+              {
+                ...forController[1],
+                destinationPath: null,
+                error:
+                  "Couldn't remove the incomplete clone. Remove it on the computer.",
+              },
+              {
+                ...forController[2],
+                destinationPath: null,
+                error: REPOSITORY_CLONE_FAILURE_MESSAGE,
+              },
+            ]
+          : forController;
+      const listed = await rpc.request(REMOTE_METHODS.invoke, {
+        channel: IPC_CHANNELS.cloneJobsList,
+        args: [],
+      });
+      expect(listed).toEqual(expected);
+      // The web client's own parser keeps every job a controller receives.
+      expect(toPortableCloneJobs(listed)).toHaveLength(jobs.length);
+      // A browser gets only the job list, never a trailing argument.
+      host.mainPush(IPC_CHANNELS.cloneJobsChanged, [
+        kind === 'browser' ? hostJobs : jobs,
+        ...(kind === 'browser' ? ['/Users/someone/code/app'] : []),
+      ]);
+      await until(() => controller.pushPayloads.length > 0);
+      expect(controller.pushPayloads).toEqual([
+        { channel: IPC_CHANNELS.cloneJobsChanged, args: [expected] },
+      ]);
+      expect(job.destinationPath).toBe('/Users/someone/code/app');
+    }
+  });
+
+  it('fails closed on clone job shapes it does not expect (CAN-7433)', async () => {
+    // A job without a `destinationPath` key still has its free-text `error`
+    // reduced to a safe clone message, and only job records reach a browser.
+    const pathless = {
+      id: 'job-1',
+      repoName: 'app',
+      status: 'failed',
+      error: "fatal: could not create work tree dir '/Users/someone/code/'",
+    };
+    const expectedJobs = [
+      {
+        ...pathless,
+        destinationPath: null,
+        error: REPOSITORY_CLONE_FAILURE_MESSAGE,
+      },
+    ];
+    const hub = new Hub();
+    const controller = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(controller, 'browser')] },
+      invokeResult: [pathless, '/Users/someone/code/app', null, ['nested']],
+    });
+    const { rpc } = await control(host, controller);
+    await hello(rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(
+      await rpc.request(REMOTE_METHODS.invoke, {
+        channel: IPC_CHANNELS.cloneJobsList,
+        args: [],
+      }),
+    ).toEqual(expectedJobs);
+    // A push whose first argument is not the job list carries no jobs.
+    host.mainPush(IPC_CHANNELS.cloneJobsChanged, [
+      { destinationPath: '/Users/someone/code/app' },
+    ]);
+    host.mainPush(IPC_CHANNELS.cloneJobsChanged, [
+      [
+        pathless,
+        42,
+        // An `error` that is not text never reaches a browser.
+        {
+          id: 'job-2',
+          status: 'failed',
+          error: { path: '/Users/someone/code/app' },
+        },
+      ],
+    ]);
+    await until(() => controller.pushPayloads.length > 1);
+    expect(controller.pushPayloads).toEqual([
+      { channel: IPC_CHANNELS.cloneJobsChanged, args: [[]] },
+      {
+        channel: IPC_CHANNELS.cloneJobsChanged,
+        args: [
+          [
+            ...expectedJobs,
+            {
+              id: 'job-2',
+              status: 'failed',
+              destinationPath: null,
+              error: null,
+            },
+          ],
+        ],
+      },
+    ]);
   });
 });
 
@@ -2199,6 +2793,31 @@ describe('hosted delegation', () => {
         plugins: [],
       }),
       envelope({ ...send, planReviewApproval: { approved: true } }),
+      // Plan review stays a person's decision (CAN-7435): no chat decision,
+      // approval send or tracked-plan implementation from a hosted agent.
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { trackedPlanReviewStatus: 'approved', planMode: false },
+        expectedPendingPlanExitRequestId: 'request-1',
+      }),
+      envelope({
+        ...send,
+        planReviewApproval: {
+          requestId: 'request-1',
+          planId: 'plan-1',
+          revisionNumber: 1,
+        },
+      }),
+      envelope({
+        ...send,
+        trackedPlanImplementation: {
+          planId: 'plan-1',
+          revisionNumber: 1,
+          userMessageId: 'message-1',
+          startedAt: '2026-01-01T00:00:00.000Z',
+        },
+      }),
       envelope({ ...send, attachmentPaths: ['/etc/hosts'] }),
       envelope({
         ...send,
@@ -2236,7 +2855,13 @@ describe('hosted delegation', () => {
         { projectId: 'project-1', title: 'Mine' },
       ]),
     ).toBe('remote_channel_unavailable');
-    for (const channel of [NOT_A_MOBILE_CHANNEL, 'chat:send-message']) {
+    for (const channel of [
+      NOT_A_MOBILE_CHANNEL,
+      'chat:send-message',
+      // Plan review's tracked-plan write and its chat read (CAN-7435).
+      'tracked-plans:update',
+      'chat:get-state',
+    ]) {
       expect(await invoke(channel, [])).toBe('remote_channel_unavailable');
     }
     // Sends follow the same policy, and the host serves chat commands itself.

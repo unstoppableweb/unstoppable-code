@@ -14,6 +14,8 @@ export const QUEUED_MESSAGE_WAITING_REASON_COPY: Readonly<
   steer_unavailable: 'Sends as soon as the agent can take it.',
   background_work:
     'Sends when background work finishes, so your new settings can apply. Run now sends it without them.',
+  settings_change:
+    'Sends after the current reply so your new settings can apply.',
 };
 
 export type QueuedMessageReasonProps = {

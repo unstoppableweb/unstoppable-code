@@ -1123,6 +1123,23 @@ describe('core.catalog handlers (CAN-4123)', () => {
       await expect(publish(`r-${refusal}`)).rejects.toMatchObject({ payload });
     }
 
+    // CAN-7226: a cloud copy's secret-looking file is named by the host's
+    // message, under the blocked-package code a caller already handles.
+    const secretMessage =
+      'The skill "helper" looks like it contains a secret (a password in a URL in SKILL.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.';
+    host.publishOutcome = new CatalogHostRefusedError(
+      'publish-secret-detected',
+      new Error(secretMessage),
+    );
+    await expect(publish('r-publish-secret-detected')).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'core.catalog.packageBlocked',
+        message: secretMessage,
+        retry: { kind: 'after_refresh', resource: 'core.catalog.entry' },
+      },
+    });
+
     host.publishSkill = undefined;
     await expect(publish('s5')).rejects.toMatchObject({
       payload: { kind: 'capability_unavailable' },

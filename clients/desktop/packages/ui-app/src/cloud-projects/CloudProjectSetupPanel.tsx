@@ -105,6 +105,9 @@ export interface CloudProjectSetupPanelProps {
   readonly onStart: () => void;
 }
 
+const DESTINATION_LABEL_ID = 'cloud-project-setup-destination-label';
+const DESTINATION_PATH_ID = 'cloud-project-setup-destination-path';
+
 function repositories(count: number): string {
   return `${count} ${count === 1 ? 'repository' : 'repositories'}`;
 }
@@ -226,16 +229,23 @@ function ProjectList({
           data-testid={`cloud-project-setup-row-${entry.projectId}`}
         >
           <div className="min-w-0 flex-1">
-            <p className={`truncate text-s fg-primary ${REPLAY_MASK_CLASS}`}>
+            <p
+              id={`cloud-project-setup-name-${entry.projectId}`}
+              className={`truncate text-s fg-primary ${REPLAY_MASK_CLASS}`}
+            >
               {entry.name}
             </p>
             <p className="text-xs fg-secondary">{entryStatus(entry)}</p>
           </div>
           {entry.state === 'available' || entry.state === 'needs-attention' ? (
+            // Named by reference, not `aria-label`: session replay masks the
+            // project name only on the element that carries the mask class.
             <Button
+              id={`cloud-project-setup-choose-${entry.projectId}`}
               variant="secondary"
               size="sm"
               onClick={(): void => onChoose(entry.projectId)}
+              aria-labelledby={`cloud-project-setup-choose-${entry.projectId} cloud-project-setup-name-${entry.projectId}`}
               data-testid={`cloud-project-setup-choose-${entry.projectId}`}
             >
               {entry.state === 'available' ? 'Set up' : 'Set up again'}
@@ -329,20 +339,26 @@ export function CloudProjectSetupPanel({
           ))}
         </ChoiceList>
       </div>
+      {/* The button is named by the label and the path, not a `<label for>`:
+          that would drop the path from its name and open the folder picker
+          when the label is clicked. */}
       <DialogFormField
         label="Destination folder"
-        htmlFor="cloud-project-setup-destination"
+        labelId={DESTINATION_LABEL_ID}
       >
         <Button
           id="cloud-project-setup-destination"
           data-testid="cloud-project-setup-destination"
+          aria-labelledby={`${DESTINATION_LABEL_ID} ${DESTINATION_PATH_ID}`}
           variant="secondary"
+          size="field"
           disabled={state.busy}
           onClick={onChangeDestination}
           className="w-full justify-between text-left"
         >
           {/* A local path names the user's account folder; its tooltip too. */}
           <span
+            id={DESTINATION_PATH_ID}
             className={`min-w-0 truncate font-mono ${state.destinationRoot === null ? '' : REPLAY_BLOCK_CLASS}`}
             dir="rtl"
             title={state.destinationRoot ?? undefined}
@@ -358,7 +374,7 @@ export function CloudProjectSetupPanel({
       {state.progress !== null ? (
         <p
           role="status"
-          className="text-s fg-secondary"
+          className="text-s tabular-nums fg-secondary"
           data-testid="cloud-project-setup-progress"
         >
           <ProgressLine progress={state.progress} />

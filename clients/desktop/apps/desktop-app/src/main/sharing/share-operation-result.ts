@@ -59,13 +59,20 @@ export class SkillSecretDetectedError extends ShareOperationError {
  * from an analysis that went stale (CAN-6176).
  */
 export class PackageAnalysisBlockedError extends ShareOperationError {
-  constructor() {
+  /**
+   * Set when a cloud copy refused a SKILL.md or plugin.json that looks like
+   * it holds a secret (CAN-7226); the message then names it.
+   */
+  readonly secretDetected: boolean;
+  constructor(secretRefusal?: string) {
     super(
       'dependency-review',
-      'Dependencies are not ready to package. Resolve the listed problems first.',
+      secretRefusal ??
+        'Dependencies are not ready to package. Resolve the listed problems first.',
       'prepare',
     );
     this.name = 'PackageAnalysisBlockedError';
+    this.secretDetected = secretRefusal !== undefined;
   }
 }
 

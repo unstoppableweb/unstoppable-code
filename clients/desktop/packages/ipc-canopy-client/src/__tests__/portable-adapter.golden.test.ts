@@ -39,11 +39,17 @@ import {
   REMOTE_QUERY_CHANNELS,
   deriveRemoteIpcChannels,
   remoteOperationChannelUse,
+  type RemoteIpcChannel,
   type RemoteIpcChannelKey,
   type RemoteOperationChannels,
 } from '@canopy/protocol/remote-control/channels';
 import type { RemoteControlPrActionPayload } from '@canopy/protocol/remote-control/shell';
-import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
+import {
+  channelUnavailableMessage,
+  CHANNEL_UNAVAILABLE_CODE,
+  RemoteChannelUnavailableError,
+  type RemoteIpcTransport,
+} from '@canopy/protocol/remote-control';
 import { SCRIPT_ACTIONS_CHANNELS } from '@canopy/protocol/script-actions';
 import {
   ChatHistoryCursorError,
@@ -55,6 +61,7 @@ import {
   intersectCanopyCapabilities,
   type IpcCanopyClientPorts,
 } from '../index';
+import { isRecord } from '../decoders';
 
 const C = REMOTE_IPC_CHANNELS;
 
@@ -216,6 +223,45 @@ const TRANSCRIPT_PAGE = {
   transcriptRevision: 7,
 };
 
+/** A host clone job, as `clone-jobs:list` answers it (CAN-7433). */
+const HOST_CLONE_JOB = {
+  id: 'job-1',
+  repoName: 'canopy',
+  remoteUrl: '',
+  destinationPath: '/Users/someone/code/canopy',
+  status: 'running',
+  phase: 'receiving',
+  phasePercent: 40,
+  percent: 30,
+  processedCount: 4,
+  totalCount: 10,
+  received: '1.00 MiB',
+  throughput: '1.00 MiB/s',
+  startedAt: 1,
+  background: true,
+  cancellable: true,
+  workspaceId: null,
+  workspaceName: 'canopy',
+  error: null,
+};
+const PORTABLE_CLONE_JOB = {
+  id: 'job-1',
+  repoName: 'canopy',
+  workspaceName: 'canopy',
+  status: 'running',
+  error: null,
+  background: true,
+  cancellable: true,
+};
+/** A quota projection, as `provider-usage:*` answers it (CAN-7433). */
+const PROVIDER_USAGE = {
+  updatedAt: NOW,
+  providers: [
+    { provider: 'claude', authState: 'authenticated', windows: [] },
+    { provider: 'codex', authState: 'unknown', windows: [] },
+  ],
+};
+
 const DEFAULT_REPLIES: Replies = {
   [C.homeListBranchTargets]: () => ({
     supported: true,
@@ -313,6 +359,8 @@ const DEFAULT_REPLIES: Replies = {
     onboardingTipsDismissed: {},
     suggestions: { enabled: true, dismissed: {} },
   }),
+  [C.preferencesLoadOnboardingTips]: () => ({ dismissed: {} }),
+  [C.preferencesLoadSuggestions]: () => ({ enabled: true, dismissed: {} }),
   [C.turnFeedbackRate]: () => ({ feedbackId: 'feedback-1' }),
   [C.desktopSessionSnapshot]: () => ({ workspaces: [] }),
   [C.managedDelegationLifetimeStatus]: () => ({ kind: 'unsupported' }),
@@ -327,6 +375,10 @@ const DEFAULT_REPLIES: Replies = {
   [C.workspaceLoadClaudeMd]: () => '# Instructions',
   [C.scriptActionsList]: () => ({ ok: true, value: null }),
   [C.scriptActionsReceipt]: () => ({ ok: true, value: null }),
+  [C.cloneJobsList]: () => [HOST_CLONE_JOB],
+  [C.providerUsageLoad]: () => PROVIDER_USAGE,
+  [C.providerUsageRefresh]: () => PROVIDER_USAGE,
+  [C.orgProjectsFindRepositoryOwner]: () => ({ kind: 'none' }),
 };
 
 function fakeTransport(replies: Replies = {}): FakeTransport {
@@ -377,6 +429,33 @@ const PENDING_ARCHIVE_RECOVERY = [
     confirmation: 'a'.repeat(64),
   },
 ];
+
+const VISUAL_SHA = 'a'.repeat(64);
+const VISUAL_READ = {
+  ...WORKTREE,
+  chatId: 'chat-1',
+  messageId: 'message-1',
+  toolUseId: 'tool-1',
+  reference: {
+    version: 1,
+    visualId: 'vis_00000000-0000-4000-8000-000000000000',
+    artifactId: `sha256-v1-${VISUAL_SHA}`,
+    byteLength: 4,
+    sha256: VISUAL_SHA,
+    mediaType: 'text/html',
+    title: 'Visual',
+    maxHeight: 400,
+  },
+  offset: 0,
+  limit: 4,
+} as const;
+const VISUAL_RANGE = {
+  data: 'PHA+',
+  offset: 0,
+  length: 3,
+  byteLength: 4,
+  sha256: VISUAL_SHA,
+};
 
 const CAPABILITIES: CanopyCapabilities = {
   localExecution: true,
@@ -509,6 +588,125 @@ function passthroughCommand<K extends CommandName>(
 
 const NO_ARGS: Record<string, never> = {};
 
+/**
+ * A narrow tips or suggestions read (CAN-7434): the narrow channel only; an
+ * older host's refusal of that channel falls back to `preferences:load` for a
+ * client served the full preferences, and nothing else falls back.
+ */
+function narrowPreferenceScenarios<
+  K extends 'onboardingTips.get' | 'suggestions.get',
+>(
+  channel: RemoteIpcChannel,
+  cases: {
+    readonly reply: unknown;
+    readonly expected: QueryMap[K]['result'];
+    readonly olderHostExpected: QueryMap[K]['result'];
+    readonly olderHostFailures: readonly {
+      readonly name: string;
+      readonly reply: unknown;
+      readonly rejects: RegExp;
+    }[];
+  },
+): readonly Scenario<QueryMap[K]['args'], QueryMap[K]['result']>[] {
+  const args: QueryMap[K]['args'] = NO_ARGS;
+  // What a desktop remote window sees: Electron's wrapper keeps the text only.
+  const wrappedRefusal = (): never => {
+    throw new Error(
+      `Error invoking remote method '${channel}': Error: ${channelUnavailableMessage(channel)}`,
+    );
+  };
+  const olderHost = [call(channel), call(C.preferencesLoad, undefined)];
+  return [
+    {
+      name: 'reads only the narrow channel',
+      args,
+      replies: { [channel]: () => cases.reply },
+      calls: [call(channel)],
+      result: (value) => expect(value).toEqual(cases.expected),
+    },
+    {
+      name: 'falls back to preferences:load when an older host refuses the channel (Electron-wrapped)',
+      args,
+      replies: { [channel]: wrappedRefusal },
+      calls: olderHost,
+      result: (value) => expect(value).toEqual(cases.olderHostExpected),
+    },
+    {
+      name: 'falls back to preferences:load when an older host refuses the channel (with its code)',
+      args,
+      replies: {
+        [channel]: () => {
+          throw new RemoteChannelUnavailableError(channel);
+        },
+      },
+      calls: olderHost,
+      result: (value) => expect(value).toEqual(cases.olderHostExpected),
+    },
+    ...cases.olderHostFailures.map(
+      (failure): Scenario<QueryMap[K]['args'], QueryMap[K]['result']> => ({
+        name: `older host: ${failure.name}`,
+        args,
+        replies: {
+          [channel]: wrappedRefusal,
+          [C.preferencesLoad]: () => failure.reply,
+        },
+        calls: olderHost,
+        rejects: failure.rejects,
+      }),
+    ),
+    {
+      name: "does not fall back on a current host's refusal",
+      args,
+      replies: {
+        [channel]: () => {
+          throw Object.assign(
+            new Error(
+              'The settings are unavailable because preferences could not be loaded.',
+            ),
+            { code: 'core.config.invalidState' },
+          );
+        },
+      },
+      calls: [call(channel)],
+      rejects: /preferences could not be loaded/,
+    },
+    {
+      name: 'does not fall back on a refusal naming another channel',
+      args,
+      replies: {
+        [channel]: () => {
+          throw new Error(channelUnavailableMessage(C.preferencesLoad));
+        },
+      },
+      calls: [call(channel)],
+      rejects: /not available while controlling another computer/,
+    },
+    {
+      name: 'never falls back for a client not served the full preferences',
+      args,
+      replies: {
+        [channel]: () => {
+          throw Object.assign(new Error(channelUnavailableMessage(channel)), {
+            code: CHANNEL_UNAVAILABLE_CODE,
+          });
+        },
+      },
+      ports: {
+        capabilities: { ...CAPABILITIES, settingsScope: 'api-keys-only' },
+      },
+      calls: [call(channel)],
+      rejects: /not available while controlling another computer/,
+    },
+    {
+      name: 'rejects a malformed narrow reply without falling back',
+      args,
+      replies: { [channel]: () => ({ dismissed: 'nope', enabled: 'nope' }) },
+      calls: [call(channel)],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Shell commands (CAN-5985): Portal command payloads plus a navigation target.
 // ---------------------------------------------------------------------------
@@ -525,6 +723,25 @@ const COWORK_CHAT = {
 };
 const STANDALONE_SNAPSHOT = { standaloneChats: [COWORK_CHAT] };
 const COWORK_TARGET = { projectId: 'cowork', worktreeId: 'entry-1' };
+/** The web row's archive request for {@link COWORK_CHAT}. */
+const STANDALONE_ARCHIVE = {
+  chatId: 'chat-s',
+  projectLocalId: 'cowork',
+  workEntryId: 'entry-1',
+};
+/** The snapshot lists live chats only: an archived chat is absent from it. */
+const ARCHIVED_SNAPSHOT = { standaloneChats: [] };
+/** The project's archived list with {@link COWORK_CHAT}'s Work Entry locked. */
+const LOCKED_ARCHIVE_LIST = {
+  items: [{ id: 'entry-1', title: 'Chat', state: 'archived' }],
+  nextOffset: null,
+};
+const EMPTY_ARCHIVE_LIST = { items: [], nextOffset: null };
+/** Each snapshot read answers the next value; the last one repeats. */
+function snapshotsInTurn(...snapshots: readonly unknown[]): Reply {
+  let read = 0;
+  return () => snapshots[Math.min(read++, snapshots.length - 1)];
+}
 /** The standalone target a Cowork composer sends for its `/` menu. */
 const STANDALONE_INVOCABLE_TARGET = {
   kind: 'standalone',
@@ -1695,6 +1912,125 @@ const SHELL_COMMAND_SCENARIOS: ShellCommandScenarios = {
       ],
     },
   ],
+  'standaloneChat.archive': [
+    {
+      name: 'archives the Work Entry locked and refreshes the snapshot',
+      args: { payload: STANDALONE_ARCHIVE },
+      replies: {
+        [C.desktopSessionSnapshot]: () => STANDALONE_SNAPSHOT,
+        [C.workEntriesDelete]: () => ({ browserCleanupPending: false }),
+      },
+      calls: [
+        call(C.desktopSessionSnapshot, {}),
+        call(C.workEntriesDelete, {
+          projectId: 'cowork',
+          entryId: 'entry-1',
+          lockAfterArchive: true,
+        }),
+        call(C.desktopSessionSnapshotInvalidate),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          ok: true,
+          chatId: 'chat-s',
+          projectLocalId: 'cowork',
+          workEntryId: 'entry-1',
+        }),
+    },
+    {
+      name: 'answers an archived chat as already archived without a write',
+      args: { payload: STANDALONE_ARCHIVE },
+      replies: {
+        [C.desktopSessionSnapshot]: () => ARCHIVED_SNAPSHOT,
+        [C.workEntriesListArchived]: () => LOCKED_ARCHIVE_LIST,
+      },
+      calls: [
+        call(C.desktopSessionSnapshot, {}),
+        call(C.workEntriesListArchived, { projectLocalId: 'cowork' }),
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          workEntryId: 'entry-1',
+          alreadyArchived: true,
+        }),
+    },
+    {
+      name: 'refuses a chat whose row names another Work Entry',
+      args: { payload: { ...STANDALONE_ARCHIVE, workEntryId: 'entry-2' } },
+      replies: { [C.desktopSessionSnapshot]: () => STANDALONE_SNAPSHOT },
+      calls: [call(C.desktopSessionSnapshot, {})],
+      result: (value) => expectRefused(value, /no longer available/),
+    },
+    {
+      name: 'refuses an absent chat with no locked archive',
+      args: { payload: { ...STANDALONE_ARCHIVE, chatId: 'gone' } },
+      replies: {
+        [C.desktopSessionSnapshot]: () => STANDALONE_SNAPSHOT,
+        [C.workEntriesListArchived]: () => EMPTY_ARCHIVE_LIST,
+      },
+      calls: [
+        call(C.desktopSessionSnapshot, {}),
+        call(C.workEntriesListArchived, { projectLocalId: 'cowork' }),
+      ],
+      result: (value) => expectRefused(value, /no longer available/),
+    },
+    {
+      name: 'refuses with the host message when the archive fails',
+      args: { payload: STANDALONE_ARCHIVE },
+      replies: {
+        [C.desktopSessionSnapshot]: () => STANDALONE_SNAPSHOT,
+        [C.workEntriesDelete]: () => {
+          throw new Error(
+            "Error invoking remote method 'work-entries:delete': Error: The Work Entry changed before deletion.",
+          );
+        },
+      },
+      channels: [
+        C.desktopSessionSnapshot,
+        C.workEntriesDelete,
+        C.desktopSessionSnapshot,
+      ],
+      result: (value) =>
+        expectRefused(value, /^The Work Entry changed before deletion\.$/),
+    },
+    {
+      name: 'answers an entry archived meanwhile on the computer as already archived',
+      args: { payload: STANDALONE_ARCHIVE },
+      replies: {
+        [C.desktopSessionSnapshot]: snapshotsInTurn(
+          STANDALONE_SNAPSHOT,
+          ARCHIVED_SNAPSHOT,
+        ),
+        [C.workEntriesListArchived]: () => LOCKED_ARCHIVE_LIST,
+        [C.workEntriesDelete]: () => {
+          throw new Error('Unknown work entry entry-1');
+        },
+      },
+      channels: [
+        C.desktopSessionSnapshot,
+        C.workEntriesDelete,
+        C.desktopSessionSnapshot,
+        C.workEntriesListArchived,
+      ],
+      result: (value) =>
+        expectAccepted(value, {
+          workEntryId: 'entry-1',
+          alreadyArchived: true,
+        }),
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { payload: STANDALONE_ARCHIVE },
+      replies: {
+        [C.desktopSessionSnapshot]: () => STANDALONE_SNAPSHOT,
+        [C.workEntriesDelete]: () => {
+          throw new RemoteChannelUnavailableError(C.workEntriesDelete);
+        },
+      },
+      channels: [C.desktopSessionSnapshot, C.workEntriesDelete],
+      result: (value) => expectRefused(value, /Update the desktop app/),
+    },
+  ],
   'standaloneChat.setModel': [
     {
       name: 'sets the model with its provider',
@@ -2327,8 +2663,147 @@ const SHELL_COMMAND_SCENARIOS: ShellCommandScenarios = {
   ],
 };
 
+// ---------------------------------------------------------------------------
+// Chat recovery (CAN-7435): plan-exit approval and failed-turn retry.
+// ---------------------------------------------------------------------------
+
+const PLAN_APPROVAL = {
+  requestId: 'request-1',
+  planId: 'plan-1',
+  revisionNumber: 2,
+};
+const PENDING_PLAN_TAB = {
+  id: 'chat-1',
+  planMode: true,
+  pendingPlanExit: { source: 'claude' },
+  pendingPlanExitRequestId: 'request-1',
+  trackedPlanId: 'plan-1',
+  trackedPlanSource: 'claude',
+  trackedPlanReviewStatus: 'pending',
+  latestRevisionNumber: 2,
+};
+const planExitState =
+  (tab: Record<string, unknown>): Reply =>
+  () => ({
+    revision: 1,
+    tabsFile: { tabs: [tab] },
+    runtimeByChatId: {},
+  });
+const PLAN_DECISION = chatEnvelope(WORKTREE, {
+  type: 'chat.patch_tab_settings',
+  tabId: 'chat-1',
+  patch: {
+    pendingPlanExit: null,
+    pendingPlanExitRequestId: null,
+    planMode: false,
+    proposalMode: 'optional',
+    trackedPlanReviewStatus: 'approved',
+    hasOutstandingProposal: false,
+  },
+  expectedPendingPlanExitRequestId: 'request-1',
+});
+const PLAN_REVIEW_SYNC = call(C.trackedPlansUpdate, {
+  ...WORKTREE,
+  planId: 'plan-1',
+  chatId: 'chat-1',
+  initiationSource: 'user',
+  reviewStatus: 'approved',
+  approvedAt: NOW,
+  dismissedAt: null,
+});
+const APPROVED_PLAN = { ...PLAN, reviewStatus: 'approved' };
+const RETRY_ARGS = {
+  ...CHAT,
+  turnUserMessageId: 'user-1',
+  noticeText: 'The provider is overloaded.',
+};
+const RETRY_USER_MESSAGE = {
+  id: 'user-1',
+  role: 'user',
+  timestamp: NOW,
+  blocks: [{ type: 'text', text: 'Fix the bug' }],
+  attachmentPaths: ['/tmp/a.png'],
+};
+const RETRY_NOTICE = {
+  id: 'notice-1',
+  role: 'system',
+  timestamp: NOW,
+  blocks: [{ type: 'text', text: 'The provider is overloaded.' }],
+};
+const IDLE_CHAT_STATE: Reply = () => ({
+  revision: 1,
+  tabsFile: { tabs: [{ id: 'chat-1' }] },
+  runtimeByChatId: { 'chat-1': { status: 'idle' } },
+});
+const transcriptPage =
+  (messages: readonly unknown[], before?: number): Reply =>
+  () => ({
+    messages,
+    transcriptRevision: 7,
+    ...(before === undefined ? {} : { before }),
+  });
+
 const QUERY_SCENARIOS: QueryScenarios = {
   ...SHELL_QUERY_SCENARIOS,
+  'chat.checkFailedTurnRetry': [
+    {
+      name: 'offers a re-send when the agent never ran',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([
+          RETRY_USER_MESSAGE,
+          RETRY_NOTICE,
+        ]),
+      },
+      calls: [
+        call(C.chatGetState, WORKTREE),
+        call(C.chatGetTranscriptPage, CHAT),
+      ],
+      result: (value) =>
+        expect(value).toEqual({ available: true, resendsUserMessage: true }),
+    },
+    {
+      name: 'is unavailable while the chat is busy, without reading the transcript',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: () => ({
+          tabsFile: { tabs: [{ id: 'chat-1' }] },
+          runtimeByChatId: { 'chat-1': { status: 'streaming' } },
+        }),
+      },
+      calls: [call(C.chatGetState, WORKTREE)],
+      result: (value) =>
+        expect(value).toEqual({ available: false, reason: 'busy' }),
+    },
+    {
+      name: 'is unavailable when the notice is not the last persisted message',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([RETRY_USER_MESSAGE]),
+      },
+      channels: [C.chatGetState, C.chatGetTranscriptPage],
+      result: (value) =>
+        expect(value).toEqual({ available: false, reason: 'not_current' }),
+    },
+    {
+      name: 'fails closed past the paging bound',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([RETRY_NOTICE], 50),
+      },
+      result: (value, context) => {
+        expect(value).toEqual({ available: false, reason: 'out_of_range' });
+        expect(
+          context.fake.calls.filter(
+            (entry) => entry.channel === C.chatGetTranscriptPage,
+          ),
+        ).toHaveLength(8);
+      },
+    },
+  ],
   'worktree.activity': [
     {
       name: "reads the worktree's panel entities",
@@ -2804,6 +3279,40 @@ const QUERY_SCENARIOS: QueryScenarios = {
       rejects: /The chat changed/,
     },
   ],
+  'chat.readVisual': [
+    {
+      name: 'reads one byte range of a visual (CAN-7432)',
+      args: VISUAL_READ,
+      replies: { [C.chatReadVisual]: () => VISUAL_RANGE },
+      calls: [call(C.chatReadVisual, VISUAL_READ)],
+      result: (value) => expect(value).toStrictEqual(VISUAL_RANGE),
+    },
+    {
+      name: 'passes an archived container through',
+      args: { ...VISUAL_READ, archivedContainerId: 'worktree-1' },
+      replies: { [C.chatReadVisual]: () => VISUAL_RANGE },
+      calls: [
+        call(C.chatReadVisual, {
+          ...VISUAL_READ,
+          archivedContainerId: 'worktree-1',
+        }),
+      ],
+    },
+    {
+      name: 'rejects a malformed reply',
+      args: VISUAL_READ,
+      replies: { [C.chatReadVisual]: () => ({ data: 'PHA+' }) },
+      channels: [C.chatReadVisual],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'rejects a reply longer than the requested range',
+      args: { ...VISUAL_READ, limit: 2 },
+      replies: { [C.chatReadVisual]: () => VISUAL_RANGE },
+      channels: [C.chatReadVisual],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+  ],
   'plan.get': [
     {
       name: 'reads the latest revision',
@@ -2879,6 +3388,69 @@ const QUERY_SCENARIOS: QueryScenarios = {
       name: 'reads the preference',
       args: NO_ARGS,
       calls: [call(C.settingsLoadInstallUpdateEmailPreference)],
+    },
+  ],
+  'cloneJobs.list': [
+    {
+      name: 'projects each job without its remote URL or host path',
+      args: {},
+      calls: [call(C.cloneJobsList)],
+      result: (value) => expect(value).toEqual([PORTABLE_CLONE_JOB]),
+    },
+    {
+      name: 'skips a job with an unknown status or a malformed shape',
+      args: {},
+      replies: {
+        [C.cloneJobsList]: () => [
+          { ...HOST_CLONE_JOB, id: 'job-new', status: 'paused' },
+          { ...HOST_CLONE_JOB, id: 'job-bad', background: 'yes' },
+          'not a job',
+          HOST_CLONE_JOB,
+        ],
+      },
+      channels: [C.cloneJobsList],
+      result: (value) => expect(value).toEqual([PORTABLE_CLONE_JOB]),
+    },
+    {
+      name: 'rejects a reply that is not a list',
+      args: {},
+      replies: { [C.cloneJobsList]: () => ({ jobs: [] }) },
+      channels: [C.cloneJobsList],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+  ],
+  'providerUsage.get': [
+    {
+      name: 'sends no argument, even with a host selected',
+      args: { workspaceLocalId: 'project-1' },
+      calls: [call(C.providerUsageLoad)],
+      result: (value) => expect(value).toEqual(PROVIDER_USAGE),
+    },
+    {
+      name: 'rejects an invalid projection',
+      args: {},
+      replies: { [C.providerUsageLoad]: () => ({ providers: [] }) },
+      channels: [C.providerUsageLoad],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+  ],
+  'orgProjects.findRepositoryOwner': [
+    {
+      name: 'sends exactly the remote URL',
+      args: { remoteUrl: 'https://github.com/acme/app.git' },
+      calls: [
+        call(C.orgProjectsFindRepositoryOwner, {
+          remoteUrl: 'https://github.com/acme/app.git',
+        }),
+      ],
+      result: (value) => expect(value).toEqual({ kind: 'none' }),
+    },
+    {
+      name: 'rejects a malformed lookup',
+      args: { remoteUrl: 'https://github.com/acme/app.git' },
+      replies: { [C.orgProjectsFindRepositoryOwner]: () => ({ kind: 'x' }) },
+      channels: [C.orgProjectsFindRepositoryOwner],
+      rejects: RemoteIpcMalformedReplyError,
     },
   ],
   'orgProjects.catalog': [
@@ -3002,34 +3574,47 @@ const QUERY_SCENARIOS: QueryScenarios = {
       result: (value) => expect(value).toBeNull(),
     },
   ],
-  'onboardingTips.get': [
+  'onboardingTips.get': narrowPreferenceScenarios<'onboardingTips.get'>(
+    C.preferencesLoadOnboardingTips,
     {
-      name: 'reads dismissals from preferences',
-      args: NO_ARGS,
-      calls: [call(C.preferencesLoad, undefined)],
-      result: (value) => expect(value).toEqual({ dismissed: {} }),
+      reply: { dismissed: { 'worktree-chat': '2026-11-01T10:00:00.000Z' } },
+      expected: { dismissed: { 'worktree-chat': '2026-11-01T10:00:00.000Z' } },
+      olderHostExpected: { dismissed: {} },
+      olderHostFailures: [
+        {
+          name: 'rejects a failed preferences load',
+          reply: { __error: 'broken' },
+          rejects: /Preferences could not be loaded/,
+        },
+        {
+          name: 'rejects a host without tip dismissals',
+          reply: {},
+          rejects: /does not store onboarding tip dismissals/,
+        },
+      ],
     },
+  ),
+  'suggestions.get': narrowPreferenceScenarios<'suggestions.get'>(
+    C.preferencesLoadSuggestions,
     {
-      name: 'rejects a failed preferences load',
-      args: NO_ARGS,
-      replies: { [C.preferencesLoad]: () => ({ __error: 'broken' }) },
-      rejects: /Preferences could not be loaded/,
+      reply: {
+        enabled: false,
+        dismissed: { 'plan-mode-hint': '2026-11-01T10:00:00.000Z' },
+      },
+      expected: {
+        enabled: false,
+        dismissed: { 'plan-mode-hint': '2026-11-01T10:00:00.000Z' },
+      },
+      olderHostExpected: { enabled: true, dismissed: {} },
+      olderHostFailures: [
+        {
+          name: 'rejects a host without suggestion preferences',
+          reply: {},
+          rejects: /does not store suggestion preferences/,
+        },
+      ],
     },
-  ],
-  'suggestions.get': [
-    {
-      name: 'reads suggestion preferences',
-      args: NO_ARGS,
-      calls: [call(C.preferencesLoad, undefined)],
-      result: (value) => expect(value.enabled).toBe(true),
-    },
-    {
-      name: 'rejects a host without suggestion preferences',
-      args: NO_ARGS,
-      replies: { [C.preferencesLoad]: () => ({}) },
-      rejects: /does not store suggestion preferences/,
-    },
-  ],
+  ),
   'claudeMods.get': passthroughQuery<'claudeMods.get'>(C.claudeModsGet, 'mods'),
 };
 
@@ -3054,6 +3639,204 @@ function prAction(
 
 const COMMAND_SCENARIOS: CommandScenarios = {
   ...SHELL_COMMAND_SCENARIOS,
+  'chat.resolvePlanExit': [
+    {
+      name: 'decides the chat, approves the plan, then starts its turn',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState(PENDING_PLAN_TAB),
+        [C.trackedPlansUpdate]: () => APPROVED_PLAN,
+      },
+      result: (value, context) => {
+        expect(value).toEqual({ outcome: 'started' });
+        expect(context.fake.calls.slice(0, 3)).toEqual([
+          call(C.chatGetState, WORKTREE),
+          PLAN_DECISION,
+          PLAN_REVIEW_SYNC,
+        ]);
+        const send = context.fake.calls[3];
+        expect(send?.channel).toBe(C.chatCommand);
+        expect(send?.args[0]).toMatchObject({
+          command: {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            text: 'Approved',
+            trackedPlanImplementation: {
+              planId: 'plan-1',
+              revisionNumber: 2,
+              startedAt: NOW,
+            },
+          },
+        });
+        expect(context.fake.calls).toHaveLength(4);
+      },
+    },
+    {
+      name: 'sends the proposal message for a Codex proposal',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState({
+          ...PENDING_PLAN_TAB,
+          pendingPlanExit: { source: 'codex' },
+          trackedPlanSource: 'codex',
+        }),
+        [C.trackedPlansUpdate]: () => APPROVED_PLAN,
+      },
+      result: (value, context) => {
+        expect(value).toEqual({ outcome: 'started' });
+        expect(context.fake.calls[3]?.args[0]).toMatchObject({
+          command: { text: 'Approved. Implement the plan.' },
+        });
+      },
+    },
+    {
+      name: 'refuses an OpenCode proposal without writing',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState({
+          ...PENDING_PLAN_TAB,
+          pendingPlanExit: { source: 'opencode' },
+          trackedPlanSource: 'opencode',
+        }),
+      },
+      calls: [call(C.chatGetState, WORKTREE)],
+      result: (value) => expect(value).toEqual({ outcome: 'rejected' }),
+    },
+    {
+      name: 'refuses an exit without a source instead of reading it as Claude',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState({
+          ...PENDING_PLAN_TAB,
+          pendingPlanExit: {},
+        }),
+      },
+      calls: [call(C.chatGetState, WORKTREE)],
+      result: (value) => expect(value).toEqual({ outcome: 'rejected' }),
+    },
+    {
+      name: 'answers a stale revision with a conflict and no write',
+      args: { ...CHAT, approval: { ...PLAN_APPROVAL, revisionNumber: 1 } },
+      replies: { [C.chatGetState]: planExitState(PENDING_PLAN_TAB) },
+      calls: [call(C.chatGetState, WORKTREE)],
+      result: (value) => expect(value).toEqual({ outcome: 'conflict' }),
+    },
+    {
+      name: 'answers a lost decision race with a conflict',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState(PENDING_PLAN_TAB),
+        [C.chatCommand]: () => ({ commandId: 'c', outcome: 'conflict' }),
+      },
+      calls: [call(C.chatGetState, WORKTREE), PLAN_DECISION],
+      result: (value) => expect(value).toEqual({ outcome: 'conflict' }),
+    },
+    {
+      name: 'sends nothing when the plan review did not sync',
+      args: { ...CHAT, approval: PLAN_APPROVAL },
+      replies: {
+        [C.chatGetState]: planExitState(PENDING_PLAN_TAB),
+        [C.trackedPlansUpdate]: () => PLAN,
+      },
+      calls: [call(C.chatGetState, WORKTREE), PLAN_DECISION, PLAN_REVIEW_SYNC],
+      result: (value) =>
+        expect(value).toEqual({ outcome: 'approved_not_started' }),
+    },
+  ],
+  'chat.retryFailedTurn': [
+    {
+      name: 're-sends the original message with its attachments',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([
+          RETRY_USER_MESSAGE,
+          RETRY_NOTICE,
+        ]),
+      },
+      result: (value, context) => {
+        expect(value.disposition).toBe('applied');
+        expect(value.userMessageId).toMatch(/^failed-turn-retry-[0-9a-f]{32}$/);
+        expect(context.fake.calls.map((entry) => entry.channel)).toEqual([
+          C.chatGetState,
+          C.chatGetTranscriptPage,
+          C.chatCommand,
+        ]);
+        expect(context.fake.calls[2]?.args[0]).toMatchObject({
+          command: {
+            type: 'chat.send_message',
+            chatId: 'chat-1',
+            userMessageId: value.userMessageId,
+            text: 'Fix the bug',
+            attachmentPaths: ['/tmp/a.png'],
+          },
+        });
+      },
+    },
+    {
+      name: 'sends Continue after agent work, and repeats the same id',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([
+          RETRY_USER_MESSAGE,
+          {
+            id: 'assistant-1',
+            role: 'assistant',
+            timestamp: NOW,
+            blocks: [{ type: 'text', text: 'Working on it' }],
+          },
+          RETRY_NOTICE,
+        ]),
+        [C.chatCommand]: () => ({ commandId: 'c', outcome: 'already_applied' }),
+      },
+      result: (value, context) => {
+        expect(value.disposition).toBe('already_applied');
+        const send = context.fake.calls.find(
+          (entry) => entry.channel === C.chatCommand,
+        );
+        expect(send?.args[0]).toMatchObject({
+          command: { text: 'Continue' },
+        });
+        const sent: unknown = send?.args[0];
+        expect(
+          isRecord(sent) && isRecord(sent.command)
+            ? sent.command.attachmentPaths
+            : 'missing',
+        ).toBeUndefined();
+      },
+    },
+    {
+      name: 'refuses, without sending, when the chat is busy',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: () => ({
+          tabsFile: { tabs: [{ id: 'chat-1' }] },
+          runtimeByChatId: { 'chat-1': { queuedMessageIds: ['queued-1'] } },
+        }),
+      },
+      calls: [call(C.chatGetState, WORKTREE)],
+      rejects: /can't be retried/,
+    },
+    {
+      name: 'rejects a refused send',
+      args: RETRY_ARGS,
+      replies: {
+        [C.chatGetState]: IDLE_CHAT_STATE,
+        [C.chatGetTranscriptPage]: transcriptPage([
+          RETRY_USER_MESSAGE,
+          RETRY_NOTICE,
+        ]),
+        [C.chatCommand]: () => ({
+          commandId: 'c',
+          outcome: 'conflict',
+          reason: 'The chat changed.',
+        }),
+      },
+      channels: [C.chatGetState, C.chatGetTranscriptPage, C.chatCommand],
+      rejects: /The chat changed/,
+    },
+  ],
   'chat.attachments.upload': [
     {
       name: 'stores the file through the upload port and mints its reference',
@@ -3135,9 +3918,31 @@ const COMMAND_SCENARIOS: CommandScenarios = {
     ),
   'providerUsage.refresh': [
     {
-      name: 'refreshes one provider',
-      args: { provider: 'claude' },
-      calls: [call(C.observabilityRefreshUsage, 'claude')],
+      name: 'sends exactly the provider and answers the projection',
+      args: { provider: 'claude', workspaceLocalId: 'project-1' },
+      calls: [call(C.providerUsageRefresh, { provider: 'claude' })],
+      result: (value) => expect(value).toEqual(PROVIDER_USAGE),
+    },
+    {
+      name: 'rejects an invalid projection',
+      args: { provider: 'codex' },
+      replies: { [C.providerUsageRefresh]: () => undefined },
+      channels: [C.providerUsageRefresh],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+  ],
+  'cloneJobs.cancel': [
+    {
+      name: 'cancels one job by id',
+      args: { jobId: 'job-1' },
+      calls: [call(C.cloneJobsCancel, 'job-1')],
+    },
+  ],
+  'cloneJobs.dismiss': [
+    {
+      name: 'dismisses one job by id',
+      args: { jobId: 'job-1' },
+      calls: [call(C.cloneJobsDismiss, 'job-1')],
     },
   ],
   'repoRules.apply': passthroughCommand<'repoRules.apply'>(
@@ -3511,6 +4316,45 @@ const COMMAND_SCENARIOS: CommandScenarios = {
         }),
         call(C.desktopSessionSnapshotInvalidate),
       ],
+    },
+  ],
+  'workspace.setArchiveRetention': [
+    {
+      name: 'sends only the retention days, then refreshes the snapshot',
+      args: { workspaceId: 'single', archiveRetentionDays: 14 },
+      calls: [
+        call(C.workspaceSetArchiveRetention, {
+          workspaceId: 'single',
+          archiveRetentionDays: 14,
+        }),
+        call(C.desktopSessionSnapshotInvalidate),
+      ],
+    },
+    {
+      name: 'rejects with the host message when the computer refuses',
+      args: { workspaceId: 'single', archiveRetentionDays: 9999 },
+      replies: {
+        [C.workspaceSetArchiveRetention]: () => {
+          throw new Error(
+            "Error invoking remote method 'workspace:set-archive-retention': Error: Archive retention must be null or an integer from 0 to 365",
+          );
+        },
+      },
+      channels: [C.workspaceSetArchiveRetention],
+      rejects: /^Archive retention must be/,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { workspaceId: 'single', archiveRetentionDays: 14 },
+      replies: {
+        [C.workspaceSetArchiveRetention]: () => {
+          throw new RemoteChannelUnavailableError(
+            C.workspaceSetArchiveRetention,
+          );
+        },
+      },
+      channels: [C.workspaceSetArchiveRetention],
+      rejects: /Update the desktop app/,
     },
   ],
   'workspace.delete': [
@@ -4533,6 +5377,69 @@ const SURFACE_COMPOSER_REQUEST = {
 };
 
 const EVENT_SCENARIOS: EventScenarios = {
+  'chat.transientRetry': [
+    {
+      name: 'decodes automatic-retry state and drops malformed payloads',
+      filter: { chatLocalId: 'chat-1' },
+      pushes: [
+        [
+          C.chatEvent,
+          {
+            ...WORKTREE,
+            chatId: 'chat-1',
+            data: {
+              type: 'canopy_transient_retry_state',
+              provider: 'claude',
+              active: true,
+              attempt: 1,
+              maxAttempts: 3,
+              nextRetryAt: 1_000,
+              exhausted: false,
+            },
+          },
+        ],
+        [
+          C.chatEvent,
+          {
+            ...WORKTREE,
+            chatId: 'chat-1',
+            data: { type: 'canopy_transient_retry_state', active: 'yes' },
+          },
+        ],
+        [
+          C.chatEvent,
+          {
+            ...WORKTREE,
+            chatId: 'chat-2',
+            data: {
+              type: 'canopy_transient_retry_state',
+              active: true,
+              attempt: 1,
+              maxAttempts: 3,
+              nextRetryAt: null,
+              exhausted: true,
+            },
+          },
+        ],
+        [
+          C.chatEvent,
+          { ...WORKTREE, chatId: 'chat-1', data: { type: 'assistant' } },
+        ],
+      ],
+      expected: (events) => {
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({
+          ...WORKTREE,
+          chatId: 'chat-1',
+          active: true,
+          exhausted: false,
+          attempt: 1,
+          maxAttempts: 3,
+          nextRetryAt: 1_000,
+        });
+      },
+    },
+  ],
   'claudeMods.surface': [
     {
       name: 'delivers valid Mod updates only for the subscribed chat',
@@ -4843,6 +5750,24 @@ const EVENT_SCENARIOS: EventScenarios = {
         ]),
     },
   ],
+  'cloneJobs.changed': [
+    {
+      name: 'forwards the projected list and drops a push that is not one',
+      pushes: [
+        [
+          C.cloneJobsChanged,
+          [HOST_CLONE_JOB, { ...HOST_CLONE_JOB, id: 'x', status: 'paused' }],
+        ],
+        [C.cloneJobsChanged, { jobs: [] }],
+        [C.cloneJobsChanged, []],
+      ],
+      expected: (events) =>
+        expect(events).toEqual([
+          { jobs: [PORTABLE_CLONE_JOB], occurredAt: NOW },
+          { jobs: [], occurredAt: NOW },
+        ]),
+    },
+  ],
   'scriptActions.changed': [
     {
       name: 'forwards valid contexts',
@@ -5098,6 +6023,183 @@ describe('portable CanopyClient adapter (golden)', () => {
       'member:sharedMultiRepo',
       context.fake.calls.map((entryCall) => entryCall.channel),
     );
+  });
+
+  // CAN-7432: delegate transcript reads over the delegation channels for a
+  // controller without a transcript port. Reads resolve, never reject.
+  test('transcripts maps each read to its delegation channel', async () => {
+    const target = {
+      kind: 'delegation',
+      chatId: 'chat-1',
+      delegationId: 'delegation-1',
+      runGeneration: 1,
+    } as const;
+    const source = {
+      scope: {
+        workspaceId: 'project-1',
+        worktreeId: 'worktree-1',
+        chatId: 'chat-1',
+      },
+    };
+    const wire = { ...WORKTREE, chatId: 'chat-1', target };
+    const content = {
+      ...source,
+      target,
+      messageId: 'message-1',
+      blockOrdinal: 2,
+      field: 'output',
+      offset: 0,
+      limit: 64,
+    } as const;
+    const blocks = { ...source, target, messageId: 'message-1', limit: 8 };
+    const page = { messages: [], totalMessages: 0, transcriptRevision: 3 };
+    const range = { text: 'body', byteLength: 4 };
+    const blocksPage = {
+      projection: 'bounded-v1',
+      messageId: 'message-1',
+      firstBlockOrdinal: 0,
+      entries: [],
+      blockCount: 0,
+      transcriptRevision: 3,
+    };
+    const signal = new AbortController().signal;
+    const ok =
+      (value: unknown): (() => unknown) =>
+      (): unknown => ({ ok: true, value });
+    const capabilities = {
+      ...CAPABILITIES,
+      delegationTranscriptReads: true,
+      delegationBlockReads: true,
+    };
+    const context = harness(
+      {
+        [C.chatReadDelegationPage]: ok(page),
+        [C.chatReadDelegationContent]: ok(range),
+        [C.chatReadDelegationBlocks]: ok(blocksPage),
+      },
+      { capabilities },
+    );
+    const reads = context.client.transcripts;
+    if (!reads) throw new Error('missing transcripts');
+    await expect(
+      reads.delegationPage({ ...source, target, cursor: 'next' }, signal),
+    ).resolves.toMatchObject({ ok: true, value: { transcriptRevision: 3 } });
+    await expect(
+      reads.content({ ...content, fieldSource: 'logical' }, signal),
+    ).resolves.toStrictEqual({ ok: true, value: range });
+    await expect(reads.blocks(blocks, signal)).resolves.toMatchObject({
+      ok: true,
+      value: { messageId: 'message-1', transcriptRevision: 3 },
+    });
+    // A primary target's content is never read here.
+    await expect(
+      reads.content(
+        { ...content, target: { kind: 'primary', chatId: 'chat-1' } },
+        signal,
+      ),
+    ).resolves.toStrictEqual({ ok: false, kind: 'unavailable' });
+    expect(context.fake.calls).toEqual([
+      call(C.chatReadDelegationPage, { ...wire, cursor: 'next' }),
+      call(C.chatReadDelegationContent, {
+        ...wire,
+        messageId: 'message-1',
+        blockOrdinal: 2,
+        field: 'output',
+        fieldSource: 'logical',
+        offset: 0,
+        limit: 64,
+      }),
+      call(C.chatReadDelegationBlocks, {
+        ...wire,
+        messageId: 'message-1',
+        limit: 8,
+      }),
+    ]);
+    expectWithinManifest(
+      REMOTE_MEMBER_CHANNELS.transcripts,
+      context.fake.calls.map((entryCall) => entryCall.channel),
+      [],
+    );
+    observe(
+      observedInvokes,
+      'member:transcripts',
+      context.fake.calls.map((entryCall) => entryCall.channel),
+    );
+
+    // Typed failures pass through; anything malformed or rejected fails.
+    const replying = (
+      reply: () => unknown,
+    ): ReturnType<typeof harness>['client']['transcripts'] =>
+      harness({ [C.chatReadDelegationPage]: reply }, { capabilities }).client
+        .transcripts;
+    for (const reason of ['stale', 'unavailable', 'failed'] as const) {
+      await expect(
+        replying(() => ({ ok: false, reason }))?.delegationPage(
+          { ...source, target },
+          signal,
+        ),
+      ).resolves.toStrictEqual({ ok: false, kind: reason });
+    }
+    const failed = { ok: false, kind: 'failed' };
+    await expect(
+      replying(() => ({ ok: true, value: { rows: 'no' } }))?.delegationPage(
+        { ...source, target },
+        signal,
+      ),
+    ).resolves.toStrictEqual(failed);
+    await expect(
+      replying(() => ({ ok: 'yes' }))?.delegationPage(
+        { ...source, target },
+        signal,
+      ),
+    ).resolves.toStrictEqual(failed);
+    await expect(
+      replying(() => {
+        throw new Error('transport dropped');
+      })?.delegationPage({ ...source, target }, signal),
+    ).resolves.toStrictEqual(failed);
+    // An older host refuses the channel: the read is unavailable.
+    await expect(
+      replying(() => {
+        throw Object.assign(new Error('refused'), {
+          code: 'remote_channel_unavailable',
+        });
+      })?.delegationPage({ ...source, target }, signal),
+    ).resolves.toStrictEqual({ ok: false, kind: 'unavailable' });
+
+    // Aborts resolve `cancelled`, before and after the invoke.
+    const aborted = new AbortController();
+    aborted.abort();
+    const idle = harness({}, { capabilities });
+    await expect(
+      idle.client.transcripts?.delegationPage(
+        { ...source, target },
+        aborted.signal,
+      ),
+    ).resolves.toStrictEqual({ ok: false, kind: 'cancelled' });
+    expect(idle.fake.calls).toEqual([]);
+    const late = new AbortController();
+    await expect(
+      replying(() => {
+        late.abort();
+        return { ok: true, value: page };
+      })?.delegationPage({ ...source, target }, late.signal),
+    ).resolves.toStrictEqual({ ok: false, kind: 'cancelled' });
+
+    // Block reads need their own gate; without it nothing is invoked.
+    const noBlocks = harness(
+      {},
+      { capabilities: { ...capabilities, delegationBlockReads: false } },
+    );
+    await expect(
+      noBlocks.client.transcripts?.blocks(blocks, signal),
+    ).resolves.toStrictEqual({ ok: false, kind: 'unavailable' });
+    expect(noBlocks.fake.calls).toEqual([]);
+
+    // Without the capability there is no member; a host port always wins.
+    expect(harness().client.transcripts).toBeUndefined();
+    const port = harness({}, { capabilities, transcripts: reads });
+    expect(port.client.transcripts).toBe(reads);
   });
 
   test('every manifest channel is exercised by some scenario', () => {
@@ -5463,6 +6565,22 @@ describe('portable CanopyClient adapter (golden)', () => {
         { voice: true },
       ).voice,
     ).toBe(false);
+  });
+
+  test('a branch gate narrows only its own capability', () => {
+    const withCommands = capabilityLimitForChannels(new Set([C.chatCommand]));
+    expect(withCommands.chatCreateTabSettings).toBeUndefined();
+    expect(withCommands.deferredPluginPolicy).toBeUndefined();
+    const readOnly = capabilityLimitForChannels(new Set([C.chatGetState]));
+    expect(readOnly.chatCreateTabSettings).toBe(false);
+    expect(readOnly.deferredPluginPolicy).toBe(false);
+    expect(readOnly.chatFailureRetry).toBeUndefined();
+    expect(readOnly.planProposalReview).toBeUndefined();
+    // A branch with no channels of its own (a host port) is never narrowed
+    // by an allowlist.
+    expect(
+      capabilityLimitForChannels(new Set<string>()).worktreeBranching,
+    ).toBeUndefined();
   });
 
   test('the allowlist derivation follows capability gates and branches', () => {

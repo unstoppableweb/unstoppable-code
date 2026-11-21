@@ -1,8 +1,14 @@
-import type {
-  CoreMutationFencePublishParams,
-  CoreMutationFencePublishResult,
-  CoreMutationFenceTarget,
+import type { CanopyClientStreamHandle } from '@canopy/core-client';
+import {
+  CORE_MUTATION_FENCE_PUBLISH_SCHEMA_REVISION,
+  type CoreMutationFenceActivityItem,
+  type CoreMutationFencePublishParams,
+  type CoreMutationFencePublishResult,
+  type CoreMutationFenceTarget,
+  type CoreMutationFenceWrite,
 } from '@canopy/protocol/canopy-core';
+import { isRecord } from '../lib/type-guards';
+import { touchWorkspaceTarget } from '../lib/workspace-activity';
 import {
   getSplitLockedWorktrees,
   onSplitLockChange,
@@ -30,7 +36,19 @@ import {
 export const MUTATION_FENCE_ACK_TIMEOUT_MS = 2_000;
 
 const PUBLISH = 'core.mutationFence.publish';
+const ACTIVITY = 'core.mutationFence.activity';
 const REGISTRATION = 'split-lock-fences';
+
+/** The open activity stream, as the publisher holds it. */
+type FenceActivityHandle = Pick<
+  CanopyClientStreamHandle<CoreMutationFenceActivityItem, unknown>,
+  'close'
+>;
+
+/** A frame of the daemon's write activity stream, as the publisher reads it. */
+export type FenceActivityFrame =
+  | { kind: 'item'; item: CoreMutationFenceActivityItem }
+  | { kind: 'end' };
 
 type PublishBody =
   | { kind: 'snapshot'; fenced: CoreMutationFenceTarget[] }
@@ -46,6 +64,11 @@ export interface FenceOwnerClient {
     name: typeof PUBLISH,
     params: CoreMutationFencePublishParams,
   ): Promise<CoreMutationFencePublishResult>;
+  openStream(
+    name: typeof ACTIVITY,
+    params: Record<string, never>,
+    options: { onFrame: (frame: FenceActivityFrame) => void },
+  ): Promise<FenceActivityHandle>;
 }
 
 /** The slice of an owner session the publisher uses. */
@@ -78,6 +101,14 @@ export interface SplitLockFencePublisherOptions {
   retryMaxMs?: number;
   /** How often a live owner session is looked at again. */
   recheckMs?: number;
+  /**
+   * A daemon write counts as activity on its worktree, at a time no later
+   * than this app's own clock. Called synchronously, so the touch is queued
+   * before anything that drains touches can start; it settles once the
+   * activity is recorded, and a write counts only after that.
+   */
+  onActivity?(write: CoreMutationFenceWrite): Promise<void>;
+  now?: () => number;
 }
 
 export interface SplitLockFencePublisher {
@@ -137,6 +168,15 @@ function target(
 const holdKey = (fenced: CoreMutationFenceTarget): string =>
   `${fenced.workspaceId}\0${fenced.worktreeId}\0${fenced.hold}`;
 
+/** The daemon refused a new Auto Delete hold over a write still running. */
+function isBusyRefusal(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    isRecord(error.payload) &&
+    error.payload.code === 'core.mutationFence.busy'
+  );
+}
+
 function withTimeout<T>(run: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
@@ -173,6 +213,82 @@ export function createSplitLockFencePublisher(
     ...options.locks().map((held) => target(held)),
     ...Array.from(holds.values(), (entry) => entry.target),
   ];
+  const now = options.now ?? Date.now;
+  /**
+   * The daemon's time on the last write recorded as activity for each
+   * worktree, as the daemon sent it. Matched exactly, so a skewed or bad time
+   * can never make a later report look new forever. A write counts only once
+   * its activity is recorded: one whose recording failed or is still running
+   * holds Auto Delete back until it is.
+   */
+  const reported = new Map<string, number>();
+  const latest = new Map<string, number>();
+  const report = (write: CoreMutationFenceWrite): void => {
+    const key = `${write.workspaceId}\0${write.worktreeId}`;
+    latest.set(key, write.at);
+    const recorded = options.onActivity?.({
+      workspaceId: write.workspaceId,
+      worktreeId: write.worktreeId,
+      at: Math.min(write.at, now()),
+    });
+    void Promise.resolve(recorded).then(
+      () => {
+        if (latest.get(key) === write.at) reported.set(key, write.at);
+      },
+      () => undefined,
+    );
+  };
+  /**
+   * The open activity stream and the client it is open on. While none is
+   * open, the daemon admits no write.
+   */
+  let activity: { client: FenceOwnerClient; close: () => void } | undefined;
+  let quit: AbortSignal | undefined;
+  /**
+   * Opens the stream on the session's own client, the same object for as
+   * long as one connection lasts, so a lease issue or a later look keeps a
+   * live stream instead of replacing it.
+   */
+  const followActivity = async (session: FenceOwnerSession): Promise<void> => {
+    let client: FenceOwnerClient;
+    try {
+      client = session.client;
+    } catch {
+      // The session's client is gone, as after a daemon restart; the next
+      // lease or look at the session opens the stream.
+      return;
+    }
+    if (session.signal.aborted || quit?.aborted || activity?.client === client)
+      return;
+    activity?.close();
+    let handle: FenceActivityHandle | undefined;
+    const opened = { client, close: (): void => handle?.close() };
+    activity = opened;
+    const ended = (): void => {
+      if (activity !== opened) return;
+      activity = undefined;
+      opened.close();
+    };
+    try {
+      handle = await client.openStream(
+        ACTIVITY,
+        {},
+        {
+          onFrame: (frame) => {
+            if (activity !== opened) return;
+            if (frame.kind === 'item') report(frame.item);
+            else ended();
+          },
+        },
+      );
+    } catch {
+      // Writes stay refused; the next look at the session opens it again.
+      if (activity === opened) activity = undefined;
+      return;
+    }
+    if (activity !== opened) handle.close();
+    else session.signal.addEventListener('abort', ended, { once: true });
+  };
 
   const send = (
     client: FenceOwnerClient,
@@ -180,13 +296,21 @@ export function createSplitLockFencePublisher(
   ): Promise<CoreMutationFencePublishResult> => {
     const run = queue.then(() => {
       epoch += 1;
-      return client.instruction(PUBLISH, { ...body, epoch });
+      // Always revision 2 to the daemon this app spawned, which ships with
+      // it; one that predates it rejects the param, so writes stay refused.
+      return client.instruction(PUBLISH, {
+        ...body,
+        epoch,
+        revision: CORE_MUTATION_FENCE_PUBLISH_SCHEMA_REVISION,
+      });
     });
     queue = run.catch(() => undefined);
     // A refused change leaves the daemon waiting for a whole set: send one
-    // snapshot of the locks held. A refused snapshot is not resent.
+    // snapshot of the locks held. A refused snapshot is not resent, and a
+    // busy refusal leaves the daemon's set as it was.
     if (body.kind === 'change')
-      run.catch(() => {
+      run.catch((error: unknown) => {
+        if (isBusyRefusal(error)) return;
         send(client, {
           kind: 'snapshot',
           fenced: fencedNow(),
@@ -199,6 +323,7 @@ export function createSplitLockFencePublisher(
     if (observed.has(session)) return;
     observed.add(session);
     session.lease.register(REGISTRATION, async (_lease, client) => {
+      void followActivity(session);
       await send(client, {
         kind: 'snapshot',
         fenced: fencedNow(),
@@ -222,6 +347,15 @@ export function createSplitLockFencePublisher(
     const initialMs = options.retryInitialMs ?? 1_000;
     const maxMs = options.retryMaxMs ?? 30_000;
     const recheckMs = options.recheckMs ?? 5_000;
+    quit = stop;
+    stop.addEventListener(
+      'abort',
+      () => {
+        activity?.close();
+        activity = undefined;
+      },
+      { once: true },
+    );
     let delayMs = initialMs;
     while (!stop.aborted) {
       const session = await ownerSession().catch(() => undefined);
@@ -229,6 +363,8 @@ export function createSplitLockFencePublisher(
       if (stop.aborted) break;
       if (session && !session.signal.aborted) {
         delayMs = initialMs;
+        // An activity stream that ended opens again; writes wait meanwhile.
+        void followActivity(session);
         // A session whose lease gave up stays open until the next request
         // replaces it, so look again now and then as well as when it ends.
         // A live session is reused, so its next look sends nothing.
@@ -240,12 +376,15 @@ export function createSplitLockFencePublisher(
     }
   };
 
-  const fence = (fenced: CoreMutationFenceTarget): Promise<void> =>
+  /** The daemon's ack, or undefined when this app is not its owner. */
+  const fence = (
+    fenced: CoreMutationFenceTarget,
+  ): Promise<CoreMutationFencePublishResult | undefined> =>
     withTimeout(
-      (async (): Promise<void> => {
+      (async (): Promise<CoreMutationFencePublishResult | undefined> => {
         const session = await ownerSession();
-        if (!session) return;
-        await send(session.client, {
+        if (!session) return undefined;
+        return await send(session.client, {
           kind: 'change',
           fenced: [fenced],
           released: [],
@@ -266,14 +405,31 @@ export function createSplitLockFencePublisher(
   };
 
   return {
-    confirmLocked: (held) => fence(target(held)),
+    confirmLocked: async (held) => {
+      await fence(target(held));
+    },
     released: (held): void => release(target(held)),
-    confirmHold: (held, hold) => {
+    confirmHold: async (held, hold) => {
       const fenced = target(held, hold);
       const entry = holds.get(holdKey(fenced));
       if (entry) entry.count += 1;
       else holds.set(holdKey(fenced), { target: fenced, count: 1 });
-      return fence(fenced);
+      const acked = await fence(fenced);
+      if (hold !== 'autoDelete') return;
+      // A write the daemon admitted whose report has not arrived yet: count
+      // it now and skip this Auto Delete, so nothing is deleted past it.
+      for (const write of acked?.writes ?? []) {
+        if (
+          write.workspaceId !== held.workspaceId ||
+          write.worktreeId !== held.worktreeId ||
+          reported.get(`${write.workspaceId}\0${write.worktreeId}`) === write.at
+        )
+          continue;
+        report(write);
+        throw new Error(
+          'The daemon admitted a write to this worktree that was not counted yet.',
+        );
+      }
     },
     releaseHold: (held, hold): void => {
       const fenced = target(held, hold);
@@ -354,6 +510,18 @@ export function ownerFenceSession(
 }
 
 /**
+ * A daemon write that could not be recorded as activity. It stays
+ * uncounted, so Auto Delete skips its worktree until a later touch records
+ * it.
+ */
+function warnActivityNotCounted(error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.warn('Failed to record a daemon write as worktree activity.', {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+/**
  * Main startup: fence the daemon this app owns for every split lock. The
  * watch and its listeners stop when the owner is disposed at quit, alongside
  * the owner session itself, and a lock taken after that is refused.
@@ -379,6 +547,14 @@ export function installSplitLockFencePublisher(): () => void {
     ownerSession: async () => adapt(await getDaemonOwnerSession()),
     isOwnerUnavailable: isDaemonOwnerUnavailable,
     locks: getSplitLockedWorktrees,
+    onActivity: async ({ workspaceId, worktreeId, at }) => {
+      try {
+        await touchWorkspaceTarget(workspaceId, worktreeId, at);
+      } catch (error) {
+        warnActivityNotCounted(error);
+        throw error;
+      }
+    },
   });
   const stop = new AbortController();
   const ownerLifetime = daemonOwnerLifetime();

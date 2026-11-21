@@ -73,6 +73,11 @@ export interface ListRowProps
   readonly rowProps?: ListRowRootProps;
   /** Keep the 44px hit area in a touch layout even with a fine pointer. */
   readonly touchTarget?: boolean;
+  /**
+   * Draw the focus ring inside the row, for a row in a container that clips
+   * (`overflow-hidden`, a scroll viewport), where the outside ring is cut off.
+   */
+  readonly focusInset?: boolean;
 }
 
 /** The anchor a host renders for a `ListRowLink`, such as its router's link. */
@@ -196,7 +201,9 @@ function pressClassName({
   size,
   description,
   className,
+  focusInset = false,
 }: {
+  readonly focusInset?: boolean;
   readonly wrapped: boolean;
   readonly fill: string;
   readonly size: ListRowSize;
@@ -209,6 +216,7 @@ function pressClassName({
       : `focus-ring group/list-row w-full ${fill}`,
     ROW_CLASS_NAME,
     shapeClassName(size, description),
+    focusInset ? 'focus-ring-inset' : '',
     wrapped ? '' : className,
   );
 }
@@ -267,7 +275,7 @@ function ListRowContent({
       )}
       {trailing !== undefined && (
         <span
-          className={`ml-auto inline-flex h-5 shrink-0 items-center text-xs fg-quaternary ${DISABLED_INK_CLASS_NAME}`}
+          className={`ml-auto inline-flex h-5 shrink-0 items-center text-xs tabular-nums fg-quaternary ${DISABLED_INK_CLASS_NAME}`}
         >
           {trailing}
         </span>
@@ -333,6 +341,7 @@ export const ListRow = forwardRef<HTMLButtonElement, ListRowProps>(
       actionsReveal = size !== 'lg',
       rowProps,
       touchTarget = false,
+      focusInset = false,
       className = '',
       type = 'button',
       disabled = false,
@@ -364,6 +373,7 @@ export const ListRow = forwardRef<HTMLButtonElement, ListRowProps>(
             size,
             description,
             className,
+            focusInset,
           }),
           touchTarget ? 'min-h-11' : '',
         )}
@@ -588,7 +598,7 @@ const LIST_ROW_FRAME_LAYOUT = {
   'archive-menu':
     'flex w-full items-center gap-2 rounded-md pr-2 transition-colors hover:bg-subtle has-[>button:first-child:focus-visible]:bg-subtle',
   'archive-overview':
-    'group relative flex w-full items-center rounded-md transition-colors hover:bg-fg-primary/[0.04] pointer-coarse:min-h-11',
+    'group relative flex w-full items-center rounded-md transition-colors hover:bg-subtle pointer-coarse:min-h-11',
   'customize-installed':
     'group/skill-row relative -ml-4 flex min-w-0 items-center gap-2 rounded-xl pr-4 transition-colors hover:bg-subtle',
   'question-choice':
@@ -652,11 +662,11 @@ const LIST_ROW_FRAME_STATE = {
   'harness-dragging': 'focus-within:bg-subtle hover:bg-subtle opacity-40',
   'tray-open': 'bg-subtle',
   'tray-header-closed': 'rounded-lg hover:bg-subtle',
-  'project-activatable': 'focus-ring cursor-pointer rounded-sm hover:bg-subtle',
+  'project-activatable': 'relative cursor-pointer rounded-sm hover:bg-subtle',
   'account-tall': 'h-10 hover:bg-subtle',
   'account-default': 'h-8 hover:bg-subtle',
   'file-selectable':
-    'cursor-pointer rounded-md transition-colors hover:bg-fg-primary/[0.06]',
+    'cursor-pointer rounded-md transition-colors hover:bg-subtle',
   'sidebar-interactive': 'focus-ring cursor-pointer hover:bg-subtle',
   'sidebar-selected': 'bg-muted fg-primary',
   'sidebar-selected-interactive':
@@ -697,7 +707,7 @@ function compositeListRowClassName(
 ): string {
   switch (props.presentation) {
     case 'workflow-card':
-      return 'cursor-pointer';
+      return 'focus-ring cursor-pointer';
     case 'sidebar-activity':
       return 'focus-ring rounded-row outline-none';
     case 'inline-actions':
@@ -716,7 +726,7 @@ function compositeListRowClassName(
         archived: 'fg-tertiary hover:bg-subtle',
         active: 'fg-secondary hover:bg-subtle',
       }[state];
-      return `group group/sidebar-item flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors ${stateClass} ${archiving ? 'pointer-events-none opacity-50' : ''}`;
+      return `focus-ring group group/sidebar-item flex w-full min-w-0 cursor-pointer items-center ${heightClass} gap-1.5 rounded-row px-1.5 text-left text-s transition-colors ${stateClass} ${archiving ? 'pointer-events-none opacity-50' : ''}`;
     }
     case 'work-entry': {
       const {
@@ -730,7 +740,7 @@ function compositeListRowClassName(
       const stateClass = selected
         ? 'bg-muted fg-primary'
         : `fg-secondary hover:bg-subtle${menuMarked ? ' bg-subtle' : ''}`;
-      return `group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${draggable ? 'touch-none select-none' : ''} ${stateClass} ${removing ? 'pointer-events-none opacity-50' : ''} ${dragging ? 'opacity-50' : ''}`;
+      return `focus-ring group group/sidebar-item relative flex ${touchTarget ? 'min-h-11' : 'h-8'} w-full items-center gap-1.5 rounded-row px-1.5 py-0 text-left text-s transition-opacity ${draggable ? 'pointer-fine:touch-none select-none' : ''} ${stateClass} ${removing ? 'pointer-events-none opacity-50' : ''} ${dragging ? 'opacity-50' : ''}`;
     }
   }
 }

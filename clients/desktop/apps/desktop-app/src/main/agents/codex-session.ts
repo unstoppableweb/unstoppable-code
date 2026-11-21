@@ -77,6 +77,7 @@ import { ensureGatewayCompatibleCodexCatalog } from '../codex/gateway-model-cata
 import {
   isProviderNativelyAuthenticated,
   isProviderNativelyAuthenticatedForRouting,
+  peekProviderAccountIdentity,
 } from '../auth/provider-auth-state';
 import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
@@ -2022,6 +2023,9 @@ export class CodexProvider implements AgentProvider {
         }
         void (async (): Promise<void> => {
           const interruptedUserMessageId = activeTurn?.userMessageId;
+          const detectedAt = Date.now();
+          const usageResumeAccountEmail =
+            peekProviderAccountIdentity('codex')?.accountEmail;
           const workspace = await resolveWorkspaceRecordingSnapshot(
             opts.projectId,
           );
@@ -2032,7 +2036,8 @@ export class CodexProvider implements AgentProvider {
               worktreeId: opts.worktreeId,
               chatId: opts.chatId,
               provider: 'codex',
-              detectedAt: Date.now(),
+              detectedAt,
+              usageResumeAccountEmail,
               resumeReason,
               ...(typeof quota.resetsAt === 'number'
                 ? { resetsAt: quota.resetsAt }
@@ -3235,6 +3240,7 @@ export class CodexProvider implements AgentProvider {
                     ? { executionScope: 'directory' as const }
                     : {}),
                   getWindow,
+                  interfacePort,
                 },
                 worktreeWatcherRuntime: {
                   projectId: opts.projectId,

@@ -58,6 +58,7 @@ import {
   negotiateHello,
 } from './controller-profile';
 import type { HostFileReader } from './file-reads';
+import { projectBrowserPush, projectBrowserResult } from './browser-host-paths';
 import { controllerInvokeRefusal } from './controller-invoke-refusals';
 import {
   projectControllerPush,
@@ -414,7 +415,11 @@ export class RemoteHostSession {
     )
       return;
     let bytes = 0;
-    const controllerArgs = projectControllerPush(channel, args);
+    const urlArgs = projectControllerPush(channel, args);
+    const controllerArgs =
+      this.options.kind === 'browser'
+        ? projectBrowserPush(channel, urlArgs)
+        : urlArgs;
     const wireArgs =
       this.options.kind !== 'desktop' &&
       channel === IPC_CHANNELS.accountProxyChanged
@@ -516,10 +521,14 @@ export class RemoteHostSession {
         if (!this.exactWorktreeBaseBranch)
           assertLegacyWorktreeBaseRequest(channel, args[0]);
         const bridge = await this.bridgeFor(surface ?? 'main');
-        const result = projectControllerResult(
+        const urlResult = projectControllerResult(
           channel,
           await bridge.invoke(channel, args),
         );
+        const result =
+          this.options.kind === 'browser'
+            ? projectBrowserResult(channel, urlResult)
+            : urlResult;
         return this.options.kind !== 'desktop' &&
           channel === IPC_CHANNELS.accountProxyStatus
           ? projectControllerAccountProxyStatus(result)

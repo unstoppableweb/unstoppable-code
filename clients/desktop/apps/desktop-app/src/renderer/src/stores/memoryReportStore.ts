@@ -29,6 +29,13 @@ interface MemoryReportState {
   readonly lastReport: MemoryReportSummary | null;
   /** The status check before the confirmation is in flight. */
   readonly checking: boolean;
+  /**
+   * Whether memory diagnostics are on; `null` until first known. The sidebar
+   * seeds it from the startup preferences and their updates, and the
+   * resources popover refreshes it from main on each open, so the popover
+   * opens with its Memory report row already in place.
+   */
+  readonly diagnosticsEnabled: boolean | null;
   request: () => Promise<void>;
   confirm: () => Promise<void>;
   cancel: () => void;
@@ -36,6 +43,7 @@ interface MemoryReportState {
   /** Shows a report in the file manager; false when it is gone. */
   reveal: (reportId: string) => Promise<boolean>;
   setLastReport: (report: MemoryReportSummary | null) => void;
+  setDiagnosticsEnabled: (enabled: boolean) => void;
 }
 
 /** The time a report may freeze the app, as status reports it. */
@@ -76,6 +84,7 @@ export const useMemoryReportStore = create<MemoryReportState>((set, get) => ({
   flow: { phase: 'idle' },
   lastReport: null,
   checking: false,
+  diagnosticsEnabled: null,
   request: async (): Promise<void> => {
     if (get().flow.phase !== 'idle' || get().checking) return;
     set({ checking: true });
@@ -148,5 +157,8 @@ export const useMemoryReportStore = create<MemoryReportState>((set, get) => ({
   },
   setLastReport: (report: MemoryReportSummary | null): void => {
     set({ lastReport: report });
+  },
+  setDiagnosticsEnabled: (enabled: boolean): void => {
+    set({ diagnosticsEnabled: enabled });
   },
 }));

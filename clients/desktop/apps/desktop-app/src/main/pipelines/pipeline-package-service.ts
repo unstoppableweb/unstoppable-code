@@ -2287,6 +2287,11 @@ export interface PackageConsentFacts {
   files: string[];
   /** `assetId/relativePath` for each file the analysis left out. */
   withheld: string[];
+  /**
+   * A cloud copy's refusal of a SKILL.md or plugin.json that looks like it
+   * holds a secret (CAN-7226), as the person reads it.
+   */
+  secretRefusal?: string;
 }
 
 /**
@@ -2302,7 +2307,10 @@ export function packageAnalysisConsentFacts(
   const analysis = analyses.get(analysisId);
   if (!analysis || Date.parse(analysis.summary.expiresAt) <= Date.now())
     return null;
-  return consentFactsOf(analysis.summary, selectedOptionalResourceIds);
+  const facts = consentFactsOf(analysis.summary, selectedOptionalResourceIds);
+  return analysis.secretRefusal === undefined
+    ? facts
+    : { ...facts, secretRefusal: analysis.secretRefusal };
 }
 
 /**
@@ -2617,7 +2625,7 @@ export async function readAnalyzedCapabilityPackage(request: {
   // This state check is load-bearing even though blocked analyses now retain
   // a partial manifest for publisher review.
   if (analysis.summary.state !== 'ready' || !analysis.summary.manifest) {
-    throw new PackageAnalysisBlockedError();
+    throw new PackageAnalysisBlockedError(analysis.secretRefusal);
   }
   if (await pipelinePackageAnalysisIsStale(analysis)) {
     analyses.delete(request.analysisId);

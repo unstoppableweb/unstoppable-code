@@ -8,10 +8,13 @@ export type QueuedMessageRetryBlockedReason = 'insufficient_credits';
  * a turn is running and it cannot take a new message right now.
  * `background_work`: sending it would restart the agent with changed settings
  * and stop background work that is still running, so it waits for that work.
+ * `settings_change`: the send changes settings the running turn cannot take
+ * mid-turn, so it waits for the turn to end (CAN-7349; no host emits it yet).
  */
 export type QueuedMessageWaitingReason =
   | 'steer_unavailable'
-  | 'background_work';
+  | 'background_work'
+  | 'settings_change';
 
 /**
  * The kinds of setting a held send can wait to apply, in display order.

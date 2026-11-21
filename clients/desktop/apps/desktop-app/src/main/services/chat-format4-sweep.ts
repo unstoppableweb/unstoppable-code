@@ -22,6 +22,7 @@ import {
 } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { powerMonitor } from 'electron';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -956,15 +957,6 @@ export function startChatFormat4Sweep(
     },
     () => undefined,
   );
-  let power:
-    | Pick<Electron.PowerMonitor, 'getSystemIdleTime' | 'isOnBatteryPower'>
-    | undefined;
-  void import('electron').then(
-    ({ powerMonitor }) => {
-      power = powerMonitor;
-    },
-    () => undefined,
-  );
   const sweep = new ChatFormat4Sweep({
     dataDir: getDataDir(),
     target: repositoryChatFormat4SweepTarget(repository, promotionAllowed, {
@@ -980,9 +972,21 @@ export function startChatFormat4Sweep(
           await import('../agents/session-manager');
         return hasActiveChatTurns();
       },
-      // Unknown until Electron's power monitor loads: treated as busy.
-      idleMs: (): number => (power ? power.getSystemIdleTime() * 1000 : 0),
-      onBattery: (): boolean => power?.isOnBatteryPower() ?? false,
+      // An unreadable power monitor (before app ready) reads as busy.
+      idleMs: (): number => {
+        try {
+          return powerMonitor.getSystemIdleTime() * 1000;
+        } catch {
+          return 0;
+        }
+      },
+      onBattery: (): boolean => {
+        try {
+          return powerMonitor.isOnBatteryPower();
+        } catch {
+          return false;
+        }
+      },
       freeBytes: chatFormat4FreeBytes,
     },
   });

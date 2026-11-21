@@ -109,7 +109,12 @@ function AllowDialog({
     new Set(state?.allowWithoutAsking ?? []),
   );
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // A rejected allow is a failure to record; the empty-selection reminder is
+  // a precondition the person fixes, so it is shown without recording.
+  const [error, setError] = useState<{
+    readonly message: string;
+    readonly failed: boolean;
+  } | null>(null);
 
   // Loaded and chosen once, when the dialog opens: a re-render of the page
   // mustn't put back the defaults over the person's choices.
@@ -148,7 +153,7 @@ function AllowDialog({
 
   const allow = async (): Promise<void> => {
     if (used.size === 0) {
-      setError('Choose at least one tool.');
+      setError({ message: 'Choose at least one tool.', failed: false });
       return;
     }
     setSaving(true);
@@ -160,7 +165,10 @@ function AllowDialog({
       });
       onClose();
     } catch {
-      setError('This server couldn’t be allowed. Try again.');
+      setError({
+        message: 'This server couldn’t be allowed. Try again.',
+        failed: true,
+      });
     } finally {
       setSaving(false);
     }
@@ -239,7 +247,15 @@ function AllowDialog({
       confirmLabel="Allow"
       busyLabel="Allowing…"
       busy={saving}
-      errorMessage={error}
+      {...(error?.failed
+        ? {
+            errorMessage: error.message,
+            errorSource: 'cloud-reach-back-allow',
+          }
+        : {
+            errorMessage: error?.message,
+            errorRecordingDisabled: true as const,
+          })}
       dataTestId="cloud-reach-back-dialog"
       confirmTestId="cloud-reach-back-allow"
       cancelTestId="cloud-reach-back-cancel"

@@ -25,6 +25,9 @@ const FOCUSABLE_SELECTOR = [
   'input',
   'select',
   'textarea',
+  // A player's native controls take Tab inside the element itself.
+  'audio[controls]',
+  'video[controls]',
   '[tabindex]',
 ].join(',');
 
@@ -59,6 +62,52 @@ export function focusableWithin(root: HTMLElement): HTMLElement[] {
         item.getAttribute('aria-disabled') !== 'true',
     )
     .filter((item) => !isHiddenWithin(item, root));
+}
+
+const NON_TEXT_INPUT_TYPES = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'file',
+  'image',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+]);
+
+/** Matched by tag name, not `instanceof`, for the cross-realm reason above. */
+function isTextEntry(item: HTMLElement): boolean {
+  if (item.tagName === 'TEXTAREA') return true;
+  if (item.tagName === 'INPUT') {
+    return !NON_TEXT_INPUT_TYPES.has(
+      (item.getAttribute('type') ?? 'text').toLowerCase(),
+    );
+  }
+  return item.isContentEditable;
+}
+
+/**
+ * The element a surface focuses when it opens. On a touch screen a focused
+ * text field opens the keyboard before the user has asked to type, so the
+ * first other stop in `focusables` takes focus instead, when there is one.
+ */
+export function openingFocusTarget(
+  preferred: HTMLElement | undefined,
+  focusables: readonly HTMLElement[],
+): HTMLElement | undefined {
+  if (preferred === undefined || !isTextEntry(preferred)) return preferred;
+  if (!isCoarsePointer(preferred.ownerDocument)) return preferred;
+  return focusables.find((item) => !isTextEntry(item)) ?? preferred;
+}
+
+/** The primary pointer is coarse (touch); false where it can't be known. */
+export function isCoarsePointer(doc: Document | undefined): boolean {
+  const view = (doc ?? globalThis.document)?.defaultView;
+  return (
+    typeof view?.matchMedia === 'function' &&
+    view.matchMedia('(pointer: coarse)').matches
+  );
 }
 
 /**

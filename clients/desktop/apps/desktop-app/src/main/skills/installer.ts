@@ -5,10 +5,12 @@
  */
 
 import * as fs from 'fs';
+import * as fsp from 'node:fs/promises';
 import * as path from 'path';
 import type { AvailableSkill } from '@canopy/desktop-shared/types/skills';
 import { httpsGetBuffer } from '../lib/http';
 import { isPathInside } from '../lib/path-safety';
+import { isErrnoException } from '../lib/type-guards';
 
 /** Files excluded during installation */
 const EXCLUDE_FILES = new Set(['metadata.json']);
@@ -37,6 +39,37 @@ function isExcluded(name: string, isDirectory: boolean): boolean {
 interface TreeEntry {
   path: string;
   type: string;
+}
+
+const STALE_STAGING_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Remove download staging an exit left behind for more than a day. A staging
+ * folder holding a `previous` copy may be the only copy of a skill, so it is
+ * kept for a person to recover.
+ */
+async function sweepStaleStaging(sourceDir: string): Promise<void> {
+  const names = await fsp.readdir(sourceDir).catch((): string[] => []);
+  for (const name of names) {
+    if (!name.startsWith('.install-')) continue;
+    const stagingRoot = path.join(sourceDir, name);
+    try {
+      const { mtimeMs } = await fsp.stat(stagingRoot);
+      if (Date.now() - mtimeMs < STALE_STAGING_MS) continue;
+      // Only a confirmed-missing previous copy lets the staging go.
+      const previousMissing = await fsp
+        .lstat(path.join(stagingRoot, 'previous'))
+        .then(
+          () => false,
+          (error: unknown) =>
+            isErrnoException(error) && error.code === 'ENOENT',
+        );
+      if (previousMissing)
+        await fsp.rm(stagingRoot, { recursive: true, force: true });
+    } catch {
+      // Best effort: a sweep that cannot finish must not fail the install.
+    }
+  }
 }
 
 /**
@@ -69,6 +102,8 @@ export async function installSkill(
 
   // Download beside the destination. A network failure must leave the entire
   // existing install (including local-only files) untouched.
+  await sweepStaleStaging(sourceDir);
+  // After the sweep's await, so a concurrent uninstall cannot remove it first.
   fs.mkdirSync(sourceDir, { recursive: true });
   const stagingRoot = fs.mkdtempSync(path.join(sourceDir, '.install-'));
   const stagedSkillDir = path.join(stagingRoot, 'next');

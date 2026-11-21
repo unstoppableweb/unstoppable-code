@@ -247,15 +247,22 @@ export function CustomizeRowFailureStatus({
       className="pointer-events-auto inline-flex min-w-0 items-center gap-1"
     >
       {mark}
-      <Tooltip label={failure.reason} clamp replayBlock>
+      {/* With nothing to click, a tap shows the reason: touch has no hover. */}
+      <Tooltip
+        label={failure.reason}
+        clamp
+        replayBlock
+        showOnPress={failure.retry === undefined}
+      >
         {failure.retry !== undefined ? (
           <ControlButton
             presentation="customize-row-sign-in"
             data-testid={`customize-row-failure-${entryId}-retry`}
             aria-label={`${failure.retryLabel ?? 'Try again'} for ${name}`}
             aria-busy={failure.retryBusy || undefined}
-            disabled={failure.retryBusy}
-            onClick={failure.retry}
+            // Stays focusable while busy, so keyboard focus is not dropped.
+            aria-disabled={failure.retryBusy || undefined}
+            onClick={failure.retryBusy ? undefined : failure.retry}
           >
             {failure.retryBusy
               ? (failure.retryBusyLabel ?? 'Working…')
@@ -299,8 +306,9 @@ export function CustomizeRowSignInStatus({
         data-testid={`customize-row-sign-in-${entryId}-action`}
         aria-label={signIn.accessibleName}
         aria-busy={signIn.busy || undefined}
-        disabled={signIn.busy}
-        onClick={signIn.run}
+        // Stays focusable while busy, so keyboard focus is not dropped.
+        aria-disabled={signIn.busy || undefined}
+        onClick={signIn.busy ? undefined : signIn.run}
       >
         {signIn.busy ? 'Signing in…' : 'Sign in'}
       </ControlButton>
@@ -334,8 +342,9 @@ function UpdateCallout({
           data-testid={`customize-update-${entry.id}`}
           aria-label={`Update ${entry.name}`}
           aria-busy={update.busy || undefined}
-          disabled={update.busy}
-          onClick={update.run}
+          // Stays focusable while busy, so keyboard focus is not dropped.
+          aria-disabled={update.busy || undefined}
+          onClick={update.busy ? undefined : update.run}
         >
           {update.busy ? 'Updating…' : 'Update'}
         </ControlButton>
@@ -705,7 +714,7 @@ function CompactMetadata({
       {!hasHarnessIcons && !worksWith && entry.origin === 'shared' && (
         <EntrySourceProviderMark entry={entry} />
       )}
-      {source && version && <span>·</span>}
+      {source && version && <span aria-hidden>·</span>}
       {version && (
         <span
           data-testid={`customize-row-version-${entry.id}`}
@@ -714,7 +723,7 @@ function CompactMetadata({
           {version}
         </span>
       )}
-      {(source || version) && entry.bundledBy && <span>·</span>}
+      {(source || version) && entry.bundledBy && <span aria-hidden>·</span>}
       {entry.bundledBy && (
         <span
           data-testid={`customize-row-from-plugin-${entry.id}`}
@@ -724,7 +733,7 @@ function CompactMetadata({
         </span>
       )}
       {(source || version || entry.bundledBy) && visibleCounts.length > 0 && (
-        <span>·</span>
+        <span aria-hidden>·</span>
       )}
       {visibleCounts.length > 0 && (
         <span className="flex shrink-0 items-center gap-2">
@@ -745,7 +754,7 @@ function CompactMetadata({
         </span>
       )}
       {(source || version || entry.bundledBy || visibleCounts.length > 0) &&
-        triggerSummary && <span>·</span>}
+        triggerSummary && <span aria-hidden>·</span>}
       {triggerSummary && (
         <Tooltip
           label={
@@ -769,7 +778,7 @@ function CompactMetadata({
           version ||
           entry.bundledBy ||
           visibleCounts.length > 0 ||
-          triggerSummary) && <span>·</span>}
+          triggerSummary) && <span aria-hidden>·</span>}
       {hasWorksWith && <CustomizeWorksWithChips entry={entry} />}
     </span>
   );
@@ -1295,7 +1304,7 @@ export function CustomizeInstalledRow({
         id={`${domId}-description`}
         className={`sr-only ${REPLAY_BLOCK_CLASS}`}
       >
-        {metadata.tooltip}
+        {[entry.description, metadata.tooltip].filter(Boolean).join(' · ')}
       </span>
       <div
         data-testid={`customize-row-controls-${entry.id}`}

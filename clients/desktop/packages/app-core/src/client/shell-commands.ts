@@ -57,6 +57,8 @@ export const SHELL_COMMAND_REMOTE_CONTROL_TYPES = {
   'standaloneChat.send': 'portal.standalone_chat.send',
   'standaloneChat.create': 'portal.standalone_chat.create',
   'standaloneChat.cancel': 'portal.standalone_chat.cancel',
+  /** A locked archive of the chat's Work Entry (CAN-7438). */
+  'standaloneChat.archive': 'portal.standalone_chat.archive',
   'standaloneChat.setModel': 'portal.standalone_chat.set_model',
   'standaloneChat.setPluginSelections':
     'portal.standalone_chat.set_plugin_selections',

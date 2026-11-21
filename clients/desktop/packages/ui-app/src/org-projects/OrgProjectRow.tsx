@@ -6,14 +6,8 @@
 // The row is frameless: the list around it owns borders and dividers.
 // ---------------------------------------------------------------------------
 
-import { ProjectCatalogRow } from '@canopy/ui-shared/components';
-import {
-  useId,
-  type JSX,
-  type KeyboardEvent,
-  type ReactNode,
-  type SyntheticEvent,
-} from 'react';
+import { ControlButton, ProjectCatalogRow } from '@canopy/ui-shared/components';
+import { type JSX, type ReactNode, type SyntheticEvent } from 'react';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { StatusPill } from '@canopy/ui-shared';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
@@ -115,7 +109,6 @@ export function OrgProjectRow({
   busy,
   columns = false,
 }: OrgProjectRowProps): JSX.Element {
-  const nameId = useId();
   const multiRepo = project.topology === 'multi-repo';
   const visibility = multiRepo
     ? null
@@ -125,45 +118,40 @@ export function OrgProjectRow({
   const hasMiddle = middle !== undefined && middle !== null;
   const hasActions = actions !== undefined && actions !== null;
   const activate = (): void => {
-    if (!disabled) onActivate?.();
+    if (!disabled && !busy) onActivate?.();
   };
+  const nameLabel = (
+    <span
+      data-testid={`${testIdPrefix}-name-${project.id}`}
+      className={joinClasses(
+        'truncate text-s fg-primary',
+        replayBlock,
+        multiRepo ? REPLAY_MASK_CLASS : '',
+      )}
+    >
+      {name}
+    </span>
+  );
   return (
     <ProjectCatalogRow
       columns={Boolean(columns)}
       activatable={activatable}
       data-testid={`${testIdPrefix}-row-${project.id}`}
       aria-busy={busy}
-      {...(activatable
-        ? {
-            role: 'button',
-            tabIndex: disabled ? -1 : 0,
-            'aria-label': multiRepo ? undefined : name,
-            'aria-labelledby': multiRepo ? nameId : undefined,
-            'aria-disabled': disabled || undefined,
-            onClick: activate,
-            onKeyDown: (event: KeyboardEvent<HTMLDivElement>): void => {
-              if (event.target !== event.currentTarget) return;
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                activate();
-              }
-            },
-          }
-        : {})}
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <span
-            data-testid={`${testIdPrefix}-name-${project.id}`}
-            id={multiRepo ? nameId : undefined}
-            className={joinClasses(
-              'truncate text-s fg-primary',
-              replayBlock,
-              multiRepo ? REPLAY_MASK_CLASS : '',
-            )}
-          >
-            {name}
-          </span>
+          {activatable ? (
+            <ControlButton
+              presentation="project-catalog-row-press"
+              aria-disabled={disabled || busy || undefined}
+              onClick={activate}
+            >
+              {nameLabel}
+            </ControlButton>
+          ) : (
+            nameLabel
+          )}
           {visibility && (
             <StatusPill
               data-testid={`${testIdPrefix}-visibility-${project.id}`}
@@ -217,7 +205,7 @@ export function OrgProjectRow({
       {(hasActions || columns) && (
         // Controls never activate the row around them.
         <div
-          className="flex shrink-0 items-center justify-end gap-2"
+          className="relative z-10 flex shrink-0 items-center justify-end gap-2"
           onClick={stop}
           onKeyDown={stop}
         >

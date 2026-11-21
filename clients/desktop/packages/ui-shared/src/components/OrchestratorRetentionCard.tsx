@@ -1,10 +1,13 @@
 'use client';
 
-import type { JSX } from 'react';
-import { AutoArchiveSettingsControl } from './AutoArchiveSettingsControl';
-import { TextInput } from './Field';
+import { useId, type JSX } from 'react';
+import {
+  AutoArchiveSettingsControl,
+  DaysInput,
+} from './AutoArchiveSettingsControl';
 import { Heading } from './Heading';
-import { Inline, Stack } from './Stack';
+import { SettingsRowsSubRow } from './settings/SettingsRows';
+import { Stack } from './Stack';
 import { Surface } from './Surface';
 
 export interface OrchestratorRetentionCardProps {
@@ -36,7 +39,7 @@ export function OrchestratorRetentionCard({
   testIdPrefix,
   surfaceTestId,
 }: OrchestratorRetentionCardProps): JSX.Element {
-  const labelId = `${testIdPrefix}-retention-days-label`;
+  const daysId = useId();
   const settingsTestId = `${testIdPrefix}-settings`;
   const unit = retentionDays === 1 ? 'day' : 'days';
 
@@ -61,35 +64,23 @@ export function OrchestratorRetentionCard({
           </p>
         </Stack>
         <div>
-          <Inline gap="item">
-            <span id={labelId} className="text-s fg-primary">
-              Keep deleted chats for
-            </span>
-            <div className="w-28">
-              <TextInput
-                density="settings"
-                type="number"
-                aria-labelledby={labelId}
-                trailing="days"
-                value={retentionDays}
-                onChange={(event) =>
-                  onRetentionDaysChange(
-                    Math.max(
-                      1,
-                      Math.min(
-                        maxDays,
-                        Number.parseInt(event.target.value, 10) ||
-                          fallbackRetentionDays,
-                      ),
-                    ),
-                  )
-                }
-                min={1}
-                max={maxDays}
-                data-testid={`${settingsTestId}-retention-days`}
-              />
-            </div>
-          </Inline>
+          <SettingsRowsSubRow
+            label="Keep deleted chats for"
+            htmlFor={daysId}
+            control={
+              <div className="w-28">
+                <DaysInput
+                  id={daysId}
+                  trailing="days"
+                  value={retentionDays}
+                  maxDays={maxDays}
+                  fallbackDays={fallbackRetentionDays}
+                  onDaysChange={onRetentionDaysChange}
+                  data-testid={`${settingsTestId}-retention-days`}
+                />
+              </div>
+            }
+          />
           <AutoArchiveSettingsControl
             enabled={autoArchiveEnabled}
             days={autoArchiveDays}

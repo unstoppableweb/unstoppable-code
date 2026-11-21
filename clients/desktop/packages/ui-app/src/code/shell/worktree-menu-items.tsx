@@ -112,7 +112,7 @@ export interface WorktreeMenuContext {
    * row's own menu does. Absent, it keeps "Set label" with the label glyph.
    */
   readonly renameLabelAction?: boolean;
-  /** The row is in the bulk selection: its Select item reads Deselect. */
+  /** The row is in the bulk selection: its Select multiple item reads Deselect. */
   readonly multiSelected?: boolean;
   /**
    * The row belongs to a bulk selection of 2 or more. Its menu is then the
@@ -560,7 +560,7 @@ export function deriveWorktreeMenuItems(
   if (callbacks.onSelectItemRequested) {
     items.push({
       key: 'toggle-selection',
-      label: 'Select item',
+      label: 'Select multiple',
       icon: <ListChecks />,
       onSelect: callbacks.onSelectItemRequested,
     });

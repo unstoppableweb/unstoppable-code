@@ -346,10 +346,13 @@ export function createCanopyDaemonHostLaunch(
           : children.spawn(spawnRequest)
       ).catch((error: unknown) => {
         // The closed native reason (not the child error's text) tells a missing addon from a blocked one.
-        const { nativeStage } = canopyLaunchDetails({
+        const launchDetails = canopyLaunchDetails({
           nativeStage: field(error, 'reason'),
+          errno: field(error, 'spawnErrno'),
         });
-        const details = nativeStage ? { nativeStage } : undefined;
+        const details = Object.keys(launchDetails).length
+          ? launchDetails
+          : undefined;
         if (field(error, 'code') === 'unavailable')
           throw Object.assign(
             canopyConnectError('unavailable', 'Core cleanup failed.', details),

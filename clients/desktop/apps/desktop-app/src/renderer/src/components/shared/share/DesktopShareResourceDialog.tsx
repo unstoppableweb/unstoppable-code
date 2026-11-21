@@ -58,7 +58,7 @@ export function desktopShareCopy(noun: string): Partial<ShareResourceCopy> {
     accountLoading: `Checking ${CLOUD_ACCOUNT_NAME} account…`,
     emptyState: `No ${CLOUD_ACCOUNT_NAME} account configured.`,
     emptyAction: 'Open account settings',
-    guestState: `Create a free account to share ${noun}s. ${GUEST_WORK_PRESERVED}`,
+    guestState: `Create an account to share ${noun}s. ${GUEST_WORK_PRESERVED}`,
     missingCapability: `This ${CLOUD_ACCOUNT_NAME} account does not support shared ${noun}s.`,
     upgradeHint: `Team and organization sharing isn't available for this ${CLOUD_ACCOUNT_NAME} account.`,
   };

@@ -4,6 +4,10 @@ import {
   type ChatIngestionLagEventData,
   type PlanExitRequestEvent,
   type PromptSuggestionEventData,
+  type WorktreeData,
+  type WorktreeGitFailedEvent,
+  type WorktreeGitReadyEvent,
+  type WorktreeNeedsRepairEvent,
 } from '@canopy/desktop-shared/types';
 import { sendToWindow } from '../lib/window-send';
 import type { DelegationLiveClass } from './delegation/live-frame-class';
@@ -55,9 +59,27 @@ export interface AgentInterfacePort {
   /** Shows a plan-exit request the session has already committed. */
   presentPlanExit(event: PlanExitRequestEvent): void;
   /**
+   * Worktree-action notices. Each member is the one send site of one caller,
+   * so each push keeps its own census row and the payload its caller sent.
+   * A branched agent's new worktree: its Git setup became ready, failed or
+   * needs repair, and then the project's worktree list.
+   */
+  publishWorktreeGitReady(event: WorktreeGitReadyEvent): void;
+  publishWorktreeGitFailed(event: WorktreeGitFailedEvent): void;
+  publishWorktreeNeedsRepair(event: WorktreeNeedsRepairEvent): void;
+  publishWorkspaceWorktrees(
+    workspaceId: string,
+    worktrees: WorktreeData[],
+  ): void;
+  /** A worktree's hooks were paused or resumed (`hook.pause`, `hook.resume`). */
+  publishHookPauseChanged(
+    workspaceId: string,
+    worktree: WorktreeData | undefined,
+  ): void;
+  /**
    * The window, for the intents still to move onto this port: approvals
    * (including a delegate's), questions, a delegate's detached transcript
-   * updates and worktree actions.
+   * updates and the other worktree actions.
    */
   legacyWindow(): BrowserWindow | null;
 }
@@ -83,6 +105,27 @@ export function windowAgentInterfacePort(
     },
     presentPlanExit: (event): void => {
       sendToWindow(getWindow(), IPC_CHANNELS.planExitRequest, event);
+    },
+    publishWorktreeGitReady: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitReady, event);
+    },
+    publishWorktreeGitFailed: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitFailed, event);
+    },
+    publishWorktreeNeedsRepair: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeNeedsRepair, event);
+    },
+    publishWorkspaceWorktrees: (workspaceId, worktrees): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.workspaceWorktreesUpdated, {
+        workspaceId,
+        worktrees,
+      });
+    },
+    publishHookPauseChanged: (workspaceId, worktree): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.workspaceWorktreesUpdated, {
+        workspaceId,
+        ...(worktree ? { worktree } : {}),
+      });
     },
     legacyWindow: getWindow,
   };

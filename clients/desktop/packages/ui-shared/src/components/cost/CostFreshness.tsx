@@ -65,6 +65,9 @@ export function CostFreshness({
               className="text-xs fg-warning"
             >
               {label}
+              {/* The reason shows on hover; screen readers get it here, since
+                  the label has no tab stop to carry the tooltip. */}
+              <span className="sr-only">{`: ${failureReason}`}</span>
             </span>
           </Tooltip>
         ) : (

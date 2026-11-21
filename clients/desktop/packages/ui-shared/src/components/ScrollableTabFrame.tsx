@@ -1,9 +1,9 @@
 import type { JSX, ReactNode } from 'react';
 
-export type ScrollableTabFrameVariant = 'underline' | 'segmented';
+// A segmented strip needs no frame: SegmentedControl draws its own track.
+export type ScrollableTabFrameVariant = 'underline';
 
 const FRAME_CLASS: Record<ScrollableTabFrameVariant, string> = {
-  segmented: 'min-w-0 max-w-full rounded-md border p-0.5',
   underline: 'border-b',
 };
 

@@ -8,7 +8,10 @@ import {
   useState,
   type JSX,
 } from 'react';
-import { computeUsageLimitResumePrompt } from '@canopy/execution-engine/lib/usage-limit-resume-prompt';
+import {
+  computeUsageLimitResumePrompt,
+  isCurrentFailureNotice,
+} from '@canopy/agent-transcript';
 import {
   AI_CREDITS_STOP_COPY,
   MODEL_LIBRARY_UNLOCK_COPY,
@@ -201,49 +204,6 @@ function computeProxyRetryPrompt(
   messages: ChatMessage[],
 ): ReturnType<typeof computeUsageLimitResumePrompt> {
   return computeUsageLimitResumePrompt(messages);
-}
-
-/**
- * Is this notice still the chat's CURRENT unresolved failure?
- *
- * Retry dispatches a billed, non-idempotent turn, and this notice lives in the
- * transcript permanently. Once the chat moves past the failure — a manual retry
- * completed, or `transient-error-retry-service` recovered it — the tab returns
- * to `idle`, so a gate that only checks `streaming` would let the historical
- * button go live again and charge for a problem already resolved.
- *
- * Identity is the notice's own raw source text, not its correlation id. The
- * parser deliberately accepts bodies Codex truncated before `correlation_id`
- * ever appeared, so keying on the id alone would leave every truncated notice
- * permanently retryable — the exact hole this guard exists to close. The id is
- * kept only as a fallback for callers that do not pass the source text.
- *
- * When neither identity is available we return `false` and leave Retry
- * disabled: for a billed dispatch, "cannot prove this is current" must fail
- * closed.
- */
-function isCurrentFailureNotice(
-  messages: readonly ChatMessage[],
-  sourceText: string | undefined,
-  correlationId: string | null | undefined,
-): boolean {
-  const lastMessage = messages[messages.length - 1];
-  if (!lastMessage) {
-    return false;
-  }
-  return lastMessage.blocks.some((block) => {
-    if (block.type !== 'text') {
-      return false;
-    }
-    if (sourceText !== undefined) {
-      return block.text === sourceText;
-    }
-    return (
-      correlationId !== undefined &&
-      correlationId !== null &&
-      block.text.includes(correlationId)
-    );
-  });
 }
 
 /**

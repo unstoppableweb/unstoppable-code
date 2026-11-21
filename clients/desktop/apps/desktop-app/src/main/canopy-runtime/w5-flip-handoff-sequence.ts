@@ -13,7 +13,10 @@ import {
   stopInProcessW5Host,
   w5FlipStepFailure,
 } from '../lib/w5-flip-backup';
-import { W5DaemonHandoffError } from '../lib/w5-handoff-store';
+import {
+  W5DaemonHandoffError,
+  type W5HandoffStage,
+} from '../lib/w5-handoff-store';
 import {
   getElectronDaemonFilesContext,
   probeElectronDaemonW5,
@@ -95,14 +98,31 @@ async function awaitServableDaemon(
 function handoffFailureOf(
   error: unknown,
   signal: AbortSignal,
+  stage: W5HandoffStage,
 ): W5DaemonHandoffError {
-  if (signal.aborted) return new W5DaemonHandoffError('cancelled');
-  if (error instanceof W5DaemonHandoffError) return error;
+  if (signal.aborted)
+    return new W5DaemonHandoffError('cancelled', undefined, undefined, stage);
+  if (error instanceof W5DaemonHandoffError)
+    return error.stage
+      ? error
+      : new W5DaemonHandoffError(
+          error.reason,
+          error.detail,
+          error.underlying,
+          stage,
+        );
   const refusal = canopyDaemonRefusal(error);
-  if (refusal) return new W5DaemonHandoffError(refusal, undefined, error);
+  if (refusal)
+    return new W5DaemonHandoffError(refusal, undefined, error, stage);
   const step = w5FlipStepFailure(error);
-  if (step) return new W5DaemonHandoffError(step.failure, step.detail, error);
-  return new W5DaemonHandoffError('daemon_unavailable', undefined, error);
+  if (step)
+    return new W5DaemonHandoffError(step.failure, step.detail, error, stage);
+  return new W5DaemonHandoffError(
+    'daemon_unavailable',
+    undefined,
+    error,
+    stage,
+  );
 }
 
 /**
@@ -114,25 +134,34 @@ export async function runW5FlipHandoff(
 ): Promise<W5CommitLogFileStore> {
   const lease = leaseElectronW5RecordPort();
   input.signal.addEventListener('abort', () => lease.close(), { once: true });
+  let stage: W5HandoffStage = 'admission';
   try {
     if (input.admission.kind === 'failed')
       throw new W5DaemonHandoffError('host_admission_failed');
+    stage = 'probe';
     const path = await awaitServableDaemon(input.signal);
     const buildVersion = app.getVersion();
     // A daemon already holds the log, so the backup must wait (Q1(a)). Only
     // the later capture's label depends on this record, so it never fails
     // the handoff.
+    stage = 'backup';
     if (path === 'attach')
       await deferW5FlipBackup(buildVersion).catch(() => undefined);
+    stage = 'files_context';
     const { canonicalDataRoot } = await getElectronDaemonFilesContext();
+    stage = 'root_scope';
     const servedScope = await w5RootEvidenceScope(canonicalDataRoot);
     // Attaches or starts, then checks the daemon's W5 capability and leases.
+    stage = 'attach_or_start';
     await lease.transport.recovery();
     // A lease-free probe alone must not authorize stopped-host crash respawns.
     input.signal.throwIfAborted();
+    stage = 'note_served';
     await noteW5DaemonServed(servedScope);
+    stage = 'backup';
     await deferW5FlipBackup(buildVersion).catch(() => undefined);
     // Fences in-process use where the launch attached instead of spawning.
+    stage = 'stop_in_process';
     await stopInProcessW5Host();
     input.signal.throwIfAborted();
     return createW5DaemonRecordStore({
@@ -145,6 +174,6 @@ export async function runW5FlipHandoff(
   } catch (error) {
     lease.close();
     await stopInProcessW5Host().catch(() => undefined);
-    throw handoffFailureOf(error, input.signal);
+    throw handoffFailureOf(error, input.signal, stage);
   }
 }

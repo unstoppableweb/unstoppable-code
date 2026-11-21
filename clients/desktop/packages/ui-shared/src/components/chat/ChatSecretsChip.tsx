@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type JSX } from 'react';
+import { useId, useRef, useState, type JSX } from 'react';
 import { ChevronDownIcon, KeyIcon } from '../../icons/AppIcons';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
@@ -99,6 +99,7 @@ export function ChatSecretsChip({
 }: ChatSecretsChipProps): JSX.Element | null {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
+  const rowId = useId();
   if (secrets.length === 0 && !open) return null;
   const label = secrets.length === 1 ? '1 secret' : `${secrets.length} secrets`;
   return (
@@ -112,6 +113,8 @@ export function ChatSecretsChip({
         <Chip
           icon={KeyIcon}
           selected={open}
+          aria-expanded={open}
+          aria-haspopup="dialog"
           onClick={(): void => {
             if (!open) onOpen?.();
             setOpen(!open);
@@ -157,14 +160,17 @@ export function ChatSecretsChip({
             <div className="text-s fg-secondary">No secrets.</div>
           ) : (
             <ul className="flex flex-col gap-1">
-              {secrets.map((item) => (
+              {secrets.map((item, index) => (
+                // Static test IDs: session replay keeps attributes, and a
+                // secret's name is shown only in the replay-blocked span.
                 <li
                   key={item.name}
                   className="flex items-center gap-2"
-                  data-testid={`chat-secrets-row-${item.name}`}
+                  data-testid="chat-secrets-row"
                 >
                   <div className="flex min-w-0 flex-1 flex-col">
                     <span
+                      id={`${rowId}-name-${index}`}
                       className={`${REPLAY_BLOCK_CLASS} truncate font-mono text-s fg-primary`}
                     >
                       {item.name}
@@ -178,8 +184,12 @@ export function ChatSecretsChip({
                     size="compact"
                     variant="ghost"
                     disabled={revoking?.has(item.name) === true}
+                    // Named by reference, so replay masking of the name
+                    // span also covers the button's name.
+                    id={`${rowId}-revoke-${index}`}
+                    aria-labelledby={`${rowId}-revoke-${index} ${rowId}-name-${index}`}
                     onClick={(): void => onRevoke(item.name)}
-                    data-testid={`chat-secrets-revoke-${item.name}`}
+                    data-testid="chat-secrets-revoke"
                   >
                     Revoke
                   </Button>

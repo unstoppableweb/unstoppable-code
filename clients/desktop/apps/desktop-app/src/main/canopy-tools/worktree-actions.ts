@@ -126,6 +126,7 @@ import {
 import { readPreferencesFile } from '../lib/preferences-store';
 import { readWorkspaceWorktrees } from '../lib/workspace-persistence';
 import type { BrowserWindow } from 'electron';
+import type { AgentInterfacePort } from '../agents/agent-interface-port';
 import { getBrowserService } from '../browser/browser-service-registry';
 import {
   isFileBrowserUrl,
@@ -690,6 +691,8 @@ export interface WorktreeActionRuntime {
   planInitiationSource?: 'app_advisor';
   portalCommandId?: string;
   getWindow: () => BrowserWindow | null;
+  /** The chat's interfaces; worktree-action notices go through it (CAN-6995). */
+  interfacePort: AgentInterfacePort;
   browserTargetId?: string;
   getSendableWindow?: () => SendableBrowserWindow | null;
   signal?: AbortSignal;
@@ -1590,11 +1593,7 @@ async function setHookPaused(
     }
   }
   if (changed) {
-    const getBroadcastWindow = runtime.getSendableWindow ?? runtime.getWindow;
-    sendToWindow(getBroadcastWindow(), IPC_CHANNELS.workspaceWorktreesUpdated, {
-      workspaceId: runtime.projectId,
-      ...(worktree ? { worktree } : {}),
-    });
+    runtime.interfacePort.publishHookPauseChanged(runtime.projectId, worktree);
   }
   // A repeated tool call answers its first outcome, so each hook's paused
   // state follows the answered keys rather than a later change to the row.

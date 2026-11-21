@@ -13,7 +13,11 @@ import {
   type SurfacedErrorInput,
   type SurfacedErrorRecorder,
 } from '@canopy/protocol/app-errors';
-import { setSurfacedErrorRecorder } from '@canopy/ui-shared/lib';
+import { setStorePersistenceErrorReporter } from '@canopy/app-state/client-store-lifecycle';
+import {
+  recordSurfacedError,
+  setSurfacedErrorRecorder,
+} from '@canopy/ui-shared/lib';
 import { resolveIpcAppError } from './ipc-app-error';
 
 /** Fixed names only: never a boundary's label, which can name user content. */
@@ -54,7 +58,15 @@ export function installSurfacedErrorRecording(): () => void {
   const uninstallPort = setSurfacedErrorRecorder((input) =>
     recordCaughtValue(recorder, input),
   );
+  // Shared stores swallow failed best-effort saves; only the caught value and
+  // a fixed identifier leave them.
+  const uninstallStorePort = setStorePersistenceErrorReporter(
+    (identifier, error) => {
+      recordSurfacedError({ chokePoint: 'notice', identifier, error });
+    },
+  );
   return (): void => {
+    uninstallStorePort();
     uninstallPort();
     uninstallResolver();
     if (activeRecorder === recorder) activeRecorder = null;

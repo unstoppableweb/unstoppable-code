@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { Dot } from './Badge';
+import { CometSpinner } from './CometSpinner';
 
 const RESULT_TONES = {
   neutral: 'bg-fg-primary/[0.015]',
@@ -73,10 +74,5 @@ export function FileViewControls({
 }
 
 export function PendingAttachmentSpinner(): JSX.Element {
-  return (
-    <span
-      className="h-3 w-3 animate-spin rounded-full border-2 border-fg-secondary border-t-transparent"
-      aria-label="Uploading"
-    />
-  );
+  return <CometSpinner tone="secondary" ariaLabel="Uploading" />;
 }

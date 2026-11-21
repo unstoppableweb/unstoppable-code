@@ -31,6 +31,8 @@ export const CORE_CATALOG_MUTATION_KINDS = [
   'core.catalog.plugin.install',
   'core.catalog.entry.publish',
   'core.catalog.entry.unpublish',
+  'core.catalog.entry.upsert',
+  'core.catalog.entry.delete',
   'core.catalog.skill.install',
   'core.catalog.skill.update',
   'core.catalog.skill.remove',

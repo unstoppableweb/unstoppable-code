@@ -64,8 +64,11 @@ export function LedgerStatusControl({
     variant === 'field' && labelId !== undefined
       ? { 'aria-labelledby': `${labelId} ${valueId}` }
       : { 'aria-label': ariaLabel };
+  // While saving it stays focusable (aria-disabled, not disabled): focus
+  // returns here after a pick, and disabling it would drop focus.
   const onTriggerClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation();
+    if (saving) return;
     setOpen((previous) => !previous);
   };
   const option = (value: LedgerStatus): JSX.Element => {
@@ -107,7 +110,7 @@ export function LedgerStatusControl({
           ref={triggerRef}
           type="button"
           id={id}
-          disabled={saving}
+          aria-disabled={saving || undefined}
           aria-haspopup="menu"
           aria-expanded={open}
           aria-label={ariaLabel}
@@ -126,7 +129,8 @@ export function LedgerStatusControl({
           ref={triggerRef}
           id={id}
           variant={variant}
-          disabled={saving}
+          unavailable={saving}
+          coarsePointerTarget
           aria-haspopup="menu"
           aria-expanded={open}
           {...ariaLabelProps}
@@ -147,6 +151,7 @@ export function LedgerStatusControl({
       )}
       <FloatingPickerMenu
         open={open}
+        openOnArrowKeys={!saving}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="bottom-left"

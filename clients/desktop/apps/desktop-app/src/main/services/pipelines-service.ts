@@ -1,5 +1,6 @@
 import { WorkerPipelineSurvivalAssessmentSchema } from '@canopy/protocol/canopy-core';
 import { withSharedProjectDiscovery } from '../pipelines/shared-project-discovery';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   isPipelineDefinitionNotFound,
   listDesktopPipelines,
@@ -76,6 +77,7 @@ import {
 } from '../lib/paths';
 import { readAllSidebarItems } from '../lib/sidebar-items';
 import {
+  UNATTENDED_PROJECT_DISCOVERY_LIMITS,
   discoverProjectPipelines,
   discoverProjectPipelinesBounded,
   type DiscoverProjectPipelinesLimits,
@@ -548,12 +550,8 @@ function assertExecutionMatchesScope(
 const STRICT_PIPELINE_SUMMARY_MAX_BYTES = 16 * 1024;
 
 /** Bounds for unattended (inventory sync) discovery across every worktree. */
-const STRICT_DISCOVERY_LIMITS: DiscoverProjectPipelinesLimits = {
-  maxEntries: 5_000,
-  maxFiles: 200,
-  maxBytes: 4 * 1024 * 1024,
-  maxSerializedBytes: 4 * 1024 * 1024,
-};
+const STRICT_DISCOVERY_LIMITS: DiscoverProjectPipelinesLimits =
+  UNATTENDED_PROJECT_DISCOVERY_LIMITS;
 
 export interface PipelineListTarget {
   workspaceLocalId: string;
@@ -2080,6 +2078,7 @@ function remoteControlPipelineActionRuntime(
       ? { portalCommandId: options.portalCommandId }
       : {}),
     getWindow: () => null,
+    interfacePort: windowAgentInterfacePort(() => null),
     onPipelineEvent: forwarder.onEvent,
     onPipelineStepOutput: forwarder.onStepOutput,
   };
@@ -2355,6 +2354,7 @@ export async function listPipelineExecutions(
       chatId: 'portal.pipeline.execution_list',
       cwd,
       getWindow: () => null,
+      interfacePort: windowAgentInterfacePort(() => null),
     },
   );
   throwForPipelineActionFailure(response);

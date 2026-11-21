@@ -82,7 +82,7 @@ export function SuggestionRowTrailing({
   children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="absolute right-2.5 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1">
+    <div className="absolute right-2.5 top-1/2 z-10 flex -translate-y-1/2 items-center gap-1 pointer-coarse:gap-4">
       {children}
     </div>
   );

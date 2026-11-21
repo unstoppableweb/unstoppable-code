@@ -182,9 +182,13 @@ export function UsageErrorNotice({
                       variant="secondary"
                       data-testid={`${testIdPrefix}-error-retry`}
                       onClick={onRetry}
-                      disabled={retrying || (isRateLimited && waitingForRetry)}
+                      busy={retrying}
+                      busyLabel="Trying again…"
+                      // Keeps the pressed button focusable while it runs.
+                      aria-disabled={retrying || undefined}
+                      disabled={isRateLimited && waitingForRetry}
                     >
-                      {retrying ? 'Trying again…' : 'Try again'}
+                      Try again
                     </NoticeButton>
                   )}
                 </>

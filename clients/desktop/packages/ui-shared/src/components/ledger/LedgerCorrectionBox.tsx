@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, type JSX, type KeyboardEvent } from 'react';
 import { countLedgerCodePoints } from '../../lib/ledger-display';
 import { Button } from '../Button';
 import { TextArea, FieldError } from '../Field';
+import { useMediaQuery } from '../useMediaQuery';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import { LEDGER_FORM_LIMITS } from './LedgerEntryForm';
 import type { LedgerDensity } from './ledger-entry-slots';
@@ -40,11 +41,14 @@ export function LedgerCorrectionBox({
 }: LedgerCorrectionBoxProps): JSX.Element {
   const reasonId = useId();
   const problemId = useId();
+  const countId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Only a correction just started is empty. A box that mounts again with
   // text, such as a long list's row scrolled back into view, leaves focus
   // where the person is typing.
-  const startedEmpty = useRef(value.trim().length === 0);
+  // Never on touch: focusing would open the on-screen keyboard unasked.
+  const coarsePointer = useMediaQuery('(pointer: coarse)');
+  const startedEmpty = useRef(value.trim().length === 0 && !coarsePointer);
   useEffect(() => {
     if (startedEmpty.current) inputRef.current?.focus();
   }, []);
@@ -78,29 +82,43 @@ export function LedgerCorrectionBox({
           placeholder="Add a correction"
           aria-label="Add a correction"
           aria-describedby={
-            [blocked ? reasonId : null, problem ? problemId : null]
+            [problem ? problemId : null, blocked ? reasonId : null, countId]
               .filter(Boolean)
               .join(' ') || undefined
           }
           ref={inputRef}
-          disabled={saving || blocked}
+          // Read-only while saving, not disabled: disabling the focused
+          // field would drop keyboard focus to the page.
+          disabled={blocked}
+          readOnly={saving}
           title={reason}
           data-testid="ledger-correction-input"
           className="w-full"
         />
+        {/* The error sits first under the field, before its help text. */}
+        {problem !== null && (
+          <FieldError
+            id={problemId}
+            announce
+            data-testid="ledger-correction-problem"
+          >
+            {problem}
+          </FieldError>
+        )}
         {blocked && (
           <p id={reasonId} className="text-2xs fg-tertiary">
             {reason}
           </p>
         )}
-        {overLimit && (
-          <p
-            aria-live="polite"
-            className="text-2xs tabular-nums fg-destructive"
-          >
-            {`${contentCount}/${LEDGER_FORM_LIMITS.content}`}
-          </p>
-        )}
+        {/* Always shown, as in the entry form, so nothing moves when the
+            text passes the limit. Not a live region: the field's
+            description reads it on focus. */}
+        <p
+          id={countId}
+          className={`text-2xs tabular-nums ${overLimit ? 'fg-destructive' : 'fg-tertiary'}`}
+        >
+          {`${contentCount}/${LEDGER_FORM_LIMITS.content}`}
+        </p>
         <div className="flex items-center justify-between gap-2">
           {onMoreOptions !== undefined && (
             <Button
@@ -142,15 +160,6 @@ export function LedgerCorrectionBox({
         <p className="text-2xs fg-tertiary">
           A correction is a new entry linked to this one, which stays as it is.
         </p>
-        {problem !== null && (
-          <FieldError
-            id={problemId}
-            announce
-            data-testid="ledger-correction-problem"
-          >
-            {problem}
-          </FieldError>
-        )}
       </div>
     </div>
   );

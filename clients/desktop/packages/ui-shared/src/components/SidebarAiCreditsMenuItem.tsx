@@ -1,7 +1,12 @@
 import { type JSX } from 'react';
 import { CreditCard } from '../icons/AppIcons';
 import { AI_CREDITS_LABEL } from './aiCreditsLabel';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
+import { AI_CREDITS_PURCHASE_LABEL } from './creditsPromptCopy';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+  DropdownMenuItemTrailing,
+} from './DropdownMenu';
 
 export { AI_CREDITS_LABEL } from './aiCreditsLabel';
 
@@ -100,6 +105,19 @@ export interface SidebarAiCreditsMenuItemProps {
   balanceCredits: number | null;
   onSelect: () => void;
   selected?: boolean;
+  /**
+   * A billing source other than AI Credits can carry the viewer's work now.
+   * At a zero balance the row is then left out: nothing needs buying.
+   * Defaults to `false`.
+   */
+  otherBillingSourceReady?: boolean;
+  /**
+   * The viewer may buy credits for this wallet. At a zero balance, with no
+   * other billing source ready, the row then offers the purchase in place of
+   * the balance pill. Defaults to `false`: an organization member who can't
+   * fund the pool keeps the pill.
+   */
+  canPurchase?: boolean;
   'data-testid'?: string;
 }
 
@@ -109,15 +127,26 @@ export interface SidebarAiCreditsMenuItemProps {
  * Display-only: the host loads the balance and decides where selecting the
  * row goes. Hosts render it as `BalanceSurface`'s menu row
  * (`@canopy/ui-app/credits`), never directly.
+ *
+ * At a zero balance (one that rounds to 0) the row is hidden when another
+ * billing source is ready, and otherwise names the purchase in a neutral
+ * trailing label when the viewer can buy. Selecting it still opens the
+ * wallet's billing, and its accessible name still states the balance. An
+ * unknown, negative or positive balance renders as before.
  */
 export function SidebarAiCreditsMenuItem({
   balanceCredits,
   onSelect,
   selected = false,
+  otherBillingSourceReady = false,
+  canPurchase = false,
   'data-testid': dataTestId = 'sidebar-account-menu-item-ai-credits',
-}: SidebarAiCreditsMenuItemProps): JSX.Element {
+}: SidebarAiCreditsMenuItemProps): JSX.Element | null {
   const balance = normalizeBalance(balanceCredits);
   const label = AI_CREDITS_LABEL;
+  const zero = balance === 0;
+  if (zero && otherBillingSourceReady) return null;
+  const offerPurchase = zero && canPurchase;
   return (
     <DropdownMenuItem
       onClick={onSelect}
@@ -133,11 +162,17 @@ export function SidebarAiCreditsMenuItem({
         <CreditCard size="xl" aria-hidden="true" />
       </DropdownMenuItemIcon>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {balance !== null && (
-        <AiCreditsBalancePill
-          balance={balance}
-          data-testid={`${dataTestId}-balance`}
-        />
+      {offerPurchase ? (
+        <DropdownMenuItemTrailing data-testid={`${dataTestId}-buy`}>
+          {AI_CREDITS_PURCHASE_LABEL}
+        </DropdownMenuItemTrailing>
+      ) : (
+        balance !== null && (
+          <AiCreditsBalancePill
+            balance={balance}
+            data-testid={`${dataTestId}-balance`}
+          />
+        )
       )}
     </DropdownMenuItem>
   );

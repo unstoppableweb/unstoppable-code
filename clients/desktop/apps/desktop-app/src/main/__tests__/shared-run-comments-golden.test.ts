@@ -2,7 +2,9 @@
 // before core.publication takes ownership. It drives the real
 // runs:comments:* handlers, the comments registry file, the cloud client, the
 // account store and the comment poller, with its runs:comments:updated push,
-// on a data root the golden owns. Only IPC registration, window sends, the
+// on a data root the golden owns. runs:comments:markSeen dispatches
+// core.publication.comment.markSeen on a real desktop dispatcher (CAN-4169
+// PR 2). Only IPC registration, window sends, the
 // cloud base URL, observability and the chat's saved share metadata are
 // replaced, and HTTP goes to the in-test runs server in
 // helpers/shared-runs-golden-harness.ts. Two runs start shared, as the share
@@ -18,6 +20,9 @@ import type {
   SharedRunDetail,
 } from '@canopy/protocol/runs';
 import { isUuid } from '@canopy/protocol/uuid';
+import type * as FsPromises from 'node:fs/promises';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import type * as CloudConfig from '../canopy-cloud/config';
 import type * as ChatTabsReader from '../lib/chat-tabs-reader';
 import type * as CommentPoller from '../services/shared-run-comment-poller';
@@ -253,6 +258,25 @@ let poller:
   | ReturnType<typeof CommentPoller.getSharedRunCommentPoller>
   | undefined;
 const appListeners = new Map<string, Set<() => void>>();
+let dispatcher: DesktopCanopyDispatcher | undefined;
+let instructionSpy: jest.SpyInstance | undefined;
+// The caller the IPC handlers resolve: the main window's renderer.
+const RENDERER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'desktop-local',
+  interfaceKind: 'desktop',
+  grants: [],
+};
+/** The instructions dispatched since the spy was last cleared. */
+const dispatched = (): { name: unknown; caller: unknown }[] =>
+  (instructionSpy?.mock.calls ?? []).map((call: unknown[]) => {
+    const [name, , options] = call;
+    return {
+      name,
+      caller: isRecord(options) ? options.caller : undefined,
+    };
+  });
 
 function mark(): void {
   markLists(cloud.requests, pushes, diagnostics);
@@ -355,8 +379,12 @@ beforeAll(async () => {
     ],
   });
   await sharedRun('chat-retry', {});
+  const { createDesktopRuntime } =
+    await import('../canopy-runtime/desktop-runtime');
+  dispatcher = createDesktopRuntime({ shutdownTimeoutMs: 25 });
+  instructionSpy = jest.spyOn(dispatcher, 'instruction');
   const { registerRunsHandlers } = await import('../ipc/runs');
-  registerRunsHandlers();
+  registerRunsHandlers(dispatcher, () => RENDERER);
   poller = (
     await import('../services/shared-run-comment-poller')
   ).getSharedRunCommentPoller();
@@ -373,6 +401,7 @@ afterAll(async () => {
     // A step that failed while holding a fetch must not hang the drain.
     releaseRun1();
     await drain();
+    await dispatcher?.shutdown();
     jest.useRealTimers();
     jest.restoreAllMocks();
   } finally {
@@ -545,6 +574,7 @@ describe('shared runs (CAN-4169 golden)', () => {
 
     // markSeen clears the badge and never moves backwards.
     mark();
+    instructionSpy?.mockClear();
     const seen = await invoke(IPC_CHANNELS.runsCommentsMarkSeen, {
       ...session('chat-shared'),
       commentRevision: 4,
@@ -565,6 +595,14 @@ describe('shared runs (CAN-4169 golden)', () => {
       ({ method, path }) => `${method} ${path}`,
     );
     const registryAfterSeen = registryFile();
+    // Each markSeen reaches the dispatcher as core.publication.comment.markSeen
+    // with only core.publication.write, an unshared chat's too.
+    expect(dispatched()).toEqual(
+      Array.from({ length: 3 }, () => ({
+        name: 'core.publication.comment.markSeen',
+        caller: { ...RENDERER, grants: ['core.publication.write'] },
+      })),
+    );
 
     // Only the user's own web comment: the push says so, so the renderer
     // skips the OS notification; the badge still counts it.
@@ -688,5 +726,562 @@ describe('shared runs (CAN-4169 golden)', () => {
     expect(
       stable({ listed, created, requests: newRequests() }),
     ).toMatchSnapshot();
+  });
+
+  it('serves core.publication.comment.markSeen behind queued registry writes, keeps a refused key, keeps newer unread comments and writes nothing once cancelled', async () => {
+    const registry = await import('../lib/shared-run-comments-registry');
+    const publicationOf = (chatId: string): string => {
+      const { projectId, worktreeId, chatId: chat } = session(chatId);
+      return registry.sharedRunIdempotencyKey(projectId, worktreeId, chat);
+    };
+    const markSeen = (
+      chatId: string,
+      throughRevision: number,
+      idempotencyKey: string,
+      {
+        signal,
+        deadlineAt,
+      }: { signal?: AbortSignal; deadlineAt?: string } = {},
+    ): Promise<{ seenRevision: number; unreadCount: number }> =>
+      must(dispatcher).instruction(
+        'core.publication.comment.markSeen',
+        { publicationId: publicationOf(chatId), throughRevision },
+        {
+          caller: { ...RENDERER, grants: ['core.publication.write'] },
+          metadata: { idempotencyKey, deadlineAt },
+          signal,
+        },
+      );
+
+    // A markSeen sent while the run's registration is still queued waits for
+    // it instead of reading the run as unwatched.
+    const registering = registry.registerSharedRunForComments({
+      ...session('chat-late'),
+      externalId: runId(7),
+    });
+    const late = markSeen('chat-late', 2, 'mark-late');
+    await registering;
+    await expect(late).resolves.toEqual({ seenRevision: 2, unreadCount: 0 });
+
+    // A terminal not_found keeps its key: other parameters under it are a
+    // conflict, even once the run is watched.
+    await expect(
+      markSeen('chat-unwatched', 1, 'mark-unwatched'),
+    ).rejects.toMatchObject({ payload: { kind: 'not_found' } });
+    await registry.registerSharedRunForComments({
+      ...session('chat-unwatched'),
+      externalId: runId(8),
+    });
+    await expect(
+      markSeen('chat-unwatched', 3, 'mark-unwatched'),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    await expect(
+      markSeen('chat-unwatched', 3, 'mark-unwatched-again'),
+    ).resolves.toEqual({ seenRevision: 3, unreadCount: 0 });
+
+    // A registry write that fails outright is a terminal internal error, and
+    // its key keeps refusing other parameters too.
+    const failedWrite = jest
+      .spyOn(
+        jest.requireActual<typeof FsPromises>('node:fs/promises'),
+        'rename',
+      )
+      .mockRejectedValueOnce(new Error('Injected registry write failure.'));
+    await expect(
+      markSeen('chat-unwatched', 4, 'mark-failed-write'),
+    ).rejects.toMatchObject({
+      payload: { kind: 'internal', retry: { kind: 'never' } },
+    });
+    failedWrite.mockRestore();
+    await expect(
+      markSeen('chat-unwatched', 5, 'mark-failed-write'),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    expect(
+      (await registry.readSharedRunCommentEntry(session('chat-unwatched')))
+        ?.lastSeenCommentRevision,
+    ).toBe(3);
+
+    // A markSeen below the polled revision leaves the newer comments unread
+    // (a false unread is safer than a hidden one); only a revision that
+    // covers the latest poll clears the badge.
+    const lateRun = session('chat-late');
+    const unreadOf = async (): Promise<unknown> => {
+      const entry = await registry.readSharedRunCommentEntry(lateRun);
+      return {
+        seen: entry?.lastSeenCommentRevision,
+        unread: entry?.unreadCommentCount,
+      };
+    };
+    await registry.recordPolledCommentRevision(lateRun, {
+      externalId: runId(7),
+      commentRevision: 5,
+      unreadCount: 3,
+    });
+    await expect(markSeen('chat-late', 2, 'mark-late')).resolves.toEqual({
+      seenRevision: 2,
+      unreadCount: 0,
+    });
+    expect(await unreadOf()).toEqual({ seen: 2, unread: 3 });
+    // The same call once its key has left the replay cache reaches the store.
+    await expect(markSeen('chat-late', 2, 'mark-late-stale')).resolves.toEqual({
+      seenRevision: 2,
+      unreadCount: 3,
+    });
+    expect(await unreadOf()).toEqual({ seen: 2, unread: 3 });
+    await expect(
+      markSeen('chat-late', 4, 'mark-late-partial'),
+    ).resolves.toEqual({ seenRevision: 4, unreadCount: 3 });
+
+    // A markSeen cancelled while it waits in the registry queue writes
+    // nothing once its turn comes.
+    const fsPromises =
+      jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const realRename = fsPromises.rename;
+    let releaseWrite = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const heldWrite = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(async (from, to) => {
+        await gate;
+        return realRename(from, to);
+      });
+    const held = markSeen('chat-late', 5, 'mark-late-held');
+    const cancel = new AbortController();
+    const cancelled = markSeen('chat-late', 6, 'mark-late-cancelled', {
+      signal: cancel.signal,
+    });
+    cancel.abort();
+    await expect(cancelled).rejects.toMatchObject({
+      payload: { kind: 'cancelled' },
+    });
+    releaseWrite();
+    await expect(held).resolves.toEqual({ seenRevision: 5, unreadCount: 0 });
+    heldWrite.mockRestore();
+    // A later queued write proves the cancelled one had its turn.
+    await expect(markSeen('chat-late', 5, 'mark-late-after')).resolves.toEqual({
+      seenRevision: 5,
+      unreadCount: 0,
+    });
+    expect(await unreadOf()).toEqual({ seen: 5, unread: 0 });
+
+    // A deadline that passes while a markSeen waits in the registry queue
+    // answers deadline_exceeded, but the caller only stopped waiting: the
+    // write still lands and its key stays bound to its parameters.
+    const deadlineIn = (ms: number): string =>
+      new Date(Date.now() + ms).toISOString();
+    const holdNextWrite = (): { release: () => void; restore: () => void } => {
+      let release = (): void => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const spy = jest
+        .spyOn(fsPromises, 'rename')
+        .mockImplementationOnce(async (from, to) => {
+          await gate;
+          return realRename(from, to);
+        });
+      return { release, restore: () => spy.mockRestore() };
+    };
+    const timedOut = {
+      payload: {
+        kind: 'deadline_exceeded',
+        retry: { kind: 'same_idempotency_key' },
+      },
+    };
+
+    // A same-key retry while the timed-out write is still queued joins it.
+    let hold = holdNextWrite();
+    const heldForJoin = markSeen('chat-late', 6, 'mark-late-held-join');
+    const expiredJoin = markSeen('chat-late', 7, 'mark-late-deadline-join', {
+      deadlineAt: deadlineIn(1_000),
+    });
+    jest.advanceTimersByTime(1_000);
+    await expect(expiredJoin).rejects.toMatchObject(timedOut);
+    const joined = markSeen('chat-late', 7, 'mark-late-deadline-join', {
+      deadlineAt: deadlineIn(60_000),
+    });
+    hold.release();
+    await expect(heldForJoin).resolves.toEqual({
+      seenRevision: 6,
+      unreadCount: 0,
+    });
+    await expect(joined).resolves.toEqual({ seenRevision: 7, unreadCount: 0 });
+    hold.restore();
+
+    // Once it has landed, the key refuses other parameters before any retry,
+    // and a same-key retry replays the write.
+    hold = holdNextWrite();
+    const heldForReplay = markSeen('chat-late', 7, 'mark-late-held-replay');
+    const expired = markSeen('chat-late', 8, 'mark-late-deadline', {
+      deadlineAt: deadlineIn(1_000),
+    });
+    jest.advanceTimersByTime(1_000);
+    await expect(expired).rejects.toMatchObject(timedOut);
+    hold.release();
+    await expect(heldForReplay).resolves.toEqual({
+      seenRevision: 7,
+      unreadCount: 0,
+    });
+    hold.restore();
+    // A later queued write proves the timed-out one had its turn, and wrote.
+    await expect(markSeen('chat-late', 7, 'mark-late-drain')).resolves.toEqual({
+      seenRevision: 8,
+      unreadCount: 0,
+    });
+    await expect(
+      markSeen('chat-late', 9, 'mark-late-deadline'),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    await expect(
+      markSeen('chat-late', 8, 'mark-late-deadline', {
+        deadlineAt: deadlineIn(60_000),
+      }),
+    ).resolves.toEqual({ seenRevision: 8, unreadCount: 0 });
+    await expect(
+      markSeen('chat-late', 9, 'mark-late-deadline'),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    expect(await unreadOf()).toEqual({ seen: 8, unread: 0 });
+  });
+
+  it('decides ownCommentsOnly from the comments above a partial markSeen', async () => {
+    cloud.capabilities = ['runs-crud-v1', 'run-comments-v1'];
+    await saveAccount(['runs-crud-v1', 'run-comments-v1']);
+    const externalId = runId(20);
+    serverRuns.set(externalId, {
+      externalId,
+      clientLocalRunId: `client-${externalId}`,
+      shareScope: 'team',
+      title: 'Partly read run',
+      clientChatId: 'chat-partial',
+      messages: [],
+      commentRevision: 0,
+      commentThreads: [],
+    });
+    const { registerSharedRunForComments } =
+      await import('../lib/shared-run-comments-registry');
+    await registerSharedRunForComments({
+      ...session('chat-partial'),
+      externalId,
+    });
+    const pollPushes = async (): Promise<unknown[]> => {
+      mark();
+      await must(poller).pollOnce();
+      return newPushes().flatMap((push) => {
+        const payload = isRecord(push) ? push.payload : undefined;
+        return isRecord(payload) && payload.externalId === externalId
+          ? [
+              {
+                commentRevision: payload.commentRevision,
+                seen: payload.lastSeenCommentRevision,
+                unread: payload.unreadCommentCount,
+                ownCommentsOnly: payload.ownCommentsOnly,
+              },
+            ]
+          : [];
+      });
+    };
+
+    webComment(externalId, 'First note.');
+    webComment(externalId, 'Second note.');
+    webComment(externalId, 'My reply.', OWNER_USER);
+    expect(await pollPushes()).toEqual([
+      { commentRevision: 3, seen: 0, unread: 3, ownCommentsOnly: false },
+    ]);
+
+    // Seen through the teammate's notes only: the next poll's author scan
+    // covers just the comments above revision 2, both the viewer's own.
+    await invoke(IPC_CHANNELS.runsCommentsMarkSeen, {
+      ...session('chat-partial'),
+      commentRevision: 2,
+    });
+    webComment(externalId, 'Another reply.', OWNER_USER);
+    expect(await pollPushes()).toEqual([
+      { commentRevision: 4, seen: 2, unread: 2, ownCommentsOnly: true },
+    ]);
+  });
+
+  it('refuses a new markSeen key once the pending writes reach the cap, and the key writes after the drain', async () => {
+    const registry = await import('../lib/shared-run-comments-registry');
+    const { MAX_PENDING_MARKS } =
+      await import('../canopy-runtime/core-publication-adapter');
+    const target = session('chat-cap');
+    await registry.registerSharedRunForComments({
+      ...target,
+      externalId: runId(22),
+    });
+    const publicationId = registry.sharedRunIdempotencyKey(
+      target.projectId,
+      target.worktreeId,
+      target.chatId,
+    );
+    const markSeen = (
+      throughRevision: number,
+      idempotencyKey: string,
+    ): Promise<{ seenRevision: number; unreadCount: number }> =>
+      must(dispatcher).instruction(
+        'core.publication.comment.markSeen',
+        { publicationId, throughRevision },
+        {
+          caller: { ...RENDERER, grants: ['core.publication.write'] },
+          metadata: { idempotencyKey },
+        },
+      );
+    const fsPromises =
+      jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const realRename = fsPromises.rename;
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const heldWrite = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(async (from, to) => {
+        await gate;
+        return realRename(from, to);
+      });
+    const queued = Array.from({ length: MAX_PENDING_MARKS }, (_, index) =>
+      markSeen(1, `cap-${index}`),
+    );
+    // Settled up front, so a failed run still handles every queued call.
+    const queuedSettled = Promise.allSettled(queued);
+    const refused = markSeen(2, 'cap-new');
+    let refusedSettled = false;
+    refused.then(
+      () => (refusedSettled = true),
+      () => (refusedSettled = true),
+    );
+    try {
+      await until(() => refusedSettled, 'the new key is answered at the cap');
+    } finally {
+      release();
+    }
+    await expect(refused).rejects.toMatchObject({
+      payload: { kind: 'unavailable', retry: { kind: 'same_idempotency_key' } },
+    });
+    expect(
+      (await queuedSettled).filter(({ status }) => status === 'fulfilled'),
+    ).toHaveLength(MAX_PENDING_MARKS);
+    heldWrite.mockRestore();
+    await expect(markSeen(2, 'cap-new')).resolves.toEqual({
+      seenRevision: 2,
+      unreadCount: 0,
+    });
+  });
+
+  it('keeps a timed-out markSeen outcome for its retry while the pending queue is full', async () => {
+    const registry = await import('../lib/shared-run-comments-registry');
+    const { MAX_PENDING_MARKS } =
+      await import('../canopy-runtime/core-publication-adapter');
+    const target = session('chat-replay');
+    await registry.registerSharedRunForComments({
+      ...target,
+      externalId: runId(23),
+    });
+    const publicationId = registry.sharedRunIdempotencyKey(
+      target.projectId,
+      target.worktreeId,
+      target.chatId,
+    );
+    const markSeen = (
+      throughRevision: number,
+      idempotencyKey: string,
+      deadlineAt?: string,
+    ): Promise<{ seenRevision: number; unreadCount: number }> =>
+      must(dispatcher).instruction(
+        'core.publication.comment.markSeen',
+        { publicationId, throughRevision },
+        {
+          caller: { ...RENDERER, grants: ['core.publication.write'] },
+          metadata: { idempotencyKey, deadlineAt },
+        },
+      );
+    const fsPromises =
+      jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const realRename = fsPromises.rename;
+    const gates = [0, 1].map(() => {
+      let release = (): void => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { gate, release };
+    });
+    const heldWrites = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(async (from, to) => {
+        await gates[0].gate;
+        return realRename(from, to);
+      })
+      .mockImplementationOnce(async (from, to) => {
+        await gates[1].gate;
+        return realRename(from, to);
+      });
+    // The timed-out write holds its rename; the rest of the queue waits
+    // behind a second held rename, so the pending cap stays full.
+    const timedOut = markSeen(
+      5,
+      'replay-timed-out',
+      new Date(Date.now() + 1_000).toISOString(),
+    );
+    const timedOutSettled = Promise.allSettled([timedOut]);
+    let queuedSettled: Promise<unknown> = Promise.resolve();
+    try {
+      await until(
+        () => heldWrites.mock.calls.length === 1,
+        'the timed-out write reaches its rename',
+      );
+      jest.advanceTimersByTime(1_000);
+      await expect(timedOut).rejects.toMatchObject({
+        payload: { kind: 'deadline_exceeded' },
+      });
+      const queued = Array.from({ length: MAX_PENDING_MARKS - 1 }, (_, index) =>
+        markSeen(1, `replay-${index}`),
+      );
+      queuedSettled = Promise.allSettled(queued);
+      gates[0].release();
+      await until(
+        () => heldWrites.mock.calls.length === 2,
+        'the timed-out write lands and the queue holds again',
+      );
+      // One new key fills the slot the landed write freed.
+      const admitted = markSeen(1, 'replay-admitted');
+      queuedSettled = Promise.allSettled([...queued, admitted]);
+      await expect(
+        markSeen(
+          5,
+          'replay-timed-out',
+          new Date(Date.now() + 60_000).toISOString(),
+        ),
+      ).resolves.toEqual({ seenRevision: 5, unreadCount: 0 });
+      await expect(markSeen(6, 'replay-timed-out')).rejects.toMatchObject({
+        payload: { kind: 'conflict' },
+      });
+    } finally {
+      gates[0].release();
+      gates[1].release();
+      await timedOutSettled;
+      await queuedSettled;
+      heldWrites.mockRestore();
+    }
+  });
+
+  // Last: a second runtime takes over and then clears process-wide hooks.
+  it('cancels a timed-out markSeen that has not started when its runtime shuts down', async () => {
+    const registry = await import('../lib/shared-run-comments-registry');
+    const { createDesktopRuntime } =
+      await import('../canopy-runtime/desktop-runtime');
+    const target = session('chat-shutdown');
+    await registry.registerSharedRunForComments({
+      ...target,
+      externalId: runId(21),
+    });
+    const publicationId = registry.sharedRunIdempotencyKey(
+      target.projectId,
+      target.worktreeId,
+      target.chatId,
+    );
+    const markSeenOn = (
+      runtime: DesktopCanopyDispatcher,
+      throughRevision: number,
+      idempotencyKey: string,
+      deadlineAt?: string,
+    ): Promise<{ seenRevision: number; unreadCount: number }> =>
+      runtime.instruction(
+        'core.publication.comment.markSeen',
+        { publicationId, throughRevision },
+        {
+          caller: { ...RENDERER, grants: ['core.publication.write'] },
+          metadata: { idempotencyKey, deadlineAt },
+        },
+      );
+    const second = createDesktopRuntime({ shutdownTimeoutMs: 25 });
+    const fsPromises =
+      jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const realRename = fsPromises.rename;
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const heldWrite = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(async (from, to) => {
+        await gate;
+        return realRename(from, to);
+      });
+    const held = markSeenOn(must(dispatcher), 1, 'shutdown-held');
+    const timedOut = markSeenOn(
+      second,
+      2,
+      'shutdown-timed-out',
+      new Date(Date.now() + 1_000).toISOString(),
+    );
+    jest.advanceTimersByTime(1_000);
+    await expect(timedOut).rejects.toMatchObject({
+      payload: { kind: 'deadline_exceeded' },
+    });
+    // A write still queued behind an unrelated held write does not hold
+    // shutdown; it cancels on its turn and writes nothing.
+    let secondStopped = false;
+    const stoppingSecond = second.shutdown().then(() => {
+      secondStopped = true;
+    });
+    try {
+      await until(() => secondStopped, 'shutdown leaves the queued write');
+    } finally {
+      release();
+    }
+    await stoppingSecond;
+    await expect(held).resolves.toEqual({ seenRevision: 1, unreadCount: 0 });
+    heldWrite.mockRestore();
+    // A later queued write proves the timed-out one had its turn and wrote
+    // nothing.
+    await expect(
+      markSeenOn(must(dispatcher), 1, 'shutdown-drain'),
+    ).resolves.toEqual({ seenRevision: 1, unreadCount: 0 });
+    // A runtime that never saw the key runs the write.
+    await expect(
+      markSeenOn(must(dispatcher), 2, 'shutdown-timed-out'),
+    ).resolves.toEqual({ seenRevision: 2, unreadCount: 0 });
+
+    // A timed-out write that has already started finishes, and shutdown waits
+    // for it.
+    const third = createDesktopRuntime({ shutdownTimeoutMs: 25 });
+    let releaseStarted = (): void => undefined;
+    const startedGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const heldStarted = jest
+      .spyOn(fsPromises, 'rename')
+      .mockImplementationOnce(async (from, to) => {
+        await startedGate;
+        return realRename(from, to);
+      });
+    const started = markSeenOn(
+      third,
+      3,
+      'shutdown-started',
+      new Date(Date.now() + 1_000).toISOString(),
+    );
+    await until(
+      () => heldStarted.mock.calls.length === 1,
+      'the timed-out write reaches its rename',
+    );
+    jest.advanceTimersByTime(1_000);
+    await expect(started).rejects.toMatchObject({
+      payload: { kind: 'deadline_exceeded' },
+    });
+    let stopped = false;
+    const stopping = third.shutdown().then(() => {
+      stopped = true;
+    });
+    await quietFor(() => String(stopped));
+    expect(stopped).toBe(false);
+    releaseStarted();
+    await stopping;
+    heldStarted.mockRestore();
+    expect(
+      (await registry.readSharedRunCommentEntry(target))
+        ?.lastSeenCommentRevision,
+    ).toBe(3);
   });
 });

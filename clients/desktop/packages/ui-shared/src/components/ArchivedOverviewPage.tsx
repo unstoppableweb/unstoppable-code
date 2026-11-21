@@ -12,7 +12,7 @@ import {
 import { ArchivedStateFilterDropdown } from './ArchivedStateFilterDropdown';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { HeaderActionButton } from './HeaderActionButton';
-import { SearchField } from './SearchField';
+import { SearchEmptyState, SearchField } from './SearchField';
 import { Skeleton } from './Skeleton';
 import { Surface } from './Surface';
 
@@ -72,16 +72,19 @@ export function ArchivedOverviewPage({
         <span
           className={`${REPLAY_MASK_CLASS} truncate text-2xs fg-secondary`}
           data-testid="archived-overview-workspace-name"
+          title={workspaceName}
         >
           {workspaceName}
         </span>
       </div>
-      <span
-        data-testid="archived-overview-count"
-        className="text-xs fg-secondary"
-      >
-        <Count value={totalCount} /> {totalCount === 1 ? 'item' : 'items'}
-      </span>
+      {loaded ? (
+        <span
+          data-testid="archived-overview-count"
+          className="text-xs fg-secondary"
+        >
+          <Count value={totalCount} /> {totalCount === 1 ? 'item' : 'items'}
+        </span>
+      ) : null}
       {headerActions}
     </div>
   );
@@ -134,16 +137,21 @@ export function ArchivedOverviewPage({
               {emptyMessage}
             </div>
           ) : !hasMatches ? (
-            <div
-              className="px-2 py-6 text-center text-xs fg-secondary"
-              data-testid="archived-overview-no-matches"
-            >
-              {query.trim() ? (
-                <>No items match &ldquo;{query.trim()}&rdquo;</>
-              ) : (
-                'No items match the current filter'
-              )}
-            </div>
+            query.trim() ? (
+              <SearchEmptyState
+                title={<>No items match &ldquo;{query.trim()}&rdquo;</>}
+                actionLabel="Clear search"
+                onAction={(): void => onQueryChange('')}
+                testId="archived-overview-no-matches"
+              />
+            ) : (
+              <SearchEmptyState
+                title="No items match these filters"
+                actionLabel="Clear filters"
+                onAction={(): void => onHiddenStatesChange([])}
+                testId="archived-overview-no-matches"
+              />
+            )
           ) : (
             children
           ))}

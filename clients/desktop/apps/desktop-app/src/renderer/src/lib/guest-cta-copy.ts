@@ -100,8 +100,8 @@ export const GUEST_UPGRADE_NUDGE_BODY: string =
 //
 // The gate's title, body, and actions are `guestModelGateCopy` in
 // `@canopy/ui-shared` (CAN-4703), shared with the web gate. They say the
-// account is free and, when the host can select one, name the guest model the
-// user can run right now.
+// model needs an account and, when the host can select one, name the guest
+// model the user can run right now. They never say "free" (CAN-7493).
 //
 // Per the third tone rule above: this must NOT offer free AI Credits as the
 // perk. Free daily credits are no longer offered to guests or signed-in

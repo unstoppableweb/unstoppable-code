@@ -218,6 +218,8 @@ export type CatalogHostRefusal =
   | 'publish-entry-not-found'
   | 'publish-package-stale'
   | 'publish-package-blocked'
+  /** A cloud copy's file looks like it holds a secret; the cause's message names it (CAN-7226). */
+  | 'publish-secret-detected'
   | 'publish-audience-wider'
   | 'publish-name-taken'
   | 'publish-account-mismatch'

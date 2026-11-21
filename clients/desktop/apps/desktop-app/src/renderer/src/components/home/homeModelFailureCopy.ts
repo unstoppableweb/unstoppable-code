@@ -2,7 +2,6 @@ import {
   getModelDisplayName,
   resolveKnownModel,
 } from '@canopy/desktop-shared/types';
-import { brandText } from '@/lib/brand';
 import type { HomeModelRefusalReason } from './homeModelPreflight';
 
 /**
@@ -51,7 +50,7 @@ export function homeModelFailureMessage(
     label.length === 0 || label === FALLBACK_MODEL_LABEL ? 'This model' : label;
   switch (cause) {
     case 'needs-account':
-      return `${model} needs a free ${brandText.appName} account on AI Credits. Choose another model or sign in.`;
+      return `${model} needs an account and AI Credits. Choose another model or sign in.`;
     case 'needs-purchase':
       return `${model} isn’t included in your AI Credits yet. Choose another model.`;
     case 'not-routable':

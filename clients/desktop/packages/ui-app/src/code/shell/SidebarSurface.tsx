@@ -528,7 +528,7 @@ export interface SidebarSurfaceProps {
   /**
    * Bulk removal (CAN-3975): removes one worktree of a confirmed batch and
    * settles when that removal has finished, rejecting with the reason when
-   * it failed. Omitted: rows offer no multi-select, the Select item is
+   * it failed. Omitted: rows offer no multi-select, the Select multiple item is
    * absent, and no selection bar renders.
    */
   readonly onRemoveWorktreeInBatch?: RemoveWorktreeInBatch;
@@ -964,6 +964,16 @@ export interface SidebarSurfaceProps {
   readonly onSaveScripts?: (
     workspaceLocalId: string,
     commands: Record<string, string>,
+  ) => Promise<void>;
+  /**
+   * Saves a code project's deletion retention days (CAN-7438). The settings
+   * dialog shows the field only for a row whose capabilities report
+   * `workspaceArchiveRetention`, a project that is not cowork, and a value
+   * `worktreeRetentionDaysFor` supplies; it never invents a default.
+   */
+  readonly onSaveWorkspaceArchiveRetention?: (
+    workspaceLocalId: string,
+    archiveRetentionDays: number,
   ) => Promise<void>;
   /** Host content for the organization workspace’s Repositories tab. */
   readonly renderWorkspaceRepositoriesAccessory?: (
@@ -2365,6 +2375,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     scripts: Record<string, string>;
     /** The row's `workspaceSettings` is `'details'`: name, colour, removal. */
     detailsOnly?: true;
+    /** The saved deletion retention days, when the dialog offers the field. */
+    retentionDays?: number;
   } | null>(null);
   const [pendingWorkspaceMetadata, setPendingWorkspaceMetadata] = useState<
     Readonly<
@@ -2810,6 +2822,22 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     props.onOpenWorkspaceSettingsOverride !== undefined ||
     (props.onLoadClaudeMd !== undefined && props.onLoadScripts !== undefined);
 
+  // A code project's deletion retention, offered only where the host saves
+  // it and reads the computer's value (CAN-7438). Cowork projects save
+  // retention through their own project update, on desktop only.
+  const archiveRetentionOf = (
+    workspace: SidebarSurfaceSnapshot['workspaces'][number],
+  ): { retentionDays?: number } => {
+    if (
+      props.onSaveWorkspaceArchiveRetention === undefined ||
+      workspace.type === 'cowork' ||
+      capabilitiesOf(workspace.localId).workspaceArchiveRetention !== true
+    )
+      return {};
+    const days = props.worktreeRetentionDaysFor?.(workspace.localId);
+    return days === undefined ? {} : { retentionDays: days };
+  };
+
   const openSettings = (workspaceId: string, initialTab?: string): void => {
     if (
       props.onOpenWorkspaceSettingsOverride?.(workspaceId, initialTab) === true
@@ -2827,6 +2855,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           content: '',
           scripts: {},
           detailsOnly: true,
+          ...archiveRetentionOf(workspace),
         });
       return;
     }
@@ -2851,7 +2880,13 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           content !== null &&
           scripts !== null
         ) {
-          setSettingsDialog({ workspace, initialTab, content, scripts });
+          setSettingsDialog({
+            workspace,
+            initialTab,
+            content,
+            scripts,
+            ...archiveRetentionOf(workspace),
+          });
         }
       })
       .catch(() => undefined);
@@ -5413,7 +5448,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               color: settingsWorkspace.color,
               content: settingsDialog.content,
               scripts: settingsDialog.scripts,
+              ...(settingsDialog.retentionDays === undefined
+                ? {}
+                : { deletionRetentionDays: settingsDialog.retentionDays }),
             }}
+            retentionNoun="worktrees"
             tabs={
               settingsDialog.detailsOnly === true
                 ? ['details', 'danger']
@@ -5525,7 +5564,13 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                   }
                 : undefined
             }
-            onSave={async ({ name, color, content, scripts }) => {
+            onSave={async ({
+              name,
+              color,
+              content,
+              scripts,
+              deletionRetentionDays,
+            }) => {
               const workspace = settingsWorkspace;
               // Same generation guard as the removal below: the owner-change
               // reset drops the optimistic metadata, and a save that was
@@ -5606,6 +5651,26 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
                 setSettingsDialog((current) =>
                   current?.workspace.localId === workspace.localId
                     ? { ...current, content }
+                    : current,
+                );
+              }
+              // Only a changed, whole-day value is sent; the dialog refuses an
+              // empty or out-of-range one before this runs. A retry after a
+              // later failure does not resend it.
+              if (
+                settingsDialog.retentionDays !== undefined &&
+                deletionRetentionDays !== undefined &&
+                Number.isInteger(deletionRetentionDays) &&
+                deletionRetentionDays !== settingsDialog.retentionDays
+              ) {
+                await props.onSaveWorkspaceArchiveRetention?.(
+                  workspace.localId,
+                  deletionRetentionDays,
+                );
+                if (generationRef.current !== generation) return;
+                setSettingsDialog((current) =>
+                  current?.workspace.localId === workspace.localId
+                    ? { ...current, retentionDays: deletionRetentionDays }
                     : current,
                 );
               }

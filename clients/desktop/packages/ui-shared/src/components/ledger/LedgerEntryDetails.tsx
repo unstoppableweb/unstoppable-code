@@ -11,7 +11,6 @@ import type { LedgerViewEntry } from '@canopy/protocol/ledger-view';
 import {
   LEDGER_SYNC_STATE_LABELS,
   formatLedgerDateTime,
-  formatLedgerRelativeTime,
   indexLedgerActorLabels,
   ledgerMutationSentenceParts,
   ledgerSourceDescription,
@@ -27,7 +26,7 @@ import {
   type LedgerEntryRowAttribution,
 } from './ledger-entry-attribution';
 import type { LedgerOpenEntry } from './ledger-entry-slots';
-import { LedgerActorNameText } from './LedgerEntryParts';
+import { LedgerActorNameText, LedgerRelativeTime } from './LedgerEntryParts';
 import { Fact, FactList } from '../FactList';
 
 /** One change to an entry, ready to show in its thread. */
@@ -127,7 +126,7 @@ export function LedgerActivityLine({
                 />
               ),
             )}{' '}
-        · {formatLedgerRelativeTime(item.occurredAt, now)}
+        · <LedgerRelativeTime iso={item.occurredAt} now={now} />
       </span>
     </li>
   );
@@ -153,7 +152,9 @@ export function LedgerHistoryMore({
       aria-busy={loading}
       onClick={onLoadMore}
     >
-      <BusyLabel busy={loading}>Show more changes</BusyLabel>
+      <BusyLabel busy={loading} busyText="Showing more changes…">
+        Show more changes
+      </BusyLabel>
     </Button>
   );
 }

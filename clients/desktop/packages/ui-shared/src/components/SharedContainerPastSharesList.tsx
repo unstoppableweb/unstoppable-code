@@ -1,13 +1,20 @@
-import { useMemo, useState, type JSX, type ReactNode } from 'react';
 import {
-  ARCHIVED_LIST_CONTAINER_CLASS_NAME,
-  OverviewListRow,
-} from './ArchivedOverviewRow';
-import { Button } from './Button';
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react';
+import { OverviewListRow } from './ArchivedOverviewRow';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { LoadingButton } from './LoadingButton';
+import { OverlayScrollArea } from './OverlayScrollArea';
+import { PageSearchField, PageSearchRow } from './PageSearchRow';
 import { Skeleton } from './Skeleton';
-import { SearchField } from './SearchField';
+import { SearchEmptyState } from './SearchField';
 import { Stack } from './Stack';
+import { EmptyState } from './StatusBlocks';
 import { Notice, NoticeButton } from './Notice';
 import { TRY_AGAIN_LABEL } from './useRetry';
 import { formatDateOrEmpty } from '../lib/format-date';
@@ -117,15 +124,17 @@ function RemovedGroup({
               dateTooltip={`Removed ${formatDateOrEmpty(item.dismissedAt)}`}
               actionsReserve="inline"
               actions={
-                <Button
+                <LoadingButton
                   variant="ghost"
                   size="sm"
-                  disabled={restoring}
+                  loading={restoring}
+                  loadingLabel="Restoring…"
                   onClick={(): void => onRestore(item.id)}
+                  data-restore-action=""
                   data-testid={`${TEST_ID}-restore-${item.id}`}
                 >
-                  {restoring ? 'Restoring…' : 'Restore'}
-                </Button>
+                  Restore
+                </LoadingButton>
               }
             />
           );
@@ -169,6 +178,9 @@ export function SharedContainerPastSharesList({
   renderAcceptedActions,
 }: SharedContainerPastSharesListProps): JSX.Element {
   const [query, setQuery] = useState('');
+  const listRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const restored = useRef<{ id: string; index: number } | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
   const unsupported = removedStatus === 'unsupported';
   const visibleRemoved = useMemo(
@@ -196,21 +208,50 @@ export function SharedContainerPastSharesList({
   const totalCount = (unsupported ? 0 : removed.length) + accepted.length;
   const nothingVisible =
     visibleRemoved.length === 0 && visibleAccepted.length === 0;
+  // A restored row leaves with the focused Restore; move focus to its neighbour.
+  useEffect(() => {
+    const pending = restored.current;
+    if (
+      pending === null ||
+      visibleRemoved.some((item) => item.id === pending.id)
+    )
+      return;
+    restored.current = null;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body) return;
+    const actions = listRef.current?.querySelectorAll<HTMLButtonElement>(
+      '[data-restore-action]',
+    );
+    const next = actions?.[Math.min(pending.index, actions.length - 1)];
+    (next ?? searchRef.current)?.focus();
+  }, [visibleRemoved]);
+  const restore = (id: string): void => {
+    restored.current = {
+      id,
+      index: visibleRemoved.findIndex((item) => item.id === id),
+    };
+    onRestore(id);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid={TEST_ID}>
-      <div className="shrink-0 border-b">
-        <SearchField
-          size="lg"
-          value={query}
-          onValueChange={setQuery}
-          placeholder="Search past shares"
-          aria-label="Search past shares"
-          data-testid={`${TEST_ID}-search`}
-        />
+      <div className="shrink-0 px-3 pt-4">
+        <PageSearchRow>
+          <PageSearchField
+            ref={searchRef}
+            value={query}
+            onValueChange={setQuery}
+            placeholder="Search past shares"
+            aria-label="Search past shares"
+            data-testid={`${TEST_ID}-search`}
+          />
+        </PageSearchRow>
       </div>
-      <div
-        className={`${ARCHIVED_LIST_CONTAINER_CLASS_NAME} min-h-0 flex-1 overflow-y-auto px-3 py-2`}
+      <OverlayScrollArea
+        className="min-h-0 flex-1"
+        viewportRef={listRef}
+        // Same container name as ARCHIVED_LIST_CONTAINER_CLASS_NAME; lint needs a literal.
+        contentClassName="@container/archived-list px-3 py-2"
       >
         <Stack gap="inline">
           {removedFailed && (
@@ -251,25 +292,27 @@ export function SharedContainerPastSharesList({
               </div>
             )}
             {totalCount === 0 && !removedFailed && !removedLoading ? (
-              <div
-                className="px-2 py-6 text-center text-xs fg-secondary"
-                data-testid={`${TEST_ID}-empty`}
-              >
-                Shares you accept or remove appear here.
-              </div>
+              <EmptyState
+                testId={`${TEST_ID}-empty`}
+                title="Shares you accept or remove appear here."
+                titleWeight="normal"
+              />
             ) : totalCount > 0 && nothingVisible ? (
-              <div
-                className="px-2 py-6 text-center text-xs fg-secondary"
-                data-testid={`${TEST_ID}-no-matches`}
-              >
-                No shares match &ldquo;{query.trim()}&rdquo;
-              </div>
+              <SearchEmptyState
+                testId={`${TEST_ID}-no-matches`}
+                title={<>No shares match &ldquo;{query.trim()}&rdquo;</>}
+                actionLabel="Clear search"
+                onAction={(): void => {
+                  setQuery('');
+                  searchRef.current?.focus();
+                }}
+              />
             ) : null}
             {visibleRemoved.length > 0 && (
               <RemovedGroup
                 items={visibleRemoved}
                 restoringIds={restoringIds}
-                onRestore={onRestore}
+                onRestore={restore}
               />
             )}
             {visibleAccepted.length > 0 && (
@@ -300,7 +343,7 @@ export function SharedContainerPastSharesList({
             )}
           </div>
         </Stack>
-      </div>
+      </OverlayScrollArea>
     </div>
   );
 }

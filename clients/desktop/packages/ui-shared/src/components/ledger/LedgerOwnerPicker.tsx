@@ -15,6 +15,8 @@ import {
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
 import { Button } from '../Button';
+import { Skeleton } from '../Skeleton';
+import { Tooltip } from '../Tooltip';
 import {
   FloatingPickerMenu,
   PickerMenuFooter,
@@ -23,6 +25,7 @@ import {
   PickerMenuOptionContent,
   PickerMenuOptionDescription,
   PickerMenuOptionLabel,
+  PickerMenuSampleOptions,
   PickerMenuState,
   PickerTrigger,
   PickerTriggerChevron,
@@ -93,8 +96,14 @@ export function LedgerOwnerPicker({
   const others = candidates.filter((candidate) => !candidate.isSelf);
   const inlineAriaLabel =
     ariaLabel === undefined ? `Change owner, now ${ownerName}` : ariaLabel;
+  // Unavailable, the trigger stays focusable (aria-disabled, not disabled),
+  // so keyboard and hover both reach the reason's tooltip.
+  // Saving keeps it focusable too: focus returns to the trigger after a
+  // pick, and disabling it then would drop focus to the page.
+  const unavailable = disabledReason !== undefined || saving;
   const onTriggerClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation();
+    if (unavailable) return;
     if (!open) onOpen();
     setOpen((previous) => !previous);
   };
@@ -108,6 +117,18 @@ export function LedgerOwnerPicker({
     ownerActorId === null || currentOwner?.actor.kind === 'user'
       ? REPLAY_BLOCK_CLASS
       : REPLAY_MASK_CLASS;
+  const withReason = (trigger: JSX.Element): JSX.Element =>
+    disabledReason === undefined ? (
+      trigger
+    ) : (
+      <Tooltip
+        label={disabledReason}
+        allowShrink
+        className={variant === 'field' ? 'w-full' : undefined}
+      >
+        {trigger}
+      </Tooltip>
+    );
   return (
     <div
       className={
@@ -115,68 +136,75 @@ export function LedgerOwnerPicker({
         variant === 'inline' ? 'relative flex min-w-0' : 'relative min-w-0'
       }
     >
-      {variant === 'inline' ? (
-        <LedgerInPlaceTrigger
-          ref={triggerRef}
-          id={id}
-          disabled={saving || disabledReason !== undefined}
-          title={disabledReason}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={inlineAriaLabel}
-          data-testid={triggerTestId}
-          // The trigger's -mx-1 makes its wrapper 0.5rem narrower than it;
-          // `max-w-full` alone would cut a short name such as You.
-          extent="flush-owner"
-          onClick={onTriggerClick}
-        >
-          <span className="flex min-w-0 items-center gap-1 text-2xs">
-            <span className="shrink-0 fg-tertiary">Owner:</span>
-            {triggerLabel === undefined ? (
-              <span
-                className={`min-w-0 truncate fg-secondary ${ownerNamePrivacyClass}`}
-              >
-                {ownerName}
-              </span>
-            ) : (
-              <span className="min-w-0 truncate fg-secondary">
-                {triggerLabel}
-              </span>
-            )}
-          </span>
-        </LedgerInPlaceTrigger>
-      ) : (
-        <PickerTrigger
-          ref={triggerRef}
-          id={id}
-          variant={variant}
-          disabled={saving || disabledReason !== undefined}
-          title={disabledReason}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={ariaLabel}
-          aria-labelledby={ariaLabelledBy}
-          data-testid={triggerTestId}
-          className={
-            variant === 'capsule' ? '-mx-2.5' : 'w-full justify-between'
-          }
-          onClick={onTriggerClick}
-        >
-          <span
-            className={
-              triggerLabel === undefined
-                ? `truncate ${ownerNamePrivacyClass}`
-                : 'truncate'
-            }
+      {withReason(
+        variant === 'inline' ? (
+          <LedgerInPlaceTrigger
+            ref={triggerRef}
+            id={id}
+            aria-disabled={unavailable || undefined}
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={inlineAriaLabel}
+            data-testid={triggerTestId}
+            // The trigger's -mx-1 makes its wrapper 0.5rem narrower than it;
+            // `max-w-full` alone would cut a short name such as You.
+            extent="flush-owner"
+            onClick={onTriggerClick}
           >
-            {triggerLabel ?? ownerName}
-          </span>
-          <PickerTriggerChevron open={open} variant={variant} />
-        </PickerTrigger>
+            <span className="flex min-w-0 items-center gap-1 text-2xs">
+              <span className="shrink-0 fg-tertiary">Owner:</span>
+              {triggerLabel === undefined ? (
+                <span
+                  className={`min-w-0 truncate fg-secondary ${ownerNamePrivacyClass}`}
+                >
+                  {ownerName}
+                </span>
+              ) : (
+                <span className="min-w-0 truncate fg-secondary">
+                  {triggerLabel}
+                </span>
+              )}
+            </span>
+          </LedgerInPlaceTrigger>
+        ) : (
+          <PickerTrigger
+            ref={triggerRef}
+            id={id}
+            variant={variant}
+            unavailable={unavailable}
+            coarsePointerTarget
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={ariaLabel}
+            aria-labelledby={ariaLabelledBy}
+            data-testid={triggerTestId}
+            className={
+              variant === 'capsule' ? '-mx-2.5' : 'w-full justify-between'
+            }
+            onClick={onTriggerClick}
+          >
+            <span
+              className={
+                triggerLabel === undefined
+                  ? `truncate ${ownerNamePrivacyClass}`
+                  : 'truncate'
+              }
+            >
+              {triggerLabel ?? ownerName}
+            </span>
+            <PickerTriggerChevron open={open} variant={variant} />
+          </PickerTrigger>
+        ),
       )}
       <FloatingPickerMenu
         open={open}
-        onOpenChange={setOpen}
+        // Arrow keys on the trigger open it too: never while unavailable,
+        // and loading the owners as a click does.
+        openOnArrowKeys={!unavailable}
+        onOpenChange={(next) => {
+          if (next && !open) onOpen();
+          setOpen(next);
+        }}
         anchorRef={triggerRef}
         placement="bottom-left"
         heightLimit={360}
@@ -203,9 +231,9 @@ export function LedgerOwnerPicker({
           <PickerMenuOptionCheck selected={youSelected} />
         </PickerMenuOption>
         {status === 'loading' && (
-          <PickerMenuState data-testid="ledger-owner-loading">
-            Loading owners…
-          </PickerMenuState>
+          <Skeleton loading label="Loading owners">
+            <PickerMenuSampleOptions rows={3} leading={false} />
+          </Skeleton>
         )}
         {status === 'problem' && (
           <PickerMenuState data-testid="ledger-owner-problem">

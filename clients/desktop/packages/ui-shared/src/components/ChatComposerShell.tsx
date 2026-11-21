@@ -8,7 +8,7 @@ import {
 } from './composerLayoutClasses';
 
 /**
- * The composer box: the raised tertiary surface, 16px radius, and soft shadow
+ * The composer box: the raised tertiary surface, 20px radius, and soft shadow
  * the desktop composer has always drawn. Web used to draw its own bordered
  * 12px box with a focus ring; both hosts now wrap their composer in this one
  * shell so the box reads identically (desktop is the visual source of truth).

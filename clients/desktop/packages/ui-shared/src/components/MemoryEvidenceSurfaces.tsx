@@ -73,7 +73,7 @@ export function MemoryGraphLegend({
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2 text-xs fg-secondary">
+    <div className="absolute left-4 top-4 z-10 flex flex-wrap items-center gap-3 rounded-lg bg-card px-3 py-2 text-xs fg-secondary shadow-sm">
       {children}
     </div>
   );

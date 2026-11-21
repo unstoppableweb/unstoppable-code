@@ -108,6 +108,7 @@ import { isUnavailableModelSelection } from '@canopy/execution-engine/lib/gatewa
 import {
   isProviderNativelyAuthenticated,
   isProviderNativelyAuthenticatedForRouting,
+  peekProviderAccountIdentity,
 } from '../auth/provider-auth-state';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { isCodeGraphAvailableForWorkspace } from '../lib/code-graph-availability';
@@ -2248,6 +2249,9 @@ export class ClaudeCodeProvider implements AgentProvider {
         );
         void (async (): Promise<void> => {
           const interruptedUserMessageId = activeTurn?.userMessageId;
+          const detectedAt = Date.now();
+          const usageResumeAccountEmail =
+            peekProviderAccountIdentity('claude')?.accountEmail;
           const workspace = await resolveWorkspaceRecordingSnapshot(
             opts.projectId,
           );
@@ -2258,7 +2262,8 @@ export class ClaudeCodeProvider implements AgentProvider {
               worktreeId: opts.worktreeId,
               chatId: opts.chatId,
               provider: 'claude',
-              detectedAt: Date.now(),
+              detectedAt,
+              usageResumeAccountEmail,
               resetsAt,
               resumeReason,
               workspaceName: workspace.name,
@@ -3675,6 +3680,7 @@ export class ClaudeCodeProvider implements AgentProvider {
                 cwd: opts.cwd,
                 ...(opts.selectedRepoId ? { repoId: opts.selectedRepoId } : {}),
                 getWindow,
+                interfacePort,
               },
               worktreeWatcherRuntime: {
                 projectId: opts.projectId,

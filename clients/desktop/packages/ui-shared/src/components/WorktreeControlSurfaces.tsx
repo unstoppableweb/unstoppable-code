@@ -21,7 +21,7 @@ export function WorktreeApplyControlSurface({
 }: {
   readonly children: ReactNode;
 }): JSX.Element {
-  return <div className="inline-flex rounded-md shadow-sm">{children}</div>;
+  return <div className="inline-flex rounded-full shadow-sm">{children}</div>;
 }
 
 export function RepositoryReadinessMark({

@@ -488,6 +488,8 @@ function ModelGatewayCard({
           <SettingsConfirmDialog
             dataTestId="model-gateway-disable-dialog"
             errorMessage={error?.copy}
+            // The banner above records this failure.
+            errorRecordingDisabled
             errorDetails={error?.details}
             title="Turn off your AI gateway?"
             confirmLabel="Turn it off"

@@ -12,8 +12,10 @@ import type {
   PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
 import { contributeInterfaceTools } from '@/client/interface-tools-client';
+import { retitleChatAutomationEntry } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 import { sharedDetailToPipelineInfo } from '@/lib/pipelineDocument';
 import {
+  retitleRawYaml,
   serializePipelineToYaml,
   tryParseAndValidateYaml,
 } from '@/lib/pipeline-yaml';
@@ -65,6 +67,17 @@ interface RememberedSnapshot {
   loaded?: { id: string; source: PipelineInfo['source'] };
   pipeline: Pipeline;
   rawYamlText?: string;
+  /**
+   * The draft as the editor showed it when `pipeline` adds an Orchestrator
+   * entry's new title (CAN-5782): adoption shows `pipeline` instead, while
+   * the editor still shows this draft.
+   */
+  retitledFrom?: {
+    draft: Pipeline;
+    /** The names the draft's entry title followed the rename from. */
+    previousNames: readonly string[];
+    rawYamlText?: string;
+  };
   /** Frees the editor's save guard, held until main reports the save. */
   release: () => void;
 }
@@ -315,6 +328,7 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
     editorController: PipelineEditorControllerAdapter,
     pipeline: Pipeline,
     rawYamlText?: string,
+    retitledFrom?: RememberedSnapshot['retitledFrom'],
   ): PipelineEditorSaveSnapshot | null {
     const editor = editorController.getEditor();
     const releaseHold = editor.holdSave();
@@ -329,6 +343,7 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
       ...(info ? { loaded: { id: info.id, source: info.source } } : {}),
       pipeline,
       ...(rawYamlText === undefined ? {} : { rawYamlText }),
+      ...(retitledFrom === undefined ? {} : { retitledFrom }),
       release: (): void => {
         clearTimeout(timer);
         releaseHold();
@@ -363,18 +378,54 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
       'requestId' | 'pipelineYaml' | 'isDirty' | 'validation'
     >,
     editorController: PipelineEditorControllerAdapter,
-    pipeline: Pipeline,
-    rawYamlText?: string,
+    draft: Pipeline,
+    draftYamlText?: string,
   ): PipelineEditorRendererToolResponse {
-    const snapshot = rememberSnapshot(editorController, pipeline, rawYamlText);
-    return snapshot
-      ? { ...state, ok: true, readonly: false, snapshot }
-      : {
-          ...state,
-          ok: false,
-          error: editorController.getEditor().error ?? SAVE_BUSY_MESSAGE,
-          readonly: false,
-        };
+    // A renamed Orchestrator workflow's new entries take its new name
+    // (CAN-5782). Main saves the retitled draft and the agent's result shows
+    // it; the editor shows it once the save is adopted.
+    const editor = editorController.getEditor();
+    const info = editor.pipelineInfo;
+    const pipeline =
+      info?.source === 'user'
+        ? retitleChatAutomationEntry(draft, editor.retitleFromNames())
+        : draft;
+    const retitled = pipeline !== draft && info !== null;
+    // The raw text the editor shows, clean or not, so adoption can retitle
+    // it too.
+    const shownYamlText =
+      draftYamlText ??
+      (editorController.isRawMode()
+        ? editorController.getRawYamlText()
+        : undefined);
+    const snapshot = retitled
+      ? rememberSnapshot(editorController, pipeline, undefined, {
+          draft,
+          previousNames: editor.retitleFromNames(),
+          ...(shownYamlText === undefined
+            ? {}
+            : { rawYamlText: shownYamlText }),
+        })
+      : rememberSnapshot(editorController, pipeline, draftYamlText);
+    if (!snapshot)
+      return {
+        ...state,
+        ok: false,
+        error: editor.error ?? SAVE_BUSY_MESSAGE,
+        readonly: false,
+      };
+    return {
+      ...state,
+      ...(retitled
+        ? {
+            pipelineYaml: serializePipelineToYaml(pipeline),
+            validation: toValidationIssues(pipeline),
+          }
+        : {}),
+      ok: true,
+      readonly: false,
+      snapshot,
+    };
   }
 
   /** Applies the agent's YAML to the editor. Main saves it (CAN-5822). */
@@ -424,6 +475,7 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
         },
         readyEditorController,
         result.pipeline,
+        readyEditorController.isRawMode() ? yamlText : undefined,
       );
     });
   }
@@ -534,7 +586,52 @@ export function PipelineEditorRuntimeBridge(): JSX.Element {
       saved.kind === 'stored'
         ? saved.info
         : sharedDetailToPipelineInfo(saved.detail);
-    editorController.adoptSaved(remembered.pipeline, info);
+    // A retitled save shows its new title in the editor: all of the saved
+    // draft while the editor still holds it, else only the entry title, so
+    // edits made since stay unsaved but can't write the old title back.
+    const { retitledFrom } = remembered;
+    const editor = editorController.getEditor();
+    let deferRetitleFrom: readonly string[] | null = null;
+    let retitledDraft: Pipeline | undefined;
+    const current = editor.pipeline;
+    if (retitledFrom !== undefined && current !== null) {
+      const unchanged =
+        JSON.stringify(current) === JSON.stringify(retitledFrom.draft);
+      const next = unchanged
+        ? remembered.pipeline
+        : // The title the save stored, even if the draft was renamed since.
+          retitleChatAutomationEntry(
+            current,
+            retitledFrom.previousNames,
+            info.name,
+          );
+      if (next !== current) retitledDraft = next;
+      // The raw text as it was handed over, or as Raw view first showed the
+      // draft when it opened during the save, becomes the retitled text.
+      // Text typed since keeps every edit, with only the title line moved.
+      const rawText = editorController.getRawYamlText();
+      if (editorController.isRawMode()) {
+        if (
+          rawText === retitledFrom.rawYamlText ||
+          rawText === serializePipelineToYaml(current)
+        ) {
+          const text = serializePipelineToYaml(next);
+          editorController.setRawYamlText(text);
+          if (unchanged) editorController.resetRawYamlBaseline(text);
+        } else {
+          const typed = retitleRawYaml(
+            rawText,
+            retitledFrom.previousNames,
+            info.name,
+          );
+          // Text that can't be retitled now is retitled by its next save.
+          if (typed === null) deferRetitleFrom = retitledFrom.previousNames;
+          else editorController.setRawYamlText(typed);
+        }
+      }
+    }
+    editorController.adoptSaved(remembered.pipeline, info, retitledDraft);
+    if (deferRetitleFrom !== null) editor.deferRetitleFrom(deferRetitleFrom);
     if (
       remembered.rawYamlText !== undefined &&
       editorController.isRawMode() &&

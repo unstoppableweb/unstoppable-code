@@ -1,7 +1,11 @@
 // CAN-5904: the `core.publication.delete` contract the web core serves for
-// plans and desktop never registers.
+// plans and desktop never registers. CAN-4169: the shared-run
+// `core.publication.comment.markSeen` contract the desktop dispatcher serves.
 import { CANOPY_INSTRUCTION_DEFINITIONS } from '..';
-import { CORE_PUBLICATION_INSTRUCTION_DEFINITIONS } from '../core';
+import {
+  CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
+  CORE_PUBLICATION_INSTRUCTION_DEFINITIONS,
+} from '../core';
 
 const remove =
   CORE_PUBLICATION_INSTRUCTION_DEFINITIONS['core.publication.delete'];
@@ -100,5 +104,50 @@ describe('core.publication.delete contract (CAN-5904)', () => {
         retry: { kind: 'same_request' },
       }).success,
     ).toBe(false);
+  });
+});
+
+const markSeen =
+  CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS[
+    'core.publication.comment.markSeen'
+  ];
+
+describe('core.publication.comment.markSeen contract (CAN-4169)', () => {
+  it('is a keyed core write under core.publication.write', () => {
+    expect(markSeen.requiredGrants).toEqual(['core.publication.write']);
+    expect(markSeen.idempotency).toBe('keyed');
+    expect(markSeen.placement).toBe('core-only');
+  });
+
+  it('takes a publication and a nonnegative revision, nothing else', () => {
+    const request = {
+      publicationId: '7b0c3a52-1f7e-5a54-9a59-1f3c9d1e2b40',
+      throughRevision: 4,
+    };
+    expect(markSeen.params.safeParse(request).success).toBe(true);
+    for (const throughRevision of [-1, 1.5, undefined])
+      expect(
+        markSeen.params.safeParse({ ...request, throughRevision }).success,
+      ).toBe(false);
+    expect(
+      markSeen.params.safeParse({ ...request, projectId: 'p' }).success,
+    ).toBe(false);
+  });
+
+  it('answers the seen revision and unread count, and refuses an unwatched run', () => {
+    expect(
+      markSeen.result.safeParse({ seenRevision: 4, unreadCount: 0 }).success,
+    ).toBe(true);
+    expect(
+      markSeen.result.safeParse({ seenRevision: 4, unreadCount: -1 }).success,
+    ).toBe(false);
+    expect(
+      markSeen.error.safeParse({
+        kind: 'not_found',
+        code: 'core.publication.notFound',
+        message: 'This shared run is not watched for comments.',
+        retry: { kind: 'never' },
+      }).success,
+    ).toBe(true);
   });
 });

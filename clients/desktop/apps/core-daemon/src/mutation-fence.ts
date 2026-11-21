@@ -12,12 +12,16 @@ import {
 } from '@canopy/core-runtime/node';
 import {
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+  CORE_MUTATION_FENCE_PUBLISH_SCHEMA_REVISION,
+  CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   CanopyWorkspaceScopeSchema,
   MUTATION_FENCE_RESERVED_WORKSPACE_IDS,
   type CanopyWorkspaceScope,
+  type CoreMutationFenceActivityItem,
   type CoreMutationFencePublishParams,
   type CoreMutationFencePublishResult,
   type CoreMutationFenceTarget,
+  type CoreMutationFenceWrite,
   type MutationFenceHold,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -59,6 +63,12 @@ interface OwnerFences {
   placed: Map<string, string>;
   /** A snapshot arrived, so this owner's fences are complete. */
   published: boolean;
+  /**
+   * The schema revision of the publish that last applied to this set. Below
+   * revision 2 the owner cannot check an Auto Delete ack against the writes
+   * it has counted, so its set admits no write.
+   */
+  revision: number;
   /** Its owner lease is held; an ended owner's fences wait for a live one. */
   live: boolean;
 }
@@ -80,10 +90,29 @@ export interface MutationFenceRegistry {
    */
   ownerLeaseEnded(leaseId: string): void;
   /**
-   * Admits a write to `key`, or refuses it while the key is fenced or no
-   * owner has published. Call the returned release once the write settles.
+   * Admits a write to `key`, or refuses it while the key is fenced, no owner
+   * has published, or a live owner holds no activity stream. An admitted
+   * write to a worktree is reported on its owners' streams. Call the
+   * returned release once the write settles.
    */
-  admit(key: string): () => void;
+  admit(key: string, scope?: CanopyWorkspaceScope): () => void;
+  /**
+   * Opens an activity stream for an owner's client instance. `emit` returns
+   * false once the stream has ended. Call the returned close when it ends.
+   */
+  openActivity(
+    clientInstanceId: string,
+    emit: (item: CoreMutationFenceActivityItem) => boolean,
+  ): () => void;
+}
+
+/** At most one activity item per worktree and stream in this span. */
+export const MUTATION_FENCE_ACTIVITY_INTERVAL_MS = 1_000;
+
+interface ActivitySubscriber {
+  readonly emit: (item: CoreMutationFenceActivityItem) => boolean;
+  /** When each key was last reported on this stream. */
+  readonly sent: Map<string, number>;
 }
 
 /** The refusal each hold gives, worded as the desktop words that hold. */
@@ -123,7 +152,10 @@ function leaseEndedRefusal(): CanopyOperationError {
 }
 
 function publishRefusal(
-  code: 'core.mutationFence.staleEpoch' | 'core.mutationFence.unresolved',
+  code:
+    | 'core.mutationFence.staleEpoch'
+    | 'core.mutationFence.unresolved'
+    | 'core.mutationFence.busy',
   message: string,
   cause?: unknown,
 ): CanopyOperationError {
@@ -155,6 +187,7 @@ function digestOf(params: CoreMutationFencePublishParams): string {
     params.kind,
     sorted(params.fenced),
     params.kind === 'change' ? sorted(params.released) : [],
+    params.revision ?? 1,
   ]);
 }
 
@@ -227,6 +260,35 @@ export function createMutationFenceRegistry(
   /** Admitted writes still running, by key, and who waits for them to end. */
   const inFlight = new Map<string, number>();
   const drainWaiters = new Map<string, Set<() => void>>();
+  /** When the last write to each key was admitted, since this daemon started. */
+  const lastAdmitted = new Map<string, number>();
+  /** Open activity streams, by the owner client instance that opened them. */
+  const subscribers = new Map<string, Set<ActivitySubscriber>>();
+
+  const writesFor = (
+    targets: ReadonlyArray<{ target: CoreMutationFenceTarget; key: string }>,
+  ): CoreMutationFenceWrite[] =>
+    targets.flatMap(({ target, key }) => {
+      const at = lastAdmitted.get(key);
+      return target.hold === 'autoDelete' && at !== undefined
+        ? [
+            {
+              workspaceId: target.workspaceId,
+              worktreeId: target.worktreeId,
+              at,
+            },
+          ]
+        : [];
+    });
+  /** `writes` goes only to a revision 2 publisher (protocol rule 5). */
+  const acknowledgement = (
+    params: CoreMutationFencePublishParams,
+    writes: CoreMutationFenceWrite[],
+  ): CoreMutationFencePublishResult =>
+    params.revision === CORE_MUTATION_FENCE_PUBLISH_SCHEMA_REVISION &&
+    writes.length > 0
+      ? { acknowledged: true, epoch: params.epoch, writes }
+      : { acknowledged: true, epoch: params.epoch };
 
   const drained = async (keys: readonly string[]): Promise<void> => {
     await Promise.all(
@@ -250,12 +312,20 @@ export function createMutationFenceRegistry(
    * Writes wait while no live owner has a complete fence set, and while any
    * live owner's set is incomplete: one that never snapshotted, or whose
    * publish was refused, so a stale earlier set is never enforced instead.
+   * They wait too while a live owner holds no activity stream, or published
+   * below revision 2, so no write goes unreported or unchecked by the owner
+   * that would delete its worktree.
    */
   const awaitingOwner = (): boolean => {
-    const live = Array.from(owners.values()).filter((fences) => fences.live);
+    const live = Array.from(owners).filter(([, fences]) => fences.live);
     return (
-      !live.some((fences) => fences.published) ||
-      live.some((fences) => !fences.published)
+      !live.some(([, fences]) => fences.published) ||
+      live.some(
+        ([owner, fences]) =>
+          !fences.published ||
+          fences.revision < CORE_MUTATION_FENCE_PUBLISH_SCHEMA_REVISION ||
+          (subscribers.get(owner)?.size ?? 0) === 0,
+      )
     );
   };
   // Writes wait from the start until a live owner's set arrives.
@@ -327,7 +397,15 @@ export function createMutationFenceRegistry(
         );
       if (params.epoch === current.epoch) {
         if (digest === current.digest)
-          return { acknowledged: true, epoch: params.epoch };
+          return acknowledgement(
+            params,
+            writesFor(
+              params.fenced.flatMap((target) => {
+                const key = current.placed.get(targetId(target));
+                return key === undefined ? [] : [{ target, key }];
+              }),
+            ),
+          );
         // Nothing was applied at a refused epoch: its identical retry is
         // resolved again below.
         if (current.digest !== REFUSED + digest)
@@ -358,6 +436,7 @@ export function createMutationFenceRegistry(
           keys: new Map(),
           placed: new Map(),
           published: false,
+          revision: params.revision ?? 1,
           live: true,
         });
       noteState();
@@ -365,6 +444,26 @@ export function createMutationFenceRegistry(
     }
     // The lease ended while its targets resolved: nothing is installed.
     if (endedWhilePublishing.has(lease)) throw leaseEndedRefusal();
+    // A new Auto Delete hold over a write still running is refused, as the
+    // desktop refuses its lease while a write holds its reservation. The
+    // set stays as it was; only this epoch is spent.
+    if (
+      own &&
+      params.kind === 'change' &&
+      fenced.some(
+        ({ key, hold }) =>
+          hold === 'autoDelete' &&
+          current.keys.get(key)?.has('autoDelete') !== true &&
+          (inFlight.get(key) ?? 0) > 0,
+      )
+    ) {
+      current.epoch = params.epoch;
+      current.digest = REFUSED + digest;
+      throw publishRefusal(
+        'core.mutationFence.busy',
+        'A file change in this worktree is still running, so Auto Delete was not started.',
+      );
+    }
     const keys = new Map<string, Set<MutationFenceHold>>(
       params.kind === 'snapshot' || !own
         ? []
@@ -395,6 +494,7 @@ export function createMutationFenceRegistry(
       keys,
       placed,
       published,
+      revision: params.revision ?? 1,
       live: true,
     });
     // A live owner's snapshot is the whole truth; ended owners' fences go.
@@ -404,7 +504,18 @@ export function createMutationFenceRegistry(
     // New writes to these keys are refused from here; the ack waits for the
     // ones admitted before.
     await drained(fenced.map(({ key }) => key));
-    return { acknowledged: true, epoch: params.epoch };
+    const named = new Map(
+      params.fenced.map((target) => [targetId(target), target]),
+    );
+    return acknowledgement(
+      params,
+      writesFor(
+        fenced.flatMap(({ id, key }) => {
+          const target = named.get(id);
+          return target ? [{ target, key }] : [];
+        }),
+      ),
+    );
   };
 
   return {
@@ -441,7 +552,23 @@ export function createMutationFenceRegistry(
       }
       noteState();
     },
-    admit: (key) => {
+    openActivity: (clientInstanceId, emit) => {
+      const subscriber: ActivitySubscriber = { emit, sent: new Map() };
+      let streams = subscribers.get(clientInstanceId);
+      if (!streams) {
+        streams = new Set();
+        subscribers.set(clientInstanceId, streams);
+      }
+      streams.add(subscriber);
+      noteState();
+      return (): void => {
+        const open = subscribers.get(clientInstanceId);
+        if (!open?.delete(subscriber)) return;
+        if (open.size === 0) subscribers.delete(clientInstanceId);
+        noteState();
+      };
+    },
+    admit: (key, scope) => {
       noteState();
       if (awaitingOwner()) {
         const waitedMs = awaitingSince === null ? 0 : now() - awaitingSince;
@@ -458,6 +585,25 @@ export function createMutationFenceRegistry(
       for (const fences of owners.values())
         for (const hold of fences.keys.get(key) ?? []) holds.add(hold);
       if (holds.size > 0) throw refusal('held', HELD_MESSAGES[heldBy(holds)]);
+      const at = now();
+      lastAdmitted.set(key, at);
+      // Only a worktree can be deleted for inactivity; a workspace-wide
+      // write names none, so it has nothing to report.
+      const worktreeId = scope?.worktreeId;
+      if (scope?.workspaceId !== undefined && worktreeId !== undefined)
+        for (const [owner, fences] of owners) {
+          if (!fences.live) continue;
+          for (const subscriber of subscribers.get(owner) ?? []) {
+            const last = subscriber.sent.get(key);
+            if (
+              last !== undefined &&
+              at - last < MUTATION_FENCE_ACTIVITY_INTERVAL_MS
+            )
+              continue;
+            subscriber.sent.set(key, at);
+            subscriber.emit({ workspaceId: scope.workspaceId, worktreeId, at });
+          }
+        }
       inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
       let released = false;
       return (): void => {
@@ -548,15 +694,18 @@ export function createMutationFenceGuard(options: {
       scope.worktreeId,
       options.lookupWorktreeRoot,
     );
-    return options.registry.admit(key);
+    return options.registry.admit(key, scope);
   };
 }
 
 /**
- * Serves `core.mutationFence.publish` on the daemon's core. The dispatcher
- * checks its owner-only grant and principal before this handler runs, and
- * the host binds the operation to a live client lease: each publish belongs
- * to the client instance and the lease it was admitted under.
+ * Serves `core.mutationFence.publish` and `core.mutationFence.activity` on
+ * the daemon's core. The dispatcher checks their owner-only grant and
+ * principal before these handlers run, and the host binds the publish to a
+ * live client lease: each publish belongs to the client instance and the
+ * lease it was admitted under. An activity stream belongs to the client
+ * instance that opened it, and enables writes only for that instance's live
+ * fence set.
  */
 export function createMutationFenceModule(
   registry: MutationFenceRegistry,
@@ -567,7 +716,7 @@ export function createMutationFenceModule(
     definitions: {
       queries: {},
       instructions: CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
-      streams: {},
+      streams: CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
     },
     handlers: {
       queries: {},
@@ -590,7 +739,20 @@ export function createMutationFenceModule(
           );
         },
       },
-      streams: {},
+      streams: {
+        'core.mutationFence.activity': (_params, context, sink) => {
+          let close = (): void => undefined;
+          close = registry.openActivity(
+            context.caller.clientInstanceId,
+            (item) => {
+              if (sink.emit(item) !== null) return true;
+              close();
+              return false;
+            },
+          );
+          return Promise.resolve(close);
+        },
+      },
     },
   });
 }

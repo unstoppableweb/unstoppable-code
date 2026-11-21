@@ -30,6 +30,7 @@ import {
   continueWithLabel,
   resumeAtLabel,
   SWITCH_PROVIDER_LABEL,
+  USAGE_LIMIT_RESUME_COPY,
   usageLimitMessage,
 } from '@canopy/ui-shared/components';
 import {
@@ -322,11 +323,14 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'usage-limit-scheduled',
         title: 'Usage limit reached: resume scheduled',
-        note: 'After Resume at … the message states the outcome and the used button is gone; provider choice stays the way to keep going now.',
+        note: 'After Resume at … the message states the outcome and Cancel resume replaces the used button; dismissing does not cancel. Provider choice stays the way to keep going now.',
         intent: 'attention',
         heading: 'Codex usage limit reached',
-        message: 'This chat resumes automatically at Tue 9:00 AM.',
-        actions: [{ label: SWITCH_PROVIDER_LABEL, variant: 'primary' }],
+        message: USAGE_LIMIT_RESUME_COPY.scheduled('Tue 9:00 AM'),
+        actions: [
+          { label: USAGE_LIMIT_RESUME_COPY.cancel },
+          { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
+        ],
         dismissible: true,
       },
       {
@@ -378,7 +382,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: 'Finish checkout in your browser',
         message: 'Your credits show up here once the payment goes through.',
         actions: [
-          { label: 'Resume at reset' },
+          { label: USAGE_LIMIT_RESUME_COPY.resumeWhenBack('Claude') },
           { label: 'Reopen billing' },
           { label: 'Check again', variant: 'primary' },
         ],
@@ -391,7 +395,50 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: 'Claude usage limit reached',
         message: CONTACT_ORG_ADMIN_COPY,
-        actions: [{ label: 'Resume at reset' }],
+        actions: [{ label: USAGE_LIMIT_RESUME_COPY.resumeWhenBack('Claude') }],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-unknown-reset',
+        title: 'Usage limit reached: no reset time',
+        note: 'The provider gave no reset, so Resume waits for usage to clear instead of sending now (CAN-7483).',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: USAGE_LIMIT_RESUME_COPY.unknownReset('Claude'),
+        actions: [
+          { label: USAGE_LIMIT_RESUME_COPY.resumeWhenBack('Claude') },
+          { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
+        ],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-resume-checking',
+        title: 'Usage limit reached: usage check pending',
+        note: 'The time is the next usage check, not a promised send. It moves on after each check that finds the limit still reached.',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: USAGE_LIMIT_RESUME_COPY.checking(
+          'Sat, Nov 21, 9:15 AM',
+          'Claude',
+        ),
+        actions: [
+          { label: USAGE_LIMIT_RESUME_COPY.cancel },
+          { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
+        ],
+        dismissible: true,
+      },
+      {
+        id: 'usage-limit-resume-expired',
+        title: 'Usage limit reached: usage check stopped',
+        note: 'After seven days the check stops without sending. Unreadable usage reads differently.',
+        intent: 'attention',
+        heading: 'Claude usage limit reached',
+        message: USAGE_LIMIT_RESUME_COPY.unknownReset('Claude'),
+        detail: USAGE_LIMIT_RESUME_COPY.expired('Claude'),
+        actions: [
+          { label: USAGE_LIMIT_RESUME_COPY.resumeWhenBack('Claude') },
+          { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
+        ],
         dismissible: true,
       },
       {

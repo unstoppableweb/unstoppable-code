@@ -1,6 +1,7 @@
 import type { JSX, RefObject } from 'react';
-import { Button } from './Button';
 import { DialogModal } from './DialogModal';
+import { LoadingButton } from './LoadingButton';
+import { Surface } from './Surface';
 import { SharedContainerAcceptSummary } from './SharedContainerAcceptSummary';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
@@ -78,28 +79,39 @@ export function SharedContainerInvitationDialog({
           }
         />
       </div>
-      <div className="flex items-center gap-2 border-t px-6 py-3">
-        <Button
+      <Surface
+        variant="section"
+        boundary="top"
+        padding="dialog-footer"
+        gap="inline"
+        direction="row"
+        className="items-center"
+      >
+        <LoadingButton
           variant="ghost"
           size="sm"
           onClick={onRemove}
-          disabled={busy}
+          loading={removing}
+          loadingLabel="Removing…"
+          disabled={accepting}
           data-testid={`${TEST_ID}-remove`}
         >
-          {removing ? 'Removing…' : 'Remove share'}
-        </Button>
+          Remove share
+        </LoadingButton>
         <span className="ml-auto flex items-center gap-2">
-          <Button
+          <LoadingButton
             variant="primary"
             size="sm"
             onClick={onAccept}
-            disabled={busy}
+            loading={accepting}
+            loadingLabel="Opening…"
+            disabled={removing}
             data-testid={`${TEST_ID}-accept`}
           >
-            {accepting ? 'Opening…' : 'Accept and open'}
-          </Button>
+            Accept and open
+          </LoadingButton>
         </span>
-      </div>
+      </Surface>
     </DialogModal>
   );
 }

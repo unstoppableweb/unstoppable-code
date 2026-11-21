@@ -319,7 +319,9 @@ export function DiffFileTreeRow({
     onContextMenu,
     'data-testid': testId,
     'data-selected': selected ? 'true' : 'false',
-    'aria-label': details ?? file.filePath,
+    'aria-current': selected ? ('true' as const) : undefined,
+    // Without details the name comes from the row's text: path, line counts and status.
+    'aria-label': details,
   };
   const content = (
     <>

@@ -15,7 +15,6 @@ import {
   SUBAGENTS_LEVELS_MENU_LABEL,
   SUBAGENTS_NO_ROOTS_BODY,
   SUBAGENTS_NO_ROOTS_TITLE,
-  SUBAGENTS_ROOT_PICKER_LABEL,
   SUBAGENTS_ROOT_SECTION_ACTIVE,
   SUBAGENTS_ROOT_SECTION_FINISHED,
   SUBAGENTS_SHOW_ALL_LABEL,
@@ -137,7 +136,7 @@ export function SubagentsRootPickerMenu({
   const active = roots.filter((root) => root.live > 0);
   const finished = roots.filter((root) => root.live === 0);
   return (
-    <div aria-label={SUBAGENTS_ROOT_PICKER_LABEL}>
+    <div>
       {active.length > 0 ? (
         <>
           <PickerMenuSectionLabel>
@@ -236,7 +235,7 @@ export function SubagentsLevelsMenu({
   const numbered: number[] = [];
   for (let level = 3; level <= maxDepth; level += 1) numbered.push(level);
   return (
-    <div aria-label={SUBAGENTS_LEVELS_MENU_LABEL}>
+    <div>
       <PickerMenuSectionLabel>
         {SUBAGENTS_LEVELS_MENU_LABEL}
       </PickerMenuSectionLabel>

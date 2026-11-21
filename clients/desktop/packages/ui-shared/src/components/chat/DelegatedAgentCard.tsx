@@ -44,7 +44,7 @@ import { Fact, FactList } from '../FactList';
 export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';
 
 const DELEGATION_METADATA_CLASSNAME =
-  'flex flex-col gap-2 px-2.5 py-2 text-3xs inset-ring-[length:var(--border-hairline)] inset-ring-line-base';
+  'flex flex-col gap-2 border-b px-2.5 py-2 text-3xs';
 
 export interface DelegatedAgentCardProps {
   snapshot: AgentDelegationSnapshot;

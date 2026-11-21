@@ -175,23 +175,37 @@ function CatalogPicker({
               setConsent({ row, resolve });
             }),
         };
-  // A failed read closes the picker: it never offers a draft without the
+  // A failed read keeps the picker open with Try again (CAN-7473). With
+  // nothing read yet it offers no Save, so it never saves a draft without the
   // chat's saved selection.
-  useEffect(() => {
-    if (state.status === 'error') onClose();
-  }, [onClose, state.status]);
+  const [retrying, setRetrying] = useState(false);
+  const retryRead = (): void => {
+    setRetrying(true);
+    void catalog
+      .refresh()
+      .then((): void => setRead(true), reportClientAppError)
+      .finally((): void => setRetrying(false));
+  };
   // The picker takes its draft from the selection when it opens, so it opens
-  // only once this open has read the chat's saved selection; Save then keeps it.
+  // with a draft only once this open has read the chat's saved selection;
+  // Save then keeps it. A first read that lands after a failure opens it
+  // afresh with that selection.
   return (
     <>
       <RemoteControlPluginsPicker
-        open={read && state.status === 'ready'}
+        key={state.plugins === null ? 'unread' : 'read'}
+        open={(read && state.status === 'ready') || state.status === 'error'}
         onOpenChange={(open): void => {
           if (!open) onClose();
         }}
         hideTrigger
         {...(returnFocusRef === undefined ? {} : { returnFocusRef })}
         catalog={state.plugins}
+        loadError={state.status === 'error'}
+        loading={retrying}
+        onRetryLoad={retryRead}
+        // The read's failure is recorded where it was caught.
+        loadFailureRecorded
         selections={state.selections}
         brandDisplayName={brandText.appName}
         {...(localItems === undefined ? {} : { localItems })}

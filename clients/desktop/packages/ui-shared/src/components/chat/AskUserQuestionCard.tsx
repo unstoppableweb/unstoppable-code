@@ -29,12 +29,26 @@ import { ChoiceField, ChoiceMark } from '../Choice';
 import { Kbd } from '../Kbd';
 import { Select, TextArea, TextInput, FieldError } from '../Field';
 import { Notice } from '../Notice';
+import { surfaceClassName } from '../Surface';
+import { isCoarsePointerNow } from '../useMediaQuery';
 import { QuestionProgress } from './QuestionProgress';
 import { QuestionOptionText } from './QuestionOptionText';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
+
+// A pending-input form: the neutral group box (docs/design/surfaces.md).
+const QUESTION_BOX_CLASS = surfaceClassName({ variant: 'group' });
+
+// Browsers ignore autocomplete="off" on a password field; keep password
+// managers from saving or filling an agent's secret.
+const SECRET_FIELD_PROPS = {
+  autoComplete: 'off',
+  'data-1p-ignore': true,
+  'data-lpignore': 'true',
+  'data-bwignore': true,
+} as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -134,7 +148,7 @@ export const AnsweredQuestionsBlock = memo(function AnsweredQuestionsBlock({
   // across their hairline, the same as the inset.
   return (
     <div
-      className={`flex flex-col gap-2 rounded-2xl border border-line-base bg-tertiary text-s text-pretty canopy-small-icon-stroke p-3`}
+      className={`flex flex-col gap-2 ${QUESTION_BOX_CLASS} text-s text-pretty canopy-small-icon-stroke p-3`}
       data-testid="answered-questions"
     >
       <div className="flex items-center gap-2 fg-tertiary">
@@ -677,7 +691,7 @@ function AskUserQuestionCardImpl({
       className={
         embedded
           ? 'flex w-full flex-col gap-3 p-3 text-pretty outline-none'
-          : 'flex w-full flex-col gap-3 overflow-hidden rounded-2xl border border-line-base bg-tertiary p-3 text-pretty'
+          : `flex w-full flex-col gap-3 overflow-hidden ${QUESTION_BOX_CLASS} p-3 text-pretty`
       }
       onSubmit={(event) => {
         event.preventDefault();
@@ -711,7 +725,14 @@ function AskUserQuestionCardImpl({
           const actionButton = target.closest(
             'button:not([data-question-option])',
           );
-          if (explicitAdvance || (!actionButton && !target.matches('select'))) {
+          // A phone keyboard has no Shift+Enter, so Enter in a textarea adds a
+          // line on touch and the button advances.
+          const touchNewline =
+            target.matches('textarea') && isCoarsePointerNow();
+          if (
+            explicitAdvance ||
+            (!actionButton && !target.matches('select') && !touchNewline)
+          ) {
             event.preventDefault();
             event.currentTarget.requestSubmit();
           }
@@ -818,6 +839,7 @@ function AskUserQuestionCardImpl({
                     id={groupName}
                     aria-labelledby={questionId}
                     type={q.secret ? 'password' : q.control}
+                    {...(q.secret ? SECRET_FIELD_PROPS : {})}
                     value={otherTexts.get(step) ?? ''}
                     onChange={(e) => setOtherText(step, e.target.value)}
                     disabled={controlsDisabled}
@@ -936,6 +958,8 @@ function AskUserQuestionCardImpl({
                     {q.secret ? (
                       <TextInput
                         type="password"
+                        aria-labelledby={questionId}
+                        {...SECRET_FIELD_PROPS}
                         value={otherTexts.get(step) ?? ''}
                         disabled={controlsDisabled}
                         onChange={(e) => setOtherText(step, e.target.value)}
@@ -943,6 +967,7 @@ function AskUserQuestionCardImpl({
                       />
                     ) : (
                       <TextArea
+                        aria-labelledby={questionId}
                         value={otherTexts.get(step) ?? ''}
                         disabled={controlsDisabled}
                         onChange={(e) => setOtherText(step, e.target.value)}

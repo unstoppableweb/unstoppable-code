@@ -1183,7 +1183,25 @@ export function clearCollectionRemoteMetadataByRemoteId(
   );
 }
 
-export function deleteCollectionConfig(id: string): Promise<void> {
+export function deleteCollectionConfig(
+  id: string,
+  guard?: Pick<CollectionSaveGuard, 'expectedRevision'>,
+): Promise<void> {
+  if (guard)
+    return withCollectionStoreLock(async () => {
+      const existing = await readCollectionConfigUnfiltered(id);
+      if (!existing)
+        throw new CollectionMutationError('not_found', 'Collection not found.');
+      if (
+        !guard.expectedRevision ||
+        existing.collection.revision !== guard.expectedRevision
+      )
+        throw new CollectionMutationError(
+          'conflict',
+          'Collection changed. Reload it before deleting.',
+        );
+      return deleteCollectionConfigUnlocked(id);
+    });
   return withCollectionStoreLock(() => deleteCollectionConfigUnlocked(id));
 }
 

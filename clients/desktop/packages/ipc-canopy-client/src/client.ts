@@ -58,13 +58,18 @@ import type {
   ClaudeModSurfaceUpdate,
 } from '@canopy/protocol/extension-ui';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
-import type {
-  PreparedSharedMultiRepo,
-  SharedMultiRepoCreationStatus,
+import {
+  isOrgRepositoryOwnerLookup,
+  type PreparedSharedMultiRepo,
+  type SharedMultiRepoCreationStatus,
 } from '@canopy/protocol/org-projects';
+import { toPortableCloneJobs } from '@canopy/protocol/clone-jobs';
+import { readRemoteControlProviderUsage } from '@canopy/protocol/remote-control/shell/provider-usage-reader';
 import {
   normalizeOnboardingTipDismissals,
+  parseOnboardingTipsState,
   type OnboardingTipDismissals,
+  type OnboardingTipsState,
 } from '@canopy/protocol/onboarding-tips';
 import {
   OrganizationInviteResultSchema,
@@ -91,7 +96,10 @@ import {
   WorktreeArchiveResultSchema,
   worktreeRemovalOutcome,
 } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
-import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
+import {
+  isChannelUnavailableRejection,
+  type RemoteIpcTransport,
+} from '@canopy/protocol/remote-control';
 import {
   isScriptActionsAddReceipt,
   isScriptActionsContext,
@@ -114,7 +122,10 @@ import {
   type Decoder,
 } from './channel-client';
 import { readChatHistory } from './chat-history';
+import { readChatVisual } from './chat-visual';
+import { createChannelTranscriptReadClient } from './transcript-reads';
 import { createChatEventSource, subscribeChatMessages } from './chat-messages';
+import { subscribeTransientRetry } from './chat-recovery';
 import { createWorktreeActivityHandlers } from './worktree-activity';
 import {
   anyPayload,
@@ -148,7 +159,10 @@ import {
   toUpdateTrackedPlanRequest,
   versionFrom,
 } from './projections';
-import { createShellCommandHandlers } from './shell-commands';
+import {
+  createShellCommandHandlers,
+  isChannelUnavailable,
+} from './shell-commands';
 import { createTerminalHandlers } from './terminal';
 import type {
   WireAddedWorkspace,
@@ -192,6 +206,11 @@ type SubscribeHandlers = {
   ) => Unsubscribe;
 };
 
+// A computer on an older release refuses the retention write from a browser
+// (CAN-7438); updating it is the only fix. Matches the archived overview's
+// copy for the same case (CAN-5986).
+const ARCHIVE_RETENTION_HOST_OUTDATED =
+  'Update the desktop app to change how long deleted items are kept.';
 /** Why a client without the session port can't answer a secret form. */
 const SECRET_REQUESTS_UNAVAILABLE =
   "Secrets can't be sent on this connection. Provide them on your computer.";
@@ -386,7 +405,15 @@ class PortableIpcCanopyClient implements CanopyClient {
         : {}),
       ...(ports.chatEventsDecoded === true ? { decoded: true } : {}),
     });
+    // A host port wins (the desktop reads through its local core). Without
+    // one, a controller whose capabilities report delegate transcript reads
+    // reads them over the narrow delegation channels (CAN-7432).
     if (ports.transcripts) this.transcripts = ports.transcripts;
+    else if (ports.capabilities.delegationTranscriptReads === true)
+      this.transcripts = createChannelTranscriptReadClient(
+        this.channels,
+        () => this.capabilities,
+      );
     if (ports.feedback) this.feedback = ports.feedback;
     if (ports.marketplaceSources) {
       this.marketplaceSources = ports.marketplaceSources;
@@ -486,11 +513,14 @@ class PortableIpcCanopyClient implements CanopyClient {
       ...shell.queries,
       'appAdvisor.chats': shell.orchestrator.query,
       'worktree.activity': activity.query,
+      'chat.checkFailedTurnRetry': shell.recovery.checkFailedTurnRetry,
     };
     this.commandHandlers = {
       ...this.createCommandHandlers(terminal),
       ...shell.commands,
       'chat.attachments.upload': shell.uploadAttachment,
+      'chat.resolvePlanExit': shell.recovery.resolvePlanExit,
+      'chat.retryFailedTurn': shell.recovery.retryFailedTurn,
       // The computer's stored copy expires on its own.
       'chat.attachments.delete': (): Promise<void> => Promise.resolve(),
       'chat.secretRequest.settle': (
@@ -523,6 +553,13 @@ class PortableIpcCanopyClient implements CanopyClient {
         shell.orchestrator.subscribe(handler, filter),
       'worktree.activityChanged': (handler, filter): Unsubscribe =>
         activity.subscribe(handler, filter),
+      'chat.transientRetry': (handler, filter): Unsubscribe =>
+        subscribeTransientRetry(
+          this.subscribeChatEvents,
+          this.now,
+          handler,
+          filter,
+        ),
     };
   }
 
@@ -599,8 +636,36 @@ class PortableIpcCanopyClient implements CanopyClient {
   }
 
   /**
-   * Stored tip dismissals. A failed preferences load rejects, so shared tips
-   * stay hidden instead of reappearing; so does a host built before tips.
+   * Tips or suggestions through their narrow read (CAN-7434). Only a client
+   * served the full preferences falls back to `preferences:load`, and only
+   * when the host refuses the narrow channel because it predates it; any
+   * other failure, including a malformed reply, rejects unchanged.
+   */
+  private async loadNarrowPreference<T>(
+    channel: RemoteIpcChannel,
+    parse: (value: unknown) => T | null,
+    olderHost: () => Promise<T>,
+  ): Promise<T> {
+    let reply: unknown;
+    try {
+      reply = await this.channels.invoke(channel, anyReply<unknown>());
+    } catch (error) {
+      if (
+        this.capabilities.settingsScope === 'full' &&
+        isChannelUnavailableRejection(error, channel)
+      )
+        return olderHost();
+      throw error;
+    }
+    const state = parse(reply);
+    if (state === null) throw new RemoteIpcMalformedReplyError(channel);
+    return state;
+  }
+
+  /**
+   * Stored tip dismissals, for an older host without the narrow read. A
+   * failed preferences load rejects, so shared tips stay hidden instead of
+   * reappearing; so does a host built before tips.
    */
   private async loadOnboardingTipDismissals(): Promise<OnboardingTipDismissals> {
     const preferences = await this.loadPreferences();
@@ -612,7 +677,10 @@ class PortableIpcCanopyClient implements CanopyClient {
     );
   }
 
-  /** The master switch, dismissals and corner cap (CAN-4343). */
+  /**
+   * The master switch, dismissals and corner cap (CAN-4343), for an older
+   * host without the narrow read.
+   */
   private async loadSuggestionsState(): Promise<SuggestionsState> {
     const preferences = await this.loadPreferences();
     const state = parseSuggestionsState(preferences.suggestions);
@@ -814,7 +882,10 @@ class PortableIpcCanopyClient implements CanopyClient {
     terminal: TerminalHandlers,
   ): Omit<
     QueryHandlers,
-    ShellQueryName | 'appAdvisor.chats' | 'worktree.activity'
+    | ShellQueryName
+    | 'appAdvisor.chats'
+    | 'worktree.activity'
+    | 'chat.checkFailedTurnRetry'
   > {
     const channels = this.channels;
     return {
@@ -903,6 +974,21 @@ class PortableIpcCanopyClient implements CanopyClient {
           ),
         ),
       ...terminal.queries,
+      // CAN-7433: the host's clone jobs, without remote URLs or host paths.
+      'cloneJobs.list': () => readCloneJobs(channels),
+      // CAN-7433: no argument; `workspaceLocalId` only picks the host.
+      'providerUsage.get': async () =>
+        readProviderUsage(
+          C.providerUsageLoad,
+          await channels.invoke(C.providerUsageLoad, anyReply<unknown>()),
+        ),
+      // CAN-7433: exactly `{ remoteUrl }`, the only form a browser may send.
+      'orgProjects.findRepositoryOwner': ({ remoteUrl }) =>
+        channels.invoke(
+          C.orgProjectsFindRepositoryOwner,
+          isOrgRepositoryOwnerLookup,
+          { remoteUrl },
+        ),
       // Organization projects (CAN-2955): the host-owned catalog per context.
       'orgProjects.catalog': (args) => {
         const broadcast = this.orgProjectBroadcasts.get(
@@ -1046,6 +1132,7 @@ class PortableIpcCanopyClient implements CanopyClient {
         }),
       'chat.history': (args) =>
         readChatHistory(channels, args, this.ports.toolFamilyFor),
+      'chat.readVisual': (args) => readChatVisual(channels, args),
       'plan.get': async (args) => {
         const plan = await channels.invoke(
           C.trackedPlansGet,
@@ -1094,16 +1181,26 @@ class PortableIpcCanopyClient implements CanopyClient {
           C.settingsLoadInstallUpdateEmailPreference,
           anyReply<QueryMap['account.installUpdateEmails.get']['result']>(),
         ),
-      'onboardingTips.get': async () => ({
-        dismissed: await this.loadOnboardingTipDismissals(),
-      }),
+      'onboardingTips.get': () =>
+        this.loadNarrowPreference(
+          C.preferencesLoadOnboardingTips,
+          parseOnboardingTipsState,
+          async (): Promise<OnboardingTipsState> => ({
+            dismissed: await this.loadOnboardingTipDismissals(),
+          }),
+        ),
       'claudeMods.get': (args) =>
         channels.invoke(
           C.claudeModsGet,
           recordReply<QueryMap['claudeMods.get']['result']>(),
           args,
         ),
-      'suggestions.get': () => this.loadSuggestionsState(),
+      'suggestions.get': () =>
+        this.loadNarrowPreference(
+          C.preferencesLoadSuggestions,
+          parseSuggestionsState,
+          () => this.loadSuggestionsState(),
+        ),
     };
   }
 
@@ -1114,6 +1211,8 @@ class PortableIpcCanopyClient implements CanopyClient {
     | ShellCommandName
     | 'chat.attachments.upload'
     | 'chat.attachments.delete'
+    | 'chat.resolvePlanExit'
+    | 'chat.retryFailedTurn'
     | 'chat.secretRequest.settle'
   > {
     const channels = this.channels;
@@ -1124,9 +1223,18 @@ class PortableIpcCanopyClient implements CanopyClient {
           recordReply<CommandMap['delegation.extendLifetimeLimit']['result']>(),
           args,
         ),
-      'providerUsage.refresh': async ({ provider }) => {
-        await channels.invokeVoid(C.observabilityRefreshUsage, provider);
-      },
+      // CAN-7433: exactly `{ provider }`; answers the fresh projection.
+      'providerUsage.refresh': async ({ provider }) =>
+        readProviderUsage(
+          C.providerUsageRefresh,
+          await channels.invoke(C.providerUsageRefresh, anyReply<unknown>(), {
+            provider,
+          }),
+        ),
+      'cloneJobs.cancel': ({ jobId }) =>
+        channels.invokeVoid(C.cloneJobsCancel, jobId),
+      'cloneJobs.dismiss': ({ jobId }) =>
+        channels.invokeVoid(C.cloneJobsDismiss, jobId),
       'repoRules.apply': (args) =>
         unwrapIpcError(
           channels.invoke(
@@ -1494,6 +1602,22 @@ class PortableIpcCanopyClient implements CanopyClient {
           ...(args.name !== undefined ? { name: args.name } : {}),
           ...(args.color !== undefined ? { color: args.color } : {}),
         });
+        await this.invalidateSessionSnapshot();
+      },
+      // A code project's deletion retention (CAN-7438). Only the two fields
+      // are sent, so the host leaves auto-archive settings unchanged.
+      'workspace.setArchiveRetention': async (args) => {
+        try {
+          await channels.invokeVoid(C.workspaceSetArchiveRetention, {
+            workspaceId: args.workspaceId,
+            archiveRetentionDays: args.archiveRetentionDays,
+          });
+        } catch (error) {
+          if (isChannelUnavailable(error)) {
+            throw new Error(ARCHIVE_RETENTION_HOST_OUTDATED);
+          }
+          throw new Error(extractIpcErrorMessage(error));
+        }
         await this.invalidateSessionSnapshot();
       },
       'workspace.delete': async (args) => {
@@ -2176,7 +2300,7 @@ class PortableIpcCanopyClient implements CanopyClient {
     terminal: TerminalHandlers,
   ): Omit<
     SubscribeHandlers,
-    'appAdvisor.changed' | 'worktree.activityChanged'
+    'appAdvisor.changed' | 'worktree.activityChanged' | 'chat.transientRetry'
   > {
     const channels = this.channels;
     return {
@@ -2250,6 +2374,11 @@ class PortableIpcCanopyClient implements CanopyClient {
           isOrgProjectSetupProgress,
           (progress) => handler({ progress, occurredAt: progress.updatedAt }),
         ),
+      'cloneJobs.changed': (handler) =>
+        channels.listen(C.cloneJobsChanged, Array.isArray, (raw) => {
+          const jobs = toPortableCloneJobs(raw);
+          if (jobs) handler({ jobs, occurredAt: this.now() });
+        }),
       'scriptActions.changed': (handler, filter) =>
         channels.listen(
           C.scriptActionsChanged,
@@ -2318,6 +2447,27 @@ class PortableIpcCanopyClient implements CanopyClient {
   ): Unsubscribe {
     return this.subscribeHandlers[name](handler, filter);
   }
+}
+
+/** The host's clone jobs; a reply that is not a list rejects. */
+async function readCloneJobs(
+  channels: ChannelClient,
+): Promise<QueryMap['cloneJobs.list']['result']> {
+  const jobs = toPortableCloneJobs(
+    await channels.invoke(C.cloneJobsList, anyReply<unknown>()),
+  );
+  if (!jobs) throw new RemoteIpcMalformedReplyError(C.cloneJobsList);
+  return jobs;
+}
+
+/** A quota projection reply; an invalid one rejects. */
+function readProviderUsage(
+  channel: RemoteIpcChannel,
+  value: unknown,
+): QueryMap['providerUsage.get']['result'] {
+  const projection = readRemoteControlProviderUsage(value);
+  if (!projection) throw new RemoteIpcMalformedReplyError(channel);
+  return projection;
 }
 
 /**

@@ -1,9 +1,12 @@
 'use client';
 
 import type { JSX, ReactNode, RefObject } from 'react';
-import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import {
+  ConfirmDialog,
+  type ConfirmDialogErrorProps,
+} from '@canopy/ui-shared/components/ConfirmDialog';
 
-export interface SettingsConfirmDialogProps {
+interface SettingsConfirmDialogBaseProps {
   readonly title: ReactNode;
   /** Body explaining the consequence of the action. */
   readonly message: ReactNode;
@@ -18,8 +21,6 @@ export interface SettingsConfirmDialogProps {
   readonly dataTestId?: string;
   /** Overrides the default confirm-button test id. */
   readonly confirmTestId?: string;
-  /** The failed action, shown above the buttons while the dialog stays open. */
-  readonly errorMessage?: string | null;
   /** The failure's raw reason: copied by `Copy details`, never shown. */
   readonly errorDetails?: string;
   /**
@@ -28,6 +29,13 @@ export interface SettingsConfirmDialogProps {
    */
   readonly restoreFocusRef?: RefObject<HTMLElement | null>;
 }
+
+/**
+ * `errorMessage` is the failed action, shown above the buttons while the
+ * dialog stays open.
+ */
+export type SettingsConfirmDialogProps = SettingsConfirmDialogBaseProps &
+  ConfirmDialogErrorProps;
 
 /**
  * The confirmation modal for consequential account and organization actions
@@ -45,9 +53,9 @@ export function SettingsConfirmDialog({
   onCancel,
   dataTestId,
   confirmTestId,
-  errorMessage,
   errorDetails,
   restoreFocusRef,
+  ...errorProps
 }: SettingsConfirmDialogProps): JSX.Element {
   return (
     <ConfirmDialog
@@ -62,7 +70,7 @@ export function SettingsConfirmDialog({
       dataTestId={dataTestId}
       confirmTestId={confirmTestId}
       cancelTestId="confirm-dialog-cancel"
-      errorMessage={errorMessage}
+      {...errorProps}
       errorDetails={errorDetails}
       restoreFocusRef={restoreFocusRef}
     />

@@ -78,7 +78,7 @@ export interface AutomationsStore {
    */
   deleteActivity: (
     id: string,
-    options?: { keepPipeline?: boolean; workflow?: boolean },
+    options?: Omit<AutomationDeleteRequest, 'id'>,
   ) => Promise<AutomationMutationResponse>;
   /** Forward a run-now request to the main process. */
   runNow: (id: string) => Promise<AutomationMutationResponse>;
@@ -245,6 +245,9 @@ export const useAutomationsStore = create<AutomationsStore>((set, get) => ({
       id,
       ...(options?.keepPipeline ? { keepPipeline: true } : {}),
       ...(options?.workflow ? { workflow: true } : {}),
+      ...(options?.pendingUsageLimitResumeOnly
+        ? { pendingUsageLimitResumeOnly: true }
+        : {}),
     };
     return await runMutation(set, (api) => api.delete(payload));
   },

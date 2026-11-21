@@ -44,7 +44,7 @@ import {
 import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { isClaudeWorkerToolExposed } from '../integration/claude-worker-tool-exposure';
 import { isRecord } from './integration-http';
-import { antigravityAdvertisedSchema } from '../antigravity/mcp-schema';
+import { antigravityAppToolDeclaration } from '../antigravity/app-tool-declarations';
 import { hasInterfaceTool } from '../agents/interface-tool-binding';
 import { isPipelineEditorToolAdvertised } from '../pipeline-editor/tool-advertisement';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
@@ -1028,9 +1028,6 @@ export function listCanopyRouteTools(
   }
   const tools = getCanopyRouteTools(route, uiServer);
   return route.providerType === 'antigravity'
-    ? tools.map((tool) => ({
-        ...tool,
-        inputSchema: antigravityAdvertisedSchema(tool.inputSchema),
-      }))
+    ? tools.map(antigravityAppToolDeclaration)
     : tools;
 }

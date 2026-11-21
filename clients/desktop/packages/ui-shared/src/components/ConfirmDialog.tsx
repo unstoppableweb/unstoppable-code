@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -19,6 +20,7 @@ import { DialogModal } from './DialogModal';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Stack } from './Stack';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { useNoticeErrorRecording } from './notice-error-recording';
 
 /** The second option of a two-way choice, such as Discard beside Save. */
 export interface ConfirmDialogSecondaryAction {
@@ -27,7 +29,7 @@ export interface ConfirmDialogSecondaryAction {
   readonly testId?: string;
 }
 
-export interface ConfirmDialogProps {
+interface ConfirmDialogBaseProps {
   /**
    * A question that names the object (`Delete worktree “owl”?`). A node, so a
    * caller can mask a user-authored name for session replay.
@@ -44,12 +46,6 @@ export interface ConfirmDialogProps {
    * caller clears it.
    */
   readonly busy?: boolean;
-  /**
-   * Failure text for a confirm handler that rejected. Rendering it keeps the
-   * dialog open so the action can be retried, instead of dismissing on a
-   * failure the user never saw.
-   */
-  readonly errorMessage?: string | null;
   /**
    * The failure's raw reason (a server's text). Never rendered: it adds a
    * `Copy details` action under `errorMessage` that copies it for support.
@@ -103,6 +99,35 @@ export interface ConfirmDialogProps {
 }
 
 /**
+ * Failure text for a confirm handler that rejected. Rendering it keeps the
+ * dialog open so the action can be retried, instead of dismissing on a
+ * failure the user never saw. Showing it records a sighting when it names the
+ * operation with `errorSource` (a static kebab-case name);
+ * `errorRecordingDisabled` is for text that is a precondition, not a failure.
+ */
+export type ConfirmDialogErrorProps =
+  // Temporary: un-annotated callers show the text and record nothing. Remove
+  // this branch once every caller names `errorSource` or disables recording.
+  | {
+      errorMessage?: string | null | undefined;
+      errorSource?: undefined;
+      errorRecordingDisabled?: undefined;
+    }
+  | {
+      errorMessage: string | null | undefined;
+      errorSource: string;
+      errorRecordingDisabled?: never;
+    }
+  | {
+      errorMessage: string | null | undefined;
+      errorSource?: never;
+      errorRecordingDisabled: true;
+    };
+
+export type ConfirmDialogProps = ConfirmDialogBaseProps &
+  ConfirmDialogErrorProps;
+
+/**
  * The one confirmation shape shared by desktop and web: a compact 380px card
  * (400px with three buttons), a question naming the object, one sentence,
  * then Cancel and the action as capsules. No header rule and no close button:
@@ -120,6 +145,8 @@ export function ConfirmDialog({
   busyLabel,
   busy = false,
   errorMessage,
+  errorSource,
+  errorRecordingDisabled,
   errorDetails,
   destructive = false,
   onConfirm,
@@ -134,6 +161,15 @@ export function ConfirmDialog({
   restoreFocusRef,
   ownerDocument,
 }: ConfirmDialogProps): JSX.Element {
+  const messageId = useId();
+  const errorRef = useNoticeErrorRecording({
+    enabled:
+      !!errorMessage && !errorRecordingDisabled && errorSource !== undefined,
+    chokePoint: 'notice',
+    identifier: errorSource,
+    textKey: errorMessage ?? '',
+    displayErrorCode: undefined,
+  });
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
   const restingWidth = useRef<number | null>(null);
@@ -160,6 +196,7 @@ export function ConfirmDialog({
       closeOnBackdrop={!busy}
       closeOnEscape={!busy}
       title={title}
+      ariaDescribedBy={messageId}
       dataTestId={dataTestId}
       trapFocus
       initialFocusRef={startOnCancel ? cancelRef : confirmRef}
@@ -168,11 +205,14 @@ export function ConfirmDialog({
     >
       <div className="flex flex-col gap-4.5 pt-1">
         <Stack gap="item">
-          <div className="text-s text-pretty fg-secondary">{message}</div>
+          <div id={messageId} className="text-s text-pretty fg-secondary">
+            {message}
+          </div>
           {children ? <div>{children}</div> : null}
           {errorMessage && (
             <Stack gap="inline">
               <div
+                ref={errorRef}
                 role="alert"
                 data-testid="confirm-dialog-error"
                 className={`text-s text-pretty fg-destructive ${REPLAY_BLOCK_CLASS}`}

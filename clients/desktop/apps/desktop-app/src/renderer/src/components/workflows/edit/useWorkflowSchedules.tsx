@@ -53,8 +53,11 @@ import { ActivityFormBody } from '../../automations/form/ActivityFormBody';
 import { usePipelineCloudRuns } from '../../activity/pipelineRunOn';
 import {
   activityToFormState,
+  findModelAliasBlock,
   type FormState,
+  type ModelAliasBlock,
 } from '../../automations/form/automationFormState';
+import { derivePipelinePreferenceLocator } from '@/lib/pipelinePluginCollections';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
 import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
 import {
@@ -62,6 +65,44 @@ import {
   type ScheduleDraft,
   type ScheduleDraftSource,
 } from './useScheduleDrafts';
+
+// A schedule's model alias that can't run (CAN-5782 follow-up). The row has
+// no model picker, so the fix is the workflow's default, or setting one in
+// its settings when it has none.
+const USE_WORKFLOW_DEFAULT = "Use the workflow's default";
+
+/**
+ * The preferences a run uses: this computer's, then the schedule's own, keyed
+ * by trimmed alias id as the executor reads them.
+ */
+function runPreferences(
+  ...layers: ReadonlyArray<Readonly<Record<string, unknown>> | undefined>
+): Record<string, unknown> {
+  // Entries, so every alias id is an own key, `__proto__` included.
+  const entries: Array<[string, unknown]> = layers.flatMap((layer) =>
+    Object.entries(layer ?? {}).flatMap(
+      ([aliasId, preference]): Array<[string, unknown]> => {
+        const id = aliasId.trim();
+        return id === '' ? [] : [[id, preference]];
+      },
+    ),
+  );
+  return Object.fromEntries(entries);
+}
+
+/** What a schedule row says about a blocked model alias, and its fix. */
+function scheduleModelAliasError(block: ModelAliasBlock): {
+  message: string;
+  resetAliasId?: string;
+} {
+  const label = block.alias.name || block.alias.id;
+  const setDefault = `Set a default for the ${label} model alias in this workflow's settings.`;
+  if (block.kind === 'unconfigured') return { message: setDefault };
+  const unusable = `This schedule's ${label} model choice can't be used.`;
+  return block.alias.defaults
+    ? { message: unusable, resetAliasId: block.alias.id }
+    : { message: `${unusable} ${setDefault}` };
+}
 
 const AGENT_ORIGIN_NOTICE =
   "An agent created this workflow. Its runs keep the agent's restrictions.";
@@ -196,6 +237,20 @@ function newScheduleState(
   return { ...activityToFormState(activity), mode: 'create', id: undefined };
 }
 
+export interface WorkflowSchedulesSaveOptions {
+  /**
+   * The name and pipeline the pipeline save just stored, which a Raw YAML
+   * edit sets without the editor having rendered them yet.
+   */
+  readonly savedName?: string;
+  readonly savedPipeline?: Pipeline;
+  /**
+   * The page's own check, run right before each schedule is written, on the
+   * drafts as they are then: a refusal stops the save with it.
+   */
+  readonly check?: () => UnsavedChangesSaveResult | null;
+}
+
 export interface WorkflowSchedulesApi {
   /** The pipeline is a workflow page: its schedules replace Automations. */
   readonly isWorkflowPage: boolean;
@@ -206,10 +261,10 @@ export interface WorkflowSchedulesApi {
   readonly agentGranted: boolean;
   /**
    * Saves each changed schedule; the first failure stops and says why.
-   * `savedName` is the name the pipeline save just stored, which a Raw YAML
-   * rename sets without the editor's own name having rendered yet.
    */
-  readonly saveAll: (savedName?: string) => Promise<UnsavedChangesSaveResult>;
+  readonly saveAll: (
+    options?: WorkflowSchedulesSaveOptions,
+  ) => Promise<UnsavedChangesSaveResult>;
   readonly discard: () => void;
   readonly triggers: PipelineTriggerSchedules | undefined;
   /**
@@ -367,6 +422,8 @@ export function useWorkflowSchedules({
   const [rowError, setRowError] = useState<{
     key: string;
     message: string;
+    /** The model alias "Use the workflow's default" resets. */
+    resetAliasId?: string;
   } | null>(null);
 
   const required = useMemo(() => inputsTheStepsRead(pipeline), [pipeline]);
@@ -402,10 +459,52 @@ export function useWorkflowSchedules({
     [declared, defaults, required],
   );
 
+  // Bumped by Discard, so a save waiting on preferences writes nothing the
+  // person discarded.
+  const saveGenerationRef = useRef(0);
   const saveAll = useCallback(
-    async (savedName?: string): Promise<UnsavedChangesSaveResult> => {
+    async ({
+      savedName,
+      savedPipeline,
+      check,
+    }: WorkflowSchedulesSaveOptions = {}): Promise<UnsavedChangesSaveResult> => {
       const scheduleName = savedName ?? name;
+      const generation = saveGenerationRef.current;
       setRowError(null);
+      // The pipeline the schedules run, and the model preferences this
+      // computer stores for it, which a run layers under a schedule's own.
+      const ran = savedPipeline ?? pipeline;
+      const aliases = (ran?.model_aliases ?? []).flatMap((alias) => {
+        const id = alias.id.trim();
+        return id === '' ? [] : [{ ...alias, id }];
+      });
+      const collectionIds = new Set(
+        (ran?.plugin_collections ?? []).map((collection) =>
+          collection.id.trim(),
+        ),
+      );
+      let stored: Readonly<Record<string, unknown>> | undefined;
+      const storedPreferences = async (): Promise<
+        Readonly<Record<string, unknown>>
+      > => {
+        if (stored !== undefined) return stored;
+        stored = {};
+        if (!info) return stored;
+        try {
+          const result = await window.pipelines.loadModelAliasPreferences({
+            pipelinePreferenceLocator: derivePipelinePreferenceLocator(info),
+          });
+          // A failed read checks the schedule's own choices alone.
+          if (result.success && result.data) stored = result.data.preferences;
+          else
+            reportClientAppError(
+              new Error(result.error ?? 'Model preferences failed to load'),
+            );
+        } catch (error: unknown) {
+          reportClientAppError(error);
+        }
+        return stored;
+      };
       // Read the drafts as they are now, again after each pass: a schedule
       // edited while the pipeline saved is saved too, never skipped.
       for (let pass = 0; pass < 3; pass += 1) {
@@ -419,8 +518,19 @@ export function useWorkflowSchedules({
           // Only the name changes: edits made meanwhile stay.
           if (scheduleName.trim() !== '')
             drafts.setName(draft.key, scheduleName);
+          // Loaded first, so the checks below see the draft that is saved.
+          const machine = aliases.length > 0 ? await storedPreferences() : {};
           const state = drafts.latest(draft.key);
           if (state === undefined) continue;
+          // A cloud run takes only the workflow's defaults, never these
+          // preferences (CAN-6917): its models are checked when it moves.
+          // Where it runs is read now, since another window may have moved it.
+          const now = drafts.current().find((entry) => entry.key === draft.key);
+          // A saved schedule put back as it was meanwhile has nothing to save.
+          if (now?.activity && !now.dirty) continue;
+          const runsIn = now?.activity;
+          const checkAliases =
+            aliases.length > 0 && runsIn?.executionLocation !== 'cloud';
           const missing = missingInput(state);
           if (missing !== undefined) {
             const message = `Fill in ${missing} for this schedule.`;
@@ -428,6 +538,22 @@ export function useWorkflowSchedules({
             setExpandedKey(draft.key);
             return { ok: false, message };
           }
+          if (checkAliases) {
+            const block = findModelAliasBlock(
+              aliases,
+              runPreferences(machine, state.modelAliasPreferences),
+              collectionIds,
+            );
+            if (block !== undefined) {
+              const error = scheduleModelAliasError(block);
+              setRowError({ key: draft.key, ...error });
+              setExpandedKey(draft.key);
+              return { ok: false, message: error.message };
+            }
+          }
+          if (saveGenerationRef.current !== generation) return { ok: false };
+          const refused = check?.();
+          if (refused) return refused;
           const saved = await drafts.save(draft.key);
           if (!saved.ok) {
             setExpandedKey(draft.key);
@@ -448,11 +574,12 @@ export function useWorkflowSchedules({
           }
         : { ok: true };
     },
-    [drafts, missingInput, name],
+    [drafts, info, missingInput, name, pipeline],
   );
 
   const { discard: discardDrafts } = drafts;
   const discard = useCallback((): void => {
+    saveGenerationRef.current += 1;
     discardDrafts();
     setNewRows([]);
     setRowError(null);
@@ -702,6 +829,8 @@ export function useWorkflowSchedules({
       // Saved, and its record not listed yet: nothing to edit here.
       if (awaitingKeys.has(draft.key))
         return <p className="text-xs fg-tertiary">{SAVING_SCHEDULE}</p>;
+      const resetAliasId =
+        rowError?.key === draft.key ? rowError.resetAliasId : undefined;
       return (
         <ScheduleBody
           draft={draft}
@@ -717,6 +846,32 @@ export function useWorkflowSchedules({
               ? rowError.message
               : (draft.error?.message ?? null)
           }
+          {...(resetAliasId !== undefined
+            ? {
+                onUseWorkflowDefault: (): void => {
+                  const latest = drafts.latest(draft.key) ?? draft.state;
+                  drafts.change(
+                    draft.key,
+                    {
+                      ...latest,
+                      // `reset` overrides a preference this computer stores.
+                      // Every key that reads as this alias goes, so none
+                      // of them outranks the reset.
+                      modelAliasPreferences: {
+                        ...Object.fromEntries(
+                          Object.entries(
+                            latest.modelAliasPreferences ?? {},
+                          ).filter(([key]) => key.trim() !== resetAliasId),
+                        ),
+                        [resetAliasId]: { mode: 'reset' },
+                      },
+                    },
+                    { origin: 'user' },
+                  );
+                  setRowError(null);
+                },
+              }
+            : {})}
           running={
             draft.activity !== null &&
             automations.runningActivityId === draft.activity.id
@@ -933,6 +1088,8 @@ interface ScheduleBodyProps {
   readonly declaredInputs: readonly string[];
   readonly requiredInputs: ReadonlySet<string>;
   readonly error: string | null;
+  /** Offered when a model alias choice blocks the save and has a default. */
+  readonly onUseWorkflowDefault?: () => void;
   readonly running: boolean;
   readonly onChange: (next: FormState) => void;
   readonly onMount: (next: FormState) => void;
@@ -953,6 +1110,7 @@ function ScheduleBody({
   declaredInputs,
   requiredInputs,
   error,
+  onUseWorkflowDefault,
   running,
   onChange,
   onMount,
@@ -986,13 +1144,27 @@ function ScheduleBody({
         saving={draft.saving || moving}
         projects={projects}
         scope={scope}
-        error={error}
+        error={onUseWorkflowDefault ? null : error}
         fieldGroup="trigger"
         showEnabledField={false}
         onChange={(next, meta): void =>
           meta.origin === 'mount' ? onMount(next) : onChange(next)
         }
       />
+      {onUseWorkflowDefault && error ? (
+        <Notice
+          intent="destructive"
+          errorSource="workflow-schedule-model-alias"
+          actions={
+            <NoticeButton onClick={onUseWorkflowDefault}>
+              {USE_WORKFLOW_DEFAULT}
+            </NoticeButton>
+          }
+          data-testid="workflow-schedule-model-alias-error"
+        >
+          {error}
+        </Notice>
+      ) : null}
       {runOn}
       {keys.length > 0 ? (
         <div

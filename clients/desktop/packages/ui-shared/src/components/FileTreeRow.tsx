@@ -7,6 +7,8 @@ import type {
   MouseEvent,
   ReactNode,
 } from 'react';
+import { ChevronDownIcon } from '../icons/ChevronDownIcon';
+import { ChevronRightIcon } from '../icons/ChevronRightIcon';
 import { FileTypeIcon } from '../icons/FileTypeIcon';
 import { FolderIcon } from '../icons/FolderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
@@ -240,7 +242,11 @@ export function FileTreeRow({
     >
       {isDirectory ? (
         <>
-          <span className="w-3 shrink-0 text-3xs">{expanded ? '▼' : '▶'}</span>
+          {expanded ? (
+            <ChevronDownIcon size={12} aria-hidden className="shrink-0" />
+          ) : (
+            <ChevronRightIcon size={12} aria-hidden className="shrink-0" />
+          )}
           {icon ?? folderIcon}
           <span
             className={secondaryLabel ? `${labelClass} shrink-0` : labelClass}
@@ -278,7 +284,7 @@ export function FileTreeRow({
       style={stickyStyle}
     >
       {row}
-      <div className="absolute right-1 top-1/2 z-10 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <div className="absolute right-1 top-1/2 z-10 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100">
         {trailingAction}
       </div>
     </div>

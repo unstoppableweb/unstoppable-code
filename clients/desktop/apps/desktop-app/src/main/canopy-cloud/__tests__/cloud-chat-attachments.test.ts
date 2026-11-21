@@ -401,8 +401,14 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
       // A refusal keeps the web core's own words, which the composer shows
       // instead of a bare "Couldn't upload it" (CAN-6369).
       [refusal('not_found'), { reason: 'rejected', message: 'refused' }],
-      // An error the client raised itself keeps the composer's own words.
-      [refusal('internal'), { reason: 'rejected' }],
+      // An internal failure with no code may have stored the file
+      // (CAN-7470); one its producer typed is a refusal that keeps the
+      // composer's own words.
+      [refusal('internal'), { reason: 'unknown' }],
+      [
+        refusal('internal', 'core.chat.attachment.unsupportedType'),
+        { reason: 'rejected' },
+      ],
     ];
     for (const [error, expected] of cases) {
       mockInstruction.mockImplementationOnce(() => Promise.reject(error));
@@ -495,7 +501,7 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
     },
   );
 
-  it('reads an answer the client itself finds malformed as develop does, rejected: known debt for the S7c flip, sent once (CAN-7196)', async () => {
+  it('reads an answer the client itself finds malformed as unknown, sent once (CAN-7196, CAN-7470)', async () => {
     const core = await serveUploadCore(
       ['core.chat.attachment.upload'],
       () => '<html>proxy page PAGE-BODY</html>',
@@ -503,12 +509,12 @@ describe('cloud chat attachment upload through main (CAN-5972, CAN-5988)', () =>
     jest.mocked(logMainProcessWarn).mockClear();
     mockState.realClient = true;
     try {
-      // Core-client refuses the answer as `internal` with retry `never`
-      // before main sees it, so it reads `rejected`, as on develop. Reading it
-      // unknown needs a typed mark from the client: the S7c flip owns it.
+      // Core-client refuses the answer as an `internal` error with no code
+      // before main sees it. The upload may have been stored, so it reads
+      // unknown and is never sent again (CAN-7470).
       await expect(upload(MAIN, 'web-core:chat-1', file())).resolves.toEqual({
         ok: false,
-        reason: 'rejected',
+        reason: 'unknown',
       });
     } finally {
       mockState.realClient = false;
@@ -1499,7 +1505,7 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
     ).toHaveLength(1);
   });
 
-  it("reads a workspace file write whose answer the client finds malformed as rejected, without the client's own words, sent once (CAN-7196)", async () => {
+  it("reads a workspace file write whose answer the client finds malformed as unknown, without the client's own words, sent once (CAN-7196, CAN-7470)", async () => {
     const core = await serveUploadCore(
       ['worker.artifact.upload.open', 'worker.artifact.upload.write'],
       (method) =>
@@ -1519,9 +1525,9 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
     } finally {
       mockState.realClient = false;
     }
-    // No message, so the card shows its own "Couldn't save the workspace
-    // file.", and the client's words appear nowhere in what main answers.
-    expect(result).toEqual({ ok: false, reason: 'rejected' });
+    // The write may have landed (CAN-7470), and the client's words appear
+    // nowhere in what main answers.
+    expect(result).toEqual({ ok: false, reason: 'unknown' });
     expect(JSON.stringify(result)).not.toContain('returned an invalid result');
     await core.done;
     expect(
@@ -1653,7 +1659,8 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
       'offline',
     ],
     ['cancelled by the core', 'cancelled', { kind: 'never' }, {}, 'offline'],
-    ['internal', 'internal', { kind: 'never' }, {}, 'rejected'],
+    // CAN-7470: an internal failure with no code may have landed.
+    ['an untyped internal', 'internal', { kind: 'never' }, {}, 'unknown'],
   ] as const)(
     'answers a sent workspace file upload answered as %s (a %s error) with its pinned reason, sent once (CAN-7196)',
     async (_case, kind, retry, details, reason) => {
@@ -1669,8 +1676,6 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
             }),
           ),
       });
-      // An internal error can be the client's own, in developer words: it
-      // never reaches the renderer, as an attachment upload's never does.
       await expect(uploadFile(MAIN, request())).resolves.toEqual({
         ok: false,
         reason,
@@ -1680,4 +1685,28 @@ describe("a cloud project's workspace file upload through main (CAN-7008)", () =
       ).toHaveLength(1);
     },
   );
+
+  it('answers a sent workspace file upload refused as an internal with a typed code as rejected, without its words, sent once (CAN-7470)', async () => {
+    mockCalls.length = 0;
+    answering({
+      'worker.artifact.upload.open': () =>
+        Promise.reject(
+          new CanopyClientError({
+            kind: 'internal',
+            code: 'worker.artifact.upload.invalidState',
+            message: 'The core said no.',
+            retry: { kind: 'never' },
+          }),
+        ),
+    });
+    // An internal error can carry developer words: they never reach the
+    // renderer, as an attachment upload's never do.
+    await expect(uploadFile(MAIN, request())).resolves.toEqual({
+      ok: false,
+      reason: 'rejected',
+    });
+    expect(
+      mockCalls.filter((call) => call === 'worker.artifact.upload.open'),
+    ).toHaveLength(1);
+  });
 });

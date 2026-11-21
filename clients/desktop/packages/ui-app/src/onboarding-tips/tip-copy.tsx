@@ -5,6 +5,7 @@ import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   McpServerIcon,
   ScheduleIcon,
+  SteerIcon,
   WorkflowsIcon,
   WorktreeIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -80,5 +81,13 @@ export const ONBOARDING_TIP_COPY: Readonly<
     icon: <McpServerIcon size={20} />,
     title: () => 'Your connectors stay out of organization projects',
     body: () => 'Add one to a project to use it there.',
+  },
+  // Shown only behind the Steer by default Labs experiment (CAN-7349); no
+  // surface lists it yet.
+  'steer-by-default': {
+    placement: 'composer',
+    icon: <SteerIcon size={20} />,
+    title: () => 'Send during a reply',
+    body: () => 'Your message guides the current reply instead of waiting.',
   },
 };

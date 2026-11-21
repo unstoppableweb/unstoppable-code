@@ -265,7 +265,7 @@ export const StepRow = forwardRef<HTMLButtonElement, StepRowProps>(
                 ? 'rotate-90 opacity-100'
                 : chevronAtRest
                   ? 'opacity-100'
-                  : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100'
+                  : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 pointer-coarse:opacity-100'
             }`}
             aria-hidden="true"
           >

@@ -81,6 +81,12 @@ export interface SegmentedControlProps<T extends string> {
   readonly touchTarget?: boolean;
   /** The track's test id; the sliding surface takes it with `-indicator`. */
   readonly dataTestId?: string;
+  /**
+   * Over busy content such as terminal output: a 32px card track with a
+   * shadow, its contents receding until hovered or focused, so it lines up
+   * with the floating controls beside it.
+   */
+  readonly floating?: boolean;
 }
 
 /**
@@ -90,7 +96,13 @@ export interface SegmentedControlProps<T extends string> {
  * rounded rectangle is retired).
  */
 const TRACK_CLASS_NAME =
-  'relative inline-flex h-7 shrink-0 items-stretch gap-0.5 rounded-full bg-depth p-0.5';
+  'relative inline-flex shrink-0 items-stretch gap-0.5 rounded-full p-0.5';
+
+const TRACK_SURFACE_CLASS_NAME = {
+  inline: 'h-7 bg-depth',
+  floating:
+    'h-8 bg-card shadow-sm *:opacity-60 hover:*:opacity-100 focus-within:*:opacity-100',
+} as const;
 
 const TRACK_WIDTH_CLASS_NAME = {
   control: 'min-w-52',
@@ -220,6 +232,7 @@ export function SegmentedControl<T extends string>({
   disabled,
   touchTarget = false,
   dataTestId,
+  floating = false,
 }: SegmentedControlProps<T>): JSX.Element {
   const trackRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLSpanElement>(null);
@@ -329,7 +342,7 @@ export function SegmentedControl<T extends string>({
       aria-describedby={describedBy}
       onBlur={roving ? onTrackBlur : undefined}
       data-testid={dataTestId}
-      className={`${TRACK_CLASS_NAME} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
+      className={`${TRACK_CLASS_NAME} ${TRACK_SURFACE_CLASS_NAME[floating ? 'floating' : 'inline']} ${TRACK_WIDTH_CLASS_NAME[width]}${touchTarget ? ' pointer-coarse:h-auto' : ''}`.trim()}
     >
       {surface && (
         <span
@@ -398,6 +411,7 @@ export function SegmentedControl<T extends string>({
             key={option.value}
             label={option.tooltip}
             link={option.tooltipLink}
+            showOnTouch={unavailable}
           >
             {segment}
           </Tooltip>

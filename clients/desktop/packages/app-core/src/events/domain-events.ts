@@ -3,6 +3,7 @@ import type {
   RemoteControlConnectionStatus,
 } from '@canopy/protocol/remote-control/shell';
 import type { OrgProjectSetupProgress } from '@canopy/protocol/org-projects';
+import type { PortableCloneJob } from '@canopy/protocol/clone-jobs';
 import type {
   WorkspaceContext,
   WorkspaceContextState,
@@ -75,6 +76,27 @@ export interface ChatMessageEvent extends DomainEventBase {
 }
 
 /**
+ * A worktree chat's automatic-retry state (`canopy_transient_retry_state` on
+ * the host's chat event stream). `active && !exhausted` means an automatic
+ * retry is scheduled or running, which blocks a manual Retry as on desktop.
+ * Consumers drop the state on reconnect: a missed "retry finished" event must
+ * not hide Retry for good, and the host cancels a pending automatic retry
+ * when a person's send is accepted.
+ */
+export interface ChatTransientRetryEvent extends DomainEventBase {
+  readonly projectId: string;
+  readonly worktreeId: string;
+  readonly chatId: string;
+  readonly active: boolean;
+  readonly exhausted: boolean;
+  /** 1-based current attempt. */
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  /** Epoch ms of the next scheduled retry, or `null` when exhausted. */
+  readonly nextRetryAt: number | null;
+}
+
+/**
  * Ordered, materialized chat-state event shared by desktop IPC and Portal.
  * `changes` contains canonical projection values, never raw SDK deltas.
  */
@@ -114,6 +136,11 @@ export interface OrgProjectSetupProgressEvent extends DomainEventBase {
 /** The authoritative lifetime allowance for a worktree may have changed. */
 export type DelegationLifetimeChangedEvent =
   ManagedDelegationLifetimeChangedEvent & DomainEventBase;
+
+/** The host's whole clone job list after any change (CAN-7433). */
+export interface CloneJobsChangedEvent extends DomainEventBase {
+  readonly jobs: readonly PortableCloneJob[];
+}
 
 /** Durable script-action state changed for this project/worktree. Refetch the list. */
 export interface ScriptActionsChangedEvent extends DomainEventBase {
@@ -161,11 +188,13 @@ export interface DomainEventMap {
   'connection.status': ConnectionStatusEvent;
   'session.snapshot-stale': SessionSnapshotStaleEvent;
   'chat.message': ChatMessageEvent;
+  'chat.transientRetry': ChatTransientRetryEvent;
   'workspace-context.changed': WorkspaceContextChangedEvent;
   'org-projects.changed': OrgProjectsChangedEvent;
   'org-projects.setup-progress': OrgProjectSetupProgressEvent;
   'delegation.lifetimeChanged': DelegationLifetimeChangedEvent;
   'scriptActions.changed': ScriptActionsChangedEvent;
+  'cloneJobs.changed': CloneJobsChangedEvent;
   'claudeMods.surface': ClaudeModSurfaceEvent;
   'appAdvisor.changed': AppAdvisorChangedEvent;
   'worktree.activityChanged': WorktreeActivityChangedEvent;

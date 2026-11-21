@@ -1,5 +1,6 @@
 'use client';
 
+import { outputlessProjectedAutoResumes } from '@canopy/ui-shared/components/chat';
 import {
   ForkContextNotice,
   TranscriptViewport,
@@ -314,6 +315,10 @@ export function ChatTranscript({
   const columnRef = useRef<HTMLDivElement>(null);
   const touchY = useRef<number | null>(null);
   const loadingOlder = useRef(false);
+  const outputlessResumes = useMemo(
+    () => outputlessProjectedAutoResumes(inputMessages, status === 'streaming'),
+    [inputMessages, status],
+  );
   // Live turns deliver a call and its result as separate messages; fold them
   // as the shell and the persisted projection do, so the call card completes.
   const messages = useMemo(
@@ -922,6 +927,9 @@ export function ChatTranscript({
                 <TurnGroupView
                   key={turnGroup.userMessageId}
                   turnGroup={turnGroup}
+                  outputlessAutoResume={outputlessResumes.has(
+                    turnGroup.userMessageId,
+                  )}
                   resultsComplete={resultsComplete}
                   messagesById={messagesById}
                   agentArtifacts={agentArtifactsByTurn[turnGroup.userMessageId]}

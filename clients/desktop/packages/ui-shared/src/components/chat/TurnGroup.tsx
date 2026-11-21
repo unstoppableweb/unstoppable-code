@@ -107,6 +107,7 @@ export function TurnGroup({
     return (
       <div
         className="-ml-3 flex flex-col gap-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
+        role="group"
         aria-label="Reverted turn"
         data-testid={dataTestId}
         data-reverted="true"
@@ -193,6 +194,7 @@ export function TurnGroup({
     return (
       <div
         className="-ml-3 flex flex-col gap-2 border-l-2 border-line-attention/40 pl-3 opacity-60"
+        role="group"
         aria-label="Reverted turn"
         data-testid={dataTestId}
         data-reverted="true"

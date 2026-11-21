@@ -22,6 +22,13 @@ import {
 } from '../account-proxy/quota-recovery';
 import { codexLoginManager } from '../auth/codex-login';
 import { getChatQueueService } from '../services/chat-queue-service';
+import {
+  matchesUsageResumeBinding,
+  USAGE_RESUME_INELIGIBLE,
+  usageResumeBinding,
+  findUsageResumeEntry,
+  usageStillClear,
+} from '../automations/usage-limit-resume-gate';
 import type { BrowserWindow } from 'electron';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
@@ -49,6 +56,7 @@ import {
   type UsageLimitedChatGroup,
   type UsageLimitedChatEntry,
   type UsageLimitedChatTarget,
+  type UsageLimitResumeInterruption,
   type UsageLimitedSessionGroup,
   type UsageLimitedPipelineSessionItem,
 } from '@canopy/desktop-shared/types';
@@ -240,6 +248,15 @@ export async function handleListUsageLimitedIdleChats(
   req: ListUsageLimitedIdleChatsRequest,
 ): Promise<ListUsageLimitedIdleChatsResponse> {
   validateIncludeResumePreview(req.includeResumePreview);
+  if (
+    req.includeUsageResumeInterruption !== undefined &&
+    typeof req.includeUsageResumeInterruption !== 'boolean'
+  ) {
+    throw classifyError(
+      new Error('includeUsageResumeInterruption must be a boolean'),
+      'input.not_accepted',
+    );
+  }
   const groups = await listUsageLimitedIdleChats(
     req,
     createResumeWorkspaceLookup(),
@@ -380,6 +397,9 @@ async function listUsageLimitedIdleChats(
       const lastStep = messages
         ? describeLastAgentStep(messages, context.worktreePath)
         : undefined;
+      const usageResumeInterruption = req.includeUsageResumeInterruption
+        ? usageResumeBinding(findUsageResumeEntry(entries, chat))
+        : undefined;
       const { entry, worktreeName } = context;
       let refreshed = refreshedGroups.get(entry.id);
       if (!refreshed) {
@@ -398,6 +418,7 @@ async function listUsageLimitedIdleChats(
         worktreeName: worktreeName ?? chat.worktreeId,
         ...(resumePromptKind ? { resumePromptKind } : {}),
         ...(lastStep ? { lastStep } : {}),
+        ...(usageResumeInterruption ? { usageResumeInterruption } : {}),
       });
     }
   }
@@ -690,12 +711,37 @@ export async function handleResumeUsageLimitedChats(
         attemptId: string;
         userMessageId: string;
         onDispatched: () => void;
+      }
+    | {
+        userMessageId: string;
+        interruption: UsageLimitResumeInterruption;
+        requireClearUsage: boolean;
       },
 ): Promise<ResumeUsageLimitedChatsResponse> {
+  const scheduledGate =
+    typeof resumeContext === 'object' && 'interruption' in resumeContext
+      ? resumeContext
+      : undefined;
+  const requestedInterruption = req.requireClearUsageFor;
+  if (
+    requestedInterruption !== undefined &&
+    (req.targets.length !== 1 || resumeContext !== undefined)
+  ) {
+    return { resumedCount: 0, failedTargets: req.targets };
+  }
+  const gatedResume =
+    scheduledGate ??
+    (requestedInterruption === undefined
+      ? undefined
+      : { interruption: requestedInterruption, requireClearUsage: true });
   const userMessageId =
-    typeof resumeContext === 'string' ? resumeContext : undefined;
+    typeof resumeContext === 'string'
+      ? resumeContext
+      : scheduledGate?.userMessageId;
   const authentication =
-    typeof resumeContext === 'object' ? resumeContext : undefined;
+    typeof resumeContext === 'object' && 'attemptId' in resumeContext
+      ? resumeContext
+      : undefined;
   const bannerSnapshots = new Map<string, PersistedUsageLimitBannerSnapshot>();
   const dispatchTargets = new Map<string, UsageLimitedChatTarget>();
   const targetKey = (target: UsageLimitedChatTarget): string =>
@@ -722,12 +768,27 @@ export async function handleResumeUsageLimitedChats(
         targetKey(target),
         capturePersistedUsageLimitBannerSnapshot(tab),
       );
-      const interrupted = (await readUsageLimitedChats()).find(
-        (entry) =>
-          entry.projectId === target.projectId &&
-          entry.worktreeId === target.worktreeId &&
-          entry.chatId === target.chatId,
+      const interrupted = findUsageResumeEntry(
+        await readUsageLimitedChats(gatedResume !== undefined),
+        target,
       );
+      if (
+        gatedResume &&
+        (!matchesUsageResumeBinding(
+          gatedResume.interruption,
+          usageResumeBinding(interrupted),
+        ) ||
+          tab?.providerType !== gatedResume.interruption.provider)
+      )
+        throw new Error(USAGE_RESUME_INELIGIBLE);
+      if (
+        gatedResume?.requireClearUsage &&
+        !(await usageStillClear(gatedResume.interruption))
+      ) {
+        throw new Error(
+          'The interrupted provider account’s usage is no longer confirmed clear.',
+        );
+      }
       const legacyBanner = tab?.llmProviderUsageLimitBanner;
       const awaitingRestart = Object.values(tab?.interruptedTurns ?? {}).some(
         (turn) => !turn.resumedBy && !turn.abandoned,

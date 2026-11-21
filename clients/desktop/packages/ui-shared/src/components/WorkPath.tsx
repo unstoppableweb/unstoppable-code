@@ -27,7 +27,9 @@ export function WorkPath({
   return (
     <span
       data-testid={testId}
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 truncate${
+      // Clips sideways only: `truncate` would also cut the links' taller touch
+      // area. Each part truncates itself.
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 overflow-x-clip whitespace-nowrap${
         className ? ` ${className}` : ''
       }`}
     >
@@ -41,7 +43,9 @@ export function WorkPath({
             />
           )}
           {part.onOpen === undefined ? (
-            <span className="min-w-0 truncate">{part.label}</span>
+            <span className="min-w-0 truncate" title={part.label}>
+              {part.label}
+            </span>
           ) : (
             <Button
               type="button"
@@ -50,11 +54,14 @@ export function WorkPath({
                 event.stopPropagation();
                 part.onOpen?.();
               }}
-              className="min-w-0"
+              // A link has no touch area of its own; grow it to 44px tall.
+              className="relative min-w-0 before:absolute before:inset-x-0 before:content-[''] pointer-coarse:before:-inset-y-3.5"
             >
               {/* A block label clips to the shrunk button; an inline one
                   spills over the next part. */}
-              <span className="block truncate">{part.label}</span>
+              <span className="block truncate" title={part.label}>
+                {part.label}
+              </span>
             </Button>
           )}
         </Fragment>

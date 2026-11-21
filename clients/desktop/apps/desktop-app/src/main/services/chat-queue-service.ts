@@ -343,6 +343,12 @@ interface HostQueuedMessage extends PersistedHostQueuedMessage {
   watcherParts?: QueuedWatcherPart[];
   /** Transient: Run now on a held row sends with the live session's settings. */
   liveSessionSettings?: true;
+  /**
+   * Transient: the provider accepted this prompt, then refused it for AI
+   * Credits. Every later send of the row is a new attempt; no other row
+   * gets one.
+   */
+  creditRefused?: true;
   /** Transient: what sending this row's saved request now would restart for. */
   restartHeldChanges?: readonly SettingsHeldChange[];
 }
@@ -3976,12 +3982,10 @@ export class ChatQueueService {
     if (retryBlockedReason === 'insufficient_credits') {
       entry.creditHold = { funded: false };
       const refused = entry.creditRetryCandidate;
-      if (
-        refused &&
-        refused.request.userMessageId === turnUserMessageId &&
-        !entry.queue.some((row) => row.id === refused.id)
-      ) {
-        this.insertQueuedMessage(entry, refused, 0);
+      if (refused && refused.request.userMessageId === turnUserMessageId) {
+        const queued = entry.queue.find((row) => row.id === refused.id);
+        (queued ?? refused).creditRefused = true;
+        if (!queued) this.insertQueuedMessage(entry, refused, 0);
       }
     }
     if (
@@ -5166,6 +5170,16 @@ export class ChatQueueService {
     )
       return;
     entry.persistedInputIds.add(rowId);
+    // The saved refusal is per chat. Only a prompt it accepted needs a new
+    // attempt, and a restored row that was never sent sends normally either
+    // way, so mark each restored prompt but only one row of it: a replayed
+    // copy must not also skip the accepted-prompt check and send it twice.
+    const creditRefused =
+      options?.creditRefused === true &&
+      entry.dispatching?.request.userMessageId !== request.userMessageId &&
+      !entry.queue.some(
+        (message) => message.request.userMessageId === request.userMessageId,
+      );
     // A row recovered mid-dispatch was already the head of the queue.
     const previousHeadId = entry.queue[0]?.id;
     this.insertQueuedMessage(
@@ -5176,6 +5190,7 @@ export class ChatQueueService {
         origin,
         enqueuedAtMs,
         ...(options?.ordinaryOnly === true ? { ordinaryOnly: true } : {}),
+        ...(creditRefused ? { creditRefused: true } : {}),
         ...(requiredAccountProxyConnectionId !== undefined
           ? { requiredAccountProxyConnectionId }
           : {}),
@@ -5601,7 +5616,10 @@ export class ChatQueueService {
     return entry;
   }
 
-  /** Funding only republishes eligibility; it never releases queued sends. */
+  /**
+   * Republishes funding for credit-held chats. The next drain releases a
+   * funded hold and resends the held prompt as a new attempt, as Run now does.
+   */
   public async refreshCreditHolds(): Promise<void> {
     await Promise.all(
       Array.from(this.entries.values()).map((entry) =>
@@ -5984,10 +6002,15 @@ export class ChatQueueService {
         message.liveSessionSettings === true
           ? { ...message.request, useLiveSessionSettings: true }
           : message.request;
+      // The one place a credit-refused row gets its new-attempt key, for Run
+      // now and for the drain that released the hold alike. The prompt was
+      // accepted once, so without the key the send is taken as already done.
+      // Only the refused row carries the marker, so no other row skips that
+      // check.
       const dispatchOptions = {
         requiredAccountProxyConnectionId:
           message.requiredAccountProxyConnectionId,
-        ...(entry.creditHold?.funded === true
+        ...(message.creditRefused === true
           ? { creditRetryAttemptId: this.dependencies.createId() }
           : {}),
       };

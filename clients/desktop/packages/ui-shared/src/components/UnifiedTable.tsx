@@ -17,9 +17,8 @@ import {
   SkillIcon,
   StorefrontIcon,
 } from '../icons';
-import { BundleIcon, RepoIcon } from '../icons/AppIcons';
+import { BundleIcon, ChevronDownIcon, RepoIcon } from '../icons/AppIcons';
 import { formatDate } from '../lib/format-date';
-import { Tooltip } from './Tooltip';
 import {
   DEFAULT_SELECTION_TABLE_COPY,
   type SelectionTableCopy,
@@ -47,7 +46,9 @@ import { Checkbox, ChoiceField } from './Choice';
 import { Disclosure } from './Disclosure';
 import { Stack } from './Stack';
 import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
-import { SearchField } from './SearchField';
+import { SearchEmptyState, SearchField } from './SearchField';
+import { DisplayAvatar } from './DisplayAvatar';
+import { Divider } from './Surface';
 import { FloatingMenu } from './FloatingMenu';
 
 /**
@@ -150,6 +151,12 @@ export interface UnifiedTableProps {
   blockRowsFromReplay?: boolean;
   /** Rendered at the end of the filter row, such as a scope chip. */
   toolbarTrailing?: ReactNode;
+  /**
+   * Shown in place of the empty copy when there are no rows at all, whatever
+   * the filters, such as the host's failed load with its Try again. A list
+   * filtered down to nothing keeps the filter message.
+   */
+  emptyState?: ReactNode;
   /** What selecting means here; words only, never selection behavior. */
   selectionCopy?: SelectionTableCopy;
 }
@@ -209,14 +216,16 @@ function SourceMultiSelect({
       <Button
         ref={buttonRef}
         size="compact"
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <span className="max-w-30 truncate">
+        <span className="max-w-30 truncate tabular-nums">
           {active.size === 0
             ? 'All sources'
             : `${String(active.size)} source${active.size === 1 ? '' : 's'}`}
         </span>
-        <span aria-hidden>⌄</span>
+        <ChevronDownIcon size="sm" aria-hidden />
       </Button>
       <FloatingMenu
         open={open}
@@ -244,7 +253,7 @@ function SourceMultiSelect({
             clearOnEscape={false}
           />
         </div>
-        <div className="max-h-60 overflow-y-auto p-0.5">
+        <div className="max-h-60 overflow-y-auto">
           {filtered.length === 0 && (
             <p className="px-2 py-3 text-center text-xs fg-secondary">
               {options.length === 0
@@ -257,7 +266,7 @@ function SourceMultiSelect({
             // toggles it.
             <div
               key={option.value}
-              className="rounded-md px-2 py-1.5 transition-colors hover:bg-secondary/50"
+              className="rounded-md px-2 py-1.5 transition-colors hover:bg-subtle"
             >
               <ChoiceField
                 checked={active.has(option.value)}
@@ -270,11 +279,17 @@ function SourceMultiSelect({
                         : SOURCE_OPTION_GLYPHS[option.icon]}
                     </span>
                     <span className="min-w-0">
-                      <span className="block truncate text-xs fg-primary">
+                      <span
+                        className="block truncate text-xs fg-primary"
+                        title={option.label}
+                      >
                         {option.label}
                       </span>
                       {option.subtitle && (
-                        <span className="block truncate text-3xs fg-secondary">
+                        <span
+                          className="block truncate text-3xs fg-secondary"
+                          title={option.subtitle}
+                        >
                           {option.subtitle}
                         </span>
                       )}
@@ -286,15 +301,22 @@ function SourceMultiSelect({
           ))}
         </div>
         {active.size > 0 && (
-          <div className="border-t px-1.5 pt-1">
-            <Button
-              variant="ghost"
-              size="compact"
-              onClick={() => onChange(new Set())}
-            >
-              Clear all
-            </Button>
-          </div>
+          <>
+            <Divider />
+            <div className="px-1.5 pt-1">
+              <Button
+                variant="ghost"
+                size="compact"
+                onClick={() => {
+                  onChange(new Set());
+                  // The button leaves with the selection; keep focus here.
+                  searchRef.current?.focus();
+                }}
+              >
+                Clear all
+              </Button>
+            </div>
+          </>
         )}
       </FloatingMenu>
     </>
@@ -401,7 +423,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
             data-testid={rowCheckboxTestId}
             data-row-key={row.key}
             aria-label={
-              toggleMode === 'unsupported' && row.toggleReason
+              toggleMode !== 'normal' && row.toggleReason
                 ? `${selectionCopy.rowLabel(row.name)} (${row.toggleReason})`
                 : selectionCopy.rowLabel(row.name)
             }
@@ -415,6 +437,9 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               type="button"
               onClick={handleToggle}
               disabled={disabled}
+              aria-pressed={locked || checked}
+              // The checkbox is the tab stop; this is its larger click target.
+              tabIndex={row.selectionAction && !checked ? undefined : -1}
               presentation="table-filter-toggle"
               appearance={{
                 disabled: !!disabled,
@@ -427,9 +452,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
                   (row.kind === 'mcp' && renderMcpLogo ? (
                     renderMcpLogo(row)
                   ) : (
-                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-subtle text-3xs font-medium fg-secondary">
-                      {row.name.trim().charAt(0).toUpperCase() || '•'}
-                    </span>
+                    <DisplayAvatar name={row.name} size="xs" subject="group" />
                   ))}
               </span>
               <Stack as="span" gap="tight" className="min-w-0 flex-1">
@@ -464,17 +487,12 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
                     )}
                   </span>
                   {row.description && (
-                    <Tooltip
-                      label={row.description}
-                      clamp
-                      allowShrink
-                      className="max-w-full"
-                      replayBlock
+                    <span
+                      className="min-w-0 truncate text-xs fg-secondary pointer-coarse:line-clamp-2 pointer-coarse:whitespace-normal"
+                      title={row.description}
                     >
-                      <span className="min-w-0 truncate text-xs fg-secondary">
-                        {row.description}
-                      </span>
-                    </Tooltip>
+                      {row.description}
+                    </span>
                   )}
                 </span>
               </Stack>
@@ -535,11 +553,17 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               )}
             </span>
             <span className="min-w-0">
-              <span className="block truncate text-s fg-primary">
+              <span
+                className="block truncate text-s fg-primary"
+                title={row.source}
+              >
                 {row.source}
               </span>
               {row.sourceSubtitle && (
-                <span className="block truncate text-xs fg-secondary">
+                <span
+                  className="block truncate text-xs fg-secondary"
+                  title={row.sourceSubtitle}
+                >
                   {row.sourceSubtitle}
                 </span>
               )}
@@ -564,7 +588,12 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               </span>
             )
           ) : (
-            <Button variant="ghost" size="compact" onClick={() => onView(row)}>
+            <Button
+              variant="ghost"
+              size="compact"
+              aria-label={`View ${row.name}`}
+              onClick={() => onView(row)}
+            >
               View
             </Button>
           )}
@@ -729,11 +758,13 @@ export function UnifiedTable({
   rowCheckboxTestId,
   blockRowsFromReplay = false,
   toolbarTrailing,
+  emptyState,
   selectionCopy = DEFAULT_SELECTION_TABLE_COPY,
 }: UnifiedTableProps): JSX.Element {
   const [selectedFilter, setSelectedFilter] =
     useState<UnifiedTableSelectedFilter>(defaultSelectedFilter);
   const [nameSearch, setNameSearch] = useState('');
+  const nameSearchRef = useRef<HTMLInputElement>(null);
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
     () => new Set(),
   );
@@ -934,6 +965,30 @@ export function UnifiedTable({
     ? rowVirtualizer.getTotalSize() - lastVirtualItem.end
     : 0;
   const showLoading = loading && rows.length === 0;
+  const filtersActive =
+    deferredNameSearch !== '' ||
+    selectedFilter !== 'all' ||
+    kindFilter !== 'all' ||
+    activeSources.size > 0;
+  const clearFilters = (): void => {
+    setNameSearch('');
+    setSelectedFilter('all');
+    setKindFilter('all');
+    setActiveSources(new Set());
+    // The button leaves with the empty state; keep focus off the body.
+    nameSearchRef.current?.focus();
+  };
+  const showEmptyState = emptyState !== undefined && rows.length === 0;
+  let status = '';
+  if (!showLoading && !showEmptyState) {
+    if (filteredRows.length > 0) {
+      status = `${String(filteredRows.length)} item${filteredRows.length === 1 ? '' : 's'}`;
+    } else {
+      status = filtersActive
+        ? 'No items match these filters.'
+        : 'No items available.';
+    }
+  }
 
   return (
     <div
@@ -952,6 +1007,7 @@ export function UnifiedTable({
           dataTestId="unified-table-selection-filter"
         />
         <SearchField
+          ref={nameSearchRef}
           value={nameSearch}
           onValueChange={setNameSearch}
           placeholder="Search by name…"
@@ -980,16 +1036,25 @@ export function UnifiedTable({
         {showLoading && (
           <UnifiedTableSkeleton providerIconScope={providerIconScope} />
         )}
-        {!showLoading && filteredRows.length === 0 && (
-          <p className="py-8 text-center text-s fg-secondary">
-            {deferredNameSearch ||
-            selectedFilter !== 'all' ||
-            kindFilter !== 'all' ||
-            activeSources.size > 0
-              ? 'No results match the current filters.'
-              : 'No items available.'}
-          </p>
-        )}
+        <p role="status" className="sr-only">
+          {status}
+        </p>
+        {!showLoading && showEmptyState && emptyState}
+        {!showLoading &&
+          !showEmptyState &&
+          filteredRows.length === 0 &&
+          (filtersActive ? (
+            <SearchEmptyState
+              title="No items match these filters."
+              actionLabel="Clear filters"
+              onAction={clearFilters}
+              testId="unified-table-filtered-empty"
+            />
+          ) : (
+            <p className="py-8 text-center text-s fg-secondary">
+              No items available.
+            </p>
+          ))}
         {filteredRows.length > 0 && (
           <DataTableFrame
             fill

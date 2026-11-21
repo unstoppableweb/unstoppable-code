@@ -67,6 +67,17 @@ jest.mock('../../lib/window-send', () => ({
 jest.mock('../../lib/desktop-telemetry', () => ({
   recordWorktreeCrudTelemetry: jest.fn(),
 }));
+const mockCompatibilityTabs = jest.fn(
+  (): Promise<{ tabs: unknown[] }> => Promise.resolve({ tabs: [] }),
+);
+jest.mock('../../services/chat-state-service', () => ({
+  getChatStateService: (): unknown => ({
+    getCompatibilityTabs: (): unknown => mockCompatibilityTabs(),
+  }),
+}));
+jest.mock('../../lib/git', () => ({
+  getCurrentBranch: (): Promise<string> => Promise.resolve('main'),
+}));
 
 import {
   InterfaceToolRegistry,
@@ -77,6 +88,7 @@ import {
   type InterfaceToolName,
 } from '@canopy/protocol/canopy-core';
 import { routeRendererToolRequest } from '../../ipc/app-advisor';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { setSessionInterfaceToolRegistry } from '../../agents/interface-tool-binding';
 import { createDesktopChatWorktree } from '../../agent-actions/desktop-environment-port';
 import {
@@ -257,6 +269,7 @@ describe('worktree chat actions as keyed core writes (CAN-5830)', () => {
           chatId: 'chat-1',
           cwd: '/worktrees/proj/wt',
           getWindow: (): null => null,
+          interfacePort: windowAgentInterfacePort(() => null),
         },
       ),
     ).rejects.toThrow(AGENT_CHAT_INTERFACE_TEXTS.needsWindow);
@@ -277,6 +290,7 @@ describe('worktree chat actions as keyed core writes (CAN-5830)', () => {
           chatId: 'chat-1',
           cwd: '/worktrees/proj/wt',
           getWindow: (): null => null,
+          interfacePort: windowAgentInterfacePort(() => null),
         },
       ),
     ).rejects.toThrow(AGENT_CHAT_INTERFACE_TEXTS.needsWindow);
@@ -298,6 +312,98 @@ describe('worktree chat actions as keyed core writes (CAN-5830)', () => {
       IPC_CHANNELS.worktreeNeedsRepair,
       { worktreeId: 'proj-new' },
     );
+  });
+
+  it("a branched agent's worktree notices reach the window through the chat's interface port, unchanged", async () => {
+    mainLease(['ui.app_advisor.present']);
+    mockCompatibilityTabs.mockResolvedValueOnce({
+      tabs: [
+        {
+          id: 'chat-1',
+          title: 'Source',
+          providerType: 'claude',
+          messages: [{ id: 'user-1', role: 'user', blocks: [] }],
+        },
+      ],
+    });
+    const ready = {
+      projectId: 'proj',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+    };
+    const failed = {
+      projectId: 'proj',
+      worktreeId: 'wt-new',
+      error: 'git failed',
+    };
+    const repair = {
+      projectId: 'proj',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+      repairIssues: [],
+    };
+    mockCreateSingleRepo.mockImplementationOnce(
+      (options: {
+        onGitReady: (event: unknown) => void;
+        onGitFailed: (event: unknown) => void;
+        onNeedsRepair: (event: unknown) => void;
+      }) => {
+        options.onGitReady(ready);
+        options.onGitFailed(failed);
+        options.onNeedsRepair(repair);
+        return Promise.resolve({ id: 'wt-new' });
+      },
+    );
+    const published: string[] = [];
+    const port = windowAgentInterfacePort(() => null);
+    const recorded = new Proxy(port, {
+      get: (target, name: string): unknown => {
+        const member = Reflect.get(target, name) as unknown;
+        if (typeof member !== 'function' || !name.startsWith('publish'))
+          return member;
+        return (...args: unknown[]): unknown => {
+          published.push(name);
+          return (member as (...a: unknown[]) => unknown)(...args);
+        };
+      },
+    });
+
+    // Nothing after the list is mocked, so the start then fails; the
+    // notices it sent before that are what this pins.
+    await expect(
+      startSplitAgent(
+        'start_branched_agent',
+        { followUpInstruction: 'Continue the work.' },
+        {
+          projectId: 'proj',
+          worktreeId: 'wt',
+          chatId: 'chat-1',
+          cwd: '/worktrees/proj/wt',
+          getWindow: (): null => null,
+          interfacePort: recorded,
+        },
+      ),
+    ).rejects.toThrow();
+
+    expect(published).toEqual([
+      'publishWorktreeGitReady',
+      'publishWorktreeGitFailed',
+      'publishWorktreeNeedsRepair',
+      'publishWorkspaceWorktrees',
+    ]);
+    expect(mockSendToWindow.mock.calls).toEqual([
+      [null, IPC_CHANNELS.worktreeGitReady, ready],
+      [null, IPC_CHANNELS.worktreeGitFailed, failed],
+      [null, IPC_CHANNELS.worktreeNeedsRepair, repair],
+      [
+        null,
+        IPC_CHANNELS.workspaceWorktreesUpdated,
+        { workspaceId: 'proj', worktrees: [] },
+      ],
+    ]);
+    expect(mockSendToWindow.mock.calls[0]?.[2]).toBe(ready);
+    expect(mockSendToWindow.mock.calls[1]?.[2]).toBe(failed);
+    expect(mockSendToWindow.mock.calls[2]?.[2]).toBe(repair);
   });
 
   it('a refused branched prompt fails the start instead of counting as queued', () => {

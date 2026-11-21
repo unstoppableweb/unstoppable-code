@@ -12,8 +12,11 @@ import { SCRIPT_ACTIONS_CHANNELS } from '../script-actions';
  * own allowlist, and the host's channel dispositions still apply (a few of
  * these are `local` or `blocked` while controlling another computer).
  * Host-local channels the adapter must never tunnel (`chat:event-output-reset`)
- * and port-owned slices (settings, feedback, marketplace sources, transcript
- * reads, external URLs) are deliberately absent.
+ * and port-owned slices (settings, feedback, marketplace sources, external
+ * URLs) are deliberately absent. Transcript reads stay port-owned on the
+ * desktop; a controller without that port reads delegate transcripts through
+ * the narrow `chat:read-delegation-*` channels (CAN-7432), never the
+ * `managed-delegation:*` ones.
  */
 export const REMOTE_IPC_CHANNELS = {
   homeListBranchTargets: 'home:list-branch-targets',
@@ -35,7 +38,15 @@ export const REMOTE_IPC_CHANNELS = {
   chatQueueEdit: 'chat:queue-edit',
   chatQueueForce: 'chat:queue-force',
   chatQueueSetEditLock: 'chat:queue-set-edit-lock',
+  chatReadDelegationBlocks: 'chat:read-delegation-blocks',
+  chatReadDelegationContent: 'chat:read-delegation-content',
+  chatReadDelegationPage: 'chat:read-delegation-page',
+  chatReadVisual: 'chat:read-visual',
   chatSendMessage: 'chat:send-message',
+  cloneJobsCancel: 'clone-jobs:cancel',
+  cloneJobsChanged: 'clone-jobs:changed',
+  cloneJobsDismiss: 'clone-jobs:dismiss',
+  cloneJobsList: 'clone-jobs:list',
   claudeModSurfacePush: 'claude-mods:surface-push',
   claudeModSurfaceCommand: 'claude-mods:surface-command',
   claudeModsGet: 'claude-mods:get',
@@ -70,8 +81,8 @@ export const REMOTE_IPC_CHANNELS = {
   managedDelegationLifetimeChanged: 'managed-delegation:lifetime-changed',
   managedDelegationLifetimeStatus: 'managed-delegation:lifetime-status',
   modelRegistryGet: 'model-registry:get',
-  observabilityRefreshUsage: 'observability:refresh-usage',
   orgProjectsChanged: 'org-projects:changed',
+  orgProjectsFindRepositoryOwner: 'org-projects:find-repository-owner',
   orgProjectsList: 'org-projects:list',
   orgProjectsRefresh: 'org-projects:refresh',
   orgProjectsSetPreference: 'org-projects:set-preference',
@@ -106,11 +117,17 @@ export const REMOTE_IPC_CHANNELS = {
   pipelinesRetryExecution: 'pipelines:retry-execution',
   pluginCatalogList: 'plugin-catalog:list',
   preferencesLoad: 'preferences:load',
+  // Only the tips or suggestions state, for controllers that are not served
+  // the full preferences (CAN-7434).
+  preferencesLoadOnboardingTips: 'preferences:load-onboarding-tips',
+  preferencesLoadSuggestions: 'preferences:load-suggestions',
   preferencesUpdateOnboardingTips: 'preferences:update-onboarding-tips',
   preferencesUpdateSuggestions: 'preferences:update-suggestions',
   projectDelete: 'project:delete',
   projectsLoad: 'projects:load',
   projectsSave: 'projects:save',
+  providerUsageLoad: 'provider-usage:load',
+  providerUsageRefresh: 'provider-usage:refresh',
   referencePreviewGitHub: 'reference-preview:github',
   referencePreviewGitHubOrigin: 'reference-preview:github-origin',
   referencePreviewGitHubScope: 'reference-preview:github-scope',
@@ -168,6 +185,7 @@ export const REMOTE_IPC_CHANNELS = {
   turnFeedbackList: 'turn-feedback:list',
   turnFeedbackRate: 'turn-feedback:rate',
   workEntriesCreate: 'work-entries:create',
+  workEntriesDelete: 'work-entries:delete',
   workEntriesList: 'work-entries:list',
   workEntriesListArchived: 'work-entries:list-archived',
   workspaceAddFromRemote: 'workspace:add-from-remote',
@@ -183,6 +201,7 @@ export const REMOTE_IPC_CHANNELS = {
   workspaceReadScripts: 'workspace:read-scripts',
   workspaceReorder: 'workspace:reorder',
   workspaceSaveClaudeMd: 'workspace:save-claude-md',
+  workspaceSetArchiveRetention: 'workspace:set-archive-retention',
   workspaceUpdateMetadata: 'workspace:update-metadata',
   worktreeActivityEntities: 'worktree:activity-entities',
   worktreeArchive: 'worktree:archive',

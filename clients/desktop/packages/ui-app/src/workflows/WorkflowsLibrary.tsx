@@ -35,6 +35,7 @@ import {
   CopyIcon,
   FilterIcon,
   HistoryIcon,
+  InfoIcon,
   InputIcon,
   MessageIcon,
   PencilIcon,
@@ -50,12 +51,14 @@ import {
   TrashIcon,
   WarningIcon,
   WorkflowIcon,
+  WorktreeIcon,
   type AppIconProps,
   type IconSize,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   WORKFLOW_LIBRARY_ACTION_LABELS,
+  WORKFLOW_LIBRARY_NO_WORKTREE_SCOPE,
   WORKFLOW_LIBRARY_SORTS,
   WORKFLOW_LIBRARY_SORT_LABELS,
   WORKFLOW_LIBRARY_SOURCES,
@@ -67,6 +70,7 @@ import {
   WORKFLOW_TRIGGER_LABELS,
   describeClearLibraryFilters,
   describeNoLibraryMatches,
+  describeOtherWorktreePipelines,
   menuWorkflowLibraryActions,
   truncateStepChain,
   workflowLibraryFiltersActive,
@@ -74,6 +78,7 @@ import {
   type WorkflowLibraryFacetCounts,
   type WorkflowLibraryFilters,
   type WorkflowLibraryPage,
+  type WorkflowLibraryProjectScope,
   type WorkflowLibraryRow,
   type WorkflowLibrarySort,
   type WorkflowLibrarySource,
@@ -485,11 +490,20 @@ export function WorkflowsLibraryTableRow({
               {row.sourceLabel ? (
                 <>
                   {row.summary ? ' · ' : ''}
-                  <span
-                    className={row.sourceIsPerson ? REPLAY_MASK_CLASS : ''}
-                    data-testid="workflows-library-source"
-                  >
-                    {row.sourceLabel}
+                  <span data-testid="workflows-library-source">
+                    <span
+                      className={row.sourceIsPerson ? REPLAY_MASK_CLASS : ''}
+                    >
+                      {row.sourceLabel}
+                    </span>
+                    {row.sourceDetail ? (
+                      <>
+                        {' · '}
+                        <span className={REPLAY_MASK_CLASS}>
+                          {row.sourceDetail}
+                        </span>
+                      </>
+                    ) : null}
                   </span>
                 </>
               ) : null}
@@ -844,6 +858,80 @@ export function WorkflowsLibraryPagination({
         </nav>
       ) : null}
     </div>
+  );
+}
+
+export interface WorkflowsLibraryProjectScopeLineProps {
+  readonly scope: WorkflowLibraryProjectScope;
+}
+
+/**
+ * Under the toolbar (CAN-965): the project and worktree the Library reads
+ * project pipelines from, since the list holds that checkout's copies only.
+ * Mounted only by a host that lists project pipelines.
+ */
+export function WorkflowsLibraryProjectScopeLine({
+  scope,
+}: WorkflowsLibraryProjectScopeLineProps): JSX.Element {
+  return (
+    <p
+      className="flex min-w-0 items-center gap-1.5 text-xs fg-tertiary"
+      data-testid="workflows-library-project-scope"
+    >
+      <WorktreeIcon size="sm" aria-hidden="true" className="shrink-0" />
+      {scope.kind === 'no-worktree' ? (
+        <span className="truncate">{WORKFLOW_LIBRARY_NO_WORKTREE_SCOPE}</span>
+      ) : (
+        <span className="truncate">
+          Project pipelines from{' '}
+          {/* The names carry the line: one ink step up and medium weight,
+              so a generic name like "New worktree" reads as a name. */}
+          <span className={`font-medium fg-secondary ${REPLAY_MASK_CLASS}`}>
+            {scope.projectName}
+          </span>
+          {' / '}
+          <span className={`font-medium fg-secondary ${REPLAY_MASK_CLASS}`}>
+            {scope.worktreeName}
+          </span>
+          {scope.hasProjectPipelines ? '' : '. This worktree has none.'}
+        </span>
+      )}
+    </p>
+  );
+}
+
+export interface WorkflowsLibraryOtherWorktreesHintProps {
+  /** Project pipelines only other worktrees of the project hold. */
+  readonly count: number;
+  readonly projectName: string;
+  /**
+   * `false` when some other worktree couldn't be read, so `count` is a lower
+   * bound. Defaults to `true`.
+   */
+  readonly complete?: boolean;
+}
+
+/**
+ * Under the pagination (CAN-965): how many project pipelines exist in other
+ * worktrees of the project and not in the selected one. Nothing at zero.
+ */
+export function WorkflowsLibraryOtherWorktreesHint({
+  count,
+  projectName,
+  complete = true,
+}: WorkflowsLibraryOtherWorktreesHintProps): JSX.Element | null {
+  if (count <= 0) return null;
+  return (
+    <p
+      className="flex min-w-0 items-center gap-1.5 text-xs fg-tertiary"
+      data-testid="workflows-library-other-worktrees"
+    >
+      <InfoIcon size="sm" aria-hidden="true" className="shrink-0" />
+      <span className="truncate tabular-nums">
+        {describeOtherWorktreePipelines(count, complete)}{' '}
+        <span className={REPLAY_MASK_CLASS}>{projectName}</span>
+      </span>
+    </p>
   );
 }
 

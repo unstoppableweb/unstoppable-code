@@ -1,5 +1,4 @@
 import { APP_ERROR_CATALOG } from '@canopy/protocol/app-errors';
-import { BILLING_TOP_UP_MIN_USD } from '@canopy/protocol/billing';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import { formatCredits } from '../lib/billing-format';
 
@@ -252,17 +251,14 @@ export const MODEL_LIBRARY_UNLOCK_HINTS: Readonly<
   needs_purchase: 'Unlock by buying credits',
 };
 
-const PURCHASE_SCOPE_BODY = `Buy credits (minimum $${BILLING_TOP_UP_MIN_USD}) to unlock Sonnet, Opus, Fable and more.`;
+// Names no minimum price and no model families or providers (CAN-7493), so it
+// stays true when the checkout minimum or the catalog changes.
+const PURCHASE_SCOPE_BODY = 'Advanced models use AI Credits.';
 
 /**
  * Recovery copy. "Advanced models", never "every model": provider, policy, and
  * funding restrictions still apply after a purchase. Nothing here promises the
  * unlock is permanent, because a lost chargeback can revoke it.
- *
- * The purchase minimum comes from the checkout's own `BILLING_TOP_UP_MIN_USD`.
- * The model families named in `purchaseBody` are editorial and maintained by
- * hand, not generated from the catalog: review them when purchase eligibility
- * changes.
  */
 export const MODEL_LIBRARY_UNLOCK_COPY = {
   title: 'Unlock advanced models',
@@ -460,3 +456,30 @@ export function outOfAiCreditsCopy(
           ''),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Web pre-send funding gate (CAN-7493)
+// ---------------------------------------------------------------------------
+
+/** The held-send row when the viewer's wallet owes a known amount. */
+export function sendFundingShortfallMessage(owed: string): string {
+  return `You're ${owed} short. ${AI_CREDITS_PURCHASE_LABEL} to send this.`;
+}
+
+/** A held send whose funding read failed. The draft stays in the composer. */
+export const SEND_FUNDING_READ_FAILED_MESSAGE =
+  "We couldn't check your credits. Your message is still here.";
+
+/** A held send whose checkout closed with no payment. */
+export const SEND_FUNDING_CHECKOUT_CLOSED_MESSAGE = `Your message is still here. ${AI_CREDITS_PURCHASE_LABEL} to send it.`;
+
+/** A held send whose owner the viewer can't buy credits for. */
+export const SEND_FUNDING_PURCHASE_UNAVAILABLE_MESSAGE =
+  "Buying credits isn't available right now.";
+
+/**
+ * The desktop app as the other way to keep going: the secondary action on a
+ * web credits notice and the subscription rows of web's provider list, which
+ * only the desktop app can connect.
+ */
+export const DESKTOP_APP_ALTERNATIVE_LABEL = 'Use the desktop app';

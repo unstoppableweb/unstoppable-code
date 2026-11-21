@@ -126,6 +126,7 @@ export function UserBubble({
 }: UserBubbleProps): JSX.Element {
   const handleNavigateClick = (event: MouseEvent<HTMLDivElement>): void => {
     if (!onNavigate) return;
+    if (startedOutside(event.target, event.currentTarget)) return;
     const view = getWindow(event.currentTarget);
     const target = event.target;
     if (
@@ -149,12 +150,14 @@ export function UserBubble({
 
   const handleContextMenu = contextMenu
     ? (event: MouseEvent<HTMLDivElement>): void => {
+        if (startedOutside(event.target, event.currentTarget)) return;
         if (isFromBubbleActions(event.target, event.currentTarget)) return;
         contextMenu.onContextMenu(event);
       }
     : undefined;
   const handleKeyDown = contextMenu
     ? (event: KeyboardEvent<HTMLDivElement>): void => {
+        if (startedOutside(event.target, event.currentTarget)) return;
         contextMenu.onKeyDown(event);
       }
     : undefined;
@@ -345,6 +348,30 @@ export function UserBubble({
       )}
     </div>
   );
+}
+
+/**
+ * An overlay a slot opens (the media viewer, a preview) portals out of the
+ * bubble on the page, but its events still bubble here through React's tree.
+ * One that did not start inside the bubble is not a click, a right-click or
+ * a key on the bubble.
+ */
+function startedOutside(
+  target: EventTarget | null,
+  bubble: HTMLElement,
+): boolean {
+  return !(isNode(target) && bubble.contains(target));
+}
+
+/**
+ * A node, told by its shape and not by `instanceof`: a pulled-out panel's
+ * content is created in the opener window and adopted into the panel's own,
+ * so there it is no instance of the `Node` of the window it is shown in, and
+ * a check against that window's constructor took every click on the bubble
+ * for one from outside it.
+ */
+function isNode(target: EventTarget | null): target is Node {
+  return target !== null && 'nodeType' in target;
 }
 
 function isFromBubbleActions(

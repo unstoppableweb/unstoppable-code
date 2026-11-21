@@ -363,13 +363,27 @@ describe('ChatSecretsChip', () => {
       '2 secrets',
     );
     harness.click(harness.byTestId('chat-secrets-chip'));
-    expect(harness.byTestId('chat-secrets-row-API_KEY').textContent).toContain(
-      'Chat · not used yet',
+    const rows = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid="chat-secrets-row"]',
+      ),
     );
-    expect(
-      harness.byTestId('chat-secrets-row-DATABASE_URL').textContent,
-    ).toContain('Chat · used 2m ago');
-    harness.click(harness.byTestId('chat-secrets-revoke-API_KEY'));
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Chat · not used yet'),
+      expect.stringContaining('Chat · used 2m ago'),
+    ]);
+    expect(rows[0]?.textContent).toContain('API_KEY');
+    expect(rows[1]?.textContent).toContain('DATABASE_URL');
+    // No secret's name in an attribute: session replay keeps attributes.
+    for (const row of rows)
+      for (const element of [row, ...Array.from(row.querySelectorAll('*'))])
+        for (const attribute of Array.from(element.attributes))
+          expect(attribute.value).not.toMatch(/API_KEY|DATABASE_URL/);
+    const revoke = rows[0]?.querySelector<HTMLElement>(
+      '[data-testid="chat-secrets-revoke"]',
+    );
+    if (!revoke) throw new Error('No Revoke for API_KEY');
+    harness.click(revoke);
     expect(revoked).toEqual(['API_KEY']);
   });
 });

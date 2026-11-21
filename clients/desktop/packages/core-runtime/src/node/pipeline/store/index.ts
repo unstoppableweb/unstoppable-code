@@ -36,3 +36,19 @@ export {
   type PipelineAssetsManifestV1,
   type PipelineAssetStore,
 } from './assets';
+export {
+  PIPELINE_DEFINITION_REMOVED_MESSAGE,
+  PIPELINE_DEFINITION_RESTORING_MESSAGE,
+  PIPELINE_DEFINITION_UNCONFIRMED_MESSAGE,
+  RUN_START_RECOVERY_WAIT_MS,
+  createPipelineInstallJournal,
+  PipelineInstallJournalLeftForHostError,
+  type PipelineInstallJournalHostPort,
+  type PipelineDefinitionRecovery,
+  type PipelineDefinitionRecoveryRefusal,
+  type PipelineInstallIntentSource,
+  type PipelineInstallJournal,
+  type PipelineInstallJournalEnvironment,
+  type PipelineInstallJournalIntent,
+  type PipelineInstallJournalRecord,
+} from './install-journal';

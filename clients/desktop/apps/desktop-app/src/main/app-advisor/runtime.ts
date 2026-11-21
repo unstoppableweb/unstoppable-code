@@ -1,5 +1,6 @@
 import { createChatHistoryActionFamily } from '@canopy/agent-actions/families/chat-history';
 import { desktopChatHistoryPort } from '../agent-actions/desktop-chat-history-port';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import {
   isTranscriptReadActionType,
   dispatchAdvisorTranscriptRead,
@@ -518,6 +519,7 @@ export function createAppAdvisorToolRuntime(
                 cwd: getAppAdvisorHomeDir(),
                 executionScope: 'directory',
                 getWindow: surfaces.getMainWindow,
+                interfacePort: windowAgentInterfacePort(surfaces.getMainWindow),
                 appAdvisorSurfaces: surfaces,
                 ...(signal ? { signal } : {}),
               },
@@ -825,6 +827,11 @@ export function createAppAdvisorToolRuntime(
             getWindow: isBotProjectId(projectId)
               ? surfaces.getAppAdvisorWindow
               : surfaces.getMainWindow,
+            interfacePort: windowAgentInterfacePort(
+              isBotProjectId(projectId)
+                ? surfaces.getAppAdvisorWindow
+                : surfaces.getMainWindow,
+            ),
           },
           signal,
         );
@@ -1668,6 +1675,7 @@ export function createAppAdvisorToolRuntime(
             executionScope: 'worktree',
             // The Scripts section that shows the run lives in the main window.
             getWindow: surfaces.getMainWindow,
+            interfacePort: windowAgentInterfacePort(surfaces.getMainWindow),
             ...(signal ? { signal } : {}),
           },
         );
@@ -1830,6 +1838,7 @@ export function createAppAdvisorToolRuntime(
               executionScope: 'worktree',
               planInitiationSource: 'app_advisor',
               getWindow: surfaces.getMainWindow,
+              interfacePort: windowAgentInterfacePort(surfaces.getMainWindow),
               ...(signal ? { signal } : {}),
             },
           );

@@ -70,7 +70,7 @@ export function McpClientSetupDetails({
           target="_blank"
           rel="noopener noreferrer"
           size="xs"
-          className="self-start"
+          className="relative pointer-coarse:before:absolute pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:inset-x-0 pointer-coarse:before:content-[''] self-start"
           data-testid={`${dataTestId}-docs`}
         >
           {serverName} docs

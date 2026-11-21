@@ -4,7 +4,7 @@ import { ListRowFrame } from './ListRow';
 import { archivedOverviewRowClassName } from './control-button-shared';
 export { ARCHIVED_ROW_ACTIONS_RESERVE_WIDE } from './control-button-shared';
 import { ControlButton } from './Button';
-import type { JSX, ReactNode } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
 import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
 import { LoadingSpinner } from './LoadingSpinner';
 import { RichHoverTooltip } from './RichHoverTooltip';
@@ -78,6 +78,11 @@ export interface OverviewListRowProps {
   /** Mirrored to `data-state` on the row. */
   state?: string;
   busy?: boolean;
+  /**
+   * Read to screen readers as the open button's description, for detail a
+   * pointer gets from a hover tooltip.
+   */
+  description?: ReactNode;
 }
 
 /**
@@ -101,7 +106,14 @@ export function OverviewListRow({
   testId,
   state,
   busy = false,
+  description,
 }: OverviewListRowProps): JSX.Element {
+  const descriptionId = useId();
+  const described =
+    onOpen !== undefined &&
+    description !== undefined &&
+    description !== null &&
+    description !== false;
   const bodyClassName = archivedOverviewRowClassName(actionsReserve);
   const body = (
     <>
@@ -133,6 +145,7 @@ export function OverviewListRow({
           type="button"
           data-testid={openTestId}
           onClick={onOpen}
+          aria-describedby={described ? descriptionId : undefined}
           presentation="archived-overview-row"
           appearance={{ actionsReserve }}
         >
@@ -141,6 +154,11 @@ export function OverviewListRow({
       ) : (
         <div className={bodyClassName}>{body}</div>
       )}
+      {described ? (
+        <span id={descriptionId} hidden>
+          {description}
+        </span>
+      ) : null}
       <span className="absolute inset-y-0 right-1 flex items-center">
         {actions}
       </span>
@@ -222,6 +240,7 @@ export function ArchivedOverviewRow({
       testId={testId}
       state={state}
       busy={busy}
+      description={busy ? undefined : stateTooltip}
     />
   );
 }

@@ -142,6 +142,7 @@ export function StandaloneChatRow({
             disabled={archivingInFlight}
             onClick={onArchive}
             revealOnItemHover
+            coarsePointerTarget
             aria-label="Archive chat"
             tooltipLabel="Archive this entry and all of its chats"
             data-testid="standalone-chat-row-archive"

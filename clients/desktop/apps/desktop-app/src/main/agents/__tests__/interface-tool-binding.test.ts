@@ -25,6 +25,10 @@ import {
   type ChatIngestionLagEventData,
   type PlanExitRequestEvent,
   type PromptSuggestionEventData,
+  type WorktreeData,
+  type WorktreeGitFailedEvent,
+  type WorktreeGitReadyEvent,
+  type WorktreeNeedsRepairEvent,
 } from '@canopy/desktop-shared/types';
 
 jest.mock('../../lib/window-send', () => ({
@@ -187,6 +191,64 @@ describe('agent interface port over the main window (CAN-6995)', () => {
     });
   });
 
+  it('sends each worktree-action notice on its channel with the payload its caller sent itself', () => {
+    const send = jest.mocked(sendToWindow);
+    send.mockClear();
+    const port = windowAgentInterfacePort(() => null);
+    const ready: WorktreeGitReadyEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+    };
+    const failed: WorktreeGitFailedEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      error: 'git failed',
+    };
+    const repair: WorktreeNeedsRepairEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+      repairIssues: [],
+    };
+    const worktree: WorktreeData = {
+      id: 'wt-new',
+      branchName: 'agent/continue',
+      createdAt: '2026-11-20T00:00:00.000Z',
+    };
+    port.publishWorktreeGitReady(ready);
+    port.publishWorktreeGitFailed(failed);
+    port.publishWorktreeNeedsRepair(repair);
+    port.publishWorkspaceWorktrees('ws', [worktree]);
+    port.publishHookPauseChanged('ws', worktree);
+    port.publishHookPauseChanged('ws', undefined);
+    expect(
+      send.mock.calls.map(([window, channel]) => [window, channel]),
+    ).toEqual([
+      [null, IPC_CHANNELS.worktreeGitReady],
+      [null, IPC_CHANNELS.worktreeGitFailed],
+      [null, IPC_CHANNELS.worktreeNeedsRepair],
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated],
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated],
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated],
+    ]);
+    // The setup events pass through as the same objects; the others are the
+    // bytes each caller built: start-split's { workspaceId, worktrees } and
+    // setHookPaused's { workspaceId, worktree? }, with no worktree key when it
+    // has none.
+    expect(send.mock.calls[0]?.[2]).toBe(ready);
+    expect(send.mock.calls[1]?.[2]).toBe(failed);
+    expect(send.mock.calls[2]?.[2]).toBe(repair);
+    expect(
+      send.mock.calls.slice(3).map(([, , payload]) => JSON.stringify(payload)),
+    ).toEqual([
+      JSON.stringify({ workspaceId: 'ws', worktrees: [worktree] }),
+      JSON.stringify({ workspaceId: 'ws', worktree }),
+      JSON.stringify({ workspaceId: 'ws' }),
+    ]);
+    expect(send.mock.calls[5]?.[2]).not.toHaveProperty('worktree');
+  });
+
   async function proposeOpenCodePlan(applied: boolean): Promise<{
     committed: PlanExitRequestEvent[];
     presented: PlanExitRequestEvent[];
@@ -293,16 +355,24 @@ const WORKTREE_ACTION_FILES: ReadonlySet<string> = new Set([
 ]);
 
 interface WindowSite {
-  kind: 'legacyWindow' | 'send';
+  kind: 'legacyWindow' | 'send' | 'hold';
   file: string;
   method: string;
-  /** The property or variable a `legacyWindow()` call fills, or a send's channel. */
+  /**
+   * The property or variable a `legacyWindow()` call fills, a send's
+   * channel, or what a hold keeps (`webContents` or a send helper).
+   */
   at: string;
   count: number;
   debt: string;
 }
 
-const MIKE_ROW = "S3-2c, after Mike's OK to re-key its census row";
+const PLAN_IMPORT =
+  "S3-2c, after Mike's say: the move takes its row out of his Phase 3 'plans' exclusion";
+const SCRIPT_EVENTS =
+  "S3-2c, after Mike's say on how the worktree script push moves";
+const SHARED_PLAN =
+  'S3-2c, after #9423, which rewrites this send, merges or closes';
 const BROWSER = 'browser owner, after #6583 and #6741';
 
 /** Only ever shrinks: a site that moves leaves this list in the same change. */
@@ -366,46 +436,11 @@ const WINDOW_SITES: readonly WindowSite[] = Object.freeze([
   ...(
     [
       [
-        'canopy-tools/start-split-agent-runtime.ts',
-        'startSplitAgent',
-        'IPC_CHANNELS.worktreeGitReady',
-        1,
-        MIKE_ROW,
-      ],
-      [
-        'canopy-tools/start-split-agent-runtime.ts',
-        'startSplitAgent',
-        'IPC_CHANNELS.worktreeGitFailed',
-        1,
-        MIKE_ROW,
-      ],
-      [
-        'canopy-tools/start-split-agent-runtime.ts',
-        'startSplitAgent',
-        'IPC_CHANNELS.worktreeNeedsRepair',
-        1,
-        MIKE_ROW,
-      ],
-      [
-        'canopy-tools/start-split-agent-runtime.ts',
-        'startSplitAgent',
-        'IPC_CHANNELS.workspaceWorktreesUpdated',
-        1,
-        MIKE_ROW,
-      ],
-      [
-        'canopy-tools/worktree-actions.ts',
-        'setHookPaused',
-        'IPC_CHANNELS.workspaceWorktreesUpdated',
-        1,
-        MIKE_ROW,
-      ],
-      [
         'canopy-tools/worktree-actions.ts',
         'importTrackedPlanAction',
         'IPC_CHANNELS.trackedPlansUpdated',
         1,
-        MIKE_ROW,
+        PLAN_IMPORT,
       ],
       [
         'canopy-tools/worktree-actions.ts',
@@ -426,14 +461,14 @@ const WINDOW_SITES: readonly WindowSite[] = Object.freeze([
         'rendererForwarder',
         'channel',
         1,
-        MIKE_ROW,
+        SCRIPT_EVENTS,
       ],
       [
         'lib/shared-plan-sync.ts',
         'emitPlanUpdated',
         'IPC_CHANNELS.trackedPlansUpdated',
         1,
-        MIKE_ROW,
+        SHARED_PLAN,
       ],
     ] as const
   ).map(
@@ -446,6 +481,14 @@ const WINDOW_SITES: readonly WindowSite[] = Object.freeze([
       debt,
     }),
   ),
+  {
+    kind: 'hold',
+    file: 'canopy-tools/worktree-actions.ts',
+    method: 'dispatchWorktreeAction',
+    at: 'webContents',
+    count: 4,
+    debt: `the browser handoff's focus checks (${BROWSER})`,
+  },
 ]);
 
 interface FoundSite {
@@ -519,6 +562,48 @@ const WINDOW_SEND_HELPERS: ReadonlyMap<string, number> = new Map([
 ]);
 
 /**
+ * The send helpers a file imports under another name, by local name:
+ * `import { sendToWindow as send }` makes `send` mean `sendToWindow`.
+ */
+function helperAliases(source: ts.SourceFile): ReadonlyMap<string, string> {
+  const aliases = new Map<string, string>();
+  for (const statement of source.statements) {
+    const bindings = ts.isImportDeclaration(statement)
+      ? statement.importClause?.namedBindings
+      : undefined;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const specifier of bindings.elements) {
+      const imported = specifier.propertyName?.text;
+      if (imported !== undefined && WINDOW_SEND_HELPERS.has(imported))
+        aliases.set(specifier.name.text, imported);
+    }
+  }
+  return aliases;
+}
+
+/**
+ * A destructuring key's name, however it is spelled: `webContents`,
+ * `'webContents'`, `"webContents"`, `['webContents']` or `` [`webContents`] ``.
+ */
+function bindingKeyName(key: ts.Node): string | undefined {
+  if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
+  if (ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression))
+    return key.expression.text;
+  return undefined;
+}
+
+/** A member's name, whether read as `.name` or as a string-literal `['name']`. */
+function memberName(node: ts.Node): string | undefined {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (
+    ts.isElementAccessExpression(node) &&
+    ts.isStringLiteralLike(node.argumentExpression)
+  )
+    return node.argumentExpression.text;
+  return undefined;
+}
+
+/**
  * The channel a call sends on, when the call reaches the window: a send
  * helper, by name or as a member, or `send` / `postMessage` on any
  * `webContents`, optional chaining included.
@@ -526,29 +611,83 @@ const WINDOW_SEND_HELPERS: ReadonlyMap<string, number> = new Map([
 function windowSendChannel(
   node: ts.CallExpression,
   source: ts.SourceFile,
+  aliases: ReadonlyMap<string, string>,
 ): string | undefined {
   const callee = node.expression;
   const name = ts.isIdentifier(callee)
-    ? callee.text
-    : ts.isPropertyAccessExpression(callee)
-      ? callee.name.text
-      : undefined;
+    ? (aliases.get(callee.text) ?? callee.text)
+    : memberName(callee);
   if (name === undefined) return undefined;
   const helperChannel = WINDOW_SEND_HELPERS.get(name);
   if (helperChannel !== undefined)
     return node.arguments[helperChannel]?.getText(source) ?? '';
   if (
     (name === 'send' || name === 'postMessage') &&
-    ts.isPropertyAccessExpression(callee)
+    (ts.isPropertyAccessExpression(callee) ||
+      ts.isElementAccessExpression(callee))
   ) {
     const receiver = callee.expression;
     const receiverName = ts.isIdentifier(receiver)
       ? receiver.text
-      : ts.isPropertyAccessExpression(receiver)
-        ? receiver.name.text
-        : undefined;
+      : memberName(receiver);
     if (receiverName === 'webContents')
       return node.arguments[0]?.getText(source) ?? '';
+  }
+  return undefined;
+}
+
+/**
+ * What a non-call node in a worktree-action file keeps of the window: a
+ * `webContents` access (unless it is the receiver of a send counted above),
+ * a destructured `webContents`, or a send helper taken as a value. Holding
+ * either is how an alias would reach the window unseen.
+ */
+function windowHold(
+  node: ts.Node,
+  aliases: ReadonlyMap<string, string>,
+): string | undefined {
+  const calledAs = (expression: ts.Node): boolean =>
+    ts.isCallExpression(expression.parent) &&
+    expression.parent.expression === expression;
+  const name = memberName(node);
+  if (name === 'webContents') {
+    const outer = node.parent;
+    const outerName = memberName(outer);
+    const sends =
+      (ts.isPropertyAccessExpression(outer) ||
+        ts.isElementAccessExpression(outer)) &&
+      outer.expression === node &&
+      (outerName === 'send' || outerName === 'postMessage') &&
+      calledAs(outer);
+    return sends ? undefined : 'webContents';
+  }
+  if (
+    name !== undefined &&
+    ts.isElementAccessExpression(node) &&
+    WINDOW_SEND_HELPERS.has(name)
+  )
+    return calledAs(node) ? undefined : name;
+  if (
+    ts.isBindingElement(node) &&
+    bindingKeyName(node.propertyName ?? node.name) === 'webContents'
+  )
+    return 'webContents';
+  const helper = ts.isIdentifier(node)
+    ? (aliases.get(node.text) ?? node.text)
+    : undefined;
+  if (helper !== undefined && WINDOW_SEND_HELPERS.has(helper)) {
+    const parent = node.parent;
+    if (
+      ts.isImportSpecifier(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isTypeQueryNode(parent)
+    )
+      return undefined;
+    const reference =
+      ts.isPropertyAccessExpression(parent) && parent.name === node
+        ? parent
+        : node;
+    return calledAs(reference) ? undefined : helper;
   }
   return undefined;
 }
@@ -565,6 +704,7 @@ function findWindowSites(
       true,
       ts.ScriptKind.TS,
     );
+    const aliases = helperAliases(source);
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
         const line =
@@ -577,11 +717,21 @@ function findWindowSites(
           const { method, holder } = enclosing(node);
           found.push({ kind: 'legacyWindow', file, line, method, at: holder });
         } else if (WORKTREE_ACTION_FILES.has(file)) {
-          const channel = windowSendChannel(node, source);
+          const channel = windowSendChannel(node, source, aliases);
           if (channel !== undefined) {
             const { method } = enclosing(node);
             found.push({ kind: 'send', file, line, method, at: channel });
           }
+        }
+      }
+      if (WORKTREE_ACTION_FILES.has(file)) {
+        const hold = windowHold(node, aliases);
+        if (hold !== undefined) {
+          const line =
+            source.getLineAndCharacterOfPosition(node.getStart(source)).line +
+            1;
+          const { method } = enclosing(node);
+          found.push({ kind: 'hold', file, line, method, at: hold });
         }
       }
       ts.forEachChild(node, visit);
@@ -606,7 +756,9 @@ function windowSiteProblems(
       problems.push(
         site.kind === 'legacyWindow'
           ? `main/${site.file}:${site.line}: a new legacyWindow() call in ${site.method}. The window shim takes no new callers; present through a typed AgentInterfacePort member instead (CAN-6995).`
-          : `main/${site.file}:${site.line}: a new window send on ${site.at} in ${site.method}. Worktree actions present through the chat's AgentInterfacePort, not the window (CAN-6995).`,
+          : site.kind === 'send'
+            ? `main/${site.file}:${site.line}: a new window send on ${site.at} in ${site.method}. Worktree actions present through the chat's AgentInterfacePort, not the window (CAN-6995).`
+            : `main/${site.file}:${site.line}: a new hold on ${site.at} in ${site.method}. Worktree actions present through the chat's AgentInterfacePort; don't keep the window or a send helper (CAN-6995).`,
       );
   }
   for (const entry of allowed) {
@@ -705,6 +857,130 @@ describe('what still reaches the window instead of the agent interface port (CAN
           `main/canopy-tools/worktree-script-actions.ts:N: a new window send on ${channel} in ${method}. Worktree actions present through the chat's AgentInterfacePort, not the window (CAN-6995).`,
       ),
     );
+  });
+
+  it('fails where a worktree action takes hold of the window or a send helper, so an alias cannot slip past', () => {
+    const extraHandles = [
+      'declare const IPC_CHANNELS: Record<string, string>;',
+      'declare const windowSend: any;',
+      'export function viaAliases(runtime: any, win: any): void {',
+      '  const wc = win.webContents;',
+      '  wc.send(IPC_CHANNELS.scriptOutput, {});',
+      '  const { webContents: contents } = runtime.getWindow();',
+      '  contents.send(IPC_CHANNELS.scriptOutput, {});',
+      '  const send = sendToWindow;',
+      '  send(runtime.getWindow(), IPC_CHANNELS.scriptOutput, {});',
+      '  const forward = windowSend.sendToAllWindows;',
+      '  forward(IPC_CHANNELS.scriptOutput, {});',
+      '}',
+    ].join('\n');
+    const sources = mainSources(MAIN_DIR).map((source) =>
+      source.file === 'canopy-tools/worktree-script-actions.ts'
+        ? { ...source, text: `${source.text}\n${extraHandles}\n` }
+        : source,
+    );
+    const problems = windowSiteProblems(findWindowSites(sources), WINDOW_SITES);
+    expect(problems.map((problem) => problem.replace(/:\d+:/, ':N:'))).toEqual(
+      ['webContents', 'webContents', 'sendToWindow', 'sendToAllWindows'].map(
+        (handle): string =>
+          `main/canopy-tools/worktree-script-actions.ts:N: a new hold on ${handle} in viaAliases. Worktree actions present through the chat's AgentInterfacePort; don't keep the window or a send helper (CAN-6995).`,
+      ),
+    );
+  });
+
+  it('fails on the same sends and holds spelled with bracket access', () => {
+    const extraBrackets = [
+      'declare const IPC_CHANNELS: Record<string, string>;',
+      'declare const windowSend: any;',
+      'export function viaBrackets(runtime: any, win: any): void {',
+      "  win['webContents'].send(IPC_CHANNELS.worktreeGitReady, {});",
+      "  const wc = win['webContents'];",
+      "  windowSend['sendToWindowDetailed'](runtime.getWindow(), IPC_CHANNELS.trackedPlansUpdated, {});",
+      "  const forward = windowSend['sendToAllWindows'];",
+      "  win.webContents['postMessage'](IPC_CHANNELS.worktreeNeedsRepair, {});",
+      '}',
+    ].join('\n');
+    const sources = mainSources(MAIN_DIR).map((source) =>
+      source.file === 'canopy-tools/worktree-script-actions.ts'
+        ? { ...source, text: `${source.text}\n${extraBrackets}\n` }
+        : source,
+    );
+    const problems = windowSiteProblems(findWindowSites(sources), WINDOW_SITES);
+    const at = 'main/canopy-tools/worktree-script-actions.ts:N:';
+    const send = (channel: string): string =>
+      `${at} a new window send on ${channel} in viaBrackets. Worktree actions present through the chat's AgentInterfacePort, not the window (CAN-6995).`;
+    const hold = (handle: string): string =>
+      `${at} a new hold on ${handle} in viaBrackets. Worktree actions present through the chat's AgentInterfacePort; don't keep the window or a send helper (CAN-6995).`;
+    expect(problems.map((problem) => problem.replace(/:\d+:/, ':N:'))).toEqual([
+      send('IPC_CHANNELS.worktreeGitReady'),
+      hold('webContents'),
+      send('IPC_CHANNELS.trackedPlansUpdated'),
+      hold('sendToAllWindows'),
+      send('IPC_CHANNELS.worktreeNeedsRepair'),
+    ]);
+  });
+
+  it('fails on a destructured webContents under a quoted, bracketed or template key', () => {
+    const extraKeys = [
+      'declare const IPC_CHANNELS: Record<string, string>;',
+      'export function viaQuotedKeys(win: any): void {',
+      "  const { 'webContents': single } = win;",
+      '  single.send(IPC_CHANNELS.scriptOutput, {});',
+      '  const { "webContents": double } = win;',
+      '  double.send(IPC_CHANNELS.scriptOutput, {});',
+      "  const { ['webContents']: bracketed } = win;",
+      '  bracketed.send(IPC_CHANNELS.scriptOutput, {});',
+      '  const { [`webContents`]: template } = win;',
+      '  template.send(IPC_CHANNELS.scriptOutput, {});',
+      '}',
+    ].join('\n');
+    const sources = mainSources(MAIN_DIR).map((source) =>
+      source.file === 'canopy-tools/worktree-script-actions.ts'
+        ? { ...source, text: `${source.text}\n${extraKeys}\n` }
+        : source,
+    );
+    const problems = windowSiteProblems(findWindowSites(sources), WINDOW_SITES);
+    expect(problems.map((problem) => problem.replace(/:\d+:/, ':N:'))).toEqual(
+      Array<string>(4).fill(
+        "main/canopy-tools/worktree-script-actions.ts:N: a new hold on webContents in viaQuotedKeys. Worktree actions present through the chat's AgentInterfacePort; don't keep the window or a send helper (CAN-6995).",
+      ),
+    );
+  });
+
+  it('fails on a send helper reached through an import alias, a namespace import or a variable', () => {
+    const extraImports = [
+      "import { sendToWindow as send, sendToAllWindows as broadcast } from '../lib/window-send';",
+      "import * as ws from '../lib/window-send';",
+      'declare const IPC_CHANNELS: Record<string, string>;',
+      'export function viaImports(runtime: any): void {',
+      '  send(runtime.getWindow(), IPC_CHANNELS.worktreeGitReady, {});',
+      '  broadcast(IPC_CHANNELS.workspaceWorktreesUpdated, {});',
+      '  ws.sendToWindow(runtime.getWindow(), IPC_CHANNELS.trackedPlansUpdated, {});',
+      '  const s = sendToWindow;',
+      '  s(runtime.getWindow(), IPC_CHANNELS.scriptOutput, {});',
+      '  const again = send;',
+      '  const viaNamespace = ws.sendToWindowDetailed;',
+      '}',
+    ].join('\n');
+    const sources = mainSources(MAIN_DIR).map((source) =>
+      source.file === 'canopy-tools/worktree-script-actions.ts'
+        ? { ...source, text: `${source.text}\n${extraImports}\n` }
+        : source,
+    );
+    const problems = windowSiteProblems(findWindowSites(sources), WINDOW_SITES);
+    const at = 'main/canopy-tools/worktree-script-actions.ts:N:';
+    const send = (channel: string): string =>
+      `${at} a new window send on ${channel} in viaImports. Worktree actions present through the chat's AgentInterfacePort, not the window (CAN-6995).`;
+    const hold = (handle: string): string =>
+      `${at} a new hold on ${handle} in viaImports. Worktree actions present through the chat's AgentInterfacePort; don't keep the window or a send helper (CAN-6995).`;
+    expect(problems.map((problem) => problem.replace(/:\d+:/, ':N:'))).toEqual([
+      send('IPC_CHANNELS.worktreeGitReady'),
+      send('IPC_CHANNELS.workspaceWorktreesUpdated'),
+      send('IPC_CHANNELS.trackedPlansUpdated'),
+      hold('sendToWindow'),
+      hold('sendToWindow'),
+      hold('sendToWindowDetailed'),
+    ]);
   });
 
   it('fails when a listed site goes but the list keeps it, until the count drops', () => {

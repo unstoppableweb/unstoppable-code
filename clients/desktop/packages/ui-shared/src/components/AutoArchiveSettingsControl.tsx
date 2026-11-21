@@ -1,5 +1,11 @@
 import { Stack } from './Stack';
-import { useId, type JSX, type ReactNode } from 'react';
+import {
+  useId,
+  useState,
+  type ComponentProps,
+  type JSX,
+  type ReactNode,
+} from 'react';
 import { TextInput } from './Field';
 import { SettingsRowsRow, SettingsRowsSubRow } from './settings/SettingsRows';
 import { ToggleSwitch } from './ToggleSwitch';
@@ -67,25 +73,12 @@ export function AutoArchiveSettingsControl({
               control={
                 <>
                   <div className="w-20">
-                    <TextInput
+                    <DaysInput
                       id={daysId}
-                      density="settings"
-                      type="number"
                       value={days}
-                      onChange={(event) =>
-                        onDaysChange(
-                          Math.max(
-                            1,
-                            Math.min(
-                              maxDays,
-                              Number.parseInt(event.target.value, 10) ||
-                                fallbackDays,
-                            ),
-                          ),
-                        )
-                      }
-                      min={1}
-                      max={maxDays}
+                      maxDays={maxDays}
+                      fallbackDays={fallbackDays}
+                      onDaysChange={onDaysChange}
                       data-testid={daysTestId}
                     />
                   </div>
@@ -98,5 +91,55 @@ export function AutoArchiveSettingsControl({
         ) : null}
       </SettingsRowsRow>
     </div>
+  );
+}
+
+type DaysInputProps = Omit<
+  ComponentProps<typeof TextInput>,
+  'type' | 'value' | 'onChange' | 'onBlur' | 'min' | 'max' | 'density'
+> & {
+  readonly value: number;
+  readonly maxDays: number;
+  readonly fallbackDays: number;
+  readonly onDaysChange: (days: number) => void;
+};
+
+/**
+ * A whole number of days from 1 to `maxDays`. The text stays as typed while
+ * the field has focus, so it can be cleared and retyped, but the host always
+ * holds the clamped value (`fallbackDays` when the text is not a number), so
+ * a save that never leaves the field still saves a valid value. Leaving the
+ * field shows the value the host holds.
+ */
+export function DaysInput({
+  value,
+  maxDays,
+  fallbackDays,
+  onDaysChange,
+  ...props
+}: DaysInputProps): JSX.Element {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <TextInput
+      {...props}
+      density="settings"
+      type="number"
+      value={draft ?? value}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        onDaysChange(
+          Math.max(
+            1,
+            Math.min(
+              maxDays,
+              Number.parseInt(event.target.value, 10) || fallbackDays,
+            ),
+          ),
+        );
+      }}
+      onBlur={() => setDraft(null)}
+      min={1}
+      max={maxDays}
+    />
   );
 }

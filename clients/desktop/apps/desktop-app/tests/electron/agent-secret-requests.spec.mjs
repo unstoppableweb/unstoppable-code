@@ -178,7 +178,7 @@ test.describe('agent secret requests', () => {
       await expect(popover).toContainText('STRIPE_SECRET_KEY');
       await expect(popover).toContainText('SHORT_PIN');
       await expect(popover).not.toContainText(CANARY);
-      await popover.getByTestId('chat-secrets-revoke-SHORT_PIN').click();
+      await popover.getByRole('button', { name: 'Revoke SHORT_PIN' }).click();
       await expect(popover).not.toContainText('SHORT_PIN');
       await window.keyboard.press('Escape');
       await expect(chip).toContainText('1 secret');
@@ -428,7 +428,7 @@ test.describe('agent secret requests', () => {
         "also set in the agent's own commands",
       );
       await popover
-        .getByTestId('chat-secrets-revoke-STRIPE_SECRET_KEY')
+        .getByRole('button', { name: 'Revoke STRIPE_SECRET_KEY' })
         .click();
       // The open list stays until closed; then the chip goes with the last
       // secret.

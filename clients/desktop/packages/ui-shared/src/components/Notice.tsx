@@ -404,6 +404,10 @@ const ACTION_SIZE_BY_SHAPE: Record<NoticeShape, NoticeButtonSize> = {
   menu: 'compact',
 };
 
+/** The tray's fill and edge, shared with `PackageProblemTray`. */
+export const NOTICE_TRAY_SURFACE_CLASS =
+  'bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ring-line-secondary';
+
 /** The tray's corners: the composer box, a toast card, a settings card. */
 const TRAY_RADIUS_BY_SHAPE: Record<NoticeShape, string> = {
   default: 'rounded-xl',
@@ -608,7 +612,7 @@ export function Notice({
       data-notice-surface={surface}
       className={`flex gap-2 text-xs fg-primary ${
         surface === 'tray'
-          ? `bg-base bg-[linear-gradient(var(--bg-subtle),var(--bg-subtle))] ring-[length:var(--border-hairline)] ring-line-secondary ${TRAY_RADIUS_BY_SHAPE[resolvedShape]}`
+          ? `${NOTICE_TRAY_SURFACE_CLASS} ${TRAY_RADIUS_BY_SHAPE[resolvedShape]}`
           : ''
       } ${
         composerShape

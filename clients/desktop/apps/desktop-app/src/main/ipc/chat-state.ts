@@ -3,8 +3,10 @@ import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   TrackedPlanImplementationInputSchema,
   ChatPlanReviewApprovalSchema,
+  isSendWhileRunning,
+  parseChatAgentSentInfo,
+  STEER_TURN_ID_MAX_LENGTH,
 } from '@canopy/protocol/remote-control/shell';
-import { parseChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import { parseAgentSenderProvenance } from '../agent-messaging/sender-context';
 import { CHAT_CUSTOM_TITLE_MAX_LENGTH } from '@canopy/protocol';
 import { rendererContentsOf } from '../lib/renderer-surface';
@@ -18,6 +20,18 @@ import type { DesktopIpcCallerResolver } from './file-tree';
 import type { ChatScopeKey } from '../services/chat-state-contracts';
 import { isChatScopeDeletingError } from '../services/chat-scope-lifecycle';
 import { isDeepStrictEqual } from 'node:util';
+import type {
+  CoreChatContentReadParams,
+  CoreChatTranscriptBlocksPageParams,
+  CoreChatTranscriptPageParams,
+} from '@canopy/protocol/canopy-core';
+import {
+  RemoteControlDelegationBlocksRequestSchema,
+  RemoteControlDelegationContentRequestSchema,
+  RemoteControlDelegationPageRequestSchema,
+  transcriptReadFailure,
+  type RemoteControlTranscriptReadReply,
+} from '@canopy/protocol/remote-control/delegation-reads';
 import {
   IPC_CHANNELS,
   isChatAttachmentPromptKind,
@@ -614,6 +628,8 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'planMode',
     'codexProposalMode',
     'inputMode',
+    'sendWhileRunning',
+    'steerTurnId',
     'fileReferences',
     'attachmentPaths',
     'attachmentPromptContexts',
@@ -1623,6 +1639,17 @@ function validateCommand(
       }
     }
     readOptionalBoolean(command.planMode, 'command.planMode');
+    if (
+      command.sendWhileRunning !== undefined &&
+      !isSendWhileRunning(command.sendWhileRunning)
+    ) {
+      failInvalidRequest('command.sendWhileRunning is unsupported.');
+    }
+    if (command.steerTurnId !== undefined) {
+      readBoundedString(command.steerTurnId, 'command.steerTurnId', {
+        maxLength: STEER_TURN_ID_MAX_LENGTH,
+      });
+    }
     if (
       command.codexProposalMode !== undefined &&
       command.codexProposalMode !== 'optional' &&
@@ -2984,6 +3011,130 @@ type ChatStatePushTarget = Pick<
   'isDestroyed' | 'send'
 >;
 
+/** Which delegate transcript read a `chat:read-delegation-*` channel serves. */
+export type ChatDelegationReadKind = 'page' | 'content' | 'blocks';
+
+/** The core read one delegate transcript request becomes. */
+export type ChatDelegationCoreRead =
+  | {
+      readonly operation: 'core.chat.transcript.page';
+      readonly params: CoreChatTranscriptPageParams;
+    }
+  | {
+      readonly operation: 'core.chat.content.read';
+      readonly params: CoreChatContentReadParams;
+    }
+  | {
+      readonly operation: 'core.chat.transcript.blocks.page';
+      readonly params: CoreChatTranscriptBlocksPageParams;
+    };
+
+function delegationCoreRead(
+  kind: ChatDelegationReadKind,
+  value: unknown,
+): ChatDelegationCoreRead {
+  const invalid = (): never =>
+    failInvalidRequest('Delegation transcript read request is invalid.');
+  const scopeOf = (request: {
+    projectId: string;
+    worktreeId: string;
+    chatId: string;
+    archivedContainerId?: string | undefined;
+  }): Pick<CoreChatTranscriptPageParams, 'scope' | 'archivedContainerId'> => ({
+    scope: {
+      workspaceId: request.projectId,
+      worktreeId: request.worktreeId,
+      chatId: request.chatId,
+    },
+    ...(request.archivedContainerId === undefined
+      ? {}
+      : { archivedContainerId: request.archivedContainerId }),
+  });
+  switch (kind) {
+    case 'page': {
+      const parsed = RemoteControlDelegationPageRequestSchema.safeParse(value);
+      if (!parsed.success) return invalid();
+      const request = parsed.data;
+      return {
+        operation: 'core.chat.transcript.page',
+        params: {
+          ...scopeOf(request),
+          target: request.target,
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+        },
+      };
+    }
+    case 'content': {
+      const parsed =
+        RemoteControlDelegationContentRequestSchema.safeParse(value);
+      if (!parsed.success) return invalid();
+      const request = parsed.data;
+      return {
+        operation: 'core.chat.content.read',
+        params: {
+          ...scopeOf(request),
+          target: request.target,
+          messageId: request.messageId,
+          blockOrdinal: request.blockOrdinal,
+          field: request.field,
+          ...(request.fieldSource === undefined
+            ? {}
+            : { fieldSource: request.fieldSource }),
+          offset: request.offset,
+          limit: request.limit,
+        },
+      };
+    }
+    case 'blocks': {
+      const parsed =
+        RemoteControlDelegationBlocksRequestSchema.safeParse(value);
+      if (!parsed.success) return invalid();
+      const request = parsed.data;
+      return {
+        operation: 'core.chat.transcript.blocks.page',
+        params: {
+          ...scopeOf(request),
+          target: request.target,
+          messageId: request.messageId,
+          ...(request.firstBlockOrdinal === undefined
+            ? {}
+            : { firstBlockOrdinal: request.firstBlockOrdinal }),
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          limit: request.limit,
+          projection: 'bounded-v1',
+        },
+      };
+    }
+  }
+}
+
+/**
+ * Serves one `chat:read-delegation-*` request (CAN-7432): a compatibility
+ * projection over the core transcript reads, narrowed to delegation targets
+ * of the named chat. A request that fails its schema rejects; a read that
+ * reaches the dispatcher always completes with a typed reply, and no error
+ * message, cause or path crosses the wire.
+ */
+export async function serveChatDelegationRead(
+  kind: ChatDelegationReadKind,
+  value: unknown,
+  read: (request: ChatDelegationCoreRead) => Promise<unknown>,
+): Promise<RemoteControlTranscriptReadReply> {
+  const request = delegationCoreRead(kind, value);
+  try {
+    return { ok: true, value: await read(request) };
+  } catch (error) {
+    if (error instanceof CanopyOperationError)
+      return { ok: false, reason: transcriptReadFailure(error.payload) };
+    try {
+      logMainProcessError(`[chat-state] ${request.operation} failed`, error);
+    } catch {
+      // The reply does not depend on diagnostics.
+    }
+    return { ok: false, reason: 'failed' };
+  }
+}
+
 /**
  * Register pure transport adapters around a structurally injected service.
  * Returns cleanup for tests/application shutdown; delivery never affects commit.
@@ -3204,6 +3355,60 @@ export function registerChatStateHandlers(
         activeVisualReads.delete(controller);
       }
     },
+  );
+  // Delegate transcript reads for Remote Control controllers (CAN-7432). The
+  // local renderer reads the same operations through `canopy-core:relay`.
+  const activeDelegationReads = new Set<AbortController>();
+  const delegationRead =
+    (kind: ChatDelegationReadKind) =>
+    async (
+      event: Parameters<DesktopIpcCallerResolver>[0],
+      value: unknown,
+    ): Promise<RemoteControlTranscriptReadReply> => {
+      const controller = new AbortController();
+      activeDelegationReads.add(controller);
+      try {
+        const context = {
+          caller: runtime.resolveCaller(event),
+          signal: controller.signal,
+        };
+        return await serveChatDelegationRead(kind, value, (request) => {
+          switch (request.operation) {
+            case 'core.chat.transcript.page':
+              return runtime.dispatcher.query(
+                request.operation,
+                request.params,
+                context,
+              );
+            case 'core.chat.content.read':
+              return runtime.dispatcher.query(
+                request.operation,
+                request.params,
+                context,
+              );
+            case 'core.chat.transcript.blocks.page':
+              return runtime.dispatcher.query(
+                request.operation,
+                request.params,
+                context,
+              );
+          }
+        });
+      } finally {
+        activeDelegationReads.delete(controller);
+      }
+    };
+  registerIpcHandler<[unknown], RemoteControlTranscriptReadReply>(
+    IPC_CHANNELS.chatReadDelegationPage,
+    delegationRead('page'),
+  );
+  registerIpcHandler<[unknown], RemoteControlTranscriptReadReply>(
+    IPC_CHANNELS.chatReadDelegationContent,
+    delegationRead('content'),
+  );
+  registerIpcHandler<[unknown], RemoteControlTranscriptReadReply>(
+    IPC_CHANNELS.chatReadDelegationBlocks,
+    delegationRead('blocks'),
   );
   // Interface projection policy (cadence and per-window routing) for this
   // legacy push only; the stream and its other clients are unchanged.
@@ -3501,6 +3706,8 @@ export function registerChatStateHandlers(
     activeToolOutputReads.clear();
     activeVisualReads.forEach((controller) => controller.abort());
     activeVisualReads.clear();
+    activeDelegationReads.forEach((controller) => controller.abort());
+    activeDelegationReads.clear();
     closed = true;
     streamHandle?.close();
     runtime.dispatcher.closeChatEventsForLegacyIpc();

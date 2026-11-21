@@ -1,14 +1,21 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   type JSX,
+  type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { focusableWithin } from '../lib/focusable';
+import {
+  focusableWithin,
+  isCoarsePointer,
+  openingFocusTarget,
+} from '../lib/focusable';
 import {
   DIALOG_INITIAL_FOCUS_TARGET_EVENT,
   DIALOG_INITIAL_FOCUS_TARGET_SELECTOR,
@@ -39,12 +46,14 @@ function isRestorable(
 ): candidate is HTMLElement {
   const view = (ownerDocument ?? doc).defaultView;
   const ElementConstructor = view?.HTMLElement;
-  return (
-    ElementConstructor !== undefined &&
-    candidate instanceof ElementConstructor &&
-    candidate.isConnected &&
-    !candidate.matches(':disabled')
-  );
+  // A pulled-out panel's content is created in the opener window and adopted
+  // into the panel's own document, so the control that opened a page there
+  // is an instance of this realm's `HTMLElement`, not of that window's.
+  const isElement =
+    (ElementConstructor !== undefined &&
+      candidate instanceof ElementConstructor) ||
+    (typeof HTMLElement !== 'undefined' && candidate instanceof HTMLElement);
+  return isElement && candidate.isConnected && !candidate.matches(':disabled');
 }
 
 /** Caller-named fallback when the original trigger no longer exists. */
@@ -333,6 +342,12 @@ interface DialogModalBaseProps {
    */
   initialFocusRef?: RefObject<HTMLElement | null>;
   /**
+   * On a coarse pointer, open on the first control that is not a text field,
+   * so the touch keyboard stays closed until the user taps the field. Off by
+   * default; set it where typing is optional on open (a rename).
+   */
+  keepTouchKeyboardClosed?: boolean;
+  /**
    * What takes focus first when `trapFocus` is set (default: `'control'`, the
    * `initialFocusRef` target or first focusable descendant).
    *
@@ -418,6 +433,31 @@ function ownedBySurface(menu: Element, surface: HTMLElement): boolean {
   return false;
 }
 
+/**
+ * A scrim press closes its overlay only when it starts and ends on the scrim.
+ * A drag that starts in the card (selecting a field's text) and is released
+ * past its edge fires `click` on the scrim, their common ancestor; that must
+ * not close the overlay and lose the draft.
+ */
+export function useBackdropDismiss(onClose: (() => void) | undefined): {
+  readonly onPointerDown: (event: PointerEvent<HTMLElement>) => void;
+  readonly onClick: (event: MouseEvent<HTMLElement>) => void;
+} {
+  const pressedScrimRef = useRef(false);
+  return {
+    onPointerDown: (event): void => {
+      pressedScrimRef.current = event.target === event.currentTarget;
+    },
+    onClick: (event): void => {
+      const pressedScrim = pressedScrimRef.current;
+      pressedScrimRef.current = false;
+      if (onClose && pressedScrim && event.target === event.currentTarget) {
+        onClose();
+      }
+    },
+  };
+}
+
 interface ModalFocusTrapOptions {
   readonly enabled: boolean;
   /** Restore focus after a marked initial target was focused, even without a trap. */
@@ -425,6 +465,7 @@ interface ModalFocusTrapOptions {
   /** Focus the surface itself rather than its first control. */
   readonly focusSurface: boolean;
   readonly initialFocusRef: RefObject<HTMLElement | null> | undefined;
+  readonly keepTouchKeyboardClosed?: boolean;
   readonly restoreFocusRef: RefObject<HTMLElement | null> | undefined;
   readonly restoreFocusWhen: (() => boolean) | undefined;
   readonly containment: 'window' | 'parent';
@@ -438,13 +479,14 @@ interface ModalFocusTrapOptions {
  * to a named fallback). DialogModal also restores focus after its marked
  * initial target is focused when its host intentionally leaves the trap off.
  */
-function useModalFocusTrap(
+export function useModalFocusTrap(
   cardRef: RefObject<HTMLElement | null>,
   {
     enabled,
     initialFocusAppliedRef,
     focusSurface,
     initialFocusRef,
+    keepTouchKeyboardClosed = false,
     restoreFocusRef,
     restoreFocusWhen,
     containment,
@@ -465,6 +507,8 @@ function useModalFocusTrap(
   // so closing would strand focus there instead of returning it.
   const initialFocusRefRef = useRef(initialFocusRef);
   initialFocusRefRef.current = initialFocusRef;
+  const keepTouchKeyboardClosedRef = useRef(keepTouchKeyboardClosed);
+  keepTouchKeyboardClosedRef.current = keepTouchKeyboardClosed;
   const restoreFocusWhenRef = useRef(restoreFocusWhen);
   restoreFocusWhenRef.current = restoreFocusWhen;
   const restoreFocusRefRef = useRef(restoreFocusRef);
@@ -521,13 +565,17 @@ function useModalFocusTrap(
       const marked = card.querySelector<HTMLElement>(
         DIALOG_INITIAL_FOCUS_TARGET_SELECTOR,
       );
-      const initial = focusCardRef.current
-        ? card
-        : named !== null && named !== undefined && focusables.includes(named)
+      const preferred =
+        named !== null && named !== undefined && focusables.includes(named)
           ? named
           : marked !== null && focusables.includes(marked)
             ? marked
             : focusables[0];
+      const initial = focusCardRef.current
+        ? card
+        : keepTouchKeyboardClosedRef.current
+          ? openingFocusTarget(preferred, focusables)
+          : preferred;
       initial?.focus();
     }
 
@@ -867,10 +915,14 @@ export function DialogModal({
   trapFocus: trapFocusProp,
   initialFocus = 'control',
   initialFocusRef,
+  keepTouchKeyboardClosed = false,
   restoreFocusRef,
   restoreFocusWhen,
 }: DialogModalProps): JSX.Element {
-  const id = titleId ?? 'dialog-modal-title';
+  // A unique fallback, so a dialog stacked over another is never named by
+  // the heading underneath it.
+  const generatedTitleId = useId();
+  const id = titleId ?? generatedTitleId;
   const pageShape = variant === 'page';
   const trapFocus = trapFocusProp ?? pageShape;
   const confirmShape = variant === 'confirm' || variant === 'confirm-wide';
@@ -927,12 +979,12 @@ export function DialogModal({
           ? 'max-w-none'
           : maxWidthClasses[maxWidth];
   const renderCloseButton = showCloseButton && !confirmShape;
-  // Both derived strings reproduce today's values for every non-`'full'`
-  // width, so existing callers are byte-identical.
+  // A full-bleed card on a phone clears the status bar and home indicator
+  // (web pages use `viewport-fit=cover`); `env()` is 0 everywhere else.
   const overlayPadClass = pageShape
-    ? 'p-4 sm:p-6'
+    ? 'px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-[max(1.5rem,env(safe-area-inset-top))] sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]'
     : maxWidth === 'full'
-      ? 'p-0 sm:p-4'
+      ? 'pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] sm:p-4'
       : 'p-4';
   const placementClass =
     placement === 'top'
@@ -979,12 +1031,21 @@ export function DialogModal({
     initialFocusAppliedRef,
     focusSurface: focusCard,
     initialFocusRef,
+    keepTouchKeyboardClosed,
     restoreFocusRef,
     restoreFocusWhen,
     containment,
     ownerDocument,
   });
-  useDialogInitialFocusTarget(cardRef, true, markInitialFocusApplied);
+  useDialogInitialFocusTarget(
+    cardRef,
+    // A marked field would open the touch keyboard after all.
+    !(keepTouchKeyboardClosed && isCoarsePointer(ownerDocument)),
+    markInitialFocusApplied,
+  );
+  const backdropDismiss = useBackdropDismiss(
+    closeOnBackdrop ? onClose : undefined,
+  );
 
   const overlay: JSX.Element = (
     <div
@@ -992,7 +1053,7 @@ export function DialogModal({
       data-canopy-overlay-root="modal"
       data-testid={overlayDataTestId}
       className={`${containment === 'parent' ? 'absolute' : 'fixed'} inset-0 z-modal flex ${placementClass} justify-center bg-overlay-scrim ${overlayPadClass} ${overlayClassName}`}
-      onClick={closeOnBackdrop ? onClose : undefined}
+      {...backdropDismiss}
     >
       {/* `electron-no-drag`: a card (a page's header and Close above all) can
           land in a desktop window-drag band painted underneath. app-region
@@ -1107,6 +1168,12 @@ interface WindowPageProps {
    * the app shell (Settings, mounted beside the shell at the app's root).
    */
   readonly portal?: boolean;
+  /**
+   * The document of the control that opened the page, when that is another
+   * window's (a pulled-out panel): the page portals to that document's body
+   * and takes its Escape and focus there. Defaults to this window's.
+   */
+  readonly ownerDocument?: Document;
   readonly children: ReactNode;
 }
 
@@ -1131,10 +1198,11 @@ export function WindowPage({
   initialFocusRef,
   restoreFocusRef,
   portal = true,
+  ownerDocument,
   children,
 }: WindowPageProps): JSX.Element | null {
   const pageRef = useRef<HTMLDivElement | null>(null);
-  useOverlayEscape(open, onClose);
+  useOverlayEscape(open, onClose, ownerDocument);
   useModalFocusTrap(pageRef, {
     enabled: open,
     focusSurface: false,
@@ -1142,7 +1210,7 @@ export function WindowPage({
     restoreFocusRef,
     restoreFocusWhen: undefined,
     containment: 'window',
-    ownerDocument: undefined,
+    ownerDocument,
   });
   useDialogInitialFocusTarget(pageRef, open);
   if (!open && !keepMounted) return null;
@@ -1167,7 +1235,9 @@ export function WindowPage({
       {children}
     </div>
   );
-  return !portal || typeof document === 'undefined'
+  const portalDocument =
+    ownerDocument ?? (typeof document === 'undefined' ? undefined : document);
+  return !portal || portalDocument === undefined
     ? page
-    : createPortal(page, document.body);
+    : createPortal(page, portalDocument.body);
 }

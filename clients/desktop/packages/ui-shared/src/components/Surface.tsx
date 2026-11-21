@@ -34,6 +34,10 @@ import {
  * - `well`: a full-bleed secondary region for a media preview.
  * - `section`: an unfilled region attached to a pane. `boundary` supplies
  *   the shared edge of headers, footers, toolbars and status regions.
+ * - `popover-footer`: an action band at the foot of a popover, on the card
+ *   fill (`--bg-primary`). It meets the popover's edges (the host bleeds it through
+ *   the surface inset), takes its top edge from `boundary`, and repeats the
+ *   popover's inset edge over its fill (`.canopy-popover-footer`).
  */
 export type SurfaceVariant =
   | 'outline'
@@ -86,6 +90,7 @@ export type SurfaceVariant =
   | 'well'
   | 'transcript-well'
   | 'transcript-nested-well'
+  | 'popover-footer'
   | 'section';
 
 /** Attached boundaries between regions of a pane, without a rounded box. */
@@ -244,6 +249,7 @@ export const SURFACE_VARIANT_CLASS: Readonly<Record<SurfaceVariant, string>> = {
     'flex items-center gap-3 px-2.5 py-2 hover:bg-fg-primary/[0.04]',
   'advisor-window-clear': 'bg-transparent fg-primary',
   'gallery-banner': 'bg-depth',
+  'popover-footer': 'canopy-popover-footer bg-card',
   'attached-action-card': 'overflow-hidden bg-tertiary shadow-sm',
   'guest-nudge': 'animate-slide-up bg-card fg-primary shadow-lg',
   pane: 'bg-base',
@@ -316,6 +322,7 @@ export const SURFACE_RADIUS_CLASS: Readonly<Record<SurfaceVariant, string>> = {
   'mcp-manage-row': 'rounded-md',
   'advisor-window-clear': '',
   'gallery-banner': 'rounded-lg',
+  'popover-footer': '',
   'attached-action-card': 'rounded-lg',
   'guest-nudge': 'rounded-xl',
   pane: '',
@@ -500,6 +507,7 @@ export function surfaceClassName({
       variant === 'workspace-panel' ||
       variant === 'rail' ||
       variant === 'well' ||
+      variant === 'popover-footer' ||
       variant === 'section') &&
     !(boundary === 'frame' && selected)
       ? SURFACE_BOUNDARY_CLASS[boundary]

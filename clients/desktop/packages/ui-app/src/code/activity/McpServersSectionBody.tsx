@@ -14,6 +14,9 @@ import {
 import {
   ActionTooltip,
   Button,
+  DelayedLoadingPlaceholder,
+  EmptyStateText,
+  LoadingButton,
   MCP_SIGN_IN_WAITING_LABEL,
   McpServerCardRow,
   McpRowSettings,
@@ -21,6 +24,7 @@ import {
   McpSignInPendingActions,
   McpSignInPendingStatus,
   useActivityItemDensity,
+  Skeleton,
   StatusLabel,
   ErrorBanner,
 } from '@canopy/ui-shared/components';
@@ -98,6 +102,30 @@ export interface McpServersSectionBodyProps {
   readonly emptyLabel?: string;
 }
 
+/** Plain servers the loading skeleton measures. */
+const SAMPLE_SERVERS: readonly McpServersSectionItem[] = [
+  {
+    key: 'mcp-sample-1',
+    displayName: 'Issue tracker',
+    source: 'standalone',
+    configName: 'Default',
+    enabled: true,
+    authStatus: 'connected',
+    authStatusLabel: 'Connected',
+    canConnect: false,
+  },
+  {
+    key: 'mcp-sample-2',
+    displayName: 'Docs search',
+    source: 'standalone',
+    configName: 'Default',
+    enabled: true,
+    authStatus: 'connected',
+    authStatusLabel: 'Connected',
+    canConnect: false,
+  },
+];
+
 export function McpServersSectionBody({
   servers,
   warnings,
@@ -123,12 +151,24 @@ export function McpServersSectionBody({
   const compact = useActivityItemDensity() === 'compact';
   const body =
     loading && servers.length === 0 ? (
-      <p
-        className="text-xs fg-secondary"
-        data-testid="mcp-servers-card-loading"
-      >
-        Checking MCP servers…
-      </p>
+      <DelayedLoadingPlaceholder slowNote="Still checking MCP servers…">
+        <Skeleton
+          loading
+          label="Checking MCP servers"
+          testId="mcp-servers-card-loading"
+        >
+          <McpServersSectionBody
+            servers={SAMPLE_SERVERS}
+            warnings={[]}
+            loading={false}
+            error={null}
+            connectingKey={null}
+            showProxyToggle={false}
+            brandAppName={brandAppName}
+            proxyLogo={null}
+          />
+        </Skeleton>
+      </DelayedLoadingPlaceholder>
     ) : error !== null ? (
       <ErrorBanner
         errorSource="mcp-servers-card-error-section-body"
@@ -138,11 +178,8 @@ export function McpServersSectionBody({
       />
     ) : servers.length === 0 ? (
       emptyLabel === undefined ? null : (
-        <p
-          className="text-xs fg-secondary"
-          data-testid="mcp-servers-card-empty"
-        >
-          {emptyLabel}
+        <p className="text-xs" data-testid="mcp-servers-card-empty">
+          <EmptyStateText title={emptyLabel} tone="secondary" />
         </p>
       )
     ) : (
@@ -172,7 +209,6 @@ export function McpServersSectionBody({
               server.disconnecting === true || disconnectingKey === server.key;
             const buttonDisabled =
               !server.canConnect ||
-              isConnecting ||
               isDisconnecting ||
               server.connectDisabled === true;
             const showToggle =
@@ -182,9 +218,6 @@ export function McpServersSectionBody({
             const signInUrl = server.signInUrl;
             const proxyActive = server.canopyProxyEnabled === true;
             const proxyUpdating = proxyUpdatingKey === server.key;
-            const toggleTitle = proxyActive
-              ? `${brandAppName} proxy enabled. Click to use agent provider auth.`
-              : `Using agent provider auth. Click to use ${brandAppName} proxy.`;
             // In the card, a status earns space only when it needs the user.
             const compactStatusInk =
               server.authStatus === 'error'
@@ -197,8 +230,8 @@ export function McpServersSectionBody({
               ? `${brandAppName} proxy: on`
               : `${brandAppName} proxy: off`;
             const toggleAction = proxyActive
-              ? 'Click to use agent provider auth.'
-              : `Click to route this server through the ${brandAppName} proxy.`;
+              ? 'Turn it off to use agent provider auth.'
+              : `Turn it on to route this server through the ${brandAppName} proxy.`;
             return (
               <McpServerCardRow
                 key={server.key}
@@ -241,7 +274,14 @@ export function McpServersSectionBody({
                         className={`max-w-full ${mcpAuthStatusBadgeClass(server.authStatus, server.canRefresh)}`}
                         data-testid="mcp-servers-card-badge"
                       >
-                        <span className="min-w-0 truncate">
+                        <span
+                          className="min-w-0 truncate"
+                          title={
+                            server.authStatus === 'connected'
+                              ? server.authStatusLabel
+                              : mcpSignInStatusLabel(server)
+                          }
+                        >
                           {server.authStatus === 'connected'
                             ? server.authStatusLabel
                             : mcpSignInStatusLabel(server)}
@@ -262,7 +302,7 @@ export function McpServersSectionBody({
                       <ProxyToggle
                         active={proxyActive}
                         updating={proxyUpdating}
-                        ariaLabel={toggleTitle}
+                        ariaLabel={`Use ${brandAppName} proxy for ${server.displayName}`}
                         bordered={!compact}
                         heading={toggleHeading}
                         action={toggleAction}
@@ -304,14 +344,23 @@ export function McpServersSectionBody({
                       server.canConnect &&
                       connectLabel &&
                       onConnect !== undefined && (
-                        <Button
+                        <LoadingButton
                           type="button"
                           variant="primary"
                           size="compact"
                           onClick={(): void => onConnect(server)}
                           disabled={buttonDisabled}
+                          loading={isConnecting}
+                          loadingLabel={
+                            requirementUnknown
+                              ? 'Connecting…'
+                              : 'Opening sign-in…'
+                          }
+                          // A static name would hide the busy label from screen readers.
                           aria-label={
-                            connectLabel === 'Sign in'
+                            connectLabel === 'Sign in' &&
+                            !isConnecting &&
+                            server.waitingForSignIn !== true
                               ? `Sign in to ${server.displayName}`
                               : undefined
                           }
@@ -319,31 +368,32 @@ export function McpServersSectionBody({
                         >
                           {server.waitingForSignIn
                             ? MCP_SIGN_IN_WAITING_LABEL
-                            : isConnecting
-                              ? requirementUnknown
-                                ? 'Connecting…'
-                                : 'Opening sign-in…'
-                              : connectLabel}
-                        </Button>
+                            : connectLabel}
+                        </LoadingButton>
                       )}
                     {server.canDisconnect === true &&
                       onDisconnect !== undefined && (
-                        <Button
+                        <LoadingButton
                           type="button"
                           variant="secondary"
                           size="compact"
                           onClick={(): void => onDisconnect(server)}
-                          disabled={isDisconnecting || isConnecting}
+                          loading={isDisconnecting}
+                          loadingLabel="Disconnecting…"
+                          disabled={isConnecting}
                           data-testid="mcp-servers-card-disconnect"
                         >
-                          {isDisconnecting ? 'Disconnecting…' : 'Disconnect'}
-                        </Button>
+                          Disconnect
+                        </LoadingButton>
                       )}
                   </>
                 }
               >
                 {compact ? null : (
-                  <p className="truncate text-2xs fg-secondary">
+                  <p
+                    className="truncate text-2xs fg-secondary"
+                    title={mcpRowSecondaryText(server)}
+                  >
                     {mcpRowSecondaryText(server)}
                   </p>
                 )}

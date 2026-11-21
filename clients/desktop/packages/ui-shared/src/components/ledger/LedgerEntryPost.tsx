@@ -204,8 +204,11 @@ export const LedgerEntryPost = memo(function LedgerEntryPost({
           />
         )}
         {/* Resting, the actions stay for keyboards and screen readers: Show
-            details is how they open the row. */}
-        <div className={isOpen ? undefined : 'sr-only'}>
+            details is how they open the row. They show while focused, so
+            the focus ring is visible. */}
+        <div
+          className={isOpen ? undefined : 'sr-only focus-within:not-sr-only'}
+        >
           <LedgerEntryActions
             slots={actionSlots}
             detailsOpen={isOpen}

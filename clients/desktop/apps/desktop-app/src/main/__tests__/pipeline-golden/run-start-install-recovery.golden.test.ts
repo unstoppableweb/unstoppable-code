@@ -6,7 +6,10 @@
 // modules, and holds that install's rollback on its final record removal.
 // It asserts what a person or caller sees: whether a run started, what its
 // step wrote, the start result and the automation run's recorded outcome.
+// The CAN-7359 cases hold an install of this process before it finishes
+// instead: a run of what it installs waits for it, up to 5 minutes.
 import { randomUUID } from 'node:crypto';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs';
 import type * as FsPromises from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -23,8 +26,13 @@ import {
 import { waitForExecution } from './executions';
 import {
   createPipelineGoldenWorld,
+  GOLDEN_AUTOMATION_ENTRY_KEY,
+  GOLDEN_AUTOMATION_REVISED_NOTES,
+  GOLDEN_AUTOMATION_SHARE_ID,
+  GOLDEN_AUTOMATION_WORKER_KEY,
   GOLDEN_WORKSPACE_ID,
   GOLDEN_WORKTREE_ID,
+  type GoldenAutomationPackage,
   type GoldenWorld,
 } from './world';
 
@@ -97,6 +105,11 @@ const REMOVED_REFUSAL = {
   error: REMOVED,
   errorCode: 'pipeline_definition_removed',
 };
+const LIVE_BOUND_MS = 300_000;
+const INSTALLING =
+  "Couldn't start this workflow because it's still being installed. Try again once the install finishes.";
+const LIVE_WAIT_LOG =
+  '[pipeline-install] A run is waiting for an install of its workflow to finish';
 
 function versionYaml(name: string, text: string): string {
   return [
@@ -555,14 +568,19 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
   });
 
   it('refuses a run or start-over of a workflow the undone install had added, and never runs the copy it was sent', async () => {
-    const createdId = randomUUID();
-    let earlierRun = '';
-    await interruptCreatingInstall(createdId, async () => {
-      const marker = newMarker();
-      const result = await startRun(createdId, CREATED, marker);
-      await expect(ranAndWrote(result, marker)).resolves.toBe('created');
-      earlierRun = executionIdOf(result);
-    });
+    // An earlier run of the workflow, which was saved and deleted before the
+    // install added it again. A run can't start while the install is live
+    // (CAN-7359), so the earlier run comes first.
+    const createdId = await world.saveUserPipeline(
+      CREATED,
+      'pipeline:created-earlier',
+    );
+    const earlierMarker = newMarker();
+    const earlier = await startRun(createdId, CREATED, earlierMarker);
+    await expect(ranAndWrote(earlier, earlierMarker)).resolves.toBe('created');
+    const earlierRun = executionIdOf(earlier);
+    await deleteWorkflow(createdId);
+    await interruptCreatingInstall(createdId);
     mockHold.mode = 'hold';
     const before = recordedRuns();
     const marker = newMarker();
@@ -992,6 +1010,27 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
       });
       expect(recordedRuns()).toBe(before);
     });
+
+    it('records an automation run of a workflow an undone install had added as a failed run once recovery has settled (CAN-7359)', async () => {
+      const createdId = randomUUID();
+      let activityId = '';
+      await interruptCreatingInstall(createdId, async () => {
+        activityId = await (
+          await automations()
+        ).create(createdId, 'Golden settled automation');
+      });
+      const intents = await import('../../pipelines/pipeline-install-intents');
+      await intents.whenPipelineInstallsRecovered();
+      const before = recordedRuns();
+      const { runNow, outcome } = await automations();
+      await runNow(activityId);
+      await expect(settledOutcome(() => outcome(activityId))).resolves.toEqual({
+        status: 'failure',
+        error: REMOVED,
+        runs: 1,
+      });
+      expect(recordedRuns()).toBe(before);
+    });
   });
 
   describe('deleted workflows (CAN-7347)', () => {
@@ -1067,6 +1106,7 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
                   chatId: 'golden-chat',
                   cwd: world.worktreePath,
                   getWindow: () => null,
+                  interfacePort: windowAgentInterfacePort(() => null),
                 },
               },
             },
@@ -1218,6 +1258,424 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
       const marker = newMarker();
       const result = await startRun(id, yaml, marker);
       await expect(ranAndWrote(result, marker)).resolves.toBe('deletable');
+    });
+  });
+
+  describe('live installs (CAN-7359)', () => {
+    let liveCount = 0;
+
+    /** A saved workflow a live install updates, with both of its versions. */
+    async function saveLiveTarget(): Promise<{
+      id: string;
+      v1: string;
+      v2: string;
+    }> {
+      liveCount += 1;
+      const name = `Golden live target ${liveCount}`;
+      const v1 = versionYaml(name, 'v1');
+      const id = await world.saveUserPipeline(v1, `pipeline:live-${liveCount}`);
+      return { id, v1, v2: versionYaml(name, 'v2') };
+    }
+
+    /**
+     * An install of this process that has journaled the workflow's update
+     * and not yet finished, as one that is still moving its files.
+     */
+    async function liveUpdate(
+      id: string,
+      v2: string,
+    ): Promise<{
+      /** Saves the new document and finishes the install. */
+      finish: () => Promise<void>;
+      /** Finishes the install without changing the document. */
+      finishUnchanged: () => Promise<void>;
+    }> {
+      const intents = await import('../../pipelines/pipeline-install-intents');
+      const intent = await intents.beginPipelineInstallIntent('shared');
+      await intent.noteDefinition({
+        definitionId: id,
+        change: 'replaced',
+        contentHash: hashPipelinePackageYaml(v2),
+      });
+      return {
+        finish: async (): Promise<void> => {
+          const { writeStoredPipeline } =
+            await import('@canopy/execution-engine/pipelines/store');
+          const written = writeStoredPipeline(
+            {
+              id,
+              name: parsePipelineText(v2).name,
+              description: '',
+              icon: '',
+              content: parsePipelineText(v2),
+              rawContent: v2,
+            },
+            { requireExisting: true },
+          );
+          if (!written.ok) throw new Error(written.message);
+          await intent.finish();
+        },
+        finishUnchanged: () => intent.finish(),
+      };
+    }
+
+    /** Records which workflows a start has waited on, from main's log. */
+    async function liveWaits(): Promise<{
+      seen: (id: string) => boolean;
+      restore: () => void;
+    }> {
+      const logging = await import('../../lib/main-process-logging');
+      const real = logging.logMainProcessWarn;
+      const waited = new Set<string>();
+      const spy = jest
+        .spyOn(logging, 'logMainProcessWarn')
+        .mockImplementation((message, context) => {
+          if (
+            message === LIVE_WAIT_LOG &&
+            typeof context === 'object' &&
+            context !== null &&
+            'definitionId' in context &&
+            typeof context.definitionId === 'string'
+          )
+            waited.add(context.definitionId);
+          real(message, context);
+        });
+      return {
+        seen: (id) => waited.has(id),
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    /**
+     * Waits, through real I/O turns, until the start is waiting on the
+     * install. A start that settles first never waited.
+     */
+    async function untilWaiting(
+      start: Tracked<unknown>,
+      waiting: () => boolean,
+    ): Promise<void> {
+      for (let turn = 0; turn < 200_000; turn += 1) {
+        if (waiting()) return;
+        if (start.settled())
+          throw new Error(
+            `The start did not wait for the install: ${JSON.stringify(
+              await start.promise,
+            )}`,
+          );
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      throw new Error('The start never reached the install wait');
+    }
+
+    /** Until no run is active, so a hook starts instead of queueing. */
+    async function untilIdle(): Promise<void> {
+      const registry =
+        await import('../../pipelines/pipeline-execution-registry');
+      const deadline = Date.now() + 60_000;
+      while (registry.hasActivePipelineExecutions()) {
+        if (Date.now() > deadline) throw new Error('A run stayed active');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    async function untilExists(path: string): Promise<void> {
+      const deadline = Date.now() + 60_000;
+      while (!existsSync(path)) {
+        if (Date.now() > deadline) throw new Error(`${path} was never written`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
+    it('makes a run that starts during an automation install wait, then runs the new workflow with its new files', async () => {
+      const { installAutomationPipelines } =
+        await import('../../pipelines/automation-pipeline-install');
+      const { pipelineAssetEnvironment } =
+        await import('../../pipelines/pipeline-asset-install');
+      const { getPipelineAssetsDir } = await import('../../lib/paths');
+      const { getStoredPipelineText } =
+        await import('@canopy/execution-engine/pipelines/store');
+      const { app } = await import('electron');
+      const { v1, v3 } = world.automationPackages;
+      const install = (
+        automationPackage: GoldenAutomationPackage,
+        existing?: { entry: string; worker: string },
+      ): ReturnType<typeof installAutomationPipelines> =>
+        installAutomationPipelines({
+          remoteId: GOLDEN_AUTOMATION_SHARE_ID,
+          packageRef: { version: 1, digest: automationPackage.digest },
+          source: 'public',
+          stage: 'pipelines',
+          ...(existing
+            ? {
+                existingPipelines: [
+                  {
+                    key: GOLDEN_AUTOMATION_ENTRY_KEY,
+                    localPipelineId: existing.entry,
+                    expectedContentHash:
+                      v1.contentHashes[GOLDEN_AUTOMATION_ENTRY_KEY] ?? '',
+                  },
+                  {
+                    key: GOLDEN_AUTOMATION_WORKER_KEY,
+                    localPipelineId: existing.worker,
+                    expectedContentHash:
+                      v1.contentHashes[GOLDEN_AUTOMATION_WORKER_KEY] ?? '',
+                  },
+                ],
+              }
+            : {}),
+        });
+      // Install effects keep state under userData, which the Electron mock
+      // otherwise resolves to the checkout.
+      const userData = jest.spyOn(app, 'getPath').mockReturnValue(world.root);
+      let releaseMove = (): void => undefined;
+      try {
+        const installed = await install(v1);
+        const idOf = (key: string): string =>
+          installed.pipelines.find((pipeline) => pipeline.key === key)
+            ?.localPipelineId ?? '';
+        const entry = idOf(GOLDEN_AUTOMATION_ENTRY_KEY);
+        const worker = idOf(GOLDEN_AUTOMATION_WORKER_KEY);
+        // The window still holds the entry workflow as it was installed.
+        const copy = getStoredPipelineText(entry);
+        if (!copy.success || copy.data === undefined)
+          throw new Error('The automation install saved no entry workflow');
+        // The update holds before it moves its first file into place.
+        const realMove = pipelineAssetEnvironment.moveAssetFile;
+        let reached = (): void => undefined;
+        const atMove = new Promise<void>((resolve) => {
+          reached = resolve;
+        });
+        const gate = new Promise<void>((release) => {
+          releaseMove = release;
+        });
+        const move = jest
+          .spyOn(pipelineAssetEnvironment, 'moveAssetFile')
+          .mockImplementationOnce(async (id, from, to) => {
+            reached();
+            await gate;
+            await realMove(id, from, to);
+          });
+        const waits = await liveWaits();
+        try {
+          const update = track(install(v3, { entry, worker }));
+          await atMove;
+          const before = recordedRuns();
+          const start = track(
+            invokeIpc(PIPELINE_CHANNELS.EXECUTE, parsePipelineText(copy.data), {
+              pipelineId: entry,
+              cwd: world.worktreePath,
+              projectId: GOLDEN_WORKSPACE_ID,
+              worktreeId: GOLDEN_WORKTREE_ID,
+              scope: 'worktree',
+            }),
+          );
+          await untilWaiting(start, () => waits.seen(entry));
+          expect(recordedRuns()).toBe(before);
+          releaseMove();
+          await update.promise;
+          const state = await waitForExecution(
+            executionsDir,
+            executionIdOf(await start.promise),
+          );
+          expect({
+            status: state.status,
+            revised: JSON.stringify(state.pipeline_snapshot).includes(
+              'echo entry revised',
+            ),
+            notes: readFileSync(
+              join(getPipelineAssetsDir(entry), 'specialists', 'notes.md'),
+              'utf8',
+            ),
+          }).toEqual({
+            status: 'success',
+            revised: true,
+            notes: GOLDEN_AUTOMATION_REVISED_NOTES,
+          });
+        } finally {
+          waits.restore();
+          move.mockRestore();
+        }
+      } finally {
+        releaseMove();
+        userData.mockRestore();
+      }
+    });
+
+    it('refuses a run after 5 minutes if the install still has not finished, and runs it once it has', async () => {
+      const { id, v1, v2 } = await saveLiveTarget();
+      const live = await liveUpdate(id, v2);
+      const waits = await liveWaits();
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        useFakeTimers();
+        const start = track(startRun(id, v1, marker));
+        await untilWaiting(start, () => waits.seen(id));
+        await elapse(LIVE_BOUND_MS - 1);
+        expect(start.settled()).toBe(false);
+        await elapse(1);
+        await expect(start.promise).resolves.toEqual({
+          success: false,
+          error: INSTALLING,
+          errorCode: 'pipeline_definition_installing',
+        });
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+        jest.useRealTimers();
+        await live.finish();
+        const again = newMarker();
+        const result = await startRun(id, v1, again);
+        await expect(ranAndWrote(result, again)).resolves.toBe('v2');
+      } finally {
+        jest.useRealTimers();
+        waits.restore();
+      }
+    });
+
+    it('refuses a run of a workflow a live install added and then undid, without a restart', async () => {
+      const createdId = randomUUID();
+      const intents = await import('../../pipelines/pipeline-install-intents');
+      const intent = await intents.beginPipelineInstallIntent('shared');
+      await intent.noteDefinition({
+        definitionId: createdId,
+        change: 'created',
+        contentHash: hashPipelinePackageYaml(CREATED),
+      });
+      const { savePipeline } = await import('../../pipelines/pipeline-service');
+      const saved = savePipeline(
+        {
+          name: 'Golden created workflow',
+          description: '',
+          icon: '',
+          content: parsePipelineText(CREATED),
+          rawContent: CREATED,
+        },
+        { id: createdId },
+      );
+      if (!saved.success) throw new Error(saved.error);
+      const waits = await liveWaits();
+      try {
+        const before = recordedRuns();
+        const marker = newMarker();
+        const waiting = track(startRun(createdId, CREATED, marker));
+        await untilWaiting(waiting, () => waits.seen(createdId));
+        // The install fails after saving the workflow, and is undone in place.
+        await intent.rollBack();
+        await expect(waiting.promise).resolves.toEqual(REMOVED_REFUSAL);
+        // A start that still holds the copy is refused the same way.
+        const later = newMarker();
+        await expect(startRun(createdId, CREATED, later)).resolves.toEqual(
+          REMOVED_REFUSAL,
+        );
+        expect(recordedRuns()).toBe(before);
+        expect(existsSync(marker)).toBe(false);
+        expect(existsSync(later)).toBe(false);
+      } finally {
+        waits.restore();
+      }
+    });
+
+    it('starts a run of another workflow at once while an install is live', async () => {
+      const { id, v2 } = await saveLiveTarget();
+      const live = await liveUpdate(id, v2);
+      try {
+        const marker = newMarker();
+        const result = await startRun(otherId, OTHER, marker);
+        await expect(ranAndWrote(result, marker)).resolves.toBe('other');
+      } finally {
+        await live.finishUnchanged();
+      }
+    });
+
+    it('refuses a run when a live install could not be undone, and tells the person to restart', async () => {
+      const { id, v1, v2 } = await saveLiveTarget();
+      const intents = await import('../../pipelines/pipeline-install-intents');
+      const intent = await intents.beginPipelineInstallIntent('shared');
+      await intent.noteDefinition({
+        definitionId: id,
+        change: 'replaced',
+        contentHash: hashPipelinePackageYaml(v2),
+      });
+      mockHold.mode = 'fail';
+      await expect(intent.rollBack()).rejects.toThrow('EACCES');
+      const before = recordedRuns();
+      await expect(startRun(id, v1, newMarker())).resolves.toEqual({
+        success: false,
+        error: UNCONFIRMED,
+        errorCode: 'pipeline_definition_unconfirmed',
+      });
+      expect(recordedRuns()).toBe(before);
+      // The record stays for the next start, which undoes it.
+      await relaunch();
+      const marker = newMarker();
+      const result = await startRun(id, v1, marker);
+      await expect(ranAndWrote(result, marker)).resolves.toBe('v1');
+    });
+
+    it('holds only later hooks behind a hook that waits for an install, never a Run of another workflow', async () => {
+      const { id, v2 } = await saveLiveTarget();
+      const live = await liveUpdate(id, v2);
+      const waits = await liveWaits();
+      try {
+        await untilIdle();
+        const first = newMarker();
+        const waiting = track(launchHook(id, first));
+        await untilWaiting(waiting, () => waits.seen(id));
+        // A later hook waits in line behind it.
+        const second = newMarker();
+        const queued = track(launchHook(otherId, second));
+        // A Run of another workflow is not held up.
+        const run = newMarker();
+        const result = await startRun(otherId, OTHER, run);
+        await expect(ranAndWrote(result, run)).resolves.toBe('other');
+        expect(waiting.settled()).toBe(false);
+        expect(existsSync(second)).toBe(false);
+        await live.finishUnchanged();
+        await expect(waiting.promise).resolves.toContain('"status":"started"');
+        await untilExists(first);
+        await untilExists(second);
+        expect(readFileSync(first, 'utf8')).toBe('v1');
+        expect(readFileSync(second, 'utf8')).toBe('other');
+        await expect(queued.promise).resolves.toContain('"status":"queued"');
+      } finally {
+        waits.restore();
+      }
+    });
+
+    it('refuses a hook that waited 5 minutes for an install, then runs the hook queued behind it', async () => {
+      const { id, v2 } = await saveLiveTarget();
+      const live = await liveUpdate(id, v2);
+      const waits = await liveWaits();
+      try {
+        await untilIdle();
+        const before = recordedRuns();
+        const first = newMarker();
+        useFakeTimers();
+        const waiting = track(launchHook(id, first));
+        await untilWaiting(waiting, () => waits.seen(id));
+        const waitedFrom = Date.now();
+        const second = newMarker();
+        const queued = track(launchHook(otherId, second));
+        // The later hook's admission keeps short timers of its own.
+        for (let step = 0; step < 1_000 && !queued.settled(); step += 1)
+          await elapse(10);
+        await expect(queued.promise).resolves.toContain('"status":"queued"');
+        expect(existsSync(second)).toBe(false);
+        await elapse(LIVE_BOUND_MS - 1 - (Date.now() - waitedFrom));
+        expect(waiting.settled()).toBe(false);
+        expect(existsSync(second)).toBe(false);
+        await elapse(1);
+        await expect(waiting.promise).resolves.toContain(INSTALLING);
+        expect(recordedRuns()).toBe(before);
+        jest.useRealTimers();
+        await untilExists(second);
+        expect(readFileSync(second, 'utf8')).toBe('other');
+        expect(existsSync(first)).toBe(false);
+      } finally {
+        jest.useRealTimers();
+        waits.restore();
+        await live.finishUnchanged();
+      }
     });
   });
 });

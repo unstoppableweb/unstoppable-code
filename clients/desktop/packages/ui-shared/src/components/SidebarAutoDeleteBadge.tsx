@@ -66,7 +66,7 @@ export function SidebarAutoDeleteBadge({
     </>
   );
   return (
-    <span className="relative inline-flex h-7 w-7 shrink-0">
+    <span className="relative inline-flex h-7 w-7 shrink-0 pointer-coarse:h-11 pointer-coarse:w-11">
       <ActionTooltip
         title={
           attention
@@ -82,6 +82,7 @@ export function SidebarAutoDeleteBadge({
           iconSize={14}
           tone={attention ? 'warning' : 'armed'}
           tooltipLabel=""
+          coarsePointerTarget
           disabled={disabled}
           aria-label={
             attention

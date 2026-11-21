@@ -1,3 +1,4 @@
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { resumeFailureUserIndex } from '@canopy/protocol/session-recovery';
 import { SessionResumeNotice } from '@canopy/ui-shared/components';
 import { chatModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
@@ -119,6 +120,7 @@ import {
   AgentSecretsComposerRestartNotice,
 } from './AgentSecretsComposerControls';
 import { useChatAgentSecrets } from '@/hooks/useChatAgentSecrets';
+import { useWebCoreChatSecrets } from '@/hooks/useWebCoreChatSecrets';
 import { usePastedSecretGuard } from './usePastedSecretGuard';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useComposerQuestions } from './useComposerQuestions';
@@ -156,6 +158,7 @@ import {
   useCancelRunningChatShortcut,
   useCancelShortcutConfirmationStore,
 } from './useCancelRunningChatShortcut';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useResourceMonitorStore } from '@/stores/resourceMonitorStore';
@@ -377,7 +380,10 @@ import { hasPendingApprovalForChat } from '@/stores/chat/pending-approvals';
 import { ChatBackgroundTray } from './ChatBackgroundTray';
 import { useComposerWorkDrawerLink } from './composer-work-drawer-context';
 import { AiCreditsUsageLimitBanner } from './AiCreditsUsageLimitBanner';
-import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
+import {
+  formatUsageLimitCheckTimeLabel,
+  formatUsageLimitTimeLabel,
+} from '@/lib/usage-limit-time-label';
 import { NoBillingSourceBanner } from './NoBillingSourceBanner';
 import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
 import { FirstSendFailedSlot } from './FirstSendFailedSlot';
@@ -652,7 +658,19 @@ import { stageLinearTicketAttachment } from '@/lib/linearTicketStaging';
 import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
 import { dispatchBrowserViewBoundsInvalidated } from '@/lib/browserViewBounds';
 import { hasForkedContainerFocus } from '@/lib/shared-containers/forked-container-focus';
-import { findPendingUsageLimitResume } from '@/lib/scheduledUsageLimitResume';
+import {
+  findPendingUsageLimitResume,
+  findStoppedUsageLimitCheck,
+  isUsageLimitResumeCheck,
+} from '@/lib/scheduledUsageLimitResume';
+import {
+  planUsageLimitResume,
+  readUsageLimitResumeInterruption,
+  sameUsageLimitResumeInterruption,
+} from '@/lib/usageLimitResumePlan';
+import { USAGE_LIMIT_RESUME_COPY } from '@canopy/ui-shared/components';
+import { USAGE_RESUME_NOT_PENDING } from '@canopy/desktop-shared/lib/usage-limit-resume-outlook';
+import type { UsageLimitResumeInterruption } from '@canopy/desktop-shared/types';
 import type { BillingLane } from '@canopy/desktop-shared/lib/default-model-lane';
 import type { StuckAgentCheckResult } from '@canopy/ui-shared/components';
 import { checkChatStatus } from './check-chat-status';
@@ -1276,6 +1294,7 @@ function ChatInputContent({
   const setScheduledSendDraft = useChatStore((s) => s.setScheduledSendDraft);
   const automationsActivities = useAutomationsStore((s) => s.activities);
   const createAutomationActivity = useAutomationsStore((s) => s.createActivity);
+  const deleteAutomationActivity = useAutomationsStore((s) => s.deleteActivity);
   const setUsageLimitBanner = useAiCreditsBannerStore((s) => s.setUsageLimit);
   const refreshProviderUsageSnapshot = useObservabilityStore(
     (s) => s.refreshProviderUsageSnapshot,
@@ -2521,7 +2540,7 @@ function ChatInputContent({
       : undefined;
   // The local chat's held agent secrets (U3): the Secrets chip and Codex's
   // Restart to apply. Cloud chats list theirs through the web core (U5).
-  const agentSecrets = useChatAgentSecrets(
+  const localAgentSecrets = useChatAgentSecrets(
     webCoreProjectId === undefined ? approvalModeTarget : undefined,
   );
   const agentSecretsAgentName =
@@ -2978,6 +2997,22 @@ function ChatInputContent({
   );
   const isStreaming =
     (composerTurn.activity !== 'idle' || cloudTurnStarting) && !pendingExit;
+  // Read again when a secret request appears or settles here, and when a
+  // turn ends: a request answered elsewhere (the web) before this window saw
+  // it still adds secrets.
+  const cloudAgentSecrets = useWebCoreChatSecrets(
+    webCoreProjectId === undefined ? undefined : approvalModeTarget?.chatId,
+    `${
+      activeSecretRequest === undefined
+        ? ''
+        : (composerQuestions[0]?.requestId ?? '')
+    }:${composerTurn.activity === 'idle' ? 'idle' : 'busy'}`,
+  );
+  const agentSecrets =
+    webCoreProjectId === undefined ? localAgentSecrets : cloudAgentSecrets;
+  const agentSecretRequestsEnabled = useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key),
+  );
   // The chat's sandbox as the web core reports it (CAN-6766): null for a
   // local chat, or before the web core has said.
   const cloudSandboxState = useCloudSandboxState(
@@ -4298,6 +4333,68 @@ function ChatInputContent({
   const [scheduleResumeError, setScheduleResumeError] = useState<string | null>(
     null,
   );
+  // Confirmed outcomes announced in the notice (CAN-7483): "Resume
+  // canceled." or why a resume couldn't wait for usage.
+  const [scheduleResumeStatus, setScheduleResumeStatus] = useState<
+    string | null
+  >(null);
+  // Guards double clicks synchronously; the state above only drives the UI.
+  const scheduleResumeInFlightRef = useRef(false);
+  // The chat and limit a click started on, checked again after each await.
+  const usageLimitResumeIdentity =
+    sessionChatTarget !== null && usageLimitBanner !== null
+      ? `${sessionChatTarget.projectId}/${sessionChatTarget.worktreeId}/${sessionChatTarget.chatId}#${usageLimitBanner.dismissKey}`
+      : null;
+  const usageLimitResumeIdentityRef = useRef(usageLimitResumeIdentity);
+  usageLimitResumeIdentityRef.current = usageLimitResumeIdentity;
+  // The interruption main recorded for this limit, read while the notice can
+  // schedule, so a stopped usage check for it can say why.
+  const [usageLimitResumeInterruption, setUsageLimitResumeInterruption] =
+    useState<UsageLimitResumeInterruption | undefined>(undefined);
+  useEffect(() => {
+    setScheduleResumeError(null);
+    setScheduleResumeStatus(null);
+    setUsageLimitResumeInterruption(undefined);
+    const provider = usageLimitBanner?.provider;
+    if (
+      !canScheduleUsageLimitResume ||
+      sessionChatTarget === null ||
+      (provider !== 'claude' && provider !== 'codex')
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void readUsageLimitResumeInterruption(provider, sessionChatTarget)
+      .then((interruption) => {
+        if (!cancelled) setUsageLimitResumeInterruption(interruption);
+      })
+      .catch((error: unknown) => {
+        reportClientAppError(error);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [
+    canScheduleUsageLimitResume,
+    sessionChatTarget,
+    usageLimitBanner?.provider,
+    usageLimitResumeIdentity,
+  ]);
+  const stoppedUsageLimitCheck = useMemo(
+    () =>
+      sessionChatTarget === null || usageLimitResumeInterruption === undefined
+        ? null
+        : findStoppedUsageLimitCheck(
+            automationsActivities,
+            {
+              workspaceId: sessionChatTarget.projectId,
+              worktreeId: sessionChatTarget.worktreeId,
+              chatId: sessionChatTarget.chatId,
+            },
+            usageLimitResumeInterruption,
+          ),
+    [automationsActivities, sessionChatTarget, usageLimitResumeInterruption],
+  );
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [scheduleSendError, setScheduleSendError] = useState<string | null>(
     null,
@@ -4925,67 +5022,118 @@ function ChatInputContent({
     ],
   );
 
+  // The notice's Resume click (CAN-7483). The interrupted account's usage,
+  // never the prompt, decides: a missing reset is not proof the limit
+  // cleared, so the click sends only when a fresh read for this interruption
+  // shows usage clear, and otherwise schedules a usage check or explains why
+  // it can't wait.
   const handleScheduleResume = useCallback(async (): Promise<void> => {
-    if (!sessionChatTarget) return;
-    if (!usageLimitBanner) return;
+    if (!sessionChatTarget || !usageLimitBanner) return;
+    if (scheduleResumeInFlightRef.current) return;
+    const provider = usageLimitBanner.provider;
+    if (provider !== 'claude' && provider !== 'codex') return;
+    const identity = usageLimitResumeIdentityRef.current;
+    const stillCurrent = (): boolean =>
+      identity !== null && usageLimitResumeIdentityRef.current === identity;
+    scheduleResumeInFlightRef.current = true;
     setScheduleResumeInFlight(true);
     setScheduleResumeError(null);
+    setScheduleResumeStatus(null);
+    const providerName = provider === 'codex' ? 'Codex' : 'Claude';
+    const target = {
+      projectId: sessionChatTarget.projectId,
+      worktreeId: sessionChatTarget.worktreeId,
+      chatId: sessionChatTarget.chatId,
+    };
+    let creating = false;
     try {
-      const providerName =
-        usageLimitBanner.provider === 'codex' ? 'Codex' : 'Claude';
-      // If the last turn was just the user's message hitting the usage limit
-      // before the agent did anything, resume by re-sending that message;
-      // otherwise fall back to the plain "Continue" nudge.
-      const key = `${sessionChatTarget.projectId}/${sessionChatTarget.worktreeId}`;
-      const resumeTab = useChatStore
-        .getState()
-        .worktreeChats[
-          key
-        ]?.tabs.find((candidate) => candidate.id === sessionChatTarget.chatId);
-      const resumePrompt = computeUsageLimitResumePrompt(
-        resumeTab?.messages ?? [],
+      const interruption = await readUsageLimitResumeInterruption(
+        provider,
+        target,
       );
-      const snapshot = await refreshProviderUsageSnapshot(
-        usageLimitBanner.provider,
+      if (!stillCurrent()) return;
+      // A failed read is not evidence of anything, so it never stands in
+      // for the cached usage.
+      const usage = await refreshProviderUsageSnapshot(provider).catch(
+        (error: unknown) => {
+          reportClientAppError(error);
+          return undefined;
+        },
       );
-      const resumeAtIso = selectProviderUsageLimitResumeAt(
-        snapshot,
-        usageLimitBanner.provider,
-      );
-      if (!resumeAtIso) {
-        if (findResumeAutomation(useAutomationsStore.getState().activities)) {
-          return;
-        }
-        // Resume now goes through the trusted resume entry, not the composer:
-        // main derives the prompt and records it as sent automatically, with
-        // the same readiness and duplicate-dispatch checks as Home.
-        const target = {
-          projectId: sessionChatTarget.projectId,
-          worktreeId: sessionChatTarget.worktreeId,
-          chatId: sessionChatTarget.chatId,
-        };
+      const refreshFailed = usage === undefined;
+      if (!stillCurrent()) return;
+      // The interruption must not have moved on while usage was read.
+      const confirmed = interruption
+        ? await readUsageLimitResumeInterruption(provider, target)
+        : undefined;
+      if (!stillCurrent()) return;
+      if (
+        interruption !== undefined &&
+        !sameUsageLimitResumeInterruption(interruption, confirmed)
+      ) {
+        setScheduleResumeError(USAGE_LIMIT_RESUME_COPY.scheduleFailed);
+        return;
+      }
+      const plan = planUsageLimitResume({
+        interruption,
+        usage,
+        refreshFailed,
+        bannerResetAt: usageLimitBanner.resetsAt,
+        now: Date.now(),
+      });
+      if (plan.kind === 'explain') {
+        setScheduleResumeStatus(
+          USAGE_LIMIT_RESUME_COPY.unreadable(providerName),
+        );
+        return;
+      }
+      // Re-find a pending resume against the freshest store snapshot before
+      // sending or creating, so a second surface can't double it.
+      if (findResumeAutomation(useAutomationsStore.getState().activities)) {
+        return;
+      }
+      if (plan.kind === 'resume') {
+        if (!interruption) return;
+        // The trusted resume entry derives the prompt, records it as sent
+        // automatically, and checks usage again before it sends.
         const response = await window.api.resumeUsageLimitedChats({
           targets: [target],
+          requireClearUsageFor: interruption,
         });
         if (response.resumedCount !== 1) {
-          setScheduleResumeError('Could not resume this chat.');
+          if (stillCurrent()) {
+            setScheduleResumeError(USAGE_LIMIT_RESUME_COPY.resumeFailed);
+          }
           return;
         }
         clearResumedChatUsageLimitBanner(target);
         return;
       }
-      // Re-check idempotency against the freshest store snapshot before create.
-      if (findResumeAutomation(useAutomationsStore.getState().activities)) {
-        return;
-      }
+      const runAt = plan.runAt;
+      // If the last turn was just the user's message hitting the usage limit
+      // before the agent did anything, resume by re-sending that message;
+      // otherwise fall back to the plain "Continue" nudge.
+      const key = `${target.projectId}/${target.worktreeId}`;
+      const resumeTab = useChatStore
+        .getState()
+        .worktreeChats[
+          key
+        ]?.tabs.find((candidate) => candidate.id === target.chatId);
+      const resumePrompt = computeUsageLimitResumePrompt(
+        resumeTab?.messages ?? [],
+      );
+      const gated = plan.kind === 'check';
+      creating = true;
       const response = await createAutomationActivity({
-        name: `Resume chat after ${providerName} usage reset`,
-        schedule: { kind: 'one_time', runAt: resumeAtIso, timezone: 'local' },
+        name: gated
+          ? `Resume chat when ${providerName} is back`
+          : `Resume chat after ${providerName} usage reset`,
+        schedule: { kind: 'one_time', runAt, timezone: 'local' },
         action: {
           type: 'worktree_session_prompt',
-          workspaceId: sessionChatTarget.projectId,
-          worktreeId: sessionChatTarget.worktreeId,
-          chatId: sessionChatTarget.chatId,
+          workspaceId: target.projectId,
+          worktreeId: target.worktreeId,
+          chatId: target.chatId,
           prompt: resumePrompt.text,
           ...(resumePrompt.fileReferences?.length
             ? { fileReferences: resumePrompt.fileReferences }
@@ -5000,15 +5148,28 @@ function ChatInputContent({
             : {}),
           inputMode: resumePrompt.inputMode ?? 'typed',
           purpose: 'usage_limit_resume',
+          ...(gated && interruption
+            ? {
+                resumeWhen: 'provider_usage_clear' as const,
+                usageResumeInterruption: interruption,
+              }
+            : {}),
           ...buildWorktreeSessionDisplayFields(),
         },
       });
-      if (!response.ok) {
-        setScheduleResumeError(response.error ?? 'Could not schedule resume.');
+      if (!response.ok && stillCurrent()) {
+        setScheduleResumeError(USAGE_LIMIT_RESUME_COPY.scheduleFailed);
       }
     } catch {
-      setScheduleResumeError('Could not schedule resume.');
+      if (stillCurrent()) {
+        setScheduleResumeError(
+          creating
+            ? USAGE_LIMIT_RESUME_COPY.scheduleFailed
+            : USAGE_LIMIT_RESUME_COPY.resumeFailed,
+        );
+      }
     } finally {
+      scheduleResumeInFlightRef.current = false;
       setScheduleResumeInFlight(false);
     }
   }, [
@@ -5020,6 +5181,47 @@ function ChatInputContent({
     sessionChatTarget,
     useChatStore,
   ]);
+
+  // Cancel resume, for a timed resume and a usage check alike. Deleting the
+  // schedule is the only cancellation; dismissing the notice is not.
+  const handleCancelResume = useCallback(async (): Promise<void> => {
+    if (scheduleResumeInFlightRef.current) return;
+    const pending = findResumeAutomation(
+      useAutomationsStore.getState().activities,
+    );
+    if (!pending) return;
+    const identity = usageLimitResumeIdentityRef.current;
+    scheduleResumeInFlightRef.current = true;
+    setScheduleResumeInFlight(true);
+    setScheduleResumeError(null);
+    setScheduleResumeStatus(null);
+    try {
+      const response = await deleteAutomationActivity(pending.id, {
+        pendingUsageLimitResumeOnly: true,
+      });
+      if (!response.ok && response.error === USAGE_RESUME_NOT_PENDING) {
+        await useAutomationsStore.getState().hydrate();
+        if (usageLimitResumeIdentityRef.current === identity) {
+          setScheduleResumeStatus(USAGE_LIMIT_RESUME_COPY.noLongerPending);
+        }
+        return;
+      }
+      if (usageLimitResumeIdentityRef.current !== identity) return;
+      if (!response.ok) {
+        setScheduleResumeError(USAGE_LIMIT_RESUME_COPY.cancelFailed);
+        return;
+      }
+      setScheduleResumeStatus(USAGE_LIMIT_RESUME_COPY.canceled);
+    } catch (error: unknown) {
+      reportClientAppError(error);
+      if (usageLimitResumeIdentityRef.current === identity) {
+        setScheduleResumeError(USAGE_LIMIT_RESUME_COPY.cancelFailed);
+      }
+    } finally {
+      scheduleResumeInFlightRef.current = false;
+      setScheduleResumeInFlight(false);
+    }
+  }, [deleteAutomationActivity, findResumeAutomation]);
 
   // Schedule button + pill are offered on live persisted-session composers and
   // on queued-message inline editors when the parent chat surface enables it.
@@ -8596,10 +8798,37 @@ function ChatInputContent({
                       onSchedule: (): void => {
                         void handleScheduleResume();
                       },
+                      onCancel: (): void => {
+                        void handleCancelResume();
+                      },
                       inFlight: scheduleResumeInFlight,
-                      disabled: existingResumeAutomation !== undefined,
+                      disabled: false,
                       error: scheduleResumeError,
+                      status: existingResumeAutomation
+                        ? null
+                        : (scheduleResumeStatus ??
+                          (stoppedUsageLimitCheck === 'expired'
+                            ? USAGE_LIMIT_RESUME_COPY.expired(
+                                usageLimitBanner.provider === 'codex'
+                                  ? 'Codex'
+                                  : 'Claude',
+                              )
+                            : stoppedUsageLimitCheck === 'unreadable'
+                              ? USAGE_LIMIT_RESUME_COPY.unreadable(
+                                  usageLimitBanner.provider === 'codex'
+                                    ? 'Codex'
+                                    : 'Claude',
+                                )
+                              : null)),
                       scheduledForLabel: formatUsageLimitTimeLabel(
+                        existingResumeAutomation?.nextRunAt,
+                      ),
+                      pendingKind: existingResumeAutomation
+                        ? isUsageLimitResumeCheck(existingResumeAutomation)
+                          ? 'check'
+                          : 'reset'
+                        : null,
+                      checkAtLabel: formatUsageLimitCheckTimeLabel(
                         existingResumeAutomation?.nextRunAt,
                       ),
                     },
@@ -9208,6 +9437,9 @@ function ChatInputContent({
           end={
             <>
               <AgentSecretsComposerControl
+                // Its pending revokes, notice and open list belong to one chat
+                // while the feature is on; turning it off closes them.
+                key={`${approvalModeTarget?.chatId ?? ''}:${String(agentSecretRequestsEnabled)}`}
                 secrets={agentSecrets}
                 agentName={agentSecretsAgentName}
               />

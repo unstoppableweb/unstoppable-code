@@ -152,6 +152,8 @@ export interface WireUpdateTrackedPlanRequest {
   approvedAt?: string | null;
   dismissedAt?: string | null;
   hidden?: boolean;
+  chatId?: string;
+  initiationSource?: 'user';
 }
 
 /** `ScriptRunRequest`. */

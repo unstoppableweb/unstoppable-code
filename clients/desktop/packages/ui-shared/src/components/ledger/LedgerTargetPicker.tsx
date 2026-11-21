@@ -11,6 +11,7 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
 } from '../PickerMenu';
+import { Tooltip } from '../Tooltip';
 
 export interface LedgerTargetOption {
   readonly id: string;
@@ -55,32 +56,47 @@ export function LedgerTargetPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const valueId = useId();
   const chosen = options.find((option) => option.id === value);
+  const trigger = (
+    <PickerTrigger
+      ref={triggerRef}
+      id={id}
+      variant="field"
+      // With a reason, it stays focusable (aria-disabled, not disabled),
+      // so keyboard and hover both reach the reason's tooltip.
+      disabled={disabled && disabledReason === undefined}
+      unavailable={disabled}
+      coarsePointerTarget
+      aria-haspopup="menu"
+      aria-expanded={open}
+      aria-labelledby={`${labelId} ${valueId}`}
+      data-testid={testId}
+      data-placeholder={chosen === undefined ? 'true' : undefined}
+      className="w-full justify-between"
+      onClick={() => {
+        if (!disabled) setOpen((previous) => !previous);
+      }}
+    >
+      <span
+        id={valueId}
+        className={`truncate ${chosen === undefined ? 'fg-tertiary' : ''}`}
+      >
+        {chosen?.label ?? placeholder}
+      </span>
+      <PickerTriggerChevron open={open} variant="field" />
+    </PickerTrigger>
+  );
   return (
     <div className="relative min-w-0">
-      <PickerTrigger
-        ref={triggerRef}
-        id={id}
-        variant="field"
-        disabled={disabled}
-        title={disabled ? disabledReason : undefined}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-labelledby={`${labelId} ${valueId}`}
-        data-testid={testId}
-        data-placeholder={chosen === undefined ? 'true' : undefined}
-        className="w-full justify-between"
-        onClick={() => setOpen((previous) => !previous)}
-      >
-        <span
-          id={valueId}
-          className={`truncate ${chosen === undefined ? 'fg-tertiary' : ''}`}
-        >
-          {chosen?.label ?? placeholder}
-        </span>
-        <PickerTriggerChevron open={open} variant="field" />
-      </PickerTrigger>
+      {disabled && disabledReason !== undefined ? (
+        <Tooltip label={disabledReason} allowShrink className="w-full">
+          {trigger}
+        </Tooltip>
+      ) : (
+        trigger
+      )}
       <FloatingPickerMenu
         open={open}
+        openOnArrowKeys={!disabled}
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         placement="bottom-left"

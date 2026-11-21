@@ -49,7 +49,9 @@ export const PipelineStepRow = forwardRef<HTMLDivElement, PipelineStepRowProps>(
   ): JSX.Element {
     const label = (
       <span className="flex min-w-0 items-center gap-2">
-        <span className="truncate">{name}</span>
+        <span className="truncate" title={name}>
+          {name}
+        </span>
         <Badge tone={kind === 'incomplete' ? 'warning' : 'neutral'}>
           {KIND_LABEL[kind]}
         </Badge>
@@ -72,6 +74,8 @@ export const PipelineStepRow = forwardRef<HTMLDivElement, PipelineStepRowProps>(
             actions={actions}
             // The editor's controls stay in view, as they did before rows.
             actionsReveal={false}
+            // The job frame clips at its 2px padding, so the ring goes inside.
+            focusInset
           >
             {label}
           </ListRow>

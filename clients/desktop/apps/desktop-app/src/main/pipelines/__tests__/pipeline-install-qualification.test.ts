@@ -74,6 +74,7 @@ import { installPipelineAssets } from '../pipeline-asset-install';
 import {
   beginPipelineInstallIntent,
   isPipelineDefinitionClaimed,
+  pipelineDefinitionRecoveryRefusal,
   recoverInterruptedPipelineInstalls,
   type PipelineInstallIntent,
 } from '../pipeline-install-intents';
@@ -1235,5 +1236,195 @@ describe('pipeline install crash qualification (CAN-5633)', () => {
 
     expect(await intentFiles()).toEqual([]);
     expect(isPipelineDefinitionClaimed(id)).toBe(false);
+  });
+
+  describe('a refused install puts back the files it wrote (CAN-7364)', () => {
+    /** The package's `tools` asset holding `files`, with its blobs cached. */
+    async function toolsAsset(
+      files: Record<string, string>,
+    ): Promise<Parameters<typeof installPipelineAssets>[0]['resources']> {
+      await mkdir(join(mockRoot, 'package', 'blobs'), { recursive: true });
+      const entries = [];
+      for (const [path, text] of Object.entries(files)) {
+        const bytes = Buffer.from(text);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        await writeFile(join(mockRoot, 'package', 'blobs', sha256), bytes);
+        entries.push({
+          path,
+          sha256,
+          size: bytes.length,
+          mode: 'read' as const,
+        });
+      }
+      return [
+        {
+          id: 'tools',
+          kind: 'file_asset',
+          displayName: 'tools',
+          sourceLabel: 'Package',
+          sourceVisibility: 'local',
+          invocationKeys: [],
+          dependencyResourceIds: [],
+          assetId: 'tools',
+          installMode: 'replace',
+          trees: [
+            {
+              provider: 'codex',
+              runtimeKind: 'pipeline_asset',
+              rootName: 'tools',
+              entries,
+            },
+          ],
+        },
+      ];
+    }
+
+    const tools = (id: string, file: string): string =>
+      join(mockRoot, 'pipeline-data', id, 'assets', 'tools', file);
+    const manifest = (id: string): string =>
+      join(mockRoot, 'pipeline-data', id, 'assets.json');
+    const contents = async (file: string): Promise<string | null> =>
+      readFile(file, 'utf8').catch((error: unknown) => {
+        if (isMissing(error)) return null;
+        throw error;
+      });
+
+    /**
+     * An update that wrote its files and saved its document, after which
+     * another writer saved the document again and the person changed `b.txt`.
+     */
+    async function rewriteThenConcurrentWrite(id: string): Promise<{
+      intent: PipelineInstallIntent;
+      installedManifest: string | null;
+    }> {
+      save(id, yaml('Before'), true);
+      await installPipelineAssets({
+        localPipelineId: id,
+        packagePath: join(mockRoot, 'package'),
+        resources: await toolsAsset({
+          'a.txt': 'before a\n',
+          'b.txt': 'before b\n',
+        }),
+      });
+      const installedManifest = await contents(manifest(id));
+      const intent = await beginPipelineInstallIntent('automation');
+      await intent.noteDefinition({
+        definitionId: id,
+        change: 'replaced',
+        contentHash: hashPipelinePackageYaml(yaml('Installed')),
+      });
+      await installPipelineAssets({
+        localPipelineId: id,
+        packagePath: join(mockRoot, 'package'),
+        resources: await toolsAsset({ 'a.txt': 'new a\n', 'b.txt': 'new b\n' }),
+        beforeWrite: (plan) => intent.noteAssetFiles(id, plan),
+      });
+      save(id, yaml('Installed'), false);
+      save(id, yaml('Writer'), false);
+      await writeFile(tools(id, 'b.txt'), 'person b\n');
+      return { intent, installedManifest };
+    }
+
+    it("restores the files an update wrote when another writer changed its document, and keeps the person's own changes", async () => {
+      const id = 'edited-rewrite';
+      const { intent, installedManifest } =
+        await rewriteThenConcurrentWrite(id);
+
+      await intent.rollBack();
+
+      expect({
+        document: getStoredPipelineText(id).data,
+        a: await contents(tools(id, 'a.txt')),
+        b: await contents(tools(id, 'b.txt')),
+        manifest: await contents(manifest(id)),
+        claimed: isPipelineDefinitionClaimed(id),
+        refusal: await pipelineDefinitionRecoveryRefusal(id),
+        intents: await intentFiles(),
+      }).toEqual({
+        document: yaml('Writer'),
+        a: 'before a\n',
+        b: 'person b\n',
+        manifest: installedManifest,
+        claimed: false,
+        refusal: null,
+        intents: [],
+      });
+    });
+
+    it("removes the files a new workflow's install wrote when another writer changed its document, and keeps a file the person added", async () => {
+      const id = 'edited-create';
+      const intent = await beginPipelineInstallIntent('automation');
+      await intent.noteDefinition({
+        definitionId: id,
+        change: 'created',
+        contentHash: hashPipelinePackageYaml(yaml('Installed')),
+        assets: true,
+      });
+      await installPipelineAssets({
+        localPipelineId: id,
+        packagePath: join(mockRoot, 'package'),
+        resources: await toolsAsset({ 'a.txt': 'new a\n' }),
+        beforeWrite: (plan) => intent.noteAssetFiles(id, plan),
+      });
+      save(id, yaml('Installed'), true);
+      save(id, yaml('Writer'), false);
+      await writeFile(tools(id, 'mine.txt'), 'person file\n');
+
+      await intent.rollBack();
+
+      expect({
+        document: getStoredPipelineText(id).data,
+        a: await contents(tools(id, 'a.txt')),
+        mine: await contents(tools(id, 'mine.txt')),
+        manifest: await contents(manifest(id)),
+        claimed: isPipelineDefinitionClaimed(id),
+        refusal: await pipelineDefinitionRecoveryRefusal(id),
+        intents: await intentFiles(),
+      }).toEqual({
+        document: yaml('Writer'),
+        a: null,
+        mine: 'person file\n',
+        manifest: null,
+        claimed: false,
+        refusal: null,
+        intents: [],
+      });
+    });
+
+    it('leaves the workflow unconfirmed, never removed, when a file it must restore has lost its kept copy', async () => {
+      const id = 'edited-unconfirmed';
+      const { intent } = await rewriteThenConcurrentWrite(id);
+      for (const entry of await readdir(join(mockRoot, 'intents'), {
+        withFileTypes: true,
+      }))
+        if (entry.isDirectory())
+          await rm(join(mockRoot, 'intents', entry.name), {
+            recursive: true,
+            force: true,
+          });
+
+      const rolledBack = await intent.rollBack().then(
+        () => 'resolved',
+        () => 'rejected',
+      );
+
+      expect({
+        rolledBack,
+        document: getStoredPipelineText(id).data,
+        a: await contents(tools(id, 'a.txt')),
+        claimed: isPipelineDefinitionClaimed(id),
+        refusal: (await pipelineDefinitionRecoveryRefusal(id))?.errorCode,
+        records: (await intentFiles()).filter((entry) =>
+          entry.endsWith('.json'),
+        ).length,
+      }).toEqual({
+        rolledBack: 'rejected',
+        document: yaml('Writer'),
+        a: 'new a\n',
+        claimed: true,
+        refusal: 'pipeline_definition_unconfirmed',
+        records: 1,
+      });
+    });
   });
 });

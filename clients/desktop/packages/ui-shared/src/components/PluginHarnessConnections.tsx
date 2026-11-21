@@ -109,20 +109,25 @@ export function PluginHarnessVia({
 }): JSX.Element {
   const full = `via ${via.name}${via.source ? ` from ${via.source}` : ''}`;
   return (
+    // The full line titles only plain text, never the link's own name.
     <span
       className="min-w-0 truncate text-left font-normal fg-tertiary"
-      title={full}
+      title={via.onOpen ? undefined : full}
       data-testid={testId}
     >
-      via{' '}
       {via.onOpen ? (
-        <Button variant="link" onClick={via.onOpen}>
-          {via.name}
-        </Button>
+        <>
+          <span title={full}>via </span>
+          <Button variant="link" onClick={via.onOpen}>
+            {via.name}
+          </Button>
+          {via.source ? (
+            <span title={full}>{` from ${via.source}`}</span>
+          ) : null}
+        </>
       ) : (
-        via.name
+        `via ${via.name}${via.source ? ` from ${via.source}` : ''}`
       )}
-      {via.source ? ` from ${via.source}` : ''}
     </span>
   );
 }
@@ -230,20 +235,20 @@ export function PluginHarnessConnections({
               )}
               {row.control}
               {row.alternative?.iconOnly ? (
-                <Tooltip label={row.alternative.label}>
-                  <Button
-                    variant="ghost"
-                    size="compact"
-                    aria-label={row.alternative.label}
-                    data-testid={`plugin-harness-${row.id}-alternative`}
-                    onClick={row.alternative.onOpen}
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <RefreshIcon size="xs" aria-hidden="true" />
-                      Reinstall
-                    </span>
-                  </Button>
-                </Tooltip>
+                // The row shows the harness name, so the label names the
+                // button for screen readers without a tooltip repeating it.
+                <Button
+                  variant="ghost"
+                  size="compact"
+                  data-testid={`plugin-harness-${row.id}-alternative`}
+                  aria-label={row.alternative.label}
+                  onClick={row.alternative.onOpen}
+                >
+                  <span className="inline-flex items-center gap-1.5">
+                    <RefreshIcon size="xs" aria-hidden="true" />
+                    Reinstall
+                  </span>
+                </Button>
               ) : (
                 row.alternative && (
                   <Button

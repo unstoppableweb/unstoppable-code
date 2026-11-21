@@ -16,7 +16,7 @@ export function CalendarDayNumber({
       ? 'mx-auto mt-0.5 size-6 text-s'
       : 'mb-0.5 size-5 self-start text-2xs';
   const tone = today
-    ? 'rounded-full bg-destructive font-semibold text-white'
+    ? 'rounded-full bg-destructive font-semibold fg-emphasis'
     : outsideMonth
       ? 'fg-secondary/50'
       : 'fg-primary';

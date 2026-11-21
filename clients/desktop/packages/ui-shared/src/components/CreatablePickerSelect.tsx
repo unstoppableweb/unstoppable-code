@@ -7,6 +7,7 @@ import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownMediumIcon, PlusIcon } from '../icons/AppIcons';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
 import { Inline } from './Stack';
+import { useMediaQuery } from './useMediaQuery';
 import {
   FloatingPickerMenu,
   PickerMenuList,
@@ -152,6 +153,8 @@ export function CreatablePickerSelect({
   className = '',
 }: CreatablePickerSelectProps): JSX.Element {
   const [open, setOpen] = useState(false);
+  // Focusing the search on a touch device raises the keyboard over the list.
+  const finePointer = useMediaQuery('(pointer: fine)');
   const [query, setQuery] = useState('');
   const [activeRowId, setActiveRowId] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -393,6 +396,7 @@ export function CreatablePickerSelect({
         <Inline as="span" className="min-w-0 flex-1">
           <span
             className={`min-w-0 flex-1 truncate ${value === '' ? 'fg-tertiary' : 'fg-primary'}`}
+            title={triggerLabel}
           >
             {triggerLabel}
           </span>
@@ -414,7 +418,7 @@ export function CreatablePickerSelect({
         onOpenChange={setOpen}
         anchorRef={triggerRef}
         returnFocusRef={triggerRef}
-        initialFocusRef={searchRef}
+        initialFocusRef={finePointer ? searchRef : undefined}
         placement="bottom-left"
         gap={FLOATING_MENU_GAP}
         interaction="manual"
@@ -427,6 +431,8 @@ export function CreatablePickerSelect({
           <PickListSearch
             ref={searchRef}
             type="search"
+            autoComplete="off"
+            spellCheck={false}
             value={query}
             onChange={(event): void =>
               handleSearchChange(event.currentTarget.value)

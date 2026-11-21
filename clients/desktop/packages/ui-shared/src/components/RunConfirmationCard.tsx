@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { Button } from './Button';
 import { Inline } from './Stack';
 import { Surface } from './Surface';
@@ -31,12 +31,29 @@ export function RunConfirmationCard({
   confirmLabel = 'Run',
   cancelLabel = 'Cancel',
 }: RunConfirmationCardProps): JSX.Element {
+  // The card replaces the row whose Run button was pressed; keep keyboard
+  // focus on the decision instead of letting it fall to the page. Cancel
+  // takes it, so a second Enter never runs anything.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    cancelRef.current?.focus({ preventScroll: true });
+  }, []);
   return (
-    <Surface variant="group" padding="tight" gap="inline">
-      <p className="text-xs fg-primary">{prompt}</p>
+    <Surface
+      variant="group"
+      padding="tight"
+      gap="inline"
+      onKeyDown={(event): void => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      }}
+    >
+      <p className="text-xs text-pretty fg-primary">{prompt}</p>
       {details === undefined || details === null ? null : <div>{details}</div>}
       <Inline gap="inline" justify="end">
-        <Button size="compact" onClick={onCancel}>
+        <Button ref={cancelRef} size="compact" onClick={onCancel}>
           {cancelLabel}
         </Button>
         <Button variant="primary" size="compact" onClick={onConfirm}>

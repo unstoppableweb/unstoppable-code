@@ -38,6 +38,15 @@ export function LedgerFileSearch({
         placeholder="Find a file"
         data-testid="ledger-file-search"
         onValueChange={onQueryChange}
+        onKeyDown={(event) => {
+          // The search sits inside the entry form: Enter picks the first
+          // match instead of saving the whole entry. While a search runs the
+          // list still holds the previous query's matches, so it picks none.
+          if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          const first = results[0];
+          if (first !== undefined && !disabled && !searching) onPick(first);
+        }}
         clearLabel="Clear file search"
         className="w-full"
       />
@@ -51,6 +60,8 @@ export function LedgerFileSearch({
             <li key={`${file.rootId}:${file.path}`}>
               <ListRow
                 data-testid="ledger-file-search-result"
+                // While the entry saves, its files can't change.
+                disabled={disabled}
                 onClick={() => onPick(file)}
                 trailing={file.rootName}
               >

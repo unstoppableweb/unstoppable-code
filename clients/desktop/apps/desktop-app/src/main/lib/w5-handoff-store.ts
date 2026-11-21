@@ -24,6 +24,17 @@ export type W5HandoffFailure =
   /** The app quit before the handoff finished; no warning. */
   | 'cancelled';
 
+/** The awaited handoff step at which a failure was observed. */
+export type W5HandoffStage =
+  | 'admission'
+  | 'probe'
+  | 'files_context'
+  | 'root_scope'
+  | 'attach_or_start'
+  | 'note_served'
+  | 'backup'
+  | 'stop_in_process';
+
 export class W5DaemonHandoffError extends Error {
   declare readonly cause?: unknown;
   constructor(
@@ -32,6 +43,8 @@ export class W5DaemonHandoffError extends Error {
     readonly detail?: string,
     /** The error behind this one, when there is one. */
     readonly underlying?: unknown,
+    /** The handoff step that failed, when known. */
+    readonly stage?: W5HandoffStage,
   ) {
     super(
       `W5 startup handoff failed (${reason}${detail ? `: ${detail}` : ''})`,

@@ -22,6 +22,10 @@ import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
 import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
 import { getAutomationNextRun } from '../../panels/automations/automations-panel-data';
 import { useChatTabTitles } from '../runs/useWorkflowRunFeed';
+import {
+  useLibraryProjectPlace,
+  type LibraryProjectPlace,
+} from './libraryProjectPlace';
 
 /** What a Library row stands for, so an action reaches the right handler. */
 export type WorkflowLibraryTarget =
@@ -42,6 +46,8 @@ export interface WorkflowLibraryData {
   readonly loading: boolean;
   /** Lists the shared automations again, such as after a failed load. */
   readonly refreshSharedAutomations: () => Promise<void>;
+  /** Where project pipelines are read from (CAN-965). */
+  readonly projectPlace: LibraryProjectPlace;
 }
 
 function sharerOf(
@@ -63,6 +69,14 @@ export function useWorkflowLibraryRows(
   now: number,
 ): WorkflowLibraryData {
   const projects = useProjectsStore((state) => state.projects);
+  const projectPlace = useLibraryProjectPlace();
+  const projectCwd =
+    projectPlace.kind === 'worktree' &&
+    pipelines.projectContext?.worktree.worktreeId === projectPlace.worktreeId
+      ? pipelines.projectContext.cwd
+      : undefined;
+  const currentWorktreeName =
+    projectPlace.kind === 'worktree' ? projectPlace.worktreeName : undefined;
   const chatTitles = useChatTabTitles();
   const sharedAutomations = useSharedAutomationList();
 
@@ -180,6 +194,9 @@ export function useWorkflowLibraryRows(
       ),
       now,
       currentProjectId: pipelines.projectId,
+      ...(currentWorktreeName && projectCwd
+        ? { currentWorktree: { name: currentWorktreeName, cwd: projectCwd } }
+        : {}),
       nextRun: getAutomationNextRun,
       projectName: (projectId) => {
         const project = projectsById.get(projectId);
@@ -199,8 +216,12 @@ export function useWorkflowLibraryRows(
         sharedAutomations.error !== null || pipelines.shared.error !== null,
       loading: automations.loading || (pipelines.loading && rows.length === 0),
       refreshSharedAutomations,
+      projectPlace,
     };
   }, [
+    currentWorktreeName,
+    projectCwd,
+    projectPlace,
     viewerId,
     automations.loading,
     executions,

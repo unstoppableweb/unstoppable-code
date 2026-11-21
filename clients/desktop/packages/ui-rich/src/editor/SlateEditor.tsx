@@ -242,6 +242,8 @@ function SlateEditorInner(
           as={LifecycleSafeEditableElement}
           data-chat-textarea
           data-testid={dataTestId}
+          // The placeholder disappears once text is typed; keep it as the name.
+          aria-label={placeholder}
           placeholder={placeholder}
           renderPlaceholder={renderPlaceholder}
           readOnly={readOnly}

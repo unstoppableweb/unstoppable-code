@@ -17,7 +17,11 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
-import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
+import {
+  lastPointerWasTouch,
+  trackInputModality,
+  wasFocusVisible,
+} from '../lib/input-modality';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Button, buttonClassName } from './Button';
 import { Kbd } from './Kbd';
@@ -238,6 +242,12 @@ export function Tooltip({
   // moves, so the resting pointer's next movement does not reopen it.
   const escapeDismissedRef = useRef(false);
   const [tooltipMounted, setTooltipMounted] = useState(false);
+  // The portal target is the TRIGGER's window body: a wrapper in an
+  // auxiliary window must portal into THAT window, not the module-global main
+  // document, or the tooltip paints at unrelated coordinates in the wrong
+  // window. It is read each time the tooltip opens, because a panel moved to
+  // another window keeps its subtree mounted and so its triggers too.
+  const [portalBody, setPortalBody] = useState<HTMLElement | null>(null);
   const [scrollable, setScrollable] = useState(false);
   const interactive = Boolean(link) || scrollable;
   const [position, setPosition] = useState<{
@@ -360,15 +370,19 @@ export function Tooltip({
       clearHideTimer();
       handoff.setLeaving(false);
       if (openTimerRef.current !== null) return;
-      if (delayMs <= 0) {
+      const mount = (): void => {
+        setPortalBody(wrapperRef.current?.ownerDocument.body ?? null);
         setTooltipMounted(true);
+      };
+      if (delayMs <= 0) {
+        mount();
         return;
       }
       openTimerRef.current = (
         wrapperRef.current?.ownerDocument.defaultView ?? window
       ).setTimeout(() => {
         openTimerRef.current = null;
-        setTooltipMounted(true);
+        mount();
       }, delayMs);
     },
     [clearHideTimer, handoff, suppressed],
@@ -384,6 +398,8 @@ export function Tooltip({
   // `useTooltipHandoff`). Keyboard focus uses `showTooltip` and so
   // `openDelay` alone.
   const showTooltipOnHover = useCallback((): void => {
+    // A tap's emulated mouseenter is not a hover; `showOnTouch` opts in.
+    if (lastPointerWasTouch(wrapperRef.current?.ownerDocument)) return;
     const requested =
       delay === 'long' ? Math.max(LONG_OPEN_DELAY_MS, openDelay) : openDelay;
     showTooltipAfter(handoff.pointerOpenDelay(requested));
@@ -540,17 +556,6 @@ export function Tooltip({
     }
   }, [disabled, hideTooltip, suppressed]);
 
-  // Resolve the portal target and viewport from the TRIGGER's realm: a
-  // wrapper mounted in an auxiliary window must portal into THAT window's
-  // body, not the module-global main document — otherwise the tooltip paints
-  // at unrelated coordinates in the wrong window. Declared ABOVE the
-  // `disabled` early return: a caller toggling `disabled` on a mounted
-  // Tooltip must see the same hooks in the same order on every render.
-  const [portalBody, setPortalBody] = useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (disabled) return;
-    setPortalBody(wrapperRef.current?.ownerDocument.body ?? null);
-  }, [disabled]);
   const canPortal = portalBody !== null;
 
   // Rendered as a bare fragment when disabled so callers can suppress a

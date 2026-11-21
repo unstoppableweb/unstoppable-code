@@ -119,6 +119,7 @@ export function isFirstTurnHeldForSetup(
  * flat message map); ids that are not present are skipped.
  */
 export interface TurnGroupViewProps {
+  readonly outputlessAutoResume?: boolean;
   /** First send is accepted locally and is waiting for its first visible output. */
   readonly starting?: boolean;
   /** A transcript can own the stable live region outside this turn. */
@@ -307,6 +308,7 @@ function hasFoldableContent(message: RemoteControlChatMessage): boolean {
 }
 
 function TurnGroupViewImpl({
+  outputlessAutoResume,
   turnGroup,
   messagesById,
   appIcon,
@@ -654,7 +656,13 @@ function TurnGroupViewImpl({
               }
             />
           ) : (
-            user && <ChatMessageView message={user} appIcon={appIcon} />
+            user && (
+              <ChatMessageView
+                message={user}
+                appIcon={appIcon}
+                outputlessAutoResume={outputlessAutoResume}
+              />
+            )
           )}
 
           {showStarting ? (

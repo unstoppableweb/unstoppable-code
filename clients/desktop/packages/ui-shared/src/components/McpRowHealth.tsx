@@ -2,6 +2,7 @@ import type { JSX } from 'react';
 import type { McpRowHealthModel } from '../lib/mcp-row-health';
 import { Dot } from './Badge';
 import { Tooltip } from './Tooltip';
+import { ControlButton } from './Button';
 import { AlertTriangle, CheckIcon } from '../icons/AppIcons';
 import { LoadingSpinner } from './LoadingSpinner';
 import { useItemStateMarks } from './ItemStateMark';
@@ -24,6 +25,11 @@ export interface McpRowHealthProps {
   readonly testId: string;
   /** The check time, already formatted for this host. */
   readonly checkedLabel?: string;
+  /**
+   * Pass a boolean to give the row a quiet live region that speaks the text
+   * only while `true` (a check the person started). Omit it for no region.
+   */
+  readonly announce?: boolean;
 }
 
 export function McpRowAttention({
@@ -61,26 +67,20 @@ export function McpRowAttention({
       showOnPress
       replayBlock
     >
-      <span
-        role="img"
-        tabIndex={0}
+      {/* A press shows the tooltip, so it is a button, not an image. */}
+      <ControlButton
+        presentation="mcp-row-attention"
         aria-label={message}
         data-testid={testId}
-        className={`focus-ring focus-ring-inset inline-flex shrink-0 items-center justify-center rounded-sm pointer-coarse:min-h-6 pointer-coarse:min-w-6 ${showLabel ? 'gap-1 fg-primary' : 'fg-warning'}`}
-        onKeyDown={(event): void => {
-          if (event.key !== 'Enter' && event.key !== ' ') return;
-          event.preventDefault();
-          event.currentTarget.click();
-        }}
       >
         <AlertTriangle
           width={13}
           height={13}
           aria-hidden="true"
-          className={showLabel ? 'shrink-0 fg-warning' : undefined}
+          className="shrink-0"
         />
-        {showLabel && <span>{label}</span>}
-      </span>
+        {showLabel && <span className="fg-primary">{label}</span>}
+      </ControlButton>
     </Tooltip>
   );
 }
@@ -91,6 +91,7 @@ export function McpRowHealth({
   model,
   testId,
   checkedLabel,
+  announce,
 }: McpRowHealthProps): JSX.Element {
   // New Customize: the dot carries the color; the text stays plain.
   const neutralText = useItemStateMarks();
@@ -114,13 +115,21 @@ export function McpRowHealth({
       className="pointer-events-auto"
       disabled={checkedLabel === undefined}
     >
+      {/* Not a live region: a list of rows would announce every background
+          check. A check the person starts speaks through `announce` or
+          McpRowCheckFeedback. */}
       <span
-        role="status"
         data-testid={testId}
         className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs ${neutralText ? 'fg-secondary' : TONE_CLASS[model.tone]}`}
       >
         <Dot tone={DOT_TONE[model.tone]} data-testid={`${testId}-dot`} />
         <span>{model.text}</span>
+        {/* Rendered before it has text, so the change is announced. */}
+        {announce !== undefined && (
+          <span role="status" className="sr-only">
+            {announce ? model.text : ''}
+          </span>
+        )}
       </span>
     </Tooltip>
   );

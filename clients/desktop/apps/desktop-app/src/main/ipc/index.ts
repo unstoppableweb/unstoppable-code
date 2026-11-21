@@ -107,6 +107,7 @@ import {
   registerOllamaHandlers,
 } from './ollama';
 import { registerModelHarnessAssignmentHandlers } from './model-harness-assignments';
+import { registerProviderUsageHandlers } from './provider-usage';
 import { registerProviderUsageLimitsHandlers } from './provider-usage-limits';
 import { registerGitExecutableHandlers } from './git-executable';
 import { registerDeepLinkHandlers } from './deep-link';
@@ -307,7 +308,7 @@ export function registerAllIpcHandlers(
     canopyRuntime.dispatcher,
     canopyRuntime.resolveCaller,
   );
-  registerRunsHandlers();
+  registerRunsHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
   registerSharedContainerHandlers(canopyRuntime);
   registerDetectedPlansHandlers(getMainWindow);
   registerCodeReviewHandlers(
@@ -428,6 +429,7 @@ export function registerAllIpcHandlers(
   registerUpdateHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
   registerModelRegistryHandlers(getMainWindow, canopyRuntime);
   registerProviderUsageLimitsHandlers(canopyRuntime);
+  registerProviderUsageHandlers();
   registerModelHarnessAssignmentHandlers();
   if (isOllamaSupportedOnPlatform()) {
     registerOllamaHandlers(getMainWindow);

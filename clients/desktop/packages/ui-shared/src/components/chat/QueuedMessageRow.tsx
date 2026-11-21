@@ -296,7 +296,7 @@ export function QueuedMessageAttachments({
       )}
       {hidden > 0 ? (
         <span
-          className={`${THUMBNAIL_CLASS} inset-ring inset-ring-fg-primary/8 text-s fg-tertiary`}
+          className={`${THUMBNAIL_CLASS} ${ATTACHMENT_TILE_EDGE_CLASS} text-s fg-tertiary`}
         >
           +{hidden}
         </span>
@@ -548,7 +548,12 @@ export const QueuedMessageRow = forwardRef<
             : steerReason
         }
         data-testid="queued-message-steer"
-        disabled={steerBlockedByCapabilityChange || steerReason !== undefined}
+        // aria-disabled keeps the reason reachable by keyboard and tap.
+        aria-disabled={
+          steerBlockedByCapabilityChange ||
+          steerReason !== undefined ||
+          undefined
+        }
         onClick={onSteer}
       >
         Steer
@@ -564,7 +569,7 @@ export const QueuedMessageRow = forwardRef<
           : { iconOnly: false })}
         aria-description={interruptReason}
         data-testid={`queued-message-${forceKind}`}
-        disabled={interruptReason !== undefined}
+        aria-disabled={interruptReason !== undefined || undefined}
         onClick={onInterrupt}
       >
         {InterruptIcon ? (
@@ -628,7 +633,7 @@ export const QueuedMessageRow = forwardRef<
               ? reorder.handleProps
               : {})}
             aria-description={reorder.unavailableReason}
-            disabled={reorder.unavailableReason !== undefined}
+            aria-disabled={reorder.unavailableReason !== undefined || undefined}
             data-testid="queued-message-drag-handle"
             data-no-double-click-edit
             className={`-mx-1.75 touch-none ${

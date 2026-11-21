@@ -361,7 +361,7 @@ export function shareResourceCopy(noun: string): ShareResourceCopy {
     accountLoading: 'Loading account…',
     emptyState: `Connect a cloud account to share this ${noun}.`,
     emptyAction: 'Open account settings',
-    guestState: `Create a free account to share this ${noun}.`,
+    guestState: `Create an account to share this ${noun}.`,
     // There is no trial to start: signing in is the whole step.
     guestAction: 'Sign in',
     missingCapability: `This account does not support shared ${noun}s.`,
@@ -379,11 +379,11 @@ export function shareResourceCopy(noun: string): ShareResourceCopy {
     preflightLoading: `Checking whether this ${noun} can be shared…`,
     teamValidationError: `Select a team to share this ${noun}.`,
     organizationValidationError: `Select an organization to share this ${noun}.`,
-    teamSearchPlaceholder: 'Search teams…',
-    teamLoading: 'Loading teams…',
+    teamSearchPlaceholder: 'Search teams',
+    teamLoading: 'Still loading teams…',
     teamEmpty: 'No teams found.',
-    organizationSearchPlaceholder: 'Search organizations…',
-    organizationLoading: 'Loading organizations…',
+    organizationSearchPlaceholder: 'Search organizations',
+    organizationLoading: 'Still loading organizations…',
     organizationEmpty: 'No organizations found.',
     organizationRequired: `${Noun}s are shared with a team or organization. Set one up to start sharing.`,
     organizationHint:
@@ -2829,6 +2829,7 @@ export function ShareResourceDialog({
           busyLabel={stopSharing.confirm.busyLabel}
           busy={stopping}
           errorMessage={stopError}
+          errorSource="share-resource-stop"
           destructive
           onConfirm={(): void => {
             void handleStopSharing();

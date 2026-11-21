@@ -1,4 +1,5 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
+import * as path from 'node:path';
 import {
   assertOrganizationPipelineAllowed,
   organizationPipelinesSwitchedOff,
@@ -29,6 +30,7 @@ import {
   type SharedPipelineSummary,
 } from '@canopy/protocol/pipelines';
 import { WORKSPACE_ROOT_REPO_ID } from '@canopy/protocol/ui-labels';
+import { validateId } from '../lib/validation';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import {
@@ -60,6 +62,7 @@ import {
   assertStoredPipelineContext,
   copyPipelineInstallOrigin,
   filterProjectPipelineContexts,
+  projectPipelinesVisible,
   recordSharedPipelineInstall,
   filterStoredPipelineContexts,
   readProjectPipelineOwner,
@@ -84,7 +87,11 @@ import {
 } from './pipeline-owner-policy';
 import * as localPipelines from './pipeline-service';
 import { deletePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
-import { discoverProjectPipelines } from './project-pipeline-discovery';
+import {
+  discoverProjectPipelines,
+  readProjectPipelinesWithinBounds,
+  UNATTENDED_PROJECT_DISCOVERY_LIMITS,
+} from './project-pipeline-discovery';
 import { recordPipelineEnabled } from './pipeline-enablement-commit';
 import {
   sharedProjectDiscovery,
@@ -317,27 +324,39 @@ function visibleProjectPipelines(
       context.scope.workspaceId,
       context.scope.worktreeId,
       context.scope.repoId,
+      context.projectDiscovery ?? 'full',
     ]),
     () => discoverVisibleProjectPipelines(context),
   );
 }
 
+/**
+ * Discovery for a `bounded` listing (CAN-965): the unattended-scan bounds,
+ * and a failure when one cuts the scan short, so the listing names the
+ * project source unavailable instead of counting part of the checkout. It
+ * writes nothing: share links are neither attached nor reconciled.
+ */
+async function discoverWithinBounds(cwd: string): Promise<PipelineInfo[]> {
+  const { pipelines, truncated } = await readProjectPipelinesWithinBounds(
+    cwd,
+    UNATTENDED_PROJECT_DISCOVERY_LIMITS,
+  );
+  if (truncated)
+    throw new Error(
+      'The project workflows exceed the bounds of an unattended read.',
+    );
+  return pipelines;
+}
+
 async function discoverVisibleProjectPipelines(
   context: PipelineDefinitionSourceContext,
 ): Promise<ContainedProjectPipeline[]> {
+  if (context.projectDiscovery === 'bounded')
+    return discoverBoundedProjectPipelines(context);
   const cwd = await projectCheckout(context.scope);
   const checkout = await realpath(cwd);
   const discovered = await discoverProjectPipelines(cwd);
-  // Discovery follows links; a definition is read only from the checkout.
-  const canonical = await Promise.all(
-    discovered.map(async (info) => {
-      if (!info.filePath) return undefined;
-      const file = await realpath(info.filePath).catch(() => undefined);
-      return file !== undefined && isPathInside(checkout, file)
-        ? file
-        : undefined;
-    }),
-  );
+  const canonical = await canonicalPathsInCheckout(discovered, checkout);
   const visible = new Set(
     await filterProjectPipelineContexts(
       discovered.filter((_info, index) => canonical[index] !== undefined),
@@ -352,6 +371,115 @@ async function discoverVisibleProjectPipelines(
       ? [{ info, canonicalPath }]
       : [];
   });
+}
+
+/** Discovery follows links; a definition is read only from the checkout. */
+function canonicalPathsInCheckout(
+  discovered: readonly PipelineInfo[],
+  checkout: string,
+): Promise<(string | undefined)[]> {
+  return Promise.all(
+    discovered.map(async (info) => {
+      if (!info.filePath) return undefined;
+      const file = await realpath(info.filePath).catch(() => undefined);
+      return file !== undefined && isPathInside(checkout, file)
+        ? file
+        : undefined;
+    }),
+  );
+}
+
+/**
+ * A `bounded` listing (CAN-965), for a checkout nobody opened. It changes
+ * nothing anywhere: visibility comes from the project's saved owner, the
+ * checkout from the project's own worktree list (no sidebar projection,
+ * whose reads may persist cleanup or prepare checkouts), and discovery
+ * neither attaches nor reconciles share links. A project the owner can't
+ * see lists nothing and is not read; one over a bound fails, so the source
+ * is named unavailable. Visibility is checked again after the reads, and a
+ * cancelled request stops before and after them. It reads a worktree root
+ * only.
+ */
+async function discoverBoundedProjectPipelines(
+  context: PipelineDefinitionSourceContext,
+): Promise<ContainedProjectPipeline[]> {
+  const { workspaceId, worktreeId, repoId } = context.scope;
+  if (
+    !workspaceId ||
+    !worktreeId ||
+    (repoId !== undefined && repoId !== WORKSPACE_ROOT_REPO_ID)
+  )
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      'A bounded project listing needs a workspace and worktree scope and reads the worktree root only.',
+    );
+  if (!(await projectPipelinesVisible(workspaceId, context.owner))) return [];
+  context.signal.throwIfAborted();
+  let discovered: PipelineInfo[];
+  let checkout: string;
+  try {
+    const cwd = await boundedProjectCheckout(workspaceId, worktreeId);
+    checkout = await realpath(cwd);
+    discovered = await discoverWithinBounds(cwd);
+  } catch (error) {
+    // A cut or failed read is reported only to an owner that can still see
+    // the project; one that can't gets the same empty answer as before.
+    if (!(await projectPipelinesVisible(workspaceId, context.owner))) return [];
+    throw error;
+  }
+  const canonical = await canonicalPathsInCheckout(discovered, checkout);
+  context.signal.throwIfAborted();
+  // Checked again after the reads: the selected owner can change while they
+  // run, and rows are returned only for the owner that can see them now.
+  if (!(await projectPipelinesVisible(workspaceId, context.owner))) return [];
+  return discovered.flatMap((info, index) => {
+    const canonicalPath = canonical[index];
+    return canonicalPath !== undefined ? [{ info, canonicalPath }] : [];
+  });
+}
+
+/**
+ * A code project's worktree root, built from the scope's ids without reading
+ * any project or worktree record: interface code reaches no daemon-owned
+ * store, and the ids are validated as path-safe. A worktree with no
+ * checkout fails to read, so the source is reported unavailable.
+ */
+async function boundedProjectCheckout(
+  workspaceId: string,
+  worktreeId: string,
+): Promise<string> {
+  // Named imports only: `paths` also holds daemon-owned store resolvers.
+  const { getWorkspaceType } = await import('../lib/workspace-registry');
+  const { getWorktreeDir, getWorkspaceWorktreeRootRepoDir } =
+    await import('../lib/paths');
+  validateId(workspaceId, 'workspaceId');
+  validateId(worktreeId, 'worktreeId');
+  const type = getWorkspaceType(workspaceId);
+  if (type !== 'single-repo' && type !== 'multi-repo')
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      'A bounded project listing reads a code project worktree only.',
+    );
+  // The checkout must be this project's own: a worktree directory that is a
+  // link (a compatibility link a worktree join leaves behind, say) or that
+  // resolves outside the project's worktrees folder may be another
+  // workspace's checkout, so it is not read.
+  const worktreeDir = getWorktreeDir(workspaceId, worktreeId);
+  const checkout =
+    type === 'single-repo'
+      ? worktreeDir
+      : getWorkspaceWorktreeRootRepoDir(workspaceId, worktreeId);
+  const [linkStats, worktreesRoot, realCheckout] = await Promise.all([
+    lstat(worktreeDir),
+    realpath(path.dirname(worktreeDir)),
+    realpath(checkout),
+  ]);
+  if (linkStats.isSymbolicLink() || !isPathInside(worktreesRoot, realCheckout))
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.scopeInvalid',
+      "The worktree's checkout is not inside its project.",
+    );
+  return checkout;
 }
 
 function projectPort(): PipelineDefinitionSourcePort {

@@ -8,7 +8,7 @@ import {
 /** Existing compound app controls whose geometry belongs to a specific widget. */
 export const APP_CONTROL_RECIPES = {
   'activity-group-disclosure':
-    'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05]',
+    'focus-ring flex w-full items-center gap-1.5 rounded-lg border bg-fg-primary/[0.03] px-2.5 py-2 text-left text-xs font-medium fg-primary/80 transition-colors hover:bg-fg-primary/[0.05] pointer-coarse:min-h-11',
   'attachment-image-open': 'focus-ring rounded-md',
   'card-open':
     'absolute inset-0 z-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-line-accent/60',
@@ -38,11 +38,11 @@ export const APP_CONTROL_RECIPES = {
   'proxy-toggle-card-on':
     "focus-ring relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors before:absolute before:-inset-2 before:content-[''] disabled:opacity-60 bg-accent-subtle fg-accent-strong",
   'proxy-toggle-panel-off':
-    "focus-ring relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors before:absolute before:-inset-2 before:content-[''] disabled:opacity-60 border fg-secondary hover:bg-fg-primary/[0.08] hover:fg-primary",
+    "focus-ring relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors before:absolute before:-inset-2 before:content-[''] disabled:opacity-60 border fg-secondary hover:bg-subtle hover:fg-primary",
   'proxy-toggle-panel-on':
     "focus-ring relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors before:absolute before:-inset-2 before:content-[''] disabled:opacity-60 border border-line-accent bg-accent-subtle fg-accent-strong",
   'repository-disclosure':
-    'flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary',
+    'focus-ring flex min-w-0 flex-1 items-center gap-1 text-xs font-medium fg-primary/80 transition-colors hover:fg-primary pointer-coarse:min-h-11',
   'section-keyboard-reorder':
     'sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-20 focus:rounded-sm focus:bg-quaternary focus:px-2 focus:py-1 focus:text-2xs focus:font-normal focus:fg-primary focus:shadow-sm',
   'settings-agent-row':
@@ -77,7 +77,7 @@ export const APP_CONTROL_RECIPES = {
     'focus-visible:outline focus-visible:outline-1 focus-visible:outline-fg-quaternary focus-visible:-outline-offset-1 outline-none absolute inset-0 rounded-drawer-row',
   'workflow-run-open': 'absolute inset-0 cursor-pointer rounded-lg',
   'workflow-step-open': 'focus-ring flex min-w-0 flex-1 rounded-sm',
-  'activity-group-disclosure-compact': `focus-ring flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} fg-primary`,
+  'activity-group-disclosure-compact': `focus-ring flex ${COMPACT_ACTIVITY_ITEM_CLASS_NAME} fg-primary pointer-coarse:min-h-11`,
   'profile-photo-edit-private': `group relative rounded-full disabled:cursor-not-allowed ${REPLAY_BLOCK_CLASS}`,
   'sidebar-icon-idle': sidebarNavIconItemClassName(false),
   'sidebar-icon-selected': sidebarNavIconItemClassName(true),

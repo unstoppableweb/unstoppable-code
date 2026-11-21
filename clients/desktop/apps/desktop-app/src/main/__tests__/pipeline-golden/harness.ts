@@ -2,6 +2,7 @@
 // actions, so every golden reaches pipelines through the
 // same entry point a real caller uses.
 import { EventEmitter } from 'node:events';
+import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import type { CanopyInjectedToolRuntime } from '../../canopy-tools/core';
 import type { WorktreeActionRuntime } from '../../canopy-tools/worktree-actions';
 import { GOLDEN_WORKSPACE_ID, GOLDEN_WORKTREE_ID } from './world';
@@ -39,6 +40,7 @@ export function goldenWorktreeActionRuntime(
     chatId: 'golden-chat',
     cwd: worktreePath,
     getWindow: () => null,
+    interfacePort: windowAgentInterfacePort(() => null),
     ...overrides,
   };
 }

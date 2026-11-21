@@ -22,6 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { Stack } from './Stack';
+import { Surface } from './Surface';
 import type { JSX, ReactNode } from 'react';
 import { formatUsd } from '../lib/money-format';
 import { formatCardLabel } from '../lib/card-display';
@@ -208,8 +209,8 @@ function TotalsRow({
       <span
         className={
           emphasis
-            ? 'whitespace-nowrap text-s font-semibold fg-primary'
-            : 'whitespace-nowrap text-s fg-primary'
+            ? 'whitespace-nowrap text-s font-semibold tabular-nums fg-primary'
+            : 'whitespace-nowrap text-s tabular-nums fg-primary'
         }
       >
         {value}
@@ -228,15 +229,19 @@ function CreditsSection({
     credits.usageGroups.length > 0 || credits.addedGroups.length > 0;
 
   return (
-    <section
-      className="flex flex-col gap-3 rounded-lg bg-muted p-4"
+    // A well inside the invoice card: `inset` nests its corners in the card's.
+    <Surface
+      as="section"
+      variant="inset"
+      padding="default"
       data-testid="invoice-credits"
     >
-      <div>
-        <Heading level={2} variant="title">
-          AI Credits activity
-        </Heading>
-        {/*
+      <div className="flex flex-col gap-3">
+        <div>
+          <Heading level={2} variant="title">
+            AI Credits activity
+          </Heading>
+          {/*
         Says WHY the credits are not in the total, not just THAT they aren't.
         A reader looking at `Credit purchases · 12 credits` here while
         `Credit purchase · $5.00` and `· $7.00` sit in the line items above will
@@ -251,96 +256,102 @@ function CreditsSection({
         closing clause has to point OUT of the total, not into it, so someone
         adding up the page knows these figures are not part of the arithmetic.
       */}
-        <p className="mt-0.5 text-xs fg-tertiary">
-          How your AI Credits balance moved during this period. AI Credits you
-          bought are already billed above, so nothing here adds to the invoice
-          total.
-        </p>
-      </div>
-      {!hasActivity ? (
-        <p className="text-s fg-secondary" data-testid="invoice-credits-empty">
-          No AI Credits activity in this period.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-4">
-          {credits.usageGroups.length > 0 && (
-            <Stack gap="tight">
-              <p className="text-xs font-medium fg-secondary">Credits used</p>
-              <ul className="flex flex-col divide-y">
-                {credits.usageGroups.map((group) => (
-                  <li
-                    key={group.key}
-                    data-testid={`invoice-credit-usage-${group.key}`}
-                    className="flex items-baseline justify-between gap-4 py-2"
-                  >
-                    <span className="min-w-0">
-                      <span className="block break-words text-s fg-primary">
-                        {group.label}
-                      </span>
-                      <span className="block text-xs fg-tertiary">
-                        {`${group.entryCount} ${group.entryCount === 1 ? 'entry' : 'entries'}`}
-                      </span>
-                    </span>
-                    <span className="whitespace-nowrap text-s fg-primary">
-                      {`${formatCredits(group.creditsUsed)} credits`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <div className="flex items-baseline justify-between gap-4 border-t pt-2">
-                <span className="text-s font-medium fg-primary">
-                  Total used
-                </span>
-                <span
-                  className="whitespace-nowrap text-s font-medium fg-primary"
-                  data-testid="invoice-credits-total-used"
-                >
-                  {`${formatCredits(credits.totalUsedCredits)} credits`}
-                </span>
-              </div>
-            </Stack>
-          )}
-
-          {credits.addedGroups.length > 0 && (
-            <Stack gap="tight">
-              <p className="text-xs font-medium fg-secondary">Credits added</p>
-              <ul className="flex flex-col divide-y">
-                {credits.addedGroups.map((group) => (
-                  <li
-                    key={group.transactionType}
-                    data-testid={`invoice-credit-added-${group.transactionType}`}
-                    className="flex items-baseline justify-between gap-4 py-2"
-                  >
-                    <span className="min-w-0">
-                      <span className="block break-words text-s fg-primary">
-                        {group.label}
-                      </span>
-                      <span className="block text-xs fg-tertiary">
-                        {`${group.entryCount} ${group.entryCount === 1 ? 'entry' : 'entries'}`}
-                      </span>
-                    </span>
-                    <span className="whitespace-nowrap text-s fg-primary">
-                      {`${formatCredits(group.creditsAdded)} credits`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-              <div className="flex items-baseline justify-between gap-4 border-t pt-2">
-                <span className="text-s font-medium fg-primary">
-                  Total added
-                </span>
-                <span
-                  className="whitespace-nowrap text-s font-medium fg-primary"
-                  data-testid="invoice-credits-total-added"
-                >
-                  {`${formatCredits(credits.totalAddedCredits)} credits`}
-                </span>
-              </div>
-            </Stack>
-          )}
+          <p className="mt-0.5 text-xs fg-tertiary">
+            How your AI Credits balance moved during this period. AI Credits you
+            bought are already billed above, so nothing here adds to the invoice
+            total.
+          </p>
         </div>
-      )}
-    </section>
+        {!hasActivity ? (
+          <p
+            className="text-s fg-secondary"
+            data-testid="invoice-credits-empty"
+          >
+            No AI Credits activity in this period.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {credits.usageGroups.length > 0 && (
+              <Stack gap="tight">
+                <p className="text-xs font-medium fg-secondary">Credits used</p>
+                <ul className="flex flex-col divide-y">
+                  {credits.usageGroups.map((group) => (
+                    <li
+                      key={group.key}
+                      data-testid={`invoice-credit-usage-${group.key}`}
+                      className="flex items-baseline justify-between gap-4 py-2"
+                    >
+                      <span className="min-w-0">
+                        <span className="block break-words text-s fg-primary">
+                          {group.label}
+                        </span>
+                        <span className="block text-xs fg-tertiary">
+                          {`${group.entryCount} ${group.entryCount === 1 ? 'entry' : 'entries'}`}
+                        </span>
+                      </span>
+                      <span className="whitespace-nowrap text-s tabular-nums fg-primary">
+                        {`${formatCredits(group.creditsUsed)} credits`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-baseline justify-between gap-4 border-t pt-2">
+                  <span className="text-s font-medium fg-primary">
+                    Total used
+                  </span>
+                  <span
+                    className="whitespace-nowrap text-s font-medium tabular-nums fg-primary"
+                    data-testid="invoice-credits-total-used"
+                  >
+                    {`${formatCredits(credits.totalUsedCredits)} credits`}
+                  </span>
+                </div>
+              </Stack>
+            )}
+
+            {credits.addedGroups.length > 0 && (
+              <Stack gap="tight">
+                <p className="text-xs font-medium fg-secondary">
+                  Credits added
+                </p>
+                <ul className="flex flex-col divide-y">
+                  {credits.addedGroups.map((group) => (
+                    <li
+                      key={group.transactionType}
+                      data-testid={`invoice-credit-added-${group.transactionType}`}
+                      className="flex items-baseline justify-between gap-4 py-2"
+                    >
+                      <span className="min-w-0">
+                        <span className="block break-words text-s fg-primary">
+                          {group.label}
+                        </span>
+                        <span className="block text-xs fg-tertiary">
+                          {`${group.entryCount} ${group.entryCount === 1 ? 'entry' : 'entries'}`}
+                        </span>
+                      </span>
+                      <span className="whitespace-nowrap text-s tabular-nums fg-primary">
+                        {`${formatCredits(group.creditsAdded)} credits`}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="flex items-baseline justify-between gap-4 border-t pt-2">
+                  <span className="text-s font-medium fg-primary">
+                    Total added
+                  </span>
+                  <span
+                    className="whitespace-nowrap text-s font-medium tabular-nums fg-primary"
+                    data-testid="invoice-credits-total-added"
+                  >
+                    {`${formatCredits(credits.totalAddedCredits)} credits`}
+                  </span>
+                </div>
+              </Stack>
+            )}
+          </div>
+        )}
+      </div>
+    </Surface>
   );
 }
 
@@ -360,197 +371,203 @@ export function InvoiceDetailView({
     <Stack gap="group" data-testid="invoice-detail">
       {backLink ? <div>{backLink}</div> : null}
 
-      <div className="flex flex-col gap-6 rounded-lg border bg-card p-4 sm:p-6">
-        <Stack gap="group">
-          <Stack gap="item">
-            <header className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <Heading
-                  level={numberLevel}
-                  variant="page"
-                  data-testid="invoice-detail-number"
-                >
-                  {invoice.number}
-                </Heading>
-                <p className="mt-0.5 text-s fg-secondary">
-                  {formatUtcDateRange(invoice.periodStart, invoice.periodEnd)}
-                </p>
-                <p className="mt-0.5 text-xs fg-tertiary">
-                  {`Issued ${formatUtcDate(invoice.issuedAt)}`}
-                </p>
-              </div>
-              {isUnpaidCurrentInvoice(invoice) ? (
-                <span className="flex flex-wrap gap-1">
+      <Surface variant="card">
+        <div className="flex flex-col gap-6 p-4 sm:p-6">
+          <Stack gap="group">
+            <Stack gap="item">
+              <header className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <Heading
+                    level={numberLevel}
+                    variant="page"
+                    data-testid="invoice-detail-number"
+                  >
+                    {invoice.number}
+                  </Heading>
+                  <p className="mt-0.5 text-s fg-secondary">
+                    {formatUtcDateRange(invoice.periodStart, invoice.periodEnd)}
+                  </p>
+                  <p className="mt-0.5 text-xs fg-tertiary">
+                    {`Issued ${formatUtcDate(invoice.issuedAt)}`}
+                  </p>
+                </div>
+                {isUnpaidCurrentInvoice(invoice) ? (
+                  <span className="flex flex-wrap gap-1">
+                    <span
+                      className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
+                      data-testid="invoice-detail-status"
+                    >
+                      {CURRENT_INVOICE_LABEL}
+                    </span>
+                    <span
+                      className={`${BADGE_BASE} ${BILLING_STATUS_TONE_CLASSES[invoiceStatusTone(invoice.status)]}`}
+                      data-testid="invoice-detail-due-status"
+                    >
+                      {humanizeInvoiceStatus(invoice.status)}
+                    </span>
+                  </span>
+                ) : invoice.isCurrent ? (
                   <span
                     className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
                     data-testid="invoice-detail-status"
                   >
                     {CURRENT_INVOICE_LABEL}
                   </span>
+                ) : (
                   <span
-                    className={`${BADGE_BASE} ${BILLING_STATUS_TONE_CLASSES[invoiceStatusTone(invoice.status)]}`}
-                    data-testid="invoice-detail-due-status"
+                    className={`${BADGE_BASE} bg-muted fg-secondary`}
+                    data-testid="invoice-detail-status"
                   >
                     {humanizeInvoiceStatus(invoice.status)}
                   </span>
-                </span>
-              ) : invoice.isCurrent ? (
-                <span
-                  className={`${BADGE_BASE} ${BADGE_TONE_CLASS.info}`}
-                  data-testid="invoice-detail-status"
-                >
-                  {CURRENT_INVOICE_LABEL}
-                </span>
-              ) : (
-                <span
-                  className={`${BADGE_BASE} bg-muted fg-secondary`}
-                  data-testid="invoice-detail-status"
-                >
-                  {humanizeInvoiceStatus(invoice.status)}
-                </span>
-              )}
-            </header>
+                )}
+              </header>
 
-            {invoice.isCurrent && (
-              <Stack gap="tight">
-                <p
-                  className="text-xs fg-tertiary"
-                  data-testid="invoice-detail-current-note"
-                >
-                  This billing period is still in progress. Totals shown are to
-                  date and will keep updating until the period closes.
-                </p>
-                {isUnpaidCurrentInvoice(invoice) && (
+              {invoice.isCurrent && (
+                <Stack gap="tight">
                   <p
                     className="text-xs fg-tertiary"
-                    data-testid="invoice-detail-due-note"
+                    data-testid="invoice-detail-current-note"
                   >
-                    Payment for this period hasn&apos;t been collected yet.
+                    This billing period is still in progress. Totals shown are
+                    to date and will keep updating until the period closes.
                   </p>
-                )}
-              </Stack>
-            )}
-          </Stack>
+                  {isUnpaidCurrentInvoice(invoice) && (
+                    <p
+                      className="text-xs fg-tertiary"
+                      data-testid="invoice-detail-due-note"
+                    >
+                      Payment for this period hasn&apos;t been collected yet.
+                    </p>
+                  )}
+                </Stack>
+              )}
+            </Stack>
 
-          <Stack as="section" gap="tight">
-            <Heading level={2} variant="label">
-              Billed to
-            </Heading>
-            <div>
-              <p
-                className={
-                  blockBillToFromReplay
-                    ? `text-s fg-primary ${REPLAY_BLOCK_CLASS}`
-                    : 'text-s fg-primary'
-                }
-              >
-                {invoice.billTo.name}
-              </p>
-              {invoice.billTo.email ? (
+            <Stack as="section" gap="tight">
+              <Heading level={2} variant="label">
+                Billed to
+              </Heading>
+              <div>
                 <p
                   className={
                     blockBillToFromReplay
-                      ? `text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`
-                      : 'text-xs fg-tertiary'
+                      ? `text-s fg-primary ${REPLAY_BLOCK_CLASS}`
+                      : 'text-s fg-primary'
                   }
                 >
-                  {invoice.billTo.email}
+                  {invoice.billTo.name}
                 </p>
+                {invoice.billTo.email ? (
+                  <p
+                    className={
+                      blockBillToFromReplay
+                        ? `text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`
+                        : 'text-xs fg-tertiary'
+                    }
+                  >
+                    {invoice.billTo.email}
+                  </p>
+                ) : null}
+              </div>
+            </Stack>
+          </Stack>
+
+          <Stack as="section" gap="inline">
+            <Heading level={2} variant="title">
+              Line items
+            </Heading>
+            {invoice.lineItems.length === 0 ? (
+              <p
+                className="text-s fg-secondary"
+                data-testid="invoice-line-items-empty"
+              >
+                No charges in this period.
+              </p>
+            ) : (
+              <ul className="flex flex-col divide-y">
+                {invoice.lineItems.map((item) => {
+                  const card = cardLabelFor(item);
+                  const servicePeriod = servicePeriodFor(item);
+                  const refundedNote = refundedNoteFor(item);
+                  return (
+                    <li
+                      key={item.id}
+                      data-testid={`invoice-line-item-${item.id}`}
+                      className="flex flex-col gap-1 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-6"
+                    >
+                      <div className="min-w-0">
+                        <p className="break-words text-s font-medium fg-primary">
+                          {descriptionFor(item)}
+                        </p>
+                        {servicePeriod ? (
+                          <p className="text-xs fg-tertiary">{servicePeriod}</p>
+                        ) : null}
+                        <p className="text-xs fg-tertiary">
+                          {formatDate(item.chargedAt)}
+                          {card ? ` · ${card}` : ''}
+                        </p>
+                      </div>
+                      <div className="shrink-0 sm:text-right">
+                        <p className="whitespace-nowrap text-s font-medium tabular-nums fg-primary">
+                          {formatUsd(item.amountUsd)}
+                        </p>
+                        {item.quantity !== null &&
+                        item.unitPriceUsd !== null ? (
+                          <p className="whitespace-nowrap text-xs fg-tertiary">
+                            {`${item.quantity} × ${formatUsd(item.unitPriceUsd)}`}
+                          </p>
+                        ) : null}
+                        {refundedNote ? (
+                          <p
+                            className="whitespace-nowrap text-xs fg-tertiary"
+                            data-testid={`invoice-line-item-refunded-${item.id}`}
+                          >
+                            {refundedNote}
+                          </p>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Stack>
+
+          <section
+            className="flex flex-col gap-1 border-t pt-3"
+            data-testid="invoice-totals"
+          >
+            <div>
+              <TotalsRow
+                label="Subtotal"
+                value={formatUsd(invoice.subtotalUsd)}
+              />
+              {/* Literal 0 from the service — Canopy collects no tax today. */}
+              <TotalsRow label="Tax" value={formatUsd(invoice.taxUsd)} />
+            </div>
+            <div className="border-t pt-2">
+              <TotalsRow
+                label="Total"
+                value={formatUsd(invoice.totalUsd)}
+                emphasis
+              />
+              <TotalsRow
+                label="Paid"
+                value={formatUsd(invoice.amountPaidUsd)}
+              />
+              {invoice.amountRefundedUsd > 0 ? (
+                <TotalsRow
+                  label="Refunded"
+                  value={formatUsd(invoice.amountRefundedUsd)}
+                />
               ) : null}
             </div>
-          </Stack>
-        </Stack>
+          </section>
 
-        <Stack as="section" gap="inline">
-          <Heading level={2} variant="title">
-            Line items
-          </Heading>
-          {invoice.lineItems.length === 0 ? (
-            <p
-              className="text-s fg-secondary"
-              data-testid="invoice-line-items-empty"
-            >
-              No charges in this period.
-            </p>
-          ) : (
-            <ul className="flex flex-col divide-y">
-              {invoice.lineItems.map((item) => {
-                const card = cardLabelFor(item);
-                const servicePeriod = servicePeriodFor(item);
-                const refundedNote = refundedNoteFor(item);
-                return (
-                  <li
-                    key={item.id}
-                    data-testid={`invoice-line-item-${item.id}`}
-                    className="flex flex-col gap-1 py-3 sm:flex-row sm:items-baseline sm:justify-between sm:gap-6"
-                  >
-                    <div className="min-w-0">
-                      <p className="break-words text-s font-medium fg-primary">
-                        {descriptionFor(item)}
-                      </p>
-                      {servicePeriod ? (
-                        <p className="text-xs fg-tertiary">{servicePeriod}</p>
-                      ) : null}
-                      <p className="text-xs fg-tertiary">
-                        {formatDate(item.chargedAt)}
-                        {card ? ` · ${card}` : ''}
-                      </p>
-                    </div>
-                    <div className="shrink-0 sm:text-right">
-                      <p className="whitespace-nowrap text-s font-medium fg-primary">
-                        {formatUsd(item.amountUsd)}
-                      </p>
-                      {item.quantity !== null && item.unitPriceUsd !== null ? (
-                        <p className="whitespace-nowrap text-xs fg-tertiary">
-                          {`${item.quantity} × ${formatUsd(item.unitPriceUsd)}`}
-                        </p>
-                      ) : null}
-                      {refundedNote ? (
-                        <p
-                          className="whitespace-nowrap text-xs fg-tertiary"
-                          data-testid={`invoice-line-item-refunded-${item.id}`}
-                        >
-                          {refundedNote}
-                        </p>
-                      ) : null}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Stack>
-
-        <section
-          className="flex flex-col gap-1 border-t pt-3"
-          data-testid="invoice-totals"
-        >
-          <div>
-            <TotalsRow
-              label="Subtotal"
-              value={formatUsd(invoice.subtotalUsd)}
-            />
-            {/* Literal 0 from the service — Canopy collects no tax today. */}
-            <TotalsRow label="Tax" value={formatUsd(invoice.taxUsd)} />
-          </div>
-          <div className="border-t pt-2">
-            <TotalsRow
-              label="Total"
-              value={formatUsd(invoice.totalUsd)}
-              emphasis
-            />
-            <TotalsRow label="Paid" value={formatUsd(invoice.amountPaidUsd)} />
-            {invoice.amountRefundedUsd > 0 ? (
-              <TotalsRow
-                label="Refunded"
-                value={formatUsd(invoice.amountRefundedUsd)}
-              />
-            ) : null}
-          </div>
-        </section>
-
-        <CreditsSection credits={invoice.credits} />
-      </div>
+          <CreditsSection credits={invoice.credits} />
+        </div>
+      </Surface>
     </Stack>
   );
 }

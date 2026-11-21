@@ -12,7 +12,8 @@ import {
   Tooltip,
 } from '@canopy/ui-shared/components';
 import { SETTINGS_GROUP_CLASS } from '@canopy/ui-shared/components/settings/SettingsCard';
-import { formatDate } from '@canopy/ui-shared/lib';
+import { formatDate, recordSurfacedError } from '@canopy/ui-shared/lib';
+import { createAppError } from '@canopy/protocol/app-errors';
 import type { OrganizationExternalShare } from '@canopy/protocol/settings/organization';
 import {
   SettingsConfirmDialog,
@@ -120,6 +121,14 @@ export function TeamExternalSharesList({
       );
       setPending(null);
     } catch (err) {
+      recordSurfacedError({
+        chokePoint: 'notice',
+        surface: 'inline',
+        identifier: 'team-external-share-remove',
+        // A structured error reaches the handler each time, so repeats count
+        // instead of being dropped as duplicate text sightings.
+        error: createAppError('app.unexpected'),
+      });
       setRemoveError(
         errorCopy.actionFailure(err, { action: 'remove the share' }),
       );
@@ -249,6 +258,8 @@ export function TeamExternalSharesList({
           destructive
           dataTestId="confirm-remove-external-share"
           errorMessage={removeError?.copy ?? null}
+          // remove records this failure.
+          errorRecordingDisabled
           errorDetails={removeError?.details}
           onConfirm={() => void remove(pending)}
           onCancel={() => {

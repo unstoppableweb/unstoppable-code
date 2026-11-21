@@ -993,6 +993,23 @@ export function createCoreCatalogHandlers(options: {
                         cause,
                       },
                     ),
+                  // CAN-7226: the host's message names the skill or plugin,
+                  // the file and the rule, never the matched text.
+                  'publish-secret-detected': (cause) =>
+                    fail(
+                      'failed_precondition',
+                      cause instanceof Error && cause.message.trim() !== ''
+                        ? cause.message
+                        : `This ${noun} has a file or dependency that can't be added to the cloud. Check its files again.`,
+                      {
+                        code: 'core.catalog.packageBlocked',
+                        retry: {
+                          kind: 'after_refresh',
+                          resource: CORE_CATALOG_ENTRY_RESOURCE,
+                        },
+                        cause,
+                      },
+                    ),
                   // CAN-7037: the wording is for the security reviewer to
                   // confirm; it names the cause and what the person can do.
                   'publish-audience-wider': (cause) =>

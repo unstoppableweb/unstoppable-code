@@ -250,22 +250,25 @@ const sha256 = (text: string): string =>
 function cloudRefusal(error: unknown): CatalogHostRefusedError {
   if (error instanceof CatalogHostRefusedError) return error;
   return new CatalogHostRefusedError(
-    // The package commit and the share client refuse a blocked analysis, a
-    // skill that looks like it holds a secret, and an expired or outdated
-    // one or a SKILL.md edited since the check, locally.
-    error instanceof PackageAnalysisBlockedError ||
-      error instanceof SkillSecretDetectedError
-      ? 'publish-package-blocked'
-      : error instanceof ShareOperationError &&
-          error.kind === 'dependency-review'
-        ? 'publish-package-stale'
-        : error instanceof CanopyCloudClientError &&
-            error.status === 409 &&
-            error.serverCode === 'audience_changed'
+    // The package commit and the share client refuse a skill that looks
+    // like it holds a secret, naming it (CAN-7226), a blocked analysis, and
+    // an expired or outdated one or a SKILL.md edited since the check,
+    // locally.
+    error instanceof SkillSecretDetectedError ||
+      (error instanceof PackageAnalysisBlockedError && error.secretDetected)
+      ? 'publish-secret-detected'
+      : error instanceof PackageAnalysisBlockedError
+        ? 'publish-package-blocked'
+        : error instanceof ShareOperationError &&
+            error.kind === 'dependency-review'
           ? 'publish-package-stale'
-          : error instanceof CanopyCloudClientError && error.status === 409
-            ? 'publish-revision-moved'
-            : 'publish-remote-unavailable',
+          : error instanceof CanopyCloudClientError &&
+              error.status === 409 &&
+              error.serverCode === 'audience_changed'
+            ? 'publish-package-stale'
+            : error instanceof CanopyCloudClientError && error.status === 409
+              ? 'publish-revision-moved'
+              : 'publish-remote-unavailable',
     error,
   );
 }
@@ -325,7 +328,7 @@ export async function publishSkillToCloud(
   });
   if (secret !== null)
     throw new CatalogHostRefusedError(
-      'publish-package-blocked',
+      'publish-secret-detected',
       new SkillSecretDetectedError(sharedSkillSecretMessage(secret), 'prepare'),
     );
   const checked = sha256(rawSkill);
@@ -353,6 +356,13 @@ export async function publishSkillToCloud(
     pkg.analysisId,
     pkg.selectedOptionalResourceIds,
   );
+  // A skill it carries looks like it holds a secret: say which, not that the
+  // files changed (CAN-7226).
+  if (facts?.secretRefusal !== undefined)
+    throw new CatalogHostRefusedError(
+      'publish-secret-detected',
+      new SkillSecretDetectedError(facts.secretRefusal, 'prepare'),
+    );
   if (facts === null || !facts.ready || facts.contentHash !== checked)
     throw new CatalogHostRefusedError('publish-package-stale');
   // Taken before the package commit, which refuses an analysis whose files
@@ -547,11 +557,12 @@ const defaultUnpublishDeps: UnpublishSkillDeps = {
       { skillId },
       context,
     ),
+  // Consent first: if its write fails, the link stays and a retry can finish.
   clearLink: async (remoteId) => {
+    consentStore().clearByRemoteId(remoteId);
     (await import('./skill-service')).clearSkillRemoteMetadataByRemoteId(
       remoteId,
     );
-    consentStore().clearByRemoteId(remoteId);
   },
 };
 

@@ -333,10 +333,14 @@ function opensForWrite(flags: unknown): boolean {
 export function ownDataRoot(prefix: string): OwnedDataRoot {
   const root = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   const roots = [root, join(tmpdir(), basename(root))];
-  // shortcut: Jest's own transform cache sits beside the root under the temp
-  // dir and is written when a module first loads; exempt by its prefix until
-  // the harness can read the configured cacheDirectory.
-  const jestCache = join(realpathSync(tmpdir()), 'jest_');
+  // Jest's default transform cache sits beside the root under the temp dir
+  // and is written when a module first loads: `jest_<uid>` where the platform
+  // has uids, plain `jest` on Windows. The repo sets no cacheDirectory.
+  const jestCache = join(realpathSync(tmpdir()), 'jest');
+  const inJestCache = (target: string): boolean =>
+    target === jestCache ||
+    target.startsWith(jestCache + sep) ||
+    target.startsWith(`${jestCache}_`);
   const insideWrites: string[] = [];
   const owned: OwnedDataRoot = {
     dataDir: join(root, 'data'),
@@ -352,7 +356,7 @@ export function ownDataRoot(prefix: string): OwnedDataRoot {
 
   const check = (value: unknown): void => {
     const target = pathOf(value);
-    if (target === null || target.startsWith(jestCache)) return;
+    if (target === null || inJestCache(target)) return;
     if (roots.some((dir) => target === dir || target.startsWith(dir + sep))) {
       insideWrites.push(target);
       return;

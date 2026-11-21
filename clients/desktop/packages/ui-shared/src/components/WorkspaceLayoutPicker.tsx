@@ -187,7 +187,6 @@ export function WorkspaceLayoutPicker({
             <DropdownMenuControl
               key={value}
               type="button"
-              aria-label={value}
               choice={{ type: 'radio', checked: mode === value }}
               disabled={disabled}
               data-testid={`workspace-layout-mode-${value}`}

@@ -5,6 +5,7 @@ import {
   type ProviderAuthFailureKind,
 } from './telemetry-error-details';
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
+import { USAGE_RESUME_FRESHNESS_MS } from '@canopy/desktop-shared/lib/usage-limit-resume-outlook';
 import type { OpenCodeUpdateDiagnostics } from '@canopy/desktop-shared/node/opencode/update-diagnostics';
 import type { DelegationMetric } from '../agents/delegation/metrics';
 import {
@@ -383,7 +384,6 @@ const TRANSCRIPT_DELEGATION_MAX_BYTES = 4 * 1024 * 1024;
 const TRANSCRIPT_DELEGATION_STATUS_RESERVATION_BYTES = 256 * 1024;
 const CHAT_TURN_OPERATION_NAME = 'canopy.chat_turn';
 const AGENT_TASK_OPERATION_NAME = 'canopy.agent_task';
-const CLAUDE_INTERACTIVE_USAGE_FRESHNESS_MS = 30_000;
 const CLAUDE_BACKGROUND_USAGE_FRESHNESS_MS = 180_000;
 const CLAUDE_USAGE_REFRESH_DEBOUNCE_MS = 30_000;
 const CLAUDE_USAGE_REFRESH_MAX_WAIT_MS = 5 * 60_000;
@@ -406,7 +406,7 @@ function claudeUsageFreshnessMs(background: boolean): number {
     claudeE2EFreshnessOverrideMs() ??
     (background
       ? CLAUDE_BACKGROUND_USAGE_FRESHNESS_MS
-      : CLAUDE_INTERACTIVE_USAGE_FRESHNESS_MS)
+      : USAGE_RESUME_FRESHNESS_MS)
   );
 }
 
@@ -3854,6 +3854,18 @@ export class ObservabilityService {
   /** Current usage overview without copying the audit history. */
   getUsageOverview(): AgentUsageOverview {
     return this.buildUsageOverview();
+  }
+
+  nativeUsageForResume(
+    provider: MergedUsageRefreshProvider,
+  ): ProviderUsageSummary {
+    return this.usageProviders[provider];
+  }
+
+  nativeUsageResumeAuthDisagrees(
+    provider: MergedUsageRefreshProvider,
+  ): boolean {
+    return provider === 'claude' && this.claudeUsageAuthDisagreement;
   }
 
   loadSnapshot(): AgentObservabilitySnapshot {

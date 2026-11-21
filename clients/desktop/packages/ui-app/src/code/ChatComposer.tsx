@@ -1,6 +1,6 @@
 'use client';
 
-import { ComposerPanel } from '@canopy/ui-shared/components';
+import { ComposerPanel, useMediaQuery } from '@canopy/ui-shared/components';
 import { useSuggestionsClaimApi } from '../suggestions/SuggestionsProvider';
 
 import {
@@ -267,6 +267,7 @@ function ChatComposerContent({
     setEditorKey((key) => key + 1);
   }, [onSend, disabled, sendBlocked, restoreDraftOnReject]);
 
+  const isCoarsePointer = useMediaQuery('(pointer: coarse)');
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>): void => {
       // A disabled composer accepts no input at all — the editor is also
@@ -277,12 +278,15 @@ function ChatComposerContent({
         }
         return;
       }
-      if (event.key === 'Enter' && !event.shiftKey) {
+      // Enter that confirms an IME candidate belongs to the composition, and
+      // a phone keyboard has no Shift+Enter, so Enter adds a line on touch.
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Enter' && !event.shiftKey && !isCoarsePointer) {
         event.preventDefault();
         send();
       }
     },
-    [disabled, send],
+    [disabled, send, isCoarsePointer],
   );
 
   const draftText = useMemo(

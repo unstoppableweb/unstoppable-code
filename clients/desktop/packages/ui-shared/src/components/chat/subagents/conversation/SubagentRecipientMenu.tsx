@@ -84,6 +84,7 @@ export function SubagentRecipientMenu({
       placement="top-left"
       heightLimit={280}
       interaction="menu"
+      aria-label={SUBAGENT_COMPOSER_TO_MENU_LABEL}
       data-testid="subagent-composer-to-menu"
     >
       <div className="flex flex-col py-1">

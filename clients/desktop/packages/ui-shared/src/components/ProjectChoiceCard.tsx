@@ -1,4 +1,6 @@
 import { ControlButton } from './Button';
+import { HAIRLINE_INSET_RING_CLASS } from '../lib/row-chips';
+import { SURFACE_SELECTED_CLASS } from './Surface';
 import type { JSX, ReactNode } from 'react';
 
 export type ProjectChoiceCardProps = {
@@ -75,7 +77,7 @@ export function ProjectDestinationCard({
   return (
     <div
       data-testid={testId}
-      className={`flex flex-col items-start rounded-md border ${active ? 'bg-subtle ring-1 ring-line-accent' : 'focus-within:ring-1 focus-within:ring-line-accent/40'}`}
+      className={`flex flex-col items-start rounded-md ${active ? SURFACE_SELECTED_CLASS : `${HAIRLINE_INSET_RING_CLASS} ring-line-base focus-within:ring-line-accent`}`}
     >
       {children}
     </div>

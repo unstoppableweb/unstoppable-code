@@ -322,6 +322,9 @@ function mergeSuffixedPersistedMessages(
           ? { updatedAtMs: Math.max(...updatedCandidates) }
           : {}),
         ...(parts.length > 0 ? { parts } : {}),
+        ...(message.hasAgentActivity === true
+          ? { hasAgentActivity: true }
+          : {}),
       });
       continue;
     }

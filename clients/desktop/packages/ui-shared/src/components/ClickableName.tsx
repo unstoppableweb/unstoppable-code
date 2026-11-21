@@ -33,9 +33,12 @@ export function ClickableName({
         {name}
       </span>
       {description && (
-        <p className="text-xs fg-secondary mt-0.5 line-clamp-1">
+        <span
+          className="block text-xs fg-secondary mt-0.5 line-clamp-1"
+          title={description}
+        >
           {description}
-        </p>
+        </span>
       )}
     </ControlButton>
   );

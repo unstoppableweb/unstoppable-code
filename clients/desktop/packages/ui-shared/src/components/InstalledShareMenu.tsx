@@ -55,6 +55,11 @@ export interface InstalledShareMenuProps {
   readonly busy?: boolean;
   readonly manageLabel?: string;
   readonly uninstallErrorMessage?: string;
+  /**
+   * The host already recorded why `onUninstall` failed, so the confirm shows
+   * its message and records nothing.
+   */
+  readonly uninstallErrorRecorded?: boolean;
   /** `above` rises from a footer row; `below` drops from a top row. */
   readonly placement?: 'above' | 'below';
   readonly testIds?: Partial<InstalledShareMenuTestIds>;
@@ -69,6 +74,7 @@ export function InstalledShareMenu({
   busy = false,
   manageLabel = 'Manage',
   uninstallErrorMessage = 'Could not uninstall. Try again.',
+  uninstallErrorRecorded = false,
   placement = 'below',
   testIds,
 }: InstalledShareMenuProps): JSX.Element {
@@ -147,6 +153,9 @@ export function InstalledShareMenu({
       </FloatingMenu>
       {confirming && onUninstall && (
         <UninstallConfirmDialog
+          {...(uninstallErrorRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'uninstall-installed-share' })}
           title={uninstallTitle}
           message="This removes your installed copy. You can install it again later."
           dataTestId={ids.uninstallDialog}

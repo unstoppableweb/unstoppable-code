@@ -42,7 +42,7 @@ const ROW_GLYPH_CHECKED_CLASS =
 // The question reads as the plan prompt's title, wrapping instead of
 // truncating since a question can run several lines.
 const QUESTION_PROSE_CLASS =
-  'prose prose-sm leading-5 prose-p:leading-5 [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-a:fg-accent prose-strong:fg-primary';
+  'prose prose-sm leading-5 prose-p:leading-5 [--tw-prose-body:var(--fg-primary)] [--tw-prose-invert-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-p:my-0 prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-a:fg-accent prose-strong:fg-primary';
 
 export interface QuestionPromptProps {
   readonly prompt: QuestionPromptState;

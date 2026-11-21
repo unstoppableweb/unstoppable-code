@@ -72,6 +72,53 @@ export interface ChatAgentSentInfo {
   projectLabel: string;
 }
 
+/**
+ * What the user chose for a send while a turn runs: `steer` adds the message
+ * to the running turn, `queue` waits behind it. Omission means `queue`
+ * (CAN-7349).
+ */
+export const SEND_WHILE_RUNNING_CHOICES = ['steer', 'queue'] as const;
+export type SendWhileRunning = (typeof SEND_WHILE_RUNNING_CHOICES)[number];
+
+export function isSendWhileRunning(value: unknown): value is SendWhileRunning {
+  return value === 'steer' || value === 'queue';
+}
+
+/** The longest `steerTurnId` a host accepts; hosts and clients share it. */
+export const STEER_TURN_ID_MAX_LENGTH = 512;
+
+export function isSteerTurnId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= STEER_TURN_ID_MAX_LENGTH
+  );
+}
+
+/** Default a validated optional choice, not an untrusted wire value. */
+export function resolveSendWhileRunning(
+  value?: SendWhileRunning,
+): SendWhileRunning {
+  return value === undefined ? 'queue' : value;
+}
+
+/** Why a running turn cannot take a steer right now, when the host can say. */
+export const CHAT_STEER_BLOCKED_REASONS = [
+  'settings_change',
+  'steer_unavailable',
+] as const;
+export type ChatSteerBlockedReason =
+  (typeof CHAT_STEER_BLOCKED_REASONS)[number];
+
+export function isChatSteerBlockedReason(
+  value: unknown,
+): value is ChatSteerBlockedReason {
+  return (
+    typeof value === 'string' &&
+    CHAT_STEER_BLOCKED_REASONS.some((reason) => reason === value)
+  );
+}
+
 /** Serializable delivery facts. Admission is not model receipt or execution. */
 export interface ChatSteeringCapabilities {
   provider: 'claude' | 'codex';
@@ -79,6 +126,8 @@ export interface ChatSteeringCapabilities {
   steer: boolean;
   withdraw: boolean;
   interrupt: boolean;
+  /** Why `steer` is false right now, when the host can say. */
+  steerBlockedReason?: ChatSteerBlockedReason;
 }
 
 /** Why an attempt ended without confirmation. */
@@ -609,5 +658,8 @@ export function parseSteeringCapabilities(
     steer: data.steer,
     withdraw: data.withdraw,
     interrupt: data.interrupt,
+    ...(isChatSteerBlockedReason(data.steerBlockedReason)
+      ? { steerBlockedReason: data.steerBlockedReason }
+      : {}),
   };
 }

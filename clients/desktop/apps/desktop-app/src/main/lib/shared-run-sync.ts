@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { assertShareScopeTarget } from './share-scope-target';
 import type {
   ShareRunEligibilityRequest,
@@ -24,6 +23,7 @@ import {
 } from '../runs/canopy-server-client';
 import {
   registerSharedRunForComments,
+  sharedRunIdempotencyKey,
   unregisterSharedRunForComments,
 } from './shared-run-comments-registry';
 import { rollupFromEntries } from './shared-run-rollup';
@@ -386,37 +386,6 @@ async function resolveShareTitle(
   }
 
   return latest.label || 'Shared run';
-}
-
-// Fixed namespace UUID for Canopy shared-run idempotency keys (CAN-395).
-const SHARED_RUN_NAMESPACE_UUID = '6f8d3a1e-2b7c-4c9a-9f1e-5a2b3c4d5e6f';
-
-/**
- * Deterministic RFC 4122 UUIDv5 for a shared run, derived from the session
- * identity `(projectId, worktreeId, chatId)`. Re-sharing the same session (or
- * retrying after a timeout) reproduces the same key so the server-side
- * `(createdByUserId, clientLocalRunId)` idempotency upsert refreshes the
- * existing grant instead of creating duplicates.
- */
-function sharedRunIdempotencyKey(
-  projectId: string,
-  worktreeId: string,
-  chatId: string,
-): string {
-  const name = `${projectId}\n${worktreeId}\n${chatId}`;
-  const namespaceBytes = Buffer.from(
-    SHARED_RUN_NAMESPACE_UUID.replace(/-/g, ''),
-    'hex',
-  );
-  const digest = createHash('sha1')
-    .update(namespaceBytes)
-    .update(name, 'utf8')
-    .digest();
-  const bytes = digest.subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50; // version 5
-  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
-  const hex = bytes.toString('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /**

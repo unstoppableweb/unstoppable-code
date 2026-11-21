@@ -7,10 +7,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { drainCurrentSessionEvents } from '../agents/session-event-router';
-import {
-  resolvePersistedChatExecutionHarness,
-  IPC_CHANNELS,
-} from '@canopy/desktop-shared/types';
+import { resolvePersistedChatExecutionHarness } from '@canopy/desktop-shared/types';
 import {
   sanitizeSystemInstructionText,
   withWorktreeRelocationInstruction,
@@ -44,7 +41,6 @@ import {
   forkOpenCodeSessionByIdViaOneShot,
   discardUnpublishedOpenCodeFork,
 } from '../opencode/fork-session';
-import { sendToWindow } from '../lib/window-send';
 import {
   getSessionInterfaceToolRegistry,
   interfaceToolAudience,
@@ -388,20 +384,12 @@ export async function startSplitAgent(
           completeBranchedProviderFork();
         },
         onGitReady: (event) =>
-          sendToWindow(
-            runtime.getWindow(),
-            IPC_CHANNELS.worktreeGitReady,
-            event,
-          ),
+          runtime.interfacePort.publishWorktreeGitReady(event),
         onGitFailed: (event) => {
           if (branchedProviderFork) {
             branchedProviderForkError ??= new Error(event.error);
           }
-          sendToWindow(
-            runtime.getWindow(),
-            IPC_CHANNELS.worktreeGitFailed,
-            event,
-          );
+          runtime.interfacePort.publishWorktreeGitFailed(event);
         },
         onNeedsRepair: (event) => {
           if (branchedProviderFork) {
@@ -412,11 +400,7 @@ export async function startSplitAgent(
             // ends this wait.
             completeBranchedProviderFork();
           }
-          sendToWindow(
-            runtime.getWindow(),
-            IPC_CHANNELS.worktreeNeedsRepair,
-            event,
-          );
+          runtime.interfacePort.publishWorktreeNeedsRepair(event);
         },
       };
       const created =
@@ -444,13 +428,9 @@ export async function startSplitAgent(
         destinationRoot,
         { sourceBranch },
       );
-      sendToWindow(
-        runtime.getWindow(),
-        IPC_CHANNELS.workspaceWorktreesUpdated,
-        {
-          workspaceId: destinationProjectId,
-          worktrees: await readWorkspaceWorktrees(destinationProjectId),
-        },
+      runtime.interfacePort.publishWorkspaceWorktrees(
+        destinationProjectId,
+        await readWorkspaceWorktrees(destinationProjectId),
       );
     } else {
       const label = source.description?.trim() || source.title.trim() || 'Chat';

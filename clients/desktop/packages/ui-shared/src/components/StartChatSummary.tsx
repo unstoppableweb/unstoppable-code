@@ -1,4 +1,5 @@
 import { Stack } from './Stack';
+import { Surface } from './Surface';
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
@@ -26,11 +27,13 @@ export function StartChatSummary({
   actions,
 }: StartChatSummaryProps): JSX.Element {
   return (
-    <section
-      className="rounded-xl border bg-card p-4 text-s"
+    <Surface
+      as="section"
+      variant="card"
+      padding="default"
       data-testid="start-chat-summary"
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-3 text-s">
         <div className="min-w-0 flex flex-col gap-2">
           <Stack gap="tight">
             <p
@@ -78,6 +81,6 @@ export function StartChatSummary({
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         ) : null}
       </div>
-    </section>
+    </Surface>
   );
 }

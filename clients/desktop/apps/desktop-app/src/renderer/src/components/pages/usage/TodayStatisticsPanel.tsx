@@ -43,12 +43,14 @@ const DETAIL_MODES: readonly SegmentedControlOption<DetailMode>[] = [
   { value: 'pipelines', label: 'Workflows' },
 ];
 
+// Chart series take the categorical chart tokens in order, in the donut's
+// order; the stat tiles and detail bars reuse each series' color.
 const SEGMENT_COLORS = {
-  chats: 'var(--fg-accent)',
-  prs: 'var(--fg-success)',
-  pipelines: 'var(--fg-warning)',
-  tools: 'var(--bg-accent-subtle)',
-  tokens: 'var(--fg-info)',
+  chats: 'var(--chart-categorical-1)',
+  prs: 'var(--chart-categorical-2)',
+  pipelines: 'var(--chart-categorical-3)',
+  tools: 'var(--chart-categorical-4)',
+  tokens: 'var(--chart-categorical-5)',
 } as const;
 
 // Defensive upper bound: with limit=500 per page, this caps the loop at
@@ -57,10 +59,10 @@ const SEGMENT_COLORS = {
 const MAX_HISTORY_PAGES = 50;
 
 const DETAIL_MODE_COLORS: Record<DetailMode, string> = {
-  repos: 'var(--fg-success)',
-  providers: 'var(--fg-accent)',
-  tools: 'var(--bg-accent-subtle)',
-  pipelines: 'var(--fg-warning)',
+  repos: SEGMENT_COLORS.prs,
+  providers: SEGMENT_COLORS.chats,
+  tools: SEGMENT_COLORS.tools,
+  pipelines: SEGMENT_COLORS.pipelines,
 };
 
 function startOfToday(): Date {

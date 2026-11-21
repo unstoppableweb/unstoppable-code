@@ -1155,49 +1155,78 @@ describe('installs from the curated catalog and shares', () => {
     };
     // Stage A installs each pipeline through core.pipeline.definition.import,
     // whose packaged remote writes the files and the document. A run starts
-    // beside every file the install moves into place.
+    // beside every file the install moves into place, through the gate every
+    // run start passes first (CAN-7359): while the install is live it waits,
+    // and it loads the workflow only once the gate lets it.
+    const intents = await import('../../pipelines/pipeline-install-intents');
     const realMove = pipelineAssetEnvironment.moveAssetFile;
-    const observed: Array<{ at: string; workflow: string; notes: string }> = [];
+    const observed: Array<{ at: string; pending: boolean }> = [];
+    const gated: Array<
+      Promise<{ at: string; outcome: string; workflow: string; notes: string }>
+    > = [];
+    const gatedStart = async (at: string, id: string): Promise<void> => {
+      let settled = false;
+      gated.push(
+        intents.whenPipelineDefinitionRecovered(id).then((outcome) => {
+          settled = true;
+          return { at, outcome, ...runStart(id, { v1, v3 }) };
+        }),
+      );
+      for (let turn = 0; turn < 50 && !settled; turn += 1)
+        await new Promise((resolve) => setImmediate(resolve));
+      observed.push({ at, pending: !settled });
+    };
     const move = jest
       .spyOn(pipelineAssetEnvironment, 'moveAssetFile')
       .mockImplementation(async (id, from, to) => {
-        observed.push({ at: 'before move', ...runStart(id, { v1, v3 }) });
+        await gatedStart('before move', id);
         await realMove(id, from, to);
-        observed.push({ at: 'after move', ...runStart(id, { v1, v3 }) });
+        await gatedStart('after move', id);
       });
     const created: string[] = [];
     try {
       const { entry, worker } = installedIds(await stageA(v1));
       created.push(entry, worker);
-      const createdRuns = observed.splice(0);
+      const createdStarts = observed.splice(0);
+      const createdRuns = await Promise.all(gated.splice(0));
       const installedRun = runStart(entry, { v1, v3 });
 
       await stageA(v3, { entry, worker, from: v1 });
-      const updateRuns = observed.splice(0);
+      const updateStarts = observed.splice(0);
+      const updateRuns = await Promise.all(gated.splice(0));
       const updatedRun = runStart(entry, { v1, v3 });
 
       expect({
-        // A new workflow has no document until its file is in place.
+        // A start during the install waits for it, so no run sees the
+        // workflow with only some of its files: not the new document
+        // without its file, nor the old document with the new file.
+        createdStarts,
         createdRuns,
         installedRun,
-        // An update keeps the old document until its replaced file is in
-        // place, so no run sees the new workflow with the old file. A run in
-        // between can see the old document with the new file (CAN-7359).
-        updateNewWorkflowWithoutItsFile: updateRuns.filter(
-          (run) => run.workflow === 'v3' && run.notes !== 'v3',
+        updateMixed: updateRuns.filter(
+          (run) => (run.workflow === 'v3') !== (run.notes === 'v3'),
         ),
+        updateStarts,
         updateRuns,
         updatedRun,
       }).toEqual({
+        createdStarts: [
+          { at: 'before move', pending: true },
+          { at: 'after move', pending: true },
+        ],
         createdRuns: [
-          { at: 'before move', workflow: 'absent', notes: 'absent' },
-          { at: 'after move', workflow: 'absent', notes: 'v1' },
+          { at: 'before move', outcome: 'ready', workflow: 'v1', notes: 'v1' },
+          { at: 'after move', outcome: 'ready', workflow: 'v1', notes: 'v1' },
         ],
         installedRun: { workflow: 'v1', notes: 'v1' },
-        updateNewWorkflowWithoutItsFile: [],
+        updateMixed: [],
+        updateStarts: [
+          { at: 'before move', pending: true },
+          { at: 'after move', pending: true },
+        ],
         updateRuns: [
-          { at: 'before move', workflow: 'v1', notes: 'v1' },
-          { at: 'after move', workflow: 'v1', notes: 'v3' },
+          { at: 'before move', outcome: 'ready', workflow: 'v3', notes: 'v3' },
+          { at: 'after move', outcome: 'ready', workflow: 'v3', notes: 'v3' },
         ],
         updatedRun: { workflow: 'v3', notes: 'v3' },
       });
@@ -1289,6 +1318,79 @@ describe('installs from the curated catalog and shares', () => {
       });
     } finally {
       setDesktopCanopyRuntime(runtime);
+      for (const id of [entry, worker]) if (id) deleteStoredPipeline(id);
+    }
+  });
+
+  it('CAN-7364 a kept workflow edited between the check and the file writes is refused with its files put back and no new state', async () => {
+    const { pipelineAssetEnvironment, readPipelineAssetsManifest } =
+      await import('../../pipelines/pipeline-asset-install');
+    const { isPipelineDefinitionClaimed, pipelineDefinitionRecoveryRefusal } =
+      await import('../../pipelines/pipeline-install-intents');
+    const { v1, v4 } = world.automationPackages;
+    const { entry, worker } = installedIds(await automationStageA(v1));
+    const notesPath = join(
+      getPipelineAssetsDir(entry),
+      'specialists',
+      'notes.md',
+    );
+    const before = {
+      notes: readFileSync(notesPath, 'utf8'),
+      assets: await readPipelineAssetsManifest(entry),
+    };
+    // v4 keeps both pipelines' YAML, so Stage A only links them and replaces
+    // the entry's file. The person edits the entry after the install checked
+    // it, as the install writes its first file.
+    const edited = parsePipelineText(GOLDEN_USER_PIPELINE_YAML);
+    let editedText: string | undefined;
+    const realWrite = pipelineAssetEnvironment.writeAssetFile;
+    const write = jest
+      .spyOn(pipelineAssetEnvironment, 'writeAssetFile')
+      .mockImplementation(async (id, relativePath, bytes, mode) => {
+        if (id === entry && editedText === undefined) {
+          saveStoredPipeline({
+            id: entry,
+            name: edited.name,
+            description: '',
+            icon: '',
+            content: edited,
+          });
+          editedText = storeModule.getStoredPipelineText(entry).data;
+        }
+        await realWrite(id, relativePath, bytes, mode);
+      });
+    try {
+      const refused = await automationStageA(v4, {
+        entry,
+        worker,
+        from: v1,
+      }).then(
+        () => 'installed',
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      );
+      expect({
+        edited: editedText !== undefined,
+        refusedAsEdited: refused.includes(
+          'could not be saved exactly as shared. Try installing again.',
+        ),
+        documentIsTheEdit:
+          storeModule.getStoredPipelineText(entry).data === editedText,
+        notes: readFileSync(notesPath, 'utf8'),
+        assets: await readPipelineAssetsManifest(entry),
+        claimed: isPipelineDefinitionClaimed(entry),
+        refusal: await pipelineDefinitionRecoveryRefusal(entry),
+      }).toEqual({
+        edited: true,
+        refusedAsEdited: true,
+        documentIsTheEdit: true,
+        notes: before.notes,
+        assets: before.assets,
+        claimed: false,
+        refusal: null,
+      });
+    } finally {
+      write.mockRestore();
       for (const id of [entry, worker]) if (id) deleteStoredPipeline(id);
     }
   });

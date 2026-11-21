@@ -62,6 +62,15 @@ const WORKSPACE_SETTINGS: RemoteCapabilityRequirement = {
   capability: 'workspaceSettings',
   oneOf: ['full'],
 };
+/**
+ * An older host without the narrow tips and suggestions reads (CAN-7434):
+ * only a client served the full preferences falls back to `preferences:load`.
+ */
+const OLDER_HOST_PREFERENCES_LOAD: RemoteOperationBranch = {
+  when: 'an older host without the narrow read',
+  requires: [{ capability: 'settingsScope', oneOf: ['full'] }],
+  invoke: [C.preferencesLoad],
+};
 const EXECUTE_PIPELINES: RemoteCapabilityRequirement = {
   capability: 'pipelines',
   oneOf: ['execute'],
@@ -92,6 +101,15 @@ const CHAT_ATTACHMENTS_UPLOADED: RemoteOperationBranch = {
   requires: ['chatAttachments'],
   local: 'answer',
 };
+/**
+ * The deferred plugin policy (`deferredToolsAllowed`) patched with the plugin
+ * selections. The base selection stays usable without the capability.
+ */
+const DEFERRED_PLUGIN_POLICY: RemoteOperationBranch = {
+  when: 'the deferred plugin policy patched with the selections',
+  requires: ['deferredPluginPolicy'],
+  invoke: [C.chatCommand],
+};
 /** The Orchestrator's sentinel workspace on the computer. */
 const ORCHESTRATOR_ENTRY: RemoteOperationBranch = {
   when: 'a chat whose Work Entry the caller did not name: found among the Orchestrator Work Entries',
@@ -111,6 +129,12 @@ const ORCHESTRATOR_QUESTION_PUSHES: readonly RemoteIpcChannel[] = [
 ];
 
 export const REMOTE_QUERY_CHANNELS = {
+  // A failed turn's Retry, checked against fresh reads of the chat's runtime
+  // and its newest transcript pages (paged back to a fixed bound).
+  'chat.checkFailedTurnRetry': {
+    requires: ['chatFailureRetry'],
+    invoke: [C.chatGetState, C.chatGetTranscriptPage],
+  },
   'worktree.baseBranches': {
     requires: ['worktreeBaseBranch'],
     invoke: [C.homeListBranchTargets],
@@ -158,6 +182,11 @@ export const REMOTE_QUERY_CHANNELS = {
   'file.roots': { invoke: [C.fileTreeRoots] },
   'file.directory': { invoke: [C.fileTreeDirectory] },
   'chat.history': { invoke: [C.chatGetTranscriptPage] },
+  // One byte range of a chat visual, checked on the computer (CAN-7432).
+  'chat.readVisual': {
+    requires: ['chatVisuals'],
+    invoke: [C.chatReadVisual],
+  },
   'plan.get': { invoke: [C.trackedPlansGet] },
   'chat.getTabSettings': { local: 'answer' },
   // The cloud slash inventory (CAN-6111); a computer has none to serve.
@@ -237,9 +266,14 @@ export const REMOTE_QUERY_CHANNELS = {
   },
   'onboardingTips.get': {
     requires: ['onboardingTips'],
-    invoke: [C.preferencesLoad],
+    invoke: [C.preferencesLoadOnboardingTips],
+    branches: [OLDER_HOST_PREFERENCES_LOAD],
   },
-  'suggestions.get': { requires: ['suggestions'], invoke: [C.preferencesLoad] },
+  'suggestions.get': {
+    requires: ['suggestions'],
+    invoke: [C.preferencesLoadSuggestions],
+    branches: [OLDER_HOST_PREFERENCES_LOAD],
+  },
   'claudeMods.get': {
     requires: ['claudeModAdmission'],
     invoke: [C.claudeModsGet],
@@ -275,6 +309,18 @@ export const REMOTE_QUERY_CHANNELS = {
     requires: ['archivedWorkEntries'],
     invoke: [C.workEntriesListArchived],
   },
+  // The computer's Add project clones, in memory (CAN-7433).
+  'cloneJobs.list': { requires: ['cloneJobs'], invoke: [C.cloneJobsList] },
+  // The curated quota projection: no audit rows (CAN-7433).
+  'providerUsage.get': {
+    requires: ['providerQuotas'],
+    invoke: [C.providerUsageLoad],
+  },
+  // A remote URL against the computer's cached catalog; the host accepts
+  // exactly `{ remoteUrl }` from a browser (CAN-7433).
+  'orgProjects.findRepositoryOwner': {
+    invoke: [C.orgProjectsFindRepositoryOwner],
+  },
 } as const satisfies OperationTable;
 
 export const REMOTE_COMMAND_CHANNELS = {
@@ -284,7 +330,12 @@ export const REMOTE_COMMAND_CHANNELS = {
   },
   'providerUsage.refresh': {
     requires: ['providerQuotas'],
-    invoke: [C.observabilityRefreshUsage],
+    invoke: [C.providerUsageRefresh],
+  },
+  'cloneJobs.cancel': { requires: ['cloneJobs'], invoke: [C.cloneJobsCancel] },
+  'cloneJobs.dismiss': {
+    requires: ['cloneJobs'],
+    invoke: [C.cloneJobsDismiss],
   },
   'repoRules.apply': {
     requires: ['repoRulesImport'],
@@ -381,6 +432,14 @@ export const REMOTE_COMMAND_CHANNELS = {
   },
   'workspace.update': {
     invoke: [C.workspaceUpdateMetadata, C.desktopSessionSnapshotInvalidate],
+  },
+  // A code project's deletion retention days (CAN-7438).
+  'workspace.setArchiveRetention': {
+    requires: ['workspaceArchiveRetention'],
+    invoke: [
+      C.workspaceSetArchiveRetention,
+      C.desktopSessionSnapshotInvalidate,
+    ],
   },
   'workspace.delete': {
     requires: [
@@ -609,12 +668,41 @@ export const REMOTE_COMMAND_CHANNELS = {
     ],
   },
   'chat.cancelTurn': { invoke: [C.chatCancel] },
+  // A Claude/Codex/Ollama plan exit approved as desktop does: the chat
+  // decision (`chat.patch_tab_settings`), the tracked plan's review, then the
+  // implementation send. An early refusal reads only.
+  'chat.resolvePlanExit': {
+    requires: ['planProposalReview'],
+    invoke: [C.chatGetState],
+    branches: [
+      {
+        when: 'the review is pending and matches the approval',
+        invoke: [C.chatCommand, C.trackedPlansUpdate],
+      },
+    ],
+  },
+  // The failed turn re-sent (or `Continue`d) once the checks pass again.
+  'chat.retryFailedTurn': {
+    requires: ['chatFailureRetry'],
+    invoke: [C.chatGetState, C.chatGetTranscriptPage],
+    branches: [
+      {
+        when: 'Retry is available: the turn is re-sent',
+        invoke: [C.chatCommand],
+      },
+    ],
+  },
   'chat.createTab': {
     invoke: [C.chatCommand],
     branches: [
       {
         ...MODEL_PROVIDER,
         when: 'an initial model without its provider: read from the model registry',
+      },
+      {
+        when: 'tab settings (model, provider, plugins) committed at create',
+        requires: ['chatCreateTabSettings'],
+        invoke: [C.chatCommand],
       },
     ],
   },
@@ -641,7 +729,10 @@ export const REMOTE_COMMAND_CHANNELS = {
   },
   'chat.setPlanMode': { invoke: [C.chatCommand] },
   'chat.setFastMode': { invoke: [C.chatCommand] },
-  'chat.setPluginSelections': { invoke: [C.chatCommand] },
+  'chat.setPluginSelections': {
+    invoke: [C.chatCommand],
+    branches: [DEFERRED_PLUGIN_POLICY],
+  },
   'chat.answerQuestion': { invoke: [C.chatCommand] },
   'chat.dismissQuestion': { invoke: [C.chatCommand] },
   'chat.markRead': {
@@ -680,11 +771,23 @@ export const REMOTE_COMMAND_CHANNELS = {
     ],
   },
   'standaloneChat.cancel': { invoke: [...STANDALONE_TARGET, C.chatCancel] },
+  // A locked archive of the chat's Work Entry (CAN-7438); restore stays on
+  // the computer's Archived and deleted list.
+  'standaloneChat.archive': {
+    requires: ['standaloneChatArchive'],
+    invoke: [
+      ...STANDALONE_TARGET,
+      C.workEntriesListArchived,
+      C.workEntriesDelete,
+      C.desktopSessionSnapshotInvalidate,
+    ],
+  },
   'standaloneChat.setModel': {
     invoke: [...STANDALONE_TARGET, C.modelRegistryGet, C.chatCommand],
   },
   'standaloneChat.setPluginSelections': {
     invoke: [...STANDALONE_TARGET, C.chatCommand],
+    branches: [DEFERRED_PLUGIN_POLICY],
   },
   // The Orchestrator: chats in the computer's Orchestrator Work Entries,
   // sent and stopped as mobile does; questions answered on the controller's
@@ -796,6 +899,10 @@ export const REMOTE_EVENT_CHANNELS = {
   'connection.status': { local: 'port' },
   'session.snapshot-stale': { listen: [C.desktopSessionSnapshotStale] },
   'chat.message': { listen: [C.chatEvent] },
+  'chat.transientRetry': {
+    requires: ['chatFailureRetry'],
+    listen: [C.chatEvent],
+  },
   'workspace-context.changed': { listen: [C.workspaceContextChanged] },
   'org-projects.changed': { listen: [C.orgProjectsChanged] },
   'org-projects.setup-progress': { listen: [C.orgProjectsSetupProgress] },
@@ -806,6 +913,10 @@ export const REMOTE_EVENT_CHANNELS = {
   'scriptActions.changed': {
     requires: ['scriptActions'],
     listen: [C.scriptActionsChanged],
+  },
+  'cloneJobs.changed': {
+    requires: ['cloneJobs'],
+    listen: [C.cloneJobsChanged],
   },
   // On the App Advisor surface: declared ready (so waiting questions are
   // delivered again), questions and their withdrawals listened to, and any
@@ -833,10 +944,23 @@ export const REMOTE_EVENT_CHANNELS = {
 
 /**
  * Optional `CanopyClient` members the adapter serves over the transport.
- * Port-owned members (settings, feedback, marketplace sources, transcript
- * reads, `openExternalUrl`) use no adapter channel.
+ * Port-owned members (settings, feedback, marketplace sources,
+ * `openExternalUrl`) use no adapter channel. Transcript reads stay port-owned
+ * on the desktop; a controller without that port reads delegate transcripts
+ * over the narrow `chat:read-delegation-*` channels (CAN-7432).
  */
 export const REMOTE_MEMBER_CHANNELS = {
+  transcripts: {
+    requires: ['delegationTranscriptReads'],
+    invoke: [C.chatReadDelegationPage, C.chatReadDelegationContent],
+    branches: [
+      {
+        when: 'a bounded block page of a delegate row',
+        requires: ['delegationBlockReads'],
+        invoke: [C.chatReadDelegationBlocks],
+      },
+    ],
+  },
   sharedMultiRepo: {
     requires: ['sharedMultiRepo'],
     invoke: [

@@ -15,10 +15,7 @@ import {
   type ReactNode,
 } from 'react';
 
-/**
- * The outer frame: `underline` for a page-level strip with a bottom border,
- * `segmented` for the pill-bordered view toggle.
- */
+/** The outer frame: `underline` for a page-level strip with a bottom border. */
 export type ScrollableTabStripFrame = ScrollableTabFrameVariant;
 
 interface ScrollableTabStripProps {

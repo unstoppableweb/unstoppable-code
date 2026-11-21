@@ -125,9 +125,10 @@ function accountProxyHarness(
 /**
  * Whether the proxy serves a provider's new work on this device, as main
  * routes it: AI Credits chosen over the proxy come first, then the proxy's
- * connection, routing, and local runtime.
+ * connection, routing, and local runtime. The usage refresh
+ * (`provider-usage-refresh.ts`) routes by the same rule.
  */
-function isRemoteControlProviderUsageServedByAccountProxy(
+export function isRemoteControlProviderUsageServedByAccountProxy(
   provider: RemoteControlProviderUsageProvider,
   source: RemoteControlProviderUsageAccountProxySource | undefined,
 ): source is RemoteControlProviderUsageAccountProxySource & {
@@ -259,7 +260,7 @@ export async function readRemoteControlProviderUsageAccountProxySource(): Promis
   try {
     status = await getAccountProxyStatus({ refresh: false });
   } catch (error: unknown) {
-    logMainProcessError('Portal provider usage proxy status failed', error);
+    logMainProcessError('Provider usage proxy status failed', error);
   }
   return {
     status,

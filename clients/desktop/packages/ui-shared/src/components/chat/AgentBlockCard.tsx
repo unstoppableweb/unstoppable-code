@@ -321,7 +321,7 @@ export function AgentBlockCard({
             {usageCells && (
               <div
                 data-testid="agent-block-usage-grid"
-                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs fg-secondary"
+                className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-b px-2.5 py-1.5 text-3xs tabular-nums fg-secondary"
               >
                 {usageCells}
               </div>

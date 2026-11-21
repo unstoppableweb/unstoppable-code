@@ -22,7 +22,8 @@ export interface DurableInstallClaim {
   readonly namespace:
     | 'pipeline_definitions'
     | 'pipeline_local_metadata'
-    | 'pipeline_data';
+    | 'pipeline_data'
+    | 'pipeline_install_intents';
   readonly writer: StorageWriterPrincipal;
   readonly module: string;
   readonly ownership?: readonly StorageOwnershipRow[];

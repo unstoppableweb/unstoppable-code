@@ -21,6 +21,7 @@ import {
   TableActionsCell,
   Tooltip,
   pageFilter,
+  useDataTableHideFrom,
 } from '@canopy/ui-shared/components';
 import {
   ChatIcon,
@@ -230,6 +231,37 @@ export function WorkflowsRunsToolbar({
   );
 }
 
+/**
+ * When a run started and how long it took, under its name while the table is
+ * too narrow for the Started and Duration columns (`showFrom="sm"`). It reads
+ * the table's breakpoints, so it renders inside the table.
+ */
+function WorkflowRunWhenLine({
+  row,
+  now,
+  locale,
+}: {
+  readonly row: WorkflowRunRow;
+  readonly now: number;
+  readonly locale: string | undefined;
+}): JSX.Element {
+  return (
+    <span
+      className={`truncate text-xs tabular-nums fg-tertiary ${useDataTableHideFrom('sm')}`}
+      data-testid="workflows-run-when"
+    >
+      {[
+        row.startedAt === undefined
+          ? ''
+          : formatRunStarted(row.startedAt, now, locale),
+        workflowRunDurationLabel(row),
+      ]
+        .filter((part) => part !== '')
+        .join(' · ')}
+    </span>
+  );
+}
+
 export interface WorkflowsRunsTableProps {
   /** Filtered and sorted by the host; drawn in this order. */
   readonly rows: readonly WorkflowRunRow[];
@@ -300,11 +332,22 @@ export function WorkflowsRunsTable({
 
   return (
     <div className="flex min-h-0 flex-col" data-testid="workflows-runs-table">
-      <DataTableFrame layout="fixed" caption="Workflow runs">
+      {/* Columns follow the table's own width, since the table also sits in
+          a half-width editor card. Workflow (12rem floor) and Actions (8rem)
+          always show: 20rem, the frame's minWidth. Each optional column
+          shows once the table has room for it on top of the ones before:
+          Started and Duration at 36rem (20 + 9 + 6 = 35), Kind at 42rem
+          (35 + 6 = 41), Started by at 48rem (41 + 7 = 48) and Where at 60rem
+          (48 + 12 = 60). Narrower than 36rem, the Workflow cell says when it
+          started. */}
+      <DataTableFrame
+        layout="fixed"
+        breakpoints="container"
+        minWidth="20rem"
+        caption="Workflow runs"
+      >
         <DataTableHead>
-          <DataTableHeaderCell>Workflow</DataTableHeaderCell>
-          {/* A phone keeps the workflow and its actions; the Workflow cell
-              says when it started. */}
+          <DataTableHeaderCell minWidth="12rem">Workflow</DataTableHeaderCell>
           {showKind && (
             <DataTableHeaderCell width="6rem" showFrom="md">
               Kind
@@ -365,7 +408,7 @@ export function WorkflowsRunsTable({
                         >
                           {row.name}
                         </span>
-                        {/* The Where column is hidden in narrow windows; a
+                        {/* The Where column is hidden in a narrow table; a
                             cloud run still says where it ran. */}
                         {row.location === 'cloud' ? (
                           <span
@@ -384,19 +427,11 @@ export function WorkflowsRunsTable({
                           {detail}
                         </span>
                       ) : null}
-                      <span
-                        className="truncate text-xs tabular-nums fg-tertiary sm:hidden"
-                        data-testid="workflows-run-when"
-                      >
-                        {[
-                          row.startedAt === undefined
-                            ? ''
-                            : formatRunStarted(row.startedAt, now, locale),
-                          workflowRunDurationLabel(row),
-                        ]
-                          .filter((part) => part !== '')
-                          .join(' · ')}
-                      </span>
+                      <WorkflowRunWhenLine
+                        row={row}
+                        now={now}
+                        locale={locale}
+                      />
                       {expanded && row.output !== undefined ? (
                         <div className="pt-1 empty:hidden">
                           <Surface

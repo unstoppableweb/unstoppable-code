@@ -385,6 +385,10 @@ export {
   templateInstallSkillSecretMessage,
   collectionSkillSecretMessage,
   packagedSkillSecretMessage,
+  pluginSecretMessage,
+  packageFileNameSecretMessage,
+  packageFileUncheckedMessage,
+  type PackageFileOwner,
   type SharedSkillFile,
   type SharedSkillSecretFinding,
 } from './secret-scan';

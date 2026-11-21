@@ -202,9 +202,10 @@ export function createWebCoreAttachmentSender(
 /**
  * A sent keyed write whose answer never came: lost and never retried, or one
  * the client asks to retry under the same key, as its own deadline after
- * dispatch does. It may have been stored. Any error the web core answered,
- * a running rebuild's refusal before any post included, is a refusal
- * (CAN-7196).
+ * dispatch does, or an internal failure with no code, such as an answer the
+ * client couldn't read (CAN-7470). It may have been stored. Any other error
+ * the web core answered, a running rebuild's refusal before any post
+ * included, is a refusal (CAN-7196).
  */
 export function isUnconfirmedKeyedWrite(error: unknown): boolean {
   return (

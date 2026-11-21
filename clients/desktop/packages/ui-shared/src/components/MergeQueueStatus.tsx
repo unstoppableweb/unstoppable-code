@@ -29,6 +29,7 @@ import {
 } from '../lib/merge-queue-display';
 import { ControlButton, Button } from './Button';
 import { FloatingMenu } from './FloatingMenu';
+import { Notice } from './Notice';
 import { RunSpinner } from './RunSpinner';
 import { Stack } from './Stack';
 
@@ -195,7 +196,7 @@ function labelParts(label: MergeQueueLabel): LabelParts {
         text: `${label.count} queued`,
         position: null,
         remainingSeconds: label.remainingSeconds,
-        accessibleName: `${label.count} pull requests in merge queues${
+        accessibleName: `${label.count} queued: ${label.count} pull requests in merge queues${
           label.remainingSeconds === null
             ? ''
             : `, all merged in about ${formatEstimateMinutes(label.remainingSeconds)}`
@@ -346,7 +347,10 @@ function QueueRow({
         {entry.position}
       </span>
       <span className="min-w-0">
-        <span className="block truncate text-xs fg-primary">
+        <span
+          className="block truncate text-xs fg-primary"
+          title={entry.title || `#${entry.number}`}
+        >
           {entry.title || `#${entry.number}`}
         </span>
         <span className="block truncate text-2xs fg-tertiary">
@@ -403,6 +407,7 @@ function QueueList({
   if (list.status === 'loading') {
     return (
       <div
+        role="status"
         className="flex h-24 items-center px-2 text-xs fg-tertiary"
         data-testid="merge-queue-popover-loading"
       >
@@ -412,12 +417,15 @@ function QueueList({
   }
   if (list.status === 'error') {
     return (
-      <div
-        className="px-2 py-3 text-xs fg-secondary"
+      <Notice
+        intent="destructive"
+        shape="menu"
+        surface="none"
+        errorSource="merge-queue-popover"
         data-testid="merge-queue-popover-error"
       >
         Couldn't load the queue.
-      </div>
+      </Notice>
     );
   }
   if (list.entries.length === 0) {
@@ -585,7 +593,7 @@ function SingleQueue({
         <Stack gap="item">
           <Stack gap="inline">
             <div className="flex items-center justify-between gap-3 text-2xs fg-secondary">
-              <span className="min-w-0 truncate">
+              <span className="min-w-0 truncate" title={section.baseBranch}>
                 Merge queue <Separator />{' '}
                 <span className="font-mono fg-primary">
                   {section.baseBranch}
@@ -605,7 +613,7 @@ function SingleQueue({
               />
               {note !== null && (
                 <p
-                  className="mt-0.5 text-xs fg-secondary"
+                  className="mt-0.5 text-xs text-pretty fg-secondary"
                   data-testid="merge-queue-popover-testing-note"
                 >
                   {note}
@@ -657,7 +665,7 @@ function SeveralQueues({
                 All merged in about{' '}
                 {formatEstimateMinutes(latest.remainingSeconds)}
               </div>
-              <div className="mt-0.5 text-xs tabular-nums fg-secondary">
+              <div className="mt-0.5 text-xs text-pretty tabular-nums fg-secondary">
                 around {formatEstimateClock(latest.remainingSeconds, now)}, when
                 the {latest.repoName} pull request lands
               </div>
@@ -665,14 +673,14 @@ function SeveralQueues({
           )}
         </Stack>
       </div>
-      <div className="max-h-105 overflow-y-auto">
+      <div className="-mx-1 max-h-105 overflow-y-auto">
         {sections.map((section) => {
           const step = mergeQueueStep(section.phase);
           return (
             <section
               key={section.key}
               aria-label={`${section.repoName} merge queue`}
-              className="-mx-1 border-t border-line-base px-1 pb-1"
+              className="border-t border-line-base px-1 pb-1"
               data-testid="merge-queue-popover-section"
             >
               <div className="flex items-center justify-between gap-3 px-2 pt-2.5 pb-1 text-xs">

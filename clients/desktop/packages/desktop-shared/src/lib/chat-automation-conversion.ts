@@ -517,6 +517,44 @@ function entryTitle(name: string): string {
   );
 }
 
+/**
+ * A converted Orchestrator prompt renamed from one of `previousNames` (the
+ * names it was saved under), with its create step's title following the new
+ * name (CAN-5782). Only a title that still reads as one of those names
+ * follows, so a title someone wrote by hand stays; anything else returns
+ * `pipeline` itself. `titleName` is the name the title is generated from:
+ * the pipeline's own, or the name a save stored when the draft has since
+ * been renamed again.
+ */
+export function retitleChatAutomationEntry(
+  pipeline: Pipeline,
+  previousNames: readonly string[],
+  titleName: string = pipeline.name,
+): Pipeline {
+  const job = pipeline.jobs[CHAT_AUTOMATION_JOB];
+  const [first, ...rest] = job?.steps ?? [];
+  const current = first?.with?.title;
+  if (
+    job === undefined ||
+    first === undefined ||
+    first.uses !== 'builtin/create-bot-entry' ||
+    !previousNames.some((name) => entryTitle(name) === current)
+  )
+    return pipeline;
+  const title = entryTitle(titleName);
+  if (title === current || titleName.trim() === '') return pipeline;
+  return {
+    ...pipeline,
+    jobs: {
+      ...pipeline.jobs,
+      [CHAT_AUTOMATION_JOB]: {
+        ...job,
+        steps: [{ ...first, with: { ...first.with, title } }, ...rest],
+      },
+    },
+  };
+}
+
 /** A create step's `group`, escaped; a stacked worktree takes none. */
 function groupInput(name: string | undefined): Record<string, string> {
   return name !== undefined ? { group: escapeExpressions(name) } : {};

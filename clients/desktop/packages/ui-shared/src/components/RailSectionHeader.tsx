@@ -83,6 +83,7 @@ export const RailSectionHeader = forwardRef<
             tone="section"
             hoverSurface
             revealOnItemHover
+            coarsePointerTarget
             disabled={actionsDisabled}
           />
         )}
@@ -91,7 +92,11 @@ export const RailSectionHeader = forwardRef<
             <RailIconButton
               ref={menuRef}
               icon={MoreHorizontalIcon}
-              aria-label={`More actions for ${label}`}
+              aria-label={
+                menuFiltered
+                  ? `More actions for ${label}, filter on`
+                  : `More actions for ${label}`
+              }
               title="More actions"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
@@ -101,6 +106,7 @@ export const RailSectionHeader = forwardRef<
               tone="section"
               hoverSurface
               revealOnItemHover={!menuFiltered}
+              coarsePointerTarget
               onClick={(): void => setMenuOpen(!menuOpen)}
             />
             {menuFiltered && (
@@ -137,7 +143,7 @@ export const RailSectionHeader = forwardRef<
             tone="section"
             hoverSurface
             revealOnItemHover={!createRevealed}
-            coarsePointerTarget={projects}
+            coarsePointerTarget
           />
         )}
       </span>

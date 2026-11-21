@@ -11,6 +11,7 @@ import type {
   AutomationAction,
   ChatAttachmentPromptContext,
   FileReference,
+  UsageLimitResumeInterruption,
 } from '@canopy/desktop-shared/types';
 import type { ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import { validateConfiguredPromptReferences } from '@canopy/protocol/configured-prompt-references';
@@ -64,6 +65,9 @@ export function buildWorktreeSessionPromptAction(args: {
   attachmentPromptContexts?: ChatAttachmentPromptContext[];
   inputMode?: 'typed' | 'voice';
   purpose?: 'usage_limit_resume' | 'scheduled_send';
+  /** A usage-limit watcher's guard (CAN-7483); kept through every edit. */
+  resumeWhen?: 'provider_usage_clear';
+  usageResumeInterruption?: UsageLimitResumeInterruption;
 }): { action?: AutomationAction; error?: string } {
   const prompt = args.prompt.trim();
   const error = validateConfiguredPromptReferences(
@@ -135,6 +139,10 @@ export function buildWorktreeSessionPromptAction(args: {
       : {}),
     ...(args.inputMode ? { inputMode: args.inputMode } : {}),
     ...(args.purpose ? { purpose: args.purpose } : {}),
+    ...(args.resumeWhen ? { resumeWhen: args.resumeWhen } : {}),
+    ...(args.usageResumeInterruption
+      ? { usageResumeInterruption: args.usageResumeInterruption }
+      : {}),
     ...(args.target.workspaceName
       ? { workspaceName: args.target.workspaceName }
       : {}),

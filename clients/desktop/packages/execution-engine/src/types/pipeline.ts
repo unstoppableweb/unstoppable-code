@@ -2180,7 +2180,10 @@ export type PipelineExecutionStartResult =
         // workflow the undone install had added.
         | 'pipeline_definition_restoring'
         | 'pipeline_definition_unconfirmed'
-        | 'pipeline_definition_removed';
+        | 'pipeline_definition_removed'
+        // CAN-7359: an install of this process still covers the definition
+        // after the run start's wait (retryable).
+        | 'pipeline_definition_installing';
     };
 
 export interface ProjectPipelineRequest {

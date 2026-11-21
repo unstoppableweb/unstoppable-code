@@ -215,7 +215,7 @@ const ROW_TOGGLE_SELECTOR = '[role="switch"], input[type="checkbox"]';
  * a row with exactly one switch or checkbox does this; with more, a click on
  * the text could mean either.
  */
-function useRowToggleClick(): {
+export function useRowToggleClick(): {
   readonly controlRef: RefObject<HTMLDivElement | null>;
   readonly onRowClick: (event: MouseEvent<HTMLDivElement>) => void;
 } {

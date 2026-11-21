@@ -36,12 +36,13 @@ export function RemoteControlPairingCode({
   'data-testid': dataTestId,
 }: RemoteControlPairingCodeProps): JSX.Element {
   return (
-    <p
-      aria-label={`Pairing code ${code.split('').join(' ')}`}
-      className={`${REPLAY_BLOCK_CLASS} ${SIZE_CLASS_NAMES[size]}`}
-      data-testid={dataTestId}
-    >
-      {formatPairingCode(code)}
+    // A paragraph can't take an `aria-label`, so the spoken form is its own
+    // text. The test id stays on the visible digits, so it holds them once.
+    <p className={`${REPLAY_BLOCK_CLASS} ${SIZE_CLASS_NAMES[size]}`}>
+      <span aria-hidden="true" data-testid={dataTestId}>
+        {formatPairingCode(code)}
+      </span>
+      <span className="sr-only">{`Pairing code ${code.split('').join(' ')}`}</span>
     </p>
   );
 }

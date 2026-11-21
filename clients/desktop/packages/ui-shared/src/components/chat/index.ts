@@ -16,6 +16,7 @@ export * from './ToolCallCard';
 export * from './tool-approval-wait';
 export * from './live-tool-activity';
 export * from './AutoResumeMarker';
+export * from './auto-resume-turn';
 export * from './tool-denial';
 export * from './CollapsibleBlock';
 export * from './CollapsedTurnSummary';

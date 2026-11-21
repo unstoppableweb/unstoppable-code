@@ -25,11 +25,14 @@ import {
   sortLibraryRows,
   WORKFLOW_LIBRARY_PAGE_SIZE,
   WorkflowsLibraryEmptyState,
+  WorkflowsLibraryOtherWorktreesHint,
   WorkflowsLibraryPagination,
+  WorkflowsLibraryProjectScopeLine,
   WorkflowsLibraryTable,
   WorkflowsLibraryTableSkeleton,
   WorkflowsLibraryToolbar,
   type WorkflowLibraryAction,
+  type WorkflowLibraryProjectScope,
   type WorkflowLibraryRow,
 } from '@canopy/ui-app/workflows';
 import {
@@ -66,6 +69,7 @@ import type {
   WorkflowLibraryTarget,
 } from './useWorkflowLibraryRows';
 import { revealedPipelineRowKey } from './revealedPipelineRowKey';
+import { useOtherWorktreeProjectPipelineCount } from './useOtherWorktreeProjectPipelines';
 
 /** Below this width Next run folds under the trigger. */
 const COMPACT_WIDTH_PX = 880;
@@ -608,6 +612,41 @@ export function WorkflowsLibraryTab({
   const deletingRunning =
     pendingDelete?.row.lastRun?.state === 'running' &&
     pendingDelete.target.kind === 'automation';
+  // Project pipelines are the selected worktree's copies (CAN-965): name it,
+  // and count the ones only the project's other worktrees hold.
+  const projectPlace = data.projectPlace;
+  const listedProjectPipelineIds = useMemo(
+    () =>
+      pipelines.pipelines
+        .filter((pipeline) => pipeline.source === 'project')
+        .map((pipeline) => pipeline.id),
+    [pipelines.pipelines],
+  );
+  // "This worktree has none" only after a load that succeeded: a failed
+  // discovery also leaves the list empty.
+  const projectListSettled =
+    !pipelines.loading &&
+    !pipelines.projectContextPending &&
+    pipelines.error === null;
+  const projectScope = useMemo((): WorkflowLibraryProjectScope | null => {
+    if (projectPlace.kind === 'no-worktree') return { kind: 'no-worktree' };
+    if (projectPlace.kind !== 'worktree') return null;
+    return {
+      kind: 'worktree',
+      projectName: projectPlace.projectName,
+      worktreeName: projectPlace.worktreeName,
+      hasProjectPipelines:
+        !projectListSettled || listedProjectPipelineIds.length > 0,
+    };
+  }, [listedProjectPipelineIds, projectListSettled, projectPlace]);
+  // Each new list (Refresh included) is a new array, so the other worktrees
+  // are read again; nothing is compared until the list loaded cleanly.
+  const otherWorktreePipelines = useOtherWorktreeProjectPipelineCount(
+    projectPlace,
+    projectListSettled ? listedProjectPipelineIds : null,
+    pipelines.error !== null,
+  );
+
   const rowBusyKeys = useMemo(() => {
     const keys = new Set(busyKeys);
     if (automations.runningActivityId !== null) {
@@ -655,6 +694,9 @@ export function WorkflowsLibraryTab({
         total={rows.length}
         matched={sorted.length}
       />
+      {projectScope ? (
+        <WorkflowsLibraryProjectScopeLine scope={projectScope} />
+      ) : null}
       {shownFailure?.scope === 'place' ? (
         <ErrorState
           testId="workflows-library-load-failed"
@@ -685,7 +727,16 @@ export function WorkflowsLibraryTab({
         />
       )}
       {firstLoad ? null : (
-        <WorkflowsLibraryPagination page={page} onPageChange={setPage} />
+        <div className="flex flex-col gap-2">
+          <WorkflowsLibraryPagination page={page} onPageChange={setPage} />
+          {projectPlace.kind === 'worktree' ? (
+            <WorkflowsLibraryOtherWorktreesHint
+              count={otherWorktreePipelines.count}
+              complete={otherWorktreePipelines.complete}
+              projectName={projectPlace.projectName}
+            />
+          ) : null}
+        </div>
       )}
       {pendingDelete && (
         <ConfirmDialog

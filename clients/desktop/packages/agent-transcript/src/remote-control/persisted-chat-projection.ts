@@ -1041,6 +1041,10 @@ export function persistedMessageToRemoteControlMessage(
       limits.textMaxChars ?? REMOTE_CONTROL_CHAT_TEXT_MAX_CHARS,
     ),
     ...(parts.length > 0 ? { parts } : {}),
+    ...(input.message.role !== 'user' &&
+    input.message.blocks.some((block) => block.type === 'codex_agent_call')
+      ? { hasAgentActivity: true }
+      : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
     ...(agentSent !== undefined ? { agentSent } : {}),
     createdAtMs: input.message.timestamp,

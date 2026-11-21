@@ -4,6 +4,7 @@ import { useEffect, useState, type JSX } from 'react';
 import { useStore } from 'zustand';
 import type { ExternalAgentsClient } from '@canopy/app-core';
 import { useCanopyClient, useCapabilities } from '@canopy/app-state';
+import { createAppError } from '@canopy/protocol/app-errors';
 import {
   createExternalAgentStore,
   type ExternalAgentAction,
@@ -29,7 +30,7 @@ import {
   TextInput,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
-import { formatDate } from '@canopy/ui-shared/lib';
+import { formatDate, recordSurfacedError } from '@canopy/ui-shared/lib';
 import { formatRelativeTime } from '@canopy/ui-shared/lib/format-relative-time';
 import {
   accessFormStateFromDetail,
@@ -379,10 +380,29 @@ function ExternalAgentDetailView({
   };
 
   const confirmRemove = async (): Promise<void> => {
+    const previousOutcome = store.getState().outcome;
     await store.getState().remove();
     if (store.getState().status === 'removed') {
       onOpenPath(EXTERNAL_AGENTS_PATH);
       return;
+    }
+    // The attempt records its own failure, so it counts once whether the
+    // dialog is still open, was dismissed while pending, or is reopened on
+    // the outcome the store keeps; the dialog records nothing.
+    const outcome = store.getState().outcome;
+    if (
+      outcome !== previousOutcome &&
+      outcome?.kind === 'unavailable' &&
+      outcome.action === 'remove'
+    ) {
+      recordSurfacedError({
+        chokePoint: 'notice',
+        surface: 'inline',
+        identifier: 'external-agent-remove',
+        // A structured error reaches the handler each time, so repeats count
+        // instead of being dropped as duplicate text sightings.
+        error: createAppError('app.unexpected'),
+      });
     }
     setConfirmingRemoval(false);
   };
@@ -810,6 +830,8 @@ function ExternalAgentDetailView({
           onCancel={(): void => setConfirmingRemoval(false)}
           confirmTestId="external-agent-remove-confirm"
           dataTestId="external-agent-remove-dialog"
+          // The attempt in confirmRemove records this failure.
+          errorRecordingDisabled
           errorMessage={
             unavailableRemove ? 'Couldn’t remove the agent. Try again.' : null
           }

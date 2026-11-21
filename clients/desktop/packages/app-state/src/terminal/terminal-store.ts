@@ -15,6 +15,10 @@ import {
   requireTerminalClient,
 } from './terminal-client-binding';
 import {
+  isPersistenceCancellation,
+  reportStorePersistenceError,
+} from '../client-store-lifecycle';
+import {
   DEFAULT_TERMINAL_DRAWER_COLLAPSED,
   TERMINAL_CUSTOM_NAME_MAX_LENGTH,
   type LoadWorktreeTerminalStateResponse,
@@ -414,9 +418,22 @@ function notifyTerminalRemoved(
     listener({ projectId, worktreeId, terminalId });
 }
 
+export interface TerminalStoreOptions {
+  /**
+   * Records one failed save. Defaults to the host recorder installed with
+   * `setStorePersistenceErrorReporter`.
+   */
+  readonly report?: (error: unknown) => void;
+}
+
 export function createTerminalStore(
   getClient: () => TerminalClient,
+  options: TerminalStoreOptions = {},
 ): TerminalStoreController {
+  const report =
+    options.report ??
+    ((error: unknown): void =>
+      reportStorePersistenceError('terminal-save', error));
   const persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const hydrationPromises = new Map<string, Promise<void>>();
   let generation = 0;
@@ -437,9 +454,14 @@ export function createTerminalStore(
       .catch((error: unknown): void => {
         // A dispatched save cannot be retracted on reset. Consume transport
         // failures without retrying this host's snapshot through a new binding.
-        // A lost forget leaves a closed terminal's history, so report it to the
-        // window's error logging (absent outside a browser).
-        if (forgetTerminalIds) globalThis.reportError?.(error);
+        // Record each failed save once: a lost layout or forget is otherwise
+        // invisible.
+        if (isPersistenceCancellation(error)) return;
+        try {
+          report(error);
+        } catch {
+          // Recording is best effort and must not break the store.
+        }
       });
   }
 

@@ -289,6 +289,17 @@ export const CLIENT_FEATURE_FLAGS = {
     ownership: 'both',
     description: 'Availability of the New Customize Labs experiment.',
   },
+  canopyDesktopLabsSteerByDefault: {
+    key: 'canopy-desktop-labs-steer-by-default',
+    // Off until opted in (CAN-7349). Dormant: nothing reads it yet, so it is
+    // `interface` and stays out of the core snapshot until a backend gates
+    // behavior on it.
+    launchDarklyDisabledDefaultValue: 'offered',
+    launchDarklyEnabledUnavailableValue: 'offered',
+    localOnlyDefaultValue: 'offered',
+    ownership: 'interface',
+    description: 'Availability of the Steer by default Labs experiment.',
+  },
   canopyPostHogCaptureEnabled: {
     key: 'canopy-desktop-posthog-capture-enabled',
     launchDarklyDisabledDefaultValue: true,
@@ -943,6 +954,8 @@ export type ClientFeatureFlagValues = {
     .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery
     .key]: LabsExperimentAvailability;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault
+    .key]: LabsExperimentAvailability;
   [CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyPostHogSessionReplaySampleRate.key]: number;
   [CLIENT_FEATURE_FLAGS.canopyPostHogAutocaptureEnabled.key]: boolean;
@@ -1097,6 +1110,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled
@@ -1334,6 +1350,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled
         .launchDarklyEnabledUnavailableValue,
@@ -1562,6 +1581,9 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
     [CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery
         .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault
+        .localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key]:
       CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyPostHogSessionReplaySampleRate.key]:
@@ -1721,6 +1743,7 @@ export const LABS_EXPERIMENT_FLAG_KEYS: ReadonlySet<string> = new Set([
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsStatisticsPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsAuditTrailPage.key,
   CLIENT_FEATURE_FLAGS.canopyDesktopLabsCustomizeDiscovery.key,
+  CLIENT_FEATURE_FLAGS.canopyDesktopLabsSteerByDefault.key,
 ]);
 
 export function isLabsExperimentFlagKey(key: string): boolean {

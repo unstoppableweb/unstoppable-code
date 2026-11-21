@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import {
@@ -18,8 +19,9 @@ import { Button } from './Button';
 import { ColorSwatchPicker } from './ColorSwatchPicker';
 import { DialogModal } from './DialogModal';
 import { InstructionsEditor } from './InstructionsEditor';
-import { Select, TextArea, TextInput } from './Field';
+import { FieldError, Select, TextArea, TextInput } from './Field';
 import { SegmentedControl } from './SegmentedControl';
+import { Surface } from './Surface';
 import { SettingsDangerConfirmBlock } from './SettingsDangerConfirmBlock';
 import { SettingsSaveStatus } from './SettingsSaveStatus';
 import { ErrorBanner } from './StatusBlocks';
@@ -105,6 +107,12 @@ export interface WorkspaceSettingsDialogProps {
    */
   readonly workspaceName: ReactNode;
   readonly initialValues: WorkspaceSettingsValues;
+  /**
+   * What the deletion retention field keeps: chats (the default, for chat
+   * projects) or worktrees (a code project, as desktop project settings word
+   * it).
+   */
+  readonly retentionNoun?: 'chats' | 'worktrees';
   readonly tabs?: readonly WorkspaceSettingsTab[];
   readonly showDescription?: boolean;
   readonly tabLabels?: Partial<Record<WorkspaceSettingsTab, string>>;
@@ -203,6 +211,7 @@ export function WorkspaceSettingsDialog({
   modelsLoading = false,
   modelsError,
   initialValues,
+  retentionNoun = 'chats',
   tabs = DEFAULT_TABS,
   showDescription = false,
   tabLabels,
@@ -243,6 +252,8 @@ export function WorkspaceSettingsDialog({
   const nameInputId = `${idPrefix}-name`;
   const descriptionInputId = `${idPrefix}-description`;
   const retentionInputId = `${idPrefix}-retention`;
+  const retentionErrorId = `${idPrefix}-retention-error`;
+  const panelId = `${idPrefix}-panel`;
   const scriptInputIdPrefix = `${idPrefix}-script`;
   const [defaultModelDefinitionId, setDefaultModelDefinitionId] = useState(
     initialValues.defaultModelDefinitionId ?? null,
@@ -282,6 +293,7 @@ export function WorkspaceSettingsDialog({
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [failure, setFailure] = useState<DialogFailure | null>(null);
+  const [retentionErrorShown, setRetentionErrorShown] = useState(false);
 
   useEffect(() => {
     metadataBaselineRef.current = {
@@ -308,6 +320,13 @@ export function WorkspaceSettingsDialog({
 
   const working = saving || deleting || secondaryWorking;
   const trimmedName = name.trim();
+  const retentionInvalid =
+    initialValues.deletionRetentionDays !== undefined &&
+    (!Number.isInteger(deletionRetentionDays) ||
+      deletionRetentionDays < MIN_ARCHIVE_RETENTION_DAYS ||
+      deletionRetentionDays > MAX_ARCHIVE_RETENTION_DAYS);
+  // Shown after a save attempt, then cleared as soon as the value is fixed.
+  const showRetentionError = retentionErrorShown && retentionInvalid;
   const displayedRetentionDays = Number.isFinite(deletionRetentionDays)
     ? deletionRetentionDays
     : DEFAULT_ARCHIVE_RETENTION_DAYS;
@@ -330,6 +349,13 @@ export function WorkspaceSettingsDialog({
   // confirms in place; Done is the only thing that dismisses it.
   const save = async (): Promise<void> => {
     if (working || !trimmedName) return;
+    if (retentionInvalid) {
+      // The error shows under its field, so bring that page forward.
+      setFailure(null);
+      setRetentionErrorShown(true);
+      setActiveTab('details');
+      return;
+    }
     setSaving(true);
     setFailure(null);
     setJustSaved(false);
@@ -339,15 +365,6 @@ export function WorkspaceSettingsDialog({
     colorSavingVersionRef.current = colorEditVersion;
     const metadataBaseline = metadataBaselineRef.current;
     try {
-      if (
-        initialValues.deletionRetentionDays !== undefined &&
-        (!Number.isInteger(deletionRetentionDays) ||
-          deletionRetentionDays < MIN_ARCHIVE_RETENTION_DAYS ||
-          deletionRetentionDays > MAX_ARCHIVE_RETENTION_DAYS)
-      )
-        throw new Error(
-          `Enter a whole number from ${MIN_ARCHIVE_RETENTION_DAYS} to ${MAX_ARCHIVE_RETENTION_DAYS}.`,
-        );
       await onSave({
         ...(modelOptions === undefined ? {} : { defaultModelDefinitionId }),
         name: trimmedName,
@@ -383,6 +400,14 @@ export function WorkspaceSettingsDialog({
     }
   };
 
+  // Enter saves from the dialog's own single-line fields. Not a <form>: host
+  // pages (plugin pickers, repositories) would inherit its Enter and submit.
+  const saveOnEnter = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    void save();
+  };
+
   const remove = async (): Promise<void> => {
     if (!onDelete || working) return;
     setDeleting(true);
@@ -402,8 +427,6 @@ export function WorkspaceSettingsDialog({
     }
   };
 
-  const activeLabel =
-    visibleTabs.find((tab) => tab.id === activeTab)?.label ?? '';
   const showManage =
     onDelete !== undefined &&
     (activeTab === 'details' ||
@@ -426,6 +449,7 @@ export function WorkspaceSettingsDialog({
             nameEditVersionRef.current !== nameSavingVersionRef.current);
         setName(nextName);
       }}
+      onKeyDown={saveOnEnter}
       data-testid={testIds?.nameInput}
     />
   );
@@ -511,30 +535,41 @@ export function WorkspaceSettingsDialog({
       {/* Pages are simple tabs under the title; a phone-width screen scrolls
           them sideways rather than wrapping. */}
       {visibleTabs.length > 1 ? (
-        <div
-          className="shrink-0 overflow-x-auto border-b px-6 pb-3 pt-1"
+        <Surface
+          variant="section"
+          boundary="bottom"
+          className="shrink-0 overflow-x-auto"
           data-testid="workspace-settings-pages"
         >
-          <SegmentedControl
-            semantics="tabs"
-            label={`${WORKSPACE_LABEL} settings pages`}
-            width="content"
-            value={activeTab}
-            options={visibleTabs.map((tab) => ({
-              value: tab.id,
-              label: tab.label,
-            }))}
-            onChange={(next): void => {
-              setActiveTab(next);
-              setConfirming(false);
-              setSecondaryConfirming(false);
-            }}
-          />
-        </div>
+          <div className="px-6 pb-3 pt-1">
+            <SegmentedControl
+              semantics="tabs"
+              label={`${WORKSPACE_LABEL} settings pages`}
+              width="content"
+              value={activeTab}
+              options={visibleTabs.map((tab) => ({
+                value: tab.id,
+                label: tab.label,
+                id: `${idPrefix}-tab-${tab.id}`,
+                controls: panelId,
+              }))}
+              onChange={(next): void => {
+                setActiveTab(next);
+                setConfirming(false);
+                setSecondaryConfirming(false);
+              }}
+            />
+          </div>
+        </Surface>
       ) : null}
       <div
-        role="tabpanel"
-        aria-label={activeLabel}
+        id={panelId}
+        {...(visibleTabs.length > 1
+          ? {
+              role: 'tabpanel',
+              'aria-labelledby': `${idPrefix}-tab-${activeTab}`,
+            }
+          : {})}
         className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-6 py-2"
       >
         <div className="flex flex-1 flex-col gap-4">
@@ -557,6 +592,15 @@ export function WorkspaceSettingsDialog({
                     onChange={(event) => {
                       setJustSaved(false);
                       setDescription(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== 'Enter' ||
+                        !(event.metaKey || event.ctrlKey)
+                      )
+                        return;
+                      event.preventDefault();
+                      void save();
                     }}
                     data-testid={testIds?.descriptionInput}
                   />
@@ -636,37 +680,47 @@ export function WorkspaceSettingsDialog({
               )}
               {initialValues.deletionRetentionDays !== undefined && (
                 <SettingsRowsRow
-                  label="Keep deleted chats for"
+                  label={`Keep deleted ${retentionNoun} for`}
                   htmlFor={retentionInputId}
-                  description={`Deleted chats are kept for ${displayedRetentionDays} days, then removed. Archived chats are kept until you delete them.`}
+                  description={`Deleted ${retentionNoun} are kept for ${displayedRetentionDays} days, then removed. Archived ${retentionNoun} are kept until you delete them.`}
                   control={
-                    <>
-                      <span className="inline-flex w-20">
-                        <TextInput
-                          id={retentionInputId}
-                          density="settings"
-                          type="number"
-                          aria-label="Keep deleted chats for"
-                          min={MIN_ARCHIVE_RETENTION_DAYS}
-                          max={MAX_ARCHIVE_RETENTION_DAYS}
-                          value={
-                            Number.isNaN(deletionRetentionDays)
-                              ? ''
-                              : deletionRetentionDays
-                          }
-                          onChange={(event) => {
-                            setJustSaved(false);
-                            setDeletionRetentionDays(
-                              event.target.valueAsNumber,
-                            );
-                          }}
-                          data-testid={testIds?.retentionInput}
-                        />
-                      </span>
-                      <span className="text-s fg-secondary">days</span>
-                    </>
+                    <span className="inline-flex w-24">
+                      <TextInput
+                        id={retentionInputId}
+                        density="settings"
+                        type="number"
+                        min={MIN_ARCHIVE_RETENTION_DAYS}
+                        max={MAX_ARCHIVE_RETENTION_DAYS}
+                        trailing="days"
+                        aria-label={`Keep deleted ${retentionNoun} for`}
+                        aria-invalid={showRetentionError || undefined}
+                        aria-describedby={
+                          showRetentionError ? retentionErrorId : undefined
+                        }
+                        value={
+                          Number.isNaN(deletionRetentionDays)
+                            ? ''
+                            : deletionRetentionDays
+                        }
+                        onChange={(event) => {
+                          setJustSaved(false);
+                          // An edit clears the error until the next save.
+                          setRetentionErrorShown(false);
+                          setDeletionRetentionDays(event.target.valueAsNumber);
+                        }}
+                        onKeyDown={saveOnEnter}
+                        data-testid={testIds?.retentionInput}
+                      />
+                    </span>
                   }
-                />
+                >
+                  {showRetentionError && (
+                    <FieldError id={retentionErrorId} announce>
+                      Enter a whole number from {MIN_ARCHIVE_RETENTION_DAYS} to{' '}
+                      {MAX_ARCHIVE_RETENTION_DAYS}.
+                    </FieldError>
+                  )}
+                </SettingsRowsRow>
               )}
               {removeRows}
             </SettingsRowsGroup>
@@ -716,6 +770,7 @@ export function WorkspaceSettingsDialog({
                           }));
                         }}
                         spellCheck={false}
+                        onKeyDown={saveOnEnter}
                         data-testid={testIds?.scriptInput?.(key)}
                         placeholder={`${label} command…`}
                       />
@@ -744,24 +799,31 @@ export function WorkspaceSettingsDialog({
       </div>
       {/* One action: Save writes every page at once and keeps the dialog
           open; the title bar's close button leaves. */}
-      <div className="flex shrink-0 items-center justify-end gap-3 border-t px-6 py-3">
-        <span className="mr-auto">
-          <SettingsSaveStatus
-            state={saving ? 'saving' : justSaved ? 'saved' : 'idle'}
-            idleLabel={null}
-            dataTestId={testIds?.saved ?? 'workspace-settings-saved'}
-          />
-        </span>
-        <Button
-          size="compact"
-          variant="primary"
-          onClick={() => void save()}
-          disabled={working || !trimmedName}
-          data-testid={testIds?.save}
-        >
-          Save
-        </Button>
-      </div>
+      <Surface
+        variant="section"
+        boundary="top"
+        padding="dialog-footer"
+        className="shrink-0"
+      >
+        <div className="flex items-center justify-end gap-3">
+          <span className="mr-auto">
+            <SettingsSaveStatus
+              state={saving ? 'saving' : justSaved ? 'saved' : 'idle'}
+              idleLabel={null}
+              dataTestId={testIds?.saved ?? 'workspace-settings-saved'}
+            />
+          </span>
+          <Button
+            size="compact"
+            variant="primary"
+            onClick={() => void save()}
+            disabled={working || !trimmedName}
+            data-testid={testIds?.save}
+          >
+            Save
+          </Button>
+        </div>
+      </Surface>
     </DialogModal>
   );
 }

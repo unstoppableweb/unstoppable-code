@@ -254,6 +254,7 @@ import { assertChatScopeAcceptsTurns } from './retired-chat-scope-guard';
 import { getChatStateService } from '../services/chat-state-service';
 import {
   normalizeProviderEventIngestResult,
+  withDeliveredToolVisuals,
   type ProviderEventIngestResult,
 } from '../services/provider-event-admission';
 import { getStoppedTurnResumeService } from '../services/stopped-turn-resume-service';
@@ -2588,7 +2589,9 @@ async function dispatchHeldWorktreeChatTurn<
         options.projectId,
         options.worktreeId,
         options.chatId,
-        data,
+        // A visual this commit stored reaches live projections, such as a
+        // directly controlled browser, with the tool result that showed it.
+        withDeliveredToolVisuals(data, ingestResult),
         {
           providerType:
             runtimeProviderType ??

@@ -23,6 +23,7 @@ import { RichHoverTooltip } from './RichHoverTooltip';
 import { Stack } from './Stack';
 import { Tooltip } from './Tooltip';
 import { StatusGlyph } from './StatusGlyph';
+import { isCoarsePointerNow, useMediaQuery } from './useMediaQuery';
 
 // ---------------------------------------------------------------------------
 // Shared, display-only plan review (comment thread) primitives — a GitHub
@@ -275,7 +276,7 @@ export function PlanReviewThread({
       data-testid={dataTestId}
       {...dataAttributes}
       className={`overflow-hidden rounded-lg border bg-card transition-colors ${
-        active ? 'border-line-accent/60 ring-1 ring-line-accent/40' : ''
+        active ? 'border-line-accent' : ''
       }`}
     >
       <div
@@ -316,6 +317,7 @@ export function PlanReviewThread({
         {reference?.icon && (
           <span
             className="shrink-0 fg-secondary"
+            role="img"
             aria-label={reference.iconLabel}
             title={reference.iconLabel}
           >
@@ -406,6 +408,8 @@ export interface PlanCommentComposerProps {
   autoFocus?: boolean;
   inputTestId?: string;
   submitTestId?: string;
+  /** Accessible name for the field; defaults to the submit label. */
+  'aria-label'?: string;
 }
 
 /**
@@ -426,9 +430,19 @@ export function PlanCommentComposer({
   autoFocus = false,
   inputTestId,
   submitTestId,
+  'aria-label': ariaLabel = submitLabel,
 }: PlanCommentComposerProps): JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const disabled = submitDisabled ?? value.trim().length === 0;
+  // A phone keyboard has no Shift+Enter, so Enter adds a line there and the
+  // button sends.
+  const isCoarsePointer = useMediaQuery('(pointer: coarse)');
+
+  useEffect(() => {
+    if (autoFocus && !isCoarsePointerNow()) {
+      textareaRef.current?.focus();
+    }
+  }, [autoFocus]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -443,7 +457,8 @@ export function PlanCommentComposer({
     if (
       event.key === 'Enter' &&
       !event.shiftKey &&
-      !event.nativeEvent.isComposing
+      !event.nativeEvent.isComposing &&
+      !isCoarsePointer
     ) {
       event.preventDefault();
       if (!disabled) {
@@ -462,10 +477,10 @@ export function PlanCommentComposer({
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={handleKeyDown}
           rows={1}
-          autoFocus={autoFocus}
+          aria-label={ariaLabel}
           data-testid={inputTestId}
           placeholder={placeholder}
-          className={`block max-h-48 w-full resize-none bg-transparent px-2.5 py-2 fg-primary outline-none ${
+          className={`block max-h-48 w-full resize-none bg-transparent px-2.5 py-2 fg-primary outline-none pointer-coarse:text-m ${
             compact ? 'text-xs' : 'text-s'
           }`}
         />

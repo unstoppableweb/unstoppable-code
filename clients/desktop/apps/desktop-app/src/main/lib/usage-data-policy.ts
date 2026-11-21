@@ -49,6 +49,12 @@ export interface UsageDataPolicy {
   /** True once the selected Personal or organization context is known. */
   hasWorkspaceContext(): boolean;
   /**
+   * True while the stored account's organization policy can't be read, so the
+   * org-prohibitable keys are off with no organization to attribute. An
+   * organization prohibition that is known never reports here.
+   */
+  isOrganizationPolicyUnreadable(): boolean;
+  /**
    * The effective value of `key`, also narrowed by the prohibition of the
    * organization that owns the work, when one is known. For per-item reports
    * that carry their owner: the selected context alone would let work owned
@@ -234,6 +240,7 @@ export function createUsageDataPolicy(options?: {
   return {
     getEffectiveUsageDataPolicy: () => ({ ...snapshot.effective }),
     hasWorkspaceContext: () => context !== null,
+    isOrganizationPolicyUnreadable: () => prohibitions === 'unreadable',
     allowsForOrganization(key, ownerOrganizationId): boolean {
       if (!snapshot.effective[key]) return false;
       if (prohibitions === 'unreadable') return false;

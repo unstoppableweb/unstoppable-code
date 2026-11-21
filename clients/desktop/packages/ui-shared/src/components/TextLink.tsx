@@ -56,7 +56,8 @@ const VARIANT_CLASS_NAMES: Record<TextLinkVariant, string> = {
     'focus-ring rounded text-xs fg-secondary underline underline-offset-4 transition-colors hover:fg-primary',
   inline: TEXT_LINK_INLINE_CLASS,
   'pull-request-header':
-    'electron-no-drag inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal fg-primary transition-colors hover:bg-subtle',
+    // A pseudo-element brings the 28px link to 44px on touch without growing the header.
+    'electron-no-drag focus-ring relative inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal fg-primary transition-colors hover:bg-subtle pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-2',
   muted: 'focus-ring rounded fg-primary/80 transition-colors hover:fg-primary',
   informational: 'focus-ring rounded fg-info hover:underline',
   inherited: '',

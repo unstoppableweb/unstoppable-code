@@ -24,7 +24,7 @@ export function FileRevertButton({
   dataTestId = 'activity-file-revert',
 }: FileRevertButtonProps): JSX.Element {
   return (
-    <span className="-my-1.5 hidden shrink-0 group-hover:inline-flex group-focus-within:inline-flex">
+    <span className="-my-1.5 hidden shrink-0 group-hover:inline-flex group-focus-within:inline-flex pointer-coarse:inline-flex">
       <Button
         variant="ghost"
         size="sm"

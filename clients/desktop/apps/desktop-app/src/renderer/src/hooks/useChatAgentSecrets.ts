@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
+  AgentSecretSummary,
   AgentSecretsChatScope,
   AgentSecretsListResponse,
 } from '@canopy/desktop-shared/types';
@@ -29,11 +30,27 @@ function sameScope(
 // and the row still shows which secret it was.
 const REVOKE_FAILED = "Couldn't revoke the secret. Try again.";
 
-export interface ChatAgentSecrets {
-  readonly state: AgentSecretsListResponse;
+/**
+ * What the composer's Secrets chip shows and does: a local chat's
+ * (`useChatAgentSecrets`) or a cloud chat's (`useWebCoreChatSecrets`).
+ */
+export interface ComposerAgentSecrets {
+  readonly state: {
+    readonly secrets: readonly Pick<
+      AgentSecretSummary,
+      'name' | 'scope' | 'lastUsedAt'
+    >[];
+    readonly ambient: AgentSecretsListResponse['ambient'];
+  };
   /** Resolves what went wrong when the revoke failed, else undefined. */
   readonly revoke: (name: string) => Promise<string | undefined>;
   readonly restart: () => Promise<void>;
+  /** Reads the list again, as the chip opens; local chats are pushed. */
+  readonly refresh?: () => void;
+}
+
+export interface ChatAgentSecrets extends ComposerAgentSecrets {
+  readonly state: AgentSecretsListResponse;
 }
 
 /** The chat's held secrets, refetched whenever main says they changed. */

@@ -249,3 +249,12 @@ export function useIsMobile(): boolean {
 export function useIsPhone(): boolean {
   return isPhoneLayoutTier(useLayoutTier());
 }
+
+/**
+ * Whether the primary pointer is touch right now. Call it from an effect or a
+ * handler before focusing a field on mount: focusing on touch opens the
+ * on-screen keyboard before the user asks for it.
+ */
+export function isCoarsePointerNow(): boolean {
+  return hasMatchMedia() && window.matchMedia('(pointer: coarse)').matches;
+}

@@ -1,4 +1,5 @@
 import { isPlanFileWrite } from '@canopy/protocol/plan-tool-input';
+import { projectRemoteControlPlanReview } from './remote-control-plan-review';
 import { latchFirstTaskSubmitted } from '../notifications/campaigns/activation-signals';
 import { requestAppAdvisorPresentation } from '../app-advisor/advisor-presentation';
 import {
@@ -810,6 +811,22 @@ async function dispatchLocalWorktreeChatMessageNow(
   await Promise.all(acceptanceTasks);
 }
 
+/**
+ * A person's send, not an automatic one: the transient-retry service's own
+ * dispatch, watchers, agent sends and managed delegation deliveries never
+ * cancel a pending automatic retry.
+ */
+function isUserInitiatedImmediateSend(
+  request: ChatSendMessageRequest,
+): boolean {
+  return (
+    request.initiationSource !== 'automation' &&
+    request.watcherFired === undefined &&
+    request.agentSent === undefined &&
+    !request.managedDelegationDeliveryId
+  );
+}
+
 // Live caller surfaces belong to this request, not the serializable queue
 // payload. Restored/edited rows use the application's registered surfaces.
 // Billing constraints are persisted separately on the main-owned queue row.
@@ -826,8 +843,28 @@ export async function dispatchHostQueuedWorktreeChatMessage(
   queueOptions: ChatQueueDispatchOptions = {},
 ): Promise<void> {
   let turnAccepted = false;
+  // A `chat:command` send dispatched now reaches its dispatcher with
+  // `queueDispatch` set, which skips the entry-point `'manual-send'` cancel.
+  // Cancel a pending automatic retry once this send is accepted, so a refused
+  // send leaves the retry in place and an accepted one never runs beside a
+  // second turn. Queued sends cancel when they leave the queue.
+  let automaticRetryPending =
+    !fromQueue && isUserInitiatedImmediateSend(request);
+  const cancelAutomaticRetry = (): void => {
+    if (!automaticRetryPending) return;
+    automaticRetryPending = false;
+    cancelTransientRetryForChat(
+      {
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+        chatId: request.chatId,
+      },
+      'manual-send',
+    );
+  };
   const onTurnAccepted = (): void => {
     turnAccepted = true;
+    cancelAutomaticRetry();
   };
   const state = getChatStateService();
   await state.runWithScopeActivity(
@@ -842,6 +879,9 @@ export async function dispatchHostQueuedWorktreeChatMessage(
           authorization,
           queueOptions,
         );
+        // Dispatchers that don't report acceptance (the `portal` origin)
+        // resolve only once the send was admitted.
+        cancelAutomaticRetry();
       } catch (error) {
         // A held send remains queue-owned user intent. In particular, do not
         // settle an independent-branch startup as rejected: no prompt was
@@ -2137,22 +2177,7 @@ function chatSummaryEntity(input: {
     // reconcile against desktop-side flips.
     planMode: input.tab.planMode,
     forkContext: input.tab.forkedFrom?.modelContext ?? null,
-    planReview:
-      surface === 'worktree' &&
-      input.tab.planMode &&
-      input.tab.trackedPlanSource === 'opencode' &&
-      input.tab.trackedPlanReviewStatus === 'pending' &&
-      input.tab.pendingPlanExit?.source === 'opencode' &&
-      input.tab.pendingPlanExitRequestId &&
-      input.tab.trackedPlanId &&
-      input.tab.latestRevisionNumber !== undefined
-        ? {
-            source: 'opencode',
-            requestId: input.tab.pendingPlanExitRequestId,
-            planId: input.tab.trackedPlanId,
-            revisionNumber: input.tab.latestRevisionNumber,
-          }
-        : null,
+    planReview: projectRemoteControlPlanReview(surface, input.tab),
 
     // Modern canonical field first: settings patches update
     // `modelConfig.thinkingLevel`; the top-level field is legacy read-compat.

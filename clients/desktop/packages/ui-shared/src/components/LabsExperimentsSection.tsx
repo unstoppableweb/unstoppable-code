@@ -142,7 +142,9 @@ function LabsExperimentRows({
   return (
     <Group>
       {rows.map((row) => {
+        const descriptionId = `labs-experiment-description-${row.id}`;
         const disabledReasonId = `labs-experiment-disabled-reason-${row.id}`;
+        const description = <span id={descriptionId}>{row.description}</span>;
         return (
           <Row
             key={row.id}
@@ -150,10 +152,10 @@ function LabsExperimentRows({
             htmlFor={toggleIdFor(row.id)}
             description={
               row.disabledReason === undefined ? (
-                row.description
+                description
               ) : (
                 <>
-                  {row.description}
+                  {description}
                   <span
                     id={disabledReasonId}
                     data-testid={disabledReasonId}
@@ -173,8 +175,8 @@ function LabsExperimentRows({
                 label={row.name}
                 describedBy={
                   row.disabledReason === undefined
-                    ? undefined
-                    : disabledReasonId
+                    ? descriptionId
+                    : `${descriptionId} ${disabledReasonId}`
                 }
                 onChange={(next) => onToggle(row.id, next)}
                 dataTestId={toggleTestIdFor(row.id)}

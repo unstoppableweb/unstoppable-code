@@ -15,10 +15,12 @@ import {
 } from 'react';
 import {
   ErrorBanner,
+  ErrorState,
   Button,
   ExternalTextLink,
   SecurityAuditSummary,
 } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { isGitHubTreeUrl } from '@canopy/ui-shared/lib/github-tree-url';
 import {
   INSTALLED_ITEM_STATUS_COPY,
@@ -166,6 +168,15 @@ export interface RemoteControlPluginsPickerProps {
   selections: RemoteControlChatTabPluginSelections;
   providerType?: string;
   loading?: boolean;
+  /**
+   * The host's last catalog load failed. With no catalog the picker shows the
+   * failure in place of its list; with one it keeps that list under a banner.
+   * Both offer Try again, which calls `onRetryLoad`.
+   */
+  loadError?: boolean;
+  onRetryLoad?: () => void;
+  /** The host records a failed load itself; the picker shows it unrecorded. */
+  loadFailureRecorded?: boolean;
   brandDisplayName: string;
   onChange: (
     selections: RemoteControlChatTabPluginSelections,
@@ -743,12 +754,39 @@ function goneDraftKeys(
  */
 const NO_UNAVAILABLE: readonly CapabilityUnavailable[] = [];
 
+// The picker's list couldn't load at all, or a later load failed and the
+// picker still shows the list it had (CAN-7473).
+const PLUGINS_LOAD_ERROR = "Couldn't load plugins.";
+const PLUGINS_RELOAD_ERROR = "Couldn't load the latest plugins.";
+
+/**
+ * Records each failed load the open picker shows, once it has settled: a
+ * retry still running records nothing, and one that fails again records again.
+ */
+function useLoadFailureRecording(shown: boolean, kept: boolean): void {
+  const recorded = useRef(false);
+  useEffect(() => {
+    if (shown && !recorded.current)
+      recordSurfacedError({
+        chokePoint: kept ? 'banner' : 'notice',
+        surface: kept ? 'banner' : 'inline',
+        identifier: 'remote-control-plugins-load',
+        text: kept ? PLUGINS_RELOAD_ERROR : PLUGINS_LOAD_ERROR,
+        textIsSensitive: false,
+      });
+    recorded.current = shown;
+  }, [shown, kept]);
+}
+
 const RemoteControlPluginsPickerContent = memo(
   function RemoteControlPluginsPickerContent({
     catalog,
     selections: projectedSelections,
     providerType,
     loading = false,
+    loadError = false,
+    onRetryLoad,
+    loadFailureRecorded = false,
     brandDisplayName,
     onChange,
     onOpen,
@@ -812,6 +850,10 @@ const RemoteControlPluginsPickerContent = memo(
       setConfirmedAllowed(null);
     const [saving, setSaving] = useState(false);
     const [saveError, setSaveError] = useState(false);
+    useLoadFailureRecording(
+      open && loadError && !loading && !loadFailureRecorded,
+      catalog !== null,
+    );
     const generation = useRef(0);
     const savingRef = useRef(false);
     useEffect(
@@ -1275,7 +1317,10 @@ const RemoteControlPluginsPickerContent = memo(
                 variant="primary"
                 size="compact"
                 onClick={handleSave}
-                disabled={saving || addingLocal !== null}
+                // With no catalog read, there's nothing to choose from.
+                disabled={
+                  saving || addingLocal !== null || (loadError && !catalog)
+                }
                 data-testid="remote-control-plugins-save"
               >
                 Save
@@ -1295,6 +1340,18 @@ const RemoteControlPluginsPickerContent = memo(
                   </Notice>
                 </div>
               )}
+              {loadError && catalog && (
+                <ErrorBanner
+                  errorSource="portal-plugins-picker"
+                  errorRecordingDisabled
+                  error={PLUGINS_RELOAD_ERROR}
+                  {...(onRetryLoad === undefined
+                    ? {}
+                    : { onRetry: onRetryLoad })}
+                  retrying={loading}
+                  testId="remote-control-plugins-reload-error"
+                />
+              )}
               <UnifiedTable
                 rows={allRows}
                 sourceOptions={sourceOptions}
@@ -1304,8 +1361,20 @@ const RemoteControlPluginsPickerContent = memo(
                   setDetailEntry(projection?.detailsByKey.get(row.key) ?? null);
                 }}
                 showCollectionKind={(catalog?.collections.length ?? 0) > 0}
-                loading={loading && !catalog}
+                loading={loading && !catalog && !loadError}
                 autoFocusSearch
+                emptyState={
+                  loadError && !catalog ? (
+                    <ErrorState
+                      space="panel"
+                      message={PLUGINS_LOAD_ERROR}
+                      onRetry={onRetryLoad}
+                      retrying={loading}
+                      testId="remote-control-plugins-load-error"
+                      retryTestId="remote-control-plugins-load-retry"
+                    />
+                  ) : undefined
+                }
                 providerIconScope={
                   providerType === 'claude' || providerType === 'codex'
                     ? providerType
@@ -1372,7 +1441,7 @@ const RemoteControlPluginsPickerContent = memo(
                   </div>
                 </div>
               )}
-              {!loading && !catalog && (
+              {!loading && !catalog && !loadError && (
                 <p className="py-2 text-center text-xs fg-secondary">
                   No plugins are available from {brandDisplayName}.
                 </p>

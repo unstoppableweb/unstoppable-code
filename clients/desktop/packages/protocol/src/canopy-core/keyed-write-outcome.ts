@@ -7,8 +7,12 @@ import type { CanopyErrorPayload } from './errors';
  * unless it carries a not-applied mark ({@link NOT_APPLIED_MARKS}) that a
  * surveyed producer sets only before any write. A running rebuild's refusal
  * before any post, by its exact code, is a refusal too. A producer nobody has
- * surveyed reads unknown. Nothing is ever sent again on its own: the caller
- * reads what stands. {@link KEYED_WRITE_OUTCOME_SHAPES} pins each shape.
+ * surveyed reads unknown. An internal failure with no code, whatever its
+ * retry, is unknown too (CAN-7470): it is how a client reads a reply it
+ * couldn't use, and how a host reports a fault it didn't type, so the write
+ * may have landed. A definite internal refusal carries its code. Nothing is
+ * ever sent again on its own: the caller reads what stands.
+ * {@link KEYED_WRITE_OUTCOME_SHAPES} pins each shape.
  */
 export function isUnknownKeyedWriteOutcome(
   payload: CanopyErrorPayload,
@@ -16,6 +20,7 @@ export function isUnknownKeyedWriteOutcome(
   if (isRebuildAdmissionRefusal(payload)) return false;
   if (payload.kind === 'unavailable' && payload.retry.kind === 'never')
     return true;
+  if (payload.kind === 'internal' && payload.code === undefined) return true;
   return (
     payload.retry.kind === 'same_idempotency_key' && !isNotApplied(payload)
   );
@@ -288,5 +293,27 @@ export const KEYED_WRITE_OUTCOME_SHAPES: readonly KeyedWriteOutcomeShape[] = [
   shape('refused', false, 'never retries', 'failed_precondition', {
     kind: 'never',
   }),
-  shape('internal', false, 'never retries', 'internal', { kind: 'never' }),
+  // An internal failure: unknown unless its producer typed it (CAN-7470).
+  shape(
+    'an untyped internal, never retried',
+    true,
+    'packages/core-client/src/client.ts:607-608 (an invalid result), :838 (an undeclared error), :860 (a lease eviction)',
+    'internal',
+    { kind: 'never' },
+  ),
+  shape(
+    'an untyped internal, same request',
+    true,
+    'none: guards that the retry hint does not matter',
+    'internal',
+    { kind: 'same_request' },
+  ),
+  shape(
+    'an internal with a typed code, never retried',
+    false,
+    "apps/web/src/lib/web-core/cloud-run-definitions.ts:386-392 (a stored package that can't be pinned)",
+    'internal',
+    { kind: 'never' },
+    { code: 'core.pipeline.definitionInvalid' },
+  ),
 ];

@@ -54,6 +54,7 @@ export function LedgerEntryTypePicker({
         aria-labelledby={`${labelId} ${valueId}`}
         data-testid="ledger-entry-form-type"
         data-type={value}
+        coarsePointerTarget
         className="w-full justify-between"
         onClick={() => setOpen((previous) => !previous)}
       >

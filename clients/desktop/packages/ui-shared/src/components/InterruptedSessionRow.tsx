@@ -127,6 +127,12 @@ export function InterruptedSessionRow({
     <>
       {context ? (
         <p
+          // A title would leak masked text past replay privacy.
+          title={
+            !replayMaskContext && typeof context === 'string'
+              ? context
+              : undefined
+          }
           className={`truncate text-xs fg-secondary ${replayMaskContext ? REPLAY_MASK_CLASS : ''}`}
         >
           {context}
@@ -136,14 +142,14 @@ export function InterruptedSessionRow({
         <p
           id={metadataId}
           data-testid={metadataTestId}
-          className="text-xs fg-secondary"
+          className="text-xs text-pretty fg-secondary"
         >
           {metadata}
         </p>
       ) : null}
       {secondaryMetadata ? (
         <p
-          className={`break-words text-xs fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
+          className={`break-words text-xs text-pretty fg-secondary ${replayMaskSecondaryMetadata ? REPLAY_MASK_CLASS : ''}`}
         >
           {secondaryMetadata}
         </p>
@@ -155,7 +161,7 @@ export function InterruptedSessionRow({
       data-testid={testId}
       role={role}
       aria-live={ariaLive}
-      className={`flex items-start ${LAYOUT_CLASS[layout]} ${INDENT_CLASS[indent]}${separated ? ' border-t border-[var(--line-base)]' : ''}`}
+      className={`flex items-start ${LAYOUT_CLASS[layout]} ${INDENT_CLASS[indent]}${separated ? ' border-t' : ''}`}
     >
       {selection ? null : leading}
       <div className="min-w-0 flex-1">

@@ -1449,7 +1449,7 @@ function ChatsSectionWorkEntryRow({
                       status={unavailableStatus}
                     />
                   )}
-                  {/* The notification renderer already includes Select item.
+                  {/* The notification renderer already includes Select multiple.
                       Without notifications, reuse those same standard rows. */}
                   {offersSelectItem && !mountsNotifications && (
                     <WorkEntryRowMenuItems menu={menuContext} />

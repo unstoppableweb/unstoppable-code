@@ -966,7 +966,7 @@ exports[`with organization projects on, the unconfigured default capability pack
       "blockers": [
         {
           "code": "SUSPECTED_SECRET",
-          "message": "A dependency file may contain a credential.",
+          "message": "The skill "deploy-keys" looks like it contains a secret (a credential value in SKILL.md). Remove it, or replace it with a placeholder such as \${{ secrets.NAME }}, then share again.",
           "occurrences": [],
           "relativePath": "SKILL.md",
           "subject": "SKILL.md",
@@ -1065,7 +1065,7 @@ exports[`with organization projects on, the unconfigured default capability pack
       "failure": {
         "commitState": "not-committed",
         "kind": "dependency-review",
-        "message": "Dependencies are not ready to package. Resolve the listed problems first.",
+        "message": "The skill "deploy-keys" looks like it contains a secret (a credential value in SKILL.md). Remove it, or replace it with a placeholder such as \${{ secrets.NAME }}, then share again.",
         "retryable": false,
         "stage": "prepare",
         "version": 1,

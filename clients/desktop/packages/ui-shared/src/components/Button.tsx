@@ -170,7 +170,11 @@ interface LinkButtonProps
   pressedHover?: undefined;
   quietWhenDisabled?: undefined;
   readOnlyAppearance?: undefined;
-  touchArea?: undefined;
+  /**
+   * A text link keeps its own box by default. `expanded` grows it to 44px
+   * tall on a touch screen, for a link with room above and below it.
+   */
+  touchArea?: ButtonTouchArea;
   railPlacement?: undefined;
 }
 
@@ -263,7 +267,7 @@ const VARIANT_CLASS_NAMES: Record<ButtonVariant, string> = {
 // height, padding, radius or label size applies, and it does not press-scale.
 // Same ink as `ExternalTextLink`, so a link and a link action match.
 const LINK_CLASS_NAME =
-  'focus-ring rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:not-data-[busy-appearance=preserved]:fg-disabled aria-disabled:cursor-not-allowed aria-disabled:not-data-[busy-appearance=preserved]:opacity-60';
+  'focus-ring rounded font-medium fg-accent hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:not-data-[busy-appearance=preserved]:fg-disabled aria-disabled:cursor-not-allowed aria-disabled:no-underline aria-disabled:not-data-[busy-appearance=preserved]:opacity-60';
 
 // Shape and label size belong to the size, so the pill and the field
 // rectangle never carry each other's radius or type.
@@ -307,6 +311,9 @@ const COARSE_HIT_X_CLASS_NAMES: Record<ButtonSize, string> = {
   compact: 'pointer-coarse:before:-inset-x-2',
   field: 'pointer-coarse:before:-inset-x-2',
 };
+
+const COARSE_LINK_HIT_CLASS_NAME =
+  "pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:-inset-y-3.5 pointer-coarse:before:content-['']";
 
 const LABEL_SIZE_CLASS_NAMES: Record<ButtonSize, string> = {
   sm: 'px-2.5',
@@ -432,7 +439,7 @@ export function buttonClassName({
   pressedHover = false,
   quietWhenDisabled = false,
   readOnlyAppearance = false,
-  touchArea = 'expanded',
+  touchArea,
   className = '',
 }: {
   variant?: ButtonVariant | ButtonLinkVariant | CostRowButtonVariant;
@@ -453,7 +460,13 @@ export function buttonClassName({
       variant === 'cost-row-stack' ? 'flex-col gap-1.5' : 'items-center gap-3';
     return `flex w-full rounded-md px-2 py-2 text-left text-xs pointer-coarse:min-h-11 ${layout} focus-ring transition-colors hover:bg-subtle ${className}`;
   }
-  if (variant === 'link') return `${LINK_CLASS_NAME} ${className}`;
+  if (variant === 'link') {
+    const touch =
+      touchArea === 'expanded'
+        ? `${positionsItself(className) ? '' : 'relative '}${COARSE_LINK_HIT_CLASS_NAME} `
+        : '';
+    return `${touch}${LINK_CLASS_NAME} ${className}`;
+  }
   const position = positionsItself(className) ? '' : 'relative ';
   const radiusClassName =
     iconShape === 'nested'
@@ -471,8 +484,8 @@ export function buttonClassName({
     readOnlyAppearance ? READ_ONLY_CLASS_NAME : ARIA_DISABLED_DIM_CLASS_NAME,
     groupHover ? GROUP_HOVER_CLASS_NAMES[variant] : '',
     pressedHover ? PRESSED_HOVER_CLASS_NAMES[variant] : '',
-    touchArea === 'expanded' ? COARSE_HIT_Y_CLASS_NAMES[size] : '',
-    touchArea === 'expanded' && iconOnly ? COARSE_HIT_X_CLASS_NAMES[size] : '',
+    touchArea !== 'contained' ? COARSE_HIT_Y_CLASS_NAMES[size] : '',
+    touchArea !== 'contained' && iconOnly ? COARSE_HIT_X_CLASS_NAMES[size] : '',
   ]
     .filter(Boolean)
     .join(' ');
@@ -562,7 +575,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       quietWhenDisabled = false,
       readOnlyAppearance = false,
       busyAppearance = 'default',
-      touchArea = 'expanded',
+      touchArea,
       railPlacement,
       type = 'button',
       className = '',

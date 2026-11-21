@@ -5,7 +5,8 @@ import type { JSX } from 'react';
 
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { Skeleton } from './Skeleton';
-import { ErrorBanner } from './StatusBlocks';
+import { EmptyStateText, ErrorBanner } from './StatusBlocks';
+import { Surface } from './Surface';
 import { Fact, FactList } from './FactList';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
@@ -111,7 +112,7 @@ function PluginSectionCard({
 }): JSX.Element {
   const author = pluginSectionAuthor(server, context.plugin);
   return (
-    <div className="flex flex-col gap-2 rounded-lg border bg-secondary/20 px-4 py-3">
+    <Surface variant="group" padding="default" gap="inline">
       {/* One label width for both lists, so their values line up. */}
       <FactList labelWidth="6rem" rowGap="2" labelTone="secondary">
         <Fact label="Plugin">
@@ -176,7 +177,7 @@ function PluginSectionCard({
           </Fact>
         )}
       </FactList>
-    </div>
+    </Surface>
   );
 }
 
@@ -218,6 +219,11 @@ export function PluginSection({
         <ErrorBanner errorSource="plugin-section" className="" error={error} />
         {!loading && !error && context && (
           <PluginSectionCard server={server} context={context} />
+        )}
+        {!loading && !error && !context && (
+          <p className="text-s">
+            <EmptyStateText title="Plugin details aren't available." />
+          </p>
         )}
       </div>
     </Stack>
@@ -343,10 +349,7 @@ function StandaloneConfigCards({
   return (
     <Stack gap="inline">
       {configs.map((config) => (
-        <div
-          key={config.id}
-          className="rounded-lg border bg-secondary/20 px-3 py-2 flex flex-col gap-1"
-        >
+        <Surface key={config.id} variant="group" padding="compact" gap="tight">
           <div className="flex items-center gap-2">
             <span className="text-s font-medium fg-primary">{config.name}</span>
             <Badge tone={config.enabled ? 'success' : 'neutral'}>
@@ -357,7 +360,7 @@ function StandaloneConfigCards({
             <p className="text-xs fg-secondary">{config.description}</p>
           )}
           <McpConfigFacts config={config} />
-        </div>
+        </Surface>
       ))}
     </Stack>
   );
@@ -402,11 +405,18 @@ export function StandaloneConfigsSection({
         {!loading && !error && serverData && (
           <>
             {serverData.configs.length === 0 ? (
-              <p className="text-xs italic fg-secondary">No configurations.</p>
+              <p className="text-xs">
+                <EmptyStateText title="No configurations." tone="secondary" />
+              </p>
             ) : (
               <StandaloneConfigCards configs={serverData.configs} />
             )}
           </>
+        )}
+        {!loading && !error && !serverData && (
+          <p className="text-xs">
+            <EmptyStateText title="Configurations aren't available." />
+          </p>
         )}
       </div>
     </Stack>

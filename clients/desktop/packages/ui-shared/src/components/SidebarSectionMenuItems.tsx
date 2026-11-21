@@ -1,4 +1,4 @@
-import type { JSX, ReactNode } from 'react';
+import { useId, type JSX, type ReactNode } from 'react';
 type SidebarSortMode = 'manual' | 'last-updated';
 import {
   DropdownMenuDivider,
@@ -49,24 +49,28 @@ export function SidebarSortMenuItems({
   dividerAfter = false,
 }: SidebarSortMenuItemsProps): JSX.Element {
   const resolved = mode === 'last-updated' ? mode : 'manual';
+  const labelId = useId();
   return (
     <>
       {divider && <DropdownMenuDivider />}
-      <DropdownMenuLabel>{label}</DropdownMenuLabel>
-      {SORT_MODE_OPTIONS.map((option) => (
-        <DropdownMenuItem
-          key={option.mode}
-          data-testid={`${testIdPrefix}-${option.mode}`}
-          aria-checked={resolved === option.mode}
-          role="menuitemradio"
-          onClick={(): void => onSelect(option.mode)}
-        >
-          <DropdownMenuItemIcon>
-            {resolved === option.mode ? <CheckIcon size="md" /> : null}
-          </DropdownMenuItemIcon>
-          <span className="truncate">{option.label}</span>
-        </DropdownMenuItem>
-      ))}
+      <DropdownMenuLabel id={labelId}>{label}</DropdownMenuLabel>
+      {/* One radio set per heading, read with that heading. */}
+      <div role="group" aria-labelledby={labelId} className="contents">
+        {SORT_MODE_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.mode}
+            data-testid={`${testIdPrefix}-${option.mode}`}
+            aria-checked={resolved === option.mode}
+            role="menuitemradio"
+            onClick={(): void => onSelect(option.mode)}
+          >
+            <DropdownMenuItemIcon>
+              {resolved === option.mode ? <CheckIcon size="md" /> : null}
+            </DropdownMenuItemIcon>
+            <span className="truncate">{option.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </div>
       {dividerAfter && <DropdownMenuDivider />}
     </>
   );
@@ -139,51 +143,54 @@ export function SidebarProjectVisibilityMenuItems({
   hiddenWorkspaceIds,
   onChange,
 }: SidebarProjectVisibilityMenuItemsProps): JSX.Element | null {
+  const labelId = useId();
   if (options.length < 2) return null;
   const hidden = new Set(hiddenWorkspaceIds);
   return (
     <>
       <DropdownMenuDivider />
-      <DropdownMenuLabel>Show projects</DropdownMenuLabel>
-      {options.map((option) => {
-        const visible = !hidden.has(option.id);
-        return (
-          <DropdownMenuItem
-            key={option.id}
-            role="menuitemcheckbox"
-            aria-checked={visible}
-            data-testid={`sidebar-projects-show-${option.id}`}
-            onClick={(): void => {
-              const next = new Set(hidden);
-              if (next.has(option.id)) next.delete(option.id);
-              else next.add(option.id);
-              onChange([...next]);
-            }}
-          >
-            <DropdownMenuItemIcon
-              data-testid={`sidebar-projects-show-check-${option.id}`}
+      <DropdownMenuLabel id={labelId}>Show projects</DropdownMenuLabel>
+      <div role="group" aria-labelledby={labelId} className="contents">
+        {options.map((option) => {
+          const visible = !hidden.has(option.id);
+          return (
+            <DropdownMenuItem
+              key={option.id}
+              role="menuitemcheckbox"
+              aria-checked={visible}
+              data-testid={`sidebar-projects-show-${option.id}`}
+              onClick={(): void => {
+                const next = new Set(hidden);
+                if (next.has(option.id)) next.delete(option.id);
+                else next.add(option.id);
+                onChange([...next]);
+              }}
             >
-              {visible ? <CheckIcon /> : null}
-            </DropdownMenuItemIcon>
-            <DropdownMenuItemIcon
-              data-testid={`sidebar-projects-show-icon-${option.id}`}
-            >
-              {option.icon}
-            </DropdownMenuItemIcon>
-            <span
-              className="min-w-0 flex-1 truncate"
-              data-testid={`sidebar-projects-show-label-${option.id}`}
-            >
-              {option.name}
-            </span>
-            <DropdownMenuItemTrailing
-              data-testid={`sidebar-projects-show-count-${option.id}`}
-            >
-              {option.worktreeCount}
-            </DropdownMenuItemTrailing>
-          </DropdownMenuItem>
-        );
-      })}
+              <DropdownMenuItemIcon
+                data-testid={`sidebar-projects-show-check-${option.id}`}
+              >
+                {visible ? <CheckIcon /> : null}
+              </DropdownMenuItemIcon>
+              <DropdownMenuItemIcon
+                data-testid={`sidebar-projects-show-icon-${option.id}`}
+              >
+                {option.icon}
+              </DropdownMenuItemIcon>
+              <span
+                className="min-w-0 flex-1 truncate"
+                data-testid={`sidebar-projects-show-label-${option.id}`}
+              >
+                {option.name}
+              </span>
+              <DropdownMenuItemTrailing
+                data-testid={`sidebar-projects-show-count-${option.id}`}
+              >
+                {option.worktreeCount}
+              </DropdownMenuItemTrailing>
+            </DropdownMenuItem>
+          );
+        })}
+      </div>
     </>
   );
 }

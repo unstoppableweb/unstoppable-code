@@ -40,7 +40,9 @@ import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
-import { ErrorBanner } from './StatusBlocks';
+import { EmptyStateText, ErrorBanner } from './StatusBlocks';
+import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
 import { StatusToneText, useItemStateMarks } from './ItemStateMark';
@@ -299,6 +301,13 @@ function ComponentContentView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [errorDetails, setErrorDetails] = useState('');
+  const [retryKey, setRetryKey] = useState(0);
+  const titleRef = useRef<HTMLHeadingElement>(null);
+
+  // The opener unmounts, so focus moves to what it opened.
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -335,7 +344,7 @@ function ComponentContentView({
     };
     // `activeFacet` is deliberately keyed by value via `readKey` (see prop
     // doc); the latest facet object is still read at call time.
-  }, [componentType, componentFile, readKey, onReadComponent]);
+  }, [componentType, componentFile, readKey, onReadComponent, retryKey]);
 
   // The component file is file content, so session replay keeps a
   // placeholder for it. MarkdownFrontmatterContent renders a fragment, so an
@@ -344,8 +353,10 @@ function ComponentContentView({
   return (
     <Stack gap="group" className="min-w-0">
       <Title
+        ref={titleRef}
         id="plugin-detail-title"
-        className="text-lg font-semibold fg-primary"
+        tabIndex={-1}
+        className="break-words text-lg font-semibold fg-primary outline-none"
       >
         {name}
       </Title>
@@ -358,6 +369,11 @@ function ComponentContentView({
           errorDetails={errorDetails}
           content={content}
           emptyText="This component has no content."
+          onRetry={() => {
+            // The banner and its button unmount while the content reloads.
+            titleRef.current?.focus();
+            setRetryKey((key) => key + 1);
+          }}
         />
         {content?.truncated === true && <TruncatedNotice />}
       </div>
@@ -391,6 +407,7 @@ function ReadmeSection({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [errorDetails, setErrorDetails] = useState('');
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   const loadContent = async (): Promise<void> => {
     setLoading(true);
@@ -426,7 +443,7 @@ function ReadmeSection({
       return;
     }
     setExpanded(true);
-    if (content !== null) return;
+    if (content !== null || loading) return;
     await loadContent();
   };
 
@@ -442,21 +459,34 @@ function ReadmeSection({
       onOpenChange={() => void handleToggle()}
       dataTestId="plugin-detail-readme"
     >
-      {loading && <p className="text-s fg-secondary">Loading README&hellip;</p>}
-      <ErrorBanner
-        errorSource="readme-section"
-        className=""
-        error={error}
-        {...(errorDetails ? { details: errorDetails } : {})}
-      />
-      {content !== null && !loading && (
-        <div
-          className={`${REPLAY_BLOCK_CLASS} canopy-readme-prose prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_code]:bg-secondary [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h2]:text-s [&_h2]:font-semibold [&_h3]:text-s [&_h3]:font-medium [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
-        >
-          <Markdown options={markdownOptions}>{content}</Markdown>
-        </div>
-      )}
-      {content !== null && !loading && truncated && <TruncatedNotice />}
+      {/* Takes focus when a retry unmounts the error banner. */}
+      <div ref={bodyRef} tabIndex={-1} role="group" aria-label="README">
+        {loading && (
+          // A spinner, not a measured skeleton: the README's shape is unknown until it loads.
+          <DelayedLoadingPlaceholder slowNote="Still loading README…">
+            <CenteredLoadingSpinner spacing="section" />
+          </DelayedLoadingPlaceholder>
+        )}
+        <ErrorBanner
+          errorSource="readme-section"
+          className=""
+          error={error}
+          {...(errorDetails ? { details: errorDetails } : {})}
+          onRetry={() => {
+            // The banner and its button unmount while the README reloads.
+            bodyRef.current?.focus();
+            void loadContent();
+          }}
+        />
+        {content !== null && !loading && (
+          <div
+            className={`${REPLAY_BLOCK_CLASS} canopy-readme-prose prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_:not(pre)>code]:bg-secondary [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded prose-pre:fg-primary/80 [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h2]:text-s [&_h2]:font-semibold [&_h3]:text-s [&_h3]:font-medium [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_img]:outline-1 [&_img]:-outline-offset-1 [&_img]:outline-line-base [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
+          >
+            <Markdown options={markdownOptions}>{content}</Markdown>
+          </div>
+        )}
+        {content !== null && !loading && truncated && <TruncatedNotice />}
+      </div>
     </Disclosure>
   );
 }
@@ -671,6 +701,28 @@ export function PluginDetailContent({
   const [viewingComponent, setViewingComponent] = useState<ComponentRef | null>(
     null,
   );
+  // The row that opened the component view, so Back can focus it again.
+  const openerKey = useRef<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const openComponent = (component: ComponentRef): void => {
+    const active = document.activeElement;
+    openerKey.current =
+      active
+        ?.closest('[data-component-opener]')
+        ?.getAttribute('data-component-opener') ?? null;
+    setViewingComponent(component);
+  };
+  useEffect(() => {
+    const key = openerKey.current;
+    if (viewingComponent !== null || key === null) return;
+    openerKey.current = null;
+    Array.from(
+      rootRef.current?.querySelectorAll('[data-component-opener]') ?? [],
+    )
+      .find((opener) => opener.getAttribute('data-component-opener') === key)
+      ?.querySelector<HTMLElement>('button')
+      ?.focus();
+  }, [viewingComponent]);
 
   const slots = useMemo(() => collectFacets(plugin), [plugin]);
 
@@ -957,7 +1009,7 @@ export function PluginDetailContent({
   );
 
   return (
-    <div className="flex min-w-0 flex-col gap-6">
+    <div ref={rootRef} className="flex min-w-0 flex-col gap-6">
       {(!layout || showBack) && chrome}
 
       {/* Plugin metadata */}
@@ -1150,7 +1202,7 @@ export function PluginDetailContent({
                       description: s.description,
                       harnesses,
                       onOpen: () =>
-                        setViewingComponent({
+                        openComponent({
                           name: s.name,
                           componentType: 'skill',
                           file: `${s.path}/SKILL.md`,
@@ -1173,7 +1225,7 @@ export function PluginDetailContent({
                         harnesses,
                         onOpen: a.filePath
                           ? () =>
-                              setViewingComponent({
+                              openComponent({
                                 name: a.name,
                                 componentType: 'agent',
                                 file: a.filePath,
@@ -1200,7 +1252,7 @@ export function PluginDetailContent({
                         harnesses,
                         onOpen: c.filePath
                           ? () =>
-                              setViewingComponent({
+                              openComponent({
                                 name: c.name,
                                 componentType: 'command',
                                 file: c.filePath,
@@ -1225,7 +1277,7 @@ export function PluginDetailContent({
                         harnesses,
                         onOpen: a.filePath
                           ? () =>
-                              setViewingComponent({
+                              openComponent({
                                 name: a.name,
                                 componentType: 'app',
                                 file: a.filePath,
@@ -1351,7 +1403,9 @@ export function PluginDetailContent({
             </>
           ) : !displayDetails.hasReadme ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <p className="text-s fg-secondary">No components found.</p>
+              <p className="text-s">
+                <EmptyStateText title="No components found." tone="secondary" />
+              </p>
             </div>
           ) : null}
         </div>
@@ -1394,7 +1448,7 @@ export function PluginDetailContent({
                     description: s.description,
                     harnesses,
                     onOpen: (): void =>
-                      setViewingComponent({
+                      openComponent({
                         name: s.name,
                         componentType: 'skill',
                         file: `${s.path}/SKILL.md`,
@@ -1419,7 +1473,7 @@ export function PluginDetailContent({
                       harnesses,
                       onOpen: item.filePath
                         ? (): void =>
-                            setViewingComponent({
+                            openComponent({
                               name: item.name,
                               componentType,
                               file: item.filePath,
@@ -1462,7 +1516,9 @@ export function PluginDetailContent({
                 ]}
               />
             ) : displayDetails && !displayDetails.hasReadme ? (
-              <p className="text-s fg-secondary">No components found.</p>
+              <p className="text-s">
+                <EmptyStateText title="No components found." tone="secondary" />
+              </p>
             ) : null}
           </ComponentSection>
         )}
@@ -1550,11 +1606,13 @@ function NameDescriptionTable({
           overflow: 'wrap',
           render: (item) =>
             item.onOpen ? (
-              <ClickableName
-                name={item.command ?? item.name}
-                mono={item.command !== undefined}
-                onClick={item.onOpen}
-              />
+              <span data-component-opener={item.key}>
+                <ClickableName
+                  name={item.command ?? item.name}
+                  mono={item.command !== undefined}
+                  onClick={item.onOpen}
+                />
+              </span>
             ) : (
               <span
                 className={
@@ -1655,11 +1713,13 @@ export function PluginContentsTable({
       </DataTableCell>
       <DataTableCell tone="primary" overflow="wrap">
         {row.onOpen ? (
-          <ClickableName
-            name={row.command ?? row.name}
-            mono={row.command !== undefined}
-            onClick={row.onOpen}
-          />
+          <span data-component-opener={row.key}>
+            <ClickableName
+              name={row.command ?? row.name}
+              mono={row.command !== undefined}
+              onClick={row.onOpen}
+            />
+          </span>
         ) : (
           <span
             className={`${
@@ -1695,13 +1755,13 @@ export function PluginContentsTable({
           {hasCommands && commandHint ? (
             <span className="inline-flex items-center gap-1">
               Name or command
-              <Tooltip label={commandHint}>
+              <Tooltip label={commandHint} showOnPress showOnTouch>
                 <span
                   tabIndex={0}
                   aria-label={commandHint}
                   role="img"
                   data-testid="plugin-detail-contents-hint-name"
-                  className="focus-ring inline-flex rounded-sm fg-tertiary"
+                  className="focus-ring relative inline-flex rounded-sm fg-tertiary pointer-coarse:before:absolute pointer-coarse:before:-inset-x-4 pointer-coarse:before:-top-4 pointer-coarse:before:bottom-0 pointer-coarse:before:content-['']"
                 >
                   <IconCircleQuestionmark size={12} />
                 </span>

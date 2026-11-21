@@ -129,6 +129,8 @@ export function PanelSection({
   const hasDraggable = headerProps !== undefined;
   const headerSpread: Record<string, unknown> = headerProps ?? {};
   const titleRowClassName = 'flex min-w-0 items-center gap-3 text-left';
+  // A truncated plain-text title keeps its full text in a native tooltip.
+  const titleText = typeof title === 'string' ? title : undefined;
   const titleIcon = (
     <span
       className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
@@ -165,8 +167,13 @@ export function PanelSection({
       data-collapsible={collapsible ? 'true' : 'false'}
     >
       <div
+        // On touch, the 20px title row grows into the card's 12px padding so
+        // the toggle reaches 44px; `isolate` keeps that layer under the
+        // header's own controls but above the card fill.
         className={`group/section-header relative grid select-none grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 ${SUBTITLE_GAP_CLASS[subtitleGap]}${
-          collapsible ? ' cursor-pointer' : ''
+          collapsible
+            ? " cursor-pointer pointer-coarse:isolate pointer-coarse:before:absolute pointer-coarse:before:-inset-3 pointer-coarse:before:-z-10 pointer-coarse:before:content-['']"
+            : ''
         }${hasDraggable ? ' active:cursor-grabbing' : ''}`}
         {...headerSpread}
         data-panel-section-header
@@ -202,6 +209,7 @@ export function PanelSection({
               {titleIcon}
               <span
                 className="min-w-0 flex-1 truncate"
+                title={titleText}
                 data-panel-section-title
               >
                 {title}
@@ -219,6 +227,7 @@ export function PanelSection({
               variant="title"
               truncate
               className="min-w-0 flex-1"
+              title={titleText}
               data-panel-section-title
             >
               {title}
