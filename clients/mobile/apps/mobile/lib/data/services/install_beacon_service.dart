@@ -108,6 +108,18 @@ final class InstallBeaconService {
     return null;
   }
 
+  /// Whether this install has not yet reported its beacon, i.e. this is its
+  /// first launch as far as the beacon knows. Read it before
+  /// [reportFirstLaunchIfNeeded] starts: that flips the marker once the server
+  /// accepts. Throws when the platform is unsupported or the marker cannot be
+  /// read, so callers can tell unknown apart from false.
+  Future<bool> isFirstLaunch() async {
+    if (_platform == null) {
+      throw StateError('Install beacon is unsupported on this platform');
+    }
+    return !await _markerStore.hasReported();
+  }
+
   /// Posts the first-launch beacon unless this install already reported.
   ///
   /// The persisted flag is written only after the server accepts the report, so

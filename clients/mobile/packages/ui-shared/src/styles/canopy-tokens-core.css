@@ -850,6 +850,21 @@ body {
   font-weight: var(--font-weight-medium);
 }
 
+/* Prose rules, table lines and captions use theme tokens on both hosts, with
+ * or without `prose-invert`, instead of the plugin's fixed grays. */
+.prose {
+  --tw-prose-hr: var(--line-base);
+  --tw-prose-quote-borders: var(--line-base);
+  --tw-prose-th-borders: var(--line-base);
+  --tw-prose-td-borders: var(--line-secondary);
+  --tw-prose-captions: var(--fg-tertiary);
+  --tw-prose-invert-hr: var(--line-base);
+  --tw-prose-invert-quote-borders: var(--line-base);
+  --tw-prose-invert-th-borders: var(--line-base);
+  --tw-prose-invert-td-borders: var(--line-secondary);
+  --tw-prose-invert-captions: var(--fg-tertiary);
+}
+
 .font-mono {
   font-family: var(--font-mono);
 }
@@ -862,7 +877,7 @@ body {
 .canopy-pr-label {
   background-color: var(--pr-label-bg);
   color: var(--pr-label-fg);
-  border: 0.5px solid var(--pr-label-border);
+  border: var(--border-hairline) solid var(--pr-label-border);
 }
 
 .dark .canopy-pr-label {
@@ -1132,6 +1147,60 @@ body {
  * scrollbars are hidden at rest; `DataTableFrame` sets the attribute only
  * while the table is wider than the card. The focused region drops the fade
  * so its inset ring stays whole. */
+/*
+ * A plain DataTable's hairlines under its header and between rows. Its rows
+ * bleed 8px into the surface inset for their hover fill, so a row border
+ * would overshoot the text; the line is drawn on the cells instead and stops
+ * where the text does, like the surface's own section dividers. The
+ * header's line rides on the pinned header, so it stays while rows scroll.
+ * A row's lines give way beside an activatable row's rounded hover fill.
+ */
+.data-table-plain-row + .data-table-plain-row > td {
+  background-image: linear-gradient(var(--line-base), var(--line-base));
+  background-repeat: no-repeat;
+  background-position: top;
+  background-size: 100% var(--border-hairline);
+}
+
+.data-table-plain-row + .data-table-plain-row > td:first-child {
+  background-position: right top;
+  background-size: calc(100% - 0.5rem) var(--border-hairline);
+}
+
+.data-table-plain-row + .data-table-plain-row > td:last-child {
+  background-position: left top;
+  background-size: calc(100% - 0.5rem) var(--border-hairline);
+}
+
+/* The header's line is a hard stop in a full-height gradient: a hairline
+ * tile placed at the cell's foot lands on a half pixel and is snapped off. */
+.data-table-plain-head > th {
+  background-image: linear-gradient(
+    to top,
+    var(--line-base) var(--border-hairline),
+    transparent var(--border-hairline)
+  );
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.data-table-plain-head > th:first-child {
+  background-position: right;
+  background-size: calc(100% - 0.5rem) 100%;
+}
+
+.data-table-plain-head > th:last-child {
+  background-position: left;
+  background-size: calc(100% - 0.5rem) 100%;
+}
+
+.data-table-plain-row-activatable:hover > td,
+.data-table-plain-row-activatable:hover + .data-table-plain-row > td,
+.data-table-plain-row[aria-current='true'] > td,
+.data-table-plain-row[aria-current='true'] + .data-table-plain-row > td {
+  background-image: none;
+}
+
 .data-table-scroll {
   --data-table-fade: 2rem;
 }
@@ -1179,7 +1248,8 @@ body {
   );
 }
 
-.data-table-scroll[data-overflow]:focus-visible {
+.data-table-scroll[data-overflow]:focus-visible,
+.data-table-scroll[data-overflow]:has(:focus-visible) {
   -webkit-mask-image: none;
   mask-image: none;
 }
@@ -1385,6 +1455,30 @@ body {
    */
   padding-top: 0;
   padding-bottom: 0;
+}
+
+/*
+ * A popover's footer band (`Surface variant="popover-footer"`). The popover
+ * draws its edge as the inset ring in --shadow-xl, which paints under its
+ * children's fills, so the band's fill would cover the edge along the sides
+ * and foot. Repeat the surface shadow over the band, clipped to the band
+ * below its own top border, so the edge draws around the whole popover. The
+ * band's foot follows the popover's 12px corners.
+ */
+.canopy-popover-footer {
+  position: relative;
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+
+.canopy-popover-footer::after {
+  content: '';
+  position: absolute;
+  inset: -1rem 0 0;
+  border-radius: inherit;
+  box-shadow: var(--shadow-xl);
+  clip-path: inset(1rem 0 0);
+  pointer-events: none;
 }
 
 /* Keep the surface's inset edge above the opaque provider rail. Repeat the
@@ -2272,4 +2366,34 @@ body {
 
 [skullet-loading][data-inline-static] {
   --skullet-animation: none;
+}
+
+/* The media viewer's ground (MediaViewer): black in both modes, as in a
+ * photo viewer, so a picture reads against the same ground whatever the
+ * app's appearance. The scope re-points the ink, fill and line tokens to
+ * white on that black, so the shared controls on it (Button, the thumbnail
+ * strip) draw unchanged.
+ *
+ * Token adapter, a documented exception to "no raw color values"
+ * (docs/design/colors.md, Never): no role is constant across themes, and a
+ * theme-following role (bg-inverse turns white in dark) would put the
+ * picture on a different ground per theme. The values are white alphas over
+ * black only, and nothing outside this scope reads them. */
+@utility media-scope {
+  --fg-primary: rgb(255 255 255 / 0.94);
+  --fg-secondary: rgb(255 255 255 / 0.72);
+  --fg-tertiary: rgb(255 255 255 / 0.56);
+  --fg-quaternary: rgb(255 255 255 / 0.4);
+  --fg-disabled: rgb(255 255 255 / 0.28);
+  --bg-subtle: rgb(255 255 255 / 0.1);
+  --bg-muted: rgb(255 255 255 / 0.16);
+  --bg-secondary: rgb(255 255 255 / 0.08);
+  /* The secondary control surface (the stage's Open in default app button):
+   * a light theme fills it white, which hid the button's white label. */
+  --bg-quaternary: rgb(255 255 255 / 0.14);
+  --line-base: rgb(255 255 255 / 0.16);
+  --line-secondary: rgb(255 255 255 / 0.14);
+  /* Opaque: at 94% the app's own text still read through around a picture. */
+  background-color: rgb(0 0 0);
+  color: var(--fg-primary);
 }

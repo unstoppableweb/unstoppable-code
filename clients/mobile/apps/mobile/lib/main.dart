@@ -73,6 +73,7 @@ import 'package:mobile/data/services/theme_preference_store.dart';
 import 'package:mobile/data/services/start_screen_preference_store.dart';
 import 'package:mobile/data/services/usage_data_preference_store.dart';
 import 'package:mobile/data/services/workspace_context_store.dart';
+import 'package:mobile/services/analytics/app_open_reporter.dart';
 import 'package:mobile/services/analytics/posthog_product_analytics.dart';
 import 'package:mobile/services/analytics/product_analytics.dart';
 import 'package:mobile/services/app_build_info.dart';
@@ -521,11 +522,15 @@ Future<void> main() async {
   );
   // First-launch install beacon. Deliberately NOT awaited: it is best-effort
   // telemetry and startup must never wait on the network for it.
-  unawaited(
-    InstallBeaconService(
-      baseUrlProvider: () => AppConfig.apiBaseUrl,
-    ).reportFirstLaunchIfNeeded(),
+  final installBeacon = InstallBeaconService(
+    baseUrlProvider: () => AppConfig.apiBaseUrl,
   );
+  // Read before the beacon starts: it flips the marker once accepted.
+  final appOpenReporter = AppOpenReporter(
+    analytics: _productAnalytics,
+    isFirstLaunch: installBeacon.isFirstLaunch(),
+  );
+  unawaited(installBeacon.reportFirstLaunchIfNeeded());
   // Anonymous product analytics. Deliberately NOT awaited, like the install
   // beacon: startup never waits on the SDK. Off unless the build enables it.
   const analyticsConfig = ProductAnalyticsConfig(
@@ -539,7 +544,7 @@ Future<void> main() async {
         analyticsConfig,
         isStaging: () => AppConfig.isStaging,
       ).then(
-        (analytics) {
+        (analytics) async {
           _productAnalytics.delegate = analytics;
           _usageDataController.onAnalyticsChanged = (enabled) =>
               unawaited(analytics.setEnabled(enabled));
@@ -547,9 +552,8 @@ Future<void> main() async {
           // itself while it is off. Apply the current choice either way:
           // the SDK persists an opt-out natively, so a choice turned back on
           // before setup finished must re-enable it.
-          unawaited(
-            analytics.setEnabled(_usageDataController.analyticsEnabled),
-          );
+          await analytics.setEnabled(_usageDataController.analyticsEnabled);
+          await appOpenReporter.reportOnce();
         },
         onError: (Object error) =>
             debugPrint('PostHog setup failed, continuing without it: $error'),
