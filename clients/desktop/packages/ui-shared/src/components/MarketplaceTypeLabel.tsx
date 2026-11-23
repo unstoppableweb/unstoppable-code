@@ -19,7 +19,10 @@ import { Tooltip } from './Tooltip';
 import { useItemStateMarks } from './ItemStateMark';
 
 interface MarketplaceTypeLabelProps {
-  readonly kind: UnifiedEntryKind;
+  /** The Customize kind, which picks the mark. Omit with `glyph`. */
+  readonly kind?: UnifiedEntryKind;
+  /** A mark for a part a kind has none for (a command, a hook). */
+  readonly glyph?: ReactNode;
   readonly label: string;
   readonly dataTestId?: string;
 }
@@ -97,6 +100,7 @@ export function DetailEntityType(): JSX.Element | null {
 /** A quiet icon-and-text label for a Customize resource kind. */
 export function MarketplaceTypeLabel({
   kind,
+  glyph,
   label,
   dataTestId,
 }: MarketplaceTypeLabelProps): JSX.Element {
@@ -105,7 +109,7 @@ export function MarketplaceTypeLabel({
       data-testid={dataTestId}
       className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-xs fg-tertiary"
     >
-      {MARKETPLACE_TYPE_GLYPHS[kind]}
+      {glyph ?? (kind ? MARKETPLACE_TYPE_GLYPHS[kind] : null)}
       <span>{label}</span>
     </span>
   );

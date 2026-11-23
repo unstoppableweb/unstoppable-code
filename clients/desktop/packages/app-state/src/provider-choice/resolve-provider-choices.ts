@@ -34,7 +34,7 @@ type UngroupedRow<TModel extends ProviderChoiceModel> = Omit<
 function targetModel<TModel extends ProviderChoiceModel>(
   target: ProviderChoiceTarget<TModel>,
 ): TModel | undefined {
-  return target.model;
+  return target.kind === 'set-up' ? undefined : target.model;
 }
 
 /**
@@ -74,7 +74,10 @@ function modelOutcome<TModel extends ProviderChoiceModel>(
       detail: facts.blockedReason,
     };
   }
-  if (facts.runsTargetModel) return sameModel(target);
+  // Set up has no model to fit: every supported source can be connected.
+  if (facts.runsTargetModel || target.kind === 'set-up') {
+    return sameModel(target);
+  }
   if (target.kind === 'run-model') {
     return { kind: 'unavailable', reason: 'model-not-offered' };
   }
@@ -128,12 +131,13 @@ function accountRow<TModel extends ProviderChoiceModel>(
     };
   }
   const outcome = modelOutcome(facts, target);
-  // A gateway lists its models only once set up, so before that "no runnable
-  // model" still offers Set up, the step that would find one. Subscription
-  // rows know their default without signing in, so signing in would not
-  // find one: they keep "no runnable model".
+  // A gateway (or an own API key, `modelsAfterConnect`) lists its models only
+  // once set up, so before that "no runnable model" still offers Set up or
+  // Connect, the step that would find one. Subscription rows know their
+  // default without signing in, so signing in would not find one: they keep
+  // "no runnable model".
   const notConnectedYet =
-    facts.source === 'gateway' &&
+    (facts.source === 'gateway' || facts.modelsAfterConnect === true) &&
     connection.kind === 'not-connected' &&
     facts.connectable &&
     outcome.kind === 'unavailable' &&
@@ -318,6 +322,40 @@ function compareRows(
 }
 
 /**
+ * A `set-up` row: what the source needs before it can run chats, with no
+ * model to keep. A connected source offers nothing (the host renders its own
+ * Change control); one not connected offers Connect or Set up; credits keep
+ * their purchase while empty. Unsupported and blocked sources still read
+ * unavailable.
+ */
+function setUpRow<TModel extends ProviderChoiceModel>(
+  facts: AnyProviderSourceFacts<TModel>,
+  input: ProviderChoiceInput<TModel>,
+): UngroupedRow<TModel> {
+  if (facts.source === 'credits') {
+    const row = creditsRow(facts, input, false);
+    return row.action === 'use' ? { ...row, action: 'none' } : row;
+  }
+  const outcome = modelOutcome(facts, input.target);
+  const { connection } = facts;
+  const action: ProviderChoiceAction =
+    outcome.kind === 'unavailable' ||
+    connection.kind !== 'not-connected' ||
+    !facts.connectable
+      ? 'none'
+      : facts.source === 'gateway'
+        ? 'set-up'
+        : 'connect';
+  return {
+    source: facts.source,
+    isCurrent: false,
+    connection,
+    outcome,
+    action,
+  };
+}
+
+/**
  * The one decision every provider-choice surface makes: which sources a chat
  * can move to, what each does to its model, which action each row offers,
  * which row a list emphasizes, and the single button a recovery notice
@@ -353,10 +391,27 @@ function compareRows(
  *   but not back after a click. Otherwise Switch provider, or Choose
  *   provider when the chat has no current source. `run-model` entry points
  *   always open the list (Choose provider).
+ * - `set-up` (first run, the web first-visit card): every source the host
+ *   supplies is listed in the host's order, connected ones included, so a
+ *   row never moves when it connects. Each row's `group` is still derived,
+ *   though a flat list ignores it. Nothing is recommended and the primary is
+ *   Choose provider.
  */
 export function resolveProviderChoices<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,
 >(input: ProviderChoiceInput<TModel>): ProviderChoices<TModel> {
+  if (input.target.kind === 'set-up') {
+    const rows = input.sources.map((facts): ProviderChoiceRow<TModel> => {
+      const row = setUpRow(facts, input);
+      return { ...row, group: rowGroup(row) };
+    });
+    return {
+      rows,
+      current: null,
+      recommended: null,
+      primary: { kind: 'choose-provider' },
+    };
+  }
   const grouped = input.sources.map((facts): ProviderChoiceRow<TModel> => {
     const isCurrent = facts.source === input.current;
     const row =

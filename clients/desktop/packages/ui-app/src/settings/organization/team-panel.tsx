@@ -2,7 +2,7 @@
 
 import { ControlButton } from '@canopy/ui-shared/components';
 import { StatusIllustration } from '@canopy/ui-shared/components';
-import { useCallback, useEffect, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Check, Mail, Plus, Users, X } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Stack,
@@ -40,6 +40,7 @@ import { useMembershipChangeFollowUp } from './membership-change';
 import { resolveJoinedOrganization } from './resolve-joined-organization';
 import type { SettingsFailure } from '../errors';
 import { Surface } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 
 export type TeamPanelStatus = 'loading' | 'ready' | 'error';
 
@@ -113,10 +114,28 @@ export function TeamPanel({
   const [pendingDecline, setPendingDecline] =
     useState<IncomingTeamInvitation | null>(null);
 
+  // Generation of the latest refresh; bumped by each refresh and invalidated
+  // on unmount and when the client changes. A refresh a pending response
+  // starts after unmount bumps it again and so matches its own generation,
+  // which is why the lifetime flag is separate: live between this client's
+  // mount and its cleanup.
+  const refreshGenerationRef = useRef(0);
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return (): void => {
+      mountedRef.current = false;
+      refreshGenerationRef.current += 1;
+    };
+  }, [client]);
+
   /** Re-reads the lists; resolves the memberships, or `null` on failure. */
   const refresh = useCallback(async (): Promise<
     OrganizationSummary[] | null
   > => {
+    // A newer refresh, an unmount or a client change supersedes this read.
+    refreshGenerationRef.current += 1;
+    const generation = refreshGenerationRef.current;
     try {
       // A refresh after a loaded list keeps the list on screen; only a panel
       // with nothing to show yet goes back to its skeleton.
@@ -127,7 +146,19 @@ export function TeamPanel({
       const loadInvitations = async (): Promise<IncomingTeamInvitation[]> => {
         try {
           return await listIncomingInvitations(client);
-        } catch {
+        } catch (error: unknown) {
+          // Nothing shows, so this records with no surface. A superseded or
+          // unmounted read is discarded, so its failure is not recorded.
+          if (
+            mountedRef.current &&
+            refreshGenerationRef.current === generation
+          ) {
+            recordSurfacedError({
+              chokePoint: 'notice',
+              identifier: 'team-panel-invitations-load',
+              error,
+            });
+          }
           return [];
         }
       };

@@ -18,6 +18,10 @@ import {
 } from '@canopy/ui-shared/components';
 import { QuestionMarkIcon } from '@canopy/ui-shared/icons';
 import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '@canopy/ui-shared/lib/replay-privacy';
+import {
   formatPipelinePackageExecutableFiles,
   formatPipelinePackageFileSummary,
   pipelinePackageKindLabel,
@@ -104,7 +108,7 @@ function AnalysisFailureReason({
   if (!reason) return null;
   return (
     <p
-      className="text-xs fg-secondary break-words"
+      className={`text-xs fg-secondary break-words ${REPLAY_BLOCK_CLASS}`}
       data-testid={`${testIdPrefix}-dependencies-error-reason`}
       title={reason}
     >
@@ -313,7 +317,9 @@ function IncludedFilesHelp({
       open={open}
       onOpenChange={setOpen}
       content={
-        <div className="flex flex-col gap-1 text-xs fg-secondary">
+        <div
+          className={`flex flex-col gap-1 text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+        >
           {lines.map((line) => (
             <p key={line} className="break-words">
               {line}
@@ -749,7 +755,7 @@ export function CapabilityPackageDependencies({
                   Kept private when sharing
                 </p>
                 <ul
-                  className="list-disc pl-5 text-xs fg-secondary"
+                  className={`list-disc pl-5 text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
                   data-testid={`${testIdPrefix}-dependencies-unpackageable`}
                 >
                   {analysis.unpackageableSelectionLabels?.map((label) => (
@@ -845,6 +851,7 @@ function DependencyRow({
 }: DependencyRowProps): JSX.Element {
   const [showSteps, setShowSteps] = useState(false);
   const [showReason, setShowReason] = useState(false);
+  const labelId = useId();
   const badge = sourceBadge(resource.sourceVisibility);
   // Each file once, however many provider copies carry it.
   const { files: fileCount, bytes: totalBytes } =
@@ -858,7 +865,7 @@ function DependencyRow({
   return (
     <li
       className="py-2"
-      data-testid={`${testIdPrefix}-dependencies-item-${resource.id}`}
+      data-testid={`${testIdPrefix}-dependencies-item`}
       data-required={required ? 'true' : 'false'}
     >
       <div className="flex items-start gap-2.5">
@@ -871,25 +878,31 @@ function DependencyRow({
             checked={checked}
             disabled={disabled}
             onChange={onToggle}
-            aria-label={`Include ${resource.displayName}`}
+            aria-labelledby={`${labelId}-include ${labelId}-name`}
             className="mt-0.5"
           />
         )}
         <Stack gap="tight" className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-s font-medium fg-primary">
+            <span id={`${labelId}-include`} hidden>
+              Include
+            </span>
+            <span
+              id={`${labelId}-name`}
+              className={`text-s font-medium fg-primary ${REPLAY_MASK_CLASS}`}
+            >
               {resource.displayName}
             </span>
             <Badge>{pipelinePackageKindLabel(resource.kind)}</Badge>
             {badge && <Badge tone="warning">{badge}</Badge>}
           </div>
-          <p className="text-xs fg-secondary">
+          <p className={`text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}>
             {resource.sourceLabel} ·{' '}
             {formatPipelinePackageFileSummary(fileCount, totalBytes)}
           </p>
           {executableFiles !== null && (
             <p
-              className="text-xs fg-primary"
+              className={`text-xs fg-primary ${REPLAY_BLOCK_CLASS}`}
               data-testid="capability-package-executable-files"
             >
               {executableFiles}
@@ -926,7 +939,9 @@ function DependencyRow({
             </p>
           )}
           {showReason && reason && (
-            <p className="text-xs fg-secondary">{reason}</p>
+            <p className={`text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}>
+              {reason}
+            </p>
           )}
         </Stack>
         {required && (
@@ -998,6 +1013,7 @@ function PackagedPipelineList({
         setAdding(false);
       });
   };
+  const labelId = useId();
   // Rows keep one text column only when some row has a checkbox.
   const anyChoosable =
     onTogglePipeline !== undefined &&
@@ -1011,9 +1027,12 @@ function PackagedPipelineList({
         {PIPELINES_HEADING}
       </Heading>
       <p className="text-xs fg-secondary">{PIPELINES_HELPER}</p>
+      <span id={`${labelId}-include`} hidden>
+        Include
+      </span>
       {pipelines.length > 0 && (
         <ul className="divide-y divide-line-base">
-          {pipelines.map((pipeline) => {
+          {pipelines.map((pipeline, index) => {
             const shipped = shippedResourceIds.has(pipeline.resourceId);
             const choosable =
               pipeline.optional && onTogglePipeline !== undefined;
@@ -1021,7 +1040,8 @@ function PackagedPipelineList({
               <li
                 key={pipeline.key}
                 className="flex items-start gap-2.5 py-2"
-                data-testid={`${testIdPrefix}-dependencies-pipeline-${pipeline.key}`}
+                data-testid={`${testIdPrefix}-dependencies-pipeline`}
+                data-index={index}
                 data-required={pipeline.optional ? 'false' : 'true'}
                 data-included={shipped ? 'true' : 'false'}
               >
@@ -1032,15 +1052,18 @@ function PackagedPipelineList({
                     onChange={(): void => {
                       onTogglePipeline(pipeline.key);
                     }}
-                    aria-label={`Include ${pipeline.name}`}
-                    data-testid={`${testIdPrefix}-dependencies-pipeline-toggle-${pipeline.key}`}
+                    aria-labelledby={`${labelId}-include ${labelId}-${index}`}
+                    data-testid={`${testIdPrefix}-dependencies-pipeline-toggle`}
                     className="mt-0.5"
                   />
                 ) : anyChoosable ? (
                   <span aria-hidden="true" className="h-4 w-4 shrink-0" />
                 ) : null}
                 <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                  <span className="text-s font-medium fg-primary">
+                  <span
+                    id={`${labelId}-${index}`}
+                    className={`text-s font-medium fg-primary ${REPLAY_MASK_CLASS}`}
+                  >
                     {pipeline.name}
                   </span>
                   <p className="text-xs fg-secondary">
@@ -1065,12 +1088,14 @@ function PackagedPipelineList({
           width="fill"
           disabled={disabled || adding}
           onValueChange={(value): void => {
-            add(value);
+            const option = addable[Number(value)];
+            if (option) add(option.id);
           }}
           aria-label={ADD_PIPELINE_LABEL}
           data-testid={`${testIdPrefix}-dependencies-pipeline-add`}
-          options={addable.map((option) => ({
-            value: option.id,
+          replayPrivacy={{ maskClassName: REPLAY_MASK_CLASS }}
+          options={addable.map((option, index) => ({
+            value: String(index),
             label: option.name,
           }))}
         />
@@ -1140,7 +1165,11 @@ function WithheldFileList({
             data-testid={`${testIdPrefix}-dependencies-withheld-item`}
             data-reason={item.reason}
           >
-            <span className="min-w-0 break-all fg-primary">{item.label}</span>
+            <span
+              className={`min-w-0 break-all fg-primary ${REPLAY_BLOCK_CLASS}`}
+            >
+              {item.label}
+            </span>
             <Badge>{WITHHELD_REASON_LABELS[item.reason]}</Badge>
           </li>
         ))}

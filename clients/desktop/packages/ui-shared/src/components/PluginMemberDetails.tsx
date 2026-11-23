@@ -4,6 +4,7 @@ import type {
   RemoteControlMcpConnectionMetadata,
   RemoteControlPluginCatalogMemberInventory,
 } from '@canopy/protocol/remote-control/shell';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Heading } from './Heading';
 import { Surface } from './Surface';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
@@ -50,7 +51,7 @@ function MemberSection({
         <p className="text-xs fg-secondary">No members</p>
       ) : (
         <Surface variant="outline">
-          <ul className="divide-y">
+          <ul className={`divide-y ${REPLAY_BLOCK_CLASS}`}>
             {rows.map((row) => (
               <li key={row.key} className="px-3 py-2">
                 <p

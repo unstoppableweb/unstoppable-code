@@ -2,6 +2,7 @@ import { isWebCoreScope } from '@/lib/chat-authority';
 import { hasExactWorktreeBaseCatalogue } from '@/lib/remote-control/worktree-base-availability';
 import { type InlineFailure } from '@/lib/inline-app-error';
 import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
+import { defaultBaseBranchTarget } from '@canopy/ui-app';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { isOpenCodeModel } from '@canopy/execution-engine/lib/opencode-models';
 import { encodeWorktreeBaseBranch } from '@canopy/protocol/remote-control/shell';
@@ -660,29 +661,16 @@ export function createOptionsForNewWorktreeBaseTarget(
 export function defaultNewWorktreeBaseTarget(
   response: HomeBranchTargetsResponse,
 ): HomeNewWorktreeBaseTarget | null {
-  const defaultBranch = response.defaultBranch;
-  const branchName =
-    defaultBranch ||
-    response.branches.find((branch) => branch.isCurrent && branch.hasLocalRef)
-      ?.name;
-  if (!branchName) return null;
-  // isRemote marks remote-only rows; a coalesced local branch can also have
-  // an origin ref that is newer than its local checkout.
-  const matchingBranch =
-    response.branches.find(
-      (branch) => branch.name === branchName && branch.hasRemoteRef,
-    ) ?? response.branches.find((branch) => branch.name === branchName);
+  const base = defaultBaseBranchTarget(response);
+  if (!base) return null;
   const target: HomeBaseBranch = {
     kind: 'branch',
-    branchName,
-    isRemote: Boolean(defaultBranch && matchingBranch?.hasRemoteRef),
+    branchName: base.branchName,
+    isRemote: base.isRemote,
   };
   // The remote default can be discovered before its ref has been fetched.
   // Keep the fetch-capable base until the picker can name a real ref.
-  const observed = target.isRemote
-    ? matchingBranch?.hasRemoteRef
-    : matchingBranch?.hasLocalRef;
-  return observed ? captureWorktreeBaseTarget(target, response) : target;
+  return base.observed ? captureWorktreeBaseTarget(target, response) : target;
 }
 
 /**

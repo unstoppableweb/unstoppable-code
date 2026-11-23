@@ -453,6 +453,7 @@ function scanStrings(
   errors: string[],
   seen: { credential: boolean; machinePath: boolean },
   options: SharedCredentialCheckOptions,
+  credentialFindings: string[] = errors,
 ): void {
   if (typeof value === 'string') {
     const rule = seen.credential
@@ -460,7 +461,7 @@ function scanStrings(
       : findSharedTextCredentialRule(value, options);
     if (rule !== null) {
       seen.credential = true;
-      errors.push(credentialError(path, rule));
+      credentialFindings.push(credentialError(path, rule));
     }
     if (
       !seen.machinePath &&
@@ -473,7 +474,14 @@ function scanStrings(
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
-      scanStrings(item, `${path}[${index}]`, errors, seen, options),
+      scanStrings(
+        item,
+        `${path}[${index}]`,
+        errors,
+        seen,
+        options,
+        credentialFindings,
+      ),
     );
     return;
   }
@@ -486,9 +494,9 @@ function scanStrings(
         isSecretKeyedValue(key, item)
       ) {
         seen.credential = true;
-        errors.push(credentialError(keyPath));
+        credentialFindings.push(credentialError(keyPath));
       }
-      scanStrings(item, keyPath, errors, seen, options);
+      scanStrings(item, keyPath, errors, seen, options, credentialFindings);
     }
   }
 }
@@ -1401,6 +1409,8 @@ function stableStringify(value: unknown): string {
 export function validateSharedContainerDefinitionDocument(
   value: unknown,
   options: SharedCredentialCheckOptions = { placeholderContents: 'ignored' },
+  /** Where credential findings go instead of `errors`; see the parse below. */
+  credentialFindings?: string[],
 ): SharedContainerDefinitionValidationResult {
   if (!isRecord(value))
     return { ok: false, errors: ['Definition document must be an object'] };
@@ -1448,6 +1458,7 @@ export function validateSharedContainerDefinitionDocument(
       errors,
       { credential: false, machinePath: false },
       options,
+      credentialFindings,
     );
     if (
       utf8ByteLength(stableStringify(document)) >
@@ -1505,6 +1516,33 @@ export function parseSharedContainerDefinitionDocument(
   bytes: Uint8Array,
   options: SharedCredentialCheckOptions = { placeholderContents: 'ignored' },
 ): SharedContainerDefinitionValidationResult {
+  return parseDefinitionDocument(bytes, options, undefined);
+}
+
+/**
+ * Parse stored definition bytes with every check
+ * parseSharedContainerDefinitionDocument applies, canonical form included,
+ * except that credential findings are returned apart instead of failing the
+ * document. Installing a package uses it to leave one definition out while
+ * every other fault still refuses the package (CAN-7585).
+ */
+export function parseSharedContainerDefinitionDocumentApartFromCredentials(
+  bytes: Uint8Array,
+  options: SharedCredentialCheckOptions = { placeholderContents: 'ignored' },
+): {
+  result: SharedContainerDefinitionValidationResult;
+  credentialFindings: string[];
+} {
+  const credentialFindings: string[] = [];
+  const result = parseDefinitionDocument(bytes, options, credentialFindings);
+  return { result, credentialFindings };
+}
+
+function parseDefinitionDocument(
+  bytes: Uint8Array,
+  options: SharedCredentialCheckOptions,
+  credentialFindings: string[] | undefined,
+): SharedContainerDefinitionValidationResult {
   if (bytes.byteLength > MAX_SHARED_CONTAINER_DEFINITION_DOCUMENT_BYTES)
     return {
       ok: false,
@@ -1520,7 +1558,11 @@ export function parseSharedContainerDefinitionDocument(
   } catch {
     return { ok: false, errors: ['Definition document is not UTF-8 JSON'] };
   }
-  const validated = validateSharedContainerDefinitionDocument(parsed, options);
+  const validated = validateSharedContainerDefinitionDocument(
+    parsed,
+    options,
+    credentialFindings,
+  );
   if (!validated.ok) return validated;
   if (stableStringify(validated.value) !== text)
     return { ok: false, errors: ['Definition document is not canonical'] };

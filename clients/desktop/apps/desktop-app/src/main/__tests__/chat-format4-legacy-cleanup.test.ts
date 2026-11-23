@@ -338,7 +338,10 @@ async function chatsOf(
 async function sweepPass(target: ChatStateV2Repository): Promise<string> {
   const result = await new ChatFormat4Sweep({
     dataDir,
-    target: repositoryChatFormat4SweepTarget(target, () => promotion),
+    target: {
+      ...repositoryChatFormat4SweepTarget(target, () => promotion),
+      sweepAllowed: (): boolean => true,
+    },
     resolveStore: storeFor,
     conditions: {
       turnInFlight: (): boolean => false,
@@ -688,6 +691,30 @@ async function migrateOnly(
     await import('../lib/legacy-chat-migration');
   await migrateLegacyChatScope(storeFor(), pathsFor(SCOPE), options);
 }
+
+describe('an unopened legacy scope the sweep promotes (CAN-7178 PR 1b, security ruling S1)', () => {
+  it('keeps a backup that is a symlink to a file outside the data folder: the link stays, its target is untouched, and the scope still reaches format 4', async () => {
+    promotion = true;
+    await seedFullLegacy();
+    const { tabs } = pathsFor(SCOPE);
+    const target = join(outside, 'target.json');
+    await writeFile(target, tabsFile([tab('live', 'Live chat')]));
+    await rm(`${tabs}.bak`);
+    await symlink(target, `${tabs}.bak`);
+
+    await visit('sweep', repository());
+    expect(await storeFor().format()).toBe('v4');
+    expect((await lstat(`${tabs}.bak`)).isSymbolicLink()).toBe(true);
+    expect(await readlink(`${tabs}.bak`)).toBe(target);
+    expect(await readFile(target, 'utf8')).toBe(
+      tabsFile([tab('live', 'Live chat')]),
+    );
+    expect(await absent(tabs)).toBe(true);
+    expect(Object.keys(await chatsOf())).toEqual(
+      expect.arrayContaining(['live', 'old']),
+    );
+  });
+});
 
 describe.each([
   ['switch on, after format 4 reads back', true, 'v4'],

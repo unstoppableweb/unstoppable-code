@@ -60,9 +60,10 @@ jest.mock('../../codex/fork-thread', () => ({
   forkCodexThreadByIdViaOneShot: jest.fn(),
 }));
 const mockSendToWindow = jest.fn<boolean, unknown[]>(() => false);
+const mockSendToAllWindows = jest.fn<void, unknown[]>();
 jest.mock('../../lib/window-send', () => ({
   sendToWindow: (...args: unknown[]): boolean => mockSendToWindow(...args),
-  sendToAllWindows: jest.fn(),
+  sendToAllWindows: (...args: unknown[]): void => mockSendToAllWindows(...args),
 }));
 jest.mock('../../lib/desktop-telemetry', () => ({
   recordWorktreeCrudTelemetry: jest.fn(),
@@ -118,6 +119,7 @@ function call(): CreateCall {
         chatId: 'chat-1',
         cwd: '/worktrees/proj/wt',
         getWindow: (): null => null,
+        interfacePort: windowAgentInterfacePort(() => null),
       },
     },
   } as unknown as CreateCall;
@@ -295,6 +297,84 @@ describe('worktree chat actions as keyed core writes (CAN-5830)', () => {
       ),
     ).rejects.toThrow(AGENT_CHAT_INTERFACE_TEXTS.needsWindow);
     expect(mockCreateSingleRepo).not.toHaveBeenCalled();
+  });
+
+  it("an agent-created worktree's notices reach the window through the chat's interface port, unchanged", async () => {
+    mainLease(['ui.app_advisor.present']);
+    mockSendToAllWindows.mockClear();
+    const used: string[] = [];
+    const port = windowAgentInterfacePort(() => null);
+    const recorded = new Proxy(port, {
+      get: (target, name: string): unknown => {
+        const member = Reflect.get(target, name) as unknown;
+        if (typeof member !== 'function') return member;
+        return (...args: unknown[]): unknown => {
+          used.push(name);
+          return (member as (...a: unknown[]) => unknown)(...args);
+        };
+      },
+    });
+    const withPort = {
+      ...call(),
+      host: {
+        worktreeActionRuntime: {
+          projectId: 'proj',
+          worktreeId: 'wt',
+          chatId: 'chat-1',
+          cwd: '/worktrees/proj/wt',
+          getWindow: (): null => null,
+          interfacePort: recorded,
+        },
+      },
+    } as unknown as CreateCall;
+
+    await createDesktopChatWorktree(request, withPort);
+
+    const created = mockCreateWorktree.mock.calls[0]?.[0] as unknown as {
+      getWindow: () => unknown;
+      onGitReady: (payload: unknown) => void;
+      onGitFailed: (payload: unknown) => void;
+      onNeedsRepair: (payload: unknown) => void;
+    };
+    // The hook path still gets a window accessor, now read through the port.
+    expect(created.getWindow()).toBeNull();
+    const ready = {
+      projectId: 'proj',
+      worktreeId: 'proj-new',
+      branchName: 'b',
+    };
+    const failed = { projectId: 'proj', worktreeId: 'proj-new', error: 'x' };
+    const repair = {
+      projectId: 'proj',
+      worktreeId: 'proj-new',
+      branchName: 'b',
+      repairIssues: [],
+    };
+    created.onGitReady(ready);
+    created.onGitFailed(failed);
+    created.onNeedsRepair(repair);
+
+    expect(used).toEqual([
+      'publishCreatedWorktree',
+      'legacyWindow',
+      'publishCreatedWorktreeGitReady',
+      'publishCreatedWorktreeGitFailed',
+      'publishCreatedWorktreeNeedsRepair',
+    ]);
+    expect(mockSendToWindow.mock.calls).toEqual([
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated, { workspaceId: 'proj' }],
+      [null, IPC_CHANNELS.worktreeGitReady, ready],
+      [null, IPC_CHANNELS.worktreeGitFailed, failed],
+      [null, IPC_CHANNELS.worktreeNeedsRepair, repair],
+    ]);
+    expect(mockSendToWindow.mock.calls[1]?.[2]).toBe(ready);
+    expect(mockSendToWindow.mock.calls[2]?.[2]).toBe(failed);
+    expect(mockSendToWindow.mock.calls[3]?.[2]).toBe(repair);
+    // The window didn't take the list (the send mock returns false), so it
+    // went to every window, as before.
+    expect(mockSendToAllWindows.mock.calls).toEqual([
+      [IPC_CHANNELS.workspaceWorktreesUpdated, { workspaceId: 'proj' }],
+    ]);
   });
 
   it('a workspace root that needs repair keeps the setup pending for the repair flow', async () => {

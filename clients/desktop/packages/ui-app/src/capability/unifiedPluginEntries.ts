@@ -723,6 +723,13 @@ function buildCuratedPluginEntries(
     const providerSupport = row
       ? pluginProviderSupport(row)
       : NEUTRAL_PROVIDER_SUPPORT;
+    const installedNames = [
+      ...new Set(
+        (row?.harnessRows ?? [])
+          .filter((harnessRow) => harnessRow.installation === 'Installed')
+          .map((harnessRow) => harnessRow.name),
+      ),
+    ];
     const requirements: UnifiedEntryRequirement[] = keys.map((key) => ({
       key,
       name: curatedMcpByKey.get(key)?.name ?? key,
@@ -755,6 +762,12 @@ function buildCuratedPluginEntries(
       // The catalog entry's own metadata; the marketplace row is not a
       // revision-matched source for it, so it never fills a gap here.
       ...harnessCompatibilityFact(entry.harnessCompatibility),
+      // The installed copy's harness names, for the uninstall list only: a
+      // harness no provider flag covers still shows (CAN-7547). Not
+      // `harnessRows`, which would displace the catalog's Works with data.
+      ...(installedNames.length > 0
+        ? { installedHarnessNames: installedNames }
+        : {}),
       ...installedPluginFacts(row),
       state,
       recommended: entry.recommended === true,
@@ -3753,8 +3766,15 @@ function linkSameAppPlugins(
           ...(variant ? { marketplaceVariant: variant } : {}),
           copyName: alternativeCopyName(other),
           copyBase: alternativeCopyBase(other),
+          ...(other.marketplaceSourceName
+            ? { marketplaceSourceName: other.marketplaceSourceName }
+            : {}),
+          state: other.state,
           ...(addedWithItem(entry, other) ? { addedWithItem: true } : {}),
           ...(other.harnessRows ? { harnessRows: other.harnessRows } : {}),
+          ...(other.installedHarnessNames
+            ? { installedHarnessNames: other.installedHarnessNames }
+            : {}),
           ...(other.installedHarnesses
             ? { installedHarnesses: other.installedHarnesses }
             : {}),

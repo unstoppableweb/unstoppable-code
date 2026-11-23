@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type JSX,
   type ReactNode,
@@ -121,6 +122,16 @@ export function useWorkflowRunRowActions(
   );
   const [watcherCancelBusy, setWatcherCancelBusy] = useState(false);
   const [openCloudRunId, setOpenCloudRunId] = useState<string | null>(null);
+  // Whether this list still shows the cancel confirmation, and for which
+  // watcher, when a cancellation settles.
+  const mounted = useRef(true);
+  const shownCancelId = useRef<string | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
   // An open cloud run belongs to the account that opened it.
   useEffect(() => onCloudRunsAccountChange(() => setOpenCloudRunId(null)), []);
 
@@ -329,6 +340,7 @@ export function useWorkflowRunRowActions(
     cancellingWatcherId !== null
       ? watchersById.get(cancellingWatcherId)
       : undefined;
+  shownCancelId.current = cancellingWatcher?.id ?? null;
 
   const cloudInvoker = cloudRunsInvoker();
   const dialogs = (
@@ -361,18 +373,37 @@ export function useWorkflowRunRowActions(
           busyLabel="Canceling…"
           busy={watcherCancelBusy}
           errorMessage={watcherCancelError}
+          errorSource="workflow-run-watcher-cancel"
           destructive
           dataTestId="workflows-runs-cancel-watcher"
           onCancel={(): void => setCancellingWatcherId(null)}
           onConfirm={(): void => {
             setWatcherCancelBusy(true);
+            // Each attempt's failure is a new sighting, even with the same text.
+            setWatcherCancelError(null);
+            const watcherId = cancellingWatcher.id;
             void useAppAdvisorWatchersStore
               .getState()
-              .deleteWatcher(cancellingWatcher.id)
+              .deleteWatcher(watcherId)
               .then(
                 (result) => {
-                  if (result.ok) setCancellingWatcherId(null);
-                  else setWatcherCancelError(result.error);
+                  if (result.ok) {
+                    setCancellingWatcherId(null);
+                    return;
+                  }
+                  // Closed, or unmounted, before it settled: nobody saw it
+                  // here, so the watcher's details still show and record it.
+                  if (!mounted.current || shownCancelId.current !== watcherId)
+                    return;
+                  setWatcherCancelError(result.error);
+                  // This confirmation shows and records the failure, so the
+                  // watcher's details don't raise it again when opened.
+                  useAppAdvisorWatchersStore.setState((state) => {
+                    if (!(watcherId in state.deleteErrors)) return {};
+                    const deleteErrors = { ...state.deleteErrors };
+                    delete deleteErrors[watcherId];
+                    return { deleteErrors };
+                  });
                 },
                 (error: unknown) => {
                   setWatcherCancelError(

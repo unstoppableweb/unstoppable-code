@@ -91,6 +91,9 @@ export function CloudAccountRecoveryNotice({
           busyLabel="Resetting…"
           busy={resetting}
           errorMessage={errorMessage}
+          // The shared auth state also holds failures of other sign-in
+          // actions, and `onReset` records its own failure.
+          errorRecordingDisabled
           destructive
           onConfirm={handleConfirm}
           onCancel={(): void => setConfirmOpen(false)}

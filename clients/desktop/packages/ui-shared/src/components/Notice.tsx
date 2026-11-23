@@ -573,14 +573,21 @@ export function Notice({
       : '',
     displayErrorCode,
   });
-  // A destructive notice's string is usually a caught message, which can
-  // quote paths and command output: replay and the exported error record
-  // skip it. Titles, actions and component children stay recorded.
+  // A destructive notice's string children and string detail are usually a
+  // caught message, which can quote paths and command output: replay skips
+  // them, and the exported error record skips the children. Titles, actions,
+  // and component children and details stay recorded.
   const copy =
     intent === 'destructive' && typeof children === 'string' ? (
       <span className={REPLAY_BLOCK_CLASS}>{children}</span>
     ) : (
       children
+    );
+  const detailCopy =
+    intent === 'destructive' && typeof detail === 'string' ? (
+      <span className={REPLAY_BLOCK_CLASS}>{detail}</span>
+    ) : (
+      detail
     );
   const resolvedIcon = icon === undefined ? defaultIcon(intent) : icon;
   const resolvedRole =
@@ -728,7 +735,7 @@ export function Notice({
                       : 'mt-0.5 text-pretty fg-tertiary'
                   }
                 >
-                  {detail}
+                  {detailCopy}
                 </div>
               )}
             </div>

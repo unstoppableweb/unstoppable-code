@@ -26,6 +26,13 @@ export interface W5RecoveryNoticeProps {
   readonly archiveRecovery?: {
     readonly unavailable: boolean;
     readonly cleanupOnly?: boolean;
+    /**
+     * Review lists the records without any recovery action (CAN-7439), so
+     * the copy names no action the reader can take here. It means the
+     * actions run on another computer: the copy names "the connected
+     * computer", so set it only for a remote controller.
+     */
+    readonly readOnly?: boolean;
     readonly onReview: () => void;
     readonly onDismiss?: () => void;
   };
@@ -68,7 +75,7 @@ function BlockedChangesNotice({
       intent={complete && !archiveRecovery ? 'positive' : 'attention'}
       title={
         !cold
-          ? archiveRecovery?.cleanupOnly
+          ? archiveRecovery?.cleanupOnly && !archiveRecovery.readOnly
             ? 'Archive cleanup available'
             : 'Archive recovery needs attention'
           : restart
@@ -105,7 +112,7 @@ function BlockedChangesNotice({
                 onClick={archiveRecovery.onReview}
                 data-testid="worktree-live-recovery-notice"
               >
-                {archiveRecovery.cleanupOnly
+                {archiveRecovery.cleanupOnly && !archiveRecovery.readOnly
                   ? 'Open archive cleanup'
                   : 'Review archive recovery'}
               </NoticeButton>
@@ -128,9 +135,12 @@ function BlockedChangesNotice({
         <p>
           {archiveRecovery.unavailable
             ? "Some archive recovery records couldn't be checked."
-            : archiveRecovery.cleanupOnly
-              ? 'The archives finished. Leftover saved change data still needs cleanup.'
-              : 'Some archives need recovery or cleanup. Choose how to continue or get details to share with support.'}
+            : archiveRecovery.readOnly
+              ? // Read only (CAN-7439): the actions run on the computer itself.
+                'Some archives on the connected computer need recovery or cleanup. Review them here, then finish on that computer.'
+              : archiveRecovery.cleanupOnly
+                ? 'The archives finished. Leftover saved change data still needs cleanup.'
+                : 'Some archives need recovery or cleanup. Choose how to continue or get details to share with support.'}
         </p>
       ) : null}
       {cold ? (

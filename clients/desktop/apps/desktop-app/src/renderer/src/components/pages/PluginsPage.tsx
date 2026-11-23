@@ -1,4 +1,8 @@
-import { McpRemovalRepair } from '@canopy/ui-app/capability';
+import {
+  McpDeleteCleanupNotice,
+  McpRemovalRepair,
+  useMcpDeleteCleanupNotice,
+} from '@canopy/ui-app/capability';
 import { useCursorHarnessState } from '@/hooks/useCursorHarnessState';
 import type { CustomizeRowMenuItem } from '@canopy/ui-shared/components/CustomizeRowMenu';
 import { isLocalCollectionConfig } from '@canopy/protocol/collections';
@@ -27,6 +31,7 @@ import {
   useOpenCreatedCustomItem,
   useResourceContext,
   type CustomizeMcpRowActions,
+  type McpTestTarget,
   customizeDiscoveryDescription,
 } from '@canopy/ui-app/capability';
 import { useCapabilities, useCanopyClient } from '@canopy/app-state';
@@ -55,6 +60,7 @@ import { curatedPipelineId } from '../pipeline/pipeline-catalog-entry';
 import {
   type JSX,
   type ReactNode,
+  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -76,11 +82,9 @@ import {
   useCapabilityMarketplaceInventory,
   type CapabilityMarketplaceInventory,
 } from '../../hooks/useCapabilityMarketplaceInventory';
-import { MCP_MANAGEMENT_REASONS } from '@canopy/ui-shared/lib/mcp-card-display';
 import { mcpConnectErrorCodeTitle } from '@canopy/ui-shared/lib';
 import { formatRelativeTime } from '@/lib/format';
 import { mcpHasMultipleTargets } from '@canopy/ui-shared/lib/mcp-row-health';
-import { useDetectedMcpServers } from '../../hooks/useDetectedMcpServers';
 import { McpServerDialog } from './McpServersTab';
 import { AddSkillsModal, CreateSkillModal } from './SkillsTab';
 import { CollectionModal } from './CollectionsTab';
@@ -147,11 +151,16 @@ import {
   type PluginsPresentationLocation,
   type PipelineReturnTarget,
 } from '@/stores/navigationStore';
-import type { PluginsManagementSectionId } from '@canopy/desktop-shared/types';
+import {
+  DEFAULT_MCP_HTTP_AUTH_HANDLER,
+  type PluginsManagementSectionId,
+  type PreferencesData,
+} from '@canopy/desktop-shared/types';
 import type {
   McpServerStatusEntry,
   McpServerIndexEntry,
   AccountMcpConnection,
+  McpHttpAuthHandler,
 } from '@canopy/execution-engine/types/mcp-servers';
 import {
   CUSTOMIZE_SECTION_SUBTITLE,
@@ -166,6 +175,7 @@ import {
   RefreshButton,
   useOverlayEscape,
   CustomizeBreadcrumbs,
+  clearAgentDetailTabRestore,
 } from '@canopy/ui-shared/components';
 import {
   customizeDiscoveryTabs,
@@ -185,6 +195,7 @@ import {
   type MarketplaceEntryShareState,
   type PipelineFilterValues,
   type UnifiedEntryHarnessInstallFailure,
+  usePendingMcpDeleteCleanups,
 } from '@canopy/ui-shared/lib';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
@@ -208,6 +219,7 @@ import { projectDesktopMarketplaceInventory } from '@/lib/pluginInstallStatus';
 import { CUSTOM_SKILL_SOURCE_ID } from '@/lib/sharedSkillImport';
 import { useSkillsChangedRefresh } from '@/lib/skillsChanged';
 import { COLLECTIONS_CHANGED_EVENT } from '../share/installReveal';
+import { openInAppAgentInstall } from '../share/usePublicShareLanding';
 import { marketplaceEntryInstallLink } from '@/lib/sharedResourceInstallLink';
 import { useDesktopInstalledItemStatuses } from '@/hooks/useDesktopInstalledItemStatuses';
 import { useOfferedPluginHarnesses } from '@/hooks/useOfferedPluginHarnesses';
@@ -218,6 +230,7 @@ import {
 } from '@canopy/ui-shared';
 import { AgentModelModal } from '../agents/AgentModelModal';
 import { DeleteConfirmModal } from '../shared/DeleteConfirmModal';
+import { DeleteAgentMessage } from './DeleteAgentMessage';
 import { useAgentsStore } from '@/stores/agentsStore';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import type { SaveAgentModelRequest } from '@canopy/execution-engine/types/agent-models';
@@ -225,6 +238,18 @@ import type { SharedSkillSummary } from '@canopy/desktop-shared/types/skills';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 import { installDesktopCustomizeTelemetry } from '@/lib/customizeTelemetry';
 import { useChatStore } from '@/stores/chatStore';
+import {
+  mcpDeviceConnectTarget,
+  mcpDeviceEditTarget,
+  mcpRowConnectEligibility,
+  mcpRowTestEligibility,
+  mcpRowConnectIsCurrent,
+  mcpRowTestRun,
+  runMcpRowConnect,
+} from './mcpDeviceTestTarget';
+import { useMcpRowReadiness } from './useMcpRowReadiness';
+import { subscribePreferencesUpdated } from '@/lib/preferences-events';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 
 // Customize analytics (CAN-6806); no visible effect.
 installDesktopCustomizeTelemetry();
@@ -347,6 +372,60 @@ function rowUnshareTarget(
   return null;
 }
 
+/**
+ * The page Customize shows, in its content's precedence: an entry, an open
+ * marketplace source, a category, the Marketplaces page, the Installed view
+ * or the root list. Repair hides when this changes (CAN-7362).
+ */
+function customizeShownPageKey(page: {
+  readonly entryId: string | null;
+  readonly sourceId: string | null;
+  readonly categoryId: string | null;
+  readonly marketplaces: boolean;
+  readonly installed: boolean;
+}): string {
+  if (page.entryId !== null) return JSON.stringify(['entry', page.entryId]);
+  if (page.sourceId !== null) return JSON.stringify(['source', page.sourceId]);
+  if (page.categoryId !== null)
+    return JSON.stringify(['category', page.categoryId]);
+  if (page.marketplaces) return JSON.stringify(['marketplaces']);
+  return JSON.stringify([page.installed ? 'installed' : 'root']);
+}
+
+/** Looks the bridge up when a read starts, not when the page mounts. */
+function listMcpStatuses(): Promise<McpServerStatusEntry[]> {
+  return window.mcpServers.listStatus();
+}
+
+/**
+ * The cleanup notice sits near the top of the list, so a Delete confirmed far
+ * down the list, or one made on a detail whose close restores the list's
+ * scroll position, can leave it off screen, and the deleted server has no row
+ * left to lead back to Repair (CAN-7362). Call this after the detail scroll
+ * restore: once the list shows, a notice reported since the list last showed
+ * scrolls into view once. Notices present at mount, an older notice shown
+ * again after a dismissal, and every other return keep the position. Returns
+ * the ref for the notice element.
+ */
+function useRevealReportedMcpCleanupNotice(
+  detailEntryId: string | null,
+): RefObject<HTMLDivElement | null> {
+  const noticeRef = useRef<HTMLDivElement>(null);
+  const pending = usePendingMcpDeleteCleanups();
+  const notice = pending[pending.length - 1] ?? null;
+  // Reports are new objects, so one missing here is new since the list last
+  // showed. Those present at mount count as seen.
+  const seenReportsRef = useRef(pending);
+  useEffect(() => {
+    // A detail shows the notice itself; the list reveals it when it closes.
+    if (detailEntryId !== null) return;
+    if (notice !== null && !seenReportsRef.current.includes(notice))
+      noticeRef.current?.scrollIntoView({ block: 'nearest' });
+    seenReportsRef.current = pending;
+  }, [detailEntryId, notice, pending]);
+  return noticeRef;
+}
+
 export function PluginsPage({
   onOpenAccountSettings,
 }: PluginsPageProps): JSX.Element {
@@ -434,44 +513,6 @@ export function PluginsPage({
     (): McpServerIndexEntry[] => pickerMcpServers(servers),
     [servers],
   );
-  const [mcpStatuses, setMcpStatuses] = useState<McpServerStatusEntry[]>([]);
-
-  // Read-only status snapshot. Deliberately does NOT drive the health sweep
-  // that `useMcpServerStatuses` performs for the MCP Servers table: discovery
-  // only needs the already-derived auth state, and probing every configured
-  // server on page open would be a new cost on a landing surface.
-  useEffect(() => {
-    let cancelled = false;
-    void (async (): Promise<void> => {
-      try {
-        const entries = await window.mcpServers.listStatus();
-        if (!cancelled) setMcpStatuses(entries);
-      } catch {
-        // No handler / transport failure → degrade to "no status known".
-        if (!cancelled) setMcpStatuses([]);
-      }
-    })();
-    return (): void => {
-      cancelled = true;
-    };
-  }, [servers]);
-
-  // A browser sign-in settles after its Connect returned, with no other signal.
-  useEffect(
-    () =>
-      window.mcpServers?.onAuthChanged?.(() => {
-        void window.mcpServers
-          .listStatus()
-          .then(setMcpStatuses, () => undefined);
-      }),
-    [],
-  );
-
-  /** Re-reads the status cache; a failed read rejects, unlike the passive one. */
-  const refreshMcpStatuses = useCallback(async (): Promise<void> => {
-    setMcpStatuses(await window.mcpServers.listStatus());
-  }, []);
-
   // --- Discovery state ---
   const [category, setCategory] = useState<string | null>(
     savedPresentation?.browse.category ?? null,
@@ -554,6 +595,13 @@ export function PluginsPage({
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(
     savedPresentation?.entry?.id ?? null,
   );
+  // An agent page remembers its tab only for the back arrow from one of its
+  // plugins or skills: closing the detail (a breadcrumb, a new view) or
+  // leaving the page makes the next visit a fresh one.
+  useEffect(() => {
+    if (selectedEntryId === null) clearAgentDetailTabRestore();
+  }, [selectedEntryId]);
+  useEffect(() => clearAgentDetailTabRestore, []);
   const sourceClient = useCanopyClient();
   const canAddMarketplace =
     sourceClient.capabilities.marketplaceSourceAdd === true &&
@@ -698,6 +746,9 @@ export function PluginsPage({
   const [entryDetailIntent, setEntryDetailIntent] = useState<'view' | 'add'>(
     'view',
   );
+  // Bumped by each entry-detail navigation so a repeat visit to the entry
+  // already open remounts its detail on the default tab.
+  const [entryDetailNonce, setEntryDetailNonce] = useState(0);
   /**
    * Entry ids behind the currently open detail: a related-item click swaps
    * the detail in place and pushes the previous entry here so its Back
@@ -855,27 +906,55 @@ export function PluginsPage({
   const [mcpEditAccount, setMcpEditAccount] =
     useState<AccountMcpConnection | null>(null);
   const [mcpRowError, setMcpRowError] = useState('');
-  const rowMcpSelections = useMemo(
-    () => ({
-      collectionIds: [],
-      skillRefs: [],
-      pluginRefs: [],
-      mcpServerRefs: servers.flatMap((server) =>
-        server.configs.map((config) => ({
-          serverId: server.id,
-          configId: config.id,
-        })),
-      ),
-    }),
-    [servers],
-  );
-  const rowMcp = useDetectedMcpServers(rowMcpSelections, {
-    ownerKey: 'customize-mcp-rows',
-    cancelOnDispose: true,
+  // The app-wide HTTP auth default routes every server that names no handler
+  // of its own, so a kept Test result is keyed on it (CAN-7363). Settings
+  // opens above this page, and its save reaches here as a preferences update.
+  // It is null until the first read lands or fails: a Test whose key depends on
+  // it waits, so no result is kept under a default that was not read.
+  const [mcpAuthDefault, setMcpAuthDefault] =
+    useState<McpHttpAuthHandler | null>(null);
+  useEffect((): (() => void) => {
+    let current = true;
+    const apply = (preferences: PreferencesData): void =>
+      setMcpAuthDefault(
+        preferences.mcpHttpAuthDefaultHandler ?? DEFAULT_MCP_HTTP_AUTH_HANDLER,
+      );
+    const unsubscribe = subscribePreferencesUpdated((preferences): void => {
+      // An update is newer than the first read, whichever settles last.
+      current = false;
+      apply(preferences);
+    });
+    void window.api
+      .loadPreferences()
+      .then((preferences): void => {
+        if (current) apply(preferences);
+      })
+      .catch((error: unknown): void => {
+        // Main falls back to the same default, so Test is never blocked.
+        if (current) setMcpAuthDefault(DEFAULT_MCP_HTTP_AUTH_HANDLER);
+        reportClientAppError(error);
+      });
+    return (): void => {
+      current = false;
+      unsubscribe();
+    };
+  }, []);
+  // The row Test and Connect decisions' scope generation, status snapshot and
+  // sign-in inventory: one hook, so the golden runs the same wiring.
+  const {
+    statuses: mcpStatuses,
+    refreshStatuses: refreshMcpStatuses,
+    rowMcp,
+    readiness: mcpRowReadiness,
+    connectReadiness: mcpRowConnectReadiness,
+    readError: mcpRowReadError,
+    latestReadiness: latestMcpRowReadiness,
+  } = useMcpRowReadiness({
+    servers,
+    authDefault: mcpAuthDefault,
+    listStatus: listMcpStatuses,
+    setBannerError: setMcpRowError,
   });
-  useEffect(() => {
-    if (rowMcp.error) setMcpRowError(rowMcp.error);
-  }, [rowMcp.error]);
   const [addSkillsOpen, setAddSkillsOpen] = useState(false);
   const [createSkillOpen, setCreateSkillOpen] = useState(false);
   const [collectionEditor, setCollectionEditor] = useState<{
@@ -1407,6 +1486,12 @@ export function PluginsPage({
   const [installedStatusError, setInstalledStatusError] = useState<
     string | null
   >(null);
+  // Outlives the detail page a deletion closes, and this page too: leaving
+  // Customize and coming back keeps the way to Repair (CAN-7362).
+  const mcpDeleteCleanup = useMcpDeleteCleanupNotice(
+    sourceClient,
+    installedStatuses.state,
+  );
   const entryStatusStates = useMemo(
     () => installedEntryStatusStates(entries, installedStatuses.state),
     [entries, installedStatuses.state],
@@ -2010,6 +2095,12 @@ export function PluginsPage({
         }
         break;
       case 'entry-detail': {
+        // A fresh visit, even to the agent already open: only a history
+        // restore (Back) or the page's own back arrow keeps its saved tab.
+        // The null-selection effect cannot see this, since React batches the
+        // clear and the reselect into one update.
+        clearAgentDetailTabRestore();
+        setEntryDetailNonce((nonce) => nonce + 1);
         setMcpNavigation(
           pendingPluginsNavigation.mcpTarget
             ? {
@@ -2620,6 +2711,17 @@ export function PluginsPage({
           handleSelectEntry(entry);
           return;
         }
+        if (installLink.entity === 'agent') {
+          // The card's Add confirms the revision the list read.
+          const shown = sharedInstallInventory.sharedAgents.find(
+            (agent) => agent.id === installLink.externalId,
+          );
+          openInAppAgentInstall(
+            installLink,
+            shown ? { contentHash: shown.contentHash } : null,
+          );
+          return;
+        }
         useNavigationStore.getState().openShareInstall(installLink, 'in-app');
         return;
       }
@@ -2774,43 +2876,25 @@ export function PluginsPage({
 
   const { connectRow: connectAccountRow, pendingOf: accountPendingOf } =
     accountRequests;
-  const mcpBannerError = mcpRowError || accountRequests.error;
+  const mcpBannerError =
+    mcpRowError || mcpRowReadError || accountRequests.error;
   // A cloud refusal's code stays out of the sentence but at hand.
   const mcpBannerErrorCode =
-    mcpBannerError !== '' && mcpBannerError === accountRequests.error
+    mcpRowError === '' && mcpRowReadError === null && mcpBannerError !== ''
       ? accountRequests.errorCode
       : null;
 
   const mcpRowActions = useMemo((): CustomizeMcpRowActions => {
-    const deviceTarget = (
-      entry: UnifiedPluginEntry,
-    ): { serverId: string; configId: string | undefined } | null => {
-      if (mcpHasMultipleTargets(entry)) return null;
-      const [only, ...others] = entry.integration?.connections ?? [];
-      if (only) {
-        return others.length === 0 && only.binding === 'device'
-          ? { serverId: only.serverId, configId: only.configId }
-          : null;
-      }
-      if (entry.ref.type !== 'local-mcp' || entry.placement !== 'desktop')
-        return null;
-      const { serverId } = entry.ref;
-      const configs = servers.find((row) => row.id === serverId)?.configs;
-      const [onlyConfig, ...otherConfigs] = configs ?? [];
-      return onlyConfig && otherConfigs.length === 0
-        ? { serverId, configId: onlyConfig.id }
-        : null;
-    };
-    const runTest = async (target: {
-      serverId: string;
-      configId: string | undefined;
-    }): Promise<void> => {
+    // Connect and Edit do not key a kept result, so the fallback is harmless.
+    const authDefault = mcpAuthDefault ?? DEFAULT_MCP_HTTP_AUTH_HANDLER;
+    // The probe alone: the row keeps its outcome, and the caller refreshes the
+    // status cache separately so a failed read cannot read as a failed probe.
+    const runTest = async (target: McpTestTarget): Promise<void> => {
       setMcpRowError('');
       const result = await window.mcpServers.testConnection(
         target.serverId,
         target.configId,
       );
-      await refreshMcpStatuses();
       if (!result.success) throw new Error(result.error ?? result.message);
     };
     return {
@@ -2818,28 +2902,27 @@ export function PluginsPage({
       // The shared row shows a thrown message verbatim.
       onError: (message) => setMcpRowError(extractIpcErrorMessage(message)),
       test: (entry) => {
-        if ((entry.connection ?? entry.aggregateConnection)?.provider)
-          return { available: false, reason: MCP_MANAGEMENT_REASONS.provider };
-        if ((entry.connection ?? entry.aggregateConnection)?.disabled)
-          return {
-            available: false,
-            reason: 'Enable this server before testing its connection.',
-          };
-        if (mcpHasMultipleTargets(entry))
+        // One decision for every reason Test is held back or offered.
+        const gate = mcpRowTestEligibility(entry, mcpRowReadiness);
+        if (!gate.available) return gate;
+        const { target } = gate;
+        if (target === undefined)
           return {
             available: true,
+            target: undefined,
             run: () => {
               handleSelectEntry(entry);
               return Promise.resolve('opened' as const);
             },
           };
-        const target = deviceTarget(entry);
-        return target
-          ? { available: true, run: () => runTest(target) }
-          : { available: false, reason: MCP_MANAGEMENT_REASONS.cloudTest };
+        const { run, refresh } = mcpRowTestRun(
+          () => runTest(target),
+          refreshMcpStatuses,
+        );
+        return { available: true, target, run, refresh };
       },
       pending: (entry) => {
-        const target = deviceTarget(entry);
+        const target = mcpDeviceConnectTarget(entry, servers, authDefault);
         if (!target) {
           const accountRow = accountRowOf(entry, servers);
           const pending = accountRow && accountPendingOf(accountRow);
@@ -2865,8 +2948,7 @@ export function PluginsPage({
             available: false,
             reason: 'Finish the current sign-in first.',
           };
-        const target = deviceTarget(entry);
-        if (!target) {
+        if (!mcpDeviceConnectTarget(entry, servers, authDefault)) {
           const accountRow = accountRowOf(entry, servers);
           const connection = accountRow?.accountConnection;
           // A custom connection has no catalog entry for Add to open, so its
@@ -2889,30 +2971,35 @@ export function PluginsPage({
               },
             };
           }
-          return { available: true, run: () => handleAddEntry(entry) };
         }
+        // A device server's sign-in decision reads the status and the sign-in
+        // state, both resolved under the current default.
+        const gate = mcpRowConnectEligibility(entry, mcpRowConnectReadiness);
+        if (!gate.available) return gate;
+        if (gate.target === null)
+          return { available: true, run: () => handleAddEntry(entry) };
+        // The sign-in read's entry for this very target, as the gate found it.
+        const { target, detected: server } = gate;
+        // The scope and the saved revision this click was made under.
+        const isCurrent = mcpRowConnectIsCurrent(
+          mcpRowReadiness,
+          latestMcpRowReadiness,
+          target,
+        );
         return {
           available: true,
-          run: async () => {
-            setMcpRowError('');
-            const server = rowMcp.servers.find(
-              (candidate) =>
-                candidate.serverId === target.serverId &&
-                candidate.configId === target.configId,
-            );
-            if (!server) throw new Error(MCP_MANAGEMENT_REASONS.noTarget);
-            const connection = entry.connection ?? entry.aggregateConnection;
-            const signInRequired =
-              connection?.status === 'auth_required' ||
-              connection?.signIn === 'connect' ||
-              connection?.signIn === 'reconnect';
-            if (
-              (server.canConnect || signInRequired) &&
-              !(await rowMcp.connect(server, { signInRequired }))
-            )
-              return;
-            await runTest(target);
-          },
+          run: (onProbeStarted) =>
+            runMcpRowConnect({
+              entry,
+              target,
+              detected: server,
+              connect: (signIn, options) => rowMcp.connect(signIn, options),
+              runTest,
+              refreshStatuses: refreshMcpStatuses,
+              clearError: () => setMcpRowError(''),
+              onProbeStarted,
+              isCurrent,
+            }),
         };
       },
       edit: (entry) => {
@@ -2937,7 +3024,7 @@ export function PluginsPage({
               },
             };
         }
-        const target = deviceTarget(entry);
+        const target = mcpDeviceEditTarget(entry, servers, authDefault);
         return target
           ? {
               available: true,
@@ -2958,6 +3045,10 @@ export function PluginsPage({
     connectAccountRow,
     handleAddEntry,
     handleSelectEntry,
+    latestMcpRowReadiness,
+    mcpAuthDefault,
+    mcpRowConnectReadiness,
+    mcpRowReadiness,
     refreshMcpStatuses,
     rowMcp,
     servers,
@@ -3013,6 +3104,10 @@ export function PluginsPage({
     capabilityInventory.loading,
     marketplaceSources.loading,
   ]);
+  // After the scroll restores above, so the notice wins (CAN-7362).
+  const mcpCleanupNoticeRef = useRevealReportedMcpCleanupNotice(
+    selectedDetailPageEntryId,
+  );
 
   const closeEntryDetail = useCallback((): void => {
     sharedSkillLinkGeneration.current += 1;
@@ -3334,7 +3429,8 @@ export function PluginsPage({
     <PluginEntryDetail
       workflowActions={workflowActions}
       relatedEntries={entries}
-      key={`${detailEntry.id}:${entryDetailIntent}`}
+      publisherSkills={publisherSkills.skills}
+      key={`${detailEntry.id}:${entryDetailIntent}:${entryDetailNonce}`}
       entry={detailEntry}
       onOpenMarketplaceSource={
         marketplaceSourcesAvailable
@@ -3636,6 +3732,16 @@ export function PluginsPage({
     sourceDetailOpen ||
     activeBrowseGroup,
   );
+  // The margin keeps a notice scrolled into view clear of the pinned titlebar.
+  const mcpCleanupNotice = mcpDeleteCleanup.notice ? (
+    <div ref={mcpCleanupNoticeRef} className="scroll-mt-12">
+      <McpDeleteCleanupNotice
+        client={sourceClient}
+        notice={mcpDeleteCleanup.notice}
+        onDismiss={mcpDeleteCleanup.dismiss}
+      />
+    </div>
+  ) : null;
 
   return (
     <div
@@ -3837,11 +3943,18 @@ export function PluginsPage({
       <PageContent bottomInset="spacious" stack>
         {selectedEntryUsesDetailPage && selectedEntry ? (
           <div data-testid="plugins-entry-detail-page" className="-mt-1.5">
+            {/* A remount can restore the MCP detail the user left mid-delete. */}
+            {mcpDeleteCleanup.notice &&
+            (selectedEntry.ref.type === 'local-mcp' ||
+              selectedEntry.ref.type === 'curated-mcp') ? (
+              <div className="pb-4">{mcpCleanupNotice}</div>
+            ) : null}
             {renderEntryDetail(selectedEntry, 'page')}
           </div>
         ) : sourceDetailOpen && selectedSourceId !== null ? (
           <div data-testid="marketplace-source-page" className="-mt-1.5">
             <>
+              {mcpCleanupNotice}
               <ErrorBanner
                 errorSource="plugins-page-source-navigation"
                 error={sourceNavigationError}
@@ -3874,6 +3987,7 @@ export function PluginsPage({
               title={activeBrowseGroup.title}
               description={`Browse all ${activeBrowseGroup.title.toLowerCase()} capabilities.`}
             />
+            {mcpCleanupNotice}
 
             <PageSearchRow className="">
               <MarketplaceSearchField
@@ -3911,20 +4025,23 @@ export function PluginsPage({
         ) : discoveryEnabled && sourcesVisible ? (
           // New Customize (CAN-6814): Marketplaces is its own page, opened
           // from Manage marketplaces… and from the old tab's links.
-          <MarketplacesManagePage
-            state={marketplaceSources}
-            back={{
-              label: CUSTOMIZE_LABEL,
-              onClick: () => selectTypeTab('all'),
-            }}
-            onAddMarketplace={
-              canAddMarketplace
-                ? (): void => setAddMarketplaceOpen(true)
-                : undefined
-            }
-            onOpenSource={openMarketplaceSource}
-            removeConfirmation={marketplaceSourceRemoveConfirmation}
-          />
+          <>
+            {mcpCleanupNotice}
+            <MarketplacesManagePage
+              state={marketplaceSources}
+              back={{
+                label: CUSTOMIZE_LABEL,
+                onClick: () => selectTypeTab('all'),
+              }}
+              onAddMarketplace={
+                canAddMarketplace
+                  ? (): void => setAddMarketplaceOpen(true)
+                  : undefined
+              }
+              onOpenSource={openMarketplaceSource}
+              removeConfirmation={marketplaceSourceRemoveConfirmation}
+            />
+          </>
         ) : (
           <Stack gap="section">
             <div className="flex flex-col gap-0">
@@ -3958,6 +4075,7 @@ export function PluginsPage({
                 }
               />
 
+              {mcpCleanupNotice}
               {(sourceNavigationError || installedStatusError) && (
                 <Stack gap="tight">
                   <ErrorBanner
@@ -4388,7 +4506,16 @@ export function PluginsPage({
             </div>
           </Stack>
         )}
-        <McpRemovalRepair client={sourceClient} />
+        <McpRemovalRepair
+          client={sourceClient}
+          pageKey={customizeShownPageKey({
+            entryId: selectedDetailPageEntryId,
+            sourceId: sourceDetailOpen ? selectedSourceId : null,
+            categoryId: activeBrowseGroup?.id ?? null,
+            marketplaces: discoveryEnabled && sourcesVisible,
+            installed: installedExpanded,
+          })}
+        />
       </PageContent>
       {capabilityInventory.curated && (
         <CuratedPipelinePreview
@@ -4555,7 +4682,7 @@ export function PluginsPage({
         agentDialogTarget && (
           <DeleteConfirmModal
             title="Delete agent"
-            message={`Existing chats and workflows that use ${agentDialogTarget.id} will fail until another model is selected.`}
+            message={<DeleteAgentMessage modelId={agentDialogTarget.id} />}
             confirmLabel="Delete agent"
             pending={agentDeletePending}
             {...(agentDeleteRecorded

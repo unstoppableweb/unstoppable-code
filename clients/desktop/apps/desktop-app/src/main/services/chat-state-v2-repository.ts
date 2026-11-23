@@ -359,6 +359,8 @@ interface ScopeEntry {
   formatReconcileQueued?: boolean;
   /** This residency found no legacy file left to remove. */
   legacyCleanupSettled?: boolean;
+  /** The background sweep is loading or promoting this scope (CAN-7178). */
+  sweepLoading?: boolean;
 }
 
 function hasVisualOwner(
@@ -783,9 +785,13 @@ export class ChatStateV2Repository {
           : outcome.event === 'retries_exhausted'
             ? 'format4_promotion_exhausted'
             : undefined;
+    const entry = this.scopes.get(directory);
     if (kind !== undefined)
-      this.recordDeltaJournalLifecycle(this.scopes.get(directory), scope, kind);
-    this.sendFormat4Telemetry(outcome);
+      this.recordDeltaJournalLifecycle(entry, scope, kind);
+    this.sendFormat4Telemetry({
+      ...outcome,
+      trigger: entry?.sweepLoading === true ? 'sweep' : 'load',
+    });
   }
 
   private reportStorageFailure(failure: ChatStorageFailure): void {
@@ -2477,7 +2483,10 @@ export class ChatStateV2Repository {
     } catch {
       // An unreadable journal is still a refused newer format.
     }
-    this.sendFormat4Telemetry({ event: 'newer_format_refused' });
+    this.sendFormat4Telemetry({
+      event: 'newer_format_refused',
+      trigger: entry.sweepLoading === true ? 'sweep' : 'load',
+    });
     this.recordStorageDiagnostic(entry, {
       kind: 'delta_journal_newer_format',
       occurredAt,
@@ -4213,12 +4222,15 @@ export class ChatStateV2Repository {
       if (before === 'v4') return { outcome: 'already_format4' } as const;
       if (entry.inFlightTurns !== 1 || admit?.() === false) return held;
       loadedHere = true;
+      entry.sweepLoading = true;
       try {
         await this.load(scope, entry);
         // A failed reopen becomes a load error here, as it does for an open.
         if (viewer) await this.reconcileFormat(entry, { includeViewer: true });
       } catch (cause) {
         return { outcome: 'failed', cause } as const;
+      } finally {
+        entry.sweepLoading = false;
       }
       let after: Awaited<ReturnType<ChatStorageV2['format']>>;
       try {

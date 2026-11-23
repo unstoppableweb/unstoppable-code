@@ -100,6 +100,7 @@ export * from './pullRequest/operations';
 export * from './integration/operations';
 export * from './integration/mcp-host-requests';
 export * from './integration/credential';
+export * from './integration/provider-key';
 export * from './integration/mcp-account';
 export * from './integration/cloud-account';
 

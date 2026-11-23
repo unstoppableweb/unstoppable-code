@@ -1,11 +1,16 @@
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import { resolveChatModelChangeHarness } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { RpcPublicError } from '../transport/rpc-peer';
 import {
+  getProviderForModel,
+  isModelHarness,
   resolveKnownModel,
+  type AgentProviderType,
   type ChatCommandExecutionOptions,
   type ChatCommandRequest,
   type ChatCommandResult,
   type ChatStateCommandPort,
+  type PersistedChatTab,
 } from '@canopy/desktop-shared/types';
 import {
   createChatCommandDispatchOptions,
@@ -72,6 +77,43 @@ function dispatch(
   });
 }
 
+const AGENT_PROVIDER_TYPES: Record<AgentProviderType, true> = {
+  claude: true,
+  codex: true,
+  ollama: true,
+  cursor: true,
+  opencode: true,
+  copilot: true,
+  antigravity: true,
+};
+
+function isAgentProviderType(value: unknown): value is AgentProviderType {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(AGENT_PROVIDER_TYPES, value)
+  );
+}
+
+const OPENCODE_PROVIDER_REFUSAL =
+  'The selected provider does not match the OpenCode harness.';
+
+/**
+ * One chat's persisted tab, read through the chat state port as the
+ * pending-question lookup does (the core chat boundary forbids reaching the
+ * chat state service directly). Only a model change reads it.
+ */
+async function hostedChatTab(target: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): Promise<PersistedChatTab | undefined> {
+  const state = await chatPort().getState({
+    projectId: target.projectId,
+    worktreeId: target.worktreeId,
+  });
+  return state.tabsFile.tabs.find((tab) => tab.id === target.chatId);
+}
+
 function knownModel(model: string): string {
   return resolveKnownModel(model) ?? model;
 }
@@ -94,8 +136,35 @@ export const dispatchHostedChatCommandOnDesktop = createHostedChatDispatcher({
       ? { refusal: remoteCreateTabNoModelMessage(seed.noDispatchableModel) }
       : seed;
   },
-  modelRefusal: (target, model) =>
-    remoteCreateTabModelRefusal(target, { model: knownModel(model) }),
+  // A harness or provider outside the known set is refused by the chat
+  // command validation. A model change is checked on the harness it will
+  // apply to this tab (an OpenCode chat, or an explicitly chosen harness on
+  // the same model, keeps its own), read from the tab alone.
+  modelRefusal: async (target, model, change) => {
+    const resolved = knownModel(model);
+    if (change === undefined)
+      return remoteCreateTabModelRefusal(target, { model: resolved });
+    const harness = resolveChatModelChangeHarness(
+      await hostedChatTab(target),
+      resolved,
+      isModelHarness(change.executionHarness)
+        ? change.executionHarness
+        : undefined,
+    );
+    // The apply path refuses this pair; say why before anything changes.
+    if (harness === 'opencode' && change.providerType !== 'opencode')
+      return OPENCODE_PROVIDER_REFUSAL;
+    return remoteCreateTabModelRefusal(target, {
+      model: resolved,
+      executionHarness: harness,
+      ...(isAgentProviderType(change.providerType)
+        ? { providerType: change.providerType }
+        : {}),
+    });
+  },
+  // Undefined for a gateway or custom model, whose provider only its chooser
+  // knows; `chat.set_model` then keeps the requested provider.
+  modelProvider: (model) => getProviderForModel(knownModel(model)),
   pendingQuestion: async (scope, chatId, questionId) =>
     (await chatPort().getState(scope)).tabsFile.pendingQuestions?.find(
       (question) =>

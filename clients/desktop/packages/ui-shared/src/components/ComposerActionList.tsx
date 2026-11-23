@@ -73,6 +73,8 @@ export interface ComposerActionListError {
   onRetry?: () => void;
   /** The retry is running. */
   retrying?: boolean;
+  /** The host already recorded the failure, so the banner records nothing. */
+  recorded?: boolean;
 }
 
 /** A control that expands a capped result list; never a completion row. */
@@ -151,6 +153,10 @@ export function ComposerActionList({
           rows: rows.filter((row) => row.group === group),
         }));
   const showAllId = `${listId}-${COMPOSER_SHOW_ALL_ROW_ID}`;
+  // A failure above says why nothing is listed, so the empty line does not
+  // also say nothing matched.
+  const showsEmptyLine =
+    rows.length === 0 && (error === null || error.tone === 'attention');
   return (
     <div
       ref={menuRef}
@@ -243,6 +249,7 @@ export function ComposerActionList({
               error={error.message}
               {...(error.onRetry ? { onRetry: error.onRetry } : {})}
               retrying={error.retrying ?? false}
+              errorRecordingDisabled={error.recorded ?? false}
               testId={`${dataTestIdPrefix}-menu-error`}
             />
           )}
@@ -413,7 +420,7 @@ export function ComposerActionList({
             {showAll.label}
           </ControlButton>
         )}
-        {rows.length === 0 && (
+        {showsEmptyLine && (
           // The shared empty-list line owns its height and type; the wrapper
           // only sets the rows' inset, so the empty and loading menus keep the
           // list's normal padding instead of a tall card.

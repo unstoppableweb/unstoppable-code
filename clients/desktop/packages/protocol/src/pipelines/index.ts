@@ -3,6 +3,7 @@ import type { ResourceOwner } from '../resource-owner';
 import type { PublicShareVersion, ShareRemoteMetadata } from '../sharing';
 export * from './dependencies';
 export * from './package';
+export * from './package-manifest-text';
 export * from './shared-pipeline-id';
 export * from './public-pipeline-share-id';
 export * from './packaged-pipeline-id';

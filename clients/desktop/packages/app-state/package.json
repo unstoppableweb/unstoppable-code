@@ -17,6 +17,7 @@
     "./billing": "./src/billing.ts",
     "./billing/credits": "./src/billing/credits/index.ts",
     "./provider-choice": "./src/provider-choice/index.ts",
+    "./provider-keys": "./src/provider-keys/index.ts",
     "./settings": "./src/settings/index.ts",
     "./ledger-feed": "./src/ledger-feed.ts",
     "./lifecycle-journal": "./src/lifecycle-journal/index.ts",

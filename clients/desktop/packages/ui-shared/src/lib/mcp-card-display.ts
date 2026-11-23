@@ -340,6 +340,20 @@ export function mcpDeleteScopeDescription(
   }
 }
 
+/**
+ * Main refuses to test an Account-authorized server that has no configuration
+ * before probing it. The rejection reaches the renderer wrapped by IPC (`Error
+ * invoking remote method …: Error: …`), so it is matched by substring.
+ */
+const MCP_NO_CONFIG_TEST_ERROR = 'Account MCP connection requires a config.';
+
+/** Whether a failed Test is that rejection: nothing was probed, no retry helps. */
+export function isMcpNoConfigTestError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes(MCP_NO_CONFIG_TEST_ERROR)
+  );
+}
+
 /** Shared generic unavailable reasons; hosts choose the applicable gate. */
 export const MCP_MANAGEMENT_REASONS = {
   disconnected: 'Reconnect your desktop to manage this server.',
@@ -349,4 +363,6 @@ export const MCP_MANAGEMENT_REASONS = {
   noTarget: 'This server can only be tested from the desktop app.',
   provider: 'This connection is managed by the agent provider.',
   cloudTest: 'This cloud connection cannot be tested from this device.',
+  noConfig: 'Add a configuration before testing this server.',
+  loadingSettings: 'Loading settings. Try again in a moment.',
 } as const;

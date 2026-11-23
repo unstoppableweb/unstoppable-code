@@ -1988,7 +1988,7 @@ function SidebarCoworkWorkspaceRowImpl({
             put them while extending the hit area to the row edge. */}
         <div
           data-workspace-header-actions="true"
-          className="pointer-events-none absolute inset-y-0 right-0 flex items-center gap-0.5 pr-0.5 group-hover/sidebar-item:pointer-events-auto group-focus-within/sidebar-item:pointer-events-auto"
+          className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-0.5 group-hover/sidebar-item:pointer-events-auto group-focus-within/sidebar-item:pointer-events-auto"
         >
           <RailIconButton
             icon={SettingsIcon}

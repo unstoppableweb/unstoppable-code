@@ -23,6 +23,7 @@ import type { CanopyHandlerContext } from '../../runtime/types';
 import {
   pipelineDefinitionError,
   PipelineDefinitionResumableWrite,
+  type PipelineDefinitionCreateReplay,
   type PipelineDefinitionPendingEnablement,
   type PipelineDefinitionService,
 } from './definitions';
@@ -484,6 +485,34 @@ function supersededReceipt(
   };
 }
 
+/**
+ * The id a keyed create or copy commits under (CAN-7497), so a resend whose
+ * receipt was lost finds its own definition. It digests the receipt's whole
+ * scope, the operation, principal, client instance and key, never the key
+ * alone: another caller's same key derives another id.
+ */
+function createReplay(
+  operation: PipelineDefinitionWriteOperation,
+  context: CanopyHandlerContext,
+): PipelineDefinitionCreateReplay {
+  const hex = createHash('sha256')
+    .update(
+      [
+        'pipeline-definition-create',
+        operation,
+        context.caller.principalId,
+        context.caller.clientInstanceId,
+        context.metadata.idempotencyKey ?? '',
+      ].join('\0'),
+    )
+    .digest('hex');
+  // A UUID-shaped id (RFC 9562 version 8), as the store's other ids are.
+  const variant = ((parseInt(hex[16] ?? '0', 16) & 0x3) | 0x8).toString(16);
+  return {
+    createId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
+  };
+}
+
 /** A definition a receipt names, unless a later write has moved it on. */
 async function restoreDefinition(
   host: CorePipelineDefinitionHost,
@@ -643,7 +672,13 @@ export function createCorePipelineDefinitionHandlers(
           return {
             definition: await (
               await host.load()
-            ).upsert(params, context.signal),
+            ).upsert(
+              params,
+              context.signal,
+              params.definitionId === null
+                ? createReplay('core.pipeline.definition.upsert', context)
+                : undefined,
+            ),
           };
         }),
       'core.pipeline.definition.delete': (
@@ -659,7 +694,11 @@ export function createCorePipelineDefinitionHandlers(
       ): Promise<PipelineDefinitionDuplicateResult> =>
         replayDuplicate(context, params, async () => {
           assertServingAuthority(host, params.scope.authorityId);
-          return (await host.load()).duplicate(params, context.signal);
+          return (await host.load()).duplicate(
+            params,
+            context.signal,
+            createReplay('core.pipeline.definition.duplicate', context),
+          );
         }),
       'core.pipeline.definition.import': (
         params,

@@ -18,6 +18,8 @@ interface RevertConfirmModalProps {
   worktreeId: string;
   reverting: boolean;
   error?: string | null;
+  /** Main already recorded the revert failure, so this dialog must not. */
+  errorRecorded?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -39,6 +41,7 @@ export function RevertConfirmModal({
   worktreeId,
   reverting,
   error,
+  errorRecorded = false,
   onConfirm,
   onCancel,
 }: RevertConfirmModalProps): JSX.Element {
@@ -108,6 +111,9 @@ export function RevertConfirmModal({
       busyLabel="Discarding…"
       busy={reverting}
       errorMessage={error}
+      {...(errorRecorded
+        ? { errorRecordingDisabled: true as const }
+        : { errorSource: 'changed-files-revert' })}
       destructive
       onConfirm={onConfirm}
       onCancel={onCancel}

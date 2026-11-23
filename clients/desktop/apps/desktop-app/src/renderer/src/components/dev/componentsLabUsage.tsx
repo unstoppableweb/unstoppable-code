@@ -4,6 +4,7 @@ import {
   Button,
   HostTooltipProvider,
   NoticeButton,
+  QueuedWatcherRow,
   SWITCH_PROVIDER_LABEL,
   Tooltip,
   TooltipProvider,
@@ -249,6 +250,25 @@ const WAKE_BOUNDARIES: readonly {
   { label: 'scheduled, unnamed', props: { scheduled: true } },
   { label: 'after loading tools', props: { toolsLoaded: true } },
   {
+    label: 'fired watcher',
+    props: {
+      watcher: { kind: 'GitHub pull request (acme/app#8482)' },
+      followUp: 'PR #8482 “Batch sidebar resizing”',
+    },
+  },
+  {
+    label: 'several watchers',
+    props: {
+      watcher: {
+        kind: 'Multiple watchers fired (2)',
+        combinedWatchers: [
+          { kind: 'Chat completion', text: 'The chat finished its turn.' },
+          { kind: 'GitHub workflow run', text: 'CI on develop passed.' },
+        ],
+      },
+    },
+  },
+  {
     label: 'long task name truncates',
     props: {
       taskLabel:
@@ -317,7 +337,71 @@ export function WakeSection(): JSX.Element {
           ))}
         </SpecimenGrid>
       </SpecimenPanel>
+      <QueuedWatcherSection />
     </div>
+  );
+}
+
+const QUEUED_WATCHER = {
+  kind: 'GitHub pull request (acme/app#8482)',
+} as const;
+const QUEUED_WATCHER_TEXT = 'Watcher fired.\nPR #8482 “Batch sidebar resizing”';
+
+/** A fired watcher's message waiting behind the running turn. */
+function QueuedWatcherSection(): JSX.Element {
+  return (
+    <SpecimenPanel title="QueuedWatcherRow">
+      <SpecimenGrid min={340}>
+        <SpecimenCell label="queued, Clear on hover">
+          <div className="w-80">
+            <QueuedWatcherRow
+              watcherFired={QUEUED_WATCHER}
+              text={QUEUED_WATCHER_TEXT}
+              onCancel={noop}
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="waiting reason in the details">
+          <div className="w-80">
+            <QueuedWatcherRow
+              watcherFired={QUEUED_WATCHER}
+              text={QUEUED_WATCHER_TEXT}
+              waitingReason="background_work"
+              onCancel={noop}
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="being sent: Clear disabled">
+          <div className="w-80">
+            <QueuedWatcherRow
+              watcherFired={QUEUED_WATCHER}
+              text={QUEUED_WATCHER_TEXT}
+              onCancel={noop}
+              pending
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="no Clear">
+          <div className="w-80">
+            <QueuedWatcherRow
+              watcherFired={QUEUED_WATCHER}
+              text={QUEUED_WATCHER_TEXT}
+            />
+          </div>
+        </SpecimenCell>
+        <SpecimenCell label="long watcher name truncates">
+          <div className="w-80">
+            <QueuedWatcherRow
+              watcherFired={{
+                kind: 'GitHub workflow run (unstoppabledomains/a-very-long-repository-name)',
+              }}
+              text={QUEUED_WATCHER_TEXT}
+              onCancel={noop}
+            />
+          </div>
+        </SpecimenCell>
+      </SpecimenGrid>
+    </SpecimenPanel>
   );
 }
 
@@ -420,6 +504,7 @@ export function UninstallSection(): JSX.Element {
       </SpecimenCell>
       {open === null ? null : (
         <UninstallConfirmDialog
+          errorRecordingDisabled
           title={open === 'verb' ? 'Remove this skill?' : 'Uninstall Linear?'}
           message="Its tools stop working in new chats. Chats already open keep them."
           confirmLabel={open === 'verb' ? 'Remove' : undefined}

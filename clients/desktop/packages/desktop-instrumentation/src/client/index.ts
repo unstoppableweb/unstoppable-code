@@ -19,6 +19,7 @@ import {
   isPostHogErrorEvent,
 } from './posthog-runtime';
 import { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
+import { maskReplaySnapshotData } from './posthog-replay-stylesheets';
 
 /** The session recording options the desktop starts PostHog with. */
 export { buildPostHogSessionRecordingOptions } from './posthog-replay-options';
@@ -399,6 +400,13 @@ async function initializePostHogClient(
           const properties: Record<string, unknown> = { ...event.properties };
           delete properties.$set;
           delete properties.$set_once;
+          if (event.event === '$snapshot') {
+            const snapshotData = maskReplaySnapshotData(
+              properties.$snapshot_data,
+            );
+            if (snapshotData === null) return null;
+            properties.$snapshot_data = snapshotData;
+          }
           const envelope = { ...event };
           delete envelope.$set;
           delete envelope.$set_once;

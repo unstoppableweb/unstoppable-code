@@ -627,8 +627,10 @@ export {
 } from './code/shell/SidebarGuestProjectsCard';
 export {
   SidebarAccountFooter,
+  SidebarAccountRailActions,
   SidebarAccountRow,
   type SidebarAccountAttention,
+  type SidebarAccountRailActionsProps,
   type SidebarAccountFooterProps,
   type SidebarAccountIdentity,
   type SidebarAccountIdentityTone,
@@ -1023,6 +1025,13 @@ export {
   type BaseBranchPickerWorktree,
   type BaseBranchTarget,
 } from './code/composer/BaseBranchPicker';
+export {
+  BASE_BRANCH_CATALOGUE_ERROR,
+  baseBranchCatalogueState,
+  defaultBaseBranchTarget,
+  type BaseBranchCatalogue,
+  type DefaultBaseBranchTarget,
+} from './code/composer/base-branch-catalogue';
 export {
   RemoteControlDirectoryPicker,
   type DirectoryPickerOption,

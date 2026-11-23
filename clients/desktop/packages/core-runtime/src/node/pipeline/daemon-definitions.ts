@@ -1,7 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto';
 import {
   PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
+  type CanopyWorkspaceScope,
+  type WorkerPipelineHostRequest,
+  type WorkerPipelineOwnerResult,
 } from '@canopy/protocol/canopy-core';
 import {
   defineRuntimeModule,
@@ -21,10 +25,15 @@ import {
 } from './core-pipeline-definitions';
 import {
   createPipelineDefinitionService,
+  PipelineDefinitionSourceError,
+  type PipelineDefinitionOwnerEffectsPort,
+  type PipelineDefinitionOwnerWrite,
   type PipelineDefinitionService,
   type PipelineDefinitionServiceOptions,
   type PipelineDefinitionWritePort,
 } from './definitions';
+import { PipelineHostUnavailableError } from './execution/host-requests';
+import type { PipelineOwnerChannel } from './execution/owner-channel';
 import type { PipelineLocalMetadataStore } from './store/local-metadata';
 import {
   createDurableReplayFileWriter,
@@ -81,6 +90,183 @@ export interface DaemonPipelineDefinitionHostOptions {
    * composition only: the entry codec comes with it.
    */
   readonly localMetadata?: PipelineLocalMetadataStore<object>;
+  /**
+   * The owner channel (CAN-7522): with it, the owner checks each edit,
+   * delete and copy before it commits and applies its effects, and
+   * reconciles whenever it attaches.
+   */
+  readonly owner?: PipelineOwnerChannel;
+}
+
+/** The reserved scope the definitions' owner requests ride (CAN-7522). */
+export const PIPELINE_DEFINITIONS_OWNER_SCOPE = 'core:pipeline-definitions';
+/** How long the owner has to check a write before it is refused. */
+export const PIPELINE_DEFINITION_PRECHECK_DEADLINE_MS = 10_000;
+/** How long the owner has to apply a write's effects. */
+export const PIPELINE_DEFINITION_EFFECTS_DEADLINE_MS = 30_000;
+
+/**
+ * No request was raised: no owner is subscribed, none serves the request, or
+ * the scope is full. Nothing was written, so this is a definite refusal
+ * (a not-applied mark, CAN-7522) that the same key may send again.
+ */
+function ownerNotAsked(cause: unknown): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'unavailable',
+      code: 'core.pipeline.ownerUnavailable',
+      message:
+        'The app is not answering for workflow changes, so nothing was changed.',
+      retry: { kind: 'same_idempotency_key' },
+    },
+    cause,
+  );
+}
+
+/** A request the owner received but didn't answer in time: the write may be half done. */
+function ownerUnavailable(cause: unknown): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'unavailable',
+      code: 'core.pipeline.sourceUnavailable',
+      message: 'The app did not answer for this workflow change.',
+      retry: { kind: 'same_idempotency_key' },
+    },
+    cause,
+  );
+}
+
+type DefinitionOwnerRequest = Extract<
+  WorkerPipelineHostRequest['request'],
+  { action: 'owner.definition.precheck' | 'owner.definition.effects' }
+>;
+
+/**
+ * The owner's side of the daemon's definition writes (CAN-7522), raised over
+ * the owner channel in the definitions' scope. A write's requests take ids
+ * from its replay key, so a replayed request is the same request. An owner
+ * that doesn't answer by the deadline, or doesn't serve these requests,
+ * refuses the write as unavailable, to be sent again with the same key.
+ */
+export function createDaemonDefinitionOwnerEffects(
+  channel: Pick<PipelineOwnerChannel, 'broker'>,
+  deadlines: { readonly precheckMs?: number; readonly effectsMs?: number } = {},
+): PipelineDefinitionOwnerEffectsPort {
+  const precheckMs =
+    deadlines.precheckMs ?? PIPELINE_DEFINITION_PRECHECK_DEADLINE_MS;
+  const effectsMs =
+    deadlines.effectsMs ?? PIPELINE_DEFINITION_EFFECTS_DEADLINE_MS;
+  const raise = async (
+    request: DefinitionOwnerRequest,
+    requestId: string,
+    deadlineMs: number,
+    signal: AbortSignal,
+  ): Promise<WorkerPipelineOwnerResult> => {
+    let settlement: Awaited<
+      ReturnType<PipelineOwnerChannel['broker']['raiseOwner']>
+    >;
+    try {
+      settlement = await channel.broker.raiseOwner(
+        {
+          requestId,
+          executionId: PIPELINE_DEFINITIONS_OWNER_SCOPE,
+          jobId: '_run',
+          stepId: '_run',
+          childExecutionId: null,
+          attempt: 0,
+          iteration: 0,
+          owner: null,
+          deadlineAt: new Date(Date.now() + deadlineMs).toISOString(),
+          request,
+        },
+        AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]),
+      );
+    } catch (error) {
+      // The broker refuses this way only before it raises anything.
+      if (error instanceof PipelineHostUnavailableError)
+        throw ownerNotAsked(error);
+      throw ownerUnavailable(error);
+    }
+    if (settlement.result.status !== 'owner')
+      throw ownerUnavailable(settlement.result);
+    return settlement.result.value;
+  };
+  const idOf = (write: PipelineDefinitionOwnerWrite, phase: string): string =>
+    createHash('sha256')
+      .update(
+        [
+          'pipeline-definition-owner',
+          write.op,
+          write.definitionId ?? '',
+          write.replayKey ?? randomUUID(),
+          phase,
+        ].join('\0'),
+      )
+      .digest('hex');
+  return {
+    async precheck(
+      write: PipelineDefinitionOwnerWrite,
+      scope: CanopyWorkspaceScope,
+      signal: AbortSignal,
+    ): Promise<void> {
+      const value = await raise(
+        {
+          action: 'owner.definition.precheck',
+          op: write.op,
+          definitionId: write.op === 'duplicate' ? null : write.definitionId,
+          ...(write.origin && { origin: write.origin }),
+          scope: {
+            ...(scope.workspaceId !== undefined && {
+              workspaceId: scope.workspaceId,
+            }),
+            ...(scope.worktreeId !== undefined && {
+              worktreeId: scope.worktreeId,
+            }),
+          },
+        },
+        idOf(write, 'precheck'),
+        precheckMs,
+        signal,
+      );
+      if (value.kind !== 'definition.precheck') throw ownerUnavailable(value);
+      if (!value.answer.allowed)
+        throw new PipelineDefinitionSourceError(
+          value.answer.code === 'contextMismatch'
+            ? 'core.pipeline.contextMismatch'
+            : 'core.pipeline.definitionNotFound',
+          value.answer.message,
+        );
+    },
+    async effects(write, phase, signal): Promise<void> {
+      await raise(
+        {
+          action: 'owner.definition.effects',
+          op: write.op,
+          phase,
+          definitionId: write.definitionId,
+          ...(write.op === 'duplicate' && write.origin
+            ? { origin: write.origin }
+            : {}),
+        },
+        idOf(write, phase),
+        effectsMs,
+        signal,
+      );
+    },
+    async reconcile(signal): Promise<void> {
+      await raise(
+        {
+          action: 'owner.definition.effects',
+          op: 'reconcile',
+          phase: 'reconcile',
+          definitionId: null,
+        },
+        `pipeline-definition-reconcile-${randomUUID()}`,
+        effectsMs,
+        signal,
+      );
+    },
+  };
 }
 
 function notOwned(cause: unknown): CanopyOperationError {
@@ -188,6 +374,8 @@ export function createDaemonPipelineDefinitionHost(
     }
   };
   let service: Promise<PipelineDefinitionService> | undefined;
+  const ownerEffects =
+    options.owner && createDaemonDefinitionOwnerEffects(options.owner);
   const receipts = createPipelineDefinitionReplayStore({
     filePath: () => pipelineDefinitionReplaysPath(options.dataRoot),
     write:
@@ -204,7 +392,7 @@ export function createDaemonPipelineDefinitionHost(
         .then(assertReplayOwner)
         .then(() => receipts.save(ledger)),
   };
-  return {
+  const host: CorePipelineDefinitionHost = {
     authorityId: options.authorityId,
     replays,
     load: (): Promise<PipelineDefinitionService> =>
@@ -237,6 +425,7 @@ export function createDaemonPipelineDefinitionHost(
               ...(sources.normalizeOptions && {
                 normalizeOptions: sources.normalizeOptions,
               }),
+              ...(ownerEffects && { ownerEffects }),
             });
           })
           .catch((error: unknown) => {
@@ -246,6 +435,25 @@ export function createDaemonPipelineDefinitionHost(
         return service;
       }),
   };
+  // Whenever an owner attaches, it reconciles what a write left half done,
+  // in this run or a crashed one (CAN-7522).
+  const reconcileOnAttach = (): void => {
+    host
+      .load()
+      .then((loaded) =>
+        loaded.reconcileOwnerEffects(new AbortController().signal),
+      )
+      .catch(() => undefined);
+  };
+  options.owner?.onOwnerChange((subscribed) => {
+    if (subscribed) reconcileOnAttach();
+  });
+  // A subscription that replaces another never changes ownerSubscribed();
+  // the pass runs once the replacement is current.
+  options.owner?.onOwnerEpochEnd((replaced) => {
+    if (replaced) reconcileOnAttach();
+  });
+  return host;
 }
 
 /** What a peer needs for the definitions where a daemon serves them. */

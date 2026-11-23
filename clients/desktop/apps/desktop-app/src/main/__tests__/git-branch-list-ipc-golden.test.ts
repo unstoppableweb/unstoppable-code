@@ -3577,8 +3577,10 @@ describe('paired controllers never reach the daemon Git route (CAN-4729)', () =>
       IPC_CHANNELS.homeListBranchTargets,
     ],
     mobile: [IPC_CHANNELS.homeListBranchTargets],
-    browser: [],
-    hosted: [],
+    browser: [IPC_CHANNELS.homeListBranchTargets],
+    // Hosted agents list branch targets for task_create_ref_list (CAN-7445),
+    // still through the bridge, never the daemon Git route.
+    hosted: [IPC_CHANNELS.homeListBranchTargets],
   };
 
   beforeEach(async () => {

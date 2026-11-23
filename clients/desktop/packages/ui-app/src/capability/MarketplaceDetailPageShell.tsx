@@ -9,6 +9,7 @@ import {
   DetailMoreItemsContributionProvider,
   DetailMoreItemsProvider,
   DetailMoreMenu,
+  orderDetailMoreItems,
   useDetailActionSlots,
   useDetailHeaderActionsHost,
   useDetailMoreItemContributions,
@@ -53,7 +54,10 @@ export interface MarketplaceDetailPageShellProps {
    * leave the title to the shell and declare their actions as before.
    */
   header?: MarketplaceDetailPageHeader;
-  /** Rarer actions for the header's ⋯ More menu; a destructive one last. */
+  /**
+   * Rarer actions for the page's one ⋯ More menu, in the header or the action
+   * bar; rows bodies contribute join it above the page's destructive rows.
+   */
   moreItems?: readonly DetailMoreMenuItem[];
   children: ReactNode;
 }
@@ -78,11 +82,17 @@ export function MarketplaceDetailPageShell({
   const contributedMore = useDetailMoreItemContributions();
   const unclaimedMore =
     slots.moreDeclared === 0 ? contributedMore.items : undefined;
+  // The page's own rows and the body's join ONE menu; the page's Delete or
+  // Unshare stays last.
+  // A private title stays out of the menu's aria-labels, which session replay
+  // does not mask.
+  const menuName = privateTitle ? 'this page' : title;
+  const menuRows = orderDetailMoreItems(moreItems, unclaimedMore ?? []);
   const fallbackMore =
-    unclaimedMore && unclaimedMore.length > 0 ? (
+    slots.moreDeclared === 0 && menuRows.length > 0 ? (
       <DetailMoreMenu
-        name={title}
-        items={unclaimedMore}
+        name={menuName}
+        items={menuRows}
         triggerTestId="plugins-entry-detail-more"
         menuTestId="plugins-entry-detail-menu"
         placement="bottom-right"
@@ -152,10 +162,8 @@ export function MarketplaceDetailPageShell({
             actions={
               <>
                 <DetailMoreMenu
-                  name={title}
-                  items={
-                    unclaimedMore ? [...moreItems, ...unclaimedMore] : moreItems
-                  }
+                  name={menuName}
+                  items={menuRows}
                   triggerTestId="plugins-entry-detail-more"
                   menuTestId="plugins-entry-detail-menu"
                 />

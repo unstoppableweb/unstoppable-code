@@ -43,6 +43,8 @@ interface PendingConnection {
   accountId?: string;
   /** Shared cleanup barrier for both cancellation paths. */
   releasePromise?: Promise<void>;
+  /** Failures its discard reported, so a canceller can tell it did. */
+  discardReports: number;
 }
 export type AccountMcpErrorOperation = 'connect' | 'disconnect' | 'promote';
 export interface AccountMcpConnectOptions {
@@ -158,7 +160,8 @@ export interface AccountMcpActions {
     configId?: string,
     options?: AccountMcpConnectOptions,
   ) => Promise<AccountMcpConnectionErrorCode | undefined>;
-  cancel: (targetKey: string, knownConnectionId?: string) => Promise<void>;
+  /** Resolves true when the cancellation reported a failed discard. */
+  cancel: (targetKey: string, knownConnectionId?: string) => Promise<boolean>;
   disconnect: (
     id: string,
     onFailure?: (message: string) => void,
@@ -285,6 +288,7 @@ export function useAccountMcpActions(
         active = (await window.api?.loadCanopyCloudAccount?.())?.account?.id;
       } catch (error) {
         reportClientAppError(error);
+        flow.discardReports += 1;
         return;
       }
       if (active !== flow.accountId) return;
@@ -298,6 +302,7 @@ export function useAccountMcpActions(
         )?.id;
       } catch (error) {
         reportClientAppError(error);
+        flow.discardReports += 1;
       }
       if (id === undefined) return;
     }
@@ -308,6 +313,7 @@ export function useAccountMcpActions(
       );
     } catch (error) {
       reportClientAppError(error);
+      flow.discardReports += 1;
       if (flow.cancelled) await revoke(flow, id);
     }
   };
@@ -360,6 +366,7 @@ export function useAccountMcpActions(
     const flow: PendingConnection = {
       cancelled: false,
       observing: true,
+      discardReports: 0,
       done,
       serverKey,
       configId: configId ?? 'default',
@@ -628,13 +635,16 @@ export function useAccountMcpActions(
   const cancel = async (
     targetKey: string,
     knownConnectionId?: string,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const flow = flows.current.get(targetKey);
-    if (!flow) return;
+    if (!flow) return false;
     flow.cancelled = true;
     flow.cancelledConnectionId ??= knownConnectionId;
-    if (!flow.id) return;
+    if (!flow.id) return false;
+    const reported = flow.discardReports;
     await release(flow);
+    // A release shared with an earlier attempt reports nothing new.
+    return flow.discardReports > reported;
   };
   const stopObserving = (): void => {
     observationRevision.current += 1;

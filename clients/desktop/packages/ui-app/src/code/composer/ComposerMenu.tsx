@@ -34,6 +34,13 @@ import {
   SkillIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 
+/** A load the menu lists from that failed, with the retry that reloads it. */
+export interface ComposerMenuLoadError {
+  message: string;
+  onRetry: () => void;
+  retrying: boolean;
+}
+
 /** One host action row in the Add, Current settings or View section. */
 export interface ComposerMenuItem {
   id: string;
@@ -200,6 +207,11 @@ export interface ComposerMenuProps<
   hideTriggerWhenEmpty?: boolean;
   isRefreshing?: boolean;
   /**
+   * A command catalog or file search that failed to load, shown above the
+   * rows (a failed pick wins). The host has already recorded it.
+   */
+  loadError?: ComposerMenuLoadError | null;
+  /**
    * The chat and Home composers' 32px capsule: a flat subtle fill with a
    * one-device-pixel inset rim, the same in every composer.
    */
@@ -292,6 +304,7 @@ export function ComposerMenu<TCommand extends ComposerMenuCommand>({
   onSelectPlugin,
   onSelectCommand,
   isRefreshing = false,
+  loadError = null,
   capsuleTrigger = false,
   tapTarget,
   active = false,
@@ -767,7 +780,9 @@ export function ComposerMenu<TCommand extends ComposerMenuCommand>({
       }
       error={
         shownFailure === null
-          ? null
+          ? loadError === null
+            ? null
+            : { ...loadError, recorded: true }
           : shownFailure.outcome === 'skipped'
             ? {
                 tone: 'attention',

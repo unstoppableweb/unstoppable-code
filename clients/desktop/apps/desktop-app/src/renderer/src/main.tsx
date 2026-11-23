@@ -25,7 +25,9 @@ import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config'
 import {
   initializeDesktopInstrumentationClient,
   disposePostHogInstrumentationClient,
+  reportClientAppError,
 } from '@canopy/desktop-instrumentation/client';
+import { setPanelErrorSink } from '@canopy/ui-shared/panels';
 import type { PostHogRuntimeFlags } from '@canopy/desktop-instrumentation/types';
 import {
   CLIENT_FEATURE_FLAGS,
@@ -216,6 +218,11 @@ function installRendererRuntime(): void {
     .subscribe({ isTabInOwnerScope: isChatTabInScopingContext });
   const uninstallRendererErrorLogging = installRendererErrorLogging();
   const uninstallSurfacedErrorRecording = installSurfacedErrorRecording();
+  // A panel view that throws during layout is contained by the engine; record
+  // it with a fixed source. Only its class and V8 frames leave, never the message.
+  const uninstallPanelErrorSink = setPanelErrorSink((error) => {
+    reportClientAppError(error, { source: 'panel-layout' });
+  });
   // Register the Claude Code terminal IPC subscriptions exactly once for the
   // lifetime of the renderer. The disposer is wired into the HMR dispose hook
   // so hot-reloaded modules don't double-subscribe (see store implementation).
@@ -228,6 +235,7 @@ function installRendererRuntime(): void {
     uninstallRendererErrorLogging();
     // Before instrumentation goes away, with the recorder's dedupe cache.
     uninstallSurfacedErrorRecording();
+    uninstallPanelErrorSink();
     disposeClaudeTerminalSubscriptions();
     disposeTerminalActivitySubscriptions();
     disposePostHogInstrumentationClient();

@@ -31,8 +31,11 @@ import type {
 } from '@canopy/protocol/settings/payment-handoff';
 import { createIpcCanopyClient } from '@canopy/ipc-canopy-client';
 import { attachRestoredIpcAppError } from '@canopy/protocol/app-errors/ipc-rejection';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
-import { createAppError } from '@canopy/protocol/app-errors';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { createAppError, toAppError } from '@canopy/protocol/app-errors';
 import { canopyErrorDiagnostic } from '@canopy/protocol/canopy-core';
 import { scopedFileOperationsFor } from '@/lib/files/workspace-file-source';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
@@ -303,6 +306,8 @@ function createNormalDesktopCapabilities(
     worktreeDiscard: true,
     worktreeRecovery: true,
     worktreeRecoveryResolution: true,
+    // Every host with live resolution also lists recovery (CAN-7439).
+    worktreeRecoveryReads: true,
     // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
     projectDeletionDiscard: true,
     // Observed cost reads over the `cost:*` IPC.
@@ -692,8 +697,17 @@ export function createDesktopCanopyClient(
       window.api.workEntryAutoDelete?.onChanged(listener) ?? (() => undefined),
     disarmWorkEntryAutoDelete: (request) =>
       window.api.workEntryAutoDelete.disarm(request),
-    resolveWorkEntryAutoDeleteBranch: (request) =>
-      window.api.workEntryAutoDelete.resolveBranch(request),
+    resolveWorkEntryAutoDeleteBranch: async (request) => {
+      try {
+        await window.api.workEntryAutoDelete.resolveBranch(request);
+      } catch (error) {
+        // Main records a rejected IPC call. Carry its record so the shared
+        // store links to it instead of recording the same failure again.
+        throw Object.assign(new Error('Could not save the branch choice.'), {
+          appError: toAppError(resolveClientAppError(error)),
+        });
+      }
+    },
   } satisfies Pick<
     CanopyClient,
     | 'workflowsPanel'

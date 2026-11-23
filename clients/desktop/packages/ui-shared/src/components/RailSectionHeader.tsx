@@ -71,7 +71,7 @@ export const RailSectionHeader = forwardRef<
       <span
         // 2px from the edge, as every sidebar row's controls; the header's
         // 4px side padding still holds its label.
-        className="-mr-0.5 ml-auto flex shrink-0 items-center gap-0.5"
+        className="-mr-0.5 ml-auto flex shrink-0 items-center"
       >
         {onSettings && (
           <RailIconButton

@@ -645,7 +645,11 @@ import { useObservabilityStore } from '@/stores/observabilityStore';
 import { selectProviderUsageLimitResumeAt } from '@/lib/claudeUsageLimitResume';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ScheduleMessageModal } from './ScheduleMessageModal';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import {
   ATTACHMENT_IMPORT_ERROR_MESSAGE,
   addPendingAttachmentsAndRefreshIndex,
@@ -1992,6 +1996,9 @@ function ChatInputContent({
   }, [continuePick]);
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
+  // The shown text is a precondition, or a failure already recorded where it
+  // was caught, so the dialog must not record it again.
+  const [continueErrorUnrecorded, setContinueErrorUnrecorded] = useState(false);
   // Which answer the dialog is running, for its busy label.
   const [continueAction, setContinueAction] = useState<'switch' | 'fork'>(
     'switch',
@@ -2312,6 +2319,7 @@ function ChatInputContent({
     setContinueAction('fork');
     setContinueBusy(true);
     setContinueError(null);
+    setContinueErrorUnrecorded(false);
     void (async (): Promise<void> => {
       try {
         const result = await continueTabOnProvider(
@@ -2328,9 +2336,14 @@ function ChatInputContent({
         // store — that part is done and correct. It just no longer owns this
         // dialog, so it reports nothing rather than reporting to the wrong one.
         if (continueRunIdRef.current !== runId) return;
-        if (result.status === 'failed') {
+        if (result.status === 'failed' || result.status === 'refused') {
           // Keep the dialog open so the user sees why nothing happened. The
           // store creates no tab on failure, so there is nothing to roll back.
+          // A refusal is an expected precondition, and a failure main already
+          // recorded is not recorded again, so the dialog records neither.
+          setContinueErrorUnrecorded(
+            result.status === 'refused' || result.recorded,
+          );
           setContinueError(result.message);
           return;
         }
@@ -2340,6 +2353,9 @@ function ChatInputContent({
         // result, so reaching here means something unexpected threw. Without
         // this the dialog would just stop spinning and silently do nothing.
         if (continueRunIdRef.current !== runId) return;
+        setContinueErrorUnrecorded(
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+        );
         setContinueError(extractIpcErrorMessage(error));
       } finally {
         if (continueRunIdRef.current === runId) setContinueBusy(false);
@@ -2369,6 +2385,7 @@ function ChatInputContent({
     // A turn, queued message, plan or question that arrived while the
     // dialog was open (from another window or the Portal) blocks the switch.
     if (!continueEligibility || !continueEligibility.ok) {
+      setContinueErrorUnrecorded(true);
       setContinueError(
         continueEligibility
           ? continueEligibility.reason
@@ -2383,6 +2400,7 @@ function ChatInputContent({
     setContinueAction('switch');
     setContinueBusy(true);
     setContinueError(null);
+    setContinueErrorUnrecorded(false);
     void (async (): Promise<void> => {
       try {
         const switchTarget = continuePick.recoveryTarget ?? targetOverride;
@@ -2405,6 +2423,8 @@ function ChatInputContent({
         );
         if (continueRunIdRef.current !== runId) return;
         if (!switched) {
+          // `setModelAndWait` answers false for a refusal, not a failure.
+          setContinueErrorUnrecorded(true);
           setContinueError(
             `This chat couldn't switch to ${modelName}. Try again.`,
           );
@@ -2418,6 +2438,7 @@ function ChatInputContent({
         // unexpected: record it, and keep the dialog's own explanation.
         reportClientAppError(error);
         if (continueRunIdRef.current !== runId) return;
+        setContinueErrorUnrecorded(true);
         setContinueError(
           `This chat couldn't switch to ${modelName}. Try again.`,
         );
@@ -9774,6 +9795,9 @@ function ChatInputContent({
             busy={continueBusy}
             busyLabel={continueAction === 'fork' ? 'Setting up…' : 'Switching…'}
             errorMessage={continueError}
+            {...(continueErrorUnrecorded
+              ? { errorRecordingDisabled: true as const }
+              : { errorSource: 'chat-input-continue-draft' })}
             onConfirm={handleConfirmSwitch}
             onCancel={closeContinueDialog}
             {...(isContinuableHarnessPair(lockedProvider, continuePick.provider)

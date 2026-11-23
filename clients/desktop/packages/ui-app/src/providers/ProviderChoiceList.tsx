@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, type JSX, type ReactNode } from 'react';
+import { Fragment, useId, type JSX, type ReactNode } from 'react';
 import {
   PROVIDER_CHOICE_GROUP_ORDER,
   type ProviderChoiceModel,
@@ -18,6 +18,7 @@ import {
   PROVIDER_CHOICE_SETUP_SUFFIXES,
   SettingsRowsGroup,
   staysOn,
+  type SettingsRowsGroupProps,
   switchesTo,
   type ProviderChoiceOutcomeWords,
   type ProviderChoiceSetupStep,
@@ -81,6 +82,26 @@ export interface ProviderChoiceListProps<TModel extends ProviderChoiceModel> {
   readonly dataTestId?: string;
   /** The model a `run-model` list is for, for "Doesn't offer {model}". */
   readonly modelNotOfferedLabel?: string;
+  /**
+   * `grouped` (default): one heading per non-empty group, for recovery.
+   * `flat`: one box in row order, no headings and no outcome line, for a
+   * `set-up` list. A row still checking draws no dot until its read
+   * settles. A row never changes parent there, so state a host renders
+   * inside it (an inline editor) survives a connect.
+   */
+  readonly layout?: 'grouped' | 'flat';
+  /** The rows' box surface. Grouped lists default to `plain`. */
+  readonly surface?: SettingsRowsGroupProps['surface'];
+  /** Rendered inside a row, under its lines: an inline editor. */
+  readonly rowChildren?: (row: ProviderChoiceRow<TModel>) => ReactNode;
+  /**
+   * A host row that `presentation` and `renderAction` can't express without
+   * a visual change. Return `undefined` to render the default row.
+   */
+  readonly renderRow?: (
+    row: ProviderChoiceRow<TModel>,
+    defaultRow: ReactNode,
+  ) => ReactNode;
 }
 
 function statusTone(
@@ -256,6 +277,11 @@ function outcomeText(outcome: ProviderChoiceRowOutcome): ReactNode {
  * Each group is its own parent, so a row that changes group (a connect that
  * finishes, credits that arrive) remounts: no modal or in-flight state lives
  * in a row; hosts keep it above the list.
+ *
+ * The `flat` layout (a `set-up` list: first run, the web first-visit card)
+ * is one box in row order with no headings and no outcome line. Its rows
+ * keep their parent, so a host's inline editor (`rowChildren`) survives a
+ * connect.
  */
 export function ProviderChoiceList<TModel extends ProviderChoiceModel>({
   rows,
@@ -270,14 +296,88 @@ export function ProviderChoiceList<TModel extends ProviderChoiceModel>({
   ariaLabel,
   dataTestId,
   modelNotOfferedLabel,
+  layout = 'grouped',
+  surface,
+  rowChildren,
+  renderRow,
 }: ProviderChoiceListProps<TModel>): JSX.Element {
   const idPrefix = useId();
+  const flat = layout === 'flat';
   const outcomeOptions: ProviderChoiceRowOutcomeOptions = {
     ...(targetModelLabel !== undefined ? { modelLabel: targetModelLabel } : {}),
     ...(formatResetsAt !== undefined ? { formatResetsAt } : {}),
     ...(now !== undefined ? { now } : {}),
     ...(modelNotOfferedLabel !== undefined ? { modelNotOfferedLabel } : {}),
   };
+  const renderOne = (row: ProviderChoiceRow<TModel>): ReactNode => {
+    const shown = presentation[row.source];
+    const outcome = providerChoiceRowOutcome(row, outcomeOptions);
+    const error =
+      rowError !== null && rowError.source === row.source
+        ? rowError.message
+        : undefined;
+    const defaultRow = (
+      <ProviderSourceRow
+        key={row.source}
+        icon={shown?.icon}
+        name={shown?.name ?? row.source}
+        // A flat list has no outcome line to say a row is checking, so the
+        // row's description says it and the dot waits for the read.
+        {...(flat && row.connection.kind === 'checking'
+          ? {}
+          : { status: statusTone(row) })}
+        // A grouped row still checking keeps its pending dot. A flat list has
+        // no groups, so only an unavailable outcome quiets its row.
+        unavailable={
+          flat
+            ? row.outcome.kind === 'unavailable'
+            : row.group === 'unavailable' && row.connection.kind !== 'checking'
+        }
+        {...(row.isCurrent ? { badge: PROVIDER_CHOICE_ROW_COPY.current } : {})}
+        description={shown?.description}
+        {...(flat
+          ? {}
+          : {
+              outcome: {
+                text: outcomeText(outcome),
+                testId: `provider-choice-detail-${row.source}`,
+              },
+            })}
+        {...(error !== undefined
+          ? {
+              error,
+              errorTestId: `switch-provider-dialog-error-${row.source}`,
+            }
+          : {})}
+        control={renderAction(row, {
+          recommended: row.source === recommended,
+        })}
+        dataTestId={`provider-choice-row-${row.source}`}
+      >
+        {rowChildren?.(row)}
+      </ProviderSourceRow>
+    );
+    const custom = renderRow?.(row, defaultRow);
+    return custom === undefined ? (
+      defaultRow
+    ) : (
+      <Fragment key={row.source}>{custom}</Fragment>
+    );
+  };
+  if (flat) {
+    return (
+      <div className="flex flex-col gap-3">
+        <SettingsRowsGroup
+          {...(surface !== undefined ? { surface } : {})}
+          {...(ariaLabel !== undefined ? { ariaLabel } : {})}
+          {...(dataTestId !== undefined ? { dataTestId } : {})}
+        >
+          {rows.map(renderOne)}
+        </SettingsRowsGroup>
+        {footer}
+      </div>
+    );
+  }
   const groups = PROVIDER_CHOICE_GROUP_ORDER.map((group) => ({
     group,
     rows: rows.filter((row) => row.group === group),
@@ -304,46 +404,8 @@ export function ProviderChoiceList<TModel extends ProviderChoiceModel>({
               <Heading level={3} variant="label" id={headingId}>
                 {PROVIDER_CHOICE_GROUP_HEADINGS[group]}
               </Heading>
-              <SettingsRowsGroup surface="plain">
-                {groupRows.map((row) => {
-                  const shown = presentation[row.source];
-                  const outcome = providerChoiceRowOutcome(row, outcomeOptions);
-                  const error =
-                    rowError !== null && rowError.source === row.source
-                      ? rowError.message
-                      : undefined;
-                  return (
-                    <ProviderSourceRow
-                      key={row.source}
-                      icon={shown?.icon}
-                      name={shown?.name ?? row.source}
-                      status={statusTone(row)}
-                      // A row still checking keeps its pending dot.
-                      unavailable={
-                        row.group === 'unavailable' &&
-                        row.connection.kind !== 'checking'
-                      }
-                      {...(row.isCurrent
-                        ? { badge: PROVIDER_CHOICE_ROW_COPY.current }
-                        : {})}
-                      description={shown?.description}
-                      outcome={{
-                        text: outcomeText(outcome),
-                        testId: `provider-choice-detail-${row.source}`,
-                      }}
-                      {...(error !== undefined
-                        ? {
-                            error,
-                            errorTestId: `switch-provider-dialog-error-${row.source}`,
-                          }
-                        : {})}
-                      control={renderAction(row, {
-                        recommended: row.source === recommended,
-                      })}
-                      dataTestId={`provider-choice-row-${row.source}`}
-                    />
-                  );
-                })}
+              <SettingsRowsGroup surface={surface ?? 'plain'}>
+                {groupRows.map(renderOne)}
               </SettingsRowsGroup>
             </div>
           );

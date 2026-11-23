@@ -9,6 +9,10 @@ import {
   LoadingButton,
   OverlayScrollArea,
 } from '@canopy/ui-shared/components';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '@canopy/ui-shared/lib/replay-privacy';
 import { CapabilityPackageDependencies } from '../sharing/capability-package/CapabilityPackageDependencies';
 import {
   computeRequiredResourceIds,
@@ -168,9 +172,11 @@ export function CloudCopyConsentDialog({
   return (
     <DialogModal
       title={
-        replacing
-          ? `Update ${subject.name} in your cloud account?`
-          : `Add ${subject.name} to your cloud account?`
+        <>
+          {replacing ? 'Update ' : 'Add '}
+          <span className={REPLAY_MASK_CLASS}>{subject.name}</span>
+          {replacing ? ' in your cloud account?' : ' to your cloud account?'}
+        </>
       }
       maxWidth="lg"
       trapFocus
@@ -253,7 +259,10 @@ export function CloudCopyConsentDialog({
               Sent
             </Heading>
             <OverlayScrollArea className="max-h-48">
-              <ul data-selectable className="flex flex-col gap-0.5 text-xs">
+              <ul
+                data-selectable
+                className={`flex flex-col gap-0.5 text-xs ${REPLAY_BLOCK_CLASS}`}
+              >
                 {sent.map((path) => (
                   <li
                     key={path}

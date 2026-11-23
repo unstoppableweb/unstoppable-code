@@ -33,7 +33,8 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
-import { formatRelativeTime } from '@canopy/ui-shared/lib';
+import { recordedErrorOf } from '@canopy/ui-shared';
+import { formatRelativeTime, recordSurfacedError } from '@canopy/ui-shared/lib';
 import { BackIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   MEMORY_PROJECT_KEEP_LABEL,
@@ -63,7 +64,15 @@ export function useMemorySyncState(
       .then((next) => {
         if (current) setState(next);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // Pushes still arrive through the watch below; nothing shows.
+        if (current)
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'memory-sync-state-load',
+            error,
+          });
+      });
     const stop = sync.watch((next) => {
       if (current) setState(next);
     });
@@ -281,8 +290,15 @@ export function MemorySyncConflictsView({
       .then((next) => {
         if (current) setConflict(next);
       })
-      .catch(() => {
-        if (current) setLoadError("Couldn't open this edit.");
+      .catch((error: unknown) => {
+        if (!current) return;
+        setLoadError("Couldn't open this edit.");
+        recordSurfacedError({
+          chokePoint: 'notice',
+          surface: 'inline',
+          identifier: 'memory-sync-conflict-load',
+          error,
+        });
       });
     return (): void => {
       current = false;
@@ -459,6 +475,7 @@ export function MemorySyncHistoryView({
   );
   const [busy, setBusy] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreRecorded, setRestoreRecorded] = useState(false);
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
@@ -471,8 +488,15 @@ export function MemorySyncHistoryView({
         setPage(next);
         setRevisions(next.ok ? [...next.revisions] : []);
       })
-      .catch(() => {
-        if (current) setPage({ ok: false, code: 'offline' });
+      .catch((error: unknown) => {
+        if (!current) return;
+        setPage({ ok: false, code: 'offline' });
+        recordSurfacedError({
+          chokePoint: 'notice',
+          surface: 'inline',
+          identifier: 'memory-sync-history-load',
+          error,
+        });
       });
     return (): void => {
       current = false;
@@ -497,6 +521,7 @@ export function MemorySyncHistoryView({
     if (restoring === null) return;
     setBusy(true);
     setRestoreError(null);
+    setRestoreRecorded(false);
     try {
       const result = await sync.restore(restoring.revision);
       if (!result.ok) {
@@ -506,8 +531,9 @@ export function MemorySyncHistoryView({
       setRestoring(null);
       notify({ message: `Restored version ${restoring.revision}.` });
       setVersion((value) => value + 1);
-    } catch {
+    } catch (error) {
       setRestoreError(memorySyncFailureText('failed'));
+      setRestoreRecorded(recordedErrorOf(error) !== undefined);
     } finally {
       setBusy(false);
     }
@@ -577,6 +603,7 @@ export function MemorySyncHistoryView({
                     size="compact"
                     onClick={() => {
                       setRestoreError(null);
+                      setRestoreRecorded(false);
                       setRestoring(revision);
                     }}
                     data-testid="memory-sync-restore"
@@ -609,6 +636,9 @@ export function MemorySyncHistoryView({
           busyLabel="Restoring…"
           busy={busy}
           errorMessage={restoreError}
+          {...(restoreRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'memory-sync-restore' })}
           onConfirm={() => void restore()}
           onCancel={() => setRestoring(null)}
           dataTestId="memory-sync-restore-dialog"

@@ -10,6 +10,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./capability": "./src/capability/index.ts",
+    "./installed-items": "./src/installed-items/index.ts",
     "./customize-discovery": "./src/customize-discovery.ts",
     "./extension-ui": "./src/extension-ui/index.ts",
     "./sidebar": "./src/sidebar.ts",

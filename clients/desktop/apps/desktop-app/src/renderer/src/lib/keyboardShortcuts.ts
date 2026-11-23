@@ -281,6 +281,7 @@ export { isTerminalTarget } from '@canopy/ui-app/terminal-core';
 // Shared with the web shell through the find bar's shortcut router.
 export {
   hasClosestMethod,
+  isBehindModal,
   isDialogTarget,
   isMacPlatform,
   isShortcutEvent,

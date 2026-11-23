@@ -12,20 +12,11 @@ import {
   type ReactNode,
 } from 'react';
 import type {
-  AgentProviderAuthStatus,
   AuthTerminalProvider,
   GitHubPermission,
   GitHubPermissionsStatus,
   PermissionState,
 } from '@canopy/desktop-shared/types';
-import {
-  invalidateClaudeAuthStatusCache,
-  useClaudeAuthStatus,
-} from '@/hooks/useClaudeAuthStatus';
-import {
-  invalidateCodexAuthStatusCache,
-  useCodexAuthStatus,
-} from '@/hooks/useCodexAuthStatus';
 import {
   invalidateGitHubCliStatusCache,
   useGitHubCliStatus,
@@ -36,7 +27,6 @@ import {
 } from '@/hooks/useGitHubPermissions';
 import { notifyGitHubConnectionChanged } from '@/lib/integrationConnectionEvents';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
 import {
   Stack,
   Button,
@@ -64,13 +54,15 @@ import { brandText } from '@/lib/brand';
 import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import { ProviderCarryoverNote } from '@/components/settings/ProviderCarryoverNote';
 import {
+  signedInProviderLine,
+  useDesktopProviderSignIn,
+} from './useDesktopProviderSignIn';
+import {
   SettingsRow,
   SettingsSegmentedControl,
   SettingsSubRow,
   SettingsTextField,
 } from '@/components/settings/SettingsLayout';
-import { useObservabilityStore } from '@/stores/observabilityStore';
-import { PROVIDER_CONNECTION_STATE_LABELS } from '@/lib/onboarding/provider-connection-status';
 
 const TOKEN_SAVE_DEBOUNCE_MS = 600;
 
@@ -91,14 +83,6 @@ export type AuthProviderId = 'github' | 'codex' | 'claude';
  */
 export type ProviderAuthPanelLayout = 'panel' | 'row';
 
-/**
- * How a signed-out Claude or Codex row reads. `error` is the Settings look:
- * a red dot and the provider's error in red. `neutral` is for surfaces where
- * not having the provider is a normal choice, such as the first-run page: a
- * hollow grey ring, a grey status line, and "Connect".
- */
-export type ProviderAuthUnauthenticatedTone = 'error' | 'neutral';
-
 interface ProviderAuthPanelProps {
   provider: AuthProviderId;
   /**
@@ -110,17 +94,6 @@ interface ProviderAuthPanelProps {
   compact?: boolean;
   /** Defaults to `panel`; Settings → Accounts passes `row`. */
   layout?: ProviderAuthPanelLayout;
-  /**
-   * Claude and Codex `row` layout only; GitHub and the `panel` layout ignore
-   * it. Defaults to `error`.
-   */
-  unauthenticatedTone?: ProviderAuthUnauthenticatedTone;
-  /**
-   * Replaces "Not connected" on a signed-out neutral row with what connecting
-   * gets the user. Claude and Codex `row` layout only; GitHub and the `panel`
-   * layout ignore it.
-   */
-  signedOutDescription?: string;
 }
 
 export function ProviderAuthPanel({
@@ -128,8 +101,6 @@ export function ProviderAuthPanel({
   onStatusChange,
   compact = false,
   layout = 'panel',
-  unauthenticatedTone = 'error',
-  signedOutDescription,
 }: ProviderAuthPanelProps): JSX.Element {
   if (provider === 'github') {
     return (
@@ -147,8 +118,6 @@ export function ProviderAuthPanel({
         onStatusChange={onStatusChange}
         compact={compact}
         layout={layout}
-        unauthenticatedTone={unauthenticatedTone}
-        signedOutDescription={signedOutDescription}
       />
     );
   }
@@ -158,29 +127,13 @@ export function ProviderAuthPanel({
       onStatusChange={onStatusChange}
       compact={compact}
       layout={layout}
-      unauthenticatedTone={unauthenticatedTone}
-      signedOutDescription={signedOutDescription}
     />
   );
 }
 
-/**
- * Live connection state beside the provider name: green when signed in. The
- * neutral tone draws a signed-out provider as a hollow grey ring instead of
- * a red dot.
- */
-function StatusDot({
-  ok,
-  tone = 'error',
-}: {
-  ok: boolean;
-  tone?: ProviderAuthUnauthenticatedTone;
-}): JSX.Element {
-  return (
-    <ProviderStatusDot
-      tone={ok ? 'connected' : tone === 'neutral' ? 'signed-out' : 'failed'}
-    />
-  );
+/** Live connection state beside the provider name: green when signed in. */
+function StatusDot({ ok }: { ok: boolean }): JSX.Element {
+  return <ProviderStatusDot tone={ok ? 'connected' : 'failed'} />;
 }
 
 /** Show / hide control for a masked token field. */
@@ -213,8 +166,6 @@ interface TerminalProviderAuthPanelProps {
   onStatusChange?: (authenticated: boolean) => void;
   compact?: boolean;
   layout: ProviderAuthPanelLayout;
-  unauthenticatedTone: ProviderAuthUnauthenticatedTone;
-  signedOutDescription?: string;
 }
 
 function providerDisplayName(provider: AuthTerminalProvider): string {
@@ -226,23 +177,14 @@ function TerminalProviderAuthPanel({
   onStatusChange,
   compact = false,
   layout,
-  unauthenticatedTone,
-  signedOutDescription,
 }: TerminalProviderAuthPanelProps): JSX.Element {
-  const [claudeRefreshKey, setClaudeRefreshKey] = useState(0);
-  const [codexRefreshKey, setCodexRefreshKey] = useState(0);
-  const [loginOpen, setLoginOpen] = useState(false);
-  const refreshProviderUsageDetails = useObservabilityStore(
-    (s) => s.refreshProviderUsageDetails,
-  );
-
-  const claudeStatus = useClaudeAuthStatus(claudeRefreshKey, {
-    forceRefreshOnMount: provider === 'claude',
-  });
-  const codexStatus = useCodexAuthStatus(codexRefreshKey);
-
-  const status: AgentProviderAuthStatus | null =
-    provider === 'claude' ? claudeStatus : codexStatus;
+  const {
+    status,
+    detail: detailText,
+    refreshKey,
+    openSignIn,
+    signInModal: loginModal,
+  } = useDesktopProviderSignIn(provider);
 
   const name = providerDisplayName(provider);
   const loadingText = `Checking ${name} authentication status…`;
@@ -252,50 +194,11 @@ function TerminalProviderAuthPanel({
 
   const authenticated = status?.authenticated === true;
 
-  // Prefer the friendly full subscription label from the shared plan catalog
-  // (e.g. `Claude Max 20x`, `ChatGPT Business`) over the raw provider `detail`
-  // string (`claude.ai (max)`, `team`), matching the provider Usage cards. For
-  // Claude, `status.planType` is already the tier-enriched plan type. Falls
-  // back to `status.detail` for API-key/Bedrock logins with no subscription
-  // plan.
-  const subscriptionLabel =
-    authenticated && status?.planType
-      ? subscriptionLabelForPlanType(provider, status.planType)
-      : null;
-  const planText = subscriptionLabel ?? status?.detail ?? null;
-  // Codex reports which ChatGPT workspace the account uses (Codex 0.165+).
-  const workspaceName = authenticated ? status?.workspaceName : null;
-  // Workspace names can name a person, so replay blocks that part only.
-  const detailText: ReactNode =
-    planText && workspaceName ? (
-      <>
-        {planText} ·{' '}
-        <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{workspaceName}</span>
-      </>
-    ) : (
-      planText
-    );
-
   useEffect(() => {
     onStatusChange?.(authenticated);
   }, [authenticated, onStatusChange]);
 
-  const handleCloseLoginModal = useCallback((): void => {
-    setLoginOpen(false);
-    if (provider === 'claude') {
-      invalidateClaudeAuthStatusCache();
-      setClaudeRefreshKey((k) => k + 1);
-    } else {
-      invalidateCodexAuthStatusCache();
-      setCodexRefreshKey((k) => k + 1);
-    }
-    void refreshProviderUsageDetails(provider);
-  }, [provider, refreshProviderUsageDetails]);
-
   const loginLabel = status?.authenticated ? 'Change account' : 'Sign in';
-  // A sign-in bumps the key, so what carried over is read again for the
-  // account that just connected.
-  const refreshKey = provider === 'claude' ? claudeRefreshKey : codexRefreshKey;
   const logo =
     provider === 'claude' ? (
       <ClaudeLogo className="h-4 w-4 shrink-0 fg-primary" aria-hidden />
@@ -303,22 +206,13 @@ function TerminalProviderAuthPanel({
       <CodexLogo className="h-4 w-4 shrink-0 fg-primary" aria-hidden />
     );
   const statusDot = status ? <StatusDot ok={status.authenticated} /> : null;
-  const loginModal = loginOpen ? (
-    <AuthLoginModal provider={provider} onClose={handleCloseLoginModal} />
-  ) : null;
 
   if (layout === 'row') {
-    const neutralTone = unauthenticatedTone === 'neutral';
-    // Only a signed-out row changes tone; a signed-in row whose check failed
-    // still reads as signed in.
-    const neutral = neutralTone && status !== null && !status.authenticated;
     // The same tones as `StatusDot`, on the shared provider row.
     const rowStatus: ProviderStatusDotTone | undefined = status
       ? status.authenticated
         ? 'connected'
-        : neutral
-          ? 'signed-out'
-          : 'failed'
+        : 'failed'
       : undefined;
     // One status line: the account and plan when signed in, the provider's
     // own error otherwise.
@@ -326,35 +220,7 @@ function TerminalProviderAuthPanel({
     if (!status) {
       statusLine = 'Checking sign-in…';
     } else if (status.authenticated) {
-      // Session replay blocks the account label, not the copy around it.
-      const account: ReactNode = status.accountLabel ? (
-        <span className={POSTHOG_REPLAY_BLOCK_CLASS}>
-          {status.accountLabel}
-        </span>
-      ) : (
-        'Signed in'
-      );
-      statusLine = detailText ? (
-        <>
-          {account} · {detailText}
-        </>
-      ) : (
-        account
-      );
-    } else if (neutral) {
-      // Main reports a plain sign-out with a generic "is not authenticated"
-      // error, so only a failed check shows the provider's own message. A
-      // failed check never shows the description: it is not evidence that
-      // the user has no subscription.
-      const probeFailed = status.probeFailed === true;
-      statusLine = (
-        <span className="fg-secondary">
-          {probeFailed
-            ? status.error || PROVIDER_CONNECTION_STATE_LABELS['not-connected']
-            : (signedOutDescription ??
-              PROVIDER_CONNECTION_STATE_LABELS['not-connected'])}
-        </span>
-      );
+      statusLine = signedInProviderLine(status, detailText);
     } else {
       statusLine = (
         <StatusLabel>{status.error || unauthenticatedText}</StatusLabel>
@@ -369,14 +235,12 @@ function TerminalProviderAuthPanel({
         description={statusLine}
         control={
           <Button
-            onClick={(): void => setLoginOpen(true)}
+            onClick={openSignIn}
             disabled={status === null}
             data-testid={`auth-panel-${provider}-connect`}
             size="compact"
           >
-            {/* A neutral row says Connect while the read runs too, like the
-                account row beside it. */}
-            {neutralTone && !status?.authenticated ? 'Connect' : loginLabel}
+            {loginLabel}
           </Button>
         }
       >
@@ -405,7 +269,7 @@ function TerminalProviderAuthPanel({
         </Heading>
         {statusDot}
         <Button
-          onClick={(): void => setLoginOpen(true)}
+          onClick={openSignIn}
           disabled={status === null}
           data-testid={`auth-panel-${provider}-connect`}
           size="compact"

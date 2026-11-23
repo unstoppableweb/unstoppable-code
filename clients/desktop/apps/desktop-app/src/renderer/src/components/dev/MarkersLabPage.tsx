@@ -226,6 +226,20 @@ export function DotSection(): JSX.Element {
           </div>
         </div>
       ))}
+      <div className="flex flex-col gap-3">
+        <span className="text-xs font-medium fg-secondary">
+          Ring, 8px, a still live state under reduced motion
+        </span>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+          {DOT_TONES.map(({ tone, meaning }) => (
+            <Cell key={tone} label={tone}>
+              <span className="flex items-center gap-1.5 text-s fg-primary">
+                <Dot tone={tone} variant="ring" size="large" /> {meaning}
+              </span>
+            </Cell>
+          ))}
+        </div>
+      </div>
     </Panel>
   );
 }

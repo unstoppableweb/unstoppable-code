@@ -156,7 +156,7 @@ export const RailIconButton = forwardRef<
       iconShape="nested"
       aria-label={ariaLabel ?? ''}
       // Without a 44px slot to hold it, the Button's coarse-pointer hit area
-      // would reach over the controls beside it (header clusters 2px apart,
+      // would reach over the controls beside it (header clusters, buttons side by side,
       // the account footer), so it keeps its own 28px/32px target, as the
       // native rail buttons did. Switches to Button's `touchArea` (#7528).
       railPlacement={{ coarsePointerTarget, visibility, inset }}

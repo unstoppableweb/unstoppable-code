@@ -14,6 +14,8 @@ import {
   toWorkerScriptExecution,
   type ScriptRunChild,
   type ScriptRunChildReap,
+  type ScriptRunChildReapOptions,
+  type ScriptRunSpawner,
   type ScriptRunWriter,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
@@ -210,13 +212,17 @@ async function startWithChild(): Promise<void> {
 }
 
 function reaping(...results: ScriptRunChildReap[]): ScriptRunWriterFence & {
-  reapChild: jest.Mock<Promise<ScriptRunChildReap>, [ScriptRunChild]>;
+  reapChild: jest.Mock<
+    Promise<ScriptRunChildReap>,
+    [ScriptRunChild, ScriptRunChildReapOptions?]
+  >;
 } {
   return {
     ...fence(() => Promise.resolve('gone')),
-    reapChild: jest.fn<Promise<ScriptRunChildReap>, [ScriptRunChild]>(() =>
-      Promise.resolve(results.shift() ?? 'unproven'),
-    ),
+    reapChild: jest.fn<
+      Promise<ScriptRunChildReap>,
+      [ScriptRunChild, ScriptRunChildReapOptions?]
+    >(() => Promise.resolve(results.shift() ?? 'unproven')),
   };
 }
 
@@ -231,7 +237,7 @@ it('records the run process as it starts and reads the run lost once a proven re
     ...target,
     scriptKey: 'build',
   });
-  expect(bFence.reapChild).toHaveBeenCalledWith(child);
+  expect(bFence.reapChild).toHaveBeenCalledWith(child, { signal: true });
   expect(meta).toMatchObject({ status: 'failed', outcome: 'lost' });
 });
 
@@ -260,6 +266,125 @@ it('kills nothing on an unproven reap and reads the run orphaned with its pid un
   // A lost run no longer names the process that has gone.
   expect(lost && toWorkerScriptExecution(lost)).not.toHaveProperty('pid');
   expect(bFence.reapChild).toHaveBeenCalledTimes(3);
+});
+
+describe('the host that started a run (CAN-7517)', () => {
+  const readRaw = async (): Promise<Record<string, unknown>> => {
+    const value: unknown = JSON.parse(await readFile(metaPath(), 'utf8'));
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+      throw new Error('Unreadable metadata.');
+    return Object.fromEntries(Object.entries(value));
+  };
+
+  async function startBy(spawner?: ScriptRunSpawner): Promise<void> {
+    const a = store({
+      ...fence(() => Promise.resolve('running'), writerA),
+      ...(spawner ? { spawner } : {}),
+      identifyChild: (pid): Promise<ScriptRunChild | null> =>
+        Promise.resolve(pid === child.pid ? child : null),
+    });
+    const ref = await a.start({ ...target, script, invocation: 'manual-run' });
+    await a.recordChild({ ref, pid: child.pid });
+  }
+
+  it('records the host that started the run beside its writer', async () => {
+    for (const spawner of ['daemon', 'electron'] as const) {
+      await startBy(spawner);
+      expect(JSON.parse(await readFile(metaPath(), 'utf8'))).toMatchObject({
+        writer: writerA,
+        spawner,
+      });
+      const read = await store(
+        fence(() => Promise.resolve('running')),
+      ).readMetaFor({ ...target, scriptKey: 'build' });
+      expect(read).toMatchObject({ status: 'running', spawner });
+    }
+    await startBy();
+    expect(JSON.parse(await readFile(metaPath(), 'utf8'))).not.toHaveProperty(
+      'spawner',
+    );
+  });
+
+  it('lets a reap signal only for the host that started the run, and an earlier record as before', async () => {
+    const cases: [
+      ScriptRunSpawner | undefined,
+      ScriptRunSpawner | undefined,
+      boolean,
+    ][] = [
+      [undefined, 'daemon', true],
+      [undefined, 'electron', true],
+      [undefined, undefined, true],
+      ['daemon', 'daemon', true],
+      ['electron', 'electron', true],
+      ['electron', 'daemon', false],
+      ['daemon', 'electron', false],
+      // A fence that names no host signals no recorded host's run.
+      ['daemon', undefined, false],
+      ['electron', undefined, false],
+    ];
+    for (const [recorded, reader, signal] of cases) {
+      await startBy(recorded);
+      const bFence = {
+        ...reaping('unproven'),
+        ...(reader ? { spawner: reader } : {}),
+      };
+      const meta = await store(bFence).readMetaFor({
+        ...target,
+        scriptKey: 'build',
+      });
+      expect(bFence.reapChild).toHaveBeenCalledWith(child, { signal });
+      expect(meta).toMatchObject({ status: 'running', orphaned: true });
+    }
+  });
+
+  it("reads a host this version does not know as another host's, and never signals its run", async () => {
+    await startBy('daemon');
+    const raw = await readRaw();
+    await writeFile(
+      metaPath(),
+      JSON.stringify({ ...raw, spawner: 'future-host' }),
+      'utf8',
+    );
+    const bFence = {
+      ...reaping('unproven', 'gone'),
+      spawner: 'daemon' as const,
+    };
+    const b = store(bFence);
+    const orphaned = await b.readMetaFor({ ...target, scriptKey: 'build' });
+    expect(orphaned).toMatchObject({
+      status: 'running',
+      orphaned: true,
+      spawner: 'future-host',
+    });
+    // The value survives the orphaned rewrite as written.
+    expect(JSON.parse(await readFile(metaPath(), 'utf8'))).toMatchObject({
+      orphaned: true,
+      spawner: 'future-host',
+    });
+    const lost = await b.readMetaFor({ ...target, scriptKey: 'build' });
+    expect(lost).toMatchObject({
+      status: 'failed',
+      outcome: 'lost',
+      spawner: 'future-host',
+    });
+    expect(bFence.reapChild.mock.calls).toEqual([
+      [child, { signal: false }],
+      [child, { signal: false }],
+    ]);
+  });
+
+  it("reads a spawner that can't be kept as written as another host's", async () => {
+    for (const spawner of [7, '', 'x'.repeat(257)]) {
+      await startBy('daemon');
+      const raw = await readRaw();
+      await writeFile(metaPath(), JSON.stringify({ ...raw, spawner }), 'utf8');
+      const bFence = { ...reaping('unproven'), spawner: 'daemon' as const };
+      expect(
+        await store(bFence).readMetaFor({ ...target, scriptKey: 'build' }),
+      ).toMatchObject({ orphaned: true, spawner: 'unreadable' });
+      expect(bFence.reapChild).toHaveBeenCalledWith(child, { signal: false });
+    }
+  });
 });
 
 it('refreshes the recorded process only for the same PID and start identity', async () => {
@@ -302,7 +427,10 @@ it('never upgrades a PID-only record, so a reused PID cannot become a proven rea
   expect(stored).not.toHaveProperty('child.startIdentity');
   const bFence = reaping('unproven');
   await store(bFence).readMetaFor({ ...target, scriptKey: 'build' });
-  expect(bFence.reapChild).toHaveBeenCalledWith({ pid: child.pid });
+  expect(bFence.reapChild).toHaveBeenCalledWith(
+    { pid: child.pid },
+    { signal: true },
+  );
 });
 
 it('refreshes nothing when the start recorded no process, so a reused PID is never adopted', async () => {

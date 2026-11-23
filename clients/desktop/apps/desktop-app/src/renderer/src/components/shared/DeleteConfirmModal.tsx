@@ -4,23 +4,6 @@ import {
   type ConfirmDialogErrorProps,
 } from '@canopy/ui-shared/components';
 
-/**
- * Deprecated alias for `errorMessage` with no source: shows the text and
- * records nothing. Temporary: remove it once every caller names its source
- * (with the change that tightens `ConfirmDialog`). Not combinable with the
- * `ConfirmDialog` error props.
- */
-type LegacyDeleteConfirmError = {
-  error: string | null | undefined;
-  errorMessage?: undefined;
-  errorSource?: undefined;
-  errorRecordingDisabled?: undefined;
-};
-
-type DeleteConfirmModalErrorProps =
-  | LegacyDeleteConfirmError
-  | (ConfirmDialogErrorProps & { error?: undefined });
-
 interface DeleteConfirmModalBaseProps {
   title: string;
   /** Body shown above the action buttons. Strings render in muted-foreground. */
@@ -44,7 +27,7 @@ interface DeleteConfirmModalBaseProps {
 }
 
 type DeleteConfirmModalProps = DeleteConfirmModalBaseProps &
-  DeleteConfirmModalErrorProps;
+  ConfirmDialogErrorProps;
 
 /**
  * Desktop's delete/remove confirmation props, rendered by the shared
@@ -61,7 +44,6 @@ export function DeleteConfirmModal({
   confirmTestId,
   onConfirm,
   onCancel,
-  error,
   ...errorProps
 }: DeleteConfirmModalProps): JSX.Element {
   return (
@@ -71,7 +53,7 @@ export function DeleteConfirmModal({
       confirmLabel={confirmLabel}
       busyLabel={pendingLabel}
       busy={pending}
-      {...(error === undefined ? errorProps : { errorMessage: error })}
+      {...errorProps}
       destructive={confirmTone === 'destructive'}
       dataTestId={dataTestId}
       confirmTestId={confirmTestId}

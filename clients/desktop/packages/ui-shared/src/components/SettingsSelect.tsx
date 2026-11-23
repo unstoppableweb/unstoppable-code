@@ -91,7 +91,9 @@ export interface SettingsSelectProps<Value extends string = string> {
    * block class for personal data, the mask class for user-authored titles
    * such as project names. They go on the label text only (the chosen label
    * on the trigger and every option label in the menu), never on the control
-   * itself, and never change how either looks.
+   * itself, and never change how either looks. With either set, `data-value`
+   * holds the option's position instead of its value, since replay records
+   * the attribute as is; option test ids must carry no content either.
    */
   readonly replayPrivacy?: {
     readonly blockClassName?: string;
@@ -130,7 +132,8 @@ export function settingsSelectOptions<Value extends string>(
  * Tab or an outside press close with focus back on the trigger.
  *
  * Each option row carries `data-value`, so UI automation can choose by value
- * the way it would on a native `<select>`.
+ * the way it would on a native `<select>`. With `replayPrivacy` set it is the
+ * option's position instead.
  */
 export function SettingsSelect<Value extends string>({
   options,
@@ -180,6 +183,8 @@ export function SettingsSelect<Value extends string>({
   ]
     .filter((name): name is string => Boolean(name))
     .join(' ');
+  const dataValue = (option: SettingsSelectOption<Value>): string =>
+    privacyClassName ? String(flat.indexOf(option)) : option.value;
   // In a dialog's form field the dropdown fills the dialog's content width
   // instead of a Settings row's column.
   const inDialogFormField = useInDialogFormField();
@@ -207,7 +212,7 @@ export function SettingsSelect<Value extends string>({
         aria-selected={selected}
         selected={selected}
         disabled={option.disabled}
-        data-value={option.value}
+        data-value={dataValue(option)}
         data-testid={option.testId}
         style={{ columnGap: option.preview ? 10 : undefined }}
         // Like a native select, choosing the current value changes nothing.
@@ -252,7 +257,7 @@ export function SettingsSelect<Value extends string>({
           aria-busy={busy || undefined}
           disabled={disabled}
           data-testid={dataTestId}
-          data-value={chosen?.value}
+          data-value={chosen === undefined ? undefined : dataValue(chosen)}
           onClick={() => setOpen((current) => !current)}
         >
           {chosen?.preview}

@@ -29,6 +29,7 @@ import type {
   WorkEntryAutoDeleteResolveBranchRequest,
 } from '@canopy/protocol';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
+import type { ProviderKeysClient } from './provider-keys-client';
 import type { SharedMultiRepoClient } from './shared-multi-repo-client';
 import type {
   OnboardingTipsCommandMap,
@@ -111,6 +112,17 @@ import type {
   OrgRepositoryOwnerLookup,
 } from '@canopy/protocol/org-projects';
 import type { PortableCloneJob } from '@canopy/protocol/clone-jobs';
+import type {
+  InstalledItemMutationResult,
+  InstalledItemSnapshot,
+  SetInstalledItemStatusRequest,
+  UninstallInstalledItemRequest,
+} from '@canopy/protocol/installed-items';
+import type {
+  RemoteInstalledPlugin,
+  RemotePluginInstallProvider,
+  RemotePluginProviderOutcomes,
+} from '@canopy/protocol/plugins/remote-install';
 import type {
   WorkspaceContext,
   WorkspaceContextState,
@@ -538,6 +550,15 @@ export interface QueryMap
     result: readonly PortableCloneJob[];
   };
   /**
+   * The host's installed-item status snapshot (CAN-7442): installed plugins,
+   * skills, collections and MCP servers with their status and removal
+   * targets. Gated by `CanopyCapabilities.installedItemStatus`.
+   */
+  'installedItems.listStatus': {
+    args: Record<string, never>;
+    result: InstalledItemSnapshot;
+  };
+  /**
    * The host's curated provider quota projection (CAN-7433): plan usage with
    * no audit rows, credentials or raw provider responses. `workspaceLocalId`
    * only selects the host. Gated by `CanopyCapabilities.providerQuotas`.
@@ -725,6 +746,50 @@ export interface CommandMap
   'cloneJobs.dismiss': {
     args: { readonly jobId: string };
     result: void;
+  };
+  /**
+   * Set one installed item to active, available or disabled on the host
+   * (CAN-7442). Resolves with the host's result, whose `errors` name any
+   * part that failed. Gated by `installedItemStatus`.
+   */
+  'installedItems.setStatus': {
+    args: SetInstalledItemStatusRequest;
+    result: InstalledItemMutationResult;
+  };
+  /**
+   * Uninstall one installed item on the host (CAN-7442); the caller confirms
+   * first. Gated by `installedItemUninstall`.
+   */
+  'installedItems.uninstall': {
+    args: UninstallInstalledItemRequest;
+    result: InstalledItemMutationResult;
+  };
+  /**
+   * Install a marketplace plugin from the source the host has stored for it
+   * (CAN-7442). The caller names the marketplace and plugin only, never a
+   * source URL. Rejects with the host's message when the host refuses or the
+   * install fails. Gated by `marketplacePluginInstall`.
+   */
+  'plugins.install': {
+    args: { readonly marketplaceId: string; readonly pluginName: string };
+    result: RemoteInstalledPlugin;
+  };
+  /**
+   * Install a built-in or curated plugin for the named providers (CAN-7442).
+   * Resolves when at least one provider installed, with each provider's
+   * outcome; rejects with the first provider's error when none did. Gated by
+   * `marketplacePluginInstall`.
+   */
+  'plugins.installBuiltIn': {
+    args: {
+      readonly marketplaceId: string;
+      readonly pluginName: string;
+      readonly providers: readonly RemotePluginInstallProvider[];
+    };
+    result: {
+      readonly plugin: RemoteInstalledPlugin;
+      readonly providerOutcomes: RemotePluginProviderOutcomes;
+    };
   };
   'repoRules.apply': {
     args: RepoRulesApplyRequest;
@@ -1193,6 +1258,11 @@ export interface CanopyClient {
    * when the host reports `capabilities.reviewApprovalReadiness`.
    */
   readonly reviewApprovals?: ReviewApprovalsClient;
+  /**
+   * The person's own provider API keys for cloud chats. Present only when
+   * the host reports `capabilities.providerApiKeys`.
+   */
+  readonly providerKeys?: ProviderKeysClient;
   /** Fixed capability set describing what this host can do. */
   readonly capabilities: CanopyCapabilities;
 

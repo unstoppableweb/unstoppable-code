@@ -50,6 +50,12 @@ export interface PersonalOrganizationUpgradePort {
     invite: SendOrganizationInviteRequest,
   ) => Promise<OrganizationInviteResult>;
   readonly listProjects: () => Promise<readonly PersonalProject[]>;
+  /**
+   * Whether a `listProjects` rejection means this host's build predates
+   * Personal project conversion, so trying again cannot help. Hosts that
+   * can't be outdated omit it. Must accept any value and never throw.
+   */
+  readonly isHostOutdated?: (error: unknown) => boolean;
   readonly convert: (
     request: PersonalProjectConversionRequest,
   ) => Promise<PersonalProjectOperation>;
@@ -186,7 +192,11 @@ export type PersonalOrganizationUpgradePhase =
   | 'finished';
 
 export interface PersonalProjectListState {
-  readonly status: 'idle' | 'loading' | 'ready' | 'error';
+  /**
+   * `host-outdated`: the host's build predates Personal project conversion,
+   * so only continuing without projects can help.
+   */
+  readonly status: 'idle' | 'loading' | 'ready' | 'error' | 'host-outdated';
   readonly items: readonly PersonalProject[];
 }
 
@@ -720,11 +730,13 @@ export function createPersonalOrganizationUpgradeStore({
               ...(get().promotion === null ? { selection } : {}),
             });
           });
-        } catch {
+        } catch (error) {
           // Keep the previous list and choices; never read as "no projects".
+          const status =
+            port.isHostOutdated?.(error) === true ? 'host-outdated' : 'error';
           reply.apply(() =>
             set((state) => ({
-              projects: { ...state.projects, status: 'error' },
+              projects: { ...state.projects, status },
             })),
           );
         }

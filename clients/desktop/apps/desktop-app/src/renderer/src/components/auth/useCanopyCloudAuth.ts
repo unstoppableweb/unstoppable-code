@@ -4,6 +4,7 @@ import type {
   CanopyServerStatus,
 } from '@canopy/desktop-shared/types';
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { isConclusiveAccountRead } from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
 import { brandText } from '@/lib/brand';
@@ -1137,7 +1138,10 @@ export function useCanopyCloudAuth({
       }
       window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
       return true;
-    } catch {
+    } catch (error: unknown) {
+      // Main records a rejected reset itself; this only links to that record
+      // and records a failure that never reached main.
+      reportClientAppError(error);
       if (mountedRef.current) {
         setErrorMessage(
           'Couldn’t reset the saved sign-in. Close other desktop builds and try again.',

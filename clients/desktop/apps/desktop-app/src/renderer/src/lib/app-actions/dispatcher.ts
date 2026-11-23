@@ -1848,15 +1848,11 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
     case 'file.save_active':
     case 'file.preview_search_open':
     case 'file.preview_search_close':
-    case 'canopy_portal.open':
-    case 'canopy_portal.close':
-    case 'canopy_portal.stop':
     case 'canopy_cloud.load_account':
     case 'canopy_cloud.clear_api_key':
     case 'canopy_cloud.start_oauth_login':
     case 'canopy_cloud.cancel_oauth_login':
     case 'canopy_cloud.disconnect':
-    case 'canopy_portal.open_account_settings':
     case 'app_advisor.open':
     case 'app_advisor.close':
     case 'app_advisor.toggle':
@@ -3512,8 +3508,6 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
     case 'panel.arrange':
       return action.arrangement === 'even' ? valid() : invalid('arrangement');
     case 'panel.save_default_layout':
-      return valid();
-    case 'canopy_portal.start':
       return valid();
     // ------------------------------------------------------------------
     // Automations actions: shape-validate the request envelope so the
@@ -10156,22 +10150,13 @@ async function routeAction(
     case 'canopy_cloud.start_oauth_login':
     case 'canopy_cloud.cancel_oauth_login':
     case 'canopy_cloud.disconnect':
-    case 'canopy_portal.start':
-    case 'canopy_portal.stop':
-    case 'canopy_portal.open':
-    case 'canopy_portal.close':
-    case 'canopy_portal.open_account_settings':
     case 'remote_control.get_state':
     case 'remote_control.set_allow_incoming':
     case 'opencode.connection':
     case 'ollama.install':
       // CAN-6008: the App Advisor runtime runs credential and remote-access
       // actions in main, only while this window's lease is bound; these
-      // never reach the renderer dispatcher. CAN-7298: the canopy_portal
-      // dialog names are main-routed legacy aliases of the shared
-      // remote_control.open_dialog / close_dialog (and settings.open)
-      // actions; UI callers use lib/navigation/remote-control-dialog.
-      // CAN-7345 removes these labels with the aliases.
+      // never reach the renderer dispatcher.
       return {
         ok: false,
         error: {

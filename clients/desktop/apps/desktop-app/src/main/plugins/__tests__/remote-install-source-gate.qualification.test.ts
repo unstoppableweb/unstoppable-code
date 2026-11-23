@@ -6,6 +6,7 @@ import {
 } from '../../remote-control/host/controller-remote-urls';
 import {
   installPluginForPrincipal,
+  REMOTE_PLUGIN_SOURCE_MISMATCH,
   REMOTE_PLUGIN_SOURCE_REFUSAL,
   storedPluginSourceUrl,
   type PluginSourceInstall,
@@ -141,6 +142,8 @@ describe('plugins:install-plugin source from a controller (CAN-7082)', () => {
   it.each([
     ['the redacted URL a controller sees', REDACTED],
     ['the stored URL itself', STORED],
+    // A browser controller always sends '' (CAN-7442).
+    ['an empty source, which means the stored one', ''],
   ])(
     'clones the stored source when the controller sends %s',
     async (_label, sourceUrl) => {
@@ -162,7 +165,7 @@ describe('plugins:install-plugin source from a controller (CAN-7082)', () => {
     ['another repository', 'https://github.com/acme/other.git'],
     ['another host', 'https://example.invalid/acme/plugin.git'],
     ['a new credential', `https://github.com/acme/plugin.git?token=new`],
-    ['an empty source', ''],
+    ['a whitespace-only source', '  '],
   ])(
     'refuses %s that does not match the stored source, and never clones',
     async (_label, sourceUrl) => {
@@ -177,6 +180,62 @@ describe('plugins:install-plugin source from a controller (CAN-7082)', () => {
       expect(install).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    ['a named source', REDACTED],
+    ['an empty source', ''],
+  ])(
+    'refuses %s for a plugin this computer has no source for, and never clones (CAN-7442)',
+    async (_label, sourceUrl) => {
+      const install = installSpy();
+      const result = await installPluginForPrincipal(
+        { remote: true, marketplaceId: 'acme', pluginName: 'p', sourceUrl },
+        install,
+        storedAs(undefined),
+      );
+      expect(result).toEqual({
+        success: false,
+        error: REMOTE_PLUGIN_SOURCE_MISMATCH,
+      });
+      expect(install).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['a private host', 'https://git.internal.example.com/acme/plugin.git'],
+    ['an ssh remote', 'git@github.com:acme/plugin.git'],
+    ['userinfo', 'https://user:token@github.com/acme/plugin.git'],
+  ])(
+    'keeps refusing an empty source whose stored source has %s, and never clones (CAN-7442)',
+    async (_label, stored) => {
+      resolveHosts({
+        'github.com': PUBLIC_ADDRESS,
+        'git.internal.example.com': PRIVATE_ADDRESS,
+      });
+      const install = installSpy();
+      const result = await installPluginForPrincipal(
+        { remote: true, marketplaceId: 'acme', pluginName: 'p', sourceUrl: '' },
+        install,
+        storedAs(stored),
+      );
+      expect(result.success).toBe(false);
+      expect(result.error?.startsWith(REMOTE_PLUGIN_SOURCE_REFUSAL)).toBe(true);
+      expect(JSON.stringify(result)).not.toContain('token');
+      expect(install).not.toHaveBeenCalled();
+    },
+  );
+
+  it('passes a local caller its empty source unchanged (CAN-7442)', async () => {
+    const install = installSpy();
+    const stored = storedAs(STORED);
+    await installPluginForPrincipal(
+      { remote: false, marketplaceId: 'acme', pluginName: 'p', sourceUrl: '' },
+      install,
+      stored,
+    );
+    expect(install).toHaveBeenCalledWith('acme', 'p', '');
+    expect(stored).not.toHaveBeenCalled();
+  });
 
   it('refuses a plugin this computer has no source for, and never clones', async () => {
     const install = installSpy();

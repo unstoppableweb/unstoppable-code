@@ -42,6 +42,7 @@ import {
 import { markdownDescriptionToPlainText } from '@canopy/ui-shared/lib/markdown-plain-text';
 import { LoadingRegion } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   useNavigationStore,
   type PendingShareInstall,
@@ -56,6 +57,8 @@ import {
   type InstallAutomationOutcome,
 } from '@/components/automations/InstallSharedAutomationModal';
 import {
+  forgetClickedAgentRevision,
+  isClickedAgentRevision,
   usePublicShareLanding,
   type PublicShareInstalledTarget,
   type PublicShareLanding,
@@ -103,7 +106,8 @@ import { SharedContainerLinkLandingModal } from '@/components/shared-containers/
  * The install review for every shared resource (CAN-3710): a share deep link
  * from the web and an in-app Add or Install open the same small dialog. It
  * names the item, says who shared it, describes it in a line or three, and
- * offers exactly one primary action. Nothing installs without that click.
+ * offers exactly one primary action. Nothing installs without that click,
+ * except a shared agent's in-app Install, which is that click already.
  * A finished install closes the review and lands on the result, except a
  * skill installed over a chat: the user stays in that chat and the notice
  * offers **Use in this chat** (CAN-5219).
@@ -608,6 +612,63 @@ export function ShareInstallModal({
   const [turningOn, setTurningOn] = useState(false);
   const { steppedAside, stepAside } = useStepAsideForAccount();
   const handleInstall = useInstallAndLand(link, landing, onClose, chat);
+  // A shared agent's Install inside the app is the click that confirms it, so
+  // the review installs as soon as it is ready instead of asking again. The
+  // dialog stays as the progress and error surface: a failure keeps it open
+  // on its message with the same primary to retry. The click confirms only
+  // what it saw, so the review asks first when it resolves to another
+  // revision than the one clicked, when a copy may already be here (current
+  // or not: an older revision or an edited import is replaced or duplicated
+  // only on the person's own click, and so is one a failed check could not
+  // rule out), when it references GitHub skills or plugins (the installer
+  // would replace an installed copy of them), or when it needs a refresh. A link from outside the app and
+  // every other kind always review first.
+  const autoInstallSettled =
+    origin === 'in-app' &&
+    link.entity === 'agent' &&
+    landing.state.phase === 'ready' &&
+    !landing.detecting &&
+    !landing.agentReadinessLoading &&
+    !landing.agentReviewLoading;
+  const autoInstallAllowed =
+    landing.state.phase === 'ready' &&
+    isClickedAgentRevision(link, landing.state.snapshot) &&
+    landing.installed === null &&
+    !landing.mayHaveOtherCopy &&
+    landing.verificationError === '' &&
+    !landing.needsRefresh;
+  // Decided once per link, on the first settled review: a review that asked
+  // first never installs unasked later (after an uninstall from its menu, a
+  // refresh or a retry), and another link in the same dialog gets its own one
+  // decision.
+  const autoInstallDecidedLinkRef = useRef<DeepLinkShareOpenEvent | null>(null);
+  // A resolve that failed (no access, signed out) ends the click's decision
+  // as "ask": whoever signs in afterwards, possibly as another account, must
+  // press Install themselves, so the pending click never carries over.
+  const resolveFailed =
+    origin === 'in-app' &&
+    link.entity === 'agent' &&
+    landing.state.phase === 'error';
+  useEffect(() => {
+    if (!resolveFailed) return;
+    const decided = autoInstallDecidedLinkRef.current;
+    if (decided !== null && isSameShareLink(decided, link)) return;
+    autoInstallDecidedLinkRef.current = link;
+    forgetClickedAgentRevision(link);
+  }, [resolveFailed, link]);
+  useEffect(() => {
+    if (!autoInstallSettled) return;
+    const decided = autoInstallDecidedLinkRef.current;
+    if (decided !== null && isSameShareLink(decided, link)) return;
+    autoInstallDecidedLinkRef.current = link;
+    forgetClickedAgentRevision(link);
+    if (!autoInstallAllowed) return;
+    // The landing shows a failed install itself and the dialog stays open on
+    // it. Anything thrown past that is recorded, and the same Install retries.
+    handleInstall('installed').catch((error: unknown) => {
+      reportClientAppError(error);
+    });
+  }, [autoInstallSettled, autoInstallAllowed, handleInstall, link]);
   // CAN-5307: replacing a copy with the user's edits (or with no install-time
   // hash to rule them out) asks first. The answer belongs to the reviewed
   // copy: a refreshed or replaced target needs a new confirmation.

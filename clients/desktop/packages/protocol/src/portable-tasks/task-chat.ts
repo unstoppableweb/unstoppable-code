@@ -881,12 +881,31 @@ const responseOptionIndexesSchema = z
     message: 'selectedOptionIndexes must be distinct',
   });
 
+export const taskActivityStatusSchema = activityStateSchema;
+export type TaskActivityStatus = z.infer<typeof taskActivityStatusSchema>;
+
 export const taskListInputSchema = z.strictObject({
   organizationId: UUID.optional(),
   projectId: UUID.optional(),
   group: z.string().min(1).max(128).nullable().optional(),
   setup: taskSetupSchema.optional(),
-  lifecycle: z.enum(['active', 'archived']).optional(),
+  lifecycle: z
+    .enum(['active', 'archived'])
+    .optional()
+    .describe(
+      'Whether the task is open (active) or archived. This is not whether work is running; use activity for that.',
+    ),
+  activity: z
+    .array(taskActivityStatusSchema)
+    .min(1)
+    .max(3)
+    .refine((values) => new Set(values).size === values.length, {
+      message: 'activity values must be distinct',
+    })
+    .optional()
+    .describe(
+      'Keep only tasks whose activity.status is one of these, before paging. active: an agent turn, background work, a watcher or a scheduled message is running. blocked: waiting for an answer, an approval, a plan review or a paused workflow. idle: nothing reported is running.',
+    ),
   origin: z.enum(['this_connection', 'all']).optional(),
   limit: taskListLimit,
   cursor: cursorSchema,
@@ -894,9 +913,43 @@ export const taskListInputSchema = z.strictObject({
 });
 export type TaskListInput = z.infer<typeof taskListInputSchema>;
 
+/** One chat that makes a listed task active or blocked. */
+export const taskActiveChatSchema = z.strictObject({
+  chatId: ChatId,
+  title: z.string().min(1).max(256),
+  activity: activitySchema,
+});
+export type TaskActiveChat = z.infer<typeof taskActiveChatSchema>;
+
+export const TASK_ACTIVE_CHATS_MAX = 10;
+
+/** Select the chats that make a task active, blocked ones first. */
+export function selectTaskActiveChats(
+  chats: readonly Pick<ChatSummary, 'chatId' | 'title' | 'activity'>[],
+): TaskActiveChat[] {
+  const rank = { blocked: 0, active: 1, idle: 2 } as const;
+  return chats
+    .filter((chat) => chat.activity.status !== 'idle')
+    .sort(
+      (left, right) => rank[left.activity.status] - rank[right.activity.status],
+    )
+    .slice(0, TASK_ACTIVE_CHATS_MAX)
+    .map(({ chatId, title, activity }) => ({ chatId, title, activity }));
+}
+
+/**
+ * A `task_list` row: the task summary plus the chats that make it active.
+ * `activeChats` lists up to 10 non-idle chats, blocked first; `chats.active`
+ * and `chats.blocked` give the full counts.
+ */
+export const taskListItemSchema = taskSummarySchema.safeExtend({
+  activeChats: z.array(taskActiveChatSchema).max(TASK_ACTIVE_CHATS_MAX),
+});
+export type TaskListItem = z.infer<typeof taskListItemSchema>;
+
 export const taskListResultSchema = z.strictObject({
   host: Host,
-  items: z.array(taskSummarySchema).max(50),
+  items: z.array(taskListItemSchema).max(50),
   nextCursor: UUID.nullable(),
 });
 export type TaskListResult = z.infer<typeof taskListResultSchema>;

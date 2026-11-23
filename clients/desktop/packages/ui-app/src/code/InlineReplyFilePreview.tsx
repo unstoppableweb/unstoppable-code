@@ -18,6 +18,7 @@ import {
   TRANSCRIPT_MARKDOWN_OPTIONS,
   TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { parseCsvTableContent } from './file/FileCsvPreview';
 import { fileExtension, resolveFileRenderKind } from './file/file-kind';
@@ -78,6 +79,18 @@ const CODE_EXTENSIONS = new Set([
 ]);
 const MAX_INLINE_TEXT_LENGTH = 100_000;
 const MAX_INLINE_TABLE_CELLS = 2_000;
+
+// TODO(CAN-759): replace with a typed error code on the file read. A file
+// deleted after lookup, one that cannot be read as text, or a cloud saved copy
+// that has expired is an expected outcome: the preview just stays hidden.
+function isExpectedPreviewOutcome(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.startsWith('File not found:') ||
+      error.message.includes('Binary files cannot be read') ||
+      error.message.startsWith('Saved copy is no longer available'))
+  );
+}
 
 export function InlineReplyFilePreview({
   path,
@@ -189,8 +202,16 @@ export function InlineReplyFilePreview({
           ? await readDocument(request, documentKind, signal)
           : await client.query('file.read', request);
       show(preview);
-    })().catch(() => {
-      if (!signal.aborted) setResult({ scopeKey, preview: null });
+    })().catch((error: unknown) => {
+      if (signal.aborted) return;
+      setResult({ scopeKey, preview: null });
+      if (isExpectedPreviewOutcome(error)) return;
+      // The preview just stays hidden, so this records with no surface.
+      recordSurfacedError({
+        chokePoint: 'notice',
+        identifier: 'inline-reply-file-preview',
+        error,
+      });
     });
     return (): void => {
       controller.abort();

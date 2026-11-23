@@ -702,7 +702,12 @@ function ModelRowDetail({
   if (!hideBilling && option.funding)
     rows.push({
       label: 'Billing',
-      value: option.funding === 'org-gateway' ? 'AI gateway' : 'AI Credits',
+      value:
+        option.funding === 'org-gateway'
+          ? 'AI gateway'
+          : option.funding === 'provider-key'
+            ? 'Your API key'
+            : 'AI Credits',
     });
   else if (!hideBilling && usesAiCredits)
     // CAN-5213: a credits route says so even when the row's tag gives way to
@@ -902,6 +907,11 @@ function sectionKeyFor(option: ModelCatalogOption): string {
   return UNCLAIMED_VENDOR_KEY;
 }
 
+/** Funding the person pays for directly: their own gateway or API key. */
+function isOwnFunded(funding: ModelCatalogOption['funding']): boolean {
+  return funding === 'org-gateway' || funding === 'provider-key';
+}
+
 /**
  * Glyph for one catalog section. Mirrors {@link sectionKeyFor} exactly, so an
  * unclaimed row gets the neutral mark rather than its harness's brand logo —
@@ -914,6 +924,9 @@ function sectionIconProvider(option: ModelCatalogOption): string {
   if (option.funding === 'org-gateway' && option.gatewayPresetId) {
     return option.gatewayPresetId;
   }
+  // An own-key section is keyed apart from the hosted maker's, but its rows
+  // run on that maker's own API, so it shows the maker's mark.
+  if (option.funding === 'provider-key') return option.provider;
   const provider = sectionProvider(option);
   if (provider) return provider;
   const vendor = normalizedVendor(option);
@@ -2568,15 +2581,14 @@ export function ModelPickerMenu({
       billingHarness,
     );
     const preference = billing?.getPreference(option.id, billingHarness);
-    // The chosen runtime's funding, else the row's: an own-gateway row is
-    // never AI Credits, whatever its source.
+    // The chosen runtime's funding, else the row's: an own-gateway or
+    // own-key row is never AI Credits, whatever its source.
     const funding = selectedChoice?.funding ?? option.funding;
-    credits =
-      funding === 'org-gateway'
-        ? false
-        : credits ||
-          preference?.payment === 'credits' ||
-          selectedChoice?.funding === 'ai-credits';
+    credits = isOwnFunded(funding)
+      ? false
+      : credits ||
+        preference?.payment === 'credits' ||
+        selectedChoice?.funding === 'ai-credits';
     const stateSelection: ModelPickerSelectionContext | undefined =
       selectionHarness
         ? {
@@ -2630,7 +2642,7 @@ export function ModelPickerMenu({
         hideBilling={hideBilling}
         usesAiCredits={
           !hideBilling &&
-          funding !== 'org-gateway' &&
+          !isOwnFunded(funding) &&
           !managedAccount &&
           (credits ||
             presentation.source === 'ai-gateway' ||
@@ -2829,8 +2841,6 @@ export function ModelPickerMenu({
     label: string;
     icon: ReactNode;
     connected: boolean;
-    /** Name the tab on hover: a gateway's glyph doesn't say which it is. */
-    tooltip?: boolean;
   }[] = harnessTabs
     ? [
         {
@@ -2888,7 +2898,6 @@ export function ModelPickerMenu({
             <GatewayIcon size={railIconSize} exactSize />
           ),
           connected: true,
-          tooltip: true,
         })),
         ...extraHarnessTabs
           .filter(
@@ -3126,16 +3135,16 @@ export function ModelPickerMenu({
                       {pickerChrome ? null : indicator}
                     </DropdownMenuControl>
                   );
-                  const labelledTabButton = tab.tooltip ? (
+                  const labelledTabButton = (
                     <Tooltip
                       key={pickerChrome ? undefined : tab.id}
                       label={tab.label}
                       placement="right"
+                      tone="inverse"
+                      className="w-full"
                     >
                       {tabButton}
                     </Tooltip>
-                  ) : (
-                    tabButton
                   );
                   if (!pickerChrome) return labelledTabButton;
                   return (
@@ -3815,7 +3824,7 @@ function ModelPickerOption({
   highlightSelection = false,
   leadingFavorite = false,
   usesAiCredits = option.source === 'ai-gateway' &&
-    option.funding !== 'org-gateway',
+    !isOwnFunded(option.funding),
   hideBilling = false,
   extraChargeMarker = false,
   billingPreference,
@@ -3996,11 +4005,6 @@ function ModelPickerOption({
       : `${testIdPrefix}-option-${option.id}`,
     // Host Auto is a selection mode, not a model.
     'data-model-id': option.id === AUTO_ROW_ID ? undefined : option.id,
-    onMouseEnter: (): void => onDetailChange(option.id, 'hover', true),
-    onMouseMove: detailOpen
-      ? undefined
-      : (): void => onDetailChange(option.id, 'hover', true),
-    onMouseLeave: (): void => onDetailChange(option.id, 'hover', false),
     onFocus: (): void => onDetailChange(option.id, 'focus', true, inFlyout),
     onBlur: (): void => onDetailChange(option.id, 'focus', false, inFlyout),
     onMouseDown: (event: ReactMouseEvent<HTMLButtonElement>): void =>
@@ -4172,6 +4176,14 @@ function ModelPickerOption({
       >
         <div
           className={`group/model-row relative w-full rounded-md ${highlightSelection && selected ? 'bg-subtle' : ''}`}
+          // The overlaid harness and favorite controls are part of this row.
+          onMouseEnter={(): void => onDetailChange(option.id, 'hover', true)}
+          onMouseMove={
+            detailOpen
+              ? undefined
+              : (): void => onDetailChange(option.id, 'hover', true)
+          }
+          onMouseLeave={(): void => onDetailChange(option.id, 'hover', false)}
         >
           {lock ? (
             <LockedModelRow

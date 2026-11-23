@@ -3,15 +3,13 @@ import { RefreshIcon } from '../icons/AppIcons';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import type { SkillUpdateAction } from '../lib/skill-update-action';
 import { useMinuteClock } from '../lib/useMinuteClock';
-import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { DetailMoreMenuItem } from './DetailMoreMenu';
 import { RefreshSpinner } from './RefreshSpinner';
 import { Notice, NoticeButton } from './Notice';
-import { Button } from './Button';
-import { DetailFact } from './DetailFact';
 import {
-  DetailFactError,
   DetailVersionUpdateFact,
+  type DetailUpdateState,
+  type DetailVersionUpdate,
 } from './CapabilityDetailLayout';
 
 export interface SkillUpdateNoticeProps {
@@ -143,6 +141,13 @@ export interface SkillUpdateStatusProps {
   action: SkillUpdateAction | undefined;
 }
 
+/** The Version row's "Checked just now", then "Checked 5m ago". */
+function checkedAgo(checkedAt: number, now: number): string {
+  const age =
+    now - checkedAt < 60_000 ? 'just now' : formatRelativeTime(checkedAt, now);
+  return `Checked ${age}`;
+}
+
 /** Whether {@link SkillUpdateStatus} has anything to say for `action`. */
 export function hasSkillUpdateStatus(
   action: SkillUpdateAction | undefined,
@@ -228,127 +233,111 @@ export function skillUpdateMenuItem(
 }
 
 /**
- * New Customize's Version row for an installed skill: the update notice's
- * states on one fact row. It shows while an update is available, applying
- * or failed; otherwise nothing, so the version stays hidden. A check's
- * progress belongs beside the header action that started it.
+ * New Customize's Version row for an installed skill, the row every entity
+ * uses: `unknown` until a check this session, `current` only once one found
+ * nothing newer, `checking` or `applying` while work runs, `available` with
+ * its update action, and a failure in place of the state. A skill with no
+ * update action (nothing to check or update here) says `unknown`, with no icon.
  */
 export function SkillVersionFact({
   action,
   version,
-  name,
   onRemove,
   refreshError,
+  onShareUpdate,
+  sourceChanged,
 }: {
   readonly action: SkillUpdateAction | undefined;
   /** From SKILL.md: shown under session replay's block. */
   readonly version?: string;
-  /** The skill's name, for the Update button's accessible name. */
-  readonly name: string;
   readonly onRemove?: () => void;
   /** A failure after an update (reading the new content), on this row. */
   readonly refreshError?: string;
-}): JSX.Element | null {
-  const versionText = version ? (
-    <>
-      <span className={REPLAY_BLOCK_CLASS}>{version}</span>
-      <span aria-hidden>·</span>
-    </>
-  ) : null;
-  if (refreshError) {
-    return (
-      <DetailFact label="Version" testId="skill-version-fact">
-        <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
-          {versionText}
-          <DetailFactError
-            error={refreshError}
-            testId="skill-version-fact-refresh-error"
-          />
-        </span>
-      </DetailFact>
-    );
-  }
-  if (!action) return null;
-  if (action.status === 'blocked') {
-    return action.updateAvailable ? (
-      <DetailVersionUpdateFact
-        name={name}
-        update={{ version, note: action.reason, versionReplay: 'block' }}
-        testId="skill-version-fact"
-      />
-    ) : null;
-  }
-  const { error } = action;
-  if (error) {
-    const missing = error.kind === 'missing-source';
+  /** A shared copy's update: the one available, and the one the icon runs. */
+  readonly onShareUpdate?: () => void;
+  /** A shared copy's source changed but its update cannot run here: no icon. */
+  readonly sourceChanged?: boolean;
+}): JSX.Element {
+  const now = useMinuteClock();
+  const ready = action?.status === 'ready' ? action : undefined;
+  const error = ready?.error;
+  const missing = error?.kind === 'missing-source';
+  const failure = ((): DetailVersionUpdate['failure'] => {
+    if (refreshError) return { text: refreshError };
+    if (!ready || !error) return undefined;
     const label = missing
       ? 'No longer in its source'
       : error.kind === 'check-failed'
         ? 'Couldn’t check for updates'
         : 'Couldn’t update this skill';
-    const retry = missing
+    const run = missing
       ? onRemove
       : error.kind === 'check-failed'
-        ? action.onCheck
-        : action.onApply;
-    return (
-      <DetailFact label="Version" testId="skill-version-fact">
-        <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
-          {versionText}
-          <DetailFactError
-            error={
-              error.kind !== 'missing-source' && error.detail
-                ? `${label}: ${error.detail}`
-                : label
+        ? ready.onCheck
+        : ready.onApply;
+    return {
+      text: label,
+      // The installer's diagnostic can carry the skill's path.
+      ...(error.kind !== 'missing-source' && error.detail
+        ? { detail: error.detail }
+        : {}),
+      tone: missing ? 'attention' : 'failed',
+      ...(run
+        ? {
+            retry: {
+              label: missing ? 'Remove' : 'Try again',
+              run,
+              disabled: ready.pending !== 'none',
+            },
+          }
+        : {}),
+    };
+  })();
+  // A skill gone from its source has nothing of its own to update to.
+  const available =
+    onShareUpdate !== undefined ||
+    sourceChanged === true ||
+    (action !== undefined && action.updateAvailable && !missing);
+  const state: DetailUpdateState =
+    ready?.pending === 'applying'
+      ? 'applying'
+      : ready?.pending === 'checking'
+        ? 'checking'
+        : available
+          ? 'available'
+          : hasSkillUpdateStatus(ready)
+            ? 'current'
+            : 'unknown';
+  // Only "Up to date" has a check behind it, and it reads as the header's did.
+  const checkedAt =
+    state === 'current' && !failure ? ready?.checkedAt : undefined;
+  return (
+    <DetailVersionUpdateFact
+      update={{
+        version,
+        versionReplay: 'block',
+        state,
+        ...(checkedAt !== undefined
+          ? { checked: checkedAgo(checkedAt, now) }
+          : {}),
+        ...(onShareUpdate || ready
+          ? {
+              // A change only the source shows has no update to run here.
+              run:
+                onShareUpdate ??
+                (sourceChanged && !action?.updateAvailable
+                  ? undefined
+                  : ready?.onApply),
+              check: ready?.onCheck,
             }
-            tone={missing ? 'attention' : 'failed'}
-            testId="skill-version-fact-error"
-          />
-          {retry && (
-            <>
-              <span aria-hidden>·</span>
-              <Button
-                variant="link"
-                onClick={retry}
-                disabled={action.pending !== 'none'}
-                data-testid="skill-version-fact-retry"
-              >
-                {missing ? 'Remove' : 'Try again'}
-              </Button>
-            </>
-          )}
-        </span>
-      </DetailFact>
-    );
-  }
-  if (action.pending === 'applying') {
-    return (
-      <DetailFact label="Version" testId="skill-version-fact">
-        <span
-          className="inline-flex min-w-0 flex-wrap items-center gap-1.5"
-          role="status"
-          data-state="applying"
-        >
-          {versionText}
-          <RefreshSpinner spinning size="sm" tone="secondary" />
-          Updating…
-        </span>
-      </DetailFact>
-    );
-  }
-  if (action.updateAvailable) {
-    return (
-      <DetailVersionUpdateFact
-        name={name}
-        update={{
-          version,
-          versionReplay: 'block',
-          busy: action.pending !== 'none',
-          run: action.onApply,
-        }}
-        testId="skill-version-fact"
-      />
-    );
-  }
-  return null;
+          : {}),
+        // A host that cannot run updates says where to; a share needs none.
+        ...(action?.status === 'blocked' && !onShareUpdate
+          ? { note: action.reason }
+          : {}),
+        ...(failure ? { failure } : {}),
+      }}
+      testId="skill-version-fact"
+    />
+  );
 }

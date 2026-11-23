@@ -61,6 +61,12 @@ export interface ChatFormat4SweepTarget {
   sweepFormat4(scope: ChatScopeKey): Promise<ChatFormat4SweepAttempt>;
   /** The format 4 stop switch, asked before every scope. */
   promotionAllowed(): boolean;
+  /**
+   * The sweep's own switch, asked before every scope after the stop switch.
+   * The app's sweep always has it (startChatFormat4Sweep); a target without
+   * it sweeps nothing.
+   */
+  sweepAllowed?(): boolean;
 }
 
 export interface ChatFormat4SweepConditions {
@@ -650,6 +656,14 @@ export class ChatFormat4Sweep {
     }
   }
 
+  /** Which switch holds the sweep, the stop switch first; none when both are on. */
+  private switchedOff(): 'switch_off' | 'sweep_switch_off' | undefined {
+    const { target } = this.options;
+    if (!target.promotionAllowed()) return 'switch_off';
+    if (target.sweepAllowed?.() !== true) return 'sweep_switch_off';
+    return undefined;
+  }
+
   private pause(reason: ChatFormat4PauseReason): void {
     if (this.pausesReported.has(reason)) return;
     this.pausesReported.add(reason);
@@ -756,8 +770,9 @@ export class ChatFormat4Sweep {
    */
   public async runPass(): Promise<ChatFormat4SweepPassResult> {
     const { target, dataDir, resolveStore } = this.options;
-    if (!target.promotionAllowed()) {
-      this.pause('switch_off');
+    const off = this.switchedOff();
+    if (off) {
+      this.pause(off);
       return { status: 'withheld', promoted: 0, remaining: 0 };
     }
     const inventory = await listChatFormat4SweepCandidates(
@@ -772,8 +787,9 @@ export class ChatFormat4Sweep {
       if (this.stopped) break;
       if (!this.offerable(candidate)) continue;
       if (!(await this.waitForIdle())) break;
-      if (!target.promotionAllowed()) {
-        this.pause('switch_off');
+      const offNow = this.switchedOff();
+      if (offNow) {
+        this.pause(offNow);
         return { status: 'withheld', promoted, remaining: left };
       }
       if (!(await this.hasRoom(candidate))) {
@@ -930,11 +946,11 @@ function rootFailureReason(error: unknown): ChatFormat4Reason {
 }
 
 /**
- * Compiled off (CAN-7178 PR 1): the sweep ships dormant, with no user effect.
- * PR 1b turns it on; until then no scope is ever admitted, whatever the
- * format 4 switch says.
+ * Compiled on (CAN-7178 PR 1b). Two switches still decide, each checked
+ * before every scope: the format 4 stop switch and the sweep's own switch.
+ * With either off, a pass reads no scope.
  */
-export const CHAT_FORMAT4_SWEEP_COMPILED_ON = false;
+export const CHAT_FORMAT4_SWEEP_COMPILED_ON = true;
 
 /**
  * Starts the app's sweep for the repository the chat state service built,
@@ -944,6 +960,7 @@ export const CHAT_FORMAT4_SWEEP_COMPILED_ON = false;
 export function startChatFormat4Sweep(
   repository: Pick<ChatStateV2Repository, 'sweepFormat4'>,
   promotionAllowed: () => boolean,
+  sweepAllowed: () => boolean,
   isScopeDeleting: (scope: ChatScopeKey) => boolean = (): boolean => false,
   compiledOn: boolean = CHAT_FORMAT4_SWEEP_COMPILED_ON,
 ): ChatFormat4Sweep | undefined {
@@ -959,10 +976,13 @@ export function startChatFormat4Sweep(
   );
   const sweep = new ChatFormat4Sweep({
     dataDir: getDataDir(),
-    target: repositoryChatFormat4SweepTarget(repository, promotionAllowed, {
-      isScopeDeleting,
-      codeReviewQualified: (): boolean => codeReviewQualified(),
-    }),
+    target: {
+      ...repositoryChatFormat4SweepTarget(repository, promotionAllowed, {
+        isScopeDeleting,
+        codeReviewQualified: (): boolean => codeReviewQualified(),
+      }),
+      sweepAllowed,
+    },
     resolveStore: resolveChatFormat4SweepStore,
     report: recordChatFormat4Outcome,
     conditions: {

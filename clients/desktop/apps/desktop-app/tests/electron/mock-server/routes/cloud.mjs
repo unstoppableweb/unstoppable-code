@@ -220,7 +220,7 @@ const AUTOMATION_PUBLIC_SHARE = {
   externalId: AUTOMATION_PUBLIC_SHARE_ID,
   pinnedContentHash: AUTOMATION_PUBLIC_CONTENT_HASH,
   upToDate: true,
-  sharePath: `/portal/plugins/automations/${AUTOMATION_SHARE_ID}`,
+  sharePath: `/portal/plugins/workflows/${AUTOMATION_SHARE_ID}`,
   createdAt: NOW,
   updatedAt: NOW,
 };

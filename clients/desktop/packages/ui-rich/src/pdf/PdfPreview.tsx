@@ -31,6 +31,7 @@ import {
   MaximizeIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import styles from './PdfPreview.module.css';
 import { isPdfRectangle, pdfExternalLinks } from './pdf-links';
 
@@ -98,6 +99,53 @@ function isCancellation(error: unknown): boolean {
   );
 }
 
+/**
+ * pdf.js exceptions that mean the file's own bytes are damaged or unusable
+ * (parse, format and embedded-image decode failures), never an application
+ * defect.
+ */
+const PDF_INPUT_FAILURE_NAMES: ReadonlySet<string> = new Set([
+  'InvalidPDFException',
+  'FormatError',
+  'XRefParseException',
+  'XRefEntryException',
+  'ParserEOFException',
+  'MissingDataException',
+  'JpegError',
+  'JpxError',
+  'DNLMarkerError',
+  'EOIMarkerError',
+  'ResponseException',
+  'PasswordException',
+]);
+
+/**
+ * `details` prefix of the pinned pdf.js (5.7.284) Brotli stream decoder, the
+ * one decoder that fails with a plain `Error` (name `Error`, so the name set
+ * cannot match it). Used only to classify; nothing from it is sent.
+ */
+const PDF_BROTLI_FAILURE_PREFIX = 'Error: Brotli error code:';
+
+/**
+ * True for a damaged-input failure. The pdf.js worker rewraps every error it
+ * does not know as an `UnknownErrorException` whose `details` is the
+ * original's `toString()` (`"FormatError: …"`); a `cause` is read too, for
+ * builds that set one.
+ */
+function isPdfInputFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (PDF_INPUT_FAILURE_NAMES.has(error.name)) return true;
+  if (error.name !== 'UnknownErrorException') return false;
+  const details: unknown = Reflect.get(error, 'details');
+  const cause: unknown = Reflect.get(error, 'cause');
+  return (
+    (typeof details === 'string' &&
+      (details.startsWith(PDF_BROTLI_FAILURE_PREFIX) ||
+        PDF_INPUT_FAILURE_NAMES.has(details.split(':', 1)[0] ?? ''))) ||
+    (cause instanceof Error && PDF_INPUT_FAILURE_NAMES.has(cause.name))
+  );
+}
+
 function textItems(content: PdfTextContent): PdfSearchTextItem[] {
   return content.items.map((item) =>
     'str' in item
@@ -157,6 +205,9 @@ export function PdfPreview({
   const textCache = useRef(new Map<number, Promise<PdfTextContent>>());
   const visibleRatios = useRef(new Map<number, number>());
   const searchGeneration = useRef(0);
+  // One page-failure record per opened document: zoom, scrolling back and
+  // the remaining pages fail the same way and would otherwise repeat it.
+  const pageFailureRecorded = useRef(false);
   const searchState = useRef<{
     readonly matches: readonly PdfSearchMatch[];
     readonly activeMatchIndex: number;
@@ -374,6 +425,18 @@ export function PdfPreview({
         if (isCancellation(error)) return;
         if (renderWork.current.get(pageIndex)?.token !== token) return;
         renderWork.current.delete(pageIndex);
+        // A damaged page is the file's fault, not a defect: it keeps the
+        // placeholder below but is not recorded and leaves the document's
+        // one reporting slot free for a real defect on a later page.
+        if (!isPdfInputFailure(error) && !pageFailureRecorded.current) {
+          pageFailureRecorded.current = true;
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'pdf-page',
+            surface: 'inline',
+            error,
+          });
+        }
         setPages((current) =>
           current.map((page, index) =>
             index === pageIndex && page.state === 'loaded'
@@ -400,6 +463,7 @@ export function PdfPreview({
     });
     textCache.current.clear();
     annotationCache.current.clear();
+    pageFailureRecorded.current = false;
     searchGeneration.current += 1;
     const documentRenderWork = renderWork.current;
 

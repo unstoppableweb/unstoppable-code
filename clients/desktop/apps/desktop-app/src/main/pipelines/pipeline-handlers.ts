@@ -120,6 +120,7 @@ import type {
   PipelineData,
   PipelineInfo,
   IPCResult,
+  IPCResultWithOutcome,
   PipelineExecutionStartResult,
   PipelineAdvisorSnapshot,
   PipelineLookupRequest,
@@ -1045,7 +1046,7 @@ function persistPipelineRemoteMetadata(
  */
 export async function saveEditorPipeline(
   input: PipelineSaveInput,
-): Promise<IPCResult<PipelineInfo>> {
+): Promise<IPCResultWithOutcome<PipelineInfo>> {
   if (pipelineResourceContextEnabled() && input.id) {
     try {
       await assertStoredPipelineContext(input.id);
@@ -1101,7 +1102,7 @@ export async function saveEditorPipeline(
       source: 'user',
       hasPipelineId: Boolean(input.id),
     },
-    (): Promise<IPCResult<PipelineInfo>> =>
+    (): Promise<IPCResultWithOutcome<PipelineInfo>> =>
       saveUserPipeline({
         ...(input.id ? { id: input.id } : {}),
         ...(input.expectedRevision === undefined
@@ -1397,12 +1398,15 @@ export function registerPipelineHandlers(): void {
   registerIpcHandler(PIPELINE_CHANNELS.DELETE, (_, id: string) => {
     return withPipelineCrudTelemetry(
       { action: 'delete', source: 'user', hasPipelineId: true },
-      (): Promise<IPCResult> => deleteUserPipeline(id, null),
+      (): Promise<IPCResultWithOutcome> => deleteUserPipeline(id, null),
     );
   });
   registerIpcHandler(
     PIPELINE_CHANNELS.DUPLICATE,
-    async (_event, request: PipelineLookupRequest) => {
+    async (
+      _event,
+      request: PipelineLookupRequest,
+    ): Promise<IPCResultWithOutcome<PipelineInfo>> => {
       // A copy belongs to the selected owner and carries no agent marker.
       const copyOwner = await selectedOwnerContext();
       const duplicated = await withPipelineCrudTelemetry(

@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import { ConfirmDialog } from '@canopy/ui-shared';
 import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
+import { McpActionRefusedError } from './McpServerManagement';
 
 /** A secret of the server the person may copy; named, never its value. */
 export interface McpCopySecretSlot {
@@ -76,16 +77,20 @@ export function CopyMcpServerDialog({
   const [chosen, setChosen] = useState<ReadonlySet<string>>(new Set());
   const [copying, setCopying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A refusal before the copy was attempted is shown, not recorded as a failure.
+  const [refused, setRefused] = useState(false);
 
   const copy = async (): Promise<void> => {
     setCopying(true);
     setError(null);
+    setRefused(false);
     try {
       await onCopy(
         slots.map((item) => item.slot).filter((slot) => chosen.has(slot)),
       );
       onClose();
     } catch (caught) {
+      setRefused(caught instanceof McpActionRefusedError);
       setError(
         caught instanceof Error && caught.message !== ''
           ? caught.message
@@ -150,7 +155,9 @@ export function CopyMcpServerDialog({
       busyLabel="Adding…"
       busy={copying}
       confirmDisabled={slots.length > 0 && chosen.size === 0}
-      errorMessage={error}
+      {...(refused
+        ? { errorMessage: error, errorRecordingDisabled: true as const }
+        : { errorMessage: error, errorSource: 'mcp-server-copy' })}
       dataTestId="copy-mcp-server-dialog"
       confirmTestId="copy-mcp-server-confirm"
       cancelTestId="copy-mcp-server-cancel"

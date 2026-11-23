@@ -227,6 +227,7 @@ export function TeamProjectsGrantsEditor({
               {...control}
               aria-label="Add team"
               width="fill"
+              replayPrivacy={{ blockClassName }}
               value={null}
               placeholder="Choose a team"
               disabled={addDisabled}

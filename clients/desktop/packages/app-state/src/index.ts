@@ -301,6 +301,7 @@ export {
   type SidebarActivityStatus,
 } from './sidebar-activity/create-sidebar-activity-mode-store';
 export * from './marketplace-sources/useMarketplaceSourceAdd';
+export * from './base-branches';
 export * from './script-actions';
 export * from './onboarding-tips';
 export * from './suggestions';

@@ -9,6 +9,7 @@
  */
 export {
   findPanelByInstanceKey,
+  getActivePanelId,
   getAuxPanelLayoutOwnerKey,
   getPanelGridController,
   getPanelInstanceKey,

@@ -170,6 +170,7 @@ const ID_OUTSIDE = '9a9a9a9a-0000-4000-8000-00000000000c';
 const ID_MALFORMED = 'bcbcbcbc-0000-4000-8000-00000000000d';
 const ORG_OUTSIDE = 'dededede-0000-4000-8000-00000000000e';
 const ID_MALFORMED_OUTSIDE = 'efefefef-0000-4000-8000-00000000000f';
+const ID_UNDATED = '13131313-0000-4000-8000-000000000010';
 const UNREADABLE = {
   kind: 'failed_precondition',
   code: 'core.catalog.entryUnreadable',
@@ -596,6 +597,44 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
       revisionChanged: true,
       mcpServers: [{ serverId: SERVER, configId: CONFIG, owner: ORG_OWNER }],
     });
+  });
+
+  it('reads and replaces a collection with no stored date, leaving it undated (CAN-5239)', async () => {
+    // A legacy config without createdAt: JSON drops the undefined field.
+    seedConfig(ID_UNDATED, 'Undated', { createdAt: undefined });
+    const read = await entryOf(ID_UNDATED);
+    expect({ read: 'createdAt' in read, revision: read.revision }).toEqual({
+      read: false,
+      revision: 'rev-Undated',
+    });
+    const replaced: unknown = await upsert({
+      entryId: collectionEntryId(ID_UNDATED),
+      expectedRevision: 'rev-Undated',
+      name: 'Undated renamed',
+      members: MEMBERS,
+    });
+    if (
+      typeof replaced !== 'object' ||
+      replaced === null ||
+      !('entry' in replaced) ||
+      typeof replaced.entry !== 'object' ||
+      replaced.entry === null
+    )
+      throw new Error('No replaced entry');
+    const written: Record<string, unknown> = { ...replaced.entry };
+    const stored = storedCollection(ID_UNDATED);
+    expect({
+      written: 'createdAt' in written,
+      name: written.name,
+      stored: 'createdAt' in stored,
+      revisionChanged: stored.revision !== 'rev-Undated',
+    }).toEqual({
+      written: false,
+      name: 'Undated renamed',
+      stored: false,
+      revisionChanged: true,
+    });
+    expect(await get(ID_UNDATED)).toEqual({ read: 'entry', entry: written });
   });
 
   it('drops a removed MCP member with its owner, and gives an added one none', async () => {

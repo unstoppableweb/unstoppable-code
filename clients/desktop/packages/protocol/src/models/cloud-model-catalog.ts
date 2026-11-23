@@ -47,11 +47,21 @@ export interface ProjectableCloudModelOption {
   readonly familyLabel?: string | null;
   /** Owner-scoped library eligibility. Older route versions omit it. */
   readonly libraryEligibility?: 'available' | 'locked';
-  /** Served by the work owner's own AI gateway (CAN-5811). */
-  readonly funding?: 'org-gateway';
+  /**
+   * Served by the work owner's own AI gateway (CAN-5811), or by the person's
+   * own Anthropic or OpenAI key (`provider-key`). A reader that predates a
+   * value drops it, so the row reads as an ordinary credits model.
+   */
+  readonly funding?: 'org-gateway' | 'provider-key';
   /** The preset gateway serving an `org-gateway` row (CAN-6444). */
   readonly gatewayPresetId?: string;
 }
+
+/**
+ * `GET /api/cloud/models` query parameter (`=1`) by which a client opts in to
+ * the caller's own-key `byok/` rows. Without it the rows are omitted.
+ */
+export const CLOUD_MODELS_PROVIDER_KEY_PARAM = 'providerKeyModels';
 
 /**
  * Core model definitions → the picker's `ModelCatalog`. The option id IS the
@@ -115,7 +125,9 @@ export function toModelCatalog(
       model.libraryEligibility === 'available'
         ? { libraryEligibility: model.libraryEligibility }
         : {}),
-      ...(model.funding === 'org-gateway' ? { funding: model.funding } : {}),
+      ...(model.funding === 'org-gateway' || model.funding === 'provider-key'
+        ? { funding: model.funding }
+        : {}),
       ...(model.funding === 'org-gateway' &&
       typeof model.gatewayPresetId === 'string'
         ? { gatewayPresetId: model.gatewayPresetId }
@@ -186,7 +198,9 @@ export function readProjectableCloudModel(
     ...(libraryEligibility === 'available' || libraryEligibility === 'locked'
       ? { libraryEligibility }
       : {}),
-    ...(funding === 'org-gateway' ? { funding } : {}),
+    ...(funding === 'org-gateway' || funding === 'provider-key'
+      ? { funding }
+      : {}),
     ...(typeof gatewayPresetId === 'string' ? { gatewayPresetId } : {}),
   };
 }

@@ -329,6 +329,13 @@ function isNode(target: EventTarget): target is Node {
   return 'nodeType' in target;
 }
 
+/**
+ * The picture or video fills at most 70% of the viewer each way, so the dark
+ * ground frames it, and never more than the stage between the header and
+ * the strip.
+ */
+const MEDIA_SIZE_CLASS = 'max-h-[min(100%,70vh)] max-w-[min(100%,70vw)]';
+
 function MediaStage({
   item,
   onOpenExternal,
@@ -377,7 +384,7 @@ function MediaStage({
         autoPlay
         playsInline
         aria-label={item.name}
-        className={`max-h-full max-w-full rounded-md ${REPLAY_BLOCK_CLASS}`}
+        className={`${MEDIA_SIZE_CLASS} rounded-md ${REPLAY_BLOCK_CLASS}`}
       />
       {onFocusPastVideo ? (
         // A lone video is the focus trap's last stop, and focus on any of its
@@ -409,7 +416,7 @@ function MediaStage({
       onError={(): void => setFailedSrc(src)}
       alt={item.name}
       draggable={false}
-      className={`max-h-full max-w-full rounded-md object-contain ${REPLAY_BLOCK_CLASS}`}
+      className={`${MEDIA_SIZE_CLASS} rounded-md object-contain ${REPLAY_BLOCK_CLASS}`}
     />
   );
 }

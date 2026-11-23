@@ -34,6 +34,7 @@ function getSupervision(): PlatformSupervisionServices {
 
 /** Electron main's run-log writer fence, over the host's process inspector (as `pipelines/pipeline-owner-fence.ts`). */
 export const desktopScriptRunWriterFence: ScriptRunWriterFence = {
+  spawner: 'electron',
   async self(): Promise<ScriptRunWriter | null> {
     const found = await getSupervision().inspectProcess({ pid: process.pid });
     return found.state === 'running'

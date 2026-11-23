@@ -25,6 +25,7 @@ import {
 import { useAgentSentReceivingContext } from './AgentSentReceivingContext';
 import { MessageEditCard } from './MessageEditCard';
 import { WatcherFiredTitle } from './WatcherFiredTitle';
+import { QueuedWatcherRow } from './QueuedWatcherRow';
 import { hostMessagePresentation } from './SteeringRequestTitle';
 import {
   MessageEditBadge,
@@ -261,6 +262,89 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
       row.state === 'cancelled') &&
     !row.generated;
   const steeringRequest = hostMessagePresentation(shownText);
+  // A fired watcher's message reads as the wake row it becomes, not an info
+  // bubble (chat-blocks.md, Watchers): its delivery state is the row's status,
+  // Cancel or Dismiss take that place on hover, and Resend and Queue stay
+  // below. A message with a sender keeps its bubble.
+  const watcherWake =
+    row.watcherFired !== undefined && !row.agentSent
+      ? row.watcherFired
+      : undefined;
+  const deliveryActions = (
+    <>
+      {((row.state === 'pending' && row.canWithdraw) ||
+        row.state === 'cancelled' ||
+        row.state === 'uncertain') && (
+        // The resend warning only follows these actions (it needs the
+        // uncertain state), so they share one group.
+        <Stack gap="inline">
+          <div className="flex flex-wrap justify-end gap-2">
+            {(row.state === 'cancelled' || row.state === 'uncertain') && (
+              <Button
+                ref={row.state === 'uncertain' ? resendButtonRef : undefined}
+                variant="secondary"
+                size="compact"
+                data-testid="input-delivery-resend"
+                disabled={busy}
+                onClick={() => {
+                  if (row.state === 'uncertain') {
+                    setResendWarningOpen(true);
+                  } else {
+                    void act('resend');
+                  }
+                }}
+              >
+                Resend
+              </Button>
+            )}
+            {row.state !== 'uncertain' && (
+              <Button
+                variant="secondary"
+                size="compact"
+                data-testid="input-delivery-queue"
+                disabled={busy}
+                onClick={() => void act('queue')}
+              >
+                Queue
+              </Button>
+            )}
+          </div>
+          {row.state === 'uncertain' && resendWarningOpen && (
+            <div
+              data-testid="input-delivery-resend-warning"
+              className="flex flex-wrap items-center justify-end gap-2 text-3xs fg-secondary"
+              role="status"
+              aria-live="polite"
+            >
+              <span>Send again? It may arrive twice.</span>
+              <Button
+                variant="secondary"
+                size="compact"
+                data-testid="input-delivery-resend-confirm"
+                disabled={busy}
+                onClick={() => void act('resend')}
+              >
+                Send again
+              </Button>
+              <Button
+                ref={resendKeepButtonRef}
+                variant="secondary"
+                size="compact"
+                data-testid="input-delivery-resend-keep"
+                disabled={busy}
+                onClick={() => {
+                  setResendWarningOpen(false);
+                  resendButtonRef.current?.focus();
+                }}
+              >
+                Keep
+              </Button>
+            </div>
+          )}
+        </Stack>
+      )}
+    </>
+  );
   return (
     <div
       ref={rowRef}
@@ -339,6 +423,61 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
             )}
           </MessageEditCard>
         </Stack>
+      ) : watcherWake ? (
+        <QueuedWatcherRow
+          dataTestId="input-delivery-bubble"
+          watcherFired={watcherWake}
+          text={shownText}
+          status={
+            <span role="status" aria-live="polite">
+              {statusLabel}
+            </span>
+          }
+          actions={
+            row.state === 'pending' && row.canWithdraw ? (
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                data-testid="input-delivery-cancel"
+                aria-label="Cancel pending message"
+                disabled={busy}
+                onClick={() => void act('cancel')}
+              >
+                <TrashIcon size="sm" aria-hidden="true" />
+              </Button>
+            ) : row.state === 'cancelled' || row.state === 'uncertain' ? (
+              <Button
+                variant="ghost"
+                size="compact"
+                iconOnly
+                data-testid="input-delivery-dismiss"
+                aria-label="Dismiss message"
+                disabled={busy}
+                onClick={() => void act('dismiss')}
+              >
+                <TrashIcon size="sm" aria-hidden="true" />
+              </Button>
+            ) : undefined
+          }
+          footer={
+            <div className="flex min-w-0 flex-col gap-1">
+              {detail && (
+                <p
+                  className="pl-9 text-3xs fg-secondary"
+                  role={error ? 'alert' : undefined}
+                >
+                  {error ? (
+                    <span className={REPLAY_BLOCK_CLASS}>{error}</span>
+                  ) : (
+                    detail
+                  )}
+                </p>
+              )}
+              {deliveryActions}
+            </div>
+          }
+        />
       ) : (
         <div className="flex justify-end">
           <div className="group relative flex min-w-0 max-w-full flex-col gap-1">
@@ -453,79 +592,7 @@ const InputDeliveryRow = memo(function InputDeliveryRow({
                 )}
               </Stack>
             </MessageEditSurface>
-            {((row.state === 'pending' && row.canWithdraw) ||
-              row.state === 'cancelled' ||
-              row.state === 'uncertain') && (
-              // The resend warning only follows these actions (it needs the
-              // uncertain state), so they share one group.
-              <Stack gap="inline">
-                <div className="flex flex-wrap justify-end gap-2">
-                  {(row.state === 'cancelled' || row.state === 'uncertain') && (
-                    <Button
-                      ref={
-                        row.state === 'uncertain' ? resendButtonRef : undefined
-                      }
-                      variant="secondary"
-                      size="compact"
-                      data-testid="input-delivery-resend"
-                      disabled={busy}
-                      onClick={() => {
-                        if (row.state === 'uncertain') {
-                          setResendWarningOpen(true);
-                        } else {
-                          void act('resend');
-                        }
-                      }}
-                    >
-                      Resend
-                    </Button>
-                  )}
-                  {row.state !== 'uncertain' && (
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      data-testid="input-delivery-queue"
-                      disabled={busy}
-                      onClick={() => void act('queue')}
-                    >
-                      Queue
-                    </Button>
-                  )}
-                </div>
-                {row.state === 'uncertain' && resendWarningOpen && (
-                  <div
-                    data-testid="input-delivery-resend-warning"
-                    className="flex flex-wrap items-center justify-end gap-2 text-3xs fg-secondary"
-                    role="status"
-                    aria-live="polite"
-                  >
-                    <span>Send again? It may arrive twice.</span>
-                    <Button
-                      variant="secondary"
-                      size="compact"
-                      data-testid="input-delivery-resend-confirm"
-                      disabled={busy}
-                      onClick={() => void act('resend')}
-                    >
-                      Send again
-                    </Button>
-                    <Button
-                      ref={resendKeepButtonRef}
-                      variant="secondary"
-                      size="compact"
-                      data-testid="input-delivery-resend-keep"
-                      disabled={busy}
-                      onClick={() => {
-                        setResendWarningOpen(false);
-                        resendButtonRef.current?.focus();
-                      }}
-                    >
-                      Keep
-                    </Button>
-                  </div>
-                )}
-              </Stack>
-            )}
+            {deliveryActions}
           </div>
         </div>
       )}

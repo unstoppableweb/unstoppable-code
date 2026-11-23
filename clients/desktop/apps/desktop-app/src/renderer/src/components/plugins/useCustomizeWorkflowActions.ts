@@ -26,8 +26,14 @@ export interface CustomizeWorkflowActionsInput {
   readonly pipelines: readonly PipelineInfo[];
   readonly activities: readonly ScheduledActivity[];
   readonly refreshPipelines: () => Promise<void>;
-  readonly deletePipeline: (id: string) => Promise<boolean>;
-  readonly deleteSharedPipeline: (remoteId: string) => Promise<boolean>;
+  readonly deletePipeline: (
+    id: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
+  readonly deleteSharedPipeline: (
+    remoteId: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
 }
 
 export interface CustomizeWorkflowActionsResult {
@@ -173,7 +179,7 @@ export function useCustomizeWorkflowActions({
         }
         if (entry.ref.type === 'pipeline') openPipelineRuns(entry.name);
       },
-      onDelete: async (entry): Promise<string | null> => {
+      onDelete: async (entry, confirmationShown): Promise<string | null> => {
         const failure = `Couldn't delete ${entry.name}`;
         const { ref } = entry;
         if (ref.type === 'automation') {
@@ -183,12 +189,18 @@ export function useCustomizeWorkflowActions({
           return response.ok ? null : (response.error ?? failure);
         }
         if (ref.type !== 'pipeline') return failure;
+        // The confirmation shows and records the failure, so the pipeline
+        // list's load error, which the page would raise, holds it only once
+        // the confirmation is gone.
+        const handled = confirmationShown
+          ? { callerShowsFailure: confirmationShown }
+          : {};
         const deleted =
           ref.source === 'shared'
             ? ref.remoteId
-              ? await deleteSharedPipeline(ref.remoteId)
+              ? await deleteSharedPipeline(ref.remoteId, handled)
               : false
-            : await deletePipeline(ref.pipelineId);
+            : await deletePipeline(ref.pipelineId, handled);
         if (!deleted) return failure;
         await refreshPipelines();
         return null;

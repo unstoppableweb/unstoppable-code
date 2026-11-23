@@ -56,9 +56,19 @@ export type OfficeParseResult =
   | DocxParseResult
   | XlsxParseResult
   | PptxParseResult;
+/**
+ * What a failed parse posts: the thrown value's class and system code, never
+ * its message, which can quote document content. Hosts validate both against
+ * their allowlists before recording anything.
+ */
+export interface OfficeParseFailure {
+  readonly name?: string;
+  readonly code?: string;
+}
+
 export type OfficeParseResponse =
   | { readonly ok: true; readonly result: OfficeParseResult }
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: false; readonly error: OfficeParseFailure };
 
 function boundedResult<T extends DocxParseResult | XlsxParseResult>(
   result: T,

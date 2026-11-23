@@ -40,8 +40,7 @@ export function createRemoteControlActionFamily<H>(options: {
         if (action.type === 'remote_control.open_dialog') {
           const outcome = await options.port.open(call);
           if (outcome.status === 'unavailable') {
-            // The legacy canopy_portal.open success shape: a skipped open is
-            // not an error.
+            // A skipped open is a success, not an error.
             return agentActionResult(call, action.type, {
               skipped: true,
               reason: 'remote-control-unavailable',

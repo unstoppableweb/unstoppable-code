@@ -259,6 +259,12 @@ export function customizeWorksWithRows(
   entry: Parameters<typeof CustomizeWorksWithChips>[0]['entry'] &
     Pick<UnifiedPluginEntry, 'state' | 'harnessInstalls'>,
   live?: CustomizeLiveHarnesses,
+  /**
+   * Whether the host knows this item is not added, when its state says
+   * otherwise (a curated plugin on disk reads `installed` before a harness
+   * has it).
+   */
+  notAddedYet = entry.state === 'available',
 ): PluginWorksWithRow[] {
   const rows = customizeEntryHarnessRows(entry);
   if (rows !== undefined) {
@@ -314,10 +320,11 @@ export function customizeWorksWithRows(
   // harness is known, so the others are unknown rather than unsupported.
   // Per harness: compatibility may cover only some of them.
   const copyRead =
-    entry.state !== 'available' ||
+    !notAddedYet ||
     listings.some(
       (listing) =>
-        listing.state === 'installed' || listing.state === 'needs-auth',
+        listing !== entry &&
+        (listing.state === 'installed' || listing.state === 'needs-auth'),
     );
   // A harness an installed copy in the group serves reads Installed.
   const installedVia = new Set(
@@ -347,8 +354,7 @@ export function customizeWorksWithRows(
         : verified(value)
           ? 'Not supported'
           : 'Unknown until added'
-      : installedVia.has(value) ||
-          (entry.state !== 'available' && !failedLive.has(value))
+      : installedVia.has(value) || (!notAddedYet && !failedLive.has(value))
         ? 'Installed'
         : 'Not installed',
   }));
@@ -359,14 +365,17 @@ export function CustomizeEntryWorksWith({
   entry,
   checking = false,
   liveHarnesses,
+  notAddedYet,
 }: {
   readonly entry: Parameters<typeof customizeWorksWithRows>[0];
   /** A preview of the plugin's files is being read: unknown rows say so. */
   readonly checking?: boolean;
   /** The host's live harness reading, for entries without compatibility. */
   readonly liveHarnesses?: CustomizeLiveHarnesses;
+  /** The host's answer for an item its state calls added; see `customizeWorksWithRows`. */
+  readonly notAddedYet?: boolean;
 }): JSX.Element | null {
-  const rows = customizeWorksWithRows(entry, liveHarnesses);
+  const rows = customizeWorksWithRows(entry, liveHarnesses, notAddedYet);
   return (
     <PluginWorksWith
       rows={

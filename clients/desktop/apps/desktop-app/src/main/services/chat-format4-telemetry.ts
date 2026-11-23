@@ -42,11 +42,20 @@ export const CHAT_FORMAT4_PAUSE_REASONS = [
   'battery',
   'disk',
   'switch_off',
+  'sweep_switch_off',
 ] as const;
 export type ChatFormat4PauseReason = Exclude<
   (typeof CHAT_FORMAT4_PAUSE_REASONS)[number],
   'none'
 >;
+
+/**
+ * What started the work an event reports (CAN-7178): the background sweep,
+ * an ordinary load, or the flip build's pre-handoff pass (CAN-7178 PR 3).
+ * Exactly these three values; never an identifier.
+ */
+export const CHAT_FORMAT4_TRIGGERS = ['sweep', 'load', 'pre-handoff'] as const;
+export type ChatFormat4Trigger = (typeof CHAT_FORMAT4_TRIGGERS)[number];
 
 /** Scopes a sweep pass left below format 4, bucketed; never a count or name. */
 export const CHAT_FORMAT4_REMAINING_BUCKETS = [
@@ -74,7 +83,7 @@ export type ChatFormat4DurationBucket =
 /** Attempts are numbered 1 to 6 (an initial attempt and five retries). */
 export const CHAT_FORMAT4_MAX_ATTEMPT = 6;
 
-export type ChatFormat4Outcome =
+export type ChatFormat4Outcome = (
   | { readonly event: 'promoted'; readonly attempt: number }
   | {
       readonly event: 'promotion_failed';
@@ -89,7 +98,11 @@ export type ChatFormat4Outcome =
   | {
       readonly event: 'sweep_scope_backed_off';
       readonly reason: ChatFormat4Reason;
-    };
+    }
+) & {
+  /** Set by whoever reports the outcome; see `chatFormat4TriggerLabel`. */
+  readonly trigger?: ChatFormat4Trigger;
+};
 
 export type ChatFormat4Labels = {
   readonly format4_event: ChatFormat4Event;
@@ -98,6 +111,7 @@ export type ChatFormat4Labels = {
   readonly format4_duration_bucket: ChatFormat4DurationBucket;
   readonly format4_remaining_bucket: ChatFormat4RemainingBucket;
   readonly format4_pause_reason: (typeof CHAT_FORMAT4_PAUSE_REASONS)[number];
+  readonly format4_trigger: ChatFormat4Trigger;
 };
 
 const OPERATION = 'canopy.chat_storage_format4';
@@ -146,12 +160,36 @@ function attemptLabel(attempt: number): number {
 }
 
 /**
- * The labels one outcome sends: exactly the six declared keys, each a fixed
- * code or a bounded number, whatever the caller passed.
+ * The trigger an outcome is labelled with: its own when it is one of the
+ * three fixed values, else the sweep for the sweep's own events and a load
+ * for everything else.
+ */
+export function chatFormat4TriggerLabel(
+  outcome: ChatFormat4Outcome,
+): ChatFormat4Trigger {
+  const trigger = CHAT_FORMAT4_TRIGGERS.find(
+    (value) => value === outcome.trigger,
+  );
+  if (trigger) return trigger;
+  return outcome.event.startsWith('sweep_') ? 'sweep' : 'load';
+}
+
+/**
+ * The labels one outcome sends: exactly the seven declared keys, each a
+ * fixed code or a bounded number, whatever the caller passed.
  */
 export function chatFormat4Labels(
   outcome: ChatFormat4Outcome,
 ): ChatFormat4Labels {
+  return {
+    ...outcomeLabels(outcome),
+    format4_trigger: chatFormat4TriggerLabel(outcome),
+  };
+}
+
+function outcomeLabels(
+  outcome: ChatFormat4Outcome,
+): Omit<ChatFormat4Labels, 'format4_trigger'> {
   switch (outcome.event) {
     case 'promoted':
     case 'retries_exhausted':

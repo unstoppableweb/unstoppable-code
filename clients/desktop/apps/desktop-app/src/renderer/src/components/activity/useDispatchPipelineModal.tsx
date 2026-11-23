@@ -112,6 +112,8 @@ interface PendingCloudModels extends CloudLaunchTarget {
 interface PendingCloudCheckout extends CloudLaunchTarget {
   state: CloudPipelineRunCheckoutState;
   error: string | null;
+  /** `error` is main's `cloud_unavailable` refusal (signed out), not a failure. */
+  errorRefused: boolean;
 }
 
 /** Who owns a cloud run: its owner with no project, or a task's chosen one. */
@@ -283,10 +285,18 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
       if (cloudPreparing.current) return;
       setDispatchRunning(true);
       setDispatchRunError(null);
+      // A retry from the push dialog clears its error, so a failure with the
+      // same text is sighted again.
+      if (confirmed?.checkout !== undefined)
+        setCloudCheckout((current) =>
+          current ? { ...current, error: null, errorRefused: false } : current,
+        );
       // Once a wait for the cloud worktree closed the confirmations, every
       // later answer belongs to the Run dialog, which is what's showing.
       let confirmationsClosed = false;
-      const fail = (message: string): void => {
+      // `refused` marks an expected refusal the checkout dialog must not
+      // record as a failure.
+      const fail = (message: string, refused = false): void => {
         if (confirmationsClosed) setDispatchRunError(message);
         else if (confirmed?.models)
           setCloudModels((current) =>
@@ -294,7 +304,9 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
           );
         else if (confirmed?.checkout !== undefined)
           setCloudCheckout((current) =>
-            current ? { ...current, error: message } : current,
+            current
+              ? { ...current, error: message, errorRefused: refused }
+              : current,
           );
         else setDispatchRunError(message);
       };
@@ -526,6 +538,7 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
             ...launchTarget,
             state: result.checkout,
             error: null,
+            errorRefused: false,
           });
           return;
         }
@@ -545,7 +558,9 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
           });
           return;
         }
-        fail(result.error);
+        // `cloud_unavailable` is main's answer to a signed-out account (or cloud
+        // runs being off), an expected refusal rather than a failure.
+        fail(result.error, result.errorCode === 'cloud_unavailable');
       } catch (error: unknown) {
         reportClientAppError(error);
         // Main may have sent the start before the answer was lost: as for
@@ -762,6 +777,9 @@ export function useDispatchPipelineModal(): DispatchPipelineModalController {
       state={cloudCheckout.state}
       busy={dispatchRunning}
       errorMessage={cloudCheckout.error}
+      {...(cloudCheckout.errorRefused
+        ? { errorRecordingDisabled: true as const }
+        : { errorSource: 'cloud-run-checkout' })}
       onCancel={() => {
         if (
           cloudLaunch.current?.unsettled !== true &&

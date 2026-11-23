@@ -4,6 +4,14 @@ import type { OrganizationSettingsSubtab } from './routes';
 
 export interface AccountSettingsNavFlags {
   aiGatewayEnabled?: boolean;
+  /**
+   * The host's `providerApiKeys` capability (`CanopyCapabilities`), resolved
+   * where the page is served: the person may keep their own Claude and
+   * ChatGPT API keys for cloud chats, so the Model providers page shows.
+   * Web sets it from the server-only provider-keys flag; desktop keeps no
+   * cloud provider keys and leaves it unset, which hides the item.
+   */
+  providerApiKeys?: boolean;
   billingEnabled: boolean;
   digestsEnabled: boolean;
   integrationsEnabled: boolean;
@@ -26,6 +34,12 @@ export interface AccountSettingsNavFlags {
    * chat detail under Display → Appearance, so absent hides the item.
    */
   appearanceEnabled?: boolean;
+  /**
+   * The Delegation page (cloud delegation limits, CAN-7571) is listed: cloud
+   * managed delegation is on for this user. Absent from servers before the
+   * field, which hides the item.
+   */
+  delegationEnabled?: boolean;
   /**
    * Free app access is on (CAN-3926).
    * @deprecated Retained for shipped clients, which require it; the server always sends `true`. Current navigation always names the Billing item "AI Credits".

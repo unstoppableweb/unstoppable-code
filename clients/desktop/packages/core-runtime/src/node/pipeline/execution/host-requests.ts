@@ -1,8 +1,11 @@
 import {
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_OWNER_RESULT_KIND,
+  WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX,
+  WORKER_PIPELINE_OWNER_SERVED_REVISIONS,
   isWorkerPipelineHostWithdrawal,
   isWorkerPipelineOwnerAction,
+  isWorkerPipelineOwnerScope,
   type CanopyCallerDescriptor,
   type CanopyInstructionHandler,
   type CanopyStreamHandlerMap,
@@ -49,6 +52,55 @@ export class PipelineHostUnavailableError extends Error {
     super('No core is settling host requests.');
     this.name = 'PipelineHostUnavailableError';
   }
+}
+
+/**
+ * A reserved scope already holds its most pending requests (CAN-7522); the
+ * request was never raised.
+ */
+export class PipelineOwnerScopeFullError extends PipelineHostUnavailableError {
+  constructor() {
+    super();
+    this.message = 'Too many owner requests are pending in this scope.';
+    this.name = 'PipelineOwnerScopeFullError';
+  }
+}
+
+/** An owner request kind a subscriber serves, at a revision (CAN-7522). */
+export interface PipelineOwnerServedKind {
+  readonly kind: string;
+  readonly revision: number;
+}
+
+/** What a subscriber declares when it subscribes. */
+export interface PipelineHostSubscription {
+  /** Absent: only the owner requests every owner answers. */
+  readonly serves?: readonly PipelineOwnerServedKind[];
+}
+
+type Subscriber = (item: WorkerPipelineHostRequestsItem) => void;
+
+/** The revision each served kind is served at (CAN-7522). */
+const SERVED_REVISIONS: ReadonlyMap<string, number> = new Map(
+  Object.entries(WORKER_PIPELINE_OWNER_SERVED_REVISIONS),
+);
+
+/** The revision a kind is served at, or undefined when every owner answers it. */
+function servedRevision(action: string): number | undefined {
+  return SERVED_REVISIONS.get(action);
+}
+
+/** Whether a subscriber with these declarations may receive the request. */
+function serves(
+  subscription: PipelineHostSubscription,
+  request: WorkerPipelineHostRequest,
+): boolean {
+  const required = servedRevision(request.request.action);
+  if (required === undefined) return true;
+  return (subscription.serves ?? []).some(
+    (served) =>
+      served.kind === request.request.action && served.revision >= required,
+  );
 }
 
 /** What a host step settles with: never an owner answer (CAN-5095). */
@@ -133,8 +185,9 @@ export class PipelineHostRequestBroker {
     string,
     { executionId: string; settledAt: string }
   >();
-  private readonly subscribers = new Set<
-    (item: WorkerPipelineHostRequestsItem) => void
+  private readonly subscribers = new Map<
+    Subscriber,
+    PipelineHostSubscription
   >();
   private readonly announceWithdrawals: boolean;
 
@@ -208,8 +261,15 @@ export class PipelineHostRequestBroker {
       hostStep: WorkerPipelineHostStepValues | undefined,
     ) => T,
   ): Promise<T> {
-    if (this.subscribers.size === 0)
+    const receivers = this.receiversOf(request);
+    if (receivers.length === 0)
       return Promise.reject(new PipelineHostUnavailableError());
+    if (
+      isWorkerPipelineOwnerScope(request.executionId) &&
+      this.pendingIn(request.executionId) >=
+        WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX
+    )
+      return Promise.reject(new PipelineOwnerScopeFullError());
     return new Promise((resolve, reject) => {
       const withdrawn = (): Error => {
         const reason: unknown = signal.reason;
@@ -228,7 +288,7 @@ export class PipelineHostRequestBroker {
           executionId: request.executionId,
           requestId: request.requestId,
         } as const;
-        for (const subscriber of Array.from(this.subscribers))
+        for (const subscriber of Array.from(this.subscribers.keys()))
           subscriber(withdrawal);
       };
       if (signal.aborted) {
@@ -243,9 +303,21 @@ export class PipelineHostRequestBroker {
           resolve(settle(result, values, hostStep));
         },
       });
-      for (const subscriber of Array.from(this.subscribers))
-        subscriber(request);
+      for (const subscriber of receivers) subscriber(request);
     });
+  }
+
+  private receiversOf(request: WorkerPipelineHostRequest): Subscriber[] {
+    return Array.from(this.subscribers)
+      .filter(([, subscription]) => serves(subscription, request))
+      .map(([subscriber]) => subscriber);
+  }
+
+  private pendingIn(executionId: string): number {
+    let count = 0;
+    for (const { request } of this.pending.values())
+      if (request.executionId === executionId) count += 1;
+    return count;
   }
 
   /**
@@ -300,13 +372,17 @@ export class PipelineHostRequestBroker {
     return settledAt;
   }
 
-  /** Deliver every pending request, then each new item. */
+  /**
+   * Deliver every pending request, then each new item: only the owner
+   * requests the subscription serves (CAN-7522), and every withdrawal.
+   */
   subscribe(
-    subscriber: (item: WorkerPipelineHostRequestsItem) => void,
+    subscriber: Subscriber,
+    subscription: PipelineHostSubscription = {},
   ): () => void {
-    this.subscribers.add(subscriber);
+    this.subscribers.set(subscriber, subscription);
     for (const { request } of Array.from(this.pending.values()))
-      subscriber(request);
+      if (serves(subscription, request)) subscriber(request);
     return () => {
       this.subscribers.delete(subscriber);
     };
@@ -347,14 +423,17 @@ export function createWorkerPipelineHostRequestHandlers(
     },
     streams: {
       'worker.pipeline.hostRequests': (
-        _params,
+        params,
         _context,
         sink,
       ): Promise<() => void> => {
         let stop: (() => void) | null = null;
-        stop = broker.subscribe((item) => {
-          if (sink.emit(item) === null) stop?.();
-        });
+        stop = broker.subscribe(
+          (item) => {
+            if (sink.emit(item) === null) stop?.();
+          },
+          params.serves ? { serves: params.serves } : {},
+        );
         return Promise.resolve(() => stop?.());
       },
     },

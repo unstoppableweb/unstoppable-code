@@ -14,10 +14,12 @@ import {
   type ComposerMenuChannel,
 } from '@canopy/ui-rich/editor';
 import type { FileMentionOption } from '@canopy/ui-rich/types';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import {
   ComposerMenu,
   type ComposerMenuCommand,
   type ComposerMenuCommandOutcome,
+  type ComposerMenuLoadError,
   type ComposerMenuPick,
   type ComposerMenuProps,
 } from './ComposerMenu';
@@ -26,7 +28,7 @@ export interface ComposerEditorMenuProps<
   TCommand extends ComposerMenuCommand,
 > extends Omit<
   ComposerMenuProps<TCommand>,
-  'controller' | 'commands' | 'searchFiles' | 'onSelectFile'
+  'controller' | 'commands' | 'searchFiles' | 'onSelectFile' | 'loadError'
 > {
   /** The channel the host's `ComposerEditor` publishes its session on. */
   channel: ComposerMenuChannel;
@@ -48,6 +50,8 @@ export interface ComposerEditorMenuProps<
 
 const NO_FILES: FileMentionOption[] = [];
 const NO_COMMANDS: never[] = [];
+const COMMANDS_LOAD_ERROR = "Couldn't load commands. Try again.";
+const FILE_SEARCH_ERROR = "Couldn't search files. Try again.";
 
 /**
  * {@link ComposerMenu} for a host whose editor runs the menu session in its
@@ -103,6 +107,12 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
   const [loadingFor, setLoadingFor] = useState<
     (() => Promise<TCommand[]>) | null
   >(null);
+  // The loader whose last load failed, until one of its loads succeeds, and
+  // the count of Try again presses that reload it.
+  const [commandsFailedFor, setCommandsFailedFor] = useState<
+    (() => Promise<TCommand[]>) | null
+  >(null);
+  const [commandsRetry, setCommandsRetry] = useState(0);
   const catalogCurrent =
     loadCommands !== undefined && catalog?.loader === loadCommands;
   const commands = catalogCurrent ? catalog.commands : NO_COMMANDS;
@@ -123,14 +133,23 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
     setLoadingFor(() => loadCommands);
     loadCommands()
       .then((next) => {
-        if (!cancelled)
-          setCatalog({ loader: loadCommands, commands: next, stale: false });
+        if (cancelled) return;
+        setCatalog({ loader: loadCommands, commands: next, stale: false });
+        setCommandsFailedFor(null);
       })
       // A failed load keeps what the scope listed before (nothing, the
-      // first time): the menu says nothing matched, and the next session
-      // loads again.
-      .catch(() => {
+      // first time) under a Couldn't load error with Try again, and the next
+      // session loads again. Each failed load records once; a load its
+      // session dropped is cancelled and records nothing.
+      .catch((error: unknown) => {
         if (cancelled) return;
+        recordSurfacedError({
+          chokePoint: 'banner',
+          identifier: 'composer-menu-commands-load',
+          surface: 'banner',
+          error,
+        });
+        setCommandsFailedFor(() => loadCommands);
         setCatalog((current) => ({
           loader: loadCommands,
           commands: current?.loader === loadCommands ? current.commands : [],
@@ -144,7 +163,7 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
       cancelled = true;
       setLoadingFor(null);
     };
-  }, [commandsActive, loadCommands]);
+  }, [commandsActive, loadCommands, commandsRetry]);
   // Loading from the first frame a session lists a catalog it has not
   // loaded, rather than after an effect: no frame says nothing matched. A
   // reload behind cached rows shows no loading state.
@@ -184,17 +203,36 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
   const [fileQueryInFlight, setFileQueryInFlight] = useState<string | null>(
     null,
   );
+  // The source and query whose search failed, and the count of Try again
+  // presses that search again.
+  const [fileFailure, setFileFailure] = useState<{
+    source: (query: string) => Promise<FileMentionOption[]>;
+    query: string;
+  } | null>(null);
+  const [fileRetry, setFileRetry] = useState(0);
   useEffect(() => {
     if (!filesActive || !searchFiles) return undefined;
     let cancelled = false;
     setFileQueryInFlight(query);
     searchFiles(query)
       .then((files) => {
-        if (!cancelled) setFileResults({ source: searchFiles, query, files });
+        if (cancelled) return;
+        setFileResults({ source: searchFiles, query, files });
+        setFileFailure(null);
       })
-      .catch(() => {
-        if (!cancelled)
-          setFileResults({ source: searchFiles, query, files: NO_FILES });
+      // A failed search lists no files under a Couldn't search error with
+      // Try again. Each failed search records once; one a newer query or a
+      // closed session dropped is cancelled and records nothing.
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        recordSurfacedError({
+          chokePoint: 'banner',
+          identifier: 'composer-menu-file-search',
+          surface: 'banner',
+          error,
+        });
+        setFileResults({ source: searchFiles, query, files: NO_FILES });
+        setFileFailure({ source: searchFiles, query });
       })
       .finally(() => {
         if (!cancelled) setFileQueryInFlight(null);
@@ -202,7 +240,7 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
     return (): void => {
       cancelled = true;
     };
-  }, [filesActive, searchFiles, query]);
+  }, [filesActive, searchFiles, query, fileRetry]);
   // The menu searches synchronously: it lists the matches the host's
   // current source returned for the query it shows, and nothing while that
   // query is in flight.
@@ -215,6 +253,32 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
         : NO_FILES,
     [fileResults, searchFiles],
   );
+
+  // A failed load shows while the session lists what it failed to load, and
+  // stays while Try again reloads it. When both failed, the catalog leads
+  // and Try again reloads both.
+  const commandsFailed =
+    commandsActive &&
+    loadCommands !== undefined &&
+    commandsFailedFor === loadCommands;
+  const filesFailed =
+    filesActive &&
+    fileFailure !== null &&
+    fileFailure.source === searchFiles &&
+    fileFailure.query === query;
+  const loadError: ComposerMenuLoadError | null =
+    commandsFailed || filesFailed
+      ? {
+          message: commandsFailed ? COMMANDS_LOAD_ERROR : FILE_SEARCH_ERROR,
+          onRetry: (): void => {
+            if (commandsFailed) setCommandsRetry((count) => count + 1);
+            if (filesFailed) setFileRetry((count) => count + 1);
+          },
+          retrying:
+            (commandsFailed && loadingFor === loadCommands) ||
+            (filesFailed && fileQueryInFlight !== null),
+        }
+      : null;
 
   const selectFile = useCallback(
     (file: FileMentionOption): void => {
@@ -237,6 +301,7 @@ export function ComposerEditorMenu<TCommand extends ComposerMenuCommand>({
         ? {}
         : { searchFiles: searchLoadedFiles, onSelectFile: selectFile })}
       multiRepo={multiRepo}
+      loadError={loadError}
       isRefreshing={
         isRefreshing ||
         (commandsActive && commandsLoading) ||

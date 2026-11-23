@@ -225,6 +225,27 @@ export function findInstalledItem(
   );
 }
 
+/**
+ * Whether a device MCP server's deletion removed the server but could not
+ * finish cleanup (CAN-7362). Only the host's own confirmation counts: its
+ * `uninstall_incomplete` error for this server carries `serverRemoved`. The
+ * snapshot is not evidence, since a missing index can hide a server file
+ * that is still on disk. A host that omits the marker stays a failure.
+ */
+export function deviceServerDeletedWithIncompleteCleanup(
+  result: InstalledItemMutationResult,
+  target: InstalledItemTarget,
+): boolean {
+  if (target.kind !== 'mcp-server') return false;
+  const key = installedItemTargetKey(target);
+  return result.errors.some(
+    (error) =>
+      error.code === 'uninstall_incomplete' &&
+      error.serverRemoved === true &&
+      installedItemTargetKey(error.target) === key,
+  );
+}
+
 /** Account MCP selection identities differ from connection mutation identities. */
 export function installedSelectionIsDisabled(
   snapshot: InstalledItemSnapshot,
@@ -468,6 +489,12 @@ export interface InstalledItemMutationOutcome {
   /** Failure copy for an inline error; absent on success. */
   readonly message?: string;
   readonly notices: readonly InstalledItemNotice[];
+  /**
+   * The host confirmed the device MCP server is gone but cleanup did not
+   * finish (CAN-7362). Not `ok`: callers close their confirmation only when
+   * a notice that offers Repair takes the report, and keep retry otherwise.
+   */
+  readonly cleanupIncomplete?: true;
 }
 
 export interface InstalledItemStatusController {

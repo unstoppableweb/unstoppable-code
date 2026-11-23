@@ -1,3 +1,4 @@
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { Dot } from '@canopy/ui-shared/components/Badge';
 import {
   AccountMenuComputersItem,
@@ -51,10 +52,12 @@ import {
   maxUsageAlertLevel,
 } from '@canopy/desktop-shared/lib/usage-alert';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { accountBillingPath } from '@canopy/protocol/billing';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   SidebarAccountFooter,
+  SidebarAccountRailActions,
   SidebarAccountMenuHeader,
   type SidebarAccountAttention,
   type SidebarAccountIdentityTone,
@@ -67,7 +70,6 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuStatusRow,
-  RailIconButton,
   RichHoverTooltip,
 } from '@canopy/ui-shared';
 import { BalanceSurface } from '@canopy/ui-app/credits';
@@ -76,8 +78,6 @@ import {
   LoginIcon,
   LogoutIcon,
   RemoteControlIcon,
-  RaisedHandIcon,
-  SettingsIcon,
   SyncIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -239,6 +239,9 @@ export function SidebarAccountMenu({
   const [signingIn, setSigningIn] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
+  // Main already recorded that failure's IPC call, so the dialog does not
+  // record it again. Reset with `signOutError`.
+  const [signOutErrorRecorded, setSignOutErrorRecorded] = useState(false);
   // Synchronous re-entrancy guard for sign-in. A `useState` flag is not enough:
   // two rapid clicks in the same render frame share the same closure (the state
   // update hasn't re-rendered yet), so both would fire OAuth. A ref updates
@@ -418,6 +421,7 @@ export function SidebarAccountMenu({
   const handleSignOutClick = (): void => {
     closeMenu();
     setSignOutError(null);
+    setSignOutErrorRecorded(false);
     setSignOutConfirmOpen(true);
   };
 
@@ -425,16 +429,20 @@ export function SidebarAccountMenu({
     if (signingOut) return;
     setSigningOut(true);
     setSignOutError(null);
+    setSignOutErrorRecorded(false);
     void window.api
       .disconnectCanopyCloudAccount()
       .then(() => {
         window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
         setSignOutConfirmOpen(false);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         // Surface the failure inline and keep the confirm modal open so the
         // user knows sign-out did not complete and can retry, mirroring
         // CanopyCloudAccountSection's disconnect error handling.
+        setSignOutErrorRecorded(
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+        );
         setSignOutError('Unable to sign out. Please try again.');
       })
       .finally(() => {
@@ -491,35 +499,18 @@ export function SidebarAccountMenu({
         menuWidth="compact"
         menuInstantInteractions
         railActions={
-          <>
-            <RailIconButton
-              icon={RaisedHandIcon}
-              tone="secondary"
-              size="row"
-              hoverSurface
-              onClick={openFeedback}
-              aria-label="Send feedback"
-              aria-haspopup="dialog"
-              aria-expanded={feedbackModalOpen}
-              title="Send feedback"
-              data-testid="sidebar-account-action-feedback"
-            />
-            <RailIconButton
-              icon={SettingsIcon}
-              tone="secondary"
-              size="row"
-              hoverSurface
-              onClick={() => {
-                closeMenu();
-                onSettingsClick();
-              }}
-              aria-label="Settings"
-              aria-pressed={settingsOpen}
-              title="Settings"
-              data-testid="sidebar-account-action-settings"
-              data-onboarding-anchor="sidebar-settings"
-            />
-          </>
+          <SidebarAccountRailActions
+            onFeedback={openFeedback}
+            feedbackOpen={feedbackModalOpen}
+            onSettings={() => {
+              closeMenu();
+              onSettingsClick();
+            }}
+            settingsOpen={settingsOpen}
+            settingsAttributes={{
+              'data-onboarding-anchor': 'sidebar-settings',
+            }}
+          />
         }
         menu={(close) => {
           closeMenuRef.current = close;
@@ -735,12 +726,16 @@ export function SidebarAccountMenu({
           confirmLabel="Sign out"
           pendingLabel="Signing out…"
           pending={signingOut}
-          error={signOutError}
+          errorMessage={signOutError}
+          {...(signOutErrorRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'sidebar-sign-out' })}
           confirmTone="primary"
           onConfirm={handleConfirmSignOut}
           onCancel={() => {
             if (!signingOut) {
               setSignOutError(null);
+              setSignOutErrorRecorded(false);
               setSignOutConfirmOpen(false);
             }
           }}

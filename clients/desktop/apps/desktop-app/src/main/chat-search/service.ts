@@ -16,6 +16,7 @@ import {
   createThreadedChatSearchIndexer,
   type ThreadedChatSearchIndexer,
 } from './threaded-indexer';
+import { ChatSearchIndexWorkerUnavailableError } from './index-worker-runner';
 import { BrowserWindow } from 'electron';
 import {
   APP_ADVISOR_PROJECT_ID,
@@ -81,9 +82,10 @@ import {
   readArchivedContainerChatArchives,
   getArchivedContainerChatStorage,
   readArchivedContainerChats,
-  readArchivedContainerManifest,
+  readArchivedContainerManifestIncludingExpired,
   readArchivedContainerTrackedPlans,
 } from '../lib/archived-containers';
+import { isArchivedContainerExpired } from '@canopy/desktop-shared/lib/archive-retention';
 import { isWorktreeSummaryData } from '../lib/worktree-summary-persistence';
 import {
   type AgentChatSearchFilter,
@@ -496,6 +498,13 @@ function buildPreviewSearchDoc(
 
 /** First wait before replacing a failed index worker; doubles per failure. */
 export const CHAT_SEARCH_INDEXER_RECOVERY_DELAY_MS = 30_000;
+/**
+ * A failed initial scan is kept, and returned to callers, for this long
+ * before `ensureInitialScan` starts another full scan.
+ */
+const CHAT_SEARCH_INITIAL_SCAN_RETRY_DELAY_MS = 30_000;
+/** Sources whose failure a full scan logs in detail; the rest are counted. */
+const CHAT_SEARCH_SKIPPED_SOURCE_DETAIL_LIMIT = 5;
 const CHAT_SEARCH_INDEXER_RECOVERY_MAX_DELAY_MS = 10 * 60_000;
 
 /** Bounded retries for a child set that changed while it was staged. */
@@ -540,6 +549,8 @@ export class ChatSearchService {
   private broadcastTimer: ReturnType<typeof setTimeout> | null = null;
   private indexRevision = 0;
   private initialScanPromise: Promise<void> | null = null;
+  /** Wall-clock time the kept `initialScanPromise` rejected, else null. */
+  private initialScanFailedAtMs: number | null = null;
   private activeScanPromise: Promise<void> | null = null;
   private activeScanSourceKeys: Set<string> | null = null;
   private closed = false;
@@ -584,15 +595,45 @@ export class ChatSearchService {
   }
 
   ensureInitialScan(): void {
-    if (this.closed || this.initialScanPromise !== null) return;
+    if (this.closed) return;
+    if (this.initialScanPromise !== null) {
+      // A scan in flight or done, or one that failed too recently: callers
+      // share its result instead of starting a full scan on every call.
+      if (this.initialScanFailedAtMs === null) return;
+      const failedAgoMs = Date.now() - this.initialScanFailedAtMs;
+      // A negative age means the clock moved back; treat it as elapsed.
+      if (
+        failedAgoMs >= 0 &&
+        failedAgoMs < CHAT_SEARCH_INITIAL_SCAN_RETRY_DELAY_MS
+      ) {
+        return;
+      }
+    }
     const scan = yieldToMainLoop().then(() => this.scanAllSources());
     this.initialScanPromise = scan;
-    void scan.catch((error: unknown) => {
-      // eslint-disable-next-line no-console
-      console.error('Chat search initial scan failed:', error);
-      this.recoverFailedIndexer();
-      if (this.initialScanPromise === scan) this.initialScanPromise = null;
-    });
+    this.initialScanFailedAtMs = null;
+    void scan.then(
+      () => {
+        if (this.initialScanPromise === scan) this.initialScanFailedAtMs = null;
+      },
+      (error: unknown) => {
+        // eslint-disable-next-line no-console
+        console.error('Chat search initial scan failed:', error);
+        // Keep the rejected scan (handled here) so callers within the retry
+        // delay share it; set before recovery, which may clear it.
+        if (this.initialScanPromise === scan) {
+          this.initialScanFailedAtMs = Date.now();
+        }
+        this.recoverFailedIndexer();
+      },
+    );
+  }
+
+  /** Lets the next `ensureInitialScan` start at once after a failure. */
+  private clearFailedInitialScan(): void {
+    if (this.initialScanFailedAtMs === null) return;
+    this.initialScanPromise = null;
+    this.initialScanFailedAtMs = null;
   }
 
   async waitForInitialScan(): Promise<void> {
@@ -1463,13 +1504,7 @@ export class ChatSearchService {
         !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
       )
         return;
-      const payload = await Promise.all([
-        readArchivedContainerManifest(projectId, containerId),
-        readArchivedSummaryForIndex(projectId, containerId),
-        readArchivedContainerChats(projectId, containerId),
-        readArchivedContainerChatArchives(projectId, containerId),
-        readArchivedContainerTrackedPlans(projectId, containerId),
-      ]).catch(async (error: unknown) => {
+      const discardIfRemoved = async (error: unknown): Promise<null> => {
         if (
           await this.discardRemovedArchivedContainer(
             projectId,
@@ -1480,9 +1515,48 @@ export class ChatSearchService {
         )
           return null;
         throw error;
-      });
+      };
+      const manifest = await readArchivedContainerManifestIncludingExpired(
+        projectId,
+        containerId,
+      ).catch(discardIfRemoved);
+      if (manifest === null) return;
+      if (
+        this.closed ||
+        !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
+      ) {
+        return;
+      }
+      if (isArchivedContainerExpired(manifest, Date.now())) {
+        // Expired but not yet purged: hidden everywhere, like the catalog's
+        // expiry filter, so drop its docs and record the fingerprint.
+        await this.getIndexer().deleteArchivedContainerDocs(
+          projectId,
+          containerId,
+        );
+        if (
+          this.closed ||
+          !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
+        ) {
+          return;
+        }
+        await this.refreshFingerprint(
+          fileKey,
+          projectId,
+          containerId,
+          generation,
+        );
+        this.scheduleUpdatedBroadcast();
+        return;
+      }
+      const payload = await Promise.all([
+        readArchivedSummaryForIndex(projectId, containerId),
+        readArchivedContainerChats(projectId, containerId),
+        readArchivedContainerChatArchives(projectId, containerId),
+        readArchivedContainerTrackedPlans(projectId, containerId),
+      ]).catch(discardIfRemoved);
       if (payload === null) return;
-      const [manifest, summary, chats, archives, plans] = payload;
+      const [summary, chats, archives, plans] = payload;
       if (
         this.closed ||
         !this.isWorktreeGenerationCurrent(projectId, containerId, generation)
@@ -2543,6 +2617,8 @@ export class ChatSearchService {
       this.indexerRecoveryTimer = null;
       if (this.closed || this.indexer !== failed) return;
       this.indexer = null;
+      // The replacement indexer may rescan at once, without the retry delay.
+      this.clearFailedInitialScan();
       // The replacement may have rebuilt the index without these scopes.
       this.syncedLiveScopes.clear();
       this.db?.close();
@@ -2737,6 +2813,7 @@ export class ChatSearchService {
       for (const descriptor of descriptors) {
         sourceKeys.add(descriptor.fileKey);
       }
+      let skippedSources = 0;
       const liveFingerprintsFenced =
         (await this.getIndexer().getMetadata(
           LIVE_FINGERPRINT_FENCE_METADATA_KEY,
@@ -2783,10 +2860,22 @@ export class ChatSearchService {
           await yieldToMainLoop();
           continue;
         }
-        await this.indexSource(descriptor);
+        if (!(await this.indexSource(descriptor, skippedSources))) {
+          skippedSources += 1;
+        }
         await yieldToMainLoop();
       }
       if (this.closed) return;
+      if (skippedSources > 0) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          'Chat search full scan skipped sources it could not index.',
+          {
+            skipped: skippedSources,
+            total: descriptors.length,
+          },
+        );
+      }
       await this.pruneMissingSources(sourceKeys);
       if (!liveFingerprintsFenced) {
         await this.getIndexer().setMetadata(
@@ -2967,9 +3056,18 @@ export class ChatSearchService {
     }
   }
 
-  private async indexSource(descriptor: SourceDescriptor): Promise<void> {
+  /**
+   * Indexes one full-scan source. Returns false when the source failed and was
+   * skipped: its docs are kept and, with no fingerprint recorded, the next
+   * full scan retries it.
+   */
+  private async indexSource(
+    descriptor: SourceDescriptor,
+    skippedBefore: number,
+  ): Promise<boolean> {
     try {
       await this.indexCurrentSource(descriptor);
+      return true;
     } catch (error) {
       // An explicit deletion or a newer live projection can supersede this
       // source while its transcript is being read. Continue the full scan.
@@ -2983,8 +3081,29 @@ export class ChatSearchService {
         ) ||
         this.isCoworkArchiveDeleted(descriptor.projectId, descriptor.chatId)
       )
-        return;
-      throw error;
+        return true;
+      // A failed indexer fails every later write: fail the scan so recovery
+      // replaces it, rather than "completing" with an empty index. A closing
+      // or saturated worker says nothing about this source either, so it
+      // fails the scan too instead of being counted as a skipped source.
+      const indexer = this.indexer;
+      if (
+        error instanceof ChatSearchIndexWorkerUnavailableError ||
+        (indexer !== null && 'isFailed' in indexer && indexer.isFailed())
+      ) {
+        throw error;
+      }
+      // One unreadable source (a corrupt manifest, for example) must not
+      // abort the scan for every other source.
+      if (skippedBefore < CHAT_SEARCH_SKIPPED_SOURCE_DETAIL_LIMIT) {
+        // eslint-disable-next-line no-console
+        console.warn('Chat search skipped a source it could not index:', {
+          kind: descriptor.kind,
+          fileKey: descriptor.fileKey,
+          error,
+        });
+      }
+      return false;
     }
   }
 
@@ -3042,7 +3161,7 @@ export class ChatSearchService {
         entries,
       );
     } else if (descriptor.kind === 'archived-container') {
-      const manifest = await readArchivedContainerManifest(
+      const manifest = await readArchivedContainerManifestIncludingExpired(
         descriptor.projectId,
         descriptor.worktreeId,
       ).catch(async (error: unknown) => {
@@ -3068,7 +3187,12 @@ export class ChatSearchService {
       ) {
         return;
       }
-      if (manifest.restoredTo) {
+      // An expired, not yet purged archive is hidden everywhere: drop its
+      // docs and record its fingerprint so later scans skip it unread.
+      if (
+        manifest.restoredTo ||
+        isArchivedContainerExpired(manifest, Date.now())
+      ) {
         await indexer.deleteArchivedContainerDocs(
           descriptor.projectId,
           descriptor.worktreeId,

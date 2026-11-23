@@ -318,6 +318,38 @@ describe('desktop single-skill share refuses secret-looking text before upload (
     ).resolves.toMatchObject({ ok: true });
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it('the client refuses a skill holding a bare npm token before any request (CAN-7475)', async () => {
+    const npmToken = `np${'m'}_${'Q'.repeat(36)}`;
+    const error: unknown = await createSharedSkill({
+      rawSkill: `---\nname: deploy-helper\ndescription: Deploys.\n---\nPublish with ${npmToken}.\n`,
+      shareScope: 'private',
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      name: 'SkillSecretDetectedError',
+      kind: 'unavailable',
+      stage: 'access',
+      message: MESSAGE.replace('a GitHub token', 'an npm token'),
+    });
+    expect(JSON.stringify(error)).not.toContain(npmToken);
+    expect(mockWarnings.join('\n')).not.toContain(npmToken);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("still shares a skill that only names npm's own variables, with one request (CAN-7475)", async () => {
+    const rawSkill =
+      '---\nname: deploy-helper\ndescription: Deploys.\n---\nSet npm_config_registry, then run npm publish.\n';
+    request.mockResolvedValue(detail(rawSkill));
+    await expect(
+      invoke(SKILLS_CHANNELS.SHARED_CREATE, {
+        rawSkill,
+        shareScope: 'private',
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a secret-looking SKILL.md before its package uploads (CAN-7226)', () => {
@@ -490,6 +522,28 @@ describe('publishing a skill to the cloud (core.catalog.entry.publish) refuses a
     ).resolves.toMatchObject({ publicationId: 'remote-new' });
     expect(commits).toEqual([PKG]);
     expect(creates).toHaveLength(1);
+  });
+  it('refuses a SKILL.md holding a bare npm token with no package upload and no request (CAN-7475)', async () => {
+    const npmToken = `np${'m'}_${'Q'.repeat(36)}`;
+    const { deps, commits, creates } = publishFakes(
+      `---\nname: helper\n---\nPublish with ${npmToken}.\n`,
+    );
+    const error: unknown = await publishSkillToCloud(ENTRY, PKG, deps, {
+      expectedAccountId: 'acct-1',
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(CatalogHostRefusedError);
+    expect(error).toMatchObject({ refusal: 'publish-secret-detected' });
+    const cause = error instanceof Error ? error.cause : undefined;
+    expect(cause instanceof Error && cause.message).toBe(
+      'The skill "helper" looks like it contains a secret (an npm token in SKILL.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.',
+    );
+    expect(JSON.stringify(error)).not.toContain(npmToken);
+    expect(commits).toEqual([]);
+    expect(creates).toEqual([]);
+    expect(request).not.toHaveBeenCalled();
   });
 });
 
@@ -798,5 +852,28 @@ describe('desktop collection share refuses an inline custom skill holding secret
       }),
     ).resolves.toMatchObject({ id: 'remote-c1' });
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('the client refuses an inline custom skill holding a bare npm token, with zero requests (CAN-7475)', async () => {
+    const npmToken = `np${'m'}_${'Q'.repeat(36)}`;
+    const error = await caught(
+      createSharedCollection({
+        sourceCollectionId: 'local-c1',
+        rawCollection: RAW_COLLECTION,
+        customSkills: skills(
+          `---\nname: deploy-helper\ndescription: Deploys.\n---\nPublish with ${npmToken}.\n`,
+        ),
+        shareScope: 'private',
+      }),
+    );
+    expect(error).toBeInstanceOf(SkillSecretDetectedError);
+    expect(error).toMatchObject({
+      kind: 'unavailable',
+      stage: 'access',
+      message: COLLECTION_MESSAGE.replace('a GitHub token', 'an npm token'),
+    });
+    expect(JSON.stringify(error)).not.toContain(npmToken);
+    expect(consoleLines.join('\n')).not.toContain(npmToken);
+    expectNoRequest();
   });
 });

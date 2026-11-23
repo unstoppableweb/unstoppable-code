@@ -104,14 +104,17 @@ interface ConfirmDialogBaseProps {
  * failure the user never saw. Showing it records a sighting when it names the
  * operation with `errorSource` (a static kebab-case name);
  * `errorRecordingDisabled` is for text that is a precondition, not a failure.
+ *
+ * `errorMessage` requires either `errorSource` (the dialog records the failure
+ * it shows) or `errorRecordingDisabled` (the text is a precondition, or the
+ * caller or main already recorded the failure); a dialog without
+ * `errorMessage` takes neither.
  */
 export type ConfirmDialogErrorProps =
-  // Temporary: un-annotated callers show the text and record nothing. Remove
-  // this branch once every caller names `errorSource` or disables recording.
   | {
-      errorMessage?: string | null | undefined;
-      errorSource?: undefined;
-      errorRecordingDisabled?: undefined;
+      errorMessage?: undefined;
+      errorSource?: never;
+      errorRecordingDisabled?: never;
     }
   | {
       errorMessage: string | null | undefined;

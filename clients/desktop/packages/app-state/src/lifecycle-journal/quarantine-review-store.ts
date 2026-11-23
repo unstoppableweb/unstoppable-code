@@ -5,6 +5,7 @@ import type {
   LifecycleJournalQuarantineResult,
   LifecycleJournalUnreadableEntry,
 } from '@canopy/protocol/remote-control/shell/lifecycle-journal';
+import { isHostRecordedFailure } from '../host-recorded-failure';
 
 /**
  * CAN-5335: the review a deletion or archive refusal opens when an unreadable
@@ -25,6 +26,8 @@ export type LifecycleJournalQuarantineView =
       readonly inspection: LifecycleJournalInspection;
       readonly moving: boolean;
       readonly moveError: string | null;
+      /** The host already recorded the failure behind `moveError`. */
+      readonly moveRecorded: boolean;
       readonly moved: LifecycleJournalQuarantineResult | null;
     };
 
@@ -71,6 +74,7 @@ function createLifecycleJournalQuarantineStore(
             inspection,
             moving: false,
             moveError: null,
+            moveRecorded: false,
             moved: null,
           },
         });
@@ -112,7 +116,9 @@ function createLifecycleJournalQuarantineStore(
         const view = get().view;
         if (view.phase !== 'inspected' || view.moving) return;
         const current = generation;
-        set({ view: { ...view, moving: true, moveError: null } });
+        set({
+          view: { ...view, moving: true, moveError: null, moveRecorded: false },
+        });
         let moved: LifecycleJournalQuarantineResult;
         try {
           moved = await client.command('lifecycleJournal.quarantine', {
@@ -125,7 +131,13 @@ function createLifecycleJournalQuarantineStore(
           // An unconfirmed move may already have renamed the entry.
           await reread(
             current,
-            (inspection) => ({ ...view, inspection, moving: false, moveError }),
+            (inspection) => ({
+              ...view,
+              inspection,
+              moving: false,
+              moveError,
+              moveRecorded: isHostRecordedFailure(error),
+            }),
             { phase: 'failed', message: moveError },
           );
           return;
@@ -139,6 +151,7 @@ function createLifecycleJournalQuarantineStore(
             inspection,
             moving: false,
             moveError: null,
+            moveRecorded: false,
             moved,
           }),
           { phase: 'moved-unchecked', moved },

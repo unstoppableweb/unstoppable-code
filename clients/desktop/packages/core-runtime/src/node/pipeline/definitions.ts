@@ -213,6 +213,20 @@ export interface PipelineDefinitionWrite {
   /** The document text to keep verbatim; a parsed document is serialized. */
   readonly text: string;
   readonly pipeline: Pipeline;
+  /**
+   * For a create, the id core assigned; the host refuses one that is taken.
+   * Absent, the host picks a new id.
+   */
+  readonly createId?: string;
+}
+
+/**
+ * The id a keyed create or copy commits under, derived from its replay scope
+ * (CAN-7497). A resend whose receipt was lost finds the definition at that id
+ * and is answered with it only when it is what this request writes.
+ */
+export interface PipelineDefinitionCreateReplay {
+  readonly createId: string;
 }
 
 /** A copy for the writable source to create under the id core assigned. */
@@ -252,6 +266,24 @@ export interface PipelineDefinitionWritePort {
     copy: PipelineDefinitionCopy,
     context: PipelineDefinitionWriteContext,
   ): Promise<PipelineDefinitionSourceDocument>;
+  /**
+   * The document text a committed copy of `origin` holds, when the host
+   * stores other bytes than the text it was given (CAN-7497). Absent, a copy
+   * holds the text it was given.
+   */
+  copiedText?(
+    copy: Pick<PipelineDefinitionCopy, 'origin' | 'text'>,
+    context: PipelineDefinitionWriteContext,
+  ): Promise<string>;
+  /**
+   * Finishes a copy a resend found committed (CAN-7497): writes what the host
+   * keeps about its origin when a crash left it unwritten, and changes nothing
+   * when the copy is complete.
+   */
+  finishCopy?(
+    copy: Pick<PipelineDefinitionCopy, 'definitionId' | 'origin'>,
+    context: PipelineDefinitionWriteContext,
+  ): Promise<void>;
   /** The stored revision of a user definition; `null` when there is none. */
   revision(definitionId: string): Promise<number | null>;
   /** Returns the revision the deleted definition had. */
@@ -294,6 +326,47 @@ export interface PipelineDefinitionPendingEnablement {
   readonly enabled: boolean;
 }
 
+/** A definition write the owner checks or applies effects for (CAN-7522). */
+export interface PipelineDefinitionOwnerWrite {
+  readonly op: 'upsert' | 'delete' | 'duplicate';
+  /** The definition written; a copy's own id once it has one. */
+  readonly definitionId: string | null;
+  /** A copy's source. */
+  readonly origin?: PipelineDefinitionCopy['origin'];
+  /** The request's replay key, so its owner requests keep their ids. */
+  readonly replayKey?: string;
+}
+
+/**
+ * The owner's side of a definition write (CAN-7522), for a core that commits
+ * the write for another process that keeps the desktop's own state. Every
+ * effect is idempotent and keyed by the definition, so a resend or a replay
+ * changes nothing.
+ */
+export interface PipelineDefinitionOwnerEffectsPort {
+  /**
+   * The owner's checks before the commit. Throws the owner's refusal as a
+   * {@link PipelineDefinitionSourceError}, or an unavailable error when no
+   * owner answers; nothing is committed either way.
+   */
+  precheck(
+    write: PipelineDefinitionOwnerWrite,
+    scope: CanopyWorkspaceScope,
+    signal: AbortSignal,
+  ): Promise<void>;
+  /** The owner's effects of the write on one side of its commit. */
+  effects(
+    write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
+    phase: 'beforeCommit' | 'afterCommit',
+    signal: AbortSignal,
+  ): Promise<void>;
+  /**
+   * One pass that leaves the owner's state as if every committed write's
+   * effects had run, and removes what no stored definition needs.
+   */
+  reconcile(signal: AbortSignal): Promise<void>;
+}
+
 /** A source failure with a stable code and a message safe for its caller. */
 export class PipelineDefinitionSourceError extends Error {
   constructor(
@@ -325,6 +398,12 @@ export interface PipelineDefinitionServiceOptions {
     definitionId: string,
     enabled: boolean,
   ) => Promise<void>;
+  /**
+   * The owner's checks and effects around each write (CAN-7522), when this
+   * core commits writes for the process that keeps the desktop's state.
+   * Absent, every write runs as it did.
+   */
+  readonly ownerEffects?: PipelineDefinitionOwnerEffectsPort;
 }
 
 const SOURCE_ORDER = new Map<PipelineDefinitionSource, number>(
@@ -352,6 +431,7 @@ const ERROR_KINDS: Record<PipelineDefinitionImportErrorCode, CanopyErrorKind> =
     'core.pipeline.definitionInvalid': 'invalid_argument',
     'core.pipeline.definitionReadOnly': 'failed_precondition',
     'core.pipeline.revisionConflict': 'conflict',
+    'core.pipeline.ownerUnavailable': 'unavailable',
     'core.pipeline.remoteNotFound': 'not_found',
     'core.pipeline.remoteVersionConflict': 'conflict',
   };
@@ -559,6 +639,8 @@ export interface PipelineDefinitionService {
   upsert(
     params: Omit<PipelineDefinitionUpsertParams, '_meta'>,
     signal: AbortSignal,
+    /** Used only when `params.definitionId` is `null`. */
+    replay?: PipelineDefinitionCreateReplay,
   ): Promise<PipelineDefinition>;
   delete(
     params: Omit<PipelineDefinitionDeleteParams, '_meta'>,
@@ -567,6 +649,7 @@ export interface PipelineDefinitionService {
   duplicate(
     params: Omit<PipelineDefinitionDuplicateParams, '_meta'>,
     signal: AbortSignal,
+    replay?: PipelineDefinitionCreateReplay,
   ): Promise<PipelineDefinitionDuplicateResult>;
   setEnabled(
     params: Omit<PipelineDefinitionSetEnabledParams, '_meta'>,
@@ -580,6 +663,11 @@ export interface PipelineDefinitionService {
    * write has raised the definition's revision since.
    */
   resumeEnablement(pending: PipelineDefinitionPendingEnablement): Promise<void>;
+  /**
+   * Asks the owner for one reconcile pass (CAN-7522); does nothing without
+   * owner effects. An owner that doesn't answer leaves it to the next pass.
+   */
+  reconcileOwnerEffects(signal: AbortSignal): Promise<void>;
 }
 
 export function createPipelineDefinitionService(
@@ -662,6 +750,48 @@ export function createPipelineDefinitionService(
     );
   };
 
+  // A keyed create's id that already holds a definition (CAN-7497): this
+  // request's own earlier commit when the stored definition is exactly what
+  // it writes, with no owner, as a create leaves it; any other definition
+  // is refused rather than answered. `partialText` is a document this same
+  // request commits before its final one, as a copy does before the host
+  // puts other bytes in place.
+  const replayedCreate = async (
+    writer: PipelineDefinitionWritePort,
+    replay: PipelineDefinitionCreateReplay | undefined,
+    expected: Pick<
+      PipelineDefinitionWrite,
+      'name' | 'description' | 'icon' | 'text'
+    >,
+    signal: AbortSignal,
+    partialText?: string,
+  ): Promise<PipelineDefinitionSourceDocument | undefined> => {
+    if (replay === undefined) return undefined;
+    let revision: number | null;
+    try {
+      revision = await writer.revision(replay.createId);
+    } catch (error) {
+      throw toOperationError(error, 'The workflow could not be read.');
+    }
+    if (revision === null) return undefined;
+    const stored = await read(replay.createId, {}, signal, undefined);
+    if (
+      stored.source === 'user' &&
+      stored.owner === null &&
+      stored.name === expected.name &&
+      stored.description === expected.description &&
+      stored.icon === expected.icon &&
+      (stored.text === expected.text ||
+        (partialText !== undefined && stored.text === partialText))
+    )
+      return stored;
+    throw new CanopyOperationError({
+      kind: 'conflict',
+      message: 'This idempotency key was already used for a different request.',
+      retry: { kind: 'never' },
+    });
+  };
+
   const definitionFrom = async (
     document: PipelineDefinitionSourceDocument,
     scope: CanopyWorkspaceScope,
@@ -711,6 +841,76 @@ export function createPipelineDefinitionService(
     } finally {
       if (locks.get(definitionId) === settled) locks.delete(definitionId);
     }
+  };
+
+  // The owner's checks and effects around a commit (CAN-7522). A refusal or
+  // an owner that doesn't answer refuses the write before anything commits;
+  // effects after the commit never fail it, since a committed write is
+  // always answered, and are left to the owner's next reconcile.
+  const owner = options.ownerEffects;
+  const beforeOwnerCommit = async (
+    check: PipelineDefinitionOwnerWrite,
+    write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
+    scope: CanopyWorkspaceScope,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (!owner) return;
+    try {
+      await owner.precheck(check, scope, signal);
+      await owner.effects(write, 'beforeCommit', signal);
+    } catch (error) {
+      throw toOperationError(
+        error,
+        'The app could not check this workflow change.',
+      );
+    }
+  };
+  const afterOwnerCommit = async (
+    write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
+    signal: AbortSignal,
+  ): Promise<void> => {
+    try {
+      await owner?.effects(write, 'afterCommit', signal);
+    } catch {
+      // The owner's next reconcile applies them.
+    }
+  };
+  // A reconcile never runs while a write's effects are in flight: it would
+  // take a copy's receipts, applied before its commit, for orphans. Writes
+  // that arrive while one waits or runs queue behind it.
+  let ownerWrites = 0;
+  let reconciling: Promise<void> | null = null;
+  const writesDone: (() => void)[] = [];
+  const ownerWrite = async <T>(run: () => Promise<T>): Promise<T> => {
+    if (!owner) return run();
+    while (reconciling) await reconciling;
+    ownerWrites += 1;
+    try {
+      return await run();
+    } finally {
+      ownerWrites -= 1;
+      if (ownerWrites === 0) for (const done of writesDone.splice(0)) done();
+    }
+  };
+  /** A write's definition lock, inside the owner's write gate. */
+  const withWriteLock = <T>(
+    definitionId: string | null,
+    run: () => Promise<T>,
+  ): Promise<T> => ownerWrite(() => withDefinitionLock(definitionId, run));
+  const reconcileOwner = (signal: AbortSignal): Promise<void> => {
+    if (!owner) return Promise.resolve();
+    reconciling ??= (async (): Promise<void> => {
+      if (ownerWrites > 0)
+        await new Promise<void>((done) => writesDone.push(done));
+      try {
+        await owner.reconcile(signal);
+      } catch {
+        // An owner that doesn't answer reconciles when it next attaches.
+      }
+    })().finally(() => {
+      reconciling = null;
+    });
+    return reconciling;
   };
 
   // Only the user store is writable: curated, shared and project ids name
@@ -849,7 +1049,7 @@ export function createPipelineDefinitionService(
       );
     },
 
-    async upsert(params, signal): Promise<PipelineDefinition> {
+    async upsert(params, signal, replay): Promise<PipelineDefinition> {
       const writer = writerFor(params.definitionId);
       const setEnabled = options.setDefinitionEnabled;
       if (params.enabled !== undefined && !setEnabled)
@@ -876,30 +1076,58 @@ export function createPipelineDefinitionService(
           'The workflow document is larger than 1 MiB.',
         );
       const context = { scope: params.scope, signal };
-      return withDefinitionLock(params.definitionId, async () => {
+      const create = params.definitionId === null ? replay : undefined;
+      const lockId = params.definitionId ?? create?.createId ?? null;
+      return withWriteLock(lockId, async () => {
+        const fields = {
+          name: params.name,
+          description: params.description ?? '',
+          icon: params.icon ?? '',
+          text,
+        };
+        const replayed = await replayedCreate(writer, create, fields, signal);
+        // A replayed create answers the enabled state the definition has now:
+        // any later setEnabled is the user's, so the request's is not reapplied.
+        const enabled = replayed ? undefined : params.enabled;
+        // An edit is checked by the owner first; a create needs no check.
+        if (params.definitionId !== null) {
+          const edit = {
+            op: 'upsert',
+            definitionId: params.definitionId,
+          } as const;
+          await beforeOwnerCommit(edit, edit, params.scope, signal);
+        }
         let written: PipelineDefinitionSourceDocument;
         try {
-          written = await writer.upsert(
-            {
-              definitionId: params.definitionId,
-              expectedRevision: params.expectedRevision,
-              name: params.name,
-              description: params.description ?? '',
-              icon: params.icon ?? '',
-              text,
-              pipeline,
-            },
-            context,
-          );
+          written =
+            replayed ??
+            (await writer.upsert(
+              {
+                definitionId: params.definitionId,
+                expectedRevision: params.expectedRevision,
+                ...fields,
+                pipeline,
+                ...(create && { createId: create.createId }),
+              },
+              context,
+            ));
         } catch (error) {
           throw toOperationError(error, 'The workflow could not be saved.');
         }
+        await afterOwnerCommit(
+          {
+            op: 'upsert',
+            definitionId: written.definitionId,
+            ...(create && { replayKey: create.createId }),
+          },
+          signal,
+        );
         const finish = async (): Promise<PipelineDefinition> => {
-          if (params.enabled !== undefined)
+          if (enabled !== undefined)
             await recordCommittedEnablement(writer, {
               definitionId: written.definitionId,
               revision: written.revision,
-              enabled: params.enabled,
+              enabled,
             });
           return definitionFrom(written, params.scope);
         };
@@ -909,7 +1137,7 @@ export function createPipelineDefinitionService(
         // under this lock, superseded it.
         const attempt = async (): Promise<PipelineDefinition> => {
           if (
-            params.enabled !== undefined &&
+            enabled !== undefined &&
             enablementGeneration(written.definitionId) !== generation
           )
             throw pipelineDefinitionError(
@@ -930,9 +1158,7 @@ export function createPipelineDefinitionService(
                 {
                   definitionId: written.definitionId,
                   revision: written.revision,
-                  ...(params.enabled === undefined
-                    ? {}
-                    : { enabled: params.enabled }),
+                  ...(enabled === undefined ? {} : { enabled }),
                 },
                 () => enablementGeneration(written.definitionId) !== generation,
               ),
@@ -945,22 +1171,33 @@ export function createPipelineDefinitionService(
 
     async delete(params, signal): Promise<PipelineDefinitionDeleteResult> {
       const writer = writerFor(params.definitionId);
-      let revision: number;
-      try {
-        revision = await writer.delete(
-          params.definitionId,
-          params.expectedRevision,
-          { scope: {}, signal },
-        );
-      } catch (error) {
-        throw toOperationError(error, 'The workflow could not be deleted.');
-      }
-      return { definitionId: params.definitionId, deleted: true, revision };
+      const remove = async (): Promise<PipelineDefinitionDeleteResult> => {
+        const write = {
+          op: 'delete',
+          definitionId: params.definitionId,
+        } as const;
+        await beforeOwnerCommit(write, write, {}, signal);
+        let revision: number;
+        try {
+          revision = await writer.delete(
+            params.definitionId,
+            params.expectedRevision,
+            { scope: {}, signal },
+          );
+        } catch (error) {
+          throw toOperationError(error, 'The workflow could not be deleted.');
+        }
+        await afterOwnerCommit(write, signal);
+        return { definitionId: params.definitionId, deleted: true, revision };
+      };
+      // With an owner, a delete and its effects take the definition's lock.
+      return owner ? withWriteLock(params.definitionId, remove) : remove();
     },
 
     async duplicate(
       params,
       signal,
+      replay,
     ): Promise<PipelineDefinitionDuplicateResult> {
       const writer = writerFor(null);
       const origin = await read(
@@ -996,30 +1233,100 @@ export function createPipelineDefinitionService(
           'core.pipeline.definitionInvalid',
           'The workflow document is larger than 1 MiB.',
         );
-      const definitionId = (options.createDefinitionId ?? randomUUID)();
+      const definitionId =
+        replay?.createId ?? (options.createDefinitionId ?? randomUUID)();
       // Read before the copy commits, so nothing after it can fail the
       // request and free its key while the copy stays stored.
       const disabled = await disabledIds();
-      let written: PipelineDefinitionSourceDocument;
-      try {
-        written = await writer.copy(
-          {
+      const fields = {
+        name,
+        description: origin.description,
+        icon: origin.icon,
+        text,
+      };
+      const copyOrigin = {
+        source: origin.source,
+        definitionId: origin.definitionId,
+      };
+      const context = { scope: params.scope, signal };
+      // A resend is answered only with exactly the bytes its copy holds.
+      let copiedText = text;
+      if (replay && writer.copiedText)
+        try {
+          copiedText = await writer.copiedText(
+            { origin: copyOrigin, text },
+            context,
+          );
+        } catch (error) {
+          throw toOperationError(error, 'The workflow could not be read.');
+        }
+      // Under the copy's lock, as upsert takes it, so finishing a resent
+      // copy never runs alongside an edit of that copy in this process.
+      const written = await withWriteLock(
+        definitionId,
+        async (): Promise<PipelineDefinitionSourceDocument> => {
+          // The copy commits the serialized text first, so a crash can leave
+          // it before the host's own bytes are in place.
+          let replayed = await replayedCreate(
+            writer,
+            replay,
+            { ...fields, text: copiedText },
+            signal,
+            copiedText === text ? undefined : text,
+          );
+          // A matched copy can lack what a crash left unwritten after its
+          // document; it is finished, then answered as it is now stored.
+          if (replayed && writer.finishCopy) {
+            try {
+              await writer.finishCopy(
+                { definitionId: replayed.definitionId, origin: copyOrigin },
+                context,
+              );
+            } catch (error) {
+              throw toOperationError(
+                error,
+                'The workflow copy could not be finished.',
+              );
+            }
+            replayed = await read(replayed.definitionId, {}, signal, undefined);
+          }
+          const copied = {
+            op: 'duplicate',
             definitionId,
-            origin: {
-              source: origin.source,
-              definitionId: origin.definitionId,
-            },
-            name,
-            description: origin.description,
-            icon: origin.icon,
-            text,
-            pipeline,
-          },
-          { scope: params.scope, signal },
-        );
-      } catch (error) {
-        throw toOperationError(error, 'The workflow could not be copied.');
-      }
+            origin: copyOrigin,
+            ...(replay && { replayKey: replay.createId }),
+          } as const;
+          if (replayed) {
+            await afterOwnerCommit(copied, signal);
+            return replayed;
+          }
+          await beforeOwnerCommit(
+            { ...copied, definitionId: null },
+            copied,
+            params.scope,
+            signal,
+          );
+          let created: PipelineDefinitionSourceDocument;
+          try {
+            created = await writer.copy(
+              {
+                definitionId,
+                origin: copyOrigin,
+                ...fields,
+                pipeline,
+              },
+              context,
+            );
+          } catch (error) {
+            // The owner's receipts for the copy are orphans now; the pass
+            // runs once this write is out of the way.
+            if (owner) void reconcileOwner(new AbortController().signal);
+            throw toOperationError(error, 'The workflow could not be copied.');
+          }
+          await afterOwnerCommit(copied, signal);
+          return created;
+        },
+      );
       if (written.definitionId !== definitionId)
         throw pipelineDefinitionError(
           'core.pipeline.sourceUnavailable',
@@ -1228,5 +1535,7 @@ export function createPipelineDefinitionService(
         return recordCommittedEnablement(writer, pending);
       });
     },
+
+    reconcileOwnerEffects: reconcileOwner,
   };
 }

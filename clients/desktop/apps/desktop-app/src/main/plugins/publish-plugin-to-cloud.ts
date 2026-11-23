@@ -7,6 +7,7 @@ import {
   type CatalogPublishPackage,
 } from '@canopy/core-runtime/node/catalog';
 import { pluginEntryId } from '@canopy/protocol/canopy-core';
+import { SHARED_SKILL_SECRET_DETECTED_CODE } from '@canopy/protocol/skills';
 import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import {
   CanopyCloudClientError,
@@ -209,12 +210,18 @@ const isNameTaken = (error: unknown): boolean =>
   error.status === 409 &&
   error.serverCode === 'plugin_name_taken';
 
+const isSecretDetected = (error: unknown): boolean =>
+  error instanceof CanopyCloudClientError &&
+  error.status === 422 &&
+  error.serverCode === SHARED_SKILL_SECRET_DETECTED_CODE;
+
 function cloudRefusal(error: unknown): CatalogHostRefusedError {
   if (error instanceof CatalogHostRefusedError) return error;
   return new CatalogHostRefusedError(
     // A SKILL.md or plugin.json that looks like it holds a secret is named
     // (CAN-7226); any other blocked analysis keeps its own reason.
-    error instanceof PackageAnalysisBlockedError && error.secretDetected
+    (error instanceof PackageAnalysisBlockedError && error.secretDetected) ||
+      isSecretDetected(error)
       ? 'publish-secret-detected'
       : error instanceof PackageAnalysisBlockedError
         ? 'publish-package-blocked'

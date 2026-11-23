@@ -16,6 +16,7 @@ import type {
 import { QueuedMessageActions } from './QueuedMessageActions';
 import { QueuedMessageContent } from './QueuedMessageReason';
 import { hostMessagePresentation } from './SteeringRequestTitle';
+import { QueuedWatcherRow } from './QueuedWatcherRow';
 import {
   MessageEditSurface,
   type MessageEditHandler,
@@ -93,6 +94,36 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   );
   const paragraphs = (steeringRequest?.text ?? message.text).split(/\n{2,}/);
   const editHandler = message.editLocked ? undefined : onEdit;
+  const footer = (
+    <QueuedMessageActions
+      placement="footer"
+      turnPhase={turnPhase}
+      onSteer={onSteer}
+      onInterrupt={onForce}
+      onRetry={onRetry}
+      onRunNow={onRunNow}
+      retryBlockedReason={message.retryBlockedReason}
+      steeringSupported={steeringSupported}
+      steerBlockedByCapabilityChange={message.steerBlockedByCapabilityChange}
+      editLocked={message.editLocked}
+      forceLocked={message.forceLocked}
+      settingsHeld={message.restartHeldChanges}
+    />
+  );
+  // A fired watcher waits as the quiet row it becomes, not an info bubble
+  // (chat-blocks.md, Watchers). A message with a sender keeps its bubble.
+  if (message.watcherFired && !message.agentSent) {
+    return (
+      <QueuedWatcherRow
+        watcherFired={message.watcherFired}
+        text={message.text}
+        reason={message.reason}
+        waitingReason={message.waitingReason}
+        onCancel={onCancel}
+        footer={footer}
+      />
+    );
+  }
   return (
     <div className="flex justify-end" data-testid="queued-message-bubble">
       {/*
@@ -151,22 +182,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
             </QueuedMessageContent>
           </MessageEditSurface>
         </Stack>
-        <QueuedMessageActions
-          placement="footer"
-          turnPhase={turnPhase}
-          onSteer={onSteer}
-          onInterrupt={onForce}
-          onRetry={onRetry}
-          onRunNow={onRunNow}
-          retryBlockedReason={message.retryBlockedReason}
-          steeringSupported={steeringSupported}
-          steerBlockedByCapabilityChange={
-            message.steerBlockedByCapabilityChange
-          }
-          editLocked={message.editLocked}
-          forceLocked={message.forceLocked}
-          settingsHeld={message.restartHeldChanges}
-        />
+        {footer}
       </div>
     </div>
   );

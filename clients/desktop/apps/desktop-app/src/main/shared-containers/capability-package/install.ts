@@ -113,6 +113,8 @@ import {
   type ForkAutomationSkipReason,
   type ForkCapabilityInstallPlan,
   type PlannedAutomation,
+  type RefusedDefinition,
+  type RefusedDefinitionRef,
 } from './install-plan';
 
 // ---------------------------------------------------------------------------
@@ -186,6 +188,28 @@ function pluginMembersWarning(labels: readonly string[]): string {
 
 function unmatchedRefsWarning(refs: readonly string[]): string {
   return `Some skills and plugins this share uses aren't on this device: ${refs.join(', ')}.`;
+}
+
+const DEFINITION_KIND_NOUNS = {
+  agent_definition: 'Agent',
+  pipeline_definition: 'pipeline',
+  automation_definition: 'automation',
+  hook_definition: 'hook',
+} as const;
+
+function definitionNoun(ref: RefusedDefinitionRef): string {
+  return ref.displayName === null
+    ? 'a definition from this share'
+    : `${DEFINITION_KIND_NOUNS[ref.kind]} "${ref.displayName}"`;
+}
+
+/** Names the definition and the field, never the value (CAN-7585). */
+function refusedDefinitionWarning(refused: RefusedDefinition): string {
+  const noun = definitionNoun(refused);
+  const subject = `${noun.charAt(0).toUpperCase()}${noun.slice(1)}`;
+  if (refused.reason === 'credential')
+    return `${subject} wasn't added because its ${refused.field} may contain a credential. Ask the person who shared it to remove the credential and share again.`;
+  return `${subject} wasn't added because it uses ${refused.path.map(definitionNoun).join(', which uses ')}, which wasn't added.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -933,6 +957,14 @@ async function runAttempt(
       },
     });
     await finalizeJournal(deps, live, 'completed', false);
+    for (const refused of plan.refusedDefinitions) {
+      deps.log('[shared-container-capabilities] definition refused', {
+        resourceId: refused.resourceId,
+        kind: refused.kind,
+        reason: refused.reason,
+      });
+      warnings.push(refusedDefinitionWarning(refused));
+    }
     if (plan.hooks.length > 0) warnings.push(HOOKS_OMITTED_WARNING);
     if (plan.pluginMemberLabels.length > 0)
       warnings.push(pluginMembersWarning(plan.pluginMemberLabels));

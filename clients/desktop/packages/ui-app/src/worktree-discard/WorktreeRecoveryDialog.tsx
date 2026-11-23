@@ -33,6 +33,7 @@ export function WorktreeRecoveryDialog({
   busy,
   error,
   unconfirmedAction,
+  hostOutdated,
   outcome,
   canResolve = false,
   onAction,
@@ -60,6 +61,11 @@ export function WorktreeRecoveryDialog({
     | 'release'
     | 'finish'
     | 'finish-cleanup';
+  /**
+   * An older computer refused the last action or check, so nothing ran
+   * (CAN-7444): its update message, shown instead of the unconfirmed copy.
+   */
+  readonly hostOutdated?: string;
   readonly onAction: (
     action: 'retry' | 'finishArchive' | 'keepWorktree' | 'release',
   ) => void;
@@ -269,6 +275,15 @@ export function WorktreeRecoveryDialog({
             </ul>
           </section>
         </>
+      ) : null}
+      {hostOutdated && !error ? (
+        <p
+          role="status"
+          className="text-pretty"
+          data-testid="worktree-recovery-host-outdated"
+        >
+          {hostOutdated}
+        </p>
       ) : null}
       {error ? (
         <ErrorBanner

@@ -114,7 +114,7 @@ export interface DesktopWorktreeRowLiveKeys {
   readonly pipelineUnseen: ReadonlySet<string>;
   readonly pipelineUnseenFailed: ReadonlySet<string>;
   readonly pipelinePaused: ReadonlySet<string>;
-  /** Live background tasks by row (turn-state D11), for the background spinner. */
+  /** Live background tasks by row (turn-state D11), for the background dot. */
   readonly backgroundTasks: ReadonlyMap<string, number>;
 }
 

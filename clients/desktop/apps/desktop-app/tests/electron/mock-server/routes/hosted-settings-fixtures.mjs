@@ -333,6 +333,7 @@ export function bootstrapPayload(state, organizationId) {
       // `hostedSettings.integrationsEnabled: false` models a server with the
       // Cloud Git (Integrations) page off.
       integrationsEnabled: state.integrationsEnabled !== false,
+      delegationEnabled: state.delegationEnabled === true,
       freeAccess: true,
     },
     organizations: state.orgOrder.map((id) => {
@@ -892,6 +893,7 @@ const ACCOUNT_PAGES = new Set([
   'integrations',
   'plugins',
   'mcp',
+  'delegation',
   'security',
   'ai-gateway',
   'billing',
@@ -974,6 +976,7 @@ export const HOSTED_SETTINGS_PAGE_DATA_ROUTES = Object.freeze([
   { scope: 'account', page: 'integrations' },
   { scope: 'account', page: 'plugins' },
   { scope: 'account', page: 'mcp' },
+  { scope: 'account', page: 'delegation' },
   { scope: 'account', page: 'security' },
   { scope: 'account', page: 'billing' },
   { scope: 'account', page: 'billing', invoiceId: HOSTED_SETTINGS_INVOICE_ID },
@@ -1081,6 +1084,11 @@ function accountPageData(state, kind, route) {
       return { data: {} };
     // Desktop keeps Chat detail under Display; the kind still loads like web's.
     case 'account.appearance':
+      return { data: {} };
+    // The page loads its limits through account.settings.delegation.read;
+    // like the web page, it is not found while delegation is off.
+    case 'account.delegation':
+      if (state.delegationEnabled !== true) return null;
       return { data: {} };
     case 'account.integrations':
       // The web page guard 404s while the server's Integrations flag is off.

@@ -10,7 +10,14 @@ import {
   type UnifiedEntryAlternative,
   type UnifiedEntryBundledServerRow,
 } from '@canopy/ui-shared';
-import { type JSX, type ReactNode, useEffect, useMemo, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type {
   BuiltInProviderInstallStatus,
   MarketplacePluginExternalSource,
@@ -189,6 +196,16 @@ export interface PluginDetailHostProps {
     onInstall: () => void;
     busy: boolean;
   }) => ReactNode;
+  /** Shows the catalog instead of full detail while keeping its provider Add live. */
+  renderProviderCatalog?: (action: {
+    onInstall: () => void;
+    busy: boolean;
+    /**
+     * A failed Add's error, to show under Works with: the summary has no
+     * harness row to take it, and it outlives the page the Add opened.
+     */
+    error?: ReactNode;
+  }) => JSX.Element;
   headerIcon?: ReactNode;
   /** Page hosts own an h1; nested desktop panels retain the default h2. */
   titleAs?: 'h1' | 'h2';
@@ -491,6 +508,7 @@ export function PluginDetailHost({
   headerActions,
   idlePrimaryAction,
   renderPrimaryAction,
+  renderProviderCatalog,
   headerIcon,
   titleAs = 'h2',
   authorDisplay,
@@ -534,6 +552,7 @@ export function PluginDetailHost({
   const [compatError, setCompatError] = useState('');
   const [compatBusy, setCompatBusy] = useState(false);
   const builtIn = useBuiltInInstall(plugin, onInstall, onPluginUpdated);
+  const providerAddInFlight = useRef(false);
   const actionSlots = useDetailActionSlots();
   // Rows bodies offer to the ⋯ menu (the web install panel's Reinstall).
   const contributedMore = useDetailMoreItemContributions();
@@ -765,6 +784,36 @@ export function PluginDetailHost({
   const canInstall = onInstall !== undefined;
   const showInstallPrompt = canInstall && needsInstall;
   const builtInPanel = plugin.builtIn === true || plugin.curated === true;
+  const installToProviders = (): void => {
+    if (!discoveryEnabled) {
+      void builtIn.install(builtIn.installable);
+      return;
+    }
+    if (
+      !canInstall ||
+      builtIn.installable.length === 0 ||
+      builtIn.installing !== null ||
+      providerAddInFlight.current
+    )
+      return;
+    providerAddInFlight.current = true;
+    void builtIn.install(builtIn.installable).finally(() => {
+      providerAddInFlight.current = false;
+    });
+  };
+  if (
+    discoveryEnabled &&
+    renderProviderCatalog &&
+    builtInPanel &&
+    !showInstallPrompt
+  )
+    return renderProviderCatalog({
+      onInstall: installToProviders,
+      busy: builtIn.installing !== null,
+      ...(builtIn.message?.tone === 'error'
+        ? { error: <BuiltInInstallMessage state={builtIn} /> }
+        : {}),
+    });
   const installAction =
     !canInstall || installContent ? undefined : showInstallPrompt ||
       installing ? (
@@ -794,8 +843,7 @@ export function PluginDetailHost({
   const primaryAction = renderPrimaryAction
     ? renderPrimaryAction({
         onInstall: (): void => {
-          if (builtInPanel && !showInstallPrompt)
-            void builtIn.install(builtIn.installable);
+          if (builtInPanel && !showInstallPrompt) installToProviders();
           else void installExternal();
         },
         busy: installing || builtIn.installing !== null,
@@ -1017,17 +1065,29 @@ export function PluginDetailHost({
     ) : (
       worksWithNotice
     );
+  const updating: DetailVersionUpdate | undefined =
+    installing && !showInstallPrompt ? { state: 'applying' } : undefined;
   // New Customize's fact rows, in the shared order.
   const discoveryFacts = discoveryEnabled
     ? {
         source: marketplaceFact,
         otherVersions: otherVersionsFacts,
-        version: versionUpdate ? (
+        // Unknown until the host says more (a changed shared source is an
+        // available update): a plugin has no check of its own. The host's
+        // version wins only when it has one, so a share without a version
+        // still shows the installed one. An installed external plugin's own
+        // Update says it is applying while its install call is pending.
+        version: (
           <DetailVersionUpdateFact
-            update={versionUpdate}
-            name={pluginDisplayName(plugin)}
+            update={{
+              state: versionUpdate ? 'available' : 'unknown',
+              ...versionUpdate,
+              ...updating,
+              version: versionUpdate?.version ?? plugin.version,
+              versionReplay: 'block',
+            }}
           />
-        ) : undefined,
+        ),
         entity: plugin.externalSource ? (
           // Update re-fetches the repository; its failure stays on this row.
           <DetailFact label="Repository" testId="plugin-detail-repository">
@@ -1130,7 +1190,11 @@ export function PluginDetailHost({
         {...(mcpServerHealth
           ? {
               renderMcpServerStatus: (server: PluginMcpServerInfo) =>
-                renderMcpServerHealth(mcpServerHealth, server),
+                renderMcpServerHealth(
+                  mcpServerHealth,
+                  server,
+                  discoveryEnabled,
+                ),
             }
           : {})}
       />
@@ -1153,12 +1217,19 @@ function PluginMcpConnectionControls({
   serverName,
 }: {
   connection: PluginDetailMcpConnection;
-  serverName: string;
+  /**
+   * Names the controls' hooks and labels. New Customize's Contents row
+   * passes none: the name is the plugin config's, and attributes are not
+   * private in session replay; the row already shows the name.
+   */
+  serverName?: string;
 }): JSX.Element {
   const { action, authorizationUrl, onCancel, phase = 'idle' } = connection;
+  const hook = (prefix: string): string =>
+    serverName === undefined ? prefix : `${prefix}-${serverName}`;
   return (
     <div
-      data-testid={`plugin-detail-mcp-connection-${serverName}`}
+      data-testid={hook('plugin-detail-mcp-connection')}
       className="flex flex-col items-start gap-1.5"
     >
       {!action.available ? (
@@ -1171,7 +1242,7 @@ function PluginMcpConnectionControls({
             variant="compact"
             authorizationUrl={authorizationUrl}
             onCancel={onCancel}
-            dataTestId={`plugin-detail-mcp-sign-in-${serverName}`}
+            dataTestId={hook('plugin-detail-mcp-sign-in')}
           />
         </div>
       ) : (
@@ -1184,15 +1255,19 @@ function PluginMcpConnectionControls({
             variant="secondary"
             disabled={connection.disabled === true}
             onClick={action.run}
-            data-testid={`plugin-detail-mcp-connect-${serverName}`}
+            data-testid={hook('plugin-detail-mcp-connect')}
           />
           {phase !== 'idle' && onCancel !== undefined && (
             <Button
               type="button"
               size="compact"
               variant="ghost"
-              aria-label={`Cancel ${serverName} sign-in`}
-              data-testid={`plugin-detail-mcp-connect-cancel-${serverName}`}
+              aria-label={
+                serverName === undefined
+                  ? 'Cancel sign-in'
+                  : `Cancel ${serverName} sign-in`
+              }
+              data-testid={hook('plugin-detail-mcp-connect-cancel')}
               onClick={onCancel}
             >
               Cancel
@@ -1213,43 +1288,60 @@ function PluginMcpConnectionControls({
 function renderMcpServerHealth(
   health: PluginDetailMcpHealth,
   server: PluginMcpServerInfo,
+  /** New Customize's Contents list: label and Connect share one line. */
+  listRow: boolean,
 ): ReactNode | undefined {
   const resolved = health.resolve(server);
   if (!resolved) return undefined;
+  // In the list row the status sits at the row's end: it wraps only when a
+  // long health line or error needs the room.
+  const wrapper = listRow
+    ? 'flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5'
+    : 'flex flex-col gap-1.5';
+  // The list row names nothing after the server: its name is the plugin
+  // config's, and labels and hooks are not private in session replay. The
+  // row it sits in shows the name.
+  const name = listRow ? undefined : server.name;
+  const healthLabel = name === undefined ? 'Health' : `Health for ${name}`;
   switch (resolved.kind) {
     case 'target':
       return (
-        <div className="flex flex-col gap-1.5">
+        <div className={wrapper}>
           <McpServerHealthSection
             presentation="inline"
-            label={`Health for ${server.name}`}
+            label={healthLabel}
             {...resolved.target}
             formatTimestamp={health.formatTimestamp}
           />
           {resolved.connection && (
             <PluginMcpConnectionControls
               connection={resolved.connection}
-              serverName={server.name}
+              serverName={name}
             />
           )}
         </div>
       );
     case 'loading':
       return (
-        <Skeleton loading label={`Loading health for ${server.name}`}>
+        <Skeleton
+          loading
+          label={
+            name === undefined ? 'Loading health' : `Loading health for ${name}`
+          }
+        >
           <McpServerHealthSection
             presentation="inline"
-            label={`Health for ${server.name}`}
+            label={healthLabel}
             {...SAMPLE_MCP_HEALTH}
           />
         </Skeleton>
       );
     case 'unavailable':
       return (
-        <div className="flex flex-col gap-1.5">
+        <div className={wrapper}>
           {resolved.connected ? (
             <McpRowHealth
-              name={server.name}
+              name={name ?? 'this server'}
               model={{
                 text: resolved.reason,
                 tone: 'positive',
@@ -1268,7 +1360,7 @@ function renderMcpServerHealth(
           {resolved.connection && (
             <PluginMcpConnectionControls
               connection={resolved.connection}
-              serverName={server.name}
+              serverName={name}
             />
           )}
         </div>

@@ -122,7 +122,8 @@ export const CatalogCollectionEntrySchema = z.strictObject({
   name: NameSchema,
   description: DescriptionSchema,
   members: CatalogCollectionMembersSchema,
-  createdAt: TimestampSchema,
+  /** First save of this copy; absent when the desktop has no record (CAN-5239). */
+  createdAt: TimestampSchema.optional(),
   updatedAt: TimestampSchema,
   sharedSource: CatalogCollectionSharedSourceSchema.nullable(),
   share: CatalogCollectionShareLinkSchema.nullable(),

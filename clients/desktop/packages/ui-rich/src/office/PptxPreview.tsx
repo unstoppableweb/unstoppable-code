@@ -10,7 +10,10 @@ import {
   DelayedLoadingPlaceholder,
 } from '@canopy/ui-shared/components';
 import { useEffect, useState, type CSSProperties, type JSX } from 'react';
-import { parseOfficeDocument } from './office-parse-client';
+import {
+  officePreviewRenderFailure,
+  parseOfficeDocument,
+} from './office-parse-client';
 import { OfficePreviewBanner } from './OfficePreviewBanner';
 import type {
   PptxBox,
@@ -32,7 +35,11 @@ export interface PptxPreviewProps {
   readonly fileName: string;
   readonly createWorker: () => Worker;
   readonly copy?: OfficePreviewCopy;
-  readonly onRenderFailure: (failure: OfficePreviewRenderFailure) => void;
+  /** `error` accompanies a `worker-defect` only, for the host to record. */
+  readonly onRenderFailure: (
+    failure: OfficePreviewRenderFailure,
+    error?: unknown,
+  ) => void;
 }
 
 type State =
@@ -62,8 +69,11 @@ export function PptxPreview({
         if (controller.signal.aborted) return;
         if (result.kind !== 'pptx') throw new Error('Unexpected parse result.');
         setState({ status: 'ready', bytes, presentation: result });
-      } catch {
-        if (!controller.signal.aborted) onRenderFailure('parse-failed');
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (officePreviewRenderFailure(error) === 'worker-defect')
+          onRenderFailure('worker-defect', error);
+        else onRenderFailure('parse-failed');
       }
     })();
     return (): void => controller.abort();

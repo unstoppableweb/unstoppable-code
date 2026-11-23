@@ -1,8 +1,10 @@
 import type {
+  OfficeParseFailure,
   OfficeParseRequest,
   OfficeParseResponse,
   OfficeParseResult,
 } from './office-parse';
+import type { OfficePreviewRenderFailure } from './office-preview-copy';
 
 export const OFFICE_PARSE_TIMEOUT_MS = 30_000;
 
@@ -10,16 +12,54 @@ export type OfficeParseFailureReason =
   | 'timeout'
   | 'worker-error'
   | 'parse-error'
+  /** The parser threw a programming error, not a refusal of the file. */
+  | 'worker-defect'
   | 'aborted';
+
+/**
+ * Classes the parsers throw when they refuse a file: a damaged, unsupported or
+ * over-budget document, never a defect. Any other class is a defect.
+ */
+const FILE_REFUSAL_CLASSES: ReadonlySet<string> = new Set([
+  'Error',
+  'DocxElementBudgetError',
+]);
 
 export class OfficeParseError extends Error {
   constructor(
     readonly reason: OfficeParseFailureReason,
     message: string,
+    /** A defect's class and code as the worker posted them, unvalidated. */
+    readonly failure?: OfficeParseFailure,
   ) {
     super(message);
     this.name = 'OfficeParseError';
   }
+}
+
+/** The worker's failure as posted; anything malformed reads as no facts. */
+function readParseFailure(value: unknown): OfficeParseFailure {
+  if (typeof value !== 'object' || value === null) return {};
+  const name: unknown = Reflect.get(value, 'name');
+  const code: unknown = Reflect.get(value, 'code');
+  return {
+    ...(typeof name === 'string' ? { name } : {}),
+    ...(typeof code === 'string' ? { code } : {}),
+  };
+}
+
+/**
+ * How a preview reports a failed parse: a worker crash or parser defect is a
+ * `worker-defect` its host records; a refused file, a timeout and anything
+ * else keep the `parse-failed` outcome and are not recorded.
+ */
+export function officePreviewRenderFailure(
+  error: unknown,
+): OfficePreviewRenderFailure {
+  return error instanceof OfficeParseError &&
+    (error.reason === 'worker-defect' || error.reason === 'worker-error')
+    ? 'worker-defect'
+    : 'parse-failed';
 }
 
 export interface ParseOfficeDocumentOptions {
@@ -77,8 +117,17 @@ export function parseOfficeDocument(
       } else if (response.ok) {
         finish(() => resolve(response.result));
       } else {
+        const failure = readParseFailure(response.error);
         finish(() =>
-          reject(new OfficeParseError('parse-error', response.error)),
+          reject(
+            failure.name === undefined || FILE_REFUSAL_CLASSES.has(failure.name)
+              ? new OfficeParseError('parse-error', 'Document refused.')
+              : new OfficeParseError(
+                  'worker-defect',
+                  'Office parser failed.',
+                  failure,
+                ),
+          ),
         );
       }
     };

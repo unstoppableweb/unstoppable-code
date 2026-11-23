@@ -38,7 +38,9 @@ import {
 import { SKILLS_CHANNELS } from '@canopy/desktop-shared/constants/skill-channels';
 import {
   findPackageFileCredentialRule,
+  findSharedMemberFileCredentialRule,
   scanSharedSkillForSecrets,
+  sharedSkillSecretRuleLabel,
 } from '@canopy/protocol/skills';
 import {
   encodeSharedContainerDefinitionDocument,
@@ -92,6 +94,12 @@ const URL_SKILL =
   '---\nname: deploy-db\ndescription: Deploys.\n---\nConnect to postgres://admin:pw@db/app.\n';
 const PLACEHOLDER_SKILL =
   '---\nname: deploy-placeholder\ndescription: Deploys.\n---\nSet api_key: ${{ secrets.API_KEY }}\n';
+// A bare npm token trips the token rule alone (CAN-7475); npm's own
+// variables do not.
+const NPM_TOKEN = `np${'m'}_${'T'.repeat(36)}`;
+const NPM_SKILL = `---\nname: deploy-npm\ndescription: Publishes.\n---\nPublish with ${NPM_TOKEN}.\n`;
+const NPM_CONFIG_SKILL =
+  '---\nname: deploy-npm-config\ndescription: Publishes.\n---\nSet npm_config_registry, run npm publish, then print npm_package_version.\n';
 const KEEP_STEP_SKILL =
   '---\nname: keep-step\ndescription: Keeps notes.\n---\nRead notes.md.\n';
 // A share over Remote Control (CAN-7476): a clean file named after a token
@@ -104,6 +112,8 @@ const SKILLS: Record<string, string> = {
   'deploy-env': ENV_SKILL,
   'deploy-db': URL_SKILL,
   'deploy-placeholder': PLACEHOLDER_SKILL,
+  'deploy-npm': NPM_SKILL,
+  'deploy-npm-config': NPM_CONFIG_SKILL,
   'keep-step': KEEP_STEP_SKILL,
 };
 
@@ -223,6 +233,31 @@ describe('committing a skill package refuses a secret-looking SKILL.md before an
     const result = await analyzeAndCommit(
       'deploy-placeholder',
       PLACEHOLDER_SKILL,
+    );
+    // Past the check the upload starts; this cloud refuses it.
+    expect(requests.length).toBeGreaterThan(0);
+    expect(result).toMatchObject({ ok: false });
+    expect(result).not.toMatchObject({ failure: { kind: 'unavailable' } });
+  });
+});
+
+describe('committing a skill package refuses a SKILL.md holding a bare npm token before any upload (CAN-7475)', () => {
+  it('blocks the share, naming the rule only, and sends no request', async () => {
+    const message =
+      'The skill "deploy-npm" looks like it contains a secret (an npm token in SKILL.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.';
+    const result = await analyzeAndCommit('deploy-npm', NPM_SKILL, message);
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { kind: 'dependency-review', stage: 'prepare', message },
+    });
+    expect(requests).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(NPM_TOKEN);
+  });
+
+  it("still commits a SKILL.md that only uses npm and npm's own variables", async () => {
+    const result = await analyzeAndCommit(
+      'deploy-npm-config',
+      NPM_CONFIG_SKILL,
     );
     // Past the check the upload starts; this cloud refuses it.
     expect(requests.length).toBeGreaterThan(0);
@@ -2656,6 +2691,370 @@ describe('a workflow share blocks on a pipeline, asset or child resource whose n
         (resource) => resource.displayName,
       ),
     ).toContain('build');
+  });
+});
+
+describe('a workflow share reads asset, child pipeline, action and pipeline files with the shared member check (CAN-7492)', () => {
+  const W = 'W'.repeat(30);
+  // Each is caught by the shared member check and missed by the package rule.
+  const FIXTURES = [
+    [
+      'a JSON-escaped token',
+      'notes.json',
+      `{"note":"see gh${'p'}\\u005f${W}"}\n`,
+      'a GitHub token',
+    ],
+    [
+      'a text-escaped token',
+      'notes.md',
+      `see gh${'p'}\\x5f${W} for access\n`,
+      'a GitHub token',
+    ],
+    [
+      'a password in a URL',
+      'notes.md',
+      'Connect to postgres://admin:hunter2pass@db.internal/app\n',
+      'a password in a URL',
+    ],
+    [
+      'JSON nested too deeply to check',
+      'notes.json',
+      `${'['.repeat(20_000)}${']'.repeat(20_000)}\n`,
+      null,
+    ],
+  ] as const;
+  const PLACEHOLDERS =
+    'Run with NPM_TOKEN=${NPM_TOKEN} or ${{ secrets.NPM_TOKEN }} as <your token> against postgres://admin@db/app.\n';
+  const PIPELINE_YAML = 'name: deploy\njobs: {}\n';
+  const NOT_IGNORED = {
+    gitIgnored: (): Promise<{
+      isIgnored: (absolutePath: string) => boolean;
+      checked: true;
+    }> => Promise.resolve({ isIgnored: () => false, checked: true }),
+  };
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0))
+      rmSync(root, { recursive: true, force: true });
+  });
+  function folder(files: Record<string, string>): string {
+    const root = mkdtempSync(join(tmpdir(), 'workflow-member-'));
+    roots.push(root);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), text);
+    }
+    return root;
+  }
+  type Input = Parameters<typeof analyzeCapabilityPackage>[0];
+  function analyse(
+    extra: Partial<Input>,
+  ): ReturnType<typeof analyzeCapabilityPackage> {
+    return analyzeUnchanged({
+      rawContent: 'Workflow.',
+      invocableInventory: {
+        version: 6,
+        builtAt: '2026-11-11T00:00:00.000Z',
+        entries: [],
+      },
+      capabilityInventoryEntryIdsByKey: {},
+      sourceByInventoryEntryId: {},
+      requests: [],
+      ...extra,
+    });
+  }
+  const pipeline = (
+    rawContent = PIPELINE_YAML,
+  ): NonNullable<Input['automationPipelines']>[number] => ({
+    pipelineKey: 'action',
+    name: 'deploy',
+    source: 'user',
+    rawContent,
+    bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+  });
+  const asset = (home: string): NonNullable<Input['fileAssets']>[number] => ({
+    pipelineKey: 'action',
+    assetId: 'data',
+    sourcePath: join(home, 'data'),
+    required: true,
+    installMode: 'seed',
+    localState: [],
+  });
+  const action = (
+    root: string,
+  ): NonNullable<Input['portableResources']>[number] => ({
+    kind: 'pipeline_action',
+    displayName: 'build',
+    invocationKeys: ['build'],
+    bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+    descriptor: {
+      sourceRoot: root,
+      memberPath: 'actions/build',
+      exportRoot: root,
+      sourceVisibility: 'local',
+      runtimeKind: 'plugin_fragment',
+      rootName: 'pipelines-test',
+    },
+  });
+  const childPipeline = (
+    root: string,
+  ): NonNullable<Input['portableResources']>[number] => ({
+    kind: 'child_pipeline',
+    displayName: 'pipelines/notes.yml',
+    invocationKeys: ['pipelines/notes.yml'],
+    bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+    descriptor: {
+      sourceRoot: root,
+      memberPath: 'pipelines/notes.yml',
+      exportRoot: root,
+      sourceVisibility: 'local',
+      runtimeKind: 'plugin_fragment',
+      rootName: 'pipelines-test',
+    },
+  });
+  // The rule and the file, never the value.
+  const secretMessage = (
+    owner: string,
+    file: string,
+    label: string | null,
+  ): string =>
+    label === null
+      ? `${owner} has a file, ${file}, that is nested too deeply to check for secrets. Simplify it, then share again.`
+      : `${owner} looks like it contains a secret (${label} in ${file}). Remove it, or replace it with a placeholder such as \${{ secrets.NAME }}, then share again.`;
+  const secretBlockers = (
+    analysis: Awaited<ReturnType<typeof analyse>>,
+  ): unknown[] =>
+    analysis.summary.blockers.filter(
+      (blocker) => blocker.code === 'SUSPECTED_SECRET',
+    );
+  const uploaded = (analysis: Awaited<ReturnType<typeof analyse>>): string =>
+    [...analysis.blobs.values()]
+      .map((bytes) => Buffer.from(bytes).toString('utf8'))
+      .join('\n');
+
+  it.each(FIXTURES)(
+    'blocks a share whose asset file holds %s, naming the asset, its pipeline, the rule and the file',
+    async (_label, file, text, rule) => {
+      const home = folder({
+        'data/readme.txt': 'Read me.\n',
+        [`data/${file}`]: text,
+      });
+      const analysis = await analyse({
+        homedir: home,
+        automationPipelines: [pipeline()],
+        fileAssets: [asset(home)],
+      });
+      expect(secretBlockers(analysis)).toEqual([
+        expect.objectContaining({
+          message: secretMessage('The asset "data" in "deploy"', file, rule),
+          subject: file,
+          relativePath: file,
+        }),
+      ]);
+      expect(analysis.summary.withheldFiles ?? []).toEqual([]);
+      expect(uploaded(analysis)).not.toContain(text);
+    },
+  );
+
+  it.each(FIXTURES)(
+    'withholds an asset file that holds %s from a cloud copy instead',
+    async (_label, file, text) => {
+      const home = folder({
+        'data/readme.txt': 'Read me.\n',
+        [`data/${file}`]: text,
+      });
+      const analysis = await analyse({
+        cloudCopy: NOT_IGNORED,
+        homedir: home,
+        automationPipelines: [pipeline()],
+        fileAssets: [asset(home)],
+      });
+      expect(secretBlockers(analysis)).toEqual([]);
+      expect(analysis.summary.withheldFiles).toEqual([
+        {
+          pipelineKey: 'action',
+          assetId: 'data',
+          relativePath: file,
+          reason: 'suspected_secret',
+        },
+      ]);
+      expect(uploaded(analysis)).not.toContain(text);
+      expect(uploaded(analysis)).toContain('Read me.');
+    },
+  );
+
+  it.each(FIXTURES)(
+    'blocks a pipeline action file that holds %s, in a share and a cloud copy alike',
+    async (_label, file, text, rule) => {
+      const root = folder({
+        'actions/build/run.sh': 'echo build\n',
+        [`actions/build/${file}`]: text,
+      });
+      for (const cloudCopy of [undefined, NOT_IGNORED]) {
+        const analysis = await analyse({
+          ...(cloudCopy === undefined ? {} : { cloudCopy }),
+          portableResources: [action(root)],
+        });
+        expect(secretBlockers(analysis)).toEqual([
+          expect.objectContaining({
+            message: secretMessage(
+              'The pipeline action "build"',
+              `actions/build/${file}`,
+              rule,
+            ),
+          }),
+        ]);
+        expect(uploaded(analysis)).not.toContain(text);
+      }
+    },
+  );
+
+  it.each(FIXTURES)(
+    'blocks a child pipeline whose file holds %s, in a share and a cloud copy alike',
+    async (_label, _file, text, rule) => {
+      const root = folder({ 'pipelines/notes.yml': text });
+      for (const cloudCopy of [undefined, NOT_IGNORED]) {
+        const analysis = await analyse({
+          ...(cloudCopy === undefined ? {} : { cloudCopy }),
+          portableResources: [childPipeline(root)],
+        });
+        expect(secretBlockers(analysis)).toEqual([
+          expect.objectContaining({
+            message: secretMessage(
+              'The child pipeline "pipelines/notes.yml"',
+              'pipelines/notes.yml',
+              rule,
+            ),
+          }),
+        ]);
+        expect(uploaded(analysis)).not.toContain(text);
+      }
+    },
+  );
+
+  it.each(FIXTURES)(
+    'blocks an automation pipeline whose YAML holds %s',
+    async (_label, _file, text, rule) => {
+      // JSON this deep is caught as a whole file, so that pipeline is
+      // nothing but the JSON; the others carry their text in a comment.
+      const rawContent =
+        rule === null ? text : `${PIPELINE_YAML}# ${text.trim()}\n`;
+      const analysis = await analyse({
+        automationPipelines: [pipeline(rawContent)],
+      });
+      expect(secretBlockers(analysis)).toEqual([
+        expect.objectContaining({
+          message: secretMessage(
+            'The pipeline "deploy"',
+            'pipeline.yaml',
+            rule,
+          ),
+          subject: 'deploy',
+          relativePath: 'pipeline.yaml',
+        }),
+      ]);
+      expect(uploaded(analysis)).not.toContain(text.trim());
+    },
+  );
+
+  it('never shows a file name that looks like a secret in the blocker for its content', async () => {
+    const token = `gh${'p'}_${W}`;
+    const root = folder({
+      'actions/build/run.sh': 'echo build\n',
+      [`actions/build/${token}.md`]: FIXTURES[2][2],
+    });
+    const analysis = await analyse({ portableResources: [action(root)] });
+    expect(secretBlockers(analysis)).toContainEqual(
+      expect.objectContaining({
+        message: secretMessage(
+          'The pipeline action "build"',
+          '[redacted path]',
+          'a password in a URL',
+        ),
+        subject: '[redacted path]',
+      }),
+    );
+    expect(JSON.stringify(analysis.summary)).not.toContain(token);
+  });
+
+  // The YAML is read as it uploads, whitespace and all: a tab can carry a URL
+  // credential, and a line break ends an empty assignment.
+  const TAB_CREDENTIAL_YAML =
+    'name: deploy\njobs:\n  build:\n    steps:\n      - run: curl -u\tadmin:hunter2pass https://example.com\n';
+  const EMPTY_EXPORT_YAML =
+    'name: deploy\njobs:\n  build:\n    steps:\n      - run: |\n          export NPM_TOKEN=\n          npm ci\n';
+
+  it('blocks an automation pipeline whose run step separates a URL credential with a tab', async () => {
+    const analysis = await analyse({
+      automationPipelines: [pipeline(TAB_CREDENTIAL_YAML)],
+    });
+    expect(secretBlockers(analysis)).toEqual([
+      expect.objectContaining({
+        message: secretMessage(
+          'The pipeline "deploy"',
+          'pipeline.yaml',
+          'a password in a URL',
+        ),
+      }),
+    ]);
+    expect(JSON.stringify(analysis.summary)).not.toContain('hunter2pass');
+    expect(uploaded(analysis)).not.toContain('hunter2pass');
+  });
+
+  it('lets an empty credential export followed by another command through', async () => {
+    const analysis = await analyse({
+      automationPipelines: [pipeline(EMPTY_EXPORT_YAML)],
+    });
+    expect(secretBlockers(analysis)).toEqual([]);
+    expect(uploaded(analysis)).toContain('export NPM_TOKEN=');
+  });
+
+  it.each([
+    ['a tab-separated URL credential', TAB_CREDENTIAL_YAML],
+    ['an empty export followed by another command', EMPTY_EXPORT_YAML],
+  ])(
+    "gives pipeline YAML holding %s the hosted check's verdict on the same bytes",
+    async (_label, yaml) => {
+      // The hosted check reads the uploaded blob with this rule (CAN-7492).
+      const hosted = findSharedMemberFileCredentialRule(
+        new TextEncoder().encode(yaml),
+      );
+      const analysis = await analyse({ automationPipelines: [pipeline(yaml)] });
+      expect(secretBlockers(analysis)).toEqual(
+        hosted === null
+          ? []
+          : [
+              expect.objectContaining({
+                message: secretMessage(
+                  'The pipeline "deploy"',
+                  'pipeline.yaml',
+                  hosted === 'unreadable'
+                    ? null
+                    : sharedSkillSecretRuleLabel(hosted),
+                ),
+              }),
+            ],
+      );
+    },
+  );
+
+  it('lets asset, action, child pipeline and pipeline files that only name placeholders through', async () => {
+    const home = folder({
+      'data/notes.md': PLACEHOLDERS,
+      'actions/build/notes.md': PLACEHOLDERS,
+      'pipelines/notes.yml': `${PIPELINE_YAML}# ${PLACEHOLDERS}`,
+    });
+    const analysis = await analyse({
+      homedir: home,
+      automationPipelines: [
+        pipeline(`${PIPELINE_YAML}# ${PLACEHOLDERS.trim()}\n`),
+      ],
+      fileAssets: [asset(home)],
+      portableResources: [action(home), childPipeline(home)],
+    });
+    expect(secretBlockers(analysis)).toEqual([]);
+    expect(analysis.summary.withheldFiles ?? []).toEqual([]);
+    expect(uploaded(analysis)).toContain(PLACEHOLDERS.trim());
   });
 });
 

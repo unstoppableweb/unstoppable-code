@@ -22,11 +22,13 @@ import {
   type ClaudeModSurfaceUpdate,
   type ExtensionUiNode,
 } from '@canopy/protocol/extension-ui';
+import { isChannelUnavailableRejection } from '@canopy/protocol/remote-control';
 import {
   ComposerDrawer,
   ComposerDrawerSection,
   EmptyState,
 } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   ExtensionTreeView,
@@ -144,8 +146,8 @@ class SurfaceStore {
   >();
   /** Panes given the keyboard before their view mounted, by chat. */
   private readonly focusWaiting = new Map<string, string>();
-  /** Chats whose session was asked for its current surface. */
-  private readonly asked = new Set<string>();
+  /** Chats whose session was asked for its current surface, by attempt. */
+  private readonly asked = new Map<string, object>();
   /** Each chat's composer, while a view in this window shows it. */
   private readonly composers = new Map<string, ClaudeModComposerAnswerer>();
   /** Composer requests their asker withdrew. */
@@ -181,15 +183,31 @@ class SurfaceStore {
   private ask(chat: ClaudeModSurfaceChat): void {
     const key = chatKey(chat);
     if (this.asked.has(key)) return;
-    this.asked.add(key);
+    const attempt = {};
+    this.asked.set(key, attempt);
     this.client
       .command('claudeMods.surfaceCommand', {
         ...chat,
         command: { kind: 'resend' },
       })
-      .catch((): void => {
-        // Asked again on the chat's next mount.
+      .catch((error: unknown): void => {
+        // Asked again on the chat's next mount. The surface stays as it was,
+        // so this records with no surface; a session that no longer draws one
+        // resolves instead.
+        // Only this chat's current attempt, while a view still draws the
+        // chat, is news: a rejection that arrives after the last view left,
+        // or after a newer resend replaced this one, is not recorded.
+        if (this.asked.get(key) !== attempt) return;
         this.asked.delete(key);
+        if (!this.mounted.has(key)) return;
+        // An older paired desktop refuses the channel: expected, not a defect.
+        if (isChannelUnavailableRejection(error, 'claude-mods:surface-command'))
+          return;
+        recordSurfacedError({
+          chokePoint: 'notice',
+          identifier: 'claude-mod-surface-resend',
+          error,
+        });
       });
   }
 
@@ -256,7 +274,21 @@ class SurfaceStore {
         chatId: event.chatId,
         command: { kind: 'composer-answer', requestId, answer },
       })
-      .catch((): void => undefined);
+      .catch((error: unknown): void => {
+        // A session that no longer waits resolves, so a rejection is the
+        // transport's. It is only news while the asker still waits: once it
+        // withdrew or its request expired, the answer had nowhere to land.
+        if (this.withdrawn.has(requestId) || Date.now() > push.expiresAt)
+          return;
+        // An older paired desktop refuses the channel: expected, not a defect.
+        if (isChannelUnavailableRejection(error, 'claude-mods:surface-command'))
+          return;
+        recordSurfacedError({
+          chokePoint: 'notice',
+          identifier: 'claude-mod-composer-answer',
+          error,
+        });
+      });
   }
 
   subscribe(listener: () => void): () => void {
@@ -638,7 +670,9 @@ function useClaudeModSurfaceCommand(
       ) {
         return;
       }
-      // A press the session no longer answers changes nothing.
+      // A press the session no longer answers changes nothing: the host
+      // resolves it. A rejection is the transport's, recorded with no surface
+      // since nothing shows.
       client
         .command('claudeMods.surfaceCommand', {
           projectId,
@@ -646,7 +680,18 @@ function useClaudeModSurfaceCommand(
           chatId,
           command,
         })
-        .catch((): void => undefined);
+        .catch((error: unknown): void => {
+          // An older paired desktop refuses the channel: expected.
+          if (
+            isChannelUnavailableRejection(error, 'claude-mods:surface-command')
+          )
+            return;
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'claude-mod-surface-command',
+            error,
+          });
+        });
     },
     [client, projectId, worktreeId, chatId],
   );

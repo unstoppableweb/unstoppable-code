@@ -22,8 +22,10 @@ import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '../../secret-redaction';
 import {
   DEFINITION_CREDENTIAL_RULE,
   SHARED_SKILL_SECRET_DETECTED_CODE,
+  escapeDecodedCopy,
   findPackageEntryCredential,
   findPackageFileCredentialRule,
+  findSharedMemberFileCredentialRule,
   packageDefinitionDocumentEntry,
   findPackageTextCredentialRule,
   PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN,
@@ -42,6 +44,7 @@ const SAMPLES: readonly (readonly [SecretMaterialRule, string])[] = [
   ['github_token', `github_${'pat'}_${repeat('A', 24)}`],
   ['github_token', `gh${'p'}_${repeat('B', 30)}`],
   ['slack_token', `xox${'b'}-${repeat('1', 12)}`],
+  ['npm_token', `np${'m'}_${repeat('n', 36)}`],
   ['aws_access_key', `AKI${'A'}${repeat('Z', 16)}`],
   ['api_key_prefix', `s${'k'}-${repeat('k', 20)}`],
   ['auth_header', `Authori${'zation'}: Basic abc`],
@@ -65,6 +68,44 @@ describe('shared skill secret scan (CAN-7226)', () => {
     expect(findSecretMaterialRule(text)).toBeNull();
     expect(containsSecretMaterial(text)).toBe(false);
     expect(containsSecretMaterial('')).toBe(false);
+  });
+
+  // npm's own variables and near misses are not an npm token, which is
+  // `npm_` and exactly 36 letters and digits, starting a word.
+  it.each([
+    'npm_config_registry=https://registry.npmjs.org',
+    'echo $npm_package_version',
+    'Set npm_config_cache before you run npm ci.',
+    `np${'m'}_${repeat('n', 35)}`,
+    `np${'m'}_${repeat('n', 37)}`,
+    `my_np${'m'}_${repeat('n', 36)}`,
+  ])('finds no npm token in the ordinary text %j', (text) => {
+    expect(findSecretMaterialRule(text)).toBeNull();
+    expect(findSharedTextCredentialRule(text)).toBeNull();
+    expect(findPackageTextCredentialRule(text)).toBeNull();
+  });
+
+  it('refuses a skill holding a bare npm token, naming the rule and never the token', () => {
+    const sentinel = `np${'m'}_${repeat('P', 36)}`;
+    const finding = scanSharedSkillForSecrets({
+      skillName: 'publish-helper',
+      files: [
+        {
+          path: 'SKILL.md',
+          text: '---\nname: publish-helper\n---\nPublish.\n',
+        },
+        { path: 'notes/publish.md', text: `Publish with ${sentinel}.` },
+      ],
+    });
+    expect(finding).toEqual({
+      skillName: 'publish-helper',
+      file: 'notes/publish.md',
+      rule: 'npm_token',
+    });
+    if (finding === null) throw new Error('expected a finding');
+    const message = sharedSkillSecretMessage(finding);
+    expect(message).toContain('(an npm token in notes/publish.md)');
+    expect(message).not.toContain(sentinel);
   });
 
   it('ignores named placeholders but still reports env and URL credentials', () => {
@@ -643,6 +684,44 @@ describe('package definition documents are checked as the desktop checks them (C
     });
   });
 
+  // A bare npm token outside any credential field is caught by the token
+  // rule alone. Like any literal token, it is refused where the definition
+  // is written or shared and where a stored one is read.
+  it('refuses a definition holding a bare npm token, never echoing it', () => {
+    const npmToken = `np${'m'}_${repeat('D', 36)}`;
+    const bytes = new TextEncoder().encode(
+      new TextDecoder()
+        .decode(definitionBytes('${{ secrets.GITHUB_TOKEN }}'))
+        .replace('run: deploy', `run: echo ${npmToken}`),
+    );
+    expect(new TextDecoder().decode(bytes)).toContain(npmToken);
+    expect(parseSharedContainerDefinitionDocument(bytes).ok).toBe(false);
+    const result = parseSharedContainerDefinitionDocument(bytes, written);
+    if (result.ok) throw new Error('expected a refusal');
+    expect(result.errors.join('\n')).toContain('pipeline_definition.yaml');
+    expect(result.errors.join('\n')).not.toContain(npmToken);
+    expect(findPackageEntryCredential(entry(bytes))).toMatchObject({
+      rule: DEFINITION_CREDENTIAL_RULE,
+      field: 'pipeline_definition.yaml',
+    });
+  });
+
+  it('passes a definition that only uses npm and its own variables', () => {
+    const bytes = new TextEncoder().encode(
+      new TextDecoder()
+        .decode(definitionBytes('${{ secrets.GITHUB_TOKEN }}'))
+        .replace(
+          'run: deploy',
+          'run: npm publish --registry $npm_config_registry',
+        ),
+    );
+    expect(parseSharedContainerDefinitionDocument(bytes).ok).toBe(true);
+    expect(parseSharedContainerDefinitionDocument(bytes, written).ok).toBe(
+      true,
+    );
+    expect(findPackageEntryCredential(entry(bytes))).toBeNull();
+  });
+
   it('falls back to the file check for a definition that does not validate, so it is never left unscanned', () => {
     const bytes = new TextEncoder().encode(
       JSON.stringify({ kind: 'pipeline_definition', note: `use ${token}` }),
@@ -867,7 +946,7 @@ describe('package definition documents are checked as the desktop checks them (C
 // Coverage, by the regex each input aims at:
 // - SECRET_RULES (capability-files, both profiles): private key, jwt (prefix
 //   and dotted runs), github_pat_, gh*_ token, xox*, AKIA, sk-, auth headers,
-//   Bearer, the two credential_assignment forms.
+//   Bearer, the two credential_assignment forms, npm_.
 // - Shared placeholder neutralization (SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN
 //   and NAMED_PLACEHOLDER_PATTERN): every arm, <…>, ${{…}}, {{…}}, $(…),
 //   nested $($(…)), $VAR, ${VAR}, env.VAR.
@@ -890,6 +969,7 @@ const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['slack', 'xoxb'],
   ['aws', 'AKIA'],
   ['sk prefix', 'sk-'],
+  ['npm token', 'npm_'],
   ['auth header', 'Authorization '],
   ['bearer', 'Bearer '],
   ['credential colon', '"token" '],
@@ -918,26 +998,38 @@ const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['url placeholder password', 'a://b:<eyJa'],
 ];
 
-const LINEAR_CEILING_MS = 3_000;
+// Growth, not wall time (CAN-7592): a loaded runner slows both timings
+// alike, so their ratio holds where a 3 s ceiling failed linear code. The
+// step-count goldens below remain the exact growth guards; this catches a
+// slide of about 16 times over linear, and a milder super-linear term passes.
+const SMALL_DIVISOR = 256;
+const LINEAR_GROWTH_LIMIT = 16;
 
-// The fastest of up to three runs, so one stall on a loaded runner can't fail
-// a linear-time ceiling (CAN-7343). It stops at the first run under the
-// ceiling, which gives the same verdict as the minimum of all three.
-function fastestOfThree(run: () => unknown): number {
-  let fastest = Number.POSITIVE_INFINITY;
+// The full input's time over the time of SMALL_DIVISOR runs of an input
+// SMALL_DIVISOR times smaller: about 1 when linear (up to about 8 from cache
+// effects at 4 MiB), about SMALL_DIVISOR when quadratic. Both timings cover
+// the same amount of text, so a short run can't escape the runner's load
+// that a long one shares. Up to three attempts keep the best of each and stop
+// at the first under the limit, so one stall can't fail it.
+function growthOverLinear(small: () => unknown, full: () => unknown): number {
+  let smallBest = Number.POSITIVE_INFINITY;
+  let fullBest = Number.POSITIVE_INFINITY;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const started = performance.now();
-    run();
-    fastest = Math.min(fastest, performance.now() - started);
-    if (fastest < LINEAR_CEILING_MS) break;
+    let started = performance.now();
+    for (let run = 0; run < SMALL_DIVISOR; run += 1) small();
+    smallBest = Math.min(smallBest, performance.now() - started);
+    started = performance.now();
+    full();
+    fullBest = Math.min(fullBest, performance.now() - started);
+    if (fullBest / smallBest <= LINEAR_GROWTH_LIMIT) break;
   }
-  return fastest;
+  return fullBest / smallBest;
 }
 
 describe('every regex in both profiles stays linear (CAN-7226)', () => {
   const MAX = PIPELINE_PACKAGE_MAX_FILE_BYTES;
-  const fillMax = (unit: string): string =>
-    unit.repeat(Math.ceil(MAX / unit.length)).slice(0, MAX);
+  const fill = (unit: string, size: number): string =>
+    unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
   const encoder = new TextEncoder();
   const PROFILES = [
     ['shared', findSharedTextCredentialRule],
@@ -957,9 +1049,15 @@ describe('every regex in both profiles stays linear (CAN-7226)', () => {
   )(
     '%s profile stays linear on %s at the maximum file size',
     (_profile, _label, unit, check) => {
-      const text = fillMax(unit);
+      const text = fill(unit, MAX);
+      const small = fill(unit, MAX / SMALL_DIVISOR);
       expect(text.length).toBe(MAX);
-      expect(fastestOfThree(() => check(text))).toBeLessThan(LINEAR_CEILING_MS);
+      expect(
+        growthOverLinear(
+          () => check(small),
+          () => check(text),
+        ),
+      ).toBeLessThanOrEqual(LINEAR_GROWTH_LIMIT);
     },
   );
 });
@@ -968,6 +1066,9 @@ describe('every regex in both profiles stays linear (CAN-7226)', () => {
 // adversarial pipeline YAML near its 1 MiB limit.
 describe('the package definition path stays linear (CAN-7226)', () => {
   const YAML_SIZE = 1_000_000;
+  const encoder = new TextEncoder();
+  const check = (bytes: Uint8Array) => (): unknown =>
+    findPackageEntryCredential({ definitionDocument: true, bytes });
   it.each([
     ['angle placeholders', 'token: <'],
     ['brace placeholders', 'token: {{'],
@@ -975,32 +1076,37 @@ describe('the package definition path stays linear (CAN-7226)', () => {
     ['url placeholder passwords', 'a://b:<eyJa'],
     ['env assignments', 'API_KEY '],
   ])('stays linear on %s', (_label, unit) => {
-    const yaml = unit
-      .repeat(Math.ceil(YAML_SIZE / unit.length))
-      .slice(0, YAML_SIZE);
-    const bytes = new TextEncoder().encode(
-      JSON.stringify({
-        version: 1,
-        kind: 'pipeline_definition',
-        references: [],
-        name: 'deploy',
-        yaml,
-      }),
-    );
+    const definition = (size: number): Uint8Array =>
+      encoder.encode(
+        JSON.stringify({
+          version: 1,
+          kind: 'pipeline_definition',
+          references: [],
+          name: 'deploy',
+          yaml: unit.repeat(Math.ceil(size / unit.length)).slice(0, size),
+        }),
+      );
     expect(
-      fastestOfThree(() =>
-        findPackageEntryCredential({ definitionDocument: true, bytes }),
+      growthOverLinear(
+        check(definition(Math.floor(YAML_SIZE / SMALL_DIVISOR))),
+        check(definition(YAML_SIZE)),
       ),
-    ).toBeLessThan(LINEAR_CEILING_MS);
+    ).toBeLessThanOrEqual(LINEAR_GROWTH_LIMIT);
   });
   it('stays linear on a non-definition JSON of many strings through the decoded fallback', () => {
-    const strings = Array.from({ length: 100_000 }, () => 'token: <eyJa.');
-    const bytes = new TextEncoder().encode(JSON.stringify({ strings }));
+    const STRINGS = 100_000;
+    const strings = (count: number): Uint8Array =>
+      encoder.encode(
+        JSON.stringify({
+          strings: Array.from({ length: count }, () => 'token: <eyJa.'),
+        }),
+      );
     expect(
-      fastestOfThree(() =>
-        findPackageEntryCredential({ definitionDocument: true, bytes }),
+      growthOverLinear(
+        check(strings(Math.floor(STRINGS / SMALL_DIVISOR))),
+        check(strings(STRINGS)),
       ),
-    ).toBeLessThan(LINEAR_CEILING_MS);
+    ).toBeLessThanOrEqual(LINEAR_GROWTH_LIMIT);
   });
 });
 
@@ -1457,5 +1563,105 @@ describe('placeholder patterns stay bounded in source (CAN-7343)', () => {
     expect(lazyCodeLines(' * a lazy `[\\s\\S]*?` in a comment')).toEqual([]);
     expect(() => secretScanArms('')).toThrow(/can't find/);
     expect(() => capabilityArms('')).toThrow(/can't find/);
+  });
+});
+
+describe('one member file check for a shared skill or plugin, on desktop and hosted (CAN-7482)', () => {
+  const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
+  const TOKEN_TAIL = 'Q'.repeat(30);
+  const PASSWORD = `pw${'Z'.repeat(12)}`;
+  type MemberRule = ReturnType<typeof findSharedMemberFileCredentialRule>;
+  // Each file, what the package profile alone finds, and what the member
+  // check finds. The member check differs only where the package profile
+  // finds nothing.
+  const MEMBER_FILES: readonly (readonly [
+    string,
+    string,
+    SecretMaterialRule | null,
+    MemberRule,
+  ])[] = [
+    ['plain notes', 'Deploy with the release script.\n', null, null],
+    [
+      'a token',
+      `token: gh${'p'}_${TOKEN_TAIL}\n`,
+      'github_token',
+      'github_token',
+    ],
+    [
+      'a credential variable',
+      `Run with NPM_TOKEN=${PASSWORD} set.\n`,
+      null,
+      'env_assignment',
+    ],
+    [
+      'a password in a URL',
+      `Connect to postgres://admin:${PASSWORD}@db/app.\n`,
+      null,
+      'url_credentials',
+    ],
+    [
+      'a password in a URL behind JSON escapes',
+      `{"database":"postgres:\\/\\/admin:${PASSWORD}@db\\/app"}\n`,
+      null,
+      'url_credentials',
+    ],
+    [
+      'a unicode-escaped password key in JSON',
+      `{"\\u0070assword":${'7'.repeat(12)}}\n`,
+      null,
+      'credential_assignment',
+    ],
+    [
+      'a token behind a unicode escape in YAML',
+      `run: "deploy with gh\\u0070_${TOKEN_TAIL}"\n`,
+      null,
+      'github_token',
+    ],
+    [
+      'JSON too deeply nested to check',
+      `${'['.repeat(20_000)}${']'.repeat(20_000)}\n`,
+      null,
+      'unreadable',
+    ],
+  ];
+
+  it.each(MEMBER_FILES)(
+    'names the rule for %s, and the package profile alone finds only what it finds',
+    (_label, text, packageRule, memberRule) => {
+      const bytes = encode(text);
+      expect(findPackageFileCredentialRule(bytes)).toBe(packageRule);
+      expect(findSharedMemberFileCredentialRule(bytes)).toBe(memberRule);
+    },
+  );
+
+  it('runs the package profile first, so it never misses what a package upload refuses', () => {
+    for (const [, text] of SAMPLES) {
+      const bytes = encode(`before ${text} after`);
+      const packageRule = findPackageFileCredentialRule(bytes);
+      expect(packageRule).not.toBeNull();
+      expect(findSharedMemberFileCredentialRule(bytes)).toBe(packageRule);
+    }
+  });
+
+  it('reads bytes that are not UTF-8 leniently, as the package profile does', () => {
+    const bytes = new Uint8Array([
+      0xff,
+      0xfe,
+      0x00,
+      ...encode(` NPM_TOKEN=${PASSWORD}\n`),
+    ]);
+    expect(findPackageFileCredentialRule(bytes)).toBeNull();
+    expect(findSharedMemberFileCredentialRule(bytes)).toBe('env_assignment');
+  });
+
+  it('decodes text escapes into a copy, or gives null when there are none', () => {
+    expect(escapeDecodedCopy('no escapes here')).toBeNull();
+    expect(escapeDecodedCopy('a\\u0070b\\x41c\\/d\\U0001F600')).toBe(
+      'apbAc/d\u{1F600}',
+    );
+    expect(escapeDecodedCopy('bad \\U00110000 and \\u0070')).toBe(
+      'bad \\U00110000 and p',
+    );
+    expect(escapeDecodedCopy('only \\U00110000')).toBeNull();
   });
 });

@@ -16,3 +16,4 @@ export {
   type ProjectDeletionDiscardView,
   type ProjectDeletionItemDiscarded,
 } from './project-deletion-store';
+export { worktreeRecoveryHostOutdatedMessage } from './host-outdated';

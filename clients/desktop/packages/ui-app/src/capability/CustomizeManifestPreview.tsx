@@ -7,7 +7,6 @@ import type {
   PluginManifestPreview,
   PluginManifestPreviewResult,
 } from '@canopy/protocol/plugins';
-import { customizeWorksWithRows } from '@canopy/ui-shared/components';
 import { WORKS_WITH_LEVELS } from '@canopy/ui-shared/lib';
 import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib/unified-plugin-entry';
 
@@ -52,25 +51,6 @@ export function customizeEntryWithManifestPreview(
   };
 }
 
-/**
- * Whether a page has anything left for a preview to settle: a harness
- * still unknown, or Contents no installed copy has read yet (a listing's
- * own names may be only part of what the repository holds).
- */
-function needsPreview(entry: UnifiedPluginEntry): boolean {
-  if (entry.kind !== 'plugin' || entry.state !== 'available') return false;
-  const copyRead = (entry.marketplaceListings ?? []).some(
-    (listing) =>
-      listing.state === 'installed' || listing.state === 'needs-auth',
-  );
-  return (
-    !copyRead ||
-    customizeWorksWithRows(entry).some(
-      (row) => row.installation === 'Unknown until added',
-    )
-  );
-}
-
 type PreviewRead =
   | { readonly key: string; readonly phase: 'checking' }
   | {
@@ -80,18 +60,33 @@ type PreviewRead =
     };
 
 /**
- * Reads a plugin's light preview once per page, while anything is still
- * unknown, and hands the page the entry with what it read. `checking` is
- * true while the read is out; a failed read changes nothing, so the
+ * Reads a light preview once per not-added plugin page, even when a copy
+ * already filled Works with and Contents (it may not have the README).
+ * `checking` is true while the read is out; a failed read changes nothing, so the
  * marketplace's own harness stays supported and the rest Unknown until added.
  */
 export function CustomizeManifestPreview({
   entry,
   load,
   enabled = true,
+  sourceKey = '',
+  notAddedYet = entry.state === 'available',
   children,
 }: {
   entry: UnifiedPluginEntry;
+  /**
+   * Whether the plugin is not added yet, when the host knows better than the
+   * entry's state (a curated plugin whose content is on disk reads
+   * `installed` before any harness has it). The summary, this read and the
+   * checkout reader share the host's one answer.
+   */
+  notAddedYet?: boolean;
+  /**
+   * The plugin's source as the host knows it (marketplace, name, where its
+   * files come from). A read is for one source: when it changes under the
+   * same entry, the read out or settled is dropped and a new one starts.
+   */
+  sourceKey?: string;
   /** Off (New Customize off): no read, the entry as it is. */
   enabled?: boolean;
   /** The host's preview read; `null` when it couldn't answer. */
@@ -102,8 +97,9 @@ export function CustomizeManifestPreview({
     preview: PluginManifestPreview | undefined,
   ) => ReactNode;
 }): JSX.Element {
-  const wanted = enabled && needsPreview(entry);
-  const key = entry.id;
+  const wanted = enabled && entry.kind === 'plugin' && notAddedYet;
+  // Fixed before the read goes out; a late answer for another key is dropped.
+  const key = JSON.stringify([entry.id, sourceKey]);
   const [read, setRead] = useState<PreviewRead | null>(null);
   const loader = useRef(load);
   useEffect(() => {
@@ -133,7 +129,7 @@ export function CustomizeManifestPreview({
       cancelled = true;
     };
   }, [key, wanted]);
-  const current = read?.key === key ? read : null;
+  const current = wanted && read?.key === key ? read : null;
   const checking = wanted && (current === null || current.phase === 'checking');
   const shown =
     current?.phase === 'done' && current.preview

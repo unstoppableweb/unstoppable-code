@@ -1,4 +1,6 @@
 import type { JSX } from 'react';
+import { useContinuousMotion } from '../lib/continuous-motion';
+import { Dot } from './Badge';
 import { ThinkingSpinner } from './ThinkingSpinner';
 import { Tooltip } from './Tooltip';
 
@@ -20,11 +22,14 @@ export interface AgentStateGlyphProps {
   backgroundTasks?: number;
   /** `row`: a sidebar row's 24px status slot; `inline`: its own size. */
   slot?: 'row' | 'inline';
-  /** The spinner's own size, to match the glyphs it alternates with. */
+  /**
+   * The working spinner's own size, to match the glyphs it alternates with.
+   * The background dot keeps its 6px size.
+   */
   sizePx?: number;
   /**
    * The chat has output the user hasn't viewed. A tab has no separate unread
-   * dot, so its spinner carries the unread ink, as the working one does.
+   * dot, so its glyph carries the unread ink.
    */
   unread?: boolean;
   /**
@@ -41,10 +46,9 @@ const SLOT_CLASS_NAMES = {
 } as const;
 
 /**
- * The accent spinner while a turn runs, the neutral one while only background
- * work does. The two differ only in ink at rest, an intentional DESIGN.md
- * deviation for rows and tabs, so the tooltip and accessible name carry the
- * difference.
+ * The accent spinner while a turn runs; a pulsing grey dot while only
+ * background work does (a grey ring under reduced motion), so the two differ
+ * in shape, not only in ink.
  */
 export function AgentStateGlyph({
   state,
@@ -55,16 +59,35 @@ export function AgentStateGlyph({
   tooltip = true,
   testId,
 }: AgentStateGlyphProps): JSX.Element {
+  // The blink pauses offscreen and in hidden windows, as the spinner does.
+  const pulseRef = useContinuousMotion<HTMLSpanElement>(state === 'background');
   const label =
     state === 'working' ? 'Working' : backgroundTasksLabel(backgroundTasks);
-  const spinner = (
-    <span className="inline-flex h-3 w-3 items-center justify-center">
-      <ThinkingSpinner
-        tone={unread ? 'unread' : state === 'working' ? 'accent' : 'tertiary'}
-        sizePx={sizePx}
-      />
-    </span>
-  );
+  const spinner =
+    state === 'working' ? (
+      <span className="inline-flex h-3 w-3 items-center justify-center">
+        <ThinkingSpinner tone={unread ? 'unread' : 'accent'} sizePx={sizePx} />
+      </span>
+    ) : (
+      <>
+        {/* The blink rides on the wrapper: the dot itself takes no restyle. */}
+        <span
+          ref={pulseRef}
+          className="canopy-background-pulse inline-flex h-3 w-3 items-center justify-center motion-reduce:hidden"
+        >
+          <Dot tone={unread ? 'unread' : 'filter'} />
+        </span>
+        {/* Without the blink a solid dot would match an idle row's, so
+            reduced motion draws the ring instead: a still, different shape. */}
+        <span className="hidden h-3 w-3 items-center justify-center motion-reduce:inline-flex">
+          <Dot
+            tone={unread ? 'unread' : 'filter'}
+            variant="ring"
+            size="large"
+          />
+        </span>
+      </>
+    );
   if (!tooltip) {
     return (
       <span
@@ -80,7 +103,7 @@ export function AgentStateGlyph({
   return (
     <Tooltip label={label}>
       {/* An image role names the glyph by its state and hides the
-          spinner's own "Thinking" name from assistive technology. */}
+          working spinner's own "Thinking" name from assistive technology. */}
       <span
         className={SLOT_CLASS_NAMES[slot]}
         role="img"

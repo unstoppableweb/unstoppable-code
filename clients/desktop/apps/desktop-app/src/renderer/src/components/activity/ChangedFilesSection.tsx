@@ -26,6 +26,8 @@ import type {
   FileTreeRoot,
 } from '@canopy/desktop-shared/types';
 import { Button, HeaderActionButton } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import {
   ChangesIcon,
   ChangeDiagramIcon,
@@ -464,6 +466,9 @@ export function useChangedFilesSectionHostModel({
     [turnDiff, liveChangedFiles],
   );
   const [revertError, setRevertError] = useState<string | null>(null);
+  // Main already recorded that revert IPC failure, so the dialog does not
+  // record it again. Reset with `revertError`.
+  const [revertErrorRecorded, setRevertErrorRecorded] = useState(false);
   const [actionTarget, setActionTarget] =
     useState<ChangedFileActionTarget | null>(null);
   const contextMenuRequestRef = useRef(0);
@@ -591,6 +596,7 @@ export function useChangedFilesSectionHostModel({
       if (!file) return;
       setRevertTarget(file);
       setRevertError(null);
+      setRevertErrorRecorded(false);
     },
     [changedFiles.uncommitted],
   );
@@ -598,12 +604,14 @@ export function useChangedFilesSectionHostModel({
   const handleRevertCancel = useCallback((): void => {
     setRevertTarget(null);
     setRevertError(null);
+    setRevertErrorRecorded(false);
   }, []);
 
   const handleRevertConfirm = useCallback((): void => {
     if (!revertTarget) return;
     setReverting(true);
     setRevertError(null);
+    setRevertErrorRecorded(false);
     void window.api.activity
       .revertFile({
         projectId,
@@ -627,6 +635,9 @@ export function useChangedFilesSectionHostModel({
         });
       })
       .catch((error: unknown) => {
+        setRevertErrorRecorded(
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+        );
         setRevertError(
           error instanceof Error ? error.message : 'Failed to revert file',
         );
@@ -719,6 +730,7 @@ export function useChangedFilesSectionHostModel({
             worktreeId={worktreeId}
             reverting={reverting}
             error={revertError}
+            errorRecorded={revertErrorRecorded}
             onConfirm={handleRevertConfirm}
             onCancel={handleRevertCancel}
           />

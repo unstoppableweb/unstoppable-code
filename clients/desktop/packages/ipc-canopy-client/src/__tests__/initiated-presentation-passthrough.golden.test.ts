@@ -91,6 +91,7 @@ function harness(replies: Record<string, () => unknown>): Harness {
       overviewNotifications: true,
       worktreeRecovery: true,
       worktreeRecoveryResolution: true,
+      worktreeRecoveryReads: true,
     },
     appAdvisorTransport: transport,
     uploadFile: (fileName) => Promise.resolve(`/uploads/${fileName}`),

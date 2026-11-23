@@ -26,6 +26,7 @@ import { validateId } from '@canopy/core-runtime/node/identifiers';
 import {
   createWorkerScriptHandlers,
   createWorkerScriptStreamHandlers,
+  isScriptRunChildIdentified,
   ScriptExecutionWorker,
   scriptContextDirectory,
   scriptContextUnavailableError,
@@ -152,6 +153,7 @@ export function daemonScriptRunWriterFence(
 ): ScriptRunWriterFence {
   let self: Promise<ScriptRunWriter | null> | undefined;
   return {
+    spawner: 'daemon',
     self: (): Promise<ScriptRunWriter | null> => {
       self ??= supervision
         .inspectProcess({ pid: process.pid })
@@ -199,7 +201,7 @@ export function daemonScriptRunWriterFence(
       // the run orphaned while it runs, and never reaps it.
       return found?.state === 'absent' ? null : { pid };
     },
-    reapChild: async (child): Promise<ScriptRunChildReap> => {
+    reapChild: async (child, options): Promise<ScriptRunChildReap> => {
       if (!supervision.identifyProcess) {
         const seen = await supervision.inspectProcess({ pid: child.pid });
         return seen.state === 'absent' ? 'gone' : 'unproven';
@@ -232,6 +234,8 @@ export function daemonScriptRunWriterFence(
         found.executablePath !== child.executablePath
       )
         return 'unproven';
+      // A proven run another host started is left running (CAN-7517).
+      if (options?.signal === false) return 'unproven';
       try {
         process.kill(-child.processGroupId, 'SIGKILL');
       } catch (error) {
@@ -243,8 +247,12 @@ export function daemonScriptRunWriterFence(
       }
       return 'reaped';
     },
+    // Never a signal by PID alone (CAN-7520).
+    refusesUnidentifiedStop: true,
     stopChild: (child, mode): Promise<ScriptRunChildStop> =>
-      stopScriptRunChild({ child, mode, supervision }),
+      isScriptRunChildIdentified(child)
+        ? stopScriptRunChild({ child, mode, supervision })
+        : Promise.resolve('unverifiable'),
     listGroup: (child, runStartedAtMs, runId): Promise<ScriptRunGroupListing> =>
       listScriptRunGroup({ child, runStartedAtMs, runId, supervision }),
     stopGroup: (

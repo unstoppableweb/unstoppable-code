@@ -377,6 +377,7 @@ export function ProjectDeletionRecoverySpecimen(): JSX.Element {
               ? "Couldn't delete the project. Check again before continuing."
               : null
           }
+          errorRecordingDisabled
           onConfirm={close}
           onCancel={close}
         />

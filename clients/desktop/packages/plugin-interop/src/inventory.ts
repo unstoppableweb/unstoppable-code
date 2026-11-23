@@ -344,26 +344,35 @@ function mcpServerRecords(
   return isRecord(config.mcpServers) ? config.mcpServers : config;
 }
 
+/** One MCP server definition as an inventory member; null when it has neither. */
+export function pluginMcpServerMember(
+  name: string,
+  definition: unknown,
+): PluginMcpServerMember | null {
+  if (!isRecord(definition)) return null;
+  const args = readStringArray(definition.args);
+  if (
+    (definition.type === 'http' || definition.command === undefined) &&
+    typeof definition.url === 'string'
+  )
+    return { name, type: 'http', url: definition.url };
+  if (typeof definition.command === 'string')
+    return {
+      name,
+      type: 'command',
+      command: definition.command,
+      ...(args ? { args } : {}),
+    };
+  return null;
+}
+
 function extractMcpServers(
   config: Readonly<Record<string, unknown>>,
 ): PluginMcpServerMember[] {
   const results: PluginMcpServerMember[] = [];
   for (const [name, definition] of Object.entries(mcpServerRecords(config))) {
-    if (!isRecord(definition)) continue;
-    const args = readStringArray(definition.args);
-    if (
-      (definition.type === 'http' || definition.command === undefined) &&
-      typeof definition.url === 'string'
-    ) {
-      results.push({ name, type: 'http', url: definition.url });
-    } else if (typeof definition.command === 'string') {
-      results.push({
-        name,
-        type: 'command',
-        command: definition.command,
-        ...(args ? { args } : {}),
-      });
-    }
+    const member = pluginMcpServerMember(name, definition);
+    if (member) results.push(member);
   }
   return results;
 }
@@ -389,14 +398,15 @@ function extractLspServers(
     }
     const args = readStringArray(definition.args);
     const extensionToLanguage = definition.extensionToLanguage;
-    const languages: string[] = [];
+    // A Set keeps the first occurrence order and stays linear for a
+    // publisher-supplied map with many distinct languages.
+    const unique = new Set<string>();
     if (isRecord(extensionToLanguage)) {
       for (const language of Object.values(extensionToLanguage)) {
-        if (typeof language === 'string' && !languages.includes(language)) {
-          languages.push(language);
-        }
+        if (typeof language === 'string') unique.add(language);
       }
     }
+    const languages = [...unique];
     results.push({
       name,
       command: definition.command,

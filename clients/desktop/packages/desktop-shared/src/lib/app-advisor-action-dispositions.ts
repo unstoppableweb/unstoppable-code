@@ -692,36 +692,6 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     executor: 'credentials',
     requiresInterface: true,
   }),
-  // CAN-7298: legacy aliases of remote_control.open_dialog / close_dialog
-  // (and settings.open), run through the shared engine. CAN-7345 removes them.
-  'canopy_portal.close': Object.freeze({
-    kind: 'host_presentation',
-    executor: 'shared-engine',
-  }),
-  'canopy_portal.open': Object.freeze({
-    kind: 'host_presentation',
-    executor: 'shared-engine',
-  }),
-  'canopy_portal.open_account_settings': Object.freeze({
-    kind: 'host_presentation',
-    executor: 'shared-engine',
-  }),
-  'canopy_portal.start': Object.freeze({
-    kind: 'core',
-    access: 'write',
-    executor: 'remote-access',
-    grants: Object.freeze(['core.remoteAccess.write'] as const),
-    revision: 'none',
-    requiresInterface: true,
-  }),
-  'canopy_portal.stop': Object.freeze({
-    kind: 'core',
-    access: 'write',
-    executor: 'remote-access',
-    grants: Object.freeze(['core.remoteAccess.write'] as const),
-    revision: 'none',
-    requiresInterface: true,
-  }),
   'chat.content.read': Object.freeze({
     kind: 'core',
     access: 'read',

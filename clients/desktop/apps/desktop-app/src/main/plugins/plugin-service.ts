@@ -1,4 +1,13 @@
 import * as fs from 'fs';
+import {
+  BUILT_IN_PLUGIN_MARKETPLACE_REQUIRED_MESSAGE,
+  CLAUDE_FACET_UNAVAILABLE_MESSAGE,
+  CODEX_FACET_UNAVAILABLE_MESSAGE,
+  PLUGIN_NOT_IN_MARKETPLACE_MESSAGE,
+  PLUGIN_PROVIDER_REQUIRED_MESSAGE,
+  PLUGIN_UNINSTALL_PENDING_MESSAGE,
+  UNKNOWN_PLUGIN_PROVIDER_MESSAGE,
+} from '@canopy/protocol/plugins/remote-install';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as os from 'os';
@@ -96,8 +105,15 @@ import {
   chatStorageScopeIds,
   readChatStorageDiscoveryIndex,
 } from '../lib/chat-storage-discovery';
-import { parseFrontmatterAndBody } from '../lib/frontmatter';
-import { isPathInside } from '../lib/path-safety';
+import {
+  parseCatalogFrontmatterAndBody,
+  parseFrontmatterAndBody,
+} from '../lib/frontmatter';
+import {
+  ContainedPathRefusedError,
+  isPathInside,
+  withContainedFile,
+} from '../lib/path-safety';
 import { parseGitHubSource } from '../skills/source-parser';
 import {
   addCodexMarketplace as addCodexMarketplaceUnchecked,
@@ -5269,11 +5285,12 @@ export async function setCodexCompatDisabled(
   }
 }
 
-export function readComponentContent(
+export async function readComponentContent(
   installLocation: string,
   pluginSourcePath: string,
   componentFile: string,
-): IPCResult<PluginComponentContent> {
+  mode?: 'catalog-checkout',
+): Promise<IPCResult<PluginComponentContent & { truncated?: true }>> {
   try {
     if (typeof installLocation !== 'string' || !installLocation) {
       return { success: false, error: 'Missing install location.' };
@@ -5312,6 +5329,64 @@ export function readComponentContent(
     const filePath = path.resolve(pluginDir, componentFile);
     if (!isPathInside(pluginDir, filePath)) {
       return { success: false, error: 'Invalid component path.' };
+    }
+    if (mode === 'catalog-checkout') {
+      // Anchor the entire walk at the registered root that holds the caller's
+      // location, not at that location: any directory between the registered
+      // checkout and the plugin, or the caller's location itself, might be a
+      // link. The outermost registered root wins, so a plugin folder the
+      // catalog also trusts never shortens the walk.
+      let containmentRoot: string | null = null;
+      for (const root of [...knownRoots, cacheRoot]) {
+        if (
+          isPathInside(root, resolvedLocation) &&
+          (containmentRoot === null || isPathInside(root, containmentRoot))
+        ) {
+          containmentRoot = root;
+        }
+      }
+      if (containmentRoot === null) {
+        return { success: false, error: 'Invalid install location.' };
+      }
+      try {
+        const limit = 256 * 1024;
+        const data = await withContainedFile(
+          containmentRoot,
+          filePath,
+          async (
+            handle,
+          ): Promise<PluginComponentContent & { truncated?: true }> => {
+            const bytes = Buffer.alloc(limit + 1);
+            let length = 0;
+            while (length < bytes.length) {
+              const { bytesRead } = await handle.read(
+                bytes,
+                length,
+                bytes.length - length,
+                length,
+              );
+              if (bytesRead === 0) break;
+              length += bytesRead;
+            }
+            const truncated = length > limit;
+            const raw = new TextDecoder().decode(
+              bytes.subarray(0, Math.min(length, limit)),
+              { stream: truncated },
+            );
+            return {
+              ...parseCatalogFrontmatterAndBody(raw),
+              ...(truncated ? { truncated: true } : {}),
+            };
+          },
+        );
+        return { success: true, data };
+      } catch (error) {
+        if (error instanceof ContainedPathRefusedError)
+          return { success: false, error: 'Invalid component path.' };
+        if (isErrnoException(error) && error.code === 'ENOENT')
+          return { success: false, error: 'Component file not found.' };
+        throw error;
+      }
     }
     if (!fs.existsSync(filePath)) {
       return { success: false, error: 'Component file not found.' };
@@ -5600,16 +5675,15 @@ async function installBuiltInPluginUnlocked(
     if (!marketplaceId || !target) {
       return {
         success: false,
-        error:
-          'Built-in plugin installs require the built-in or curated marketplace.',
+        error: BUILT_IN_PLUGIN_MARKETPLACE_REQUIRED_MESSAGE,
       };
     }
     const providerValues = Array.from(new Set(request.providers));
     if (providerValues.length === 0) {
-      return { success: false, error: 'At least one provider is required.' };
+      return { success: false, error: PLUGIN_PROVIDER_REQUIRED_MESSAGE };
     }
     if (!providerValues.every(isPluginProvider)) {
-      return { success: false, error: 'Unknown plugin provider requested.' };
+      return { success: false, error: UNKNOWN_PLUGIN_PROVIDER_MESSAGE };
     }
     const providers: PluginProvider[] = providerValues;
 
@@ -5623,7 +5697,7 @@ async function installBuiltInPluginUnlocked(
     const marketplace = await scanManagedMarketplace(marketplaceId);
     const plugin = findBuiltInPlugin(marketplace, pluginName);
     if (!marketplace || !plugin) {
-      return { success: false, error: 'Plugin not found in the marketplace.' };
+      return { success: false, error: PLUGIN_NOT_IN_MARKETPLACE_MESSAGE };
     }
 
     const providerOutcomes: InstallBuiltInPluginResult['providerOutcomes'] = {};
@@ -5640,7 +5714,7 @@ async function installBuiltInPluginUnlocked(
             pluginName: plugin.facets.claude.name,
             ...target,
           })
-        : { installed: false, error: 'Claude facet is unavailable.' };
+        : { installed: false, error: CLAUDE_FACET_UNAVAILABLE_MESSAGE };
     }
     if (providers.includes('codex')) {
       providerOutcomes.codex = plugin.facets.codex
@@ -5648,7 +5722,7 @@ async function installBuiltInPluginUnlocked(
             pluginName: plugin.facets.codex.name,
             ...target,
           })
-        : { installed: false, error: 'Codex facet is unavailable.' };
+        : { installed: false, error: CODEX_FACET_UNAVAILABLE_MESSAGE };
     }
 
     const successes = Object.values(providerOutcomes).filter(
@@ -5963,7 +6037,7 @@ export function installPlugin(
       if (await pluginUninstallPending(args[0], args[1])) {
         return {
           success: false,
-          error: 'Finish uninstalling this plugin before adding it again.',
+          error: PLUGIN_UNINSTALL_PENDING_MESSAGE,
         };
       }
       const result = await installPluginUnlocked(...args);
@@ -5993,7 +6067,7 @@ export function installBuiltInPlugin(
       ) {
         return {
           success: false,
-          error: 'Finish uninstalling this plugin before adding it again.',
+          error: PLUGIN_UNINSTALL_PENDING_MESSAGE,
         };
       }
       const result = await installBuiltInPluginUnlocked(...args);

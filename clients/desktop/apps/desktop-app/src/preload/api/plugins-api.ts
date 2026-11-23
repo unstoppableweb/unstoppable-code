@@ -34,12 +34,14 @@ export function createPluginsAPI(): PluginsAPI {
       installLocation: string,
       pluginSourcePath: string,
       componentFile: string,
+      mode?: 'catalog-checkout',
     ) =>
       ipcRenderer.invoke(
         PLUGINS_CHANNELS.READ_COMPONENT,
         installLocation,
         pluginSourcePath,
         componentFile,
+        ...(mode ? [mode] : []),
       ),
     previewManifest: (marketplaceId: string, pluginName: string) =>
       ipcRenderer.invoke(

@@ -12,6 +12,11 @@ import {
   type RefObject,
   type UIEventHandler,
 } from 'react';
+import {
+  AppErrorClassSchema,
+  AppErrorErrnoSchema,
+  createAppError,
+} from '@canopy/protocol/app-errors';
 import type { RemoteControlFileReadPayload } from '@canopy/protocol/remote-control/shell';
 import {
   fileViewerKey,
@@ -39,6 +44,7 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '@canopy/ui-shared/lib/replay-privacy';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import type { FileLinkLineLocation } from '@canopy/ui-shared/lib/file-link-line-suffix';
 import { isShortcutEvent } from '../../find/shortcut-target';
 import { FileReadOnlyCode } from './FileReadOnlyCode';
@@ -120,7 +126,12 @@ export type FileDocumentRenderFailure =
   | 'password-protected'
   | 'corrupt'
   /** The host parser could not convert the bytes (REG-2903 upgrades this seam). */
-  | 'parse-failed';
+  | 'parse-failed'
+  /**
+   * The preview's parser crashed or hit a defect. Shows the `parse-failed`
+   * card; unlike the others, it is recorded.
+   */
+  | 'worker-defect';
 
 export interface FileRichDocumentSlot {
   readonly bytes: ArrayBuffer;
@@ -128,7 +139,11 @@ export interface FileRichDocumentSlot {
   readonly displayName: string;
   /** Selects the host renderer without re-sniffing the file. */
   readonly renderKind: RichDocumentRenderKind | 'image';
-  readonly onRenderFailure: (failure: FileDocumentRenderFailure) => void;
+  /** `error` accompanies a `worker-defect`, for the viewer to record. */
+  readonly onRenderFailure: (
+    failure: FileDocumentRenderFailure,
+    error?: unknown,
+  ) => void;
 }
 
 /**
@@ -1232,6 +1247,45 @@ type FileDocumentPreviewState =
   | { readonly status: 'corrupt' }
   | { readonly status: 'parse-failed' };
 
+const PREVIEW_DEFECT_IDENTIFIER = 'office-preview';
+
+function readProperty(value: unknown, key: string): unknown {
+  try {
+    return typeof value === 'object' && value !== null
+      ? Reflect.get(value, key)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Records a preview defect with only its allowlisted class and system code,
+ * from the worker's posted `failure` when the error carries one. Never the
+ * message, file name or path.
+ */
+function recordPreviewDefect(error: unknown): void {
+  try {
+    const failed = readProperty(error, 'failure') ?? error;
+    const name = AppErrorClassSchema.safeParse(readProperty(failed, 'name'));
+    const errno = AppErrorErrnoSchema.safeParse(readProperty(failed, 'code'));
+    recordSurfacedError({
+      chokePoint: 'notice',
+      identifier: PREVIEW_DEFECT_IDENTIFIER,
+      surface: 'inline',
+      error: createAppError('app.unexpected', {
+        detail: {
+          name: name.success ? name.data : 'Error',
+          message: PREVIEW_DEFECT_IDENTIFIER,
+          ...(errno.success ? { errno: errno.data } : {}),
+        },
+      }),
+    });
+  } catch {
+    // Recording never changes the preview's outcome.
+  }
+}
+
 function FilePreviewMessage({
   title,
   description,
@@ -1356,9 +1410,17 @@ function FileDocumentPreview({
   }, [requestKey, resolveDocumentBytes, documentRetryGeneration]);
 
   const onRenderFailure = useCallback(
-    (failure: FileDocumentRenderFailure): void => {
-      if (activeRequestKey.current === requestKey)
+    (failure: FileDocumentRenderFailure, error?: unknown): void => {
+      if (activeRequestKey.current !== requestKey) return;
+      if (failure !== 'worker-defect') {
         setState({ status: failure });
+        return;
+      }
+      // A damaged, encrypted or slow file is the person's, not a defect, so
+      // only this outcome is recorded: once per parse attempt, which calls
+      // here once. It keeps the parse-failed copy.
+      recordPreviewDefect(error);
+      setState({ status: 'parse-failed' });
     },
     [requestKey],
   );

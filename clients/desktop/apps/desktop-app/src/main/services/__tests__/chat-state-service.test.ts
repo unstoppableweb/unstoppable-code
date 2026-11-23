@@ -196,6 +196,7 @@ import {
   createChatCommandDispatchOptions,
   dispatchTrustedChatCommand,
   dispatchChatCommandForLegacyIpc,
+  getIncompatibleLegacyChatPayloadFallthroughCount,
 } from '../../canopy-runtime/core-chat-command-adapter';
 import { setChatStateCommandPort } from '../../ipc/chat-state';
 import * as chatStateServiceModule from '../chat-state-service';
@@ -4370,6 +4371,171 @@ describe('chat state service', () => {
           message: 'command.expectedPluginSelections is malformed.',
         },
       });
+      await expect(stored()).resolves.toEqual(
+        normalizePluginSelections(linear),
+      );
+    } finally {
+      await dispatcher.shutdown();
+      setChatStateCommandPort(null);
+    }
+  });
+
+  it('commits a Remote Control enable sent over chat:command (CAN-7431)', async () => {
+    const { target } = serviceWithRepository();
+    await createChat(target);
+    setChatStateCommandPort(target);
+    const dispatcher = createDesktopRuntime();
+    try {
+      // A tunneled controller's caller, as remote-core-access builds it.
+      const options = createChatCommandDispatchOptions(target, dispatcher, {
+        principalId: 'remote-device:controller-1',
+        clientInstanceId: 'remote-session:controller-1',
+        authorityId: 'local-desktop',
+        interfaceKind: 'desktop',
+        grants: ['core.chat.write'],
+      });
+      const results: unknown[] = [];
+      const errors: unknown[] = [];
+      // The chat:command IPC handler's path. Requests and replies cross the
+      // tunnel as JSON, so undefined keys drop out on the way.
+      const chatCommand = async (request: unknown): Promise<unknown> => {
+        try {
+          const result: unknown = JSON.parse(
+            JSON.stringify(
+              await dispatchChatCommandForLegacyIpc(
+                JSON.parse(JSON.stringify(request)),
+                options,
+              ),
+            ),
+          );
+          results.push(result);
+          return result;
+        } catch (error) {
+          errors.push(error);
+          throw error;
+        }
+      };
+      // The envelope the web client's editor.resolveInvocable enable sends;
+      // keep in step with "enables the plugin before inserting" in
+      // packages/ipc-canopy-client/src/__tests__/portable-adapter.golden.test.ts.
+      const enable = (
+        commandId: string,
+        pluginSelections: unknown,
+        expectedPluginSelections: unknown,
+      ): Promise<unknown> =>
+        chatCommand({
+          schemaVersion: 1,
+          commandId,
+          ...SCOPE,
+          command: {
+            type: 'chat.patch_tab_settings',
+            tabId: 'chat-1',
+            patch: { pluginSelections },
+            expectedPluginSelections,
+          },
+        });
+      const stored = async (): Promise<unknown> =>
+        normalizePluginSelections(
+          (await target.getState(SCOPE)).tabsFile.tabs[0]?.pluginSelections,
+        );
+      // As the host resolver reads the stored tab's selections.
+      const none = normalizePluginSelections(
+        (await target.getState(SCOPE)).tabsFile.tabs[0]?.pluginSelections,
+      );
+      const linear = {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [{ serverId: 'linear-mcp', configId: 'default' }],
+      };
+      const other = {
+        ...linear,
+        mcpServerRefs: [{ serverId: 'other-mcp', configId: 'default' }],
+      };
+
+      const fallthroughs = getIncompatibleLegacyChatPayloadFallthroughCount();
+      await expect(
+        enable('remote-enable', linear, none),
+      ).resolves.toMatchObject({ outcome: 'applied' });
+      expect(errors).toEqual([]);
+      expect(getIncompatibleLegacyChatPayloadFallthroughCount()).toBe(
+        fallthroughs,
+      );
+      await expect(stored()).resolves.toEqual(
+        normalizePluginSelections(linear),
+      );
+
+      // Resolved before the first enable committed: refused, not overwritten.
+      await expect(enable('remote-stale', other, none)).resolves.toMatchObject({
+        outcome: 'conflict',
+      });
+      expect(results.at(-1)).toMatchObject({ outcome: 'conflict' });
+      expect(errors).toEqual([]);
+      await expect(stored()).resolves.toEqual(
+        normalizePluginSelections(linear),
+      );
+
+      // Validation runs before dispatch, so these reject with the raw
+      // InvalidChatStateRequestError message.
+      for (const expectedPluginSelections of [
+        { collectionIds: 'linear-mcp' },
+        null,
+      ]) {
+        await expect(
+          dispatchChatCommandForLegacyIpc(
+            {
+              schemaVersion: 1,
+              commandId: 'remote-malformed',
+              ...SCOPE,
+              command: {
+                type: 'chat.patch_tab_settings',
+                tabId: 'chat-1',
+                patch: { pluginSelections: other },
+                expectedPluginSelections,
+              },
+            },
+            options,
+          ),
+        ).rejects.toThrow('command.expectedPluginSelections is malformed.');
+      }
+
+      // Admitted only as the top-level compare-and-set on this command.
+      await expect(
+        dispatchChatCommandForLegacyIpc(
+          {
+            schemaVersion: 1,
+            commandId: 'remote-set-model',
+            ...SCOPE,
+            command: {
+              type: 'chat.set_model',
+              tabId: 'chat-1',
+              model: 'sonnet',
+              expectedPluginSelections: none,
+            },
+          },
+          options,
+        ),
+      ).rejects.toThrow(
+        'command contains unexpected field "expectedPluginSelections".',
+      );
+      await expect(
+        dispatchChatCommandForLegacyIpc(
+          {
+            schemaVersion: 1,
+            commandId: 'remote-nested',
+            ...SCOPE,
+            command: {
+              type: 'chat.patch_tab_settings',
+              tabId: 'chat-1',
+              patch: {
+                pluginSelections: other,
+                expectedPluginSelections: none,
+              },
+            },
+          },
+          options,
+        ),
+      ).rejects.toThrow('unexpected field "expectedPluginSelections".');
       await expect(stored()).resolves.toEqual(
         normalizePluginSelections(linear),
       );

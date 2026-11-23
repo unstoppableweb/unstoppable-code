@@ -362,6 +362,7 @@ export type CreditsCopyReason =
   | 'no_billing_source'
   | 'model_locked'
   | 'queued_held'
+  | 'own_key_limit'
   | 'top_up';
 
 /** Who a prompt is for. Mirrors `CreditsPromptAudience` in `@canopy/app-state`. */
@@ -379,6 +380,20 @@ export interface CreditsPromptCopy {
    * writes its own line (a usage limit names its provider and reset).
    */
   readonly message?: string;
+}
+
+/**
+ * The own-key compute cap's sentence (CAN-7502): free compute for a person's
+ * own keys is monthly, and only credits pay past it.
+ */
+export const OWN_KEY_LIMIT_COPY =
+  "This month's free compute for your own keys is used up.";
+
+/** The cap's sentence with the day it resets, as the host formats it. */
+export function ownKeyLimitMessage(resetDay: string | null): string {
+  return resetDay === null
+    ? OWN_KEY_LIMIT_COPY
+    : `${OWN_KEY_LIMIT_COPY} It resets on ${resetDay}.`;
 }
 
 const BUYER: CreditsPromptCopy = { action: AI_CREDITS_PURCHASE_LABEL };
@@ -424,6 +439,13 @@ const CREDITS_PROMPT_COPY: Readonly<
     guest: { ...GUEST, message: QUEUED_MESSAGE_SAVED_COPY },
     'org-member': { action: null, message: QUEUED_MESSAGE_SAVED_COPY },
     unknown: { ...BUYER, message: QUEUED_MESSAGE_SAVED_COPY },
+  },
+  // The cap gets one sentence and the purchase; the host adds the reset day.
+  own_key_limit: {
+    buyer: { ...BUYER, message: OWN_KEY_LIMIT_COPY },
+    guest: { ...GUEST, message: OWN_KEY_LIMIT_COPY },
+    'org-member': { action: null, message: OWN_KEY_LIMIT_COPY },
+    unknown: { ...BUYER, message: OWN_KEY_LIMIT_COPY },
   },
   top_up: {
     buyer: BUYER,

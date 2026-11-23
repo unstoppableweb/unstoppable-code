@@ -272,26 +272,44 @@ function inlineDestinationEnd(markdown: string, index: number): number | null {
   return markdown.length;
 }
 
-function imageLabelEnd(markdown: string, index: number): number | null {
-  if (!markdown.startsWith('![', index)) return null;
-  let depth = 1;
-  let cursor = index + 2;
+/**
+ * Where each closed image label (`![…]`) ends, keyed by its `!`. One pass
+ * matches brackets with a stack: a backslash escapes the next character and
+ * a newline drops every open label. Scanning ahead from each `![` instead
+ * made a line of unclosed labels quadratic.
+ */
+function buildImageLabelEnds(markdown: string): ReadonlyMap<number, number> {
+  const ends = new Map<number, number>();
+  const open: number[] = [];
+  let cursor = 0;
   while (cursor < markdown.length) {
-    if (markdown[cursor] === '\\') {
+    const character = markdown[cursor];
+    if (character === '\\') {
       cursor += 2;
       continue;
     }
-    if (markdown[cursor] === '[') {
-      depth += 1;
-    } else if (markdown[cursor] === ']') {
-      depth -= 1;
-      if (depth === 0) return cursor + 1;
-    } else if (markdown[cursor] === '\n') {
-      return null;
+    if (character === '[') {
+      open.push(cursor);
+    } else if (character === ']') {
+      const start = open.pop();
+      if (start !== undefined && start > 0 && markdown[start - 1] === '!') {
+        ends.set(start - 1, cursor + 1);
+      }
+    } else if (character === '\n') {
+      open.length = 0;
     }
     cursor += 1;
   }
-  return null;
+  return ends;
+}
+
+function imageLabelEnd(
+  markdown: string,
+  index: number,
+  imageLabelEnds: ReadonlyMap<number, number>,
+): number | null {
+  if (!markdown.startsWith('![', index)) return null;
+  return imageLabelEnds.get(index) ?? null;
 }
 
 function bareAutolinkEnd(markdown: string, index: number): number | null {
@@ -642,6 +660,7 @@ export function prepareMarkdownMath(
   const precedingListContentIndents =
     buildPrecedingListContentIndents(markdown);
   const angleDestinationEnds = buildAngleDestinationEnds(markdown);
+  const imageLabelEnds = buildImageLabelEnds(markdown);
   const output: string[] = [];
   let copyFrom = 0;
   let index = 0;
@@ -687,7 +706,7 @@ export function prepareMarkdownMath(
     }
 
     const destinationEnd =
-      imageLabelEnd(markdown, index) ??
+      imageLabelEnd(markdown, index, imageLabelEnds) ??
       inlineDestinationEnd(markdown, index) ??
       angleDestinationEnds.get(index) ??
       bareAutolinkEnd(markdown, index);

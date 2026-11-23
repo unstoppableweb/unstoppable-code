@@ -29,6 +29,8 @@ import {
 } from '@canopy/app-core';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
+import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
+import { INSTALLED_ITEM_CHANNELS } from '@canopy/desktop-shared/types/installed-items';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { IpcAppErrorRejection } from '@canopy/protocol/app-errors/ipc-rejection';
 import {
@@ -54,6 +56,7 @@ import { SCRIPT_ACTIONS_CHANNELS } from '@canopy/protocol/script-actions';
 import {
   ChatHistoryCursorError,
   RemoteIpcChannelUnauthorizedError,
+  RemoteHostOutdatedError,
   RemoteIpcMalformedReplyError,
   UnsupportedOperationError,
   capabilityLimitForChannels,
@@ -75,7 +78,9 @@ type Equal<A, B> =
     : false;
 type DesktopCatalogKey = Exclude<
   RemoteIpcChannelKey,
-  `pipelines${string}` | `scriptActions${string}`
+  | `pipelines${string}`
+  | `scriptActions${string}`
+  | keyof typeof MARKETPLACE_KEYS
 >;
 type CatalogEquality = {
   [K in DesktopCatalogKey]: Equal<
@@ -98,6 +103,23 @@ const eventKeysMatch: Equal<
   keyof typeof REMOTE_EVENT_CHANNELS,
   DomainEventName
 > = true;
+
+// Installed-item and plugin install channels live in their own desktop
+// catalogs (CAN-7442).
+const MARKETPLACE_KEYS = {
+  installedItemsListStatus: INSTALLED_ITEM_CHANNELS.LIST_STATUS,
+  installedItemsSetStatus: INSTALLED_ITEM_CHANNELS.SET_STATUS,
+  installedItemsUninstall: INSTALLED_ITEM_CHANNELS.UNINSTALL,
+  installedItemsChanged: INSTALLED_ITEM_CHANNELS.CHANGED,
+  pluginsInstallPlugin: PLUGINS_CHANNELS.INSTALL_PLUGIN,
+  pluginsInstallBuiltInPlugin: PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+} as const;
+const marketplaceTypesMatch: {
+  [K in keyof typeof MARKETPLACE_KEYS]: Equal<
+    (typeof REMOTE_IPC_CHANNELS)[K],
+    (typeof MARKETPLACE_KEYS)[K]
+  >;
+}[keyof typeof MARKETPLACE_KEYS] = true;
 
 const PIPELINE_KEYS = {
   pipelinesDiscoverProject: PIPELINE_CHANNELS.DISCOVER_PROJECT,
@@ -468,6 +490,7 @@ const CAPABILITIES: CanopyCapabilities = {
   overviewNotifications: true,
   worktreeRecovery: true,
   worktreeRecoveryResolution: true,
+  worktreeRecoveryReads: true,
 };
 
 interface Harness {
@@ -587,6 +610,49 @@ function passthroughCommand<K extends CommandName>(
 }
 
 const NO_ARGS: Record<string, never> = {};
+
+// Installed items and plugin installs (CAN-7442).
+const PLUGIN_TARGET = {
+  kind: 'plugin',
+  marketplaceId: 'acme',
+  pluginName: 'lint',
+} as const;
+const INSTALLED_SNAPSHOT = {
+  items: [
+    {
+      target: PLUGIN_TARGET,
+      status: 'active',
+      removable: true,
+      uninstallTarget: PLUGIN_TARGET,
+      notices: [],
+    },
+  ],
+};
+const MUTATION_RESULT = {
+  success: true,
+  requestedStatus: 'disabled',
+  snapshot: INSTALLED_SNAPSHOT,
+  removed: [],
+  errors: [],
+};
+const INSTALLED_PLUGIN = {
+  name: 'lint',
+  marketplaceId: 'acme',
+  version: '1.0.0',
+  providerSupport: { claude: 'native', codex: 'none' },
+};
+const CURATED_PLUGIN = {
+  name: 'notes',
+  marketplaceId: 'curated/cloud',
+  curated: true,
+};
+const SOURCE_MISMATCH =
+  'Remote control can only install this plugin from the source this computer has for it. Refresh its marketplace on this computer, then try again.';
+const hostRefusesChannel =
+  (channel: string): Reply =>
+  () => {
+    throw new RemoteChannelUnavailableError(channel);
+  };
 
 /**
  * A narrow tips or suggestions read (CAN-7434): the narrow channel only; an
@@ -3419,6 +3485,37 @@ const QUERY_SCENARIOS: QueryScenarios = {
       rejects: RemoteIpcMalformedReplyError,
     },
   ],
+  'installedItems.listStatus': [
+    {
+      name: 'reads the snapshot with no argument',
+      args: {},
+      replies: { [C.installedItemsListStatus]: () => INSTALLED_SNAPSHOT },
+      calls: [call(C.installedItemsListStatus)],
+      result: (value) => expect(value).toEqual(INSTALLED_SNAPSHOT),
+    },
+    {
+      name: 'rejects a snapshot that does not parse',
+      args: {},
+      replies: {
+        [C.installedItemsListStatus]: () => ({
+          items: [{ ...INSTALLED_SNAPSHOT.items[0], extra: true }],
+        }),
+      },
+      channels: [C.installedItemsListStatus],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: {},
+      replies: {
+        [C.installedItemsListStatus]: hostRefusesChannel(
+          C.installedItemsListStatus,
+        ),
+      },
+      channels: [C.installedItemsListStatus],
+      rejects: RemoteHostOutdatedError,
+    },
+  ],
   'providerUsage.get': [
     {
       name: 'sends no argument, even with a host selected',
@@ -3945,6 +4042,223 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       calls: [call(C.cloneJobsDismiss, 'job-1')],
     },
   ],
+  'installedItems.setStatus': [
+    {
+      name: 'sends exactly the target and status and parses the result',
+      args: { target: PLUGIN_TARGET, status: 'disabled' },
+      replies: { [C.installedItemsSetStatus]: () => MUTATION_RESULT },
+      calls: [
+        call(C.installedItemsSetStatus, {
+          target: PLUGIN_TARGET,
+          status: 'disabled',
+        }),
+      ],
+      result: (value) => expect(value).toEqual(MUTATION_RESULT),
+    },
+    {
+      name: "rejects with the computer's message",
+      args: { target: PLUGIN_TARGET, status: 'active' },
+      replies: {
+        [C.installedItemsSetStatus]: () => {
+          throw new Error(
+            "Error invoking remote method 'installed-items:set-status': Error: Installed item was not found.",
+          );
+        },
+      },
+      channels: [C.installedItemsSetStatus],
+      rejects: /^Installed item was not found\.$/,
+    },
+    {
+      name: 'rejects a result that does not parse',
+      args: { target: PLUGIN_TARGET, status: 'active' },
+      replies: { [C.installedItemsSetStatus]: () => null },
+      channels: [C.installedItemsSetStatus],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { target: PLUGIN_TARGET, status: 'active' },
+      replies: {
+        [C.installedItemsSetStatus]: hostRefusesChannel(
+          C.installedItemsSetStatus,
+        ),
+      },
+      channels: [C.installedItemsSetStatus],
+      rejects: /Update the desktop app/,
+    },
+  ],
+  'installedItems.uninstall': [
+    {
+      name: 'sends exactly the target and parses the result',
+      args: { target: PLUGIN_TARGET },
+      replies: {
+        [C.installedItemsUninstall]: () => ({
+          ...MUTATION_RESULT,
+          requestedStatus: undefined,
+          removed: [PLUGIN_TARGET],
+        }),
+      },
+      calls: [call(C.installedItemsUninstall, { target: PLUGIN_TARGET })],
+      result: (value) => expect(value.removed).toEqual([PLUGIN_TARGET]),
+    },
+    {
+      name: 'rejects a result that does not parse',
+      args: { target: PLUGIN_TARGET },
+      replies: { [C.installedItemsUninstall]: () => ({ success: true }) },
+      channels: [C.installedItemsUninstall],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { target: PLUGIN_TARGET },
+      replies: {
+        [C.installedItemsUninstall]: hostRefusesChannel(
+          C.installedItemsUninstall,
+        ),
+      },
+      channels: [C.installedItemsUninstall],
+      rejects: RemoteHostOutdatedError,
+    },
+  ],
+  'plugins.install': [
+    {
+      name: 'sends the names with an empty source URL',
+      args: { marketplaceId: 'acme', pluginName: 'lint' },
+      replies: {
+        [C.pluginsInstallPlugin]: () => ({
+          success: true,
+          data: INSTALLED_PLUGIN,
+        }),
+      },
+      calls: [call(C.pluginsInstallPlugin, 'acme', 'lint', '')],
+      result: (value) => expect(value).toEqual(INSTALLED_PLUGIN),
+    },
+    {
+      name: "rejects with the computer's refusal",
+      args: { marketplaceId: 'acme', pluginName: 'lint' },
+      replies: {
+        [C.pluginsInstallPlugin]: () => ({
+          success: false,
+          error: SOURCE_MISMATCH,
+        }),
+      },
+      channels: [C.pluginsInstallPlugin],
+      rejects: /^Remote control can only install this plugin from the source/,
+    },
+    {
+      name: 'rejects a result with a field the browser projection never sends',
+      args: { marketplaceId: 'acme', pluginName: 'lint' },
+      replies: {
+        [C.pluginsInstallPlugin]: () => ({
+          success: true,
+          data: { ...INSTALLED_PLUGIN, sourcePath: '/Users/me/plugins/lint' },
+        }),
+      },
+      channels: [C.pluginsInstallPlugin],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { marketplaceId: 'acme', pluginName: 'lint' },
+      replies: {
+        [C.pluginsInstallPlugin]: hostRefusesChannel(C.pluginsInstallPlugin),
+      },
+      channels: [C.pluginsInstallPlugin],
+      rejects: /Update the desktop app/,
+    },
+  ],
+  'plugins.installBuiltIn': [
+    {
+      name: 'answers a partial install with each provider outcome',
+      args: {
+        marketplaceId: 'curated/cloud',
+        pluginName: 'notes',
+        providers: ['claude', 'codex'],
+      },
+      replies: {
+        [C.pluginsInstallBuiltInPlugin]: () => ({
+          success: true,
+          data: {
+            plugin: CURATED_PLUGIN,
+            providerOutcomes: {
+              claude: { installed: true },
+              codex: { installed: false, error: 'Codex facet is unavailable.' },
+            },
+          },
+        }),
+      },
+      calls: [
+        call(C.pluginsInstallBuiltInPlugin, {
+          marketplaceId: 'curated/cloud',
+          pluginName: 'notes',
+          providers: ['claude', 'codex'],
+        }),
+      ],
+      result: (value) =>
+        expect(value).toEqual({
+          plugin: CURATED_PLUGIN,
+          providerOutcomes: {
+            claude: { installed: true },
+            codex: { installed: false, error: 'Codex facet is unavailable.' },
+          },
+        }),
+    },
+    {
+      name: "rejects with the first provider's error when none installed",
+      args: {
+        marketplaceId: 'curated/cloud',
+        pluginName: 'notes',
+        providers: ['claude', 'codex'],
+      },
+      replies: {
+        [C.pluginsInstallBuiltInPlugin]: () => ({
+          success: false,
+          error:
+            "Couldn't install this plugin. Check the desktop app for details.",
+          data: {
+            plugin: CURATED_PLUGIN,
+            providerOutcomes: {
+              claude: {
+                installed: false,
+                error: 'Claude facet is unavailable.',
+              },
+              codex: { installed: false, error: 'Codex facet is unavailable.' },
+            },
+          },
+        }),
+      },
+      channels: [C.pluginsInstallBuiltInPlugin],
+      rejects: /^Claude facet is unavailable\.$/,
+    },
+    {
+      name: 'rejects a result that does not parse',
+      args: {
+        marketplaceId: 'curated/cloud',
+        pluginName: 'notes',
+        providers: ['claude'],
+      },
+      replies: {
+        [C.pluginsInstallBuiltInPlugin]: () => ({ success: 'yes' }),
+      },
+      channels: [C.pluginsInstallBuiltInPlugin],
+      rejects: RemoteIpcMalformedReplyError,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: {
+        marketplaceId: 'curated/cloud',
+        pluginName: 'notes',
+        providers: ['claude'],
+      },
+      replies: {
+        [C.pluginsInstallBuiltInPlugin]: hostRefusesChannel(
+          C.pluginsInstallBuiltInPlugin,
+        ),
+      },
+      channels: [C.pluginsInstallBuiltInPlugin],
+      rejects: /Update the desktop app/,
+    },
+  ],
   'repoRules.apply': passthroughCommand<'repoRules.apply'>(
     C.repoRulesApply,
     'apply',
@@ -4437,6 +4751,49 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       calls: [],
     },
     {
+      // CAN-7444: a CAN-7439 to CAN-7443 computer refuses a browser's
+      // `discardPendingRecovery`.
+      name: 'asks for a desktop update when an older computer refuses pending archive recovery',
+      args: {
+        workspaceId: 'single',
+        discardPendingRecovery: PENDING_ARCHIVE_RECOVERY,
+      },
+      replies: {
+        [C.projectDelete]: () => {
+          throw new RemoteChannelUnavailableError(C.projectDelete);
+        },
+      },
+      channels: [C.projectsLoad, C.projectDelete],
+      rejects:
+        /^Update the desktop app to discard the worktrees that block this deletion\.$/,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses a workspace deletion with pending archive recovery',
+      args: {
+        workspaceId: 'multi',
+        discardPendingRecovery: PENDING_ARCHIVE_RECOVERY,
+      },
+      replies: {
+        [C.workspaceDelete]: () => {
+          throw new RemoteChannelUnavailableError(C.workspaceDelete);
+        },
+      },
+      channels: [C.projectsLoad, C.workspaceDelete],
+      rejects:
+        /^Update the desktop app to discard the worktrees that block this deletion\.$/,
+    },
+    {
+      name: 'keeps the refusal of a deletion without pending archive recovery',
+      args: { workspaceId: 'single' },
+      replies: {
+        [C.projectDelete]: () => {
+          throw new RemoteChannelUnavailableError(C.projectDelete);
+        },
+      },
+      channels: [C.projectsLoad, C.projectDelete],
+      rejects: /is not available while controlling another computer/,
+    },
+    {
       name: 'rejects an unknown project',
       args: { workspaceId: 'missing' },
       rejects: /Project missing not found/,
@@ -4448,12 +4805,35 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       args: NO_ARGS,
       calls: [call(C.lifecycleJournalInspect)],
     },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: NO_ARGS,
+      replies: {
+        [C.lifecycleJournalInspect]: () => {
+          throw new RemoteChannelUnavailableError(C.lifecycleJournalInspect);
+        },
+      },
+      channels: [C.lifecycleJournalInspect],
+      rejects: /^Update the desktop app to review this record\.$/,
+    },
   ],
-  'lifecycleJournal.quarantine':
-    passthroughCommand<'lifecycleJournal.quarantine'>(
+  'lifecycleJournal.quarantine': [
+    ...passthroughCommand<'lifecycleJournal.quarantine'>(
       C.lifecycleJournalQuarantine,
       'quarantine',
     ),
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: opaque('quarantine'),
+      replies: {
+        [C.lifecycleJournalQuarantine]: () => {
+          throw new RemoteChannelUnavailableError(C.lifecycleJournalQuarantine);
+        },
+      },
+      channels: [C.lifecycleJournalQuarantine],
+      rejects: /^Update the desktop app to review this record\.$/,
+    },
+  ],
   'worktree.recovery.list': [
     {
       name: 'lists exact live recovery independent of cold recovery',
@@ -4469,38 +4849,150 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       result: (value: unknown) =>
         expect(value).toEqual({ entries: [], resolutions: [], check: 'ok' }),
     },
+    // CAN-7439: the list is read only and needs no action capability.
+    {
+      name: 'lists with recovery reads and without live resolution',
+      args: { workspaceId: 'single' },
+      ports: {
+        capabilities: {
+          ...CAPABILITIES,
+          worktreeRecoveryResolution: undefined,
+        },
+      },
+      replies: {
+        [C.worktreeRecoveryList]: () => ({ entries: [], check: 'ok' }),
+      },
+      calls: [call(C.worktreeRecoveryList, { workspaceId: 'single' })],
+      result: (value: unknown) =>
+        expect(value).toEqual({ entries: [], check: 'ok' }),
+    },
+    {
+      name: 'refuses before the transport without recovery reads',
+      args: { workspaceId: 'single' },
+      ports: {
+        capabilities: { ...CAPABILITIES, worktreeRecoveryReads: undefined },
+      },
+      calls: [],
+      rejects: UnsupportedOperationError,
+    },
+    {
+      name: 'reports an older host refusing the channel as unsupported (with its code)',
+      args: { workspaceId: 'single' },
+      replies: {
+        [C.worktreeRecoveryList]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeRecoveryList);
+        },
+      },
+      calls: [call(C.worktreeRecoveryList, { workspaceId: 'single' })],
+      rejects: UnsupportedOperationError,
+    },
+    {
+      name: 'reports an older host refusing the channel as unsupported (Electron-wrapped)',
+      args: { workspaceId: 'single' },
+      replies: {
+        [C.worktreeRecoveryList]: () => {
+          throw new Error(
+            `Error invoking remote method '${C.worktreeRecoveryList}': Error: ${channelUnavailableMessage(C.worktreeRecoveryList)}`,
+          );
+        },
+      },
+      calls: [call(C.worktreeRecoveryList, { workspaceId: 'single' })],
+      rejects: UnsupportedOperationError,
+    },
+    {
+      name: 'rethrows any other failure unchanged',
+      args: { workspaceId: 'single' },
+      replies: {
+        [C.worktreeRecoveryList]: () => {
+          throw new Error('Recovery evidence belongs to this desktop.');
+        },
+      },
+      calls: [call(C.worktreeRecoveryList, { workspaceId: 'single' })],
+      rejects: /Recovery evidence belongs to this desktop/,
+    },
   ],
-  'worktree.recovery.resolve': (
-    ['keep-worktree', 'release', 'delete-hold'] as const
-  ).map((action) => ({
-    name: `resolves only the reviewed operation: ${action}`,
-    args: {
-      workspaceId: 'single',
-      operationId: '12345678-1234-4234-8234-123456789abc',
-      revision: 'a'.repeat(64),
-      action,
-    },
-    replies: {
-      [C.worktreeRecoveryResolve]: () => ({
-        status: 'refused',
-        operationId: '12345678-1234-4234-8234-123456789abc',
-        check: 'resolution-not-admitted',
-      }),
-    },
-    calls: [
-      call(C.worktreeRecoveryResolve, {
+  'worktree.recovery.resolve': [
+    ...(['keep-worktree', 'release', 'delete-hold'] as const).map((action) => ({
+      name: `resolves only the reviewed operation: ${action}`,
+      args: {
         workspaceId: 'single',
         operationId: '12345678-1234-4234-8234-123456789abc',
         revision: 'a'.repeat(64),
         action,
-      }),
-    ],
-    result: (value: unknown) =>
-      expect(value).toMatchObject({
-        status: 'refused',
-        check: 'resolution-not-admitted',
-      }),
-  })),
+      },
+      replies: {
+        [C.worktreeRecoveryResolve]: () => ({
+          status: 'refused',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          check: 'resolution-not-admitted',
+        }),
+      },
+      calls: [
+        call(C.worktreeRecoveryResolve, {
+          workspaceId: 'single',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          revision: 'a'.repeat(64),
+          action,
+        }),
+      ],
+      result: (value: unknown) =>
+        expect(value).toMatchObject({
+          status: 'refused',
+          check: 'resolution-not-admitted',
+        }),
+    })),
+    // CAN-7444: a CAN-7439 to CAN-7443 computer refuses the channel.
+    {
+      name: 'asks for a desktop update when an older computer refuses Resolve (with its code)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+        action: 'release',
+      },
+      replies: {
+        [C.worktreeRecoveryResolve]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeRecoveryResolve);
+        },
+      },
+      channels: [C.worktreeRecoveryResolve],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses Resolve (Electron-wrapped)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+        action: 'release',
+      },
+      replies: {
+        [C.worktreeRecoveryResolve]: () => {
+          throw new Error(
+            `Error invoking remote method '${C.worktreeRecoveryResolve}': Error: ${channelUnavailableMessage(C.worktreeRecoveryResolve)}`,
+          );
+        },
+      },
+      channels: [C.worktreeRecoveryResolve],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'passes another Resolve failure through unchanged',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+        action: 'release',
+      },
+      replies: {
+        [C.worktreeRecoveryResolve]: () => {
+          throw new Error('Recovery evidence belongs to this desktop.');
+        },
+      },
+      channels: [C.worktreeRecoveryResolve],
+      rejects: /^Recovery evidence belongs to this desktop\.$/,
+    },
+  ],
   'worktree.recovery.finish': [
     {
       name: 'keeps separately pending cleanup distinct from completion',
@@ -4529,6 +5021,53 @@ const COMMAND_SCENARIOS: CommandScenarios = {
           status: 'cleanup-pending',
           cleanupRequired: true,
         }),
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses Finish (with its code)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoveryFinish]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeRecoveryFinish);
+        },
+      },
+      channels: [C.worktreeRecoveryFinish],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses Finish (Electron-wrapped)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoveryFinish]: () => {
+          throw new Error(
+            `Error invoking remote method '${C.worktreeRecoveryFinish}': Error: ${channelUnavailableMessage(C.worktreeRecoveryFinish)}`,
+          );
+        },
+      },
+      channels: [C.worktreeRecoveryFinish],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'passes another Finish failure through unchanged',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoveryFinish]: () => {
+          throw new Error('Recovery evidence belongs to this desktop.');
+        },
+      },
+      channels: [C.worktreeRecoveryFinish],
+      rejects: /^Recovery evidence belongs to this desktop\.$/,
     },
   ],
   'worktree.discard.describe': [
@@ -4577,6 +5116,73 @@ const COMMAND_SCENARIOS: CommandScenarios = {
         }),
       ],
     },
+    {
+      // CAN-7443: a target without settled recovery (web) gets the plain
+      // description; a browser controller is refused the key outright.
+      name: 'omits recovery, as a key, for a target without worktree recovery',
+      args: {
+        workspaceId: 'single',
+        worktreeId: 'wt-a',
+        recovery: { intent: 'delete', expectedCreatedAt: NOW },
+      },
+      ports: { capabilities: { ...CAPABILITIES, worktreeRecovery: false } },
+      calls: [
+        call(C.worktreeDiscardDescribe, {
+          projectId: 'single',
+          worktreeId: 'wt-a',
+        }),
+      ],
+      result: (_value, context) =>
+        expect(
+          context.fake.calls.map(({ args }) =>
+            args.some(
+              (arg) =>
+                typeof arg === 'object' &&
+                arg !== null &&
+                Object.prototype.hasOwnProperty.call(arg, 'recovery'),
+            ),
+          ),
+        ).toEqual([false]),
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { workspaceId: 'single', worktreeId: 'wt-a' },
+      replies: {
+        [C.worktreeDiscardDescribe]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeDiscardDescribe);
+        },
+      },
+      channels: [C.worktreeDiscardDescribe],
+      rejects: /^Update the desktop app to discard this worktree\.$/,
+    },
+    {
+      // CAN-7444: a CAN-7439 to CAN-7443 computer refuses a browser's
+      // `recovery` with the same code.
+      name: 'asks for a desktop update when an older computer refuses recovery',
+      args: {
+        workspaceId: 'single',
+        worktreeId: 'wt-a',
+        recovery: { intent: 'archive', expectedCreatedAt: NOW },
+      },
+      replies: {
+        [C.worktreeDiscardDescribe]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeDiscardDescribe);
+        },
+      },
+      channels: [C.worktreeDiscardDescribe],
+      rejects: /^Update the desktop app to discard this worktree\.$/,
+    },
+    {
+      name: 'passes another refusal through unchanged',
+      args: { workspaceId: 'single', worktreeId: 'wt-a' },
+      replies: {
+        [C.worktreeDiscardDescribe]: () => {
+          throw new Error('This worktree is busy.');
+        },
+      },
+      channels: [C.worktreeDiscardDescribe],
+      rejects: /^This worktree is busy\.$/,
+    },
   ],
   'worktree.discard': [
     {
@@ -4594,12 +5200,41 @@ const COMMAND_SCENARIOS: CommandScenarios = {
         }),
       ],
     },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: {
+        workspaceId: 'single',
+        worktreeId: 'wt-a',
+        confirmation: opaque('confirmation'),
+      },
+      replies: {
+        [C.worktreeDiscard]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeDiscard);
+        },
+      },
+      channels: [C.worktreeDiscard],
+      rejects: /^Update the desktop app to discard this worktree\.$/,
+    },
   ],
   'workspace.delete.discard.describe': [
     {
       name: 'describes a project deletion',
       args: { workspaceId: 'multi' },
       calls: [call(C.workspaceDeleteDiscardDescribe, { workspaceId: 'multi' })],
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses the channel',
+      args: { workspaceId: 'multi' },
+      replies: {
+        [C.workspaceDeleteDiscardDescribe]: () => {
+          throw new RemoteChannelUnavailableError(
+            C.workspaceDeleteDiscardDescribe,
+          );
+        },
+      },
+      channels: [C.workspaceDeleteDiscardDescribe],
+      rejects:
+        /^Update the desktop app to discard the worktrees that block this deletion\.$/,
     },
   ],
   'workspace.reorder': [
@@ -5750,6 +6385,17 @@ const EVENT_SCENARIOS: EventScenarios = {
         ]),
     },
   ],
+  'installedItems.changed': [
+    {
+      name: 'forwards each notice with no payload',
+      pushes: [
+        [C.installedItemsChanged, undefined],
+        [C.installedItemsChanged, undefined],
+      ],
+      expected: (events) =>
+        expect(events).toEqual([{ occurredAt: NOW }, { occurredAt: NOW }]),
+    },
+  ],
   'cloneJobs.changed': [
     {
       name: 'forwards the projected list and drops a push that is not one',
@@ -5929,14 +6575,17 @@ describe('portable CanopyClient adapter (golden)', () => {
     expect([
       catalogTypesMatch,
       pipelineTypesMatch,
+      marketplaceTypesMatch,
       queryKeysMatch,
       commandKeysMatch,
       eventKeysMatch,
-    ]).toEqual([true, true, true, true, true]);
+    ]).toEqual([true, true, true, true, true, true]);
     for (const key of keysOf(REMOTE_IPC_CHANNELS)) {
       const value = REMOTE_IPC_CHANNELS[key];
       if (key in PIPELINE_KEYS) {
         expect(Reflect.get(PIPELINE_KEYS, key)).toBe(value);
+      } else if (key in MARKETPLACE_KEYS) {
+        expect(Reflect.get(MARKETPLACE_KEYS, key)).toBe(value);
       } else if (key.startsWith('scriptActions')) {
         expect(Object.values(SCRIPT_ACTIONS_CHANNELS)).toContain(value);
         expect(Reflect.get(IPC_CHANNELS, key)).toBe(value);
@@ -6606,6 +7255,74 @@ describe('portable CanopyClient adapter (golden)', () => {
         C.worktreeArchive,
       ].sort(),
     );
+  });
+});
+
+describe('discard and journal on an older computer (CAN-7443)', () => {
+  test('keeps the refusal code on the update message', async () => {
+    const refused = harness({
+      [C.worktreeDiscard]: () => {
+        throw new RemoteChannelUnavailableError(C.worktreeDiscard);
+      },
+    });
+    const outcome = refused.client.command('worktree.discard', {
+      workspaceId: 'single',
+      worktreeId: 'wt-a',
+      confirmation: opaque('confirmation'),
+    });
+    await expect(outcome).rejects.toMatchObject({
+      message: 'Update the desktop app to discard this worktree.',
+      code: CHANNEL_UNAVAILABLE_CODE,
+    });
+  });
+});
+
+describe('archive recovery actions on an older computer (CAN-7444)', () => {
+  const target = {
+    workspaceId: 'single',
+    operationId: '12345678-1234-4234-8234-123456789abc',
+    revision: 'a'.repeat(64),
+  };
+
+  test('marks the update message so the shared UI trusts that nothing ran', async () => {
+    const refused = harness({
+      [C.worktreeRecoveryResolve]: () => {
+        throw new RemoteChannelUnavailableError(C.worktreeRecoveryResolve);
+      },
+      [C.worktreeRecoveryFinish]: () => {
+        throw new RemoteChannelUnavailableError(C.worktreeRecoveryFinish);
+      },
+    });
+    await expect(
+      refused.client.command('worktree.recovery.resolve', {
+        ...target,
+        action: 'delete-hold',
+      }),
+    ).rejects.toMatchObject({
+      message: 'Update the desktop app to resolve this archive.',
+      code: CHANNEL_UNAVAILABLE_CODE,
+      hostOutdated: true,
+    });
+    await expect(
+      refused.client.command('worktree.recovery.finish', target),
+    ).rejects.toMatchObject({
+      message: 'Update the desktop app to resolve this archive.',
+      hostOutdated: true,
+    });
+  });
+
+  test('never marks another failure', async () => {
+    const failed = harness({
+      [C.worktreeRecoveryResolve]: () => {
+        throw new Error('The link dropped.');
+      },
+    });
+    const outcome = failed.client
+      .command('worktree.recovery.resolve', { ...target, action: 'release' })
+      .catch((error: unknown) => error);
+    const error = await outcome;
+    expect(error).toBeInstanceOf(Error);
+    expect(Reflect.get(Object(error), 'hostOutdated')).toBeUndefined();
   });
 });
 

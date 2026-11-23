@@ -119,7 +119,7 @@ export interface SidebarWorkspacesModel {
   discoveryLoading: Set<string>;
   selectedWorktreeKey: string | null;
   streamingWorktreeKeys: Set<string>;
-  /** Live background tasks by row, for the background spinner (D15). */
+  /** Live background tasks by row, for the background dot (D15). */
   backgroundTaskCounts: ReadonlyMap<string, number>;
   activeSessionWorktreeKeys: Set<string>;
   awaitingApprovalKeys: Set<string>;

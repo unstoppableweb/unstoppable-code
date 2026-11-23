@@ -592,6 +592,7 @@ export function SidebarContextRow({
           busyLabel="Declining…"
           busy={declineBusy}
           errorMessage={declineError}
+          errorSource="sidebar-context-invitations-error"
           destructive
           focusCancel
           dataTestId="sidebar-context-decline-invitation"

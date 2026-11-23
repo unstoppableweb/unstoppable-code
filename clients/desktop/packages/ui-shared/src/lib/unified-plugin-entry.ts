@@ -220,8 +220,17 @@ export interface UnifiedEntryAlternative {
   readonly hasMcpServers?: boolean;
   /** The copy's name and publisher apart: "Slack" from "slackapi". */
   readonly copyBase?: { readonly name: string; readonly publisher?: string };
+  /** The copy's marketplace by its display name, not its repository id. */
+  readonly marketplaceSourceName?: string;
+  /**
+   * The copy's own catalog state, as its own row has it: whether it has an
+   * install of its own, rather than a listing that only resolves.
+   */
+  readonly state?: UnifiedEntryState;
   /** The copy's own harness rows, when its host computed them. */
   readonly harnessRows?: readonly UnifiedEntryHarnessRow[];
+  /** Names of the harnesses this copy is installed for; see the entry's field. */
+  readonly installedHarnessNames?: readonly string[];
   /**
    * Whether the item's one Add brings this copy along (New Customize): the
    * copy is a provider's official listing, or both name the same author.
@@ -546,6 +555,14 @@ export interface UnifiedPluginEntry {
    * is. `customizeHarnessRows` turns them into chips and table rows alike.
    */
   harnessRows?: readonly UnifiedEntryHarnessRow[];
+  /**
+   * A curated plugin's installed copy: the names of the harnesses it is
+   * installed for, from its marketplace row (CAN-7547), so the uninstall
+   * confirmation can name a harness no provider flag covers. Display only for
+   * that list; Works with never reads it (it reads `harnessRows` or the
+   * catalog's harness compatibility).
+   */
+  installedHarnessNames?: readonly string[];
   builtIn?: boolean;
   custom?: boolean;
   /**

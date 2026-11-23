@@ -19,7 +19,10 @@ import {
   workspaceChildUnitLabel,
 } from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
-import { useSidebarHeaderRest } from '@canopy/ui-shared/lib';
+import {
+  recordSurfacedError,
+  useSidebarHeaderRest,
+} from '@canopy/ui-shared/lib';
 import {
   offerLifecycleJournalQuarantine,
   offerProjectDeletionDiscard,
@@ -2435,6 +2438,14 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     };
   }, [snapshot.workspaces, workspaceSnapshotVersion]);
   const settingsRequest = useRef(0);
+  // Cleared on unmount: a settings load that rejects afterwards is discarded.
+  const sidebarMountedRef = useRef(false);
+  useEffect(() => {
+    sidebarMountedRef.current = true;
+    return (): void => {
+      sidebarMountedRef.current = false;
+    };
+  }, []);
   // How many times the owner has changed, readable from an async continuation.
   //
   // Clearing the dialogs when the owner changes is not enough on its own: a
@@ -2889,7 +2900,22 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
           });
         }
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // The dialog stays closed and shows nothing, so this records with no
+        // surface. A load a newer one or an owner change superseded counts as
+        // cancelled, and so does an unmounted sidebar.
+        if (
+          !sidebarMountedRef.current ||
+          token !== settingsRequest.current ||
+          generationRef.current !== generation
+        )
+          return;
+        recordSurfacedError({
+          chokePoint: 'notice',
+          identifier: 'sidebar-workspace-settings-load',
+          error,
+        });
+      });
   };
 
   // Shared creation can finish after this render's destination snapshot.
@@ -5327,6 +5353,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               : 'Its work is removed. This can’t be undone.'
           }
           errorMessage={pendingWorkspaceRemoval.error}
+          // The removal error reaches here as message text only, so typed
+          // refusals and failures a paired desktop already recorded can't be
+          // told apart; recording it here would double-count or log expected
+          // refusals.
+          errorRecordingDisabled
           busy={pendingWorkspaceRemoval.busy}
           busyLabel={
             pendingWorkspaceRemoval.presentation === 'archive'
@@ -5409,6 +5440,7 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
               ? (props.removalFailedMessage ?? "Couldn't remove it. Try again.")
               : null
           }
+          errorSource="sidebar-worktree-removal"
           onConfirm={() => {
             const removal = props.onArchiveWorktree?.(
               pendingDelete.workspaceId,

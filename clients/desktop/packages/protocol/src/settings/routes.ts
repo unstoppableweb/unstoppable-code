@@ -18,7 +18,9 @@ export const ACCOUNT_SETTINGS_PAGES = [
   'integrations',
   'plugins',
   'mcp',
+  'delegation',
   'security',
+  'model-providers',
   'ai-gateway',
   'billing',
   'labs',
@@ -178,7 +180,9 @@ function parseAccountSegments(rest: string[]): SettingsRoute | null {
     case 'integrations':
     case 'plugins':
     case 'mcp':
+    case 'delegation':
     case 'security':
+    case 'model-providers':
     case 'ai-gateway':
     case 'labs':
     case 'appearance':

@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { canopyJsonValueSchemaWithin } from '../errors';
 import { LedgerErrorDetailsSchema } from '../core/ledger/schemas';
 import {
+  PIPELINE_DEFINITION_DOCUMENT_MAX_LENGTH,
+  PIPELINE_DEFINITION_FORMATS,
+  PIPELINE_DEFINITION_SOURCES,
+} from '../core/pipeline/schemas';
+import {
   WorkerPipelineModelAliasResolutionsSchema,
   WorkerPipelinePluginCollectionSnapshotsSchema,
 } from '../host-execution';
@@ -65,6 +70,12 @@ import {
  * request's digest, and settles once the child ended. The parent names the
  * variant by the child's execution id; the variant's own host names none,
  * since the owner knows which variant it is.
+ *
+ * `owner.definition.*` (CAN-7522) belong to no run: a core that owns the
+ * pipeline definitions store asks the owner to check a write before its
+ * commit and to apply the owner's side effects of it, under the reserved
+ * scope `core:pipeline-definitions`. Only an owner that serves them receives
+ * them.
  */
 
 const id = z.string().min(1).max(512);
@@ -105,6 +116,8 @@ export const WORKER_PIPELINE_OWNER_ACTIONS = [
   'owner.isolatedJob.write',
   'owner.isolatedJob.read',
   'owner.isolatedJob.run',
+  'owner.definition.precheck',
+  'owner.definition.effects',
 ] as const;
 export type WorkerPipelineOwnerAction =
   (typeof WORKER_PIPELINE_OWNER_ACTIONS)[number];
@@ -126,6 +139,51 @@ export const WORKER_PIPELINE_LOCAL_OWNER_ACTIONS = [
 ] as const satisfies readonly WorkerPipelineOwnerAction[];
 export type WorkerPipelineLocalOwnerAction =
   (typeof WORKER_PIPELINE_LOCAL_OWNER_ACTIONS)[number];
+
+/**
+ * Owner requests that belong to no run (CAN-7522): the core raises them under
+ * one of these reserved execution ids, and a run id never takes one (start
+ * refuses the `core:` prefix). A run's withdrawals, lookups and child fan-out
+ * never apply to them.
+ */
+export const WORKER_PIPELINE_OWNER_SCOPES = [
+  'core:pipeline-definitions',
+  'core:operation-ledger',
+] as const;
+export type WorkerPipelineOwnerScope =
+  (typeof WORKER_PIPELINE_OWNER_SCOPES)[number];
+
+const OWNER_SCOPES: ReadonlySet<string> = new Set(WORKER_PIPELINE_OWNER_SCOPES);
+
+export function isWorkerPipelineOwnerScope(
+  executionId: string,
+): executionId is WorkerPipelineOwnerScope {
+  return OWNER_SCOPES.has(executionId);
+}
+
+/** The prefix of every reserved scope; no run id may start with it. */
+export const WORKER_PIPELINE_RESERVED_EXECUTION_ID_PREFIX = 'core:';
+
+/** The most requests one reserved scope holds pending at once (CAN-7522). */
+export const WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX = 64;
+
+/**
+ * Owner requests an owner answers only when it says so (CAN-7522): it names
+ * each kind and the revision it serves when it subscribes, and a subscriber
+ * that names none never receives them. Every other owner request goes to any
+ * owner, as before.
+ */
+export const WORKER_PIPELINE_OWNER_SERVED_REVISIONS = Object.freeze({
+  'owner.definition.precheck': 1,
+  'owner.definition.effects': 1,
+} as const satisfies Partial<Record<WorkerPipelineOwnerAction, number>>);
+
+/** What a pipeline definition write is, to the owner that checks it. */
+export const WORKER_PIPELINE_OWNER_DEFINITION_OPS = [
+  'upsert',
+  'delete',
+  'duplicate',
+] as const;
 
 /**
  * A non-secret reference to a capability a remote owner granted (P9,
@@ -309,6 +367,21 @@ const sideNamesVariant = (value: {
 }): boolean => (value.side === 'request') === (value.variantId !== undefined);
 
 /** Members added to WorkerPipelineHostActionRequestSchema's union. */
+/** Where a copied definition comes from (CAN-7522). */
+const definitionOrigin = z.strictObject({
+  source: z.enum(PIPELINE_DEFINITION_SOURCES),
+  definitionId: id,
+});
+
+/** A copy's source document, as only the owner can read it (CAN-7522). */
+const definitionSourceDocument = z.strictObject({
+  name: text(4096),
+  description: text(65_536),
+  icon: text(4096),
+  format: z.enum(PIPELINE_DEFINITION_FORMATS),
+  text: z.string().max(PIPELINE_DEFINITION_DOCUMENT_MAX_LENGTH),
+});
+
 export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
   z.strictObject({
     action: z.literal('owner.model.invocation'),
@@ -533,6 +606,55 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     request: isolatedJobPayload,
     logicalJobId: id,
   }),
+  /**
+   * Whether a definition write may go ahead (CAN-7522), raised in the
+   * `core:pipeline-definitions` scope before the commit: the owner runs the
+   * checks it runs in process, and for a copy reads the source only it can
+   * read. A read, so a resend changes nothing.
+   */
+  z
+    .strictObject({
+      action: z.literal('owner.definition.precheck'),
+      op: z.enum(WORKER_PIPELINE_OWNER_DEFINITION_OPS),
+      /** The definition written; null for a copy, whose id is the core's. */
+      definitionId: id.nullable(),
+      /** A copy's source. */
+      origin: definitionOrigin.optional(),
+      /**
+       * The scope the write's caller is in: a project copy's check reads its
+       * workspace, and a project source's read its worktree.
+       */
+      scope: z.strictObject({
+        workspaceId: id.optional(),
+        worktreeId: id.optional(),
+      }),
+    })
+    .refine(
+      (value) =>
+        (value.op === 'duplicate') === (value.definitionId === null) &&
+        (value.op === 'duplicate') === (value.origin !== undefined),
+      'Only a copy names its source, and only a copy names no definition.',
+    ),
+  /**
+   * The owner's side effects of a definition write (CAN-7522), keyed by the
+   * definition so applying one twice changes nothing. `reconcile` asks for
+   * one pass that removes what no stored definition needs any more.
+   */
+  z
+    .strictObject({
+      action: z.literal('owner.definition.effects'),
+      op: z.enum([...WORKER_PIPELINE_OWNER_DEFINITION_OPS, 'reconcile']),
+      phase: z.enum(['beforeCommit', 'afterCommit', 'reconcile']),
+      definitionId: id.nullable(),
+      origin: definitionOrigin.optional(),
+    })
+    .refine(
+      (value) =>
+        (value.op === 'reconcile') === (value.phase === 'reconcile') &&
+        (value.op === 'reconcile') === (value.definitionId === null) &&
+        (value.op === 'duplicate') === (value.origin !== undefined),
+      'Only a reconcile names no definition, and only a copy names its source.',
+    ),
 ] as const;
 
 /** What core answers an owner request with, apart from host-local values. */
@@ -734,6 +856,25 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     ),
     warnings: z.array(text(4096)).max(256),
   }),
+  z.strictObject({
+    kind: z.literal('definition.precheck'),
+    /**
+     * Allowed, with a copy's source when only the owner can read it; or
+     * refused with the code the in-process check refuses with.
+     */
+    answer: z.discriminatedUnion('allowed', [
+      z.strictObject({
+        allowed: z.literal(true),
+        source: definitionSourceDocument.optional(),
+      }),
+      z.strictObject({
+        allowed: z.literal(false),
+        code: z.enum(['contextMismatch', 'definitionNotFound']),
+        message: text(1024),
+      }),
+    ]),
+  }),
+  z.strictObject({ kind: z.literal('definition.effects') }),
 ]);
 export type WorkerPipelineOwnerResult = z.output<
   typeof WorkerPipelineOwnerResultSchema
@@ -776,6 +917,8 @@ export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
   'owner.isolatedJob.write': 'isolatedJob.write',
   'owner.isolatedJob.read': 'isolatedJob.read',
   'owner.isolatedJob.run': 'isolatedJob.run',
+  'owner.definition.precheck': 'definition.precheck',
+  'owner.definition.effects': 'definition.effects',
 });
 
 const OWNER_ACTIONS: ReadonlySet<string> = new Set(

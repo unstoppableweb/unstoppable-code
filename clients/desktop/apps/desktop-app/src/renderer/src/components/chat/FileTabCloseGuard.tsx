@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 import { ConfirmDialog } from '@canopy/ui-shared/components';
+import { isWebCoreScope } from '@/lib/chat-authority';
 import { useChatStore } from '@/stores/chatStore';
 import {
   useFileTabUiStore,
@@ -40,6 +41,15 @@ function FileTabCloseGuardModal({
   // surface a stale error or be closed against the wrong session.
   const session = useDesktopFileTabSession(pending.tabId, pending.fileKey);
   const error = session?.status === 'error' ? (session.error ?? null) : null;
+  // The error this dialog's own Save produced. An error the session already
+  // held (a failed read of the file) is shown but not recorded as a save
+  // failure.
+  const [saveFailure, setSaveFailure] = useState<string | null>(null);
+  // The shared viewer store reduces a rejected write to its text, which loses
+  // whether main recorded it. Main records every rejected local write (and the
+  // store's own refusals are preconditions), so only a cloud chat's save, which
+  // never passes through main, is recorded here.
+  const savesThroughMain = !isWebCoreScope(pending.worktreeId);
 
   function handleDismiss(): void {
     if (isSaving) return; // ignore X / Esc while a save is in flight
@@ -74,10 +84,27 @@ function FileTabCloseGuardModal({
       useFileTabUiStore.getState().clearPendingUnsavedClose();
       return;
     }
+    // An error shown now that is not an earlier save failure of this dialog
+    // came from elsewhere; a save that leaves it untouched did not produce it.
+    const inheritedError = error !== saveFailure ? error : null;
+    setSaveFailure(null);
     setIsSaving(true);
     try {
       const saved = await desktopFileSessionController.saveTab(pending.tabId);
       if (!saved) {
+        const after = desktopFileSessionController.matches(
+          pending.tabId,
+          pending.fileKey,
+        )
+          ? desktopFileSessionController.getSession(pending.tabId)
+          : undefined;
+        if (
+          after?.status === 'error' &&
+          after.error !== null &&
+          after.error !== inheritedError
+        ) {
+          setSaveFailure(after.error);
+        }
         if (
           desktopFileSessionController.matches(
             pending.tabId,
@@ -136,6 +163,9 @@ function FileTabCloseGuardModal({
       busyLabel="Saving…"
       busy={isSaving}
       errorMessage={error}
+      {...(error !== null && error === saveFailure && !savesThroughMain
+        ? { errorSource: 'file-tab-close-save' }
+        : { errorRecordingDisabled: true as const })}
       onConfirm={() => {
         void handleSave();
       }}

@@ -33,6 +33,7 @@ import type {
   WorkerPipelineHostLaunch,
 } from '@canopy/protocol/canopy-core';
 import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
+import type { PipelineOwnerChannel } from '@canopy/core-runtime/node/pipeline';
 import {
   accountExecutionHost,
   type DaemonExecutionAccounting,
@@ -68,6 +69,11 @@ export interface DaemonPipelineOptions {
   readonly accounting?: DaemonExecutionAccounting;
   /** Bound once the control plane serves; each running execution holds it (D15). */
   readonly obligations: { current?: Pick<CanopyObligationRegistry, 'hold'> };
+  /**
+   * The owner channel the daemon shares with its definitions (CAN-7522);
+   * the pipeline host makes its own without one.
+   */
+  readonly owner?: PipelineOwnerChannel;
   /** Observes each pipeline host that ended under its executions. */
   readonly onHostLost?: (report: {
     readonly code: number;
@@ -306,6 +312,7 @@ export function createDaemonPipelineModule(
   };
   return createPipelineHostModule({
     supervisor,
+    ...(options.owner && { owner: options.owner }),
     secrets: refusingExecutionSecretSource,
     stopHosts: async (): Promise<void> => {
       await options.hosts.shutdown();

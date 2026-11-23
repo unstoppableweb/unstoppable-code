@@ -184,7 +184,7 @@ export function LifecycleJournalQuarantineReview({
     case 'inspected':
       break;
   }
-  const { inspection, moved, moving, moveError } = view;
+  const { inspection, moved, moving, moveError, moveRecorded } = view;
   if (inspection.status === 'directory-unreadable')
     return (
       <ConfirmDialog
@@ -193,6 +193,10 @@ export function LifecycleJournalQuarantineReview({
         message="Deleting and archiving stay paused for every project until this folder can be read. Check its permissions, then check again."
         confirmLabel="Check again"
         errorMessage={moveError}
+        // A failure the host recorded is linked, not recorded again.
+        {...(moveRecorded
+          ? { errorRecordingDisabled: true as const }
+          : { errorSource: 'lifecycle-journal-quarantine-move' })}
         onConfirm={() => void open()}
         onCancel={close}
       >
@@ -218,6 +222,10 @@ export function LifecycleJournalQuarantineReview({
         confirmLabel="Done"
         // A failed move's re-read can land here; keep what it reported.
         errorMessage={moveError}
+        // A failure the host recorded is linked, not recorded again.
+        {...(moveRecorded
+          ? { errorRecordingDisabled: true as const }
+          : { errorSource: 'lifecycle-journal-quarantine-move' })}
         onConfirm={close}
         onCancel={close}
       >
@@ -261,6 +269,10 @@ export function LifecycleJournalQuarantineReview({
       busy={moving}
       confirmDisabled={!entry.identityVerified}
       errorMessage={moveError}
+      // A failure the host recorded is linked, not recorded again.
+      {...(moveRecorded
+        ? { errorRecordingDisabled: true as const }
+        : { errorSource: 'lifecycle-journal-quarantine-move' })}
       // Lifts a fence for every project: Enter must not confirm by accident.
       focusCancel
       onConfirm={() => void quarantine(entry)}

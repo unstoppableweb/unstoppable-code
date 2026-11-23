@@ -16,6 +16,7 @@ import {
   mcpServerCommandRefusal,
   parseMcpExtraHeaders,
 } from '@canopy/protocol/mcp-servers';
+import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import {
   accountMcpConnectionsEnabled,
   mergeAccountMcpInventory,
@@ -111,10 +112,12 @@ import {
 import { sanitizeEnvVars } from '@canopy/execution-engine/lib/mcp-security';
 import {
   projectMcpServerData,
+  mergeControllerServerUrls,
   projectMcpServerFile,
   resolveAccountSecretInputs,
   resolveMcpServerInput,
 } from '../mcp/server-secret-view';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
 import { StoredSecretError } from '../lib/stored-secrets';
 import { getRemoteImageCacheDir } from '../lib/paths';
 import {
@@ -877,10 +880,34 @@ async function readIndexWithUrlBackfill(): Promise<McpServersIndexFile> {
     if (!(error instanceof McpConfigStateError)) throw error;
     // Display fallback only: the refused index is never rewritten from it.
     logMainProcessWarn('MCP index backfill refused', error.detail);
-    return configRepository.readIndexForPresentation();
+    return withNormalizedCreatedAt(
+      await configRepository.readIndexForPresentation(),
+    );
   }
   if (backfilled.changed) await notifyConfigIndexChanged();
-  return backfilled.index;
+  return withNormalizedCreatedAt(backfilled.index);
+}
+
+/**
+ * CAN-5239: the date each row stores, an invalid one as unknown. Rows written
+ * before the index carried it stay undated; nothing is read or written here.
+ */
+function withNormalizedCreatedAt(
+  index: McpServersIndexFile,
+): McpServersIndexFile {
+  const servers = index.servers.map((entry): McpServerIndexEntry => {
+    // The display fallback keeps rows it cannot classify, null ones included.
+    const row: unknown = entry;
+    if (typeof row !== 'object' || row === null || Array.isArray(row))
+      return entry;
+    if (entry.createdAt === undefined) return entry;
+    const createdAt = normalizeInstalledAt(entry.createdAt);
+    if (createdAt === entry.createdAt) return entry;
+    const next: McpServerIndexEntry = { ...entry };
+    delete next.createdAt;
+    return createdAt ? { ...next, createdAt } : next;
+  });
+  return { ...index, servers };
 }
 
 /** The MCP index the window's list shows, account connections included. */
@@ -902,6 +929,7 @@ export function toIndexEntry(
     server.definition.type === 'http'
       ? urlIndexFields(server.definition.url)
       : {};
+  const createdAt = normalizeInstalledAt(server.definition.createdAt);
   return {
     id: server.definition.id,
     name: server.definition.name,
@@ -919,6 +947,7 @@ export function toIndexEntry(
     effectiveHttpAuthHandler === 'account'
       ? { scope: 'account' as const, authHandler: 'account' as const }
       : {}),
+    ...(createdAt ? { createdAt } : {}),
     updatedAt: server.definition.updatedAt,
   };
 }
@@ -1794,25 +1823,22 @@ function healthFromConnectionTest(
  */
 export async function saveMcpServer(
   server: SaveMcpServerRequest,
+  sender: 'local' | 'controller' = 'local',
 ): Promise<McpServerFile> {
   const id = server.definition.id || randomUUID();
   if (!SAFE_ID_RE.test(id)) throw new Error(`Invalid MCP server id: ${id}`);
-  const definition = {
-    ...server.definition,
-    id,
-    createdAt: server.definition.id
-      ? server.definition.createdAt
-      : new Date().toISOString(),
-  };
+  // The writer replaces createdAt with the stored copy's date (CAN-5239).
+  const definition = { ...server.definition, id };
   const saved = await configRepository.withServerMutation(id, async () => {
     // Kept stored secrets resolve against the server as stored now, inside
     // its lease, so a value kept here is the one this save replaces.
     const current = server.definition.id
       ? (await configRepository.readServerForMutation(id))?.server
       : undefined;
+    const sent = { definition, configs: server.configs };
     const resolved = resolveMcpServerInput(
       id,
-      { definition, configs: server.configs },
+      sender === 'controller' ? mergeControllerServerUrls(sent, current) : sent,
       current,
     );
     return writeMcpServer({
@@ -1965,7 +1991,8 @@ async function writeMcpServer(
   const resolvedDefinition: McpServerDefinitionData = {
     ...server.definition,
     id: server.definition.id || randomUUID(),
-    createdAt: server.definition.id ? server.definition.createdAt : now,
+    // Replaced with the stored copy's date under the server lease below.
+    createdAt: now,
     updatedAt: now,
   };
 
@@ -2003,7 +2030,10 @@ async function writeMcpServer(
   const preferences = await readPreferencesFile();
   const serverFile = await configRepository.save(
     resolvedDefinition.id,
-    (index) => {
+    (index, stored) => {
+      // CAN-5239: a stored copy keeps its date, even an empty legacy one; a
+      // caller's date never backdates it. Only a fresh copy is dated now.
+      resolvedDefinition.createdAt = stored ? stored.definition.createdAt : now;
       const isCreate = !index.servers.some(
         (entry) => entry.id === resolvedDefinition.id,
       );
@@ -2787,8 +2817,15 @@ export function registerMcpServerHandlers(
   // Save server (create or update)
   registerIpcHandler(
     MCP_SERVER_CHANNELS.SAVE_SERVER,
-    async (_event, server: SaveMcpServerRequest): Promise<McpServerFileView> =>
-      projectMcpServerFile(await saveMcpServer(server)),
+    async (event, server: SaveMcpServerRequest): Promise<McpServerFileView> =>
+      projectMcpServerFile(
+        await saveMcpServer(
+          server,
+          resolveRemoteBridgeSender(event.sender) === null
+            ? 'local'
+            : 'controller',
+        ),
+      ),
   );
 
   registerIpcHandler(MCP_SERVER_CHANNELS.REMOVAL_CANDIDATES, () =>

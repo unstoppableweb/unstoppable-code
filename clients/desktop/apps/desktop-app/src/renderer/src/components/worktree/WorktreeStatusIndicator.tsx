@@ -13,7 +13,7 @@ interface WorktreeStatusIndicatorProps {
   isTearingDown: boolean;
   isPendingGitSetup: boolean;
   isStreaming: boolean;
-  /** Live background tasks: the background spinner while nothing streams. */
+  /** Live background tasks: the background dot while nothing streams. */
   backgroundTasks?: number;
   fadeStatusOnHover?: boolean;
   showPrimaryIndicator?: boolean;

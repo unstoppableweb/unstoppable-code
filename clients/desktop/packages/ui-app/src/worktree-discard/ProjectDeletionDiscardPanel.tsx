@@ -44,6 +44,15 @@ export function ProjectDeletionDiscardPanel({
       errorMessage={
         view.error ? projectDeletionDiscardErrorCopy(view.error) : null
       }
+      // Only a failed run the host did not record is recorded: a changed or
+      // refused worktree, or a fresh review that found changed state (null
+      // message), is a state the person is asked to review, not a failure.
+      {...(view.error === null ||
+      (view.error.kind === 'failed' &&
+        view.error.message !== null &&
+        view.error.recorded !== true)
+        ? { errorSource: 'project-deletion-discard' }
+        : { errorRecordingDisabled: true as const })}
       onConfirm={() => {
         void confirm(onItemDiscarded);
       }}

@@ -39,6 +39,7 @@ import {
 } from './pipeline-host-values';
 import {
   WORKER_PIPELINE_OWNER_REQUEST_MEMBERS,
+  WORKER_PIPELINE_RESERVED_EXECUTION_ID_PREFIX,
   WorkerPipelineOwnerResultSchema,
 } from './pipeline-owner-requests';
 import {
@@ -74,6 +75,11 @@ export const WORKER_PIPELINE_GRANTS = {
 
 const id = z.string().min(1).max(512);
 const timestamp = z.iso.datetime({ offset: true });
+/** A run id a client names: never a reserved owner scope (CAN-7522). */
+const runId = id.refine(
+  (value) => !value.startsWith(WORKER_PIPELINE_RESERVED_EXECUTION_ID_PREFIX),
+  'The core: prefix is reserved for owner scopes.',
+);
 
 export const WORKER_PIPELINE_EXECUTION_STATUSES = [
   'pending',
@@ -151,7 +157,7 @@ export const WorkerPipelineExecutionSchema = z.strictObject({
 });
 
 export const WorkerPipelineExecutionStartParamsSchema = z.strictObject({
-  executionId: id,
+  executionId: runId,
   pipelineId: id,
   definitionSource: z.enum(WORKER_PIPELINE_DEFINITION_SOURCES),
   runScope: z.enum(WORKER_PIPELINE_RUN_SCOPES),
@@ -1275,7 +1281,7 @@ export const WorkerPipelineHostActionRequestSchema = z.discriminatedUnion(
     z.strictObject({
       action: z.literal('run-pipeline'),
       /** The child's execution id, kept across resends and handoffs. */
-      childExecutionId: id,
+      childExecutionId: runId,
       pipelineId: id,
       /** The child's definition as the worker resolved it, as JSON. */
       document: z.string().min(1).max(WORKER_PIPELINE_HOST_CHILD_DOCUMENT_MAX),
@@ -1380,6 +1386,20 @@ export const WorkerPipelineHostResultSchema = z.discriminatedUnion('status', [
 export const WorkerPipelineHostRequestsParamsSchema = z.strictObject({
   /** The stream doesn't resume; a new subscriber gets every pending request. */
   cursor: z.null().optional(),
+  /**
+   * The owner requests this subscriber answers beyond the ones every owner
+   * answers, each at the revision it serves (CAN-7522). A kind this worker
+   * doesn't know is ignored; absent, it receives none of them.
+   */
+  serves: z
+    .array(
+      z.strictObject({
+        kind: z.string().min(1).max(128),
+        revision: z.number().int().min(1).max(1_000_000),
+      }),
+    )
+    .max(64)
+    .optional(),
   _meta: CanopyQueryRequestMetadataSchema.optional(),
 });
 

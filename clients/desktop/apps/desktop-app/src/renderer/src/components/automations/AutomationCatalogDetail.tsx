@@ -864,6 +864,9 @@ export function SharedAutomationMarketplaceDetail({
               />
             ) : undefined
           }
+          // An installed copy found equal to its source; a copy you shared was
+          // never compared.
+          verifiedCurrent={sharedByActivityId === null && step.kind === 'open'}
         />
         {modals}
       </>
@@ -1047,6 +1050,8 @@ export function CuratedAutomationMarketplaceDetail({
               />
             ) : undefined
           }
+          // An installed copy found equal to its source.
+          verifiedCurrent={step.kind === 'open'}
         />
         {modals}
       </>

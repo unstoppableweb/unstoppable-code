@@ -24,6 +24,7 @@ import {
   Surface,
   splitMatchSegments,
 } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { formatShortcut } from '@canopy/ui-shared/lib/shortcuts';
 import {
   REPLAY_BLOCK_CLASS,
@@ -178,6 +179,18 @@ function dirName(path: string): string {
   return index > 0 ? path.slice(0, index) : '';
 }
 
+// TODO(CAN-759): replace with a typed error code on the file read. A plan file
+// deleted after the list loaded, one that cannot be read as text, or a cloud
+// saved copy that has expired is an expected outcome, not a defect.
+function isExpectedPreviewOutcome(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.startsWith('File not found:') ||
+      error.message.includes('Binary files cannot be read') ||
+      error.message.startsWith('Saved copy is no longer available'))
+  );
+}
+
 type PreviewState =
   | { readonly key: string; readonly status: 'loading' }
   | { readonly key: string; readonly status: 'ready'; readonly title: string }
@@ -217,8 +230,16 @@ function usePlanPreview(
               : { key, status: 'unavailable' },
           );
         })
-        .catch((): void => {
-          if (!cancelled) setPreview({ key, status: 'unavailable' });
+        .catch((error: unknown): void => {
+          if (cancelled) return;
+          setPreview({ key, status: 'unavailable' });
+          if (isExpectedPreviewOutcome(error)) return;
+          // The row keeps its file name for a title, so nothing shows.
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'import-plan-picker-preview',
+            error,
+          });
         });
     }, PREVIEW_DEBOUNCE_MS);
     return (): void => {

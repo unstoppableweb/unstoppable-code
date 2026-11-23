@@ -13,7 +13,10 @@ import { SCRIPT_ACTIONS_CHANNELS } from '../script-actions';
  * these are `local` or `blocked` while controlling another computer).
  * Host-local channels the adapter must never tunnel (`chat:event-output-reset`)
  * and port-owned slices (settings, feedback, marketplace sources, external
- * URLs) are deliberately absent. Transcript reads stay port-owned on the
+ * URLs) are deliberately absent. Of the marketplace, only the installed-item
+ * status reads and changes and the two plugin installs that take no source URL
+ * from a controller are here (CAN-7442); adding a marketplace, harness
+ * records, Codex compatibility and component reads stay port-owned. Transcript reads stay port-owned on the
  * desktop; a controller without that port reads delegate transcripts through
  * the narrow `chat:read-delegation-*` channels (CAN-7432), never the
  * `managed-delegation:*` ones.
@@ -74,6 +77,10 @@ export const REMOTE_IPC_CHANNELS = {
   hookRun: 'hook:run',
   hookStarted: 'hook:started',
   hookStop: 'hook:stop',
+  installedItemsChanged: 'installed-items:changed',
+  installedItemsListStatus: 'installed-items:list-status',
+  installedItemsSetStatus: 'installed-items:set-status',
+  installedItemsUninstall: 'installed-items:uninstall',
   lifecycleJournalInspect: 'lifecycle-journal:inspect',
   lifecycleJournalQuarantine: 'lifecycle-journal:quarantine',
   managedDelegationExtendLifetimeLimit:
@@ -116,6 +123,8 @@ export const REMOTE_IPC_CHANNELS = {
   pipelinesResume: 'pipelines:resume',
   pipelinesRetryExecution: 'pipelines:retry-execution',
   pluginCatalogList: 'plugin-catalog:list',
+  pluginsInstallBuiltInPlugin: 'plugins:install-built-in-plugin',
+  pluginsInstallPlugin: 'plugins:install-plugin',
   preferencesLoad: 'preferences:load',
   // Only the tips or suggestions state, for controllers that are not served
   // the full preferences (CAN-7434).

@@ -372,8 +372,10 @@ export {
 export {
   SHARED_SKILL_SECRET_DETECTED_CODE,
   DEFINITION_CREDENTIAL_RULE,
+  escapeDecodedCopy,
   findPackageEntryCredential,
   findPackageFileCredentialRule,
+  findSharedMemberFileCredentialRule,
   packageDefinitionDocumentEntry,
   type PackageEntryCredentialFinding,
   type PackageEntryCredentialRule,
@@ -387,6 +389,7 @@ export {
   packagedSkillSecretMessage,
   pluginSecretMessage,
   packageFileNameSecretMessage,
+  packageFileSecretMessage,
   packageFileUncheckedMessage,
   type PackageFileOwner,
   type SharedSkillFile,

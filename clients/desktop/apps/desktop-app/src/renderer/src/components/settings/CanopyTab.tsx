@@ -710,6 +710,8 @@ export function CanopyTab(): JSX.Element {
           busyLabel="Creating…"
           busy={dataDirPending}
           errorMessage={dataDirError}
+          // The banner above records this failure.
+          errorRecordingDisabled
           onConfirm={(): void => {
             void handleCreatePrimaryDataDir();
           }}
@@ -863,6 +865,8 @@ export function CanopyTab(): JSX.Element {
           busyLabel="Starting…"
           busy={targetUpdatePending}
           errorMessage={versionError}
+          // The version banner records this failure.
+          errorRecordingDisabled
           destructive
           onConfirm={(): void => {
             void startTargetUpdate(selectedDowngrade);

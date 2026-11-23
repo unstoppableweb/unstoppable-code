@@ -22,6 +22,7 @@ import * as fsp from 'node:fs/promises';
 import { TextDecoder } from 'node:util';
 import * as yaml from 'js-yaml';
 import { BRAND } from '@canopy/brand/current';
+import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import { isPipelinePackageDigest } from '@canopy/protocol/pipelines';
 import type {
   IPCResult,
@@ -767,7 +768,6 @@ function loadCustomSkills(): InstalledSkillInfo[] {
       }
       throw error;
     }
-    const installedAt = stat.birthtime.toISOString();
     const updatedAt = stat.mtime.toISOString();
 
     results.push({
@@ -775,7 +775,10 @@ function loadCustomSkills(): InstalledSkillInfo[] {
       sourceId: CUSTOM_SOURCE_ID,
       description,
       source: `${BRAND.displayName} (custom)`,
-      installedAt,
+      // CAN-5239: empty means unknown. How the detail header labels an
+      // unknown date (its "Installed" fallback) belongs to the later
+      // ordering and UI change.
+      installedAt: '',
       updatedAt,
       updateAvailable: false,
       custom: true,
@@ -803,7 +806,7 @@ export function loadSkills(): IPCResult<InstalledSkillInfo[]> {
         sourceId,
         description: readSkillDescription(sourceId, skillName),
         source: entry.source,
-        installedAt: entry.installedAt,
+        installedAt: normalizeInstalledAt(entry.installedAt) ?? '',
         updatedAt: entry.updatedAt,
         updateAvailable: updateStatus[key] ?? false,
         ...(shareableSource ? { shareableSource } : {}),

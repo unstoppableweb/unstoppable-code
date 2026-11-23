@@ -17,6 +17,10 @@ export const TEAM_UPGRADE_COPY = {
   projectsLoading: 'Loading your projects…',
   projectsEmpty: 'No Personal projects to include.',
   projectsFailed: "Couldn't load your projects.",
+  // The computer's build predates project conversion, so trying again can't
+  // help; only updating it or continuing without projects can (CAN-7469).
+  projectsHostOutdated:
+    'Update the desktop app on this computer to include its projects.',
   projectsRetry: 'Try again',
   projectsSkip: 'Continue without projects',
   projectsSkipped:

@@ -53,6 +53,12 @@ export interface McpAccountActionsPort {
    * Another account becomes the default when the default goes.
    */
   readonly removeAccount: (connectionId: string) => Promise<string | null>;
+  /**
+   * The host already recorded the failure its last `removeAccount` answered,
+   * so the confirmation shows it without recording it again. A host without
+   * it leaves the recording to the confirmation.
+   */
+  readonly removeFailureRecorded?: () => boolean;
 }
 
 /** The row the detail describes: one of the accounts, or the device copy. */
@@ -279,6 +285,8 @@ export function McpAccountControls({
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The host recorded the failure the remove confirmation shows.
+  const [errorRecorded, setErrorRecorded] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
   // Only a device copy: the first account is a cloud one, added beside it.
   const firstBesideDevice = connections.length === 0 && deviceCopy;
@@ -307,6 +315,7 @@ export function McpAccountControls({
   const run = async (
     work: () => Promise<string | null>,
     inDialog: boolean,
+    recordedByHost?: () => boolean,
   ): Promise<void> => {
     setBusy(true);
     setRowError(null);
@@ -315,8 +324,11 @@ export function McpAccountControls({
       if (failure === null) {
         setDialog(null);
         setError(null);
-      } else if (inDialog) setError(failure);
-      else setRowError(failure);
+      } else if (inDialog) {
+        // Asked as the attempt fails, while it is still the host's last.
+        setErrorRecorded(recordedByHost?.() ?? false);
+        setError(failure);
+      } else setRowError(failure);
     } finally {
       setBusy(false);
     }
@@ -542,12 +554,20 @@ export function McpAccountControls({
           confirmLabel="Remove account"
           busyLabel="Removing…"
           busy={busy}
-          errorMessage={error}
+          {...(errorRecorded
+            ? { errorMessage: error, errorRecordingDisabled: true as const }
+            : { errorMessage: error, errorSource: 'mcp-account-remove' })}
           destructive
           dataTestId="mcp-account-remove-dialog"
           confirmTestId="mcp-account-remove-confirm"
           onConfirm={(): void => {
-            void run(() => actions.removeAccount(dialog.connectionId), true);
+            // Each attempt's failure is a new sighting, even with the same text.
+            setError(null);
+            void run(
+              () => actions.removeAccount(dialog.connectionId),
+              true,
+              (): boolean => actions.removeFailureRecorded?.() === true,
+            );
           }}
           onCancel={(): void => setDialog(null)}
         />

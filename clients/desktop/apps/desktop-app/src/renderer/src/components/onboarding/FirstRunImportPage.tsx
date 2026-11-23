@@ -20,9 +20,7 @@ import { FolderIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatCompactAge } from '@canopy/ui-shared/lib';
 import { SourceBranchCommitHint } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { FirstRunAccountRowHost } from '@/components/onboarding/FirstRunAccountRowHost';
-import { FirstRunProviderGroup } from '@/components/onboarding/FirstRunProviderGroup';
-import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
+import { FirstRunProviderChooser } from '@/components/onboarding/FirstRunProviderChooser';
 import {
   bulkSelection,
   CODE_REPOSITORY_DETAIL,
@@ -57,10 +55,7 @@ import {
 import { useClaudeAuthStatus } from '@/hooks/useClaudeAuthStatus';
 import { useCodexAuthStatus } from '@/hooks/useCodexAuthStatus';
 import { offerCursorRulesReview } from '@/lib/cursorRulesOffer';
-import {
-  agentConnectionsIntro,
-  PROVIDER_ROW_DESCRIPTIONS,
-} from '@canopy/ui-app/onboarding';
+import { agentConnectionsIntro } from '@canopy/ui-app/onboarding';
 import { brandText } from '@/lib/brand';
 import {
   captureProjectImportSubmission,
@@ -852,21 +847,7 @@ export function FirstRunImportPage({
         <SettingsSection
           description={agentConnectionsIntro({ appName: brandText.appName })}
         >
-          <FirstRunProviderGroup>
-            <ProviderAuthPanel
-              provider="claude"
-              layout="row"
-              unauthenticatedTone="neutral"
-              signedOutDescription={PROVIDER_ROW_DESCRIPTIONS.claude}
-            />
-            <ProviderAuthPanel
-              provider="codex"
-              layout="row"
-              unauthenticatedTone="neutral"
-              signedOutDescription={PROVIDER_ROW_DESCRIPTIONS.codex}
-            />
-            <FirstRunAccountRowHost />
-          </FirstRunProviderGroup>
+          <FirstRunProviderChooser />
         </SettingsSection>
 
         <ProjectsSection

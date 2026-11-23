@@ -179,3 +179,16 @@ export function mcpPlacementLabel(placement: UnifiedEntryPlacement): string {
       return 'Cloud account · This device';
   }
 }
+
+/**
+ * How long ago a Test connection the person ran finished, coarse so a slow
+ * clock keeps it true: "just now" for the first minute, then "2 min ago".
+ */
+export function formatMcpResultAge(finishedAt: number, now: number): string {
+  const minutes = Math.floor((now - finishedAt) / 60_000);
+  if (!Number.isFinite(minutes) || minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}

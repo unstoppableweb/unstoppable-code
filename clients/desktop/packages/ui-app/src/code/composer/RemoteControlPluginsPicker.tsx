@@ -26,6 +26,7 @@ import {
   INSTALLED_ITEM_STATUS_COPY,
   type PluginPickerSelectionCopy,
 } from '@canopy/ui-shared/lib/installed-item-status';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { parseSecurityAudit } from '@canopy/ui-shared/lib/security-audit';
 import {
   ChatComposerToolbarChip,
@@ -181,6 +182,12 @@ export interface RemoteControlPluginsPickerProps {
   onChange: (
     selections: RemoteControlChatTabPluginSelections,
   ) => void | Promise<void>;
+  /**
+   * The host's `onChange` or `deferredTools.save` already records a failed
+   * save before it rethrows. The failure banner still shows, but does not
+   * record the same failure a second time.
+   */
+  saveFailureRecorded?: boolean;
   /** Supplied only when the selected host supports atomic policy commits. */
   deferredTools?: {
     key: string;
@@ -789,6 +796,7 @@ const RemoteControlPluginsPickerContent = memo(
     loadFailureRecorded = false,
     brandDisplayName,
     onChange,
+    saveFailureRecorded = false,
     onOpen,
     cloudScope = false,
     marketplacesEnabled = false,
@@ -952,14 +960,17 @@ const RemoteControlPluginsPickerContent = memo(
     }, [open, initializeDraft]);
     const handleOpen = useCallback((): void => setOpen(true), [setOpen]);
     const handleClose = useCallback((): void => {
-      if (savingRef.current) return;
+      // A tool-policy save keeps the picker open until its host commit lands.
+      // Any other save may be closed on: the bump below makes its late result
+      // a no-op.
+      if (savingRef.current && deferredTools !== undefined) return;
       generation.current += 1;
       setOpen(false);
       setDraft(null);
       setDetailEntry(null);
       setMarketplaceDialogOpen(false);
       setMarketplaceAdded(null);
-    }, [setOpen]);
+    }, [setOpen, deferredTools]);
     // Each account's selection key, to every account key of its connector, for
     // a curated connector the person holds several accounts of (CAN-6229).
     const accountSiblingKeys = useMemo(() => {
@@ -1250,9 +1261,43 @@ const RemoteControlPluginsPickerContent = memo(
           );
         return;
       }
-      void Promise.resolve(onChange(next)).catch(() => undefined);
+      const currentGeneration = generation.current;
+      savingRef.current = true;
+      setSaving(true);
+      setSaveError(false);
+      let pending: void | Promise<void>;
+      try {
+        pending = onChange(next);
+      } catch {
+        // A synchronous throw is a failed save too.
+        savingRef.current = false;
+        setSaving(false);
+        setSaveError(true);
+        return;
+      }
+      // Still inside the Save click: a sign-in popup opened here needs the gesture.
       onApplied?.(next, selections);
-      handleClose();
+      if (pending === undefined) {
+        // A synchronous host (a dialog's draft state) has nothing to await.
+        savingRef.current = false;
+        setSaving(false);
+        handleClose();
+        return;
+      }
+      void Promise.resolve(pending).then(
+        () => {
+          if (generation.current !== currentGeneration) return;
+          savingRef.current = false;
+          setSaving(false);
+          handleClose();
+        },
+        () => {
+          if (generation.current !== currentGeneration) return;
+          savingRef.current = false;
+          setSaving(false);
+          setSaveError(true);
+        },
+      );
     }, [
       addingLocal,
       catalog,
@@ -1358,8 +1403,12 @@ const RemoteControlPluginsPickerContent = memo(
                 selectedKeys={selectedRowKeys}
                 onToggle={toggle}
                 onView={(row): void => {
+                  // A save closes the picker, which would discard tool-policy
+                  // edits made in a details view opened meanwhile.
+                  if (savingRef.current) return;
                   setDetailEntry(projection?.detailsByKey.get(row.key) ?? null);
                 }}
+                viewActionsDisabled={saving}
                 showCollectionKind={(catalog?.collections.length ?? 0) > 0}
                 loading={loading && !catalog && !loadError}
                 autoFocusSearch
@@ -1382,6 +1431,7 @@ const RemoteControlPluginsPickerContent = memo(
                 }
                 rowCheckboxTestId="remote-control-plugins-row-checkbox"
                 selectionCopy={selectionCopy}
+                blockRowsFromReplay
               />
               {localRows.length > 0 && (
                 <p
@@ -1415,6 +1465,7 @@ const RemoteControlPluginsPickerContent = memo(
                         setMarketplaceAdded(null);
                         setMarketplaceDialogOpen(true);
                       }}
+                      disabled={saving}
                       data-testid="remote-control-plugins-add-marketplace"
                     >
                       Add marketplace
@@ -1434,11 +1485,22 @@ const RemoteControlPluginsPickerContent = memo(
                     {saveError && (
                       <ErrorBanner
                         errorSource="portal-plugins-picker"
+                        errorRecordingDisabled={saveFailureRecorded}
                         className=""
                         error="Couldn't save plugin settings. Try again."
                       />
                     )}
                   </div>
+                </div>
+              )}
+              {saveError && !deferredTools && (
+                <div className="pt-3">
+                  <ErrorBanner
+                    errorSource="portal-plugins-picker"
+                    errorRecordingDisabled={saveFailureRecorded}
+                    className=""
+                    error="Couldn't save plugin settings. Try again."
+                  />
                 </div>
               )}
               {!loading && !catalog && !loadError && (
@@ -1452,7 +1514,9 @@ const RemoteControlPluginsPickerContent = memo(
         {detailEntry?.memberInventory && (
           <DialogModal
             onClose={() => setDetailEntry(null)}
-            title={detailEntry.name}
+            title={
+              <span className={REPLAY_MASK_CLASS}>{detailEntry.name}</span>
+            }
             titleId="portal-plugin-details-dialog-title"
             subtitle={detailEntry.source.label}
             maxWidth="2xl"

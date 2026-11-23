@@ -7260,6 +7260,12 @@ export interface RemoteControlPipelineSummary extends RemoteControlPipelineMetad
    * sets it only for an owner that still runs the pipeline.
    */
   ownedByAutomation?: true;
+  /**
+   * When this desktop first saved its stored user pipeline, in UTC
+   * (CAN-5239). Bundled, checkout and shared pipelines have none, and an
+   * unknown or invalid stored date is left out.
+   */
+  installedAt?: string;
 }
 
 export interface RemoteControlPipelineListResult {

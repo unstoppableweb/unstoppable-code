@@ -19,6 +19,7 @@ import {
   isAltCodeShortcutEvent,
   isDictationShortcutEvent,
   isBrowserSurfaceTarget,
+  isBehindModal,
   isBrowserHistoryShortcutEvent,
   isDialogTarget,
   isEditableTarget,
@@ -38,6 +39,7 @@ import {
   runPanelCommand,
 } from '@/lib/panels/commands';
 import {
+  getActivePanelId,
   getPanelLayoutViewModel,
   makeWorktreePanelKey,
 } from '@/stores/panelLayoutStore';
@@ -728,13 +730,16 @@ export function handleGlobalShortcutKeyDown(
     // same way its tab-strip "X" button does, not always the chat tab. Acts on
     // whichever panel grid is visible: the normal worktree on the main page or
     // the cowork work entry on the chat page.
-    // Not behind a modal (the media viewer, a confirm): focus sits on one of
-    // its buttons, or falls to the page once its picture is clicked.
     const selection = getVisibleGridSelection();
     if (
       !selection ||
-      isDialogTarget(event.target) ||
-      document.querySelector('[aria-modal="true"]') !== null
+      isBehindModal(
+        event.target,
+        document,
+        getActivePanelId(
+          makeWorktreePanelKey(selection.projectId, selection.worktreeId),
+        ),
+      )
     ) {
       return;
     }
@@ -752,14 +757,20 @@ export function handleGlobalShortcutKeyDown(
   // editable-target guard and keep working from the composer, an editor, or
   // a terminal (the CAN-338 guard above lets them through). They act on the
   // visible grid (Cowork entries included) and stay unclaimed off it, and
-  // inside any dialog, editable or not: a focused confirm button must not
-  // switch the tab behind the modal it belongs to.
+  // while any modal is open, editable or not: a focused confirm button must
+  // not switch the tab behind the modal it belongs to.
   if (editableSafeBinding) {
     const selection = getVisibleGridSelection();
     if (
       !selection ||
       event.defaultPrevented === true ||
-      isDialogTarget(event.target)
+      isBehindModal(
+        event.target,
+        document,
+        getActivePanelId(
+          makeWorktreePanelKey(selection.projectId, selection.worktreeId),
+        ),
+      )
     ) {
       return;
     }

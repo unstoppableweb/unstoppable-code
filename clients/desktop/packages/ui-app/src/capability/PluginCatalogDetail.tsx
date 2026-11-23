@@ -3,6 +3,7 @@ import {
   type ComponentType,
   type JSX,
   type ReactNode,
+  useEffect,
   useRef,
   useState,
 } from 'react';
@@ -15,14 +16,20 @@ import {
   type UnifiedPluginEntry,
 } from '@canopy/ui-shared';
 import { customizeRowAction } from './customizeRowAction';
+import { ChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Badge,
   Button,
   CapabilityDetailLayout,
+  ComponentContentView,
   ComponentSection,
   DataTable,
   PluginContentsTable,
+  PluginDetailTabs,
+  PluginPreloadedReadme,
+  focusPluginContentsOpener,
   type PluginContentsRow,
+  type PluginDetailReadComponent,
   DropdownMenuItem,
   FloatingMenu,
   type CustomizeRowMenuItem,
@@ -55,13 +62,59 @@ export interface PluginCatalogDetailModel {
   >;
   /** New Customize: the tile's publisher line, in place of "By author". */
   publisher?: ReactNode;
-  /** New Customize: the marketplace it is listed in, for the Marketplace row. */
-  marketplace?: { name: string; onOpen?: () => void };
   /**
    * New Customize: its contents by name, where a listing or an installed
    * copy names them (`customizeCatalogContents`); the counts cover the rest.
    */
   items?: readonly PluginContentsRow[];
+  /** New Customize: the README a light preview read before Add. */
+  readme?: { body: string; truncated?: boolean };
+}
+
+/**
+ * Whether a plugin has not been added yet, the one answer the catalog summary,
+ * its preview and its checkout reader share. A curated or built-in plugin's
+ * content is on disk before anyone adds it, so the desktop projects it
+ * `installed`; its managed per-provider install status says whether a harness
+ * has it. Any other plugin, or one whose status is not reported, is not added
+ * exactly when its entry says `available`.
+ */
+export function pluginNotAddedYet({
+  state,
+  plugin,
+}: {
+  readonly state: UnifiedPluginEntry['state'];
+  readonly plugin: Pick<
+    PluginInfo,
+    'curated' | 'builtIn' | 'externalSource' | 'parked' | 'globalInstallStatus'
+  >;
+}): boolean {
+  const status = plugin.globalInstallStatus;
+  if (
+    plugin.parked !== true &&
+    status &&
+    !plugin.externalSource &&
+    (plugin.curated === true || plugin.builtIn === true)
+  )
+    return !status.claude?.installed && !status.codex?.installed;
+  return state === 'available';
+}
+
+/**
+ * Whether a plugin's page opens on this catalog summary. In New Customize
+ * every plugin not added yet does, so its light preview fills Works with and
+ * Contents before Add; otherwise only where the host prefers it.
+ */
+export function pluginOpensCatalogSummary({
+  preferCatalogDetail,
+  discovery,
+  notAddedYet,
+}: {
+  readonly preferCatalogDetail: boolean;
+  readonly discovery: boolean;
+  readonly notAddedYet: boolean;
+}): boolean {
+  return preferCatalogDetail || (discovery && notAddedYet);
 }
 
 export interface PluginCatalogDetailProps {
@@ -85,6 +138,18 @@ export interface PluginCatalogDetailProps {
   status?: ReactNode;
   /** New Customize: the Works with table, as the tile's chips read it. */
   worksWith?: ReactNode;
+  /**
+   * New Customize: reads a Contents row's file (`PluginContentsRow.component`)
+   * from the marketplace checkout, as its `facet` (the version that lists
+   * it) says; without it those rows are plain text.
+   */
+  readComponent?: PluginDetailReadComponent;
+  /**
+   * Which copy of the plugin `readComponent` and the rows read: its
+   * marketplace, name and source. A member opened from one source closes
+   * when the source changes under the same page.
+   */
+  sourceKey?: string;
 }
 
 /**
@@ -245,8 +310,8 @@ function unnamedNote(entry: PluginCatalogDetailModel): string | null {
   const left = [
     counted(entry.components.skills - named('Skill'), 'skill'),
     counted(entry.components.mcpServers - named('MCP server'), 'MCP server'),
-    counted(entry.components.commands, 'command'),
-    counted(entry.components.agents, 'agent'),
+    counted(entry.components.commands - named('Command'), 'command'),
+    counted(entry.components.agents - named('Agent'), 'agent'),
   ].filter((part): part is string => part !== null);
   return left.length > 0
     ? `Also ${left.join(', ')}, named once it's added.`
@@ -274,9 +339,50 @@ export function PluginCatalogDetail({
   layout = false,
   status,
   worksWith,
+  readComponent,
+  sourceKey = '',
 }: PluginCatalogDetailProps): JSX.Element {
   // Customize's light logo plate, only while New Customize is on.
   const logoPlate = useCustomizeDiscoveryEnabled();
+  const [viewing, setViewing] = useState<{
+    readonly key: string;
+    readonly name: string;
+    readonly component: NonNullable<PluginContentsRow['component']>;
+    /** The source it was opened from; another source's reader can't read it. */
+    readonly source: string;
+  } | null>(null);
+  // A member opened from another source is closed, from this render on.
+  const shown = viewing?.source === sourceKey ? viewing : null;
+  const summary = useRef<HTMLDivElement>(null);
+  // The opened row's key and source, kept here: the list marks openers by
+  // place, and places move when the rows change while the file is open.
+  const opener = useRef<{
+    readonly source: string;
+    readonly key: string;
+  } | null>(null);
+  const current = useRef<{
+    readonly source: string;
+    readonly items: readonly PluginContentsRow[];
+  }>({ source: sourceKey, items: [] });
+  useEffect((): void => {
+    current.current = { source: sourceKey, items: entry.items ?? [] };
+  });
+  useEffect((): void => {
+    if (viewing && !shown) setViewing(null);
+  }, [viewing, shown]);
+  useEffect((): void => {
+    if (shown || opener.current === null) return;
+    const opened = opener.current;
+    opener.current = null;
+    // Another source's row with the same key is not the one that opened:
+    // focus falls back to the Contents tab or list.
+    const { source, items } = current.current;
+    focusPluginContentsOpener(
+      summary.current,
+      opened.source === source ? items : [],
+      opened.key,
+    );
+  }, [shown]);
   const componentCount = Object.values(entry.components).reduce(
     (total, count) => total + count,
     0,
@@ -304,8 +410,98 @@ export function PluginCatalogDetail({
     const otherVersions = alternatives?.filter(
       (alternative) => !alternative.marketplaceVariant,
     );
+    const { readme } = entry;
+    const rows = entry.items?.map((row) => {
+      const { component } = row;
+      return component && readComponent
+        ? {
+            ...row,
+            onOpen: (): void => {
+              opener.current = { source: sourceKey, key: row.key };
+              setViewing({
+                key: row.key,
+                name: row.name,
+                component,
+                source: sourceKey,
+              });
+            },
+          }
+        : row;
+    });
+    const hasContents = componentCount > 0 || (entry.items?.length ?? 0) > 0;
+    const contentsInner = (
+      <>
+        {rows && rows.length > 0 ? (
+          <>
+            <PluginContentsTable rows={rows} />
+            {unnamedNote(entry) && (
+              <p className="text-xs fg-tertiary">{unnamedNote(entry)}</p>
+            )}
+          </>
+        ) : (
+          <>
+            {/* The listing counts each kind; names and files arrive
+                with the plugin when it is added. The table shows the counts,
+                so the count-only footnote is left out here. */}
+            <DataTable
+              caption="Contents"
+              testId="plugin-catalog-detail-contents"
+              rows={CONTENT_KINDS.filter(
+                ({ key }) => entry.components[key] > 0,
+              )}
+              rowKey={({ key }) => key}
+              emptyLabel={includedNote}
+              columns={[
+                {
+                  key: 'kind',
+                  header: 'Kind',
+                  render: ({ label }): string => label,
+                },
+                {
+                  key: 'count',
+                  header: 'Count',
+                  align: 'right',
+                  render: ({ key }): number => entry.components[key],
+                },
+              ]}
+            />
+          </>
+        )}
+      </>
+    );
+    if (shown && readComponent) {
+      // A member's file, read from the checkout, in place of the summary.
+      return (
+        <div
+          data-testid="plugin-catalog-detail"
+          className="flex min-w-0 flex-col gap-6"
+        >
+          <div className="flex min-w-0 items-center">
+            <Button
+              variant="ghost"
+              size="compact"
+              className="-ml-3"
+              onClick={() => setViewing(null)}
+              data-testid="plugin-catalog-detail-component-back"
+            >
+              <ChevronLeftMediumIcon size={14} aria-hidden="true" />
+              Back
+            </Button>
+          </div>
+          <ComponentContentView
+            catalogPreview
+            name={shown.name}
+            componentType={shown.component.componentType}
+            componentFile={shown.component.file}
+            activeFacet={shown.component.facet}
+            readKey={`${sourceKey}|${entry.name}|${shown.key}|${shown.component.facet?.kind ?? ''}`}
+            onReadComponent={readComponent}
+          />
+        </div>
+      );
+    }
     return (
-      <div data-testid="plugin-catalog-detail">
+      <div ref={summary} data-testid="plugin-catalog-detail">
         <CapabilityDetailLayout
           dataTestId="plugin-catalog-detail-layout"
           logo={logoMark}
@@ -315,21 +511,6 @@ export function PluginCatalogDetail({
           description={entry.description}
           facts={{
             status,
-            source: entry.marketplace ? (
-              <DetailFact label="Marketplace" testId="plugin-detail-provider">
-                {entry.marketplace.onOpen ? (
-                  <Button
-                    variant="link"
-                    onClick={entry.marketplace.onOpen}
-                    data-testid="plugin-detail-source-link"
-                  >
-                    {entry.marketplace.name}
-                  </Button>
-                ) : (
-                  entry.marketplace.name
-                )}
-              </DetailFact>
-            ) : undefined,
             website: entry.homepage ? (
               <DetailWebsiteFact
                 href={entry.homepage}
@@ -359,46 +540,18 @@ export function PluginCatalogDetail({
           }}
           worksWith={worksWith}
           contents={
-            <ComponentSection title="Contents">
-              {entry.items && entry.items.length > 0 ? (
-                <>
-                  <PluginContentsTable rows={entry.items} />
-                  {unnamedNote(entry) && (
-                    <p className="text-xs fg-tertiary">{unnamedNote(entry)}</p>
-                  )}
-                </>
-              ) : (
-                <>
-                  {/* The listing counts each kind; names and files arrive
-                  with the plugin when it is added. */}
-                  <DataTable
-                    caption="Contents"
-                    testId="plugin-catalog-detail-contents"
-                    rows={CONTENT_KINDS.filter(
-                      ({ key }) => entry.components[key] > 0,
-                    )}
-                    rowKey={({ key }) => key}
-                    emptyLabel={includedNote}
-                    columns={[
-                      {
-                        key: 'kind',
-                        header: 'Kind',
-                        render: ({ label }) => label,
-                      },
-                      {
-                        key: 'count',
-                        header: 'Count',
-                        align: 'right',
-                        render: ({ key }) => entry.components[key],
-                      },
-                    ]}
-                  />
-                  {componentCount > 0 && (
-                    <p className="text-xs fg-tertiary">{includedNote}</p>
-                  )}
-                </>
-              )}
-            </ComponentSection>
+            readme && !hasContents ? (
+              <PluginPreloadedReadme {...readme} bare={false} />
+            ) : readme ? (
+              <PluginDetailTabs
+                contents={contentsInner}
+                renderReadme={() => <PluginPreloadedReadme {...readme} />}
+              />
+            ) : (
+              <ComponentSection title="Contents">
+                {contentsInner}
+              </ComponentSection>
+            )
           }
         />
       </div>

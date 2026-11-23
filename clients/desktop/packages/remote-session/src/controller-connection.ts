@@ -45,6 +45,11 @@ export interface ControllerProfile {
    * controller profiles; desktop controllers require an exact match.
    */
   minVersion: number;
+  /**
+   * Offers the exact (`local:`/`remote:`) worktree base-branch mode in hello.
+   * A host that agrees lists exact branch catalogues and admits exact bases.
+   */
+  exactWorktreeBaseBranch?: boolean;
 }
 
 /**
@@ -52,7 +57,9 @@ export interface ControllerProfile {
  * the web server runs for MCP Remote Control. It reports this build's
  * protocol and accepts any host from `WEB_CONTROLLER_MIN_PROTOCOL_VERSION`
  * up, so a desktop a release behind the web stays controllable. Host
- * features are checked separately (`assertHostSupportsController`).
+ * features are checked separately (`assertHostSupportsController`). A
+ * browser offers the exact worktree base-branch mode (CAN-7437); the hosted
+ * agent keeps the legacy short-name catalogue.
  */
 export function webControllerProfile(
   kind: Extract<ControllerKind, 'browser' | 'hosted'>,
@@ -62,6 +69,7 @@ export function webControllerProfile(
     kind,
     version: { protocolVersion: REMOTE_PROTOCOL_VERSION, appVersion },
     minVersion: WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
+    ...(kind === 'browser' ? { exactWorktreeBaseBranch: true } : {}),
   };
 }
 
@@ -127,6 +135,9 @@ export async function helloHost(
   const params: HelloParams = {
     version: profile.version,
     controller: { kind: profile.kind, minVersion: profile.minVersion },
+    ...(profile.exactWorktreeBaseBranch === true
+      ? { exactWorktreeBaseBranch: true }
+      : {}),
   };
   let answer: unknown;
   try {

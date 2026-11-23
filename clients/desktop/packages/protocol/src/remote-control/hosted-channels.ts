@@ -14,11 +14,15 @@
  * (tool approval, permission, plan review, secret input), and destructive work
  * (delete, archive, discard, remove, force push, merge). Generic or
  * argument-sensitive channels also have an argument policy on the host
- * ({@link hostedInvocationAllowed}): `chat:command` may only start chats, send
- * messages and answer ordinary questions; `chat:cancel` must name the exact
- * turn it stops; `work-entries:create` takes only its project;
- * `file:read-content` reads only inside one worktree's roots.
+ * ({@link hostedInvocationAllowed}): `chat:command` may only start chats,
+ * send messages, answer ordinary questions, set a chat's model, change the
+ * reviewed chat settings and steer a queued message; `chat:cancel` must name
+ * the exact turn it stops; `work-entries:create` takes only its project;
+ * `file:read-content` reads only inside one worktree's roots; and every
+ * channel in {@link HOSTED_DIRECT_CHANNELS} added by CAN-7445 takes exactly
+ * its reviewed argument shape.
  */
+import { SIDEBAR_ITEM_GROUP_COLORS } from '../canopy-core/sidebar-values';
 import type {
   RemoteCapabilityValues,
   RemoteOperationSelection,
@@ -93,6 +97,29 @@ export const HOSTED_WORK_ENTRY_CREATE_CHANNEL = 'work-entries:create';
 export const HOSTED_FILE_READ_CHANNEL = 'file:read-content';
 
 /**
+ * Channels the hosted Tasks tools reach for CAN-7445, each with an exact
+ * argument policy in {@link hostedInvocationAllowed}. `workEntriesUpdate` and
+ * `worktreeSetTrackedBaseBranch` are not in the protocol's
+ * `REMOTE_IPC_CHANNELS`; the desktop's `IPC_CHANNELS` holds the same values,
+ * and the host authorization golden keeps them equal.
+ */
+export const HOSTED_TASK_CHANNELS = {
+  pluginCatalogList: 'plugin-catalog:list',
+  homeListBranchTargets: 'home:list-branch-targets',
+  worktreeActivityEntities: 'worktree:activity-entities',
+  hookChangePause: 'hook:change-pause',
+  chatQueueCancel: 'chat:queue-cancel',
+  chatQueueEdit: 'chat:queue-edit',
+  chatQueueForce: 'chat:queue-force',
+  worktreeSetLabel: 'worktree:set-label',
+  worktreeSetHidden: 'worktree:set-hidden',
+  worktreeSetTrackedBaseBranch: 'worktree:set-tracked-base-branch',
+  workEntriesUpdate: 'work-entries:update',
+  sidebarItemGroupsCreate: 'sidebar-item-groups:create',
+  sidebarItemGroupsMoveItem: 'sidebar-item-groups:move-item',
+} as const;
+
+/**
  * Channels the hosted tools call directly, outside the CanopyClient manifest,
  * each with one reviewed effect:
  *
@@ -104,6 +131,40 @@ export const HOSTED_FILE_READ_CHANNEL = 'file:read-content';
  *   (`task_cancel`); argument checked on the host.
  * - `work-entries:create`: add an empty work entry for a no-repository task,
  *   the additive create `task_create` already confirms; argument checked.
+ *
+ * CAN-7445 (Tasks tools on a connected computer; every one argument checked):
+ *
+ * - `plugin-catalog:list`: read the computer's plugin, skill, collection and
+ *   MCP server catalog (`task_chat_plugins_list`, plugin resolution).
+ * - `home:list-branch-targets`: read a workspace's branches
+ *   (`task_create_ref_list`). The read may contact the remote once to resolve
+ *   the default branch.
+ * - `worktree:activity-entities`: read a worktree's hooks and other activity
+ *   entities (`task_hook_list`).
+ * - `hook:change-pause`: pause or resume one named hook, or all of a
+ *   worktree's hooks (`task_hook_pause_set`).
+ * - `chat:queue-cancel`: remove one queued message the agent names; the
+ *   message is not sent (`task_chat_queue_update`).
+ * - `chat:queue-edit`: replace one queued message's text. The hosted edit
+ *   carries no attachment or file reference fields, and the computer clears
+ *   them when they are omitted, so the tool refuses an entry that has any.
+ * - `chat:queue-force`: send one queued message now, interrupting the running
+ *   turn. Unlike hosted `chat:cancel`, it names no turn, so it interrupts
+ *   whichever turn runs, and the entry may be one the person queued; it
+ *   deletes and pushes nothing. Reviewed exemption from `/force/` in
+ *   {@link HOSTED_FORBIDDEN_PATTERN_EXEMPTIONS}.
+ * - `worktree:set-label`, `worktree:set-hidden`: rename or hide a task's
+ *   worktree in the sidebar (`task_update`).
+ * - `worktree:set-tracked-base-branch`: change the branch a task's diff and
+ *   pull request compare against; no checkout or git write.
+ * - `work-entries:update`: rename a no-repository task; nothing else.
+ * - `sidebar-item-groups:create`: add a named sidebar group holding one
+ *   sidebar item.
+ * - `sidebar-item-groups:move-item`: move one sidebar item into an existing
+ *   group, or out of its group.
+ *
+ * The group channels check the item ID's shape only, not that it names a
+ * task in the scope; the web sends the authorized task's own item.
  */
 export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   'activity:changed-files',
@@ -115,6 +176,7 @@ export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   HOSTED_IPC_CHANNELS.pipelinesListWorktreeExecutions,
   'tracked-plans:list',
   HOSTED_WORK_ENTRY_CREATE_CHANNEL,
+  ...Object.values(HOSTED_TASK_CHANNELS),
 ];
 
 /** `chat:command` envelope fields a hosted controller may set. */
@@ -128,18 +190,28 @@ const HOSTED_CHAT_ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
 
 /**
  * The chat commands a hosted controller may send, and the fields each may
- * carry. Anything else (approval mode, plugin selections, seeded tabs,
- * attachments, plan review approval, agent-send provenance, archive, close,
- * reset, dismissals) is refused by the host. `chat.answer_question` answers an
- * ordinary agent question only: tool approvals, permissions and plan review
- * are other commands and channels, and the host also refuses an answer to a
+ * carry. Anything else (approval mode, seeded tabs, attachments, plan review
+ * approval, agent-send provenance, archive, close, reset, dismissals) is
+ * refused by the host. `chat.answer_question` answers an ordinary agent
+ * question only: tool approvals, permissions and plan review are other
+ * commands and channels, and the host also refuses an answer to a
  * secret-input question.
+ *
+ * CAN-7445 adds plugin selections on a new chat, `chat.set_model`,
+ * `chat.patch_tab_settings` limited to {@link HOSTED_TAB_PATCH_FIELDS}
+ * (auto model selection, thinking level, speed, plan mode and plugin
+ * selections) and `chat.steer_queued_message`. A hosted patch carries no
+ * `expectedPluginSelections`, so it has no compare-and-set and overwrites a
+ * concurrent edit by the person.
  */
 export const HOSTED_CHAT_COMMAND_FIELDS: ReadonlyMap<
   string,
   ReadonlySet<string>
 > = new Map([
-  ['chat.create_tab', new Set(['type', 'tabId', 'model', 'planMode'])],
+  [
+    'chat.create_tab',
+    new Set(['type', 'tabId', 'model', 'planMode', 'pluginSelections']),
+  ],
   [
     'chat.send_message',
     new Set(['type', 'chatId', 'userMessageId', 'text', 'model', 'planMode']),
@@ -148,6 +220,37 @@ export const HOSTED_CHAT_COMMAND_FIELDS: ReadonlyMap<
     'chat.answer_question',
     new Set(['type', 'chatId', 'questionId', 'answers']),
   ],
+  [
+    'chat.set_model',
+    new Set(['type', 'tabId', 'model', 'providerType', 'executionHarness']),
+  ],
+  ['chat.patch_tab_settings', new Set(['type', 'tabId', 'patch'])],
+  [
+    'chat.steer_queued_message',
+    new Set(['type', 'chatId', 'queuedMessageId', 'queuedMessageRevision']),
+  ],
+]);
+
+/** `chat.patch_tab_settings` patch keys a hosted controller may set. */
+export const HOSTED_TAB_PATCH_FIELDS: ReadonlySet<string> = new Set([
+  'modelSelectionMode',
+  'modelConfig',
+  'planMode',
+  'pluginSelections',
+]);
+
+/** `modelConfig` keys a hosted patch may set. */
+const HOSTED_MODEL_CONFIG_FIELDS: ReadonlySet<string> = new Set([
+  'thinkingLevel',
+  'fastMode',
+]);
+
+/** Keys of a hosted chat's plugin selections. */
+const HOSTED_PLUGIN_SELECTION_FIELDS: ReadonlySet<string> = new Set([
+  'collectionIds',
+  'skillRefs',
+  'pluginRefs',
+  'mcpServerRefs',
 ]);
 
 /** Fields of one answer in a hosted `chat.answer_question`. */
@@ -170,6 +273,12 @@ const MAX_ID_LENGTH = 256;
 const MAX_TEXT_LENGTH = 200_000;
 const MAX_ANSWERS = 16;
 const MAX_SELECTED_OPTIONS = 64;
+const MAX_SELECTION_ENTRIES = 100;
+/** Worktree labels, work entry titles and group names. */
+const MAX_NAME_LENGTH = 512;
+const MAX_BRANCH_LENGTH = 256;
+// eslint-disable-next-line no-control-regex -- matching control characters is the point.
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
 /**
  * A deserialized object. Its prototype is not compared: structured clones are
@@ -213,25 +322,194 @@ function hostedChatCommandAllowed(value: unknown): boolean {
   if (!isPlainRecord(command) || typeof command.type !== 'string') return false;
   const fields = HOSTED_CHAT_COMMAND_FIELDS.get(command.type);
   if (fields === undefined || !onlyFields(command, fields)) return false;
-  if (command.model !== undefined && !isId(command.model)) return false;
-  if (command.planMode !== undefined && typeof command.planMode !== 'boolean')
-    return false;
   switch (command.type) {
     case 'chat.create_tab':
-      return isId(command.tabId);
+      return (
+        isId(command.tabId) &&
+        optionalId(command.model) &&
+        optionalBoolean(command.planMode) &&
+        (command.pluginSelections === undefined ||
+          hostedPluginSelectionsAllowed(command.pluginSelections))
+      );
+    case 'chat.send_message':
+      return (
+        isId(command.chatId) &&
+        isId(command.userMessageId) &&
+        isBoundedText(command.text, 1) &&
+        optionalId(command.model) &&
+        optionalBoolean(command.planMode)
+      );
     case 'chat.answer_question':
       return (
         isId(command.chatId) &&
         isId(command.questionId) &&
         hostedAnswersAllowed(command.answers)
       );
-    default:
+    // These cases check shape only. The values of `providerType`,
+    // `executionHarness` and `thinkingLevel` are enforced by the desktop's
+    // chat command validation, which the hosted dispatcher runs before
+    // dispatch (`createHostedChatDispatcher` calls `validate` first).
+    case 'chat.set_model':
+      return (
+        isId(command.tabId) &&
+        isId(command.model) &&
+        isId(command.providerType) &&
+        optionalId(command.executionHarness)
+      );
+    case 'chat.patch_tab_settings':
+      return isId(command.tabId) && hostedTabPatchAllowed(command.patch);
+    case 'chat.steer_queued_message':
       return (
         isId(command.chatId) &&
-        isId(command.userMessageId) &&
-        isBoundedText(command.text, 1)
+        isId(command.queuedMessageId) &&
+        (command.queuedMessageRevision === undefined ||
+          isNonNegativeInteger(command.queuedMessageRevision))
       );
+    default:
+      return false;
   }
+}
+
+function optionalId(value: unknown): boolean {
+  return value === undefined || isId(value);
+}
+
+function optionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === 'boolean';
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+/** A non-empty string of at most `maxLength` with no control characters. */
+function isBoundedName(value: unknown, maxLength: number): boolean {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    !CONTROL_CHARACTERS.test(value)
+  );
+}
+
+/**
+ * A label, title or group name the hosted task channels accept. The web
+ * checks `task_update` input with it before the first write.
+ */
+export function isHostedName(value: unknown): boolean {
+  return isBoundedName(value, MAX_NAME_LENGTH);
+}
+
+/**
+ * An ID the hosted task channels accept, such as a hook key. The web checks
+ * a listed ID with it before the first write, since a computer may list IDs
+ * longer than a hosted call may carry.
+ */
+export function isHostedId(value: unknown): boolean {
+  return isId(value);
+}
+
+/**
+ * A plain object with every required key present (not `undefined`) and no
+ * key outside `required` and `optional`.
+ */
+function hasShape(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> {
+  return (
+    isPlainRecord(value) &&
+    onlyFields(value, new Set([...required, ...optional])) &&
+    required.every((key) => value[key] !== undefined)
+  );
+}
+
+function isIdList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_SELECTION_ENTRIES &&
+    value.every((entry) => isId(entry))
+  );
+}
+
+function isRefList(value: unknown, first: string, second: string): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_SELECTION_ENTRIES &&
+    value.every(
+      (entry) =>
+        hasShape(entry, [first, second]) &&
+        isId(entry[first]) &&
+        isId(entry[second]),
+    )
+  );
+}
+
+/**
+ * A chat's plugin selections: collection IDs plus skill, plugin and MCP
+ * server references, at most 100 of each, with no other key. Never looser
+ * than the desktop's own `isChatTabPluginSelections`.
+ */
+function hostedPluginSelectionsAllowed(value: unknown): boolean {
+  return (
+    hasShape(
+      value,
+      ['collectionIds', 'skillRefs', 'pluginRefs'],
+      ['mcpServerRefs'],
+    ) &&
+    onlyFields(value, HOSTED_PLUGIN_SELECTION_FIELDS) &&
+    isIdList(value.collectionIds) &&
+    isRefList(value.skillRefs, 'sourceId', 'skillName') &&
+    isRefList(value.pluginRefs, 'marketplaceId', 'pluginName') &&
+    (value.mcpServerRefs === undefined ||
+      isRefList(value.mcpServerRefs, 'serverId', 'configId'))
+  );
+}
+
+/**
+ * Whether the hosted policy admits these plugin selections. The web checks
+ * resolved selections with it before the first write, since the computer's
+ * catalog allows longer IDs than a hosted command may carry.
+ */
+export function isHostedPluginSelections(value: unknown): boolean {
+  return hostedPluginSelectionsAllowed(value);
+}
+
+/**
+ * A hosted settings patch: at least one key, every key in
+ * {@link HOSTED_TAB_PATCH_FIELDS}. One other key refuses the whole patch, so
+ * plan review, pending plan exits, titles, proposal mode, auto archive and
+ * deferred tools stay out of reach.
+ */
+function hostedTabPatchAllowed(patch: unknown): boolean {
+  if (
+    !isPlainRecord(patch) ||
+    Object.keys(patch).length === 0 ||
+    !onlyFields(patch, HOSTED_TAB_PATCH_FIELDS)
+  )
+    return false;
+  if (
+    patch.modelSelectionMode !== undefined &&
+    patch.modelSelectionMode !== 'auto'
+  )
+    return false;
+  if (patch.modelConfig !== undefined) {
+    const config = patch.modelConfig;
+    if (
+      !isPlainRecord(config) ||
+      Object.keys(config).length === 0 ||
+      !onlyFields(config, HOSTED_MODEL_CONFIG_FIELDS) ||
+      !optionalId(config.thinkingLevel) ||
+      !optionalBoolean(config.fastMode)
+    )
+      return false;
+  }
+  return (
+    optionalBoolean(patch.planMode) &&
+    (patch.pluginSelections === undefined ||
+      hostedPluginSelectionsAllowed(patch.pluginSelections))
+  );
 }
 
 function isBoundedText(value: unknown, minLength: number): boolean {
@@ -318,13 +596,186 @@ function hostedFileReadAllowed(value: unknown): boolean {
   );
 }
 
+/** `{projectId, worktreeId, chatId, entryId}`: one queued message. */
+function hostedQueueEntryAllowed(
+  value: unknown,
+  extra: readonly string[] = [],
+): boolean {
+  return (
+    hasShape(value, [
+      'projectId',
+      'worktreeId',
+      'chatId',
+      'entryId',
+      ...extra,
+    ]) &&
+    isId(value.projectId) &&
+    isId(value.worktreeId) &&
+    isId(value.chatId) &&
+    isId(value.entryId)
+  );
+}
+
+/**
+ * Pause or resume exactly one named hook, or all of a worktree's hooks.
+ * `all: false` is refused rather than read as "no target".
+ */
+function hostedHookPauseAllowed(value: unknown): boolean {
+  if (
+    !hasShape(value, ['projectId', 'worktreeId', 'kind'], ['hookKey', 'all']) ||
+    !isId(value.projectId) ||
+    !isId(value.worktreeId) ||
+    (value.kind !== 'pause' && value.kind !== 'resume')
+  )
+    return false;
+  if (value.hookKey !== undefined)
+    return value.all === undefined && isId(value.hookKey);
+  return value.all === true;
+}
+
+/**
+ * A branch name Git accepts as a ref (`git check-ref-format --branch`), with
+ * no option-like `-` prefix. The desktop stores `baseBranch` as metadata
+ * without checking it as a ref, and later Git reads use it, so the hosted
+ * policy holds it to the ref rules: no whitespace or control characters, no
+ * `~ ^ : ? * [ \\`, no `..`, `@{` or `//`, no component starting with `.` or
+ * ending with `.lock`, no trailing `/` or `.`, and not `@` or `HEAD`. The web
+ * checks `task_update` input with it before the first write.
+ */
+export function isHostedBranchName(value: unknown): boolean {
+  if (!isBoundedName(value, MAX_BRANCH_LENGTH) || typeof value !== 'string')
+    return false;
+  return (
+    !value.startsWith('-') &&
+    value !== '@' &&
+    value !== 'HEAD' &&
+    !/[\s~^:?*[\\]/.test(value) &&
+    !value.includes('..') &&
+    !value.includes('@{') &&
+    !value.includes('//') &&
+    !value.startsWith('/') &&
+    !value.endsWith('/') &&
+    !value.endsWith('.') &&
+    value
+      .split('/')
+      .every((part) => !part.startsWith('.') && !part.endsWith('.lock'))
+  );
+}
+
+/** A sidebar scope addressing one workspace, never App Advisor. */
+function isWorkspaceScope(value: unknown): boolean {
+  return hasShape(value, ['workspaceLocalId']) && isId(value.workspaceLocalId);
+}
+
+function isGroupColor(value: unknown): boolean {
+  return SIDEBAR_ITEM_GROUP_COLORS.some((color) => color === value);
+}
+
+const HOSTED_TASK_CHANNEL_NAMES: ReadonlySet<string> = new Set(
+  Object.values(HOSTED_TASK_CHANNELS),
+);
+
+/**
+ * Undefined for a channel that isn't a task channel. A task channel is
+ * refused unless it has a case below, so one added without its policy fails
+ * closed.
+ */
+function hostedTaskChannelAllowed(
+  channel: string,
+  args: readonly unknown[],
+): boolean | undefined {
+  const isTaskChannel = HOSTED_TASK_CHANNEL_NAMES.has(channel);
+  if (args.length !== 1) return isTaskChannel ? false : undefined;
+  const value = args[0];
+  switch (channel) {
+    case HOSTED_TASK_CHANNELS.pluginCatalogList:
+      return hasShape(value, ['projectId']) && isId(value.projectId);
+    case HOSTED_TASK_CHANNELS.homeListBranchTargets:
+      return hasShape(value, ['workspaceId']) && isId(value.workspaceId);
+    case HOSTED_TASK_CHANNELS.worktreeActivityEntities:
+      return (
+        hasShape(value, ['projectId', 'worktreeId']) &&
+        isId(value.projectId) &&
+        isId(value.worktreeId)
+      );
+    case HOSTED_TASK_CHANNELS.hookChangePause:
+      return hostedHookPauseAllowed(value);
+    case HOSTED_TASK_CHANNELS.chatQueueCancel:
+    case HOSTED_TASK_CHANNELS.chatQueueForce:
+      return hostedQueueEntryAllowed(value);
+    case HOSTED_TASK_CHANNELS.chatQueueEdit:
+      return (
+        hostedQueueEntryAllowed(value, ['text']) &&
+        isPlainRecord(value) &&
+        isBoundedText(value.text, 1)
+      );
+    case HOSTED_TASK_CHANNELS.worktreeSetLabel:
+      return (
+        hasShape(value, ['projectId', 'worktreeId'], ['label']) &&
+        isId(value.projectId) &&
+        isId(value.worktreeId) &&
+        (value.label === undefined ||
+          isBoundedName(value.label, MAX_NAME_LENGTH))
+      );
+    case HOSTED_TASK_CHANNELS.worktreeSetHidden:
+      return (
+        hasShape(value, ['projectId', 'worktreeId', 'hidden']) &&
+        isId(value.projectId) &&
+        isId(value.worktreeId) &&
+        typeof value.hidden === 'boolean'
+      );
+    case HOSTED_TASK_CHANNELS.worktreeSetTrackedBaseBranch:
+      return (
+        hasShape(value, ['workspaceId', 'worktreeId', 'baseBranch']) &&
+        isId(value.workspaceId) &&
+        isId(value.worktreeId) &&
+        isHostedBranchName(value.baseBranch)
+      );
+    case HOSTED_TASK_CHANNELS.workEntriesUpdate:
+      return (
+        isPlainRecord(value) &&
+        onlyFields(value, new Set(['projectId', 'entryId', 'title'])) &&
+        'title' in value &&
+        isId(value.projectId) &&
+        isId(value.entryId) &&
+        (value.title === null || isBoundedName(value.title, MAX_NAME_LENGTH))
+      );
+    case HOSTED_TASK_CHANNELS.sidebarItemGroupsCreate:
+      return (
+        hasShape(value, ['scope', 'itemId', 'name'], ['color']) &&
+        isWorkspaceScope(value.scope) &&
+        isId(value.itemId) &&
+        isBoundedName(value.name, MAX_NAME_LENGTH) &&
+        typeof value.name === 'string' &&
+        value.name.trim().length > 0 &&
+        (value.color === undefined || isGroupColor(value.color))
+      );
+    case HOSTED_TASK_CHANNELS.sidebarItemGroupsMoveItem:
+      return (
+        isPlainRecord(value) &&
+        onlyFields(value, new Set(['scope', 'itemId', 'groupId'])) &&
+        'groupId' in value &&
+        isWorkspaceScope(value.scope) &&
+        isId(value.itemId) &&
+        (value.groupId === null ||
+          (isId(value.groupId) &&
+            typeof value.groupId === 'string' &&
+            value.groupId.startsWith('grp-')))
+      );
+    default:
+      return isTaskChannel ? false : undefined;
+  }
+}
+
 /**
  * Argument-level policy for a hosted controller's invoke or send on a channel
  * its allowlist already admits. Generic or argument-sensitive channels have
- * one: `chat:command` (new chats, messages and ordinary answers only),
- * `chat:cancel` (one exact turn), `work-entries:create` (its project only)
- * and `file:read-content` (one worktree's roots only). Every other hosted
- * channel has a single effect.
+ * one: `chat:command` (new chats, messages, ordinary answers, a chat's model,
+ * the reviewed settings patch keys and steering a queued message),
+ * `chat:cancel` (one exact turn), `work-entries:create` (its project only),
+ * `file:read-content` (one worktree's roots only) and each channel in
+ * {@link HOSTED_TASK_CHANNELS} (exactly its reviewed argument). Every other
+ * hosted channel has a single effect.
  */
 export function hostedInvocationAllowed(
   channel: string,
@@ -346,7 +797,7 @@ export function hostedInvocationAllowed(
     case HOSTED_FILE_READ_CHANNEL:
       return args.length === 1 && hostedFileReadAllowed(args[0]);
     default:
-      return true;
+      return hostedTaskChannelAllowed(channel, args) ?? true;
   }
 }
 
@@ -371,3 +822,16 @@ export const HOSTED_FORBIDDEN_CHANNEL_PATTERNS: readonly RegExp[] = [
   /:stop/,
   /kill/,
 ];
+
+/**
+ * Hosted channels that match a {@link HOSTED_FORBIDDEN_CHANNEL_PATTERNS} entry
+ * after an explicit effect review, with the reason. The patterns themselves
+ * are never loosened; the wire golden holds the matches equal to this map.
+ */
+export const HOSTED_FORBIDDEN_PATTERN_EXEMPTIONS: ReadonlyMap<string, string> =
+  new Map([
+    [
+      HOSTED_TASK_CHANNELS.chatQueueForce,
+      'Sends one named queued message now, interrupting whichever turn is running: unlike hosted chat:cancel it names no turn, and the entry may be one the person queued. It deletes and force-pushes nothing, and the sign-off on task_chat_queue_update accepts the interrupt (CAN-7445).',
+    ],
+  ]);

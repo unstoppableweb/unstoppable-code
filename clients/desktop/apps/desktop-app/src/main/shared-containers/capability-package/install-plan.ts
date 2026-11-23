@@ -6,7 +6,9 @@
  * A package that fails these checks installs nothing. Individual definitions
  * that are valid but cannot target this fork (an automation for another kind
  * of project, or one whose pipeline the package does not carry) are skipped
- * with a reason instead, and the rest of the package installs.
+ * with a reason instead, and the rest of the package installs. So is a
+ * definition whose only fault is the shared credential check, together with
+ * every definition that uses it (CAN-7585).
  *
  * The module has no I/O: the caller supplies each definition document's
  * verified bytes.
@@ -28,8 +30,10 @@ import {
   type PipelinePackageResource,
 } from '@canopy/protocol/pipelines';
 import {
+  findSharedTextCredentialRule,
   isSharedContainerDefinitionKind,
-  parseSharedContainerDefinitionDocument,
+  parseSharedContainerDefinitionDocumentApartFromCredentials,
+  sharedContainerCredentialErrorField,
   SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
   type SharedContainerAgentDefinitionDocument,
   type SharedContainerAutomationDefinitionDocument,
@@ -130,6 +134,30 @@ export interface SkippedAutomation {
   reason: ForkAutomationSkipReason;
 }
 
+/** A definition named in a refusal; the name is null when it looks like a secret. */
+export interface RefusedDefinitionRef {
+  kind: SharedContainerDefinitionKind;
+  displayName: string | null;
+}
+
+/** A definition left out while the rest of its package installs. */
+export type RefusedDefinition = RefusedDefinitionRef & {
+  resourceId: string;
+} & (
+    | {
+        /** Its document trips the shared credential check. */
+        reason: 'credential';
+        /** The field the check names, never the value. */
+        field: string;
+      }
+    | {
+        /** It uses a refused definition. */
+        reason: 'depends-on-refused';
+        /** The definitions between it and the refused one, nearest first. */
+        path: RefusedDefinitionRef[];
+      }
+  );
+
 export interface ForkCapabilityInstallPlan {
   agents: PlannedAgent[];
   pipelines: PlannedPipeline[];
@@ -141,6 +169,7 @@ export interface ForkCapabilityInstallPlan {
   defaultSkillResourceIds: string[];
   /** Plugin members the skill materializer does not install. */
   pluginMemberLabels: string[];
+  refusedDefinitions: RefusedDefinition[];
 }
 
 function compareCodeUnits(left: string, right: string): number {
@@ -500,6 +529,7 @@ function requireKind(
   owner: PipelinePackageResource,
   referenceId: string,
   kind: SharedContainerDefinitionKind,
+  ownerName = owner.displayName,
 ): void {
   const target = byId.get(referenceId);
   if (
@@ -508,7 +538,7 @@ function requireKind(
     !owner.dependencyResourceIds.includes(referenceId)
   ) {
     throw new ForkCapabilityPackageInvalidError(
-      `${owner.displayName} references a ${kind} that is not one of its packaged dependencies`,
+      `${ownerName} references a ${kind} that is not one of its packaged dependencies`,
     );
   }
 }
@@ -535,6 +565,7 @@ export async function planForkCapabilityInstall(
     string,
     { bytes: Uint8Array; document: SharedContainerDefinitionDocument }
   >();
+  const refused = new Map<string, RefusedDefinition>();
   for (const resource of resources) {
     if (!isSharedContainerDefinitionKind(resource.kind)) continue;
     const entry = definitionDocumentEntry(resource);
@@ -544,26 +575,52 @@ export async function planForkCapabilityInstall(
         `${resource.displayName} failed verification`,
       );
     }
-    const parsed = parseSharedContainerDefinitionDocument(bytes);
+    // Every check applies; a credential finding is set aside, and refuses
+    // only this definition once everything else passes.
+    const { result: parsed, credentialFindings } =
+      parseSharedContainerDefinitionDocumentApartFromCredentials(bytes);
+    const fields = credentialFindings.map(sharedContainerCredentialErrorField);
+    const holdsCredential = fields.length > 0;
+    const name = holdsCredential ? shownName(resource) : resource.displayName;
     if (!parsed.ok) {
       throw new ForkCapabilityPackageInvalidError(
-        `${resource.displayName}: ${parsed.errors.join('; ')}`,
+        `${name}: ${parsed.errors.join('; ')}`,
       );
     }
     const document = parsed.value;
     if (document.kind !== resource.kind) {
       throw new ForkCapabilityPackageInvalidError(
-        `${resource.displayName} carries a ${document.kind} document`,
+        `${name} carries a ${document.kind} document`,
       );
     }
     for (const reference of document.references) {
       if (!resource.dependencyResourceIds.includes(reference)) {
         throw new ForkCapabilityPackageInvalidError(
-          `${resource.displayName} references a resource that is not one of its packaged dependencies`,
+          `${name} references a resource that is not one of its packaged dependencies`,
         );
       }
     }
+    if (holdsCredential) {
+      const [field] = fields;
+      if (typeof field !== 'string')
+        throw new ForkCapabilityPackageInvalidError(
+          `${name} has a credential finding without a field`,
+        );
+      validateDefinition(byId, resource, document, true);
+      const prefix = `${resource.kind}.`;
+      refused.set(resource.id, {
+        ...refusedRef(document.kind, resource.displayName),
+        resourceId: resource.id,
+        reason: 'credential',
+        field: field.startsWith(prefix) ? field.slice(prefix.length) : field,
+      });
+      continue;
+    }
     documents.set(resource.id, { bytes, document });
+  }
+  for (const resource of resources) {
+    const entry = documents.get(resource.id);
+    if (entry) validateDefinition(byId, resource, entry.document, false);
   }
 
   const skillsIn = (resource: PipelinePackageResource): string[] =>
@@ -580,27 +637,7 @@ export async function planForkCapabilityInstall(
   for (const resource of resources) {
     if (documents.get(resource.id)?.document.kind !== 'pipeline_definition')
       continue;
-    // The standalone skills the definition itself uses travel in the overlay
-    // too, so each step that invokes one is bound to the packaged copy under
-    // its packaged name. An Agent's skills are not among them: a step routed
-    // through an Agent gets those through the local Agent's selections.
-    const overlayRoots = [
-      ...Array.from(closureOf(resource.dependencyResourceIds, byId)).filter(
-        (id) => {
-          const kind = byId.get(id)?.kind;
-          return kind === 'child_pipeline' || kind === 'pipeline_action';
-        },
-      ),
-      ...resource.dependencyResourceIds.filter(
-        (id) => byId.get(id)?.kind === 'standalone_skill',
-      ),
-    ];
-    const resourceIds = Array.from(closureOf(overlayRoots, byId))
-      .filter((id) => {
-        const kind = byId.get(id)?.kind;
-        return kind !== undefined && !isSharedContainerDefinitionKind(kind);
-      })
-      .sort(compareCodeUnits);
+    const resourceIds = overlayResourceIdsOf(resource, byId);
     overlays.set(resource.id, {
       resourceIds,
       routesThroughAgent: await overlayReferencesAgentModel(
@@ -609,6 +646,19 @@ export async function planForkCapabilityInstall(
         readDocument,
       ),
     });
+  }
+
+  refuseDependents(resources, documents, refused);
+  // Every refused pipeline's overlay, from the manifest, is still verified,
+  // so leaving the pipeline out never hides a fault that refuses the package.
+  for (const resource of resources) {
+    if (refused.get(resource.id)?.kind !== 'pipeline_definition') continue;
+    const verified = overlays.get(resource.id);
+    const resourceIds =
+      verified?.resourceIds ?? overlayResourceIdsOf(resource, byId);
+    if (!verified)
+      await overlayReferencesAgentModel(resourceIds, byId, readDocument);
+    await readOverlayChildPipelines(resourceIds, byId, readDocument);
   }
 
   const plan: ForkCapabilityInstallPlan = {
@@ -620,6 +670,9 @@ export async function planForkCapabilityInstall(
     hooks: [],
     defaultSkillResourceIds: [],
     pluginMemberLabels: [],
+    refusedDefinitions: [...refused.values()].sort((left, right) =>
+      compareCodeUnits(left.resourceId, right.resourceId),
+    ),
   };
   const isCode = context.containerType === 'CODE_WORKTREE';
 
@@ -636,17 +689,6 @@ export async function planForkCapabilityInstall(
         });
         break;
       case 'pipeline_definition': {
-        try {
-          parsePipelineText(document.yaml);
-        } catch (error) {
-          throw new ForkCapabilityPackageInvalidError(
-            `${resource.displayName}: ${
-              error instanceof Error ? error.message : 'invalid pipeline YAML'
-            }`,
-          );
-        }
-        for (const reference of document.references)
-          requireKind(byId, resource, reference, 'agent_definition');
         const overlay = overlays.get(resource.id);
         if (overlay?.routesThroughAgent) {
           plan.skippedPipelines.push({
@@ -672,10 +714,6 @@ export async function planForkCapabilityInstall(
       }
       case 'automation_definition': {
         const uses = document.uses ?? {};
-        if (uses.pipeline !== undefined)
-          requireKind(byId, resource, uses.pipeline, 'pipeline_definition');
-        if (uses.agent !== undefined)
-          requireKind(byId, resource, uses.agent, 'agent_definition');
         const skip =
           automationSkipReason(document, isCode) ??
           (uses.pipeline !== undefined &&
@@ -703,20 +741,6 @@ export async function planForkCapabilityInstall(
         break;
       }
       case 'hook_definition':
-        for (const action of document.actions) {
-          if (action.type === 'chat' && action.agent !== undefined)
-            requireKind(byId, resource, action.agent, 'agent_definition');
-          if (
-            action.type === 'pipeline' &&
-            action.pipeline.source === 'packaged'
-          )
-            requireKind(
-              byId,
-              resource,
-              action.pipeline.resourceId,
-              'pipeline_definition',
-            );
-        }
         plan.hooks.push({
           resourceId: resource.id,
           displayName: resource.displayName,
@@ -744,6 +768,181 @@ export async function planForkCapabilityInstall(
   }
   plan.pluginMemberLabels = Array.from(labels).sort(compareCodeUnits);
   return plan;
+}
+
+const UNNAMED_DEFINITION = 'A definition from this share';
+
+/** A definition's name for a refusal, unless the name itself looks like a secret. */
+function shownName(resource: PipelinePackageResource): string {
+  return findSharedTextCredentialRule(resource.displayName) === null
+    ? resource.displayName
+    : UNNAMED_DEFINITION;
+}
+
+/**
+ * The checks every definition passes, planned or refused. A refused one is
+ * named without a secret-shaped name, and its YAML error never quotes the
+ * YAML, which holds the credential.
+ */
+function validateDefinition(
+  byId: ReadonlyMap<string, PipelinePackageResource>,
+  resource: PipelinePackageResource,
+  definition: SharedContainerDefinitionDocument,
+  refused: boolean,
+): void {
+  const name = refused ? shownName(resource) : resource.displayName;
+  switch (definition.kind) {
+    case 'agent_definition':
+      return;
+    case 'pipeline_definition':
+      try {
+        parsePipelineText(definition.yaml);
+      } catch (error) {
+        throw new ForkCapabilityPackageInvalidError(
+          refused
+            ? `${name}: invalid pipeline YAML`
+            : `${name}: ${
+                error instanceof Error ? error.message : 'invalid pipeline YAML'
+              }`,
+        );
+      }
+      for (const reference of definition.references)
+        requireKind(byId, resource, reference, 'agent_definition', name);
+      return;
+    case 'automation_definition':
+      if (definition.uses?.pipeline !== undefined)
+        requireKind(
+          byId,
+          resource,
+          definition.uses.pipeline,
+          'pipeline_definition',
+          name,
+        );
+      if (definition.uses?.agent !== undefined)
+        requireKind(
+          byId,
+          resource,
+          definition.uses.agent,
+          'agent_definition',
+          name,
+        );
+      return;
+    case 'hook_definition':
+      for (const action of definition.actions) {
+        if (action.type === 'chat' && action.agent !== undefined)
+          requireKind(byId, resource, action.agent, 'agent_definition', name);
+        if (action.type === 'pipeline' && action.pipeline.source === 'packaged')
+          requireKind(
+            byId,
+            resource,
+            action.pipeline.resourceId,
+            'pipeline_definition',
+            name,
+          );
+      }
+      return;
+  }
+}
+
+/**
+ * A pipeline's overlay, from the manifest: the child pipelines and actions it
+ * runs and the standalone skills the definition itself uses, with what those
+ * need. An Agent's skills are not among them: a step routed through an Agent
+ * gets those through the local Agent's selections.
+ */
+function overlayResourceIdsOf(
+  resource: PipelinePackageResource,
+  byId: ReadonlyMap<string, PipelinePackageResource>,
+): string[] {
+  const overlayRoots = [
+    ...Array.from(closureOf(resource.dependencyResourceIds, byId)).filter(
+      (id) => {
+        const kind = byId.get(id)?.kind;
+        return kind === 'child_pipeline' || kind === 'pipeline_action';
+      },
+    ),
+    ...resource.dependencyResourceIds.filter(
+      (id) => byId.get(id)?.kind === 'standalone_skill',
+    ),
+  ];
+  return Array.from(closureOf(overlayRoots, byId))
+    .filter((id) => {
+      const kind = byId.get(id)?.kind;
+      return kind !== undefined && !isSharedContainerDefinitionKind(kind);
+    })
+    .sort(compareCodeUnits);
+}
+
+function refusedRef(
+  kind: SharedContainerDefinitionKind,
+  displayName: string,
+): RefusedDefinitionRef {
+  return {
+    kind,
+    displayName:
+      findSharedTextCredentialRule(displayName) === null ? displayName : null,
+  };
+}
+
+/** The packaged definitions a definition's document says it uses. */
+function definitionUses(document: SharedContainerDefinitionDocument): string[] {
+  const ids = [...document.references];
+  if (document.kind === 'automation_definition') {
+    if (document.uses?.pipeline !== undefined) ids.push(document.uses.pipeline);
+    if (document.uses?.agent !== undefined) ids.push(document.uses.agent);
+  }
+  if (document.kind === 'hook_definition')
+    for (const action of document.actions) {
+      if (action.type === 'chat' && action.agent !== undefined)
+        ids.push(action.agent);
+      if (action.type === 'pipeline' && action.pipeline.source === 'packaged')
+        ids.push(action.pipeline.resourceId);
+    }
+  return ids;
+}
+
+/**
+ * Refuse, until nothing changes, every definition that uses a refused one, so
+ * the installer never meets a pipeline whose Agent it did not create. A hook
+ * is left out silently: hooks are omitted from every install anyway.
+ */
+function refuseDependents(
+  resources: readonly PipelinePackageResource[],
+  documents: Map<string, { document: SharedContainerDefinitionDocument }>,
+  refused: Map<string, RefusedDefinition>,
+): void {
+  const blocked = new Map<
+    string,
+    { ref: RefusedDefinitionRef; path: RefusedDefinitionRef[] }
+  >(
+    [...refused.values()].map((item) => [
+      item.resourceId,
+      { ref: { kind: item.kind, displayName: item.displayName }, path: [] },
+    ]),
+  );
+  for (let changed = blocked.size > 0; changed; ) {
+    changed = false;
+    for (const resource of resources) {
+      const document = documents.get(resource.id)?.document;
+      if (!document) continue;
+      const blocker = definitionUses(document)
+        .map((use) => blocked.get(use))
+        .find((entry) => entry !== undefined);
+      if (!blocker) continue;
+      const ref = refusedRef(document.kind, resource.displayName);
+      const path = [blocker.ref, ...blocker.path];
+      blocked.set(resource.id, { ref, path });
+      documents.delete(resource.id);
+      changed = true;
+      if (document.kind !== 'hook_definition')
+        refused.set(resource.id, {
+          ...ref,
+          resourceId: resource.id,
+          reason: 'depends-on-refused',
+          path,
+        });
+    }
+  }
 }
 
 function automationSkipReason(

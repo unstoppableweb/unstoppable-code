@@ -1,13 +1,12 @@
 import type { BrowserWindow } from 'electron';
-import {
-  IPC_CHANNELS,
-  type WorktreeGitFailedEvent,
-  type WorktreeGitReadyEvent,
-  type WorktreeNeedsRepairEvent,
+import type {
+  WorktreeGitFailedEvent,
+  WorktreeGitReadyEvent,
+  WorktreeNeedsRepairEvent,
 } from '@canopy/desktop-shared/types';
+import type { AgentInterfacePort } from '../agents/agent-interface-port';
 import { recordWorktreeCrudTelemetry } from './desktop-telemetry';
 import { startProjectWorktreePostCreateSetup } from './project-worktree-runtime';
-import { sendToAllWindows, sendToWindow } from './window-send';
 import { createWorktreeFromSelection } from './worktree-creation';
 import { resolveWorktreeCreationSelection } from './worktree-creation-selection';
 import { getWorkspaceType } from './workspace-registry';
@@ -32,9 +31,9 @@ export async function createAgentChatWorktree(input: {
   baseBranch?: string;
   idempotencyKey: string;
   callerSource?: 'agent-chat' | 'app-advisor';
-  getWindow: () => BrowserWindow | null;
+  interfacePort: AgentInterfacePort;
 }): Promise<AgentChatWorktreeResult> {
-  const { workspaceId, baseWorktreeId, baseBranch, getWindow } = input;
+  const { workspaceId, baseWorktreeId, baseBranch, interfacePort } = input;
   const kind = getWorkspaceType(workspaceId);
   if (kind !== 'single-repo' && kind !== 'multi-repo')
     return { status: 'unavailable', message: 'Failed to create worktree.' };
@@ -54,18 +53,18 @@ export async function createAgentChatWorktree(input: {
       replayed = true;
     },
     startPostCreateSetup: true,
-    getWindow,
+    getWindow: (): BrowserWindow | null => interfacePort.legacyWindow(),
     deferGitSetup: true,
     onGitReady: (payload: WorktreeGitReadyEvent): void => {
-      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitReady, payload);
+      interfacePort.publishCreatedWorktreeGitReady(payload);
     },
     onGitFailed: (payload: WorktreeGitFailedEvent): void => {
-      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitFailed, payload);
+      interfacePort.publishCreatedWorktreeGitFailed(payload);
     },
     // Keeps a root that needs repair pending for the repair flow, as the
     // renderer's create path does, so the held prompt waits for it.
     onNeedsRepair: (payload: WorktreeNeedsRepairEvent): void => {
-      sendToWindow(getWindow(), IPC_CHANNELS.worktreeNeedsRepair, payload);
+      interfacePort.publishCreatedWorktreeNeedsRepair(payload);
     },
   };
   const outcome =
@@ -80,11 +79,7 @@ export async function createAgentChatWorktree(input: {
           workspaceKind: 'single-repo',
           startProjectPostCreateSetup: startProjectWorktreePostCreateSetup,
         });
-  const update = { workspaceId };
-  if (
-    !sendToWindow(getWindow(), IPC_CHANNELS.workspaceWorktreesUpdated, update)
-  )
-    sendToAllWindows(IPC_CHANNELS.workspaceWorktreesUpdated, update);
+  interfacePort.publishCreatedWorktree(workspaceId);
   if (outcome.status === 'needs-repair')
     return {
       status: 'needs-repair',

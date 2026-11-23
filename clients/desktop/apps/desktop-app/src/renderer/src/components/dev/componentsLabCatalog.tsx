@@ -49,6 +49,7 @@ import { CuratedWorkflowsSpecimen } from './componentsLabCurated';
 import { CreditsNoticesSpecimen } from './componentsLabCredits';
 import { SyncedInventoryPausedSpecimen } from './componentsLabSyncedInventory';
 import { ProviderRowsSpecimen } from './componentsLabProviderRows';
+import { ProviderKeyRowSpecimen } from './componentsLabProviderKeyRow';
 import { TurnNoticesSpecimen } from './componentsLabTurnNotices';
 import { CopyMcpServerSpecimen } from './componentsLabCopyMcpServer';
 import { McpRemovalSpecimen } from './componentsLabMcpRemoval';
@@ -417,6 +418,15 @@ export const COMPONENTS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     source: 'packages/ui-app/src/providers/ProviderChoiceList.tsx',
     prs: [9519],
     View: ProviderRowsSpecimen,
+  },
+  {
+    id: 'provider-key-row',
+    name: 'Provider key row',
+    group: 'Unified',
+    note: "One provider's own API key on the web Model providers page: loading, no key, connected with and without a model count or key hint, and rejected. Connect opens the masked editor. Desktop doesn't mount it.",
+    source: 'packages/ui-app/src/providers/ProviderKeyRow.tsx',
+    prs: [10390],
+    View: ProviderKeyRowSpecimen,
   },
   {
     id: 'cloud-turn-notices',

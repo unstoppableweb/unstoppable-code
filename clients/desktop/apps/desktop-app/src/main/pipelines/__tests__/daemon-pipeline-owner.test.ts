@@ -8,6 +8,8 @@ type Frame = { kind: 'item'; cursor: string; item: unknown } | { kind: 'end' };
 interface FakeOwnerClient {
   readonly signal: AbortSignal;
   readonly calls: unknown[][];
+  /** The params of each stream it opened. */
+  readonly streams: unknown[];
   /** Rejections for the next instructions, in order. */
   readonly failures: Error[];
   instruction(...args: unknown[]): Promise<unknown>;
@@ -21,10 +23,12 @@ let mockOnFrame: ((frame: Frame) => void) | undefined;
 const mockClients: FakeOwnerClient[] = [];
 function mockClient(): FakeOwnerClient {
   const calls: unknown[][] = [];
+  const streams: unknown[] = [];
   const failures: Error[] = [];
   return {
     signal: new AbortController().signal,
     calls,
+    streams,
     failures,
     instruction: (...args: unknown[]): Promise<unknown> => {
       calls.push(args);
@@ -33,7 +37,8 @@ function mockClient(): FakeOwnerClient {
         ? Promise.reject(failure)
         : Promise.resolve({ status: 'settled' });
     },
-    openStream: (_name, _params, options): Promise<{ close(): void }> => {
+    openStream: (_name, params, options): Promise<{ close(): void }> => {
+      streams.push(params);
       mockOnFrame = options.onFrame;
       return Promise.resolve({ close: (): void => undefined });
     },
@@ -100,6 +105,7 @@ import {
   ensureDaemonPipelineOwnerSettlement,
   expectDaemonPipelineHostSteps,
   setDaemonPipelineOwnerRequestHandler,
+  setDaemonPipelineOwnerScopeHandler,
 } from '../daemon-pipeline-owner';
 
 const BUNDLED_ACTIONS = resolve(
@@ -612,5 +618,230 @@ describe('daemon pipeline owner settlement (CAN-5771)', () => {
     await waitFor(() => host.signals.length === 1);
     abortDaemonPipelineHostCalls(executionId);
     expect(host.signals[0]?.aborted).toBe(true);
+  });
+
+  // CAN-7522: requests in a reserved scope belong to no run. Each scope has
+  // its own handler, set once, and a run's paths never see them.
+  describe('reserved owner scopes (CAN-7522)', () => {
+    const SCOPE = 'core:pipeline-definitions';
+
+    function scopeRequest(): WorkerPipelineHostRequest {
+      return {
+        requestId: randomUUID(),
+        executionId: SCOPE,
+        jobId: '_run',
+        stepId: '_run',
+        childExecutionId: null,
+        attempt: 0,
+        iteration: 0,
+        owner: null,
+        deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+        request: {
+          action: 'owner.definition.precheck',
+          op: 'delete',
+          definitionId: 'definition-1',
+          scope: {},
+        },
+      };
+    }
+
+    const allowed = {
+      result: {
+        status: 'owner',
+        value: { kind: 'definition.precheck', answer: { allowed: true } },
+      },
+    } as const;
+
+    it('the owner subscription says it serves the definition requests', () => {
+      expect(owner.streams[0]).toEqual({
+        serves: [
+          { kind: 'owner.definition.precheck', revision: 1 },
+          { kind: 'owner.definition.effects', revision: 1 },
+        ],
+      });
+    });
+
+    /** A fresh module instance's open against `client`; resolves with the open's params. */
+    async function openOn(client: FakeOwnerClient): Promise<{
+      params: unknown[];
+      opened: Promise<void>;
+    }> {
+      const params: unknown[] = [];
+      const openStream = client.openStream.bind(client);
+      client.openStream = (
+        name,
+        streamParams,
+        options,
+      ): Promise<{ close(): void }> => {
+        params.push(streamParams);
+        return openStream(name, streamParams, options);
+      };
+      const saved = [...mockClients];
+      const frames = mockOnFrame;
+      mockClients.splice(0, mockClients.length, client);
+      let opened: Promise<void> = Promise.resolve();
+      try {
+        await jest.isolateModulesAsync(async () => {
+          const isolated = await import('../daemon-pipeline-owner');
+          opened = isolated.ensureDaemonPipelineOwnerSettlement();
+          await opened.catch(() => undefined);
+          isolated.stopDaemonPipelineOwnerSettlement();
+        });
+      } finally {
+        mockClients.splice(0, mockClients.length, ...saved);
+        mockOnFrame = frames;
+      }
+      return { params, opened };
+    }
+
+    function refusingServes(
+      kind: 'invalid_argument' | 'unavailable',
+    ): FakeOwnerClient {
+      const client = mockClient();
+      const openStream = client.openStream.bind(client);
+      client.openStream = (
+        name,
+        streamParams,
+        options,
+      ): Promise<{ close(): void }> =>
+        typeof streamParams === 'object' &&
+        streamParams !== null &&
+        'serves' in streamParams
+          ? Promise.reject(
+              new CanopyClientError({
+                kind,
+                message: 'Invalid operation parameters.',
+                retry: { kind: 'never' },
+              }),
+            )
+          : openStream(name, streamParams, options);
+      return client;
+    }
+
+    it('opens once more without serves on a daemon from before CAN-7522, which refuses it as invalid', async () => {
+      const { params, opened } = await openOn(
+        refusingServes('invalid_argument'),
+      );
+      await expect(opened).resolves.toBeUndefined();
+      expect(params).toEqual([
+        {
+          serves: [
+            { kind: 'owner.definition.precheck', revision: 1 },
+            { kind: 'owner.definition.effects', revision: 1 },
+          ],
+        },
+        {},
+      ]);
+    });
+
+    it('never drops serves for any other refusal of the open', async () => {
+      const { params, opened } = await openOn(refusingServes('unavailable'));
+      await expect(opened).rejects.toMatchObject({
+        payload: { kind: 'unavailable' },
+      });
+      expect(params).toHaveLength(1);
+    });
+
+    it('a scope request reaches its scope handler, never the run handler or a run', async () => {
+      const runSeen: string[] = [];
+      const scopeSeen: string[] = [];
+      const runHandler = (
+        request: WorkerPipelineHostRequest,
+      ): Promise<typeof allowed> => {
+        runSeen.push(request.executionId);
+        return Promise.resolve(allowed);
+      };
+      const scopeHandler = (
+        request: WorkerPipelineHostRequest,
+      ): Promise<typeof allowed> => {
+        scopeSeen.push(request.executionId);
+        return Promise.resolve(allowed);
+      };
+      setDaemonPipelineOwnerRequestHandler(runHandler);
+      setDaemonPipelineOwnerScopeHandler(SCOPE, scopeHandler);
+      try {
+        const request = scopeRequest();
+        deliver(request);
+        await waitFor(() => owner.calls.length === 1);
+        expect(scopeSeen).toEqual([SCOPE]);
+        expect(runSeen).toEqual([]);
+        expect(owner.calls[0]?.[1]).toEqual({
+          executionId: SCOPE,
+          requestId: request.requestId,
+          result: allowed.result,
+        });
+      } finally {
+        setDaemonPipelineOwnerScopeHandler(SCOPE, null);
+        setDaemonPipelineOwnerRequestHandler(null);
+      }
+      // With no scope handler, the request is unhandled: still never a run's.
+      setDaemonPipelineOwnerRequestHandler(runHandler);
+      try {
+        deliver(scopeRequest());
+        await waitFor(() => owner.calls.length === 2);
+        expect(runSeen).toEqual([]);
+        expect(owner.calls[1]?.[1]).toMatchObject({
+          executionId: SCOPE,
+          result: {
+            status: 'failure',
+            message: 'This workflow step cannot run in the background service.',
+          },
+        });
+      } finally {
+        setDaemonPipelineOwnerRequestHandler(null);
+      }
+    });
+
+    it('each scope is set once: the same handler again is kept, another throws, and null clears only its scope', async () => {
+      const first = (): Promise<typeof allowed> => Promise.resolve(allowed);
+      const second = (): Promise<typeof allowed> => Promise.resolve(allowed);
+      const runHandler = (): Promise<typeof allowed> =>
+        Promise.resolve(allowed);
+      setDaemonPipelineOwnerScopeHandler(SCOPE, first);
+      setDaemonPipelineOwnerRequestHandler(runHandler);
+      try {
+        expect(() =>
+          setDaemonPipelineOwnerScopeHandler(SCOPE, first),
+        ).not.toThrow();
+        expect(() => setDaemonPipelineOwnerScopeHandler(SCOPE, second)).toThrow(
+          /already/,
+        );
+        expect(() =>
+          setDaemonPipelineOwnerRequestHandler(runHandler),
+        ).not.toThrow();
+        expect(() => setDaemonPipelineOwnerRequestHandler(second)).toThrow(
+          /already/,
+        );
+        // Clearing the run scope leaves the definitions scope's handler.
+        setDaemonPipelineOwnerRequestHandler(null);
+        deliver(scopeRequest());
+        await waitFor(() => owner.calls.length === 1);
+        expect(owner.calls[0]?.[1]).toMatchObject({ result: allowed.result });
+      } finally {
+        setDaemonPipelineOwnerScopeHandler(SCOPE, null);
+        setDaemonPipelineOwnerRequestHandler(null);
+      }
+      // Cleared, another handler may take the scope.
+      setDaemonPipelineOwnerScopeHandler(SCOPE, second);
+      setDaemonPipelineOwnerScopeHandler(SCOPE, null);
+    });
+
+    it("a run's end never withdraws a scope request", async () => {
+      const signals: AbortSignal[] = [];
+      setDaemonPipelineOwnerScopeHandler(SCOPE, (_request, signal) => {
+        signals.push(signal);
+        return new Promise(() => undefined);
+      });
+      try {
+        const executionId = follow(fakeHost(never));
+        deliver(scopeRequest());
+        await waitFor(() => signals.length === 1);
+        abortDaemonPipelineHostCalls(executionId);
+        abortDaemonPipelineHostCalls(SCOPE.slice('core:'.length));
+        expect(signals[0]?.aborted).toBe(false);
+      } finally {
+        setDaemonPipelineOwnerScopeHandler(SCOPE, null);
+      }
+    });
   });
 });

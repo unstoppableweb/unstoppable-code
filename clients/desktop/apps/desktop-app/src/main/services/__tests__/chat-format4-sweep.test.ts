@@ -14,7 +14,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
@@ -31,6 +31,8 @@ import {
   CHAT_FORMAT4_SWEEP_IDLE_MS,
   CHAT_FORMAT4_SWEEP_MIN_GAP_MS,
   CHAT_FORMAT4_SWEEP_PASS_INTERVAL_MS,
+  CHAT_FORMAT4_SWEEP_RECHECK_MS,
+  CHAT_FORMAT4_SWEEP_START_DELAY_MS,
   CHAT_FORMAT4_SWEEP_COMPILED_ON,
   CHAT_FORMAT4_SWEEP_DISK_MARGIN_BYTES,
   CHAT_FORMAT4_SWEEP_SESSION_ATTEMPTS,
@@ -182,12 +184,15 @@ function recordingTarget(
 ): {
   calls: string[];
   allowed: boolean;
+  sweepOn: boolean;
   sweepFormat4: (scope: ChatScopeKey) => Promise<ChatFormat4SweepAttempt>;
   promotionAllowed: () => boolean;
+  sweepAllowed: () => boolean;
 } {
   const target = {
     calls: [] as string[],
     allowed: true,
+    sweepOn: true,
     async sweepFormat4(scope: ChatScopeKey): Promise<ChatFormat4SweepAttempt> {
       target.calls.push(`${scope.projectId}/${scope.worktreeId}`);
       const scripted = answer(scope);
@@ -218,6 +223,7 @@ function recordingTarget(
       return { outcome: 'promoted' };
     },
     promotionAllowed: (): boolean => target.allowed,
+    sweepAllowed: (): boolean => target.sweepOn,
   };
   return target;
 }
@@ -511,6 +517,91 @@ describe('the format 4 stop switch', () => {
   });
 });
 
+describe('the sweep switch, on top of the stop switch', () => {
+  it('with the sweep switch off, no scope is offered, and the pause names it once', async () => {
+    await seedV3(WORKTREE);
+    const target = recordingTarget();
+    target.sweepOn = false;
+    const reports: ChatFormat4Outcome[] = [];
+    const running = sweep(target, { reports });
+    const first = await running.runPass();
+    const second = await running.runPass();
+    expect(first.status).toBe('withheld');
+    expect(second.status).toBe('withheld');
+    expect(target.calls).toEqual([]);
+    expect(await resolveStore(WORKTREE).format()).toBe('v3');
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+    expect(reports).toEqual([
+      { event: 'sweep_paused', reason: 'sweep_switch_off' },
+    ]);
+  });
+
+  it('with both switches on, the sweep promotes', async () => {
+    await seedV3(WORKTREE);
+    const target = recordingTarget();
+    const result = await sweep(target).runPass();
+    expect(result.status).toBe('complete');
+    expect(target.calls).toEqual([
+      `${WORKTREE.projectId}/${WORKTREE.worktreeId}`,
+    ]);
+    expect(await resolveStore(WORKTREE).format()).toBe('v4');
+  });
+
+  it('with the stop switch off and the sweep switch on, nothing is swept', async () => {
+    await seedV3(WORKTREE);
+    const target = recordingTarget();
+    target.allowed = false;
+    const reports: ChatFormat4Outcome[] = [];
+    const result = await sweep(target, { reports }).runPass();
+    expect(result.status).toBe('withheld');
+    expect(target.calls).toEqual([]);
+    expect(await resolveStore(WORKTREE).format()).toBe('v3');
+    expect(reports).toEqual([{ event: 'sweep_paused', reason: 'switch_off' }]);
+  });
+
+  it('a target without the sweep switch reads no scope', async () => {
+    await seedV3(WORKTREE);
+    const recording = recordingTarget();
+    const reports: ChatFormat4Outcome[] = [];
+    const result = await new ChatFormat4Sweep({
+      dataDir,
+      target: {
+        sweepFormat4: recording.sweepFormat4,
+        promotionAllowed: recording.promotionAllowed,
+      },
+      resolveStore,
+      conditions: idleConditions(),
+      clock: virtualClock(),
+      report: (outcome): void => {
+        reports.push(outcome);
+      },
+    }).runPass();
+    expect(result.status).toBe('withheld');
+    expect(recording.calls).toEqual([]);
+    expect(await resolveStore(WORKTREE).format()).toBe('v3');
+    expect(reports).toEqual([
+      { event: 'sweep_paused', reason: 'sweep_switch_off' },
+    ]);
+  });
+
+  it('turned off mid-pass, stops before the next scope', async () => {
+    await seedV3(WORKTREE);
+    await seedV3(COWORK);
+    const reports: ChatFormat4Outcome[] = [];
+    const target = recordingTarget(() => {
+      target.sweepOn = false;
+      return { outcome: 'promoted' };
+    });
+    const result = await sweep(target, { reports }).runPass();
+    expect(target.calls).toHaveLength(1);
+    expect(result.status).toBe('withheld');
+    expect(reports).toContainEqual({
+      event: 'sweep_paused',
+      reason: 'sweep_switch_off',
+    });
+  });
+});
+
 describe('a persistently failing scope', () => {
   it('takes five attempts a session, then sits out 1, 2 and 4 launches, and never blocks the others', async () => {
     await seedV3(WORKTREE);
@@ -638,9 +729,9 @@ describe('the real clock', () => {
   });
 });
 
-describe('dormant in this release (CAN-7178 PR 1)', () => {
-  it('is compiled off, and admits no scope even with the format 4 switch on', async () => {
-    expect(CHAT_FORMAT4_SWEEP_COMPILED_ON).toBe(false);
+describe('compiled on (CAN-7178 PR 1b)', () => {
+  it('starts with the app, but admits no scope before the start delay and none once stopped', async () => {
+    expect(CHAT_FORMAT4_SWEEP_COMPILED_ON).toBe(true);
     await seedV3(WORKTREE);
     const sweepFormat4 = jest.fn(
       (): Promise<ChatFormat4SweepAttempt> =>
@@ -651,9 +742,17 @@ describe('dormant in this release (CAN-7178 PR 1)', () => {
     resetResolvedCanopyDataDirForTests();
     jest.useFakeTimers();
     try {
-      expect(
-        startChatFormat4Sweep({ sweepFormat4 }, () => true),
-      ).toBeUndefined();
+      const started = startChatFormat4Sweep(
+        { sweepFormat4 },
+        () => true,
+        () => true,
+      );
+      expect(started).toBeInstanceOf(ChatFormat4Sweep);
+      await jest.advanceTimersByTimeAsync(
+        CHAT_FORMAT4_SWEEP_START_DELAY_MS - 1,
+      );
+      expect(sweepFormat4).not.toHaveBeenCalled();
+      await started?.stop();
       await jest.advanceTimersByTimeAsync(7 * 24 * 3_600_000);
     } finally {
       jest.useRealTimers();
@@ -663,9 +762,82 @@ describe('dormant in this release (CAN-7178 PR 1)', () => {
     }
     expect(sweepFormat4).not.toHaveBeenCalled();
     expect(await resolveStore(WORKTREE).format()).toBe('v3');
-    await expect(
-      stat(join(dataDir, 'chat-format4-sweep-state.json')),
-    ).rejects.toThrow();
+  });
+});
+
+/** Every file below `root`, relative to it. */
+async function filesUnder(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else out.push(relative(root, path));
+    }
+  };
+  await walk(root);
+  return out.sort();
+}
+
+describe('what the sweep touches (CAN-7178 PR 1b, security rulings S4 and S5)', () => {
+  it('a pass writes only inside the scopes it promotes, plus its own state and done marker files', async () => {
+    await seedV3(WORKTREE);
+    await seedV2(COWORK);
+    const before = await filesUnder(dataDir);
+    const result = await sweep(recordingTarget()).runPass();
+    expect(result.status).toBe('complete');
+    const added = (await filesUnder(dataDir)).filter(
+      (path) => !before.includes(path),
+    );
+    const scopeRoots = [WORKTREE, COWORK].map((scope) =>
+      relative(dataDir, resolveStore(scope).directory),
+    );
+    const outside = added.filter(
+      (path) =>
+        !scopeRoots.some((root) => path.startsWith(`${root}${sep}`)) &&
+        path !== relative(dataDir, chatFormat4SweepDonePath(dataDir)) &&
+        path !== 'chat-format4-sweep-state.json',
+    );
+    expect(outside).toEqual([]);
+  });
+
+  it('opens no IPC channel, network socket or child process of its own', async () => {
+    const source = await readFile(
+      join(__dirname, '..', 'chat-format4-sweep.ts'),
+      'utf8',
+    );
+    const imports = Array.from(
+      source.matchAll(/(?:from|import\()\s*'([^']+)'/g),
+      (match) => match[1],
+    );
+    for (const banned of [
+      'node:net',
+      'node:http',
+      'node:https',
+      'node:dgram',
+      'node:child_process',
+      'node:worker_threads',
+    ])
+      expect(imports).not.toContain(banned);
+    expect(source).not.toMatch(/\bipcMain\b|\bwebContents\b|\bfetch\(/);
+  });
+
+  it('the desktop CLI and the core daemon never import the desktop chat store', async () => {
+    const repo = join(__dirname, '..', '..', '..', '..', '..', '..');
+    const offenders: string[] = [];
+    for (const app of ['desktop-cli', 'core-daemon']) {
+      const root = join(repo, 'apps', app, 'src');
+      for (const file of await filesUnder(root)) {
+        if (!/\.(ts|tsx|mts|cts)$/.test(file) || file.includes('__tests__'))
+          continue;
+        const text = await readFile(join(root, file), 'utf8');
+        if (
+          /from '[^']*(chat-storage-v2|desktop-app\/src\/main)[^']*'/.test(text)
+        )
+          offenders.push(`${app}/${file}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
@@ -1026,6 +1198,48 @@ describe('a sweep that keeps going (review round 5)', () => {
       expect(gap).toBeGreaterThanOrEqual(backoff);
       expect(gap).toBeLessThan(backoff + CHAT_FORMAT4_SWEEP_MIN_GAP_MS * 4);
     });
+  });
+});
+
+describe('the idle gate between scopes', () => {
+  it('stops before the next scope while the user is active, holds there, and goes on once input stops', async () => {
+    await seedV3(WORKTREE);
+    await seedV3(COWORK);
+    const clock = virtualClock();
+    const reports: ChatFormat4Outcome[] = [];
+    let idleMs = CHAT_FORMAT4_SWEEP_IDLE_MS;
+    // The user starts typing while the first scope is being promoted.
+    const target = recordingTarget(() => {
+      idleMs = CHAT_FORMAT4_SWEEP_IDLE_MS - 1;
+      return undefined;
+    });
+    const running = sweep(target, {
+      clock,
+      reports,
+      conditions: idleConditions({ idleMs: (): number => idleMs }),
+    });
+    running.start(0);
+    await untilTurn(
+      () =>
+        clock.sleeps.filter((ms) => ms === CHAT_FORMAT4_SWEEP_RECHECK_MS)
+          .length >= 3,
+    );
+    expect(target.calls).toHaveLength(1);
+    expect(reports.filter((item) => item.event === 'sweep_paused')).toEqual([
+      { event: 'sweep_paused', reason: 'activity' },
+    ]);
+    expect(await chatFormat4SweepComplete(dataDir)).toBe(false);
+
+    idleMs = CHAT_FORMAT4_SWEEP_IDLE_MS;
+    await untilTurn(() => chatFormat4SweepComplete(dataDir));
+    await running.stop();
+    expect(target.calls).toHaveLength(2);
+    expect(new Set(target.calls)).toEqual(
+      new Set([
+        `${WORKTREE.projectId}/${WORKTREE.worktreeId}`,
+        `${COWORK.projectId}/${COWORK.worktreeId}`,
+      ]),
+    );
   });
 });
 

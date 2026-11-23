@@ -23,7 +23,7 @@ import type {
 import type { CreditsNoticeProviderChoice } from '@canopy/ui-app/credits';
 import {
   ProviderChoiceActionButton,
-  SwitchProviderDialog,
+  ChooseProviderDialog,
   type ProviderChoiceActionContext,
   type ProviderChoicePresentations,
   type ProviderChoiceRowError,
@@ -36,8 +36,8 @@ import {
   providerSwitchFailedMessage,
 } from '@canopy/ui-shared/components';
 import { BrandLogo } from '@/components/BrandLogo';
+import { aiGatewayPresentation } from '@canopy/ui-app/settings/ai-gateway/AiGatewayEntry';
 import {
-  desktopGatewayPresentation,
   DesktopAiGatewayDialog,
   useDesktopAiGatewayEntry,
 } from '@/components/aiGateway/DesktopAiGatewayEntry';
@@ -384,10 +384,7 @@ export function DesktopProviderChoiceDialog({
           ? CREDITS_ROW_EMPTY_DESCRIPTION
           : CREDITS_ROW_DESCRIPTION,
     },
-    gateway: desktopGatewayPresentation(
-      gateway?.summary ?? null,
-      gatewayRowReady,
-    ),
+    gateway: aiGatewayPresentation(gateway?.summary ?? null, gatewayRowReady),
   };
   const renderAction = (
     row: DesktopChoiceRow,
@@ -442,7 +439,7 @@ export function DesktopProviderChoiceDialog({
   };
   return (
     <>
-      <SwitchProviderDialog
+      <ChooseProviderDialog
         open={choice.open}
         onClose={choice.closeDialog}
         choices={choice.choices}

@@ -49,6 +49,7 @@ export * from './marketplace-share';
 export * from './installed-item-status';
 export * from './installed-share-copy';
 export * from './useInstalledItemStatuses';
+export * from './mcp-delete-cleanup';
 export * from './skill-update-action';
 export * from './money-format';
 export * from './official-marketplace-products';

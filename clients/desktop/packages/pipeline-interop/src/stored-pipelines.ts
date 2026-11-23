@@ -54,6 +54,16 @@ export type IPCResultWithAppError<T = void> = IPCResult<T> & {
   appError?: AppError;
 };
 
+/**
+ * The result of a pipeline definition write. `outcome` is `unknown` when the
+ * write was sent but its answer never came, so it may have landed: a caller
+ * shows that it couldn't be confirmed, never that it failed, and never sends
+ * it again. Kept off `IPCResult` so other channels keep their shape.
+ */
+export type IPCResultWithOutcome<T = void> = IPCResult<T> & {
+  outcome?: 'unknown';
+};
+
 export interface PipelineSaveInput {
   /** Shared source resolved again in main before a local install. */
   sourceRemoteId?: string;

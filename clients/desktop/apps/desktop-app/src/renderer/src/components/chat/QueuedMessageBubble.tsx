@@ -8,7 +8,11 @@ import type {
   ChatTurnPhase,
   SettingsHeldChange,
 } from '@canopy/desktop-shared/types';
-import { QueuedMessageActions, QueuedMessageContent } from '@canopy/ui-shared';
+import {
+  QueuedMessageActions,
+  QueuedMessageContent,
+  QueuedWatcherRow,
+} from '@canopy/ui-shared';
 import { ScheduleIcon } from '@canopy/ui-shared/icons';
 import {
   BubbleCopyBadge,
@@ -205,6 +209,50 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
   const showRetry = !isScheduled && canForce && Boolean(onRetry);
   const showRunNow = !isScheduled && canForce && Boolean(onRunNow);
 
+  const footer = (
+    <QueuedMessageActions
+      placement="footer"
+      variant="badge"
+      turnPhase={isScheduled ? undefined : turnPhase}
+      onSteer={onSteer ? handleSteer : undefined}
+      onInterrupt={showInterrupt ? handleForce : undefined}
+      onRetry={showRetry ? handleRetry : undefined}
+      onRunNow={showRunNow ? handleRunNow : undefined}
+      // Like Retry, only the head row explains a hold.
+      retryBlockedReason={
+        !isScheduled && canForce ? message.retryBlockedReason : undefined
+      }
+      steeringSupported={steeringSupported}
+      steerBlockedByCapabilityChange={message.steerBlockedByCapabilityChange}
+      // A row behind a turn its worktree's setup holds keeps Edit and
+      // Clear; Run now waits for that turn.
+      forceLocked={
+        !isScheduled && message.forceLocked === true ? true : undefined
+      }
+      settingsHeld={isScheduled ? undefined : settingsHeld}
+      pending={!isScheduled && message.pendingSend === true}
+      anyEditing={!isScheduled && anyEditing}
+      interruptDisabled={scheduled?.running === true}
+    />
+  );
+
+  // A fired watcher waits as the quiet row it becomes, not an info bubble
+  // (chat-blocks.md, Watchers). A message with a sender keeps its bubble and
+  // sender title, as the transcript does.
+  if (watcherFired && !agentSent && !isScheduled) {
+    return (
+      <QueuedWatcherRow
+        watcherFired={watcherFired}
+        text={message.text}
+        reason={message.reason}
+        waitingReason={message.waitingReason}
+        onCancel={handleClear}
+        pending={message.pendingSend === true}
+        footer={footer}
+      />
+    );
+  }
+
   return (
     <div
       className={
@@ -305,32 +353,7 @@ export const QueuedMessageBubble = memo(function QueuedMessageBubble({
           <MessageAttachments attachmentPaths={message.attachmentPaths} />
           {!isScheduled && <QueuedMessageEditFailureBanner message={message} />}
         </Stack>
-        <QueuedMessageActions
-          placement="footer"
-          variant="badge"
-          turnPhase={isScheduled ? undefined : turnPhase}
-          onSteer={onSteer ? handleSteer : undefined}
-          onInterrupt={showInterrupt ? handleForce : undefined}
-          onRetry={showRetry ? handleRetry : undefined}
-          onRunNow={showRunNow ? handleRunNow : undefined}
-          // Like Retry, only the head row explains a hold.
-          retryBlockedReason={
-            !isScheduled && canForce ? message.retryBlockedReason : undefined
-          }
-          steeringSupported={steeringSupported}
-          steerBlockedByCapabilityChange={
-            message.steerBlockedByCapabilityChange
-          }
-          // A row behind a turn its worktree's setup holds keeps Edit and
-          // Clear; Run now waits for that turn.
-          forceLocked={
-            !isScheduled && message.forceLocked === true ? true : undefined
-          }
-          settingsHeld={isScheduled ? undefined : settingsHeld}
-          pending={!isScheduled && message.pendingSend === true}
-          anyEditing={!isScheduled && anyEditing}
-          interruptDisabled={scheduled?.running === true}
-        />
+        {footer}
       </div>
     </div>
   );

@@ -23,7 +23,6 @@ import {
   SkillUpdateNotice,
   SkillUpdateStatus,
   SkillVersionFact,
-  DetailVersionUpdateFact,
   hasSkillUpdateStatus,
   useItemStateMarks,
   skillUpdateMenuItem,
@@ -87,6 +86,11 @@ export interface SkillReadDetailHeader {
   logo?: ReactNode;
   /** New Customize: the tile's publisher line. */
   publisher?: ReactNode;
+  /**
+   * A shared copy whose source a live read found changed, whether or not the
+   * host can open its update: the Version row says so without an icon.
+   */
+  sourceChanged?: boolean;
 }
 
 const UPDATED_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
@@ -192,6 +196,7 @@ export function installedSkillDetailHeader(
           : [],
       ...(updatedDate ? { updated: updatedDate } : {}),
     },
+    ...(shared?.updateAvailable ? { sourceChanged: true } : {}),
   };
 }
 
@@ -611,12 +616,7 @@ export function SkillReadDetail({
             titleId={header.titleId}
             publisher={header.publisher}
             actions={headerActions}
-            actionsNotice={
-              actionsNotice ??
-              (hasSkillUpdateStatus(updateAction) ? (
-                <SkillUpdateStatus action={updateAction} />
-              ) : undefined)
-            }
+            actionsNotice={actionsNotice}
             description={header.description}
             descriptionReplay="block"
             facts={{
@@ -644,22 +644,14 @@ export function SkillReadDetail({
                   {header.facts.updated}
                 </DetailFact>
               ) : undefined,
-              version: shareUpdate ? (
-                <DetailVersionUpdateFact
-                  name={header.title}
-                  update={{
-                    version: header.version,
-                    versionReplay: 'block',
-                    run: shareUpdate.run,
-                  }}
-                />
-              ) : (
+              version: (
                 <SkillVersionFact
                   action={updateAction}
                   version={header.version}
-                  name={header.title}
                   onRemove={onRemove}
                   refreshError={versionError}
+                  onShareUpdate={shareUpdate?.run}
+                  sourceChanged={header.sourceChanged}
                 />
               ),
             }}

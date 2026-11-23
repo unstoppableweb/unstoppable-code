@@ -7,9 +7,14 @@ import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   DisplayAvatar,
   FloatingMenu,
+  RailIconButton,
   Surface,
 } from '@canopy/ui-shared/components';
-import { PersonIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  PersonIcon,
+  RaisedHandIcon,
+  SettingsIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /**
@@ -269,7 +274,7 @@ export function SidebarAccountRow({
         {railActions === undefined ? null : (
           // The rail's buttons line up 2px in from the edge, in the same
           // column as every sidebar row's controls.
-          <span className="flex shrink-0 items-center gap-0.5 pr-0.5">
+          <span className="flex shrink-0 items-center pr-0.5">
             {railActions}
           </span>
         )}
@@ -334,5 +339,61 @@ export function SidebarAccountFooter({
         </div>
       </Surface>
     </div>
+  );
+}
+
+export interface SidebarAccountRailActionsProps {
+  /** Opens the feedback form. Omitted where the host offers none. */
+  readonly onFeedback?: () => void;
+  readonly feedbackOpen?: boolean;
+  /** Opens settings. Omitted where there are none to open (a guest). */
+  readonly onSettings?: () => void;
+  /** Settings is open: the host marks the button pressed. */
+  readonly settingsOpen?: boolean;
+  /** Host `data-*` attributes for Settings (onboarding anchors). */
+  readonly settingsAttributes?: Readonly<Record<`data-${string}`, string>>;
+}
+
+/**
+ * The account row's Feedback and Settings buttons, shared by desktop and web
+ * so both draw them at the rail's 28px size, side by side, 2px inside the
+ * row. Hosts pass only what the buttons do.
+ */
+export function SidebarAccountRailActions({
+  onFeedback,
+  feedbackOpen = false,
+  onSettings,
+  settingsOpen,
+  settingsAttributes,
+}: SidebarAccountRailActionsProps): JSX.Element {
+  return (
+    <>
+      {onFeedback ? (
+        <RailIconButton
+          icon={RaisedHandIcon}
+          tone="secondary"
+          hoverSurface
+          onClick={onFeedback}
+          aria-label="Send feedback"
+          aria-haspopup="dialog"
+          aria-expanded={feedbackOpen}
+          title="Send feedback"
+          data-testid="sidebar-account-action-feedback"
+        />
+      ) : null}
+      {onSettings ? (
+        <RailIconButton
+          icon={SettingsIcon}
+          tone="secondary"
+          hoverSurface
+          onClick={onSettings}
+          aria-label="Settings"
+          aria-pressed={settingsOpen}
+          title="Settings"
+          data-testid="sidebar-account-action-settings"
+          {...settingsAttributes}
+        />
+      ) : null}
+    </>
   );
 }

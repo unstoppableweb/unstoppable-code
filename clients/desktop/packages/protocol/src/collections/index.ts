@@ -554,6 +554,11 @@ export interface CollectionIndexEntry {
   id: string;
   name: string;
   description: string;
+  /**
+   * When this local copy was first saved, in UTC (CAN-5239). Edits keep it;
+   * absent on older entries and whenever the stored value is not a valid date.
+   */
+  createdAt?: string;
   updatedAt: string;
   /** Opaque local snapshot revision, absent on older hosts. */
   revision?: string;
@@ -585,7 +590,11 @@ export interface CollectionConfig {
   skills: CollectionSkillRef[];
   plugins: CollectionPluginRef[];
   mcpServers: CollectionMcpRef[];
-  createdAt: string;
+  /**
+   * First save of this local copy (CAN-5239). Absent when unknown: older
+   * configs have none and a save never invents one.
+   */
+  createdAt?: string;
   updatedAt: string;
   /** Author-side link to this Collection's current cloud share. */
   remote?: ShareRemoteMetadata;
@@ -640,7 +649,8 @@ export function isLocalCollectionConfig(
     !text(value.id) ||
     !text(value.name) ||
     typeof value.description !== 'string' ||
-    !text(value.createdAt) ||
+    // CAN-5239: an unknown installed-copy date is absent, not incomplete.
+    (value.createdAt !== undefined && !text(value.createdAt)) ||
     !text(value.updatedAt) ||
     (value.revision !== undefined && !text(value.revision)) ||
     !Array.isArray(value.skills) ||

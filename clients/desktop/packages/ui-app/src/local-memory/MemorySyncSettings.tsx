@@ -8,6 +8,7 @@ import type {
   LocalMemorySyncSettingsPatch,
   LocalMemorySyncState,
 } from '@canopy/app-core/local-memory';
+import { recordedErrorOf } from '@canopy/ui-shared';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   Button,
@@ -134,6 +135,8 @@ export function MemorySyncSettings({
   );
   const [busy, setBusy] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // The host already recorded the rejection behind `confirmError`.
+  const [confirmRecorded, setConfirmRecorded] = useState(false);
   // A control's answer shows at once; the next broadcast replaces it.
   const [override, setOverride] = useState<LocalMemorySyncState | null>(null);
   useEffect(() => {
@@ -188,6 +191,7 @@ export function MemorySyncSettings({
   const confirm = async (): Promise<void> => {
     setBusy(true);
     setConfirmError(null);
+    setConfirmRecorded(false);
     try {
       const result =
         confirming === 'delete'
@@ -208,8 +212,9 @@ export function MemorySyncSettings({
             : 'Restored your memories from before the merge.',
       });
       setConfirming(null);
-    } catch {
+    } catch (error) {
       setConfirmError(memorySyncFailureText('offline'));
+      setConfirmRecorded(recordedErrorOf(error) !== undefined);
     } finally {
       setBusy(false);
     }
@@ -404,6 +409,9 @@ export function MemorySyncSettings({
           busy={busy}
           destructive={confirming === 'delete'}
           errorMessage={confirmError}
+          {...(confirmRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'memory-sync-confirm' })}
           onConfirm={() => void confirm()}
           onCancel={() => setConfirming(null)}
           dataTestId="memory-sync-confirm-dialog"

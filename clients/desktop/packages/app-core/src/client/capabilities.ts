@@ -99,6 +99,26 @@ export interface CanopyCapabilities {
    */
   readonly cloneJobs?: boolean;
   /**
+   * Host serves its installed-item status snapshot, accepts status changes
+   * (active, available, disabled) and pushes `installedItems.changed`
+   * (`installedItems.listStatus`, `installedItems.setStatus`, CAN-7442).
+   * Hosts that leave it unset show installed status read-only. Default-deny.
+   */
+  readonly installedItemStatus?: boolean;
+  /**
+   * Host uninstalls installed items (`installedItems.uninstall`, CAN-7442):
+   * plugins, skills, collections, device MCP servers and account MCP
+   * connections, behind the shared confirmation. Default-deny.
+   */
+  readonly installedItemUninstall?: boolean;
+  /**
+   * Host installs marketplace plugins from the source it has stored for them
+   * and from its built-in and curated marketplaces (`plugins.install`,
+   * `plugins.installBuiltIn`, CAN-7442). The caller names no source URL.
+   * Hosts that leave it unset keep the pairing prompt. Default-deny.
+   */
+  readonly marketplacePluginInstall?: boolean;
+  /**
    * Host can connect and run subscription providers (Claude, Codex, Cursor,
    * Copilot) for this chat, so the provider-choice list offers them. A host
    * without it shows those rows as available in the desktop app. Nothing is
@@ -106,6 +126,15 @@ export interface CanopyCapabilities {
    * Default-deny.
    */
   readonly subscriptionProviders?: boolean;
+  /**
+   * Host can save the person's own Claude (Anthropic) and ChatGPT (OpenAI)
+   * API keys for cloud chats (`core.integration.providerKey.*`, through
+   * `CanopyClient.providerKeys`) and run their `byok/` models. Web sets it
+   * from the server-only provider-keys flag; the settings nav carries the
+   * same answer for the Model providers page. Desktop leaves it unset.
+   * Default-deny.
+   */
+  readonly providerApiKeys?: boolean;
   /** Local Cursor rule review and workspace opt-in. Unset is default-deny. */
   readonly repoRulesImport?: boolean;
   /** Human review and desktop preference API; execution also requires terminalPty. */
@@ -567,7 +596,12 @@ export interface CanopyCapabilities {
    * both. Desktop and Remote Control report `true`.
    */
   readonly worktreeBranching?: boolean;
-  /** Lists and accepts branch bases; Portal requires canonical v2 support. Absent means unsupported. */
+  /**
+   * Host lists branch bases (`worktree.baseBranches`) and accepts an exact
+   * `baseBranch` on `worktree.create`. Desktop reports `true`; direct Remote
+   * Control on the web reports `true`, and an older computer refuses the read
+   * with `remote_channel_unavailable` (CAN-7437). Absent means unsupported.
+   */
   readonly worktreeBaseBranch?: boolean;
   /**
    * Host persists label and visibility edits through `worktree.update` for
@@ -815,6 +849,12 @@ export interface CanopyCapabilities {
    * during project deletion. Independent of cold workspace recovery. Default-deny.
    */
   readonly worktreeRecoveryResolution?: boolean;
+  /**
+   * Host lists its live archive recovery entries (CAN-7439). Read only: it
+   * grants no Resolve, Finish or discard action. Every client that reports
+   * `worktreeRecoveryResolution` must also report this. Default-deny.
+   */
+  readonly worktreeRecoveryReads?: boolean;
   /**
    * Host can list what keeps a project's deletion from finishing that a
    * person can discard, and supersede an interrupted deletion on request

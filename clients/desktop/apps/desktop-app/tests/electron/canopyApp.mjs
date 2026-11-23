@@ -416,8 +416,10 @@ export class CanopyAppDriver {
   /**
    * Sets one Library facet from the Filter button nested in the search
    * field: `facet` is `trigger`, `status`, `project` or `source`, and
-   * `value` is an option value or `any`. The menu stays open while values
-   * are picked, so this closes it again.
+   * `value` is an option value or `any`. A project is named by its label,
+   * since its rows carry positions in their test ids to keep project ids
+   * out of session replay. The menu stays open while values are picked, so
+   * this closes it again.
    */
   async chooseWorkflowsLibraryFilter(facet, value) {
     // The Filter menu lists one row per filter; each opens its values.
@@ -429,13 +431,15 @@ export class CanopyAppDriver {
       `workflows-library-filter-${facet}-menu`,
     );
     await expect(submenu).toBeVisible();
-    await submenu
-      .getByTestId(
-        value === 'any'
-          ? `workflows-library-filter-${facet}-any`
-          : `workflows-library-filter-${facet}-option-${value}`,
-      )
-      .click();
+    const option =
+      value === 'any'
+        ? submenu.getByTestId(`workflows-library-filter-${facet}-any`)
+        : facet === 'project'
+          ? submenu.getByRole('menuitemradio', { name: value })
+          : submenu.getByTestId(
+              `workflows-library-filter-${facet}-option-${value}`,
+            );
+    await option.click();
     for (let attempt = 0; attempt < 3 && (await menu.isVisible()); attempt += 1)
       await this.window.keyboard.press('Escape');
     await expect(menu).toBeHidden();

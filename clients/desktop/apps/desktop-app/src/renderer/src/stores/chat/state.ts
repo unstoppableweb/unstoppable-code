@@ -390,13 +390,17 @@ export type BranchTabResult =
   | { status: 'failed'; message: string; retryable: boolean };
 
 /**
- * Outcome of {@link ChatTabsSlice.continueTabOnProvider}. `failed` carries the
- * user-facing reason so the confirm dialog can stay open and show it instead of
- * dismissing on a failure the user never saw.
+ * Outcome of {@link ChatTabsSlice.continueTabOnProvider}. `refused` is an
+ * expected precondition (a chat that moved on, an ineligible chat); `failed` is
+ * an operational failure such as a summary timeout, and `recorded` says whether
+ * main already recorded it (a rejected IPC call), so the dialog records only the
+ * rest. Both carry the user-facing reason so the confirm dialog can stay open
+ * and show it instead of dismissing on a failure the user never saw.
  */
 export type ContinueTabOnProviderResult =
   | { status: 'created'; chatId: string }
-  | { status: 'failed'; message: string };
+  | { status: 'refused'; message: string }
+  | { status: 'failed'; message: string; recorded: boolean };
 
 export interface ChatTabsSlice {
   selectedWorktree: WorktreeSelection | null;

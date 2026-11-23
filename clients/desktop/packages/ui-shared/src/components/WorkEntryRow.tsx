@@ -45,7 +45,6 @@ import {
 } from './context-menu-placement';
 import { SidebarRowAge } from './SidebarRowAge';
 import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
-import { ThinkingSpinner } from './ThinkingSpinner';
 import { ChoiceMark } from './Choice';
 import { SidebarPinMenuItem } from './SidebarPinMenuItem';
 import { SidebarPinnedBadge } from './SidebarPinnedBadge';
@@ -781,6 +780,7 @@ function WorkEntryRowImpl({
         >
           <SidebarPinnedBadge
             testId={`worktree-row-pinned-badge${pinnedSuffix}`}
+            footprint="status"
           />
         </span>
       )}
@@ -792,12 +792,11 @@ function WorkEntryRowImpl({
           />
         </span>
       )}
-      {/* Beside the age, 6px off its 24px cell: the hover Archive button
-          takes the age's cell and Pin (2px gap, 4px glyph inset) lands
-          exactly here. */}
+      {/* Beside the age, 7px off its 24px cell, so its center lands on the
+          hover Pin button's icon while Archive's takes the age's spot. */}
       {compactActions && pinnedToTop && (
         <span
-          className="ml-auto inline-flex shrink-0 fg-quaternary group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden pointer-coarse:hidden"
+          className="ml-auto mr-0.25 inline-flex shrink-0 fg-secondary group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden pointer-coarse:hidden"
           role="img"
           aria-label="Pinned"
           data-testid={testIdFor('-pinned')}
@@ -908,15 +907,15 @@ function titleReserveClassName(
 }
 
 /**
- * The compact title reserve: the two 28px hover buttons plus their 2px gap
- * (60px with the inset) on hover, and the touch-only ••• on a coarse pointer.
+ * The compact title reserve: the two 28px hover buttons, side by side, and
+ * their 2px inset (58px) on hover, and the touch-only ••• on a coarse pointer.
  */
 function compactTitleReserveClassName(
   coarseActionCount: number,
   hasMetadataBadge: boolean,
 ): string {
   const hover =
-    'group-hover/sidebar-item:pr-15 group-focus-within/sidebar-item:pr-15';
+    'group-hover/sidebar-item:pr-14.5 group-focus-within/sidebar-item:pr-14.5';
   return coarseActionCount > 0 && !hasMetadataBadge
     ? `${hover} pointer-coarse:pr-6`
     : hover;
@@ -992,10 +991,13 @@ function WorkEntryRowLeadingSlot({
         data-row-status={status}
       >
         {status === 'working' || status === 'background' ? (
-          // The ring keeps the status slot's 12px.
-          <ThinkingSpinner
-            tone={status === 'working' ? 'accent' : 'tertiary'}
+          // The span around it names the state. The working ring keeps the
+          // status slot's 12px.
+          <AgentStateGlyph
+            state={status}
+            backgroundTasks={backgroundTasks}
             sizePx={12}
+            tooltip={false}
           />
         ) : (
           <Dot
@@ -1173,8 +1175,8 @@ function WorkEntryRowActions({
     <span
       className={
         inline
-          ? 'pointer-events-none inline-flex shrink-0 items-center gap-0.5'
-          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center gap-0.5'
+          ? 'pointer-events-none inline-flex shrink-0 items-center'
+          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center'
       }
     >
       {onDelete && (
@@ -1226,11 +1228,11 @@ interface WorkEntryRowCompactActionsProps {
 }
 
 /**
- * The compact hover Pin and Archive buttons. They end flush with the age's
- * right edge (`right-1.5`, the row's inset), so Archive covers the age's 24px
- * cell and Pin covers the resting pin icon. A missing action keeps its slot
- * empty so the other never moves. ••• stays for touch, which has no
- * right-click.
+ * The compact hover Pin and Archive buttons. They sit 2px from the row's
+ * edges (`right-0.5`), as every sidebar row's controls do, so Archive's icon
+ * lands on the resting status and age, and Pin's on the resting pin icon. A
+ * missing action keeps its slot empty so the other never moves. ••• stays
+ * for touch, which has no right-click.
  */
 function WorkEntryRowCompactActions({
   inline = false,
@@ -1250,8 +1252,8 @@ function WorkEntryRowCompactActions({
     <span
       className={
         inline
-          ? 'pointer-events-none inline-flex shrink-0 items-center gap-0.5'
-          : 'pointer-events-none absolute inset-y-0 right-1.5 flex items-center gap-0.5'
+          ? 'pointer-events-none inline-flex shrink-0 items-center'
+          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center'
       }
     >
       {onTogglePin ? (
@@ -1265,8 +1267,9 @@ function WorkEntryRowCompactActions({
             event.stopPropagation();
             onTogglePin(!pinned);
           }}
+          // The filled pin and the Unpin label carry the state; a pressed
+          // fill would make Pin read heavier than Archive beside it.
           aria-label={pinned ? 'Unpin' : 'Pin'}
-          aria-pressed={pinned}
           tooltipLabel={pinned ? 'Unpin' : 'Pin'}
           data-testid={testIdFor('-pin-button')}
         />
@@ -1293,7 +1296,7 @@ function WorkEntryRowCompactActions({
         slot
       )}
       {/* RailIconButton sits in a tooltip wrapper, so the wrapper is what
-          leaves fine pointers; a hidden button alone would keep a 2px gap. */}
+          leaves fine pointers, and no empty item stays in the cluster. */}
       {menuButtonRef && (
         <span className="flex pointer-fine:hidden">
           <RailIconButton

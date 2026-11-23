@@ -804,7 +804,13 @@ function extractPluginMcpServers(
   return result;
 }
 
-function readPluginMcpConfigObjects(
+/**
+ * A plugin's MCP server definitions by name, as the desktop runtime merges
+ * them (plugin-resolver.ts `readPluginMcpConfigObjects`): config files in
+ * manifest order, a later definition of a name replacing an earlier one.
+ * Entries that are not objects are dropped.
+ */
+export function readPluginMcpServerMap(
   files: ReadonlyMap<string, PluginFileContent>,
   manifest: ClaudePluginManifest | null,
 ): Record<string, Record<string, unknown>> {
@@ -836,10 +842,7 @@ function buildPluginMcpProjection(options: {
   pluginRoot: string;
   warnings: string[];
 }): PluginMcpProjection {
-  const rawServers = readPluginMcpConfigObjects(
-    options.files,
-    options.manifest,
-  );
+  const rawServers = readPluginMcpServerMap(options.files, options.manifest);
   const config: Record<string, CompatibilityMcpServer> = {};
   const extraEnv: Record<string, string> = {};
   for (const [serverName, rawServer] of Object.entries(rawServers)) {

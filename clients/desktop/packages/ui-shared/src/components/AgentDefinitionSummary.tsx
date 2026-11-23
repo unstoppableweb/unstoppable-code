@@ -1,4 +1,5 @@
-import { CodeBlock } from './CodeBlock';
+import { DescriptionMarkdown } from './DescriptionMarkdown';
+import { OverlayScrollArea } from './OverlayScrollArea';
 import { Stack } from './Stack';
 import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
@@ -10,6 +11,43 @@ import { Surface } from './Surface';
 export interface AgentDefinitionSummaryPlugin {
   key: string;
   label: string;
+}
+
+/**
+ * An agent's instructions read as sanitized Markdown (the same renderer share
+ * descriptions use: raw HTML stays text, images show their alt text, headings
+ * never compete with the page title). Long instructions scroll in place.
+ */
+export function AgentInstructionsMarkdown({
+  instructions,
+  dataTestId = 'agent-definition-instructions',
+  scroll = true,
+}: {
+  readonly instructions: string;
+  readonly dataTestId?: string;
+  /** Long instructions scroll in a box; a detail page reads them in full. */
+  readonly scroll?: boolean;
+}): JSX.Element {
+  if (instructions.trim() === '') {
+    return (
+      <p className="text-s" data-testid={dataTestId}>
+        <EmptyStateText title="No additional instructions." tone="secondary" />
+      </p>
+    );
+  }
+  const markdown = (
+    <DescriptionMarkdown tone="primary">{instructions}</DescriptionMarkdown>
+  );
+  if (!scroll) return <div data-testid={dataTestId}>{markdown}</div>;
+  return (
+    <OverlayScrollArea
+      className="max-h-96"
+      viewportClassName="overscroll-contain"
+      viewportProps={{ 'data-testid': dataTestId }}
+    >
+      {markdown}
+    </OverlayScrollArea>
+  );
 }
 
 export interface AgentDefinitionSummaryProps {
@@ -57,17 +95,9 @@ export function AgentDefinitionSummary({
         <Heading level={2} variant="title">
           Instructions
         </Heading>
-        <CodeBlock
-          variant="card"
-          size="s"
-          wrap="words"
-          tone="inherit"
-          replay="inherit"
-          font="sans"
-          overflow="visible"
-        >
-          {instructions || 'No additional instructions.'}
-        </CodeBlock>
+        <Surface variant="card" padding="default">
+          <AgentInstructionsMarkdown instructions={instructions} />
+        </Surface>
       </Stack>
 
       <Stack as="section" gap="inline">

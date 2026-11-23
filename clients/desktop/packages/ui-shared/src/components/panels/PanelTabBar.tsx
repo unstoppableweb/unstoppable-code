@@ -344,8 +344,8 @@ export function PanelFillChatTabGlyph({
 }
 
 /**
- * A chat tab whose agent runs only background work: the quiet spinner
- * (turn-state D15), at the fill bar's 10px or the classic tab's 12px. Work
+ * A chat tab whose agent runs only background work: the pulsing grey dot
+ * (turn-state D15), in the fill bar's 10px or the classic tab's 12px slot. Work
  * that blocks close keeps the busy marker that withholds the hover close.
  * Desktop and web chat tabs both draw it; each host decides when (no turn
  * running, nothing waiting on the user) and whether the work blocks close.

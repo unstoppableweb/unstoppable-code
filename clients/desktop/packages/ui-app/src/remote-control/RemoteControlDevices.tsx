@@ -76,6 +76,8 @@ export interface RemoteControlFailureText {
   readonly message: string;
   /** The raw reason, copied on request and never rendered. */
   readonly details?: string;
+  /** The host already recorded the failure, so the dialog links to it. */
+  readonly recorded?: true;
 }
 
 /**
@@ -338,6 +340,9 @@ export function RemoteControlDevices({
           busyLabel="Removing…"
           busy={removing}
           errorMessage={removeError?.message ?? null}
+          {...(removeError?.recorded === true
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'remote-control-device-remove' })}
           {...(removeError?.details === undefined
             ? {}
             : { errorDetails: removeError.details })}

@@ -8,6 +8,7 @@ import type {
   InstalledItemUninstallTarget,
 } from '@canopy/protocol/installed-items';
 import {
+  deviceServerDeletedWithIncompleteCleanup,
   findInstalledItem,
   installedItemTargetKey,
   type InstalledItemMutationOutcome,
@@ -36,6 +37,9 @@ function mutationOutcome(
     ok: false,
     message: message.length > 0 ? message : MUTATION_UNCONFIRMED,
     notices,
+    ...(deviceServerDeletedWithIncompleteCleanup(result, target)
+      ? { cleanupIncomplete: true }
+      : {}),
   };
 }
 

@@ -4,6 +4,12 @@ import {
   aiGatewayConnectSchema,
 } from '../model-gateway';
 import { aiGatewayConnectionResultSchema } from '../model-gateway/discovery';
+import {
+  CoreIntegrationProviderKeyClearParamsSchema,
+  CoreIntegrationProviderKeyListResultSchema,
+  CoreIntegrationProviderKeyResultSchema,
+  CoreIntegrationProviderKeySetParamsSchema,
+} from '../canopy-core/core/integration/provider-key';
 import { z } from 'zod';
 import type { DigestPreferences } from '../digests/index';
 import {
@@ -45,6 +51,12 @@ import type {
   DigestOnDemandRequestResult,
   DigestProfileFeatureResponse,
 } from './account-digests';
+import {
+  ACCOUNT_DELEGATION_SETTINGS_PATH,
+  accountDelegationSettingsSchema,
+  accountDelegationSettingsUpdateSchema,
+  type AccountDelegationSettings,
+} from './account-delegation';
 import {
   isGitHubCloudConnectionDto,
   isGitHubCloudConnectResponse,
@@ -274,6 +286,9 @@ const artifactPublishableItemSchema = z.looseObject({
   published: z.boolean(),
 });
 
+/** Compatibility route for a person's own provider keys. */
+export const MODEL_PROVIDERS_SETTINGS_PATH = '/api/v1/settings/model-providers';
+
 export const ACCOUNT_SETTINGS_OPERATIONS = {
   'account.settings.ai-gateway.read': defineSettingsRead({
     transport: 'backend',
@@ -301,6 +316,62 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
     request: (input) => ({
       method: 'POST',
       path: '/api/v1/settings/ai-gateway/connect',
+      body: input,
+    }),
+  }),
+  // A person's own Anthropic and OpenAI keys for cloud chats. The same
+  // service as `core.integration.providerKey.*` on the web core; the route
+  // answers not available while the provider-keys flag is off.
+  'account.settings.model-providers.read': defineSettingsRead({
+    transport: 'backend',
+    input: settingsEmptyInputSchema,
+    result: CoreIntegrationProviderKeyListResultSchema,
+    request: () => ({ method: 'GET', path: MODEL_PROVIDERS_SETTINGS_PATH }),
+  }),
+  'account.settings.model-providers.save': defineSettingsWrite({
+    maxInputBytes: 16 * 1024,
+    transport: 'backend',
+    input: CoreIntegrationProviderKeySetParamsSchema,
+    result: CoreIntegrationProviderKeyResultSchema,
+    request: (input) => ({
+      method: 'PUT',
+      path: MODEL_PROVIDERS_SETTINGS_PATH,
+      body: input,
+    }),
+  }),
+  'account.settings.model-providers.remove': defineSettingsWrite({
+    transport: 'backend',
+    input: CoreIntegrationProviderKeyClearParamsSchema,
+    result: CoreIntegrationProviderKeyResultSchema,
+    request: (input) => ({
+      method: 'DELETE',
+      path: settingsPathWithQuery(MODEL_PROVIDERS_SETTINGS_PATH, {
+        provider: input.provider,
+        expectedRevision: input.expectedRevision,
+      }),
+    }),
+  }),
+  /* ------------------------------------------------------------------------ */
+  /* Delegation tab: cloud delegation limits (CAN-7571)                       */
+  /* ------------------------------------------------------------------------ */
+
+  'account.settings.delegation.read': defineSettingsRead({
+    transport: 'backend',
+    input: settingsEmptyInputSchema,
+    result: settingsDtoSchema<AccountDelegationSettings>(
+      accountDelegationSettingsSchema,
+    ),
+    request: () => ({ method: 'GET', path: ACCOUNT_DELEGATION_SETTINGS_PATH }),
+  }),
+  'account.settings.delegation.update': defineSettingsWrite({
+    transport: 'backend',
+    input: accountDelegationSettingsUpdateSchema,
+    result: settingsDtoSchema<AccountDelegationSettings>(
+      accountDelegationSettingsSchema,
+    ),
+    request: (input) => ({
+      method: 'PATCH',
+      path: ACCOUNT_DELEGATION_SETTINGS_PATH,
       body: input,
     }),
   }),

@@ -7,6 +7,7 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { RemoteControlState } from '@canopy/desktop-shared/types/remote-control';
 import type * as AppAdvisorIpcModule from '../../ipc/app-advisor';
+import type * as DesktopRuntimeModule from '../../canopy-runtime/desktop-runtime';
 import type { AdvisorCredentialActionHost } from '../advisor-credential-actions';
 
 jest.mock('electron', () => ({
@@ -19,6 +20,17 @@ jest.mock('../../ipc/app-advisor', (): object => ({
   ...jest.requireActual<typeof AppAdvisorIpcModule>('../../ipc/app-advisor'),
   requestAppAdvisorRendererTool: jest.fn(),
   routeRendererToolRequest: jest.fn((): null => null),
+}));
+
+// DispatchAction records writes in the active runtime's action runs.
+let mockRuns: AdvisorActionRuns | null = null;
+jest.mock('../../canopy-runtime/desktop-runtime', (): object => ({
+  ...jest.requireActual<typeof DesktopRuntimeModule>(
+    '../../canopy-runtime/desktop-runtime',
+  ),
+  getActiveDesktopRuntimeIfAccepting: (): {
+    appAdvisorActions: AdvisorActionRuns | null;
+  } => ({ appAdvisorActions: mockRuns }),
 }));
 
 let mockBoundTools: readonly string[] = [];
@@ -61,6 +73,7 @@ import {
 import { ADVISOR_CREDENTIAL_ACTION_TYPES } from '../advisor-credential-actions';
 import { dispatchActionSchema } from '../definitions';
 import { createAppAdvisorToolRuntime } from '../runtime';
+import { executeAppAdvisorTool } from '../tool-executor';
 
 const SECRET = 'sk-live-0123456789abcdefSECRET';
 const LEASE = ['ui.app_advisor.present'] as const;
@@ -85,8 +98,6 @@ const HOST_ACTIONS = [
   { type: 'canopy_cloud.start_oauth_login' },
   { type: 'canopy_cloud.cancel_oauth_login' },
   { type: 'canopy_cloud.disconnect' },
-  { type: 'canopy_portal.start' },
-  { type: 'canopy_portal.stop' },
   { type: 'remote_control.get_state' },
   { type: 'remote_control.set_allow_incoming', enabled: true },
   { type: 'opencode.connection', operation: 'status' },
@@ -200,6 +211,11 @@ function setup(): {
     input: unknown,
     call?: Partial<AppAdvisorActionCall>,
   ): Promise<AppAdvisorActionResponse>;
+  /** The DispatchAction tool itself, with the main window's lease bound. */
+  dispatch(
+    input: unknown,
+    toolUseId: string,
+  ): ReturnType<typeof executeAppAdvisorTool>;
 } {
   const runtime = createAppAdvisorToolRuntime(
     {
@@ -224,6 +240,11 @@ function setup(): {
       );
       return JSON.parse(routed.text) as AppAdvisorActionResponse;
     },
+    dispatch: (input, toolUseId) =>
+      executeAppAdvisorTool('dispatch_action', { action: input }, runtime, {
+        toolUseId,
+        interfaceTools: LEASE,
+      }),
   };
 }
 
@@ -289,6 +310,7 @@ beforeEach(() => {
     openLedger: (): OperationLedger => OperationLedger.open(ledgerPath),
   });
   runs = new AdvisorActionRuns({ operations });
+  mockRuns = runs;
   calls = [];
   allowIncoming = false;
   remoteRefusal = null;
@@ -308,9 +330,9 @@ afterEach(() => {
 });
 
 describe('App Advisor credential and remote-access actions in main (CAN-6008)', () => {
-  it('the twenty actions are core, require the interface, and keep their grants', () => {
+  it('the eighteen actions are core, require the interface, and keep their grants', () => {
     const types = ALL_ACTIONS.map((action) => action.type);
-    expect(new Set(types).size).toBe(20);
+    expect(new Set(types).size).toBe(18);
     for (const type of types) {
       const disposition = appAdvisorActionDisposition(type);
       expect(disposition).toMatchObject({
@@ -326,7 +348,6 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
       expect(disposition.access).toBe(reads.includes(type) ? 'read' : 'write');
       if (disposition.access === 'write')
         expect(disposition.grants).toEqual([
-          type.startsWith('canopy_portal.') ||
           type.startsWith('remote_control.')
             ? 'core.remoteAccess.write'
             : 'core.integration.write',
@@ -359,14 +380,8 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     expect(windowRequest).not.toHaveBeenCalled();
   });
 
-  it('canopy_portal.start and remote_control.set_allow_incoming refuse headless turns and change nothing', async () => {
+  it('remote_control.set_allow_incoming refuses a headless turn and changes nothing', async () => {
     const h = setup();
-    await expect(
-      h.route({ type: 'canopy_portal.start' }, { toolUseId: 'p' }),
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'surface_unavailable' },
-    });
     await expect(
       h.route(
         { type: 'remote_control.set_allow_incoming', enabled: true },
@@ -438,7 +453,10 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
       result: { connected: true },
     });
     await expect(
-      h.route({ type: 'canopy_portal.start' }, bound('b')),
+      h.route(
+        { type: 'remote_control.set_allow_incoming', enabled: true },
+        bound('b'),
+      ),
     ).resolves.toEqual({
       requestId: 'b',
       ok: true,
@@ -512,12 +530,15 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     expect(windowRequest).not.toHaveBeenCalled();
   });
 
-  it("Portal stop turns Allow incoming off, a Remote Control refusal is the action's error, and a failed Ollama install is refused with its error", async () => {
+  it("remote_control.set_allow_incoming turns Allow incoming off, a Remote Control refusal is the action's error, and a failed Ollama install is refused with its error", async () => {
     allowIncoming = true;
     ollamaReady = false;
     const h = setup();
     await expect(
-      h.route({ type: 'canopy_portal.stop' }, bound('s')),
+      h.route(
+        { type: 'remote_control.set_allow_incoming', enabled: false },
+        bound('s'),
+      ),
     ).resolves.toEqual({
       requestId: 's',
       ok: true,
@@ -525,7 +546,10 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     });
     remoteRefusal = new Error('Sign in before allowing incoming control.');
     await expect(
-      h.route({ type: 'canopy_portal.start' }, bound('p')),
+      h.route(
+        { type: 'remote_control.set_allow_incoming', enabled: true },
+        bound('p'),
+      ),
     ).resolves.toEqual({
       requestId: 'p',
       ok: false,
@@ -663,7 +687,6 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
     for (const action of [
       { type: 'canopy_cloud.save_api_key', apiKey: SECRET },
       { type: 'canopy_cloud.start_oauth_login' },
-      { type: 'canopy_portal.start' },
       { type: 'remote_control.set_allow_incoming', enabled: true },
       { type: 'ollama.install' },
     ]) {
@@ -679,9 +702,49 @@ describe('App Advisor credential and remote-access actions in main (CAN-6008)', 
       'saveCloudApiKey',
       'startCloudOAuthLogin',
       'setAllowIncoming',
-      'setAllowIncoming',
       'installOllama',
     ]);
+  });
+
+  it('the removed canopy_portal names are refused before the router and change nothing (CAN-7345)', async () => {
+    const removed: readonly string[] = [
+      'canopy_portal.open',
+      'canopy_portal.close',
+      'canopy_portal.open_account_settings',
+      'canopy_portal.start',
+      'canopy_portal.stop',
+    ];
+    const h = setup();
+    for (const [index, type] of removed.entries()) {
+      expect({
+        type,
+        parsed: dispatchActionSchema.safeParse({ action: { type } }).success,
+        disposition: appAdvisorActionDisposition(type),
+      }).toEqual({ type, parsed: false, disposition: undefined });
+      const result = await h.dispatch({ type }, `removed-${index}`);
+      expect({ type, isError: result.isError }).toEqual({
+        type,
+        isError: true,
+      });
+      expect(
+        result.text.startsWith('Invalid arguments for DispatchAction.'),
+      ).toBe(true);
+    }
+    expect(calls).toEqual([]);
+    expect(allowIncoming).toBe(false);
+    expect(windowRequest).not.toHaveBeenCalled();
+    // Control: the same helper reaches the router for a current name.
+    const allowed = await h.dispatch(
+      { type: 'remote_control.set_allow_incoming', enabled: true },
+      'removed-control',
+    );
+    expect(allowed.isError).not.toBe(true);
+    expect(JSON.parse(allowed.text)).toMatchObject({
+      requestId: 'removed-control',
+      ok: true,
+      result: { allowIncoming: true },
+    });
+    expect(calls.map(([name]) => name)).toEqual(['setAllowIncoming']);
   });
 
   it("Settings surface actions go to the main window's lease once per tool call, never a remote route, and answer the surface's acceptance or refusal", async () => {

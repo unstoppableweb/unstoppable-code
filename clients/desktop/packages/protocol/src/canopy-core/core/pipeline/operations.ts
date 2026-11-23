@@ -59,6 +59,11 @@ export const PIPELINE_DEFINITION_INSTRUCTION_ERROR_CODES = [
   'core.pipeline.definitionInvalid',
   'core.pipeline.definitionReadOnly',
   'core.pipeline.revisionConflict',
+  /**
+   * The app that keeps the definitions' own state was not asked to check the
+   * write, so nothing was written (CAN-7522).
+   */
+  'core.pipeline.ownerUnavailable',
 ] as const;
 
 export type PipelineDefinitionInstructionErrorCode =

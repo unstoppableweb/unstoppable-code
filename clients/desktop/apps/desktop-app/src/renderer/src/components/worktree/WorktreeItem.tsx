@@ -2107,9 +2107,7 @@ function WorktreeItemContent({
           <DiffStatsBadge stats={diffStatsForRow} />
         </span>
       )}
-      <span
-        className={`flex items-center gap-0.5 ${isListMode ? '' : 'ml-auto'}`}
-      >
+      <span className={`flex items-center ${isListMode ? '' : 'ml-auto'}`}>
         {worktree.hidden && onToggleHidden && (
           <RailIconButton
             icon={EyeIcon}
@@ -2147,8 +2145,9 @@ function WorktreeItemContent({
             }}
             visibility="fine-pointer"
             data-testid={automationId('worktree-pin-button')}
+            // The filled pin and the Unpin label carry the state, as on the
+            // shared rows; a pressed fill would outweigh Archive beside it.
             aria-label={worktree.pinned === true ? 'Unpin' : 'Pin'}
-            aria-pressed={worktree.pinned === true}
           />
         )}
         {focusedRowStatus && isListMode && canArchiveFromRow && (

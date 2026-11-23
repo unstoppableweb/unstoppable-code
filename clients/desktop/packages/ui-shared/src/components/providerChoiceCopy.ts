@@ -63,7 +63,8 @@ export type ProviderChoiceConditionKey =
   | 'quota_limit'
   | 'no_billing_source'
   | 'model_locked'
-  | 'queued_held';
+  | 'queued_held'
+  | 'own_key_limit';
 
 /**
  * Mirrors `ProviderChoiceGroup` in `@canopy/app-state/provider-choice`: how
@@ -135,6 +136,7 @@ export function providerChoiceReason(
     case 'queued_held':
       return 'Pick a provider to send your message.';
     case 'model_locked':
+    case 'own_key_limit':
     case null:
     case undefined:
       return undefined;

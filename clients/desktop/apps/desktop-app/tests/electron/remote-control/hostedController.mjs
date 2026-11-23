@@ -244,10 +244,15 @@ export async function attemptDelegatedHandshake({
   }
 }
 
+/**
+ * The browser profile the web owner presents (`webControllerProfile('browser')`),
+ * including its exact worktree base-branch offer (CAN-7437).
+ */
 export const BROWSER_TEST_CONTROLLER = {
   kind: 'browser',
   version: { protocolVersion: REMOTE_PROTOCOL_VERSION, appVersion: 'web' },
   minVersion: REMOTE_PROTOCOL_VERSION,
+  exactWorktreeBaseBranch: true,
 };
 
 /**

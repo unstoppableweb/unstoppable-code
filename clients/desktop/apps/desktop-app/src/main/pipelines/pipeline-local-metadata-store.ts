@@ -529,3 +529,20 @@ export function markUserPipelineAgentHidden(pipelineId: string): boolean {
 export function deleteUserPipelineLocalMetadata(pipelineId: string): void {
   metadataStore.deleteUserPipeline(pipelineId);
 }
+
+/**
+ * The user definitions the file keeps an entry for (CAN-7522), or `null` when
+ * the file can't be read, so a reconcile never takes it for an empty one.
+ */
+export function userPipelineLocalMetadataIds(): string[] | null {
+  const file = readMetadataFile();
+  if (file.unreadable === true) return null;
+  const prefix = serializePipelinePreferenceLocator({
+    type: 'stored',
+    source: 'user',
+    value: '',
+  });
+  return Object.keys(file.entries).flatMap((key) =>
+    key.startsWith(prefix) ? [key.slice(prefix.length)] : [],
+  );
+}

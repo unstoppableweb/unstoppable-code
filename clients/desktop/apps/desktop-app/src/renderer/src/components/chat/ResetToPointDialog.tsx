@@ -1,5 +1,7 @@
 import { useEffect, useEffectEvent, useState, type JSX } from 'react';
 import { ConfirmDialog } from '@canopy/ui-shared/components';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 
 interface ResetToPointDialogProps {
   onConfirm: () => Promise<void> | void;
@@ -12,14 +14,21 @@ export function ResetToPointDialog({
 }: ResetToPointDialogProps): JSX.Element {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Main already recorded that failure's IPC call, so the dialog does not
+  // record it again. Reset with `error`.
+  const [errorRecorded, setErrorRecorded] = useState(false);
 
   const handleConfirm = async (): Promise<void> => {
     if (submitting) return;
     setSubmitting(true);
     setError(null);
+    setErrorRecorded(false);
     try {
       await onConfirm();
     } catch (err: unknown) {
+      setErrorRecorded(
+        toAppError(resolveClientAppError(err))?.recordedBy !== undefined,
+      );
       setError(err instanceof Error ? err.message : 'Failed to revert turn');
       setSubmitting(false);
     }
@@ -63,6 +72,9 @@ export function ResetToPointDialog({
       busyLabel="Reverting…"
       busy={submitting}
       errorMessage={error}
+      {...(errorRecorded
+        ? { errorRecordingDisabled: true as const }
+        : { errorSource: 'chat-reset-to-point' })}
       destructive
       onConfirm={(): void => {
         void handleConfirm();

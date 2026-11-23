@@ -14,6 +14,7 @@ import {
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { getFilenameFromPath, VIDEO_FILENAME } from '@/lib/file-type';
 import { resolveDesktopDocumentBytes } from '@/lib/file-viewer/desktop-document-bytes';
+import { usePanelOwnerDocument } from '@/lib/panels/panel-owner-document';
 import { shrinkPicture } from '@/lib/shrink-picture';
 import { useChatStore } from '@/stores/chatStore';
 
@@ -181,6 +182,9 @@ export function useDesktopMediaViewer(
   // A pulled-out panel's window can close while its viewer is open, and the
   // panel returns to the main window without unmounting this host: the
   // viewer closes with that window, so its video URL and thumbnails go.
+  // `pagehide` covers a window that unloads; the window host's own check for
+  // a closed window fires none, so the viewer also closes once the panel is
+  // shown in another window than the one it opened over.
   const viewerWindow = set?.ownerDocument?.defaultView ?? null;
   useEffect(() => {
     if (viewerWindow === null) return undefined;
@@ -189,6 +193,11 @@ export function useDesktopMediaViewer(
       viewerWindow.removeEventListener('pagehide', close);
     };
   }, [close, viewerWindow]);
+  const panelDocument = usePanelOwnerDocument() ?? document;
+  const viewerDocument = set === null ? null : (set.ownerDocument ?? document);
+  useEffect(() => {
+    if (viewerDocument !== null && viewerDocument !== panelDocument) close();
+  }, [close, panelDocument, viewerDocument]);
 
   const pumpThumbnails = useCallback((): void => {
     while (

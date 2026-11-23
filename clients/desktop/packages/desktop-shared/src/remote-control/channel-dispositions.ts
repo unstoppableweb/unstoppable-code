@@ -337,10 +337,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // entities Portal's worktree snapshot carries (CAN-5985).
     worktreeActivityEntities: 'tunnel',
     worktreeCheckRemovalAdmission: 'tunnel',
-    // CAN-6479: local IPC only; paired Portal uses sanitized user-only commands.
-    worktreeRecoveryList: 'blocked',
-    worktreeRecoveryResolve: 'blocked',
-    worktreeRecoveryFinish: 'blocked',
+    // CAN-7439: the list is a read under the bridge's `core.worktree.read`.
+    // CAN-7444: Resolve and Finish admit the local user and a bridge caller
+    // as archive recovery reviewers; the controller profile lists keep them
+    // to browser and desktop controllers.
+    worktreeRecoveryList: 'tunnel',
+    worktreeRecoveryResolve: 'tunnel',
+    worktreeRecoveryFinish: 'tunnel',
     worktreeDiscardDescribe: 'tunnel',
     worktreeDiscard: 'tunnel',
     workspaceDeleteDiscardDescribe: 'tunnel',

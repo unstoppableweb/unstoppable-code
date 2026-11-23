@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, type JSX } from 'react';
+import { memo, type JSX, type ReactElement } from 'react';
 import { visibleMessageParts } from '@canopy/agent-transcript';
 import { AppAdvisorWatcherIcon } from '../../icons';
 import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
@@ -8,7 +8,10 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
-import { RichHoverTooltip } from '../RichHoverTooltip';
+import {
+  RichHoverTooltip,
+  type TooltipTriggerProps,
+} from '../RichHoverTooltip';
 
 interface WatcherFiredTitleProps {
   watcherFired: ChatWatcherFiredInfo;
@@ -59,6 +62,26 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
   if (!combinedWatchers?.length) return titleRow;
 
   return (
+    <CombinedWatchersTooltip combinedWatchers={combinedWatchers}>
+      {titleRow}
+    </CombinedWatchersTooltip>
+  );
+});
+
+/**
+ * The details of several watchers delivered together: each one's kind and
+ * report, opened from the trigger it wraps on hover or focus.
+ */
+export function CombinedWatchersTooltip({
+  combinedWatchers,
+  children,
+}: {
+  readonly combinedWatchers: NonNullable<
+    ChatWatcherFiredInfo['combinedWatchers']
+  >;
+  readonly children: ReactElement<TooltipTriggerProps>;
+}): JSX.Element {
+  return (
     <RichHoverTooltip
       interactive
       dataTestId="watcher-fired-tooltip"
@@ -90,10 +113,10 @@ export const WatcherFiredTitle = memo(function WatcherFiredTitle({
         </div>
       }
     >
-      {titleRow}
+      {children}
     </RichHoverTooltip>
   );
-});
+}
 
 /**
  * How a bubble shows a fired watcher's message: the visible notice, without

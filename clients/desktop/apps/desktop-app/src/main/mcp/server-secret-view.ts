@@ -18,6 +18,10 @@ import {
   type StoredSecretSlot,
   toStoredSecretValue,
 } from '../lib/stored-secrets';
+import {
+  controllerCredentialFreeUrl,
+  mergeControllerUrl,
+} from '../remote-control/host/controller-remote-urls';
 
 /**
  * CAN-4411 F4: MCP server replies carry stored-secret references in place of
@@ -254,6 +258,78 @@ export function resolveMcpServerInput(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Only a controller sees this: tell it where the change can be made.
+export const CONTROLLER_SERVER_URL_CHANGED =
+  "Couldn't save this server. Its saved URLs hold a credential, so change them on the computer you're controlling.";
+
+/**
+ * A save a remote-control controller sent (CAN-7082). The controller gets a
+ * saved server's URL and OAuth endpoints without their credential parts, so
+ * each one it sent back exactly as it got it keeps the value `current`
+ * stores, byte for byte. One it changed is refused while the stored value
+ * held a credential and the new one carries none of its own: the old
+ * credential never goes to a new URL, and silently dropping it would break
+ * the connection. A stored URL the controller got as `''` (it fails closed)
+ * and left out of the save is kept: an edit form drops an empty field.
+ */
+export function mergeControllerServerUrls(
+  next: McpServerDataView,
+  current: McpServerData | undefined,
+): McpServerDataView {
+  const merge = (
+    sent: string | undefined,
+    stored: string | undefined,
+  ): string | undefined => {
+    if (stored === undefined) return sent;
+    if (sent === undefined)
+      return controllerCredentialFreeUrl(stored) === '' ? stored : undefined;
+    const merged = mergeControllerUrl(sent, [stored]);
+    if (merged.kind === 'changed')
+      throw new StoredSecretError(
+        'stored_secret_destination_changed',
+        CONTROLLER_SERVER_URL_CHANGED,
+      );
+    return merged.kind === 'carry' ? merged.value : sent;
+  };
+  const { definition } = next;
+  const stored = current?.definition;
+  const url = merge(definition.url, stored?.url);
+  const oauth =
+    definition.oauth === undefined
+      ? undefined
+      : {
+          ...definition.oauth,
+          ...optionalField(
+            'authorizationUrl',
+            merge(
+              definition.oauth.authorizationUrl,
+              stored?.oauth?.authorizationUrl,
+            ),
+          ),
+          ...optionalField(
+            'tokenUrl',
+            merge(definition.oauth.tokenUrl, stored?.oauth?.tokenUrl),
+          ),
+        };
+  return {
+    ...next,
+    definition: {
+      ...definition,
+      ...optionalField('url', url),
+      ...(oauth !== undefined ? { oauth } : {}),
+    },
+  };
+}
+
+function optionalField<K extends string>(
+  key: K,
+  value: string | undefined,
+): Partial<Record<K, string>> {
+  const field: Partial<Record<K, string>> = {};
+  if (value !== undefined) field[key] = value;
+  return field;
 }
 
 /**

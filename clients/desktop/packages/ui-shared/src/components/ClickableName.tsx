@@ -1,5 +1,6 @@
 import { ControlButton } from './Button';
 import type { JSX } from 'react';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
 /**
  * Name + optional one-line description rendered as a click target, used by the
@@ -11,12 +12,18 @@ export function ClickableName({
   name,
   description,
   mono = false,
+  privateName = false,
   onClick,
 }: {
   name: string;
   description?: string;
   /** For identifiers people type, like a command. */
   mono?: boolean;
+  /**
+   * A name read from someone's files: session replay keeps a placeholder for
+   * the text, never for the button itself.
+   */
+  privateName?: boolean;
   onClick: () => void;
 }): JSX.Element {
   return (
@@ -28,7 +35,7 @@ export function ClickableName({
       <span
         className={`fg-primary font-medium group-hover:fg-accent transition-colors${
           mono ? ' font-mono text-xs' : ''
-        }`}
+        }${privateName ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
       >
         {name}
       </span>

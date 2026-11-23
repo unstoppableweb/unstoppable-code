@@ -994,11 +994,13 @@ export function registerPluginHandlers(): void {
       installLocation: string,
       pluginSourcePath: string,
       componentFile: string,
+      mode?: 'catalog-checkout',
     ) =>
       service.readComponentContent(
         installLocation,
         pluginSourcePath,
         componentFile,
+        mode,
       ),
   );
   registerIpcHandler(

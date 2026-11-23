@@ -3,7 +3,8 @@
   "private": true,
   "dependencies": {
     "@canopy/desktop-shared": "workspace:*",
-    "@canopy/protocol": "workspace:*"
+    "@canopy/protocol": "workspace:*",
+    "fflate": "0.4.9"
   },
   "exports": {
     ".": "./src/index.ts",

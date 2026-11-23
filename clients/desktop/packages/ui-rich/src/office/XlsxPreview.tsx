@@ -15,7 +15,10 @@ import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { defaultRangeExtractor, useVirtualizer } from '@tanstack/react-virtual';
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { XlsxSheetModel } from './office-parse';
-import { parseOfficeDocument } from './office-parse-client';
+import {
+  officePreviewRenderFailure,
+  parseOfficeDocument,
+} from './office-parse-client';
 import { OfficePreviewBanner } from './OfficePreviewBanner';
 import { OfficeDocumentRegion } from './OfficeDocumentSurface';
 import { cellKey, columnLabel, coveredCells, spanByAnchor } from './xlsx-grid';
@@ -28,7 +31,11 @@ export interface XlsxPreviewProps {
   readonly fileName: string;
   readonly createWorker: () => Worker;
   readonly copy?: OfficePreviewCopy;
-  readonly onRenderFailure: (failure: OfficePreviewRenderFailure) => void;
+  /** `error` accompanies a `worker-defect` only, for the host to record. */
+  readonly onRenderFailure: (
+    failure: OfficePreviewRenderFailure,
+    error?: unknown,
+  ) => void;
 }
 
 type State =
@@ -61,8 +68,11 @@ export function XlsxPreview({
         if (result.kind !== 'xlsx') throw new Error('Unexpected parse result.');
         setActiveSheet(0);
         setState({ status: 'ready', bytes, sheets: result.sheets });
-      } catch {
-        if (!controller.signal.aborted) onRenderFailure('parse-failed');
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (officePreviewRenderFailure(error) === 'worker-defect')
+          onRenderFailure('worker-defect', error);
+        else onRenderFailure('parse-failed');
       }
     })();
     return (): void => controller.abort();

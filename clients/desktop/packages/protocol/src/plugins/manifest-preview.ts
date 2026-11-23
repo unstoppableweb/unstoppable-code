@@ -18,9 +18,33 @@ export interface PluginManifestPreview {
   /** Hooks or MCP servers are listed; their details arrive with Add. */
   readonly hooks: boolean;
   readonly mcpServers: boolean;
-  /** The MCP server names `.mcp.json` declares, when it could be read. */
+  /** The MCP server names read from the native manifests and config files. */
   readonly mcpServerNames: readonly string[];
+  /**
+   * Each named MCP server's URL or command line, as its config states it,
+   * for display only. A server whose values are too long is left out.
+   */
+  readonly mcpServerEndpoints?: readonly PluginManifestPreviewMcpServer[];
+  /** The repository's README, read on page load; capped in size. */
+  readonly readme?: { readonly body: string; readonly truncated?: boolean };
+  /**
+   * One-line descriptions from each skill, command and agent file's front
+   * matter, keyed `skill:<name>`, `command:<name>`, or `agent:<name>` using
+   * the exact member name.
+   * Only the first few files are read, so a large plugin lists some.
+   */
+  readonly descriptions?: Readonly<Record<string, string>>;
 }
+
+/** An MCP server's endpoint before Add: a URL, or a command and its args. */
+export type PluginManifestPreviewMcpServer =
+  | { readonly name: string; readonly type: 'http'; readonly url: string }
+  | {
+      readonly name: string;
+      readonly type: 'command';
+      readonly command: string;
+      readonly args?: readonly string[];
+    };
 
 /** Why a preview couldn't be read; the page keeps what it already knows. */
 export type PluginManifestPreviewFailure =
@@ -45,6 +69,16 @@ const FAILURES: ReadonlySet<string> = new Set<PluginManifestPreviewFailure>([
 /** Names are capped so a large repository can't flood a page. */
 export const PLUGIN_MANIFEST_PREVIEW_MAX_NAMES = 200;
 export const PLUGIN_MANIFEST_PREVIEW_NAME_MAX_LENGTH = 128;
+export const PLUGIN_MANIFEST_PREVIEW_README_MAX_LENGTH = 64 * 1024;
+export const PLUGIN_MANIFEST_PREVIEW_DESCRIPTION_MAX_LENGTH = 400;
+/** A server's URL or command, and each of at most 32 args. */
+export const PLUGIN_MANIFEST_PREVIEW_ENDPOINT_MAX_LENGTH = 2048;
+export const PLUGIN_MANIFEST_PREVIEW_MAX_ARGS = 32;
+export const PLUGIN_MANIFEST_PREVIEW_ARG_MAX_LENGTH = 512;
+
+// Shown as one line of text: no control characters or Unicode line breaks.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 function isFailure(value: unknown): value is PluginManifestPreviewFailure {
   return typeof value === 'string' && FAILURES.has(value);
@@ -54,14 +88,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function displayText(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= maxLength &&
+    value.trim().length > 0 &&
+    !CONTROL_CHARACTER.test(value)
+  );
+}
+
+/**
+ * One MCP server's endpoint, bounded for display; `null` when it has no
+ * plain URL or command, or a value is too long or holds control characters.
+ */
+export function parsePluginManifestPreviewMcpServer(
+  value: unknown,
+): PluginManifestPreviewMcpServer | null {
+  if (
+    !isRecord(value) ||
+    !displayText(value.name, PLUGIN_MANIFEST_PREVIEW_NAME_MAX_LENGTH)
+  )
+    return null;
+  const name = value.name;
+  if (value.type === 'http')
+    return displayText(value.url, PLUGIN_MANIFEST_PREVIEW_ENDPOINT_MAX_LENGTH)
+      ? { name, type: 'http', url: value.url }
+      : null;
+  if (
+    value.type !== 'command' ||
+    !displayText(value.command, PLUGIN_MANIFEST_PREVIEW_ENDPOINT_MAX_LENGTH)
+  )
+    return null;
+  const command = value.command;
+  if (value.args === undefined) return { name, type: 'command', command };
+  if (
+    !Array.isArray(value.args) ||
+    value.args.length > PLUGIN_MANIFEST_PREVIEW_MAX_ARGS
+  )
+    return null;
+  const args: string[] = [];
+  for (const arg of value.args) {
+    // An empty arg is kept: it is part of the command line.
+    if (
+      typeof arg !== 'string' ||
+      arg.length > PLUGIN_MANIFEST_PREVIEW_ARG_MAX_LENGTH ||
+      CONTROL_CHARACTER.test(arg)
+    )
+      return null;
+    args.push(arg);
+  }
+  return { name, type: 'command', command, ...(args.length ? { args } : {}) };
+}
+
+/**
+ * Whether a member or server name shows in Contents: one line, not blank,
+ * within the name length. The producer applies the same rule, so the page
+ * and the wire parser see the same names.
+ */
+export function isPluginManifestPreviewName(value: unknown): value is string {
+  return displayText(value, PLUGIN_MANIFEST_PREVIEW_NAME_MAX_LENGTH);
+}
+
 function names(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const out: string[] = [];
   for (const item of value.slice(0, PLUGIN_MANIFEST_PREVIEW_MAX_NAMES)) {
     if (typeof item !== 'string') return null;
-    const trimmed = item.trim();
-    if (trimmed && trimmed.length <= PLUGIN_MANIFEST_PREVIEW_NAME_MAX_LENGTH)
-      out.push(trimmed);
+    if (isPluginManifestPreviewName(item)) out.push(item);
   }
   return out;
 }
@@ -91,6 +184,35 @@ export function parsePluginManifestPreviewResult(
   )
     return null;
   const compatibility = parseHarnessCompatibility(preview.compatibility);
+  const readme =
+    isRecord(preview.readme) &&
+    typeof preview.readme.body === 'string' &&
+    preview.readme.body.length <= PLUGIN_MANIFEST_PREVIEW_README_MAX_LENGTH
+      ? {
+          body: preview.readme.body,
+          ...(preview.readme.truncated === true ? { truncated: true } : {}),
+        }
+      : undefined;
+  const descriptions: Record<string, string> = {};
+  if (isRecord(preview.descriptions))
+    for (const [key, text] of Object.entries(preview.descriptions).slice(
+      0,
+      PLUGIN_MANIFEST_PREVIEW_MAX_NAMES * 3,
+    ))
+      if (
+        typeof text === 'string' &&
+        text.length <= PLUGIN_MANIFEST_PREVIEW_DESCRIPTION_MAX_LENGTH
+      )
+        descriptions[key] = text;
+  // A malformed or oversized server is left out; the rest still show.
+  const mcpServerEndpoints = Array.isArray(preview.mcpServerEndpoints)
+    ? preview.mcpServerEndpoints
+        .slice(0, PLUGIN_MANIFEST_PREVIEW_MAX_NAMES)
+        .flatMap((server: unknown) => {
+          const parsed = parsePluginManifestPreviewMcpServer(server);
+          return parsed ? [parsed] : [];
+        })
+    : [];
   return {
     ok: true,
     preview: {
@@ -101,6 +223,9 @@ export function parsePluginManifestPreviewResult(
       hooks: preview.hooks,
       mcpServers: preview.mcpServers,
       mcpServerNames,
+      ...(mcpServerEndpoints.length > 0 ? { mcpServerEndpoints } : {}),
+      ...(readme ? { readme } : {}),
+      ...(Object.keys(descriptions).length > 0 ? { descriptions } : {}),
     },
   };
 }

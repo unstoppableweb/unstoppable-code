@@ -7,6 +7,18 @@ const MAX_ENTRY_EXPANDED_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_EXPANDED_BYTES = 64 * 1024 * 1024;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
+/**
+ * A fatal UTF-8 decode failure is a damaged entry name (a damaged file), not a
+ * parser defect: rethrow it as the plain `Error` the other archive checks use.
+ */
+function decodeEntryName(bytes: Uint8Array): string {
+  try {
+    return decoder.decode(bytes);
+  } catch {
+    throw new Error('Malformed Office ZIP entry name.');
+  }
+}
+
 function requireRange(length: number, offset: number, size: number): void {
   if (
     !Number.isSafeInteger(offset) ||
@@ -197,10 +209,10 @@ export function assertOfficeArchive(
       localOffset + 30 + localNameLength,
       localExtraLength,
     );
-    const name = decoder.decode(
+    const name = decodeEntryName(
       data.subarray(cursor + 46, cursor + 46 + nameLength),
     );
-    const localName = decoder.decode(
+    const localName = decodeEntryName(
       data.subarray(localOffset + 30, localOffset + 30 + localNameLength),
     );
     if (localName !== name)

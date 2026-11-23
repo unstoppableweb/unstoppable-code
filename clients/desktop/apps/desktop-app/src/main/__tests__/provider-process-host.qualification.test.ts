@@ -614,6 +614,9 @@ describe.each(MODES)('provider process host (%s)', (mode) => {
          write();`,
       ]),
     );
+    const host = harness.client.currentHostForTests();
+    if (!host) throw new Error('the spawn launched no host');
+    const sent = jest.spyOn(host, 'postMessage');
     const observed = observe(child);
     await until(() => child.pid !== undefined);
     const pid = child.pid;
@@ -622,8 +625,22 @@ describe.each(MODES)('provider process host (%s)', (mode) => {
     await sleep(200);
     await within(child.stop({ graceMs: 1_000 }), 8_000);
     expect(observed.closes).toHaveLength(1);
-    expect(child.stdout.readableLength).toBeLessThanOrEqual(
+    // The proxy acknowledges what its stream buffers below its high-water
+    // mark, so the window bounds only the bytes it holds unacknowledged.
+    const acked = sent.mock.calls.reduce((total, [message]) => {
+      if (
+        isProviderProcessHostRequest(message) &&
+        message.type === 'stdout-ack'
+      )
+        return total + message.bytes;
+      return total;
+    }, 0);
+    const held = child.stdout.readableLength;
+    expect(held - acked).toBeLessThanOrEqual(
       PROVIDER_PROCESS_STDOUT_WINDOW_BYTES,
+    );
+    expect(held).toBeLessThan(
+      PROVIDER_PROCESS_STDOUT_WINDOW_BYTES + child.stdout.readableHighWaterMark,
     );
   });
 
@@ -1036,6 +1053,60 @@ describe('provider process host exit frames', () => {
     if (!disconnect) throw new Error('no disconnect handler');
     disconnect();
     await until(() => exit.mock.calls.length > 0, 8_000);
+  });
+});
+
+describe('provider process host stdout credit', () => {
+  it('a chunk that crosses the credit window waits for the ack and stays in order', async () => {
+    const child = new StoppingChild(await startOwnedIdleChild());
+    const posted: unknown[] = [];
+    const listeners = new Set<(event: { data: unknown }) => void>();
+    startProviderProcessHost(
+      {
+        postMessage: (message) => posted.push(message),
+        on: (_event, listener) => listeners.add(listener),
+        once: (_event, listener) => listeners.add(listener),
+      },
+      () => undefined,
+      () => child,
+    );
+    const send = (data: ProviderProcessHostRequest): void => {
+      for (const listener of listeners) listener({ data });
+    };
+    const relayed = (): Buffer =>
+      Buffer.concat(
+        posted
+          .filter(isProviderProcessHostResponse)
+          .flatMap((frame) =>
+            frame.type === 'stdout'
+              ? [Buffer.from(frame.dataBase64, 'base64')]
+              : [],
+          ),
+      );
+    const requestId = 'crossing-chunk';
+    send({
+      type: 'spawn',
+      requestId,
+      command: process.execPath,
+      args: [],
+      cwd: dir,
+      env: {},
+      owner: OWNER,
+    });
+    // A partial first read, then a full one, before the launcher acks.
+    const first = 36_544;
+    child.stdout.write(Buffer.alloc(first, 97));
+    await sleep(20);
+    child.stdout.write(Buffer.alloc(PROVIDER_PROCESS_STDOUT_WINDOW_BYTES, 98));
+    await sleep(20);
+    expect(relayed().length).toBe(PROVIDER_PROCESS_STDOUT_WINDOW_BYTES);
+    send({ type: 'stdout-ack', requestId, bytes: first });
+    await sleep(20);
+    const bytes = relayed();
+    expect(bytes.length).toBe(first + PROVIDER_PROCESS_STDOUT_WINDOW_BYTES);
+    expect(bytes.subarray(0, first).every((byte) => byte === 97)).toBe(true);
+    expect(bytes.subarray(first).every((byte) => byte === 98)).toBe(true);
+    child.finish();
   });
 });
 

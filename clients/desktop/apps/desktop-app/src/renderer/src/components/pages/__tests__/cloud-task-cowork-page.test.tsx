@@ -961,6 +961,8 @@ let listRevisionLag = 0;
 let catalogGate: Promise<void> | null = null;
 /** Set to make the web core refuse a model change, as its handler does: with an error. */
 let setModelRefusal: string | null = null;
+/** Set to lose the reply of a selection save, so its outcome is unknown (CAN-7196). */
+let selectionReplyLost = false;
 
 /** The entries a `chat.patch_tab_settings` selection names, as the web core saves them. */
 function appliedSelection(action: unknown): string[] | undefined {
@@ -1785,6 +1787,15 @@ Object.defineProperty(window, 'canopyCore', {
                 retry: { kind: 'never' },
               },
             }));
+          if (selectionReplyLost && appliedSelection(action) !== undefined)
+            return Promise.resolve({
+              ok: false,
+              error: {
+                kind: 'unavailable',
+                message: 'The reply was lost.',
+                retry: { kind: 'never' },
+              },
+            });
           return held(updateGate).then(() => {
             savedSelection =
               appliedSelection(request.params?.action) ?? savedSelection;
@@ -2487,6 +2498,7 @@ beforeEach(() => {
   pageHolds.clear();
   listRevisionLag = 0;
   setModelRefusal = null;
+  selectionReplyLost = false;
   cloudModelLevels = ['low', 'medium', 'high'];
   cloudModelLibrary = 'unlocked';
   lockedModelEligibility = 'locked';
@@ -4487,7 +4499,7 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     expect(shownModel()).toBe('third-model');
   });
 
-  it("reopens a cloud chat's picker on the selection a save in flight writes, so a second save keeps both (CAN-6331)", async () => {
+  it("keeps a cloud chat's picker open until its selection save lands, then reopens it on what that save wrote, so a second save keeps both (CAN-6331, CAN-7119)", async () => {
     renderPage();
     act(() => {
       openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
@@ -4544,12 +4556,22 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
     await openPicker();
     pick('Review');
     await settle();
-    // The picker closed with the save still in flight; reopen it meanwhile.
+    // The picker stays open, Save busy, while the save is in flight, so a
+    // failure can still show in it (CAN-7119).
     expect(chatUpdates).toHaveLength(1);
-    await openPicker();
+    expect(
+      doc.querySelector<HTMLButtonElement>(
+        '[data-testid="remote-control-plugins-save"]',
+      )?.disabled,
+    ).toBe(true);
     updateGate = null;
     saved();
     await settle();
+    // It closes once the save lands; reopened, it starts from what it wrote.
+    expect(
+      doc.querySelector('[data-testid="remote-control-plugins-save"]'),
+    ).toBeNull();
+    await openPicker();
     expect(
       doc.querySelector<HTMLInputElement>('input[aria-label="Select Review"]')
         ?.checked,
@@ -4567,6 +4589,57 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
       },
     });
     expect(callsCarryingWebCoreIds()).toEqual([]);
+  });
+
+  it("closes a cloud chat's picker without a failure banner when its selection save's outcome is unknown (CAN-7196, CAN-7119)", async () => {
+    renderPage();
+    act(() => {
+      openCoworkWorkEntryFromSidebar('web-core:ws-1', 'web-core:wt-1');
+    });
+    await settle();
+    act(() => {
+      useChatStore.getState().switchTab('web-core:wt-1', {
+        projectId: 'web-core:ws-1',
+        worktreeId: 'web-core:wt-1',
+      });
+    });
+    await settle();
+    const doc = container.ownerDocument;
+    act(() => {
+      doc
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="chat-input-plus-button"]',
+        )
+        ?.click();
+    });
+    await settle();
+    act(() => {
+      doc
+        .querySelector<HTMLButtonElement>('[data-testid="chat-plugins-button"]')
+        ?.click();
+    });
+    await settle();
+    selectionReplyLost = true;
+    act(() => {
+      doc
+        .querySelector<HTMLInputElement>('input[aria-label^="Select Review"]')
+        ?.click();
+    });
+    act(() => {
+      doc
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="remote-control-plugins-save"]',
+        )
+        ?.click();
+    });
+    await settle();
+    // The save may have landed: the selection was read again, so the picker
+    // closes on it rather than reporting a failure.
+    expect(chatUpdates).toHaveLength(1);
+    expect(
+      doc.querySelector('[data-testid="remote-control-plugins-save"]'),
+    ).toBeNull();
+    expect(doc.body.textContent).not.toContain("Couldn't save plugin settings");
   });
 
   it('withdraws a cloud send that Stop catches waiting for a selection save (CAN-6335)', async () => {

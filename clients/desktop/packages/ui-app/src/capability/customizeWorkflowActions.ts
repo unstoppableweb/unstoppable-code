@@ -28,8 +28,16 @@ export interface CustomizeWorkflowActions {
   readonly onRunNow?: (entry: UnifiedPluginEntry) => Promise<void>;
   readonly onEdit?: (entry: UnifiedPluginEntry) => void;
   readonly onViewRuns?: (entry: UnifiedPluginEntry) => void;
-  /** Resolves `null` once removed, or the error the dialog keeps showing. */
-  readonly onDelete?: (entry: UnifiedPluginEntry) => Promise<string | null>;
+  /**
+   * Resolves `null` once removed, or the error the dialog keeps showing.
+   * `confirmationShown` tells, as the delete fails, whether that dialog is
+   * still on screen to show and record the failure; a host that also keeps the
+   * failure elsewhere records it there only once the dialog is gone.
+   */
+  readonly onDelete?: (
+    entry: UnifiedPluginEntry,
+    confirmationShown?: () => boolean,
+  ) => Promise<string | null>;
   /** Reports a failed action, usually as a toast. */
   readonly onActionError?: (message: string) => void;
 }

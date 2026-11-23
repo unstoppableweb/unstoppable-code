@@ -4,6 +4,7 @@ import {
   type InstalledItemStatusController,
   type InstalledItemStatusSource,
 } from '@canopy/ui-shared';
+import { withIpcErrorMessage } from '@/lib/ipcErrorMessage';
 import { SKILLS_CHANGED_EVENT } from '@/lib/skillsChanged';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
@@ -20,7 +21,10 @@ function desktopInstalledItemSource(): InstalledItemStatusSource | null {
   return {
     listStatus: () => api.listStatus(),
     setStatus: (request) => api.setStatus(request),
-    uninstall: (request) => api.uninstall(request),
+    // A rejection main recorded keeps its record on the error the shared hook
+    // keeps as the outcome's `cause`, so the removal confirmation does not
+    // record it again.
+    uninstall: (request) => withIpcErrorMessage(() => api.uninstall(request)),
     subscribe: (onChange) => {
       const unsubscribe = api.onChanged(onChange);
       const unsubscribePreferences =

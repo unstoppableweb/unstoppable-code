@@ -11,6 +11,7 @@ import {
   CLIENT_STORE_DISPOSE,
   type ClientStore,
 } from '../create-client-store';
+import { isHostRecordedFailure } from '../host-recorded-failure';
 
 export interface AutoDeleteTarget {
   readonly workspaceId: string;
@@ -27,6 +28,8 @@ export interface WorkEntryAutoDeleteState {
     | null;
   readonly busy: boolean;
   readonly error: string | null;
+  /** True when the host already recorded the failure behind `error`. */
+  readonly errorRecorded: boolean;
   readonly notice:
     | {
         readonly kind: 'disarmed';
@@ -59,6 +62,7 @@ export function createWorkEntryAutoDeleteStore(
       question: null,
       busy: false,
       error: null,
+      errorRecorded: false,
       notice: null,
       activate(target) {
         if (!canManage(target)) return;
@@ -67,6 +71,7 @@ export function createWorkEntryAutoDeleteStore(
           set({
             question: { ...target, confirmationId: row.confirmationId },
             error: null,
+            errorRecorded: false,
           });
         } else if (row) {
           void get().disarm(target);
@@ -117,7 +122,7 @@ export function createWorkEntryAutoDeleteStore(
           !client.resolveWorkEntryAutoDeleteBranch
         )
           return;
-        set({ busy: true, error: null });
+        set({ busy: true, error: null, errorRecorded: false });
         try {
           await client.resolveWorkEntryAutoDeleteBranch({
             workspaceId: target.workspaceId,
@@ -126,16 +131,18 @@ export function createWorkEntryAutoDeleteStore(
             confirmationId: target.confirmationId,
           });
           if (!disposed) set({ question: null, busy: false });
-        } catch {
+        } catch (error) {
           if (!disposed)
             set({
               busy: false,
               error: 'Could not save your branch choice. Try again.',
+              errorRecorded: isHostRecordedFailure(error),
             });
         }
       },
       closeQuestion() {
-        if (!get().busy) set({ question: null, error: null });
+        if (!get().busy)
+          set({ question: null, error: null, errorRecorded: false });
       },
       dismissNotice() {
         set({ notice: null });

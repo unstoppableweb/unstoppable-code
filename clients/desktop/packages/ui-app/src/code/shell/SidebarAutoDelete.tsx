@@ -121,6 +121,9 @@ function ConnectedSidebarAutoDeleteProvider({
           destructive
           busy={state.busy}
           errorMessage={state.error}
+          {...(state.errorRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'sidebar-auto-delete' })}
           onCancel={state.closeQuestion}
           onConfirm={() => {
             void state.resolve('delete-branch');

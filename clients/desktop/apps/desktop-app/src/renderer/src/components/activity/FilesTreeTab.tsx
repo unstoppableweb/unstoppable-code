@@ -19,6 +19,8 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { ConfirmDialog } from '@canopy/ui-shared';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import type {
   FileTreeEntry,
   FileTreeItemReference,
@@ -1215,6 +1217,13 @@ export function FilesTreeTab({
   const [deleteTargets, setDeleteTargets] = useState<ExplorerNode[]>([]);
   const [mutationBusy, setMutationBusy] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  // The open delete dialog's latest failure, so the dialog can tell it from a
+  // rename's refusal or precondition that it also shows. Cleared on each
+  // attempt and on cancel, so a stale one never matches a later rename's text.
+  const [deleteFailure, setDeleteFailure] = useState<string | null>(null);
+  // Main already recorded that failure's IPC call, so neither the banner nor
+  // the dialog records it again. Reset with `deleteFailure`.
+  const [deleteFailureRecorded, setDeleteFailureRecorded] = useState(false);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [watching, setWatching] = useState(false);
   const nodesRef = useRef(new Map<string, ExplorerNode>());
@@ -2729,6 +2738,8 @@ export function FilesTreeTab({
     if (!projectId || !worktreeId || deleteTargets.length === 0) return;
     setMutationBusy(true);
     setMutationError(null);
+    setDeleteFailure(null);
+    setDeleteFailureRecorded(false);
     try {
       for (const node of deleteTargets) {
         if (!node.relativePath) continue;
@@ -2752,9 +2763,13 @@ export function FilesTreeTab({
       setSelectedIds(new Set());
       void refreshVisibleDirectories();
     } catch (error) {
-      setMutationError(
-        error instanceof Error ? error.message : 'Unable to delete files.',
+      const failure =
+        error instanceof Error ? error.message : 'Unable to delete files.';
+      setDeleteFailure(failure);
+      setDeleteFailureRecorded(
+        toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
       );
+      setMutationError(failure);
       void refreshVisibleDirectories();
     } finally {
       setMutationBusy(false);
@@ -3796,6 +3811,9 @@ export function FilesTreeTab({
           <div className="px-3 py-1.5">
             <ErrorBanner
               errorSource="files-tree-tab-mutation"
+              {...(mutationError === deleteFailure && deleteFailureRecorded
+                ? { errorRecordingDisabled: true }
+                : {})}
               error={mutationError}
               className=""
             />
@@ -3876,10 +3894,20 @@ export function FilesTreeTab({
           busyLabel="Deleting…"
           busy={mutationBusy}
           errorMessage={mutationError}
+          // The tab banner above records a failed delete, except while an
+          // inline editor hides it; every path that opens or closes the editor
+          // clears the error, so the two never both record one failure.
+          {...(inlineEditor &&
+          mutationError === deleteFailure &&
+          !deleteFailureRecorded
+            ? { errorSource: 'files-tree-tab-mutation' }
+            : { errorRecordingDisabled: true as const })}
           destructive
           onCancel={() => {
             setDeleteTargets([]);
             setMutationError(null);
+            setDeleteFailure(null);
+            setDeleteFailureRecorded(false);
           }}
           onConfirm={() => void confirmDelete()}
           dataTestId="files-tree-delete-confirm"

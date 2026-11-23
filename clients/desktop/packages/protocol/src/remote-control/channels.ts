@@ -131,8 +131,10 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  * conditional branch. Operations the web keeps on web-side clients (billing,
  * external agents, account and organization operations, install-update
  * emails) and every capability the web leaves off (terminals, file writes,
- * item grouping, delegation lifetime, journals, discard, shared multi-repo)
- * add nothing. The web golden
+ * item grouping, delegation lifetime, shared multi-repo) add nothing.
+ * Worktree discard and journal quarantine are on (CAN-7443); recovery reads
+ * are on (CAN-7439), and recovery actions are on (CAN-7444).
+ * The web golden
  * keeps this list equal to that derivation and drives the composite with a
  * transport that refuses anything else.
  *
@@ -282,6 +284,112 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   organization. It deletes nothing. `:promote`, `:invite` and
  *   `:invite-status` stay off: the browser's own session creates the team
  *   and sends invites.
+ * - Marketplace on direct Remote Control (CAN-7442), offered whenever the
+ *   browser is directly connected to the account's own computer:
+ *   - `installed-items:list-status` reads the status snapshot of installed
+ *     plugins, skills, collections and MCP servers; it takes no argument.
+ *     `installed-items:changed` is a payload-free notice to read it again.
+ *   - `installed-items:set-status` sets an already-installed item to active,
+ *     available or disabled. It runs `claude plugin enable/disable`, parks or
+ *     restores Codex installs, writes the computer's global plugin
+ *     selections (new chats computer-wide see the change), and can turn on an
+ *     existing stdio MCP server that later sessions spawn. It cannot create
+ *     or edit a server or its command, and asks for no confirmation.
+ *   - `installed-items:uninstall` removes a plugin, skill, collection,
+ *     device MCP server (with its configurations and sign-ins) or account MCP
+ *     connection: it deletes files and credentials. The computer asks for no
+ *     approval of its own; the web's confirmation dialog is the only check.
+ *     The request schema excludes `mcp-config`, bundled and
+ *     marketplace-owned items are refused, and the device-MCP repair
+ *     channels stay off this list.
+ *   - `plugins:install-plugin` installs a plugin already listed with an
+ *     external source in a marketplace this computer has already added. The
+ *     host accepts exactly `(marketplaceId, pluginName, '')` from a browser
+ *     (`browserInvocationAllowed`): the empty URL means the source the
+ *     computer has stored, which must be public https with no userinfo or
+ *     private host, cloned with redirects off. A browser cannot name a URL
+ *     or add a marketplace (`plugins:addMarketplace` stays off this list).
+ *   - `plugins:install-built-in-plugin` installs from the built-in or
+ *     curated marketplace for the named providers, accepted from a browser
+ *     only as `{ marketplaceId, pluginName, providers }`. It takes no URL;
+ *     its marketplace progress pushes stay off this list.
+ *   - A browser receives both install results through a field allowlist
+ *     (no source, cache or install path, details or harness record) and an
+ *     install error only when it is one of the computer's fixed messages.
+ *     Installed plugin content can run later, once active in an agent
+ *     session, as after a desktop install. `plugins:install-for-harnesses`,
+ *     `plugins:retry-harness-install`, `plugins:prepare-codex-compatibility`,
+ *     `plugins:set-codex-compat-disabled` and `plugins:read-component` stay
+ *     off this list.
+ * - New Task base branches (CAN-7437): `home:list-branch-targets` is a
+ *   read of one registered workspace's source repository, answering branch
+ *   names, ref flags and the default branch with no host paths. The host
+ *   checks no browser arguments beyond the handler's `workspaceId`
+ *   validation. A read may contact the remote once to resolve its default
+ *   branch (`git ls-remote --symref origin HEAD`), skipped while the
+ *   computer's recorded default-branch hint is under five minutes old. A
+ *   browser session that offered `exactWorktreeBaseBranch` in hello gets the
+ *   exact (`local:`/`remote:`) catalogue and may send exact bases on
+ *   `worktree:create` and `workspace:create-worktree`. Also on the mobile
+ *   list.
+ * - Web discard and journal quarantine (CAN-7443), offered whenever the
+ *   browser is directly connected to the account's own computer. Every
+ *   channel here is user-only; agents, mobile and hosted controllers are
+ *   refused.
+ *   - `worktree:discard-describe`: reads what a discard of one stranded
+ *     worktree would remove (targets, absolute host paths for display under
+ *     the CAN-5334 exception, also-deleted data) and a confirmation token;
+ *     with `retainedArchives: true`, also a retained archive. A browser may
+ *     send `recovery` only on the first argument, as exactly the recovery
+ *     request the adapter sends (CAN-7444, `browserInvocationAllowed`); the
+ *     recovery-aware description gets the same browser projection as a
+ *     plain one.
+ *   - `worktree:discard`: permanently removes that worktree's checkout and
+ *     quarantine, or with `retainedArchives: true` one retained archive,
+ *     with its chats, plans, attachments and cost history. It needs the
+ *     token from the description; the computer re-describes inside the
+ *     deletion envelope and archive lock and refuses on any difference.
+ *   - `workspace:delete-discard-describe`: reads which worktrees (and with
+ *     `retainedArchives: true`, which retained archives) block a project's
+ *     deletion, each with its discard description. Each discard still goes
+ *     through `worktree:discard` with its own token.
+ *   - `lifecycle-journal:inspect`: reads the destructive-lifecycle journal's
+ *     health for the whole computer. Remote senders get the portable
+ *     `<data>/w5/…` label, never a host path.
+ *   - `lifecycle-journal:quarantine`: moves one unreadable journal entry,
+ *     byte for byte, into the quarantine folder (strict request schema),
+ *     which unblocks later archive and delete. Nothing is deleted.
+ *   - `project:delete` and `workspace:delete` now also carry
+ *     `supersedeInterruptedDeletion` from the web UI (already accepted), and
+ *     since CAN-7444 `discardPendingRecovery` on the first argument only, as
+ *     a bounded list of exact `{ operationId, confirmation }` entries. The
+ *     computer compares it with its own fresh description
+ *     (`isDeepStrictEqual`) and refuses any difference.
+ * - Archive recovery list (CAN-7439): `worktree:recovery-list`, read only.
+ *   It returns ids, timestamps, counts, presence flags and fixed codes for one
+ *   workspace's unfinished archives, as the core `core.worktree.recovery.list`
+ *   query answers under the bridge's `core.worktree.read` grant. The revision
+ *   and operation tokens it returns are accepted only by
+ *   `worktree:recovery-resolve` and `worktree:recovery-finish`.
+ * - Archive recovery actions (CAN-7444), offered whenever the browser is
+ *   directly connected to the account's own computer.
+ *   - `worktree:recovery-resolve`: keeps a stranded worktree
+ *     (`keep-worktree`), withdraws an archive attempt (`release`), or
+ *     permanently deletes retained recovery material, Git snapshots and file
+ *     copies (`delete-hold`). Its result carries only ids, counts and enums.
+ *   - `worktree:recovery-finish`: finishes an interrupted archive, removing
+ *     the worktree's remaining files. A browser receives its `check` only
+ *     when it is code-shaped; anything else becomes `finish-refused`.
+ *   - Both are bound to the `{ operationId, revision }` the list returned:
+ *     the computer refuses when the live diagnosis no longer matches, under
+ *     a strict params schema and `assertWritableScope`. The computer asks for
+ *     no approval of its own; the shared UI asks before deleting recovery
+ *     material. The action runs with only `core.worktree.write`, attributed
+ *     to the controller's `remote-device:<id>` principal.
+ *   - The bridge principal is the same for every controller kind, so adding
+ *     either channel to the mobile or hosted list would grant those
+ *     controllers the same destructive actions. Desktop controllers reach
+ *     both, as every tunnelled channel.
  * - Terminals: none. Remote Control on the web is terminal-free.
  */
 export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
@@ -330,11 +438,18 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'github:pull',
   'github:push-only',
   'github:request-refresh',
+  'home:list-branch-targets',
   'hook:change-pause',
   'hook:complete',
   'hook:run',
   'hook:started',
   'hook:stop',
+  'installed-items:changed',
+  'installed-items:list-status',
+  'installed-items:set-status',
+  'installed-items:uninstall',
+  'lifecycle-journal:inspect',
+  'lifecycle-journal:quarantine',
   'model-registry:get',
   'org-projects:find-repository-owner',
   'personal-organization-upgrade:convert',
@@ -354,6 +469,8 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'pipelines:resume',
   'pipelines:retry-execution',
   'plugin-catalog:list',
+  'plugins:install-built-in-plugin',
+  'plugins:install-plugin',
   'preferences:load-onboarding-tips',
   'preferences:load-suggestions',
   'preferences:update-onboarding-tips',
@@ -389,6 +506,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'workspace:archive-worktree',
   'workspace:create-worktree',
   'workspace:delete',
+  'workspace:delete-discard-describe',
   'workspace:load-claude-md',
   'workspace:merge-scripts',
   'workspace:read-scripts',
@@ -402,8 +520,13 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'worktree:activity-entities',
   'worktree:archive',
   'worktree:create',
+  'worktree:discard',
+  'worktree:discard-describe',
   'worktree:get-path',
   'worktree:list-repo-entries',
+  'worktree:recovery-finish',
+  'worktree:recovery-list',
+  'worktree:recovery-resolve',
   'worktree:reorder',
   'worktree:set-hidden',
   'worktree:set-label',
@@ -423,9 +546,17 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
  *   `work-entries:create` and `desktop:session-snapshot-invalidate`: a task
  *   in a new worktree or work entry, the same additive create `task_create`
  *   already confirms with the person.
- * - `chat:command`: only `chat.create_tab`, `chat.send_message` and ordinary
- *   question answers, argument checked on the host (`hostedInvocationAllowed`).
+ * - `chat:command`: only `chat.create_tab`, `chat.send_message`, ordinary
+ *   question answers and the CAN-7445 settings commands below, argument
+ *   checked on the host (`hostedInvocationAllowed`).
  * - `chat:cancel`: only one exact turn, argument checked on the host.
+ * - Tasks tools on a connected computer (CAN-7445), each argument checked on
+ *   the host: the plugin catalog, a workspace's branches, a worktree's hooks
+ *   (read, pause, resume), one queued message (cancel, edit, interrupt), a
+ *   task's label, visibility, tracked base branch and work entry title, and
+ *   creating a named sidebar group or moving a task between groups.
+ *   `chat:command` also sets a chat's model, the reviewed settings patch keys
+ *   and steers a queued message.
  *
  * No terminals, approval answers or destructive actions.
  */
@@ -436,6 +567,9 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'chat:command',
   'chat:event',
   'chat:get-transcript-page',
+  'chat:queue-cancel',
+  'chat:queue-edit',
+  'chat:queue-force',
   'desktop:session-snapshot',
   'desktop:session-snapshot-invalidate',
   'desktop:session-snapshot-stale',
@@ -443,17 +577,27 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'file-tree:roots',
   'file:read-content',
   'github:get-pr-state',
+  'home:list-branch-targets',
+  'hook:change-pause',
+  'plugin-catalog:list',
   'provider-usage:limits-get',
   'pipelines:get-worktree-execution',
   'pipelines:list-for-worktree',
   'pipelines:list-worktree-executions',
   'projects:load',
   'remote-control:install-id',
+  'sidebar-item-groups:create',
+  'sidebar-item-groups:move-item',
   'tracked-plans:get',
   'tracked-plans:list',
   'work-entries:create',
+  'work-entries:update',
   'workspace:create-worktree',
+  'worktree:activity-entities',
   'worktree:create',
+  'worktree:set-hidden',
+  'worktree:set-label',
+  'worktree:set-tracked-base-branch',
 ];
 export * from './browser-arguments';
 export * from './hosted-channels';

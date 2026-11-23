@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { constants as fsConstants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, open, realpath, type FileHandle } from 'node:fs/promises';
 
 /**
  * Check whether `childPath` is inside (or equal to) `parentDir`.
@@ -79,17 +79,18 @@ export async function resolveContainedRealPath(
 }
 
 /**
- * Reads a regular file inside `root` through {@link resolveContainedRealPath}.
+ * Opens a regular file inside `root` through {@link resolveContainedRealPath}.
  * The open refuses a final symbolic link where the platform supports it.
  * Containment is then checked again with the file held open: the walk must
  * still pass, and the file it reaches must be the one opened. A parent swapped
  * for a link before the open sends the open outside the root, so the held file
  * no longer matches the file inside it.
  */
-export async function readContainedFile(
+export async function withContainedFile<T>(
   root: string,
   candidate: string,
-): Promise<string> {
+  read: (handle: FileHandle) => Promise<T>,
+): Promise<T> {
   const filePath = await resolveContainedRealPath(root, candidate);
   if (!(await lstat(filePath)).isFile()) {
     throw new ContainedPathRefusedError('not-a-file');
@@ -111,10 +112,19 @@ export async function readContainedFile(
     if (opened.dev !== reached.dev || opened.ino !== reached.ino) {
       throw new ContainedPathRefusedError('symbolic-link');
     }
-    return await handle.readFile('utf8');
+    return await read(handle);
   } finally {
     await handle.close();
   }
+}
+
+export function readContainedFile(
+  root: string,
+  candidate: string,
+): Promise<string> {
+  return withContainedFile(root, candidate, (handle) =>
+    handle.readFile('utf8'),
+  );
 }
 
 function isLinkLoopError(error: unknown): boolean {

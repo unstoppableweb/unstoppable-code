@@ -209,15 +209,19 @@ function CatalogPicker({
         selections={state.selections}
         brandDisplayName={brandText.appName}
         {...(localItems === undefined ? {} : { localItems })}
+        // onChange records a failed save before it rethrows to the picker.
+        saveFailureRecorded
         onChange={(next): Promise<void> => {
-          // The picker closes before the save lands: a send meanwhile waits.
+          // The picker stays open until the save lands and shows its failure;
+          // a send meanwhile waits.
           const save = catalog.setSelections(next);
           trackSelectionSave(chatId, save);
           return save.catch((error: unknown) => {
             // A save that may have landed isn't a failure: the selection
-            // was read again and shows as it stands (CAN-7196).
-            if (!(error instanceof CoreCoworkOutcomeUnknownError))
-              reportClientAppError(error);
+            // was read again, so the picker closes and reopens on it
+            // as it stands (CAN-7196).
+            if (error instanceof CoreCoworkOutcomeUnknownError) return;
+            reportClientAppError(error);
             throw error;
           });
         }}

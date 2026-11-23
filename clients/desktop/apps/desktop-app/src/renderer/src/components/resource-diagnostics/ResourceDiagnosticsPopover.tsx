@@ -1,5 +1,4 @@
 import { Surface } from '@canopy/ui-shared/components';
-import { Stack } from '@canopy/ui-shared/components';
 import { Heading } from '@canopy/ui-shared/components';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import type {
@@ -78,6 +77,7 @@ const ELECTRON_PROCESS_LABEL_PREFIX = 'Electron ';
  * labels, start at the same edge; children indent under their parent.
  */
 const TREE_INDENT_PX = 12;
+
 /**
  * Deeper rows stop indenting: the chevron follows the name inside the
  * clipped Name cell, so unbounded indentation could push it out of reach.
@@ -617,160 +617,164 @@ export function ResourceDiagnosticsPopover({
 
   // Portaled over titlebar/sidebar drag rects; app-region ignores z-order,
   // so the controls' container opts out.
+  // One column, so only the list shrinks. The content never outgrows the
+  // popover's room (`--floating-menu-max-height`, less its 24px of inset): the
+  // list gives up height down to its header and two rows, and past that the
+  // parts run on below the popover's foot and the popover scrolls. The title,
+  // banners, totals and Memory report never shrink, so nothing overlaps. The
+  // column's gaps differ by pair (8px under the title and a banner, flush
+  // between the rows), so they are each part's own padding.
   return (
     <div
-      className="electron-no-drag flex flex-col"
+      className="electron-no-drag flex max-h-[calc(var(--floating-menu-max-height,100vh)_-_1.5rem)] flex-col"
       data-testid="resource-diagnostics-popover-content"
     >
-      <div className="flex min-h-0 flex-col gap-2">
-        <div className="flex shrink-0 items-center gap-3">
-          <Heading
-            level={3}
-            variant="title"
-            truncate
-            className="min-w-0 flex-1"
+      <div className="flex shrink-0 items-center gap-3 pb-2">
+        <Heading level={3} variant="title" truncate className="min-w-0 flex-1">
+          Resources
+        </Heading>
+        {snapshot && (
+          <span
+            className="flex gap-2 text-xs tabular-nums fg-tertiary"
+            data-testid="resource-diagnostics-popover-totals"
           >
-            Resources
-          </Heading>
-          {snapshot && (
-            <span
-              className="flex gap-2 text-xs tabular-nums fg-tertiary"
-              data-testid="resource-diagnostics-popover-totals"
-            >
-              <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
-              <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
-            </span>
-          )}
-          <RailIconButton
-            icon={SettingsIcon}
-            hoverSurface
-            aria-label="Open performance settings"
-            tooltipLabel="Performance settings"
-            data-testid="resource-diagnostics-popover-settings"
-            onClick={handleOpenPerformanceSettings}
-            // The glyph, not the button, meets the 12px content inset.
-            inset="tight-end"
+            <span>{formatCpuPercent(snapshot.cpuPercent)}% CPU</span>
+            <span>{formatMemoryBytes(snapshot.memoryRssBytes)}</span>
+          </span>
+        )}
+        <RailIconButton
+          icon={SettingsIcon}
+          hoverSurface
+          aria-label="Open performance settings"
+          tooltipLabel="Performance settings"
+          data-testid="resource-diagnostics-popover-settings"
+          onClick={handleOpenPerformanceSettings}
+          // The glyph, not the button, meets the 12px content inset.
+          inset="tight-end"
+        />
+      </div>
+
+      {loading && (
+        <p className="shrink-0 text-xs fg-tertiary">Measuring resources…</p>
+      )}
+
+      {!loading && !snapshot && error && (
+        <div className="shrink-0">
+          <ErrorBanner
+            errorSource="resource-diagnostics-popover"
+            className=""
+            error="Resource metrics unavailable"
           />
         </div>
+      )}
 
-        {/* The rows and the footer rows share one 36px rhythm with a hairline
-          between them, so they sit flush: no gap, no section padding. A
-          table row draws its hairline inside its 36px; a footer row's
-          section border takes the hairline's space, so the row gives it
-          back. */}
-        <div className="flex min-h-0 flex-col">
-          <div className="min-h-0">
-            {loading && (
-              <p className="text-xs fg-tertiary">Measuring resources…</p>
-            )}
-
-            {!loading && !snapshot && error && (
-              <ErrorBanner
-                errorSource="resource-diagnostics-popover"
-                className=""
-                error="Resource metrics unavailable"
-              />
-            )}
-
-            {!loading && !snapshot && !error && (
-              <EmptyStateRow title="No resource samples yet." />
-            )}
-
-            {snapshot && (
-              <Stack gap="inline">
-                {error && (
-                  <ErrorBanner
-                    errorSource="resource-diagnostics-popover-error"
-                    className=""
-                    error="Resource metrics unavailable"
-                    testId="resource-diagnostics-popover-error"
-                  />
-                )}
-
-                {rows.length === 0 ? (
-                  <EmptyStateRow title="No resource samples yet." />
-                ) : (
-                  <DataTableFrame
-                    caption="Resource usage"
-                    layout="fixed"
-                    appearance="plain"
-                    // The 28px header and ten 36px rows: the list stops between rows,
-                    // never partway through one.
-                    maxHeight="24.25rem"
-                  >
-                    <DataTableHead sticky>
-                      {/* CPU fits its widest sort label; Memory is 8px wider
-                      than its widest value, so the numbers stand clear of
-                      CPU's. The totals row below repeats these widths. */}
-                      <SortHeader
-                        label="Name"
-                        column="name"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="start"
-                      />
-                      <SortHeader
-                        label="CPU"
-                        column="cpu"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="end"
-                        width="3.5rem"
-                      />
-                      <SortHeader
-                        label="Memory"
-                        column="memory"
-                        sort={sort}
-                        onClick={handleHeaderClick}
-                        align="end"
-                        width="6rem"
-                      />
-                    </DataTableHead>
-                    <DataTableBody>
-                      {rows.map((row) => (
-                        <ResourceRow
-                          key={row.id}
-                          row={row}
-                          expanded={expanded.has(row.id)}
-                          onToggle={toggleExpanded}
-                          onNavigate={handleNavigateToWorktree}
-                        />
-                      ))}
-                    </DataTableBody>
-                  </DataTableFrame>
-                )}
-              </Stack>
-            )}
-          </div>
-
-          {snapshot && (
-            <Surface
-              variant="section"
-              boundary="top"
-              className="shrink-0"
-              data-testid="resource-diagnostics-popover-app-totals"
-            >
-              {/* A row like the table's: the label in a name's ink where names
-              start, the totals in the numbers' ink under the CPU (3.5rem
-              column) and Memory (6rem column, less the plain table's 8px
-              end inset) values. */}
-              <div className="flex h-[calc(2.25rem_-_var(--border-hairline))] items-center text-s fg-secondary">
-                <span className="min-w-0 flex-1 truncate fg-primary">
-                  App processes
-                </span>
-                <span className="w-14 shrink-0 text-right tabular-nums">
-                  {formatCpuPercent(appManagedTotals.cpuPercent)}%
-                  <span className="sr-only"> CPU</span>
-                </span>
-                <span className="w-22 shrink-0 text-right tabular-nums">
-                  {formatMemoryBytes(appManagedTotals.memoryRssBytes)}
-                  <span className="sr-only"> memory</span>
-                </span>
-              </div>
-            </Surface>
-          )}
+      {!loading && !snapshot && !error && (
+        <div className="shrink-0">
+          <EmptyStateRow title="No resource samples yet." />
         </div>
-      </div>
+      )}
+
+      {snapshot && error && (
+        <div className="shrink-0 pb-2">
+          <ErrorBanner
+            errorSource="resource-diagnostics-popover-error"
+            className=""
+            error="Resource metrics unavailable"
+            testId="resource-diagnostics-popover-error"
+          />
+        </div>
+      )}
+
+      {snapshot && rows.length === 0 && (
+        <div className="shrink-0">
+          <EmptyStateRow title="No resource samples yet." />
+        </div>
+      )}
+
+      {/* The rows and the footer rows share one 36px rhythm with a hairline
+          between them, so they sit flush. A table row draws its hairline
+          inside its 36px; a footer row's section border takes the
+          hairline's space, so the row gives it back. */}
+      {snapshot && rows.length > 0 && (
+        <div className="flex min-h-25 flex-col">
+          <DataTableFrame
+            caption="Resource usage"
+            layout="fixed"
+            appearance="plain"
+            // Shrinks when the popover is short; otherwise the 28px
+            // header and ten 36px rows, so it stops between rows.
+            fill
+            maxHeight="24.25rem"
+          >
+            <DataTableHead sticky>
+              {/* CPU fits its widest sort label; Memory is 8px wider
+              than its widest value, so the numbers stand clear of
+              CPU's. The totals row below repeats these widths. */}
+              <SortHeader
+                label="Name"
+                column="name"
+                sort={sort}
+                onClick={handleHeaderClick}
+                align="start"
+              />
+              <SortHeader
+                label="CPU"
+                column="cpu"
+                sort={sort}
+                onClick={handleHeaderClick}
+                align="end"
+                width="3.5rem"
+              />
+              <SortHeader
+                label="Memory"
+                column="memory"
+                sort={sort}
+                onClick={handleHeaderClick}
+                align="end"
+                width="6rem"
+              />
+            </DataTableHead>
+            <DataTableBody>
+              {rows.map((row) => (
+                <ResourceRow
+                  key={row.id}
+                  row={row}
+                  expanded={expanded.has(row.id)}
+                  onToggle={toggleExpanded}
+                  onNavigate={handleNavigateToWorktree}
+                />
+              ))}
+            </DataTableBody>
+          </DataTableFrame>
+        </div>
+      )}
+
+      {snapshot && (
+        <Surface
+          variant="section"
+          boundary="top"
+          className="shrink-0"
+          data-testid="resource-diagnostics-popover-app-totals"
+        >
+          {/* A row like the table's: the label in a name's ink where names
+          start, the totals in the numbers' ink under the CPU (3.5rem
+          column) and Memory (6rem column, less the plain table's 8px
+          end inset) values. */}
+          <div className="flex h-[calc(2.25rem_-_var(--border-hairline))] items-center text-s fg-secondary">
+            <span className="min-w-0 flex-1 truncate fg-primary">
+              App processes
+            </span>
+            <span className="w-14 shrink-0 text-right tabular-nums">
+              {formatCpuPercent(appManagedTotals.cpuPercent)}%
+              <span className="sr-only"> CPU</span>
+            </span>
+            <span className="w-22 shrink-0 text-right tabular-nums">
+              {formatMemoryBytes(appManagedTotals.memoryRssBytes)}
+              <span className="sr-only"> memory</span>
+            </span>
+          </div>
+        </Surface>
+      )}
       <MemoryReportFooter onClose={onClose} />
     </div>
   );

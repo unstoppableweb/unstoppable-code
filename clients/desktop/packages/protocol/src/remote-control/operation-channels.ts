@@ -311,6 +311,11 @@ export const REMOTE_QUERY_CHANNELS = {
   },
   // The computer's Add project clones, in memory (CAN-7433).
   'cloneJobs.list': { requires: ['cloneJobs'], invoke: [C.cloneJobsList] },
+  // The installed-item status snapshot; the host takes no argument (CAN-7442).
+  'installedItems.listStatus': {
+    requires: ['installedItemStatus'],
+    invoke: [C.installedItemsListStatus],
+  },
   // The curated quota projection: no audit rows (CAN-7433).
   'providerUsage.get': {
     requires: ['providerQuotas'],
@@ -336,6 +341,24 @@ export const REMOTE_COMMAND_CHANNELS = {
   'cloneJobs.dismiss': {
     requires: ['cloneJobs'],
     invoke: [C.cloneJobsDismiss],
+  },
+  // Installed-item changes and plugin installs (CAN-7442). An install sends
+  // no source URL; the host installs from the source it has stored.
+  'installedItems.setStatus': {
+    requires: ['installedItemStatus'],
+    invoke: [C.installedItemsSetStatus],
+  },
+  'installedItems.uninstall': {
+    requires: ['installedItemUninstall'],
+    invoke: [C.installedItemsUninstall],
+  },
+  'plugins.install': {
+    requires: ['marketplacePluginInstall'],
+    invoke: [C.pluginsInstallPlugin],
+  },
+  'plugins.installBuiltIn': {
+    requires: ['marketplacePluginInstall'],
+    invoke: [C.pluginsInstallBuiltInPlugin],
   },
   'repoRules.apply': {
     requires: ['repoRulesImport'],
@@ -460,7 +483,7 @@ export const REMOTE_COMMAND_CHANNELS = {
     invoke: [C.lifecycleJournalQuarantine],
   },
   'worktree.recovery.list': {
-    requires: ['worktreeRecoveryResolution'],
+    requires: ['worktreeRecoveryReads'],
     invoke: [C.worktreeRecoveryList],
   },
   'worktree.recovery.resolve': {
@@ -917,6 +940,10 @@ export const REMOTE_EVENT_CHANNELS = {
   'cloneJobs.changed': {
     requires: ['cloneJobs'],
     listen: [C.cloneJobsChanged],
+  },
+  'installedItems.changed': {
+    requires: ['installedItemStatus'],
+    listen: [C.installedItemsChanged],
   },
   // On the App Advisor surface: declared ready (so waiting questions are
   // delivered again), questions and their withdrawals listened to, and any

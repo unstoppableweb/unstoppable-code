@@ -288,6 +288,32 @@ export const DOT_TONE_CLASS: Readonly<Record<DotTone, string>> = {
   pending: 'bg-fg-quaternary/50',
 };
 
-export function dotClassName(tone: DotTone, size: DotSize = 'regular'): string {
-  return `${DOT_BASE_CLASS_BY_SIZE[size]} ${DOT_TONE_CLASS[tone]}`;
+/**
+ * `solid` (default) fills the dot. `ring` draws only its outline: a still
+ * shape for a live state whose motion is off (reduced motion), so it never
+ * reads as the solid dot of a resting state. An outline covers far less than
+ * a fill, so the grey ring takes the tertiary ink, a step above the grey dot,
+ * and callers draw rings at `large`. The outline is an inset `ring`, not a
+ * border: the global `* { border-color }` rule outranks border colors.
+ */
+export type DotVariant = 'solid' | 'ring';
+
+export const DOT_RING_TONE_CLASS: Readonly<Record<DotTone, string>> = {
+  unread: 'ring-fg-info',
+  attention: 'ring-fg-warning',
+  filter: 'ring-fg-tertiary',
+  working: 'ring-fg-success-strong',
+  success: 'ring-fg-success-strong',
+  danger: 'ring-fg-destructive-strong',
+  pending: 'ring-fg-quaternary',
+};
+
+export function dotClassName(
+  tone: DotTone,
+  size: DotSize = 'regular',
+  variant: DotVariant = 'solid',
+): string {
+  return variant === 'ring'
+    ? `${DOT_BASE_CLASS_BY_SIZE[size]} ring-2 ring-inset ${DOT_RING_TONE_CLASS[tone]}`
+    : `${DOT_BASE_CLASS_BY_SIZE[size]} ${DOT_TONE_CLASS[tone]}`;
 }

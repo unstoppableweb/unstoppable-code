@@ -275,6 +275,7 @@ const INDEX_ENTRY_FIELDS = knownFields<McpServerIndexEntry>({
   curatedKey: true,
   urlHost: true,
   urlScheme: true,
+  createdAt: true,
   updatedAt: true,
 });
 const CONFIG_SUMMARY_FIELDS = knownFields<McpServerConfigSummary>({

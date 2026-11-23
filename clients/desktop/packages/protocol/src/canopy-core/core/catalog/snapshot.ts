@@ -256,6 +256,14 @@ export const CORE_CATALOG_SNAPSHOT_GET_DESKTOP_UPLOADS_REVISION = 4;
  */
 export const CORE_CATALOG_SNAPSHOT_GET_COMPATIBILITY_REVISION = 5;
 
+/**
+ * Revision 6: everything revision 5 carries, and the model rows may include
+ * the caller's own-key `byok/` models (`funding: 'provider-key'`). A reader
+ * before it would show one as an ordinary credits model, so only a caller
+ * that sends revision 6 gets them.
+ */
+export const CORE_CATALOG_SNAPSHOT_GET_PROVIDER_KEY_REVISION = 6;
+
 export const CatalogSnapshotGetParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   kinds: z.array(CatalogEntryKindSchema),
@@ -266,6 +274,7 @@ export const CatalogSnapshotGetParamsSchema = z.strictObject({
       z.literal(CORE_CATALOG_SNAPSHOT_GET_SERVED_BY_REVISION),
       z.literal(CORE_CATALOG_SNAPSHOT_GET_DESKTOP_UPLOADS_REVISION),
       z.literal(CORE_CATALOG_SNAPSHOT_GET_COMPATIBILITY_REVISION),
+      z.literal(CORE_CATALOG_SNAPSHOT_GET_PROVIDER_KEY_REVISION),
     ])
     .optional(),
 });

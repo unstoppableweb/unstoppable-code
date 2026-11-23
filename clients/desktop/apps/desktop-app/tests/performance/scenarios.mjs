@@ -22,6 +22,11 @@ import {
   runOwnedAutomations,
   setupOwnedAutomations,
 } from './owned-automations-scenario.mjs';
+import {
+  preparePipelineDefinitions,
+  runPipelineDefinitions,
+  setupPipelineDefinitions,
+} from './pipeline-definitions-scenario.mjs';
 import { perfettoTraceEvents } from './perfetto-trace.mjs';
 import { w5StoreScenarios } from './w5-store-scenario.mjs';
 import { attachmentsScenarios } from './attachments-scenario.mjs';
@@ -22177,6 +22182,12 @@ const SCENARIOS = {
     beforeCapture: setupOwnedAutomations,
     run: runOwnedAutomations,
   },
+  // The probe and the fixture check (a first list and get) run before the window.
+  'pipeline-definitions': {
+    prepare: preparePipelineDefinitions,
+    beforeCapture: setupPipelineDefinitions,
+    run: runPipelineDefinitions,
+  },
   'code-review-registry-cleanup': {
     prepare: prepareCodeReviewRegistry,
     run: (context) => runCodeReviewRegistryCleanup(context, { trace: false }),
@@ -22204,6 +22215,59 @@ const SCENARIOS = {
     run: W5_STORE.runWrites,
   },
 };
+
+/**
+ * `code-graph-agent-reads` (CAN-7519): the graph-orientation journey with one
+ * source search per turn, so every model step carries a single tool call. Each
+ * turn still crosses the PreToolUse steering hook on its first search (the
+ * language check) and the orient turns call GetCodeGraphContext (the status
+ * read), while a step that asks for several tools at once never occurs. The
+ * journey's own keys are scoped to `claude-graph-orientation`, so this scenario
+ * maps its scoped keys onto them. Prompt suggestions are off in this scenario:
+ * each one is a model request after the turn that the journey's script does not
+ * model, and both sides of a pair get the same setting.
+ */
+SCENARIOS['code-graph-agent-reads'] = {
+  ...SCENARIOS['claude-graph-orientation'],
+  prepare: async (userDataDir, config, options) => {
+    const fixture = await prepareClaudeGraphOrientation(
+      userDataDir,
+      {
+        ...config,
+        claudeGraphOrientationLaterTurns: config.codeGraphAgentReadsLaterTurns,
+        claudeGraphOrientationSearchesPerTurn: 1,
+        claudeGraphOrientationFixtureFiles:
+          config.codeGraphAgentReadsFixtureFiles,
+      },
+      options,
+    );
+    seedPromptSuggestionsOff(userDataDir);
+    return fixture;
+  },
+};
+
+function seedPromptSuggestionsOff(userDataDir) {
+  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  const stored = existsSync(preferencesPath)
+    ? JSON.parse(readFileSync(preferencesPath, 'utf8'))
+    : { version: 1, preferences: {} };
+  writeFileSync(
+    preferencesPath,
+    JSON.stringify(
+      {
+        ...stored,
+        version: stored.version ?? 1,
+        preferences: {
+          ...(stored.preferences ?? {}),
+          promptSuggestionsEnabled: false,
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
 
 export function scenarioHasAfterMeasurement(name) {
   return typeof SCENARIOS[name]?.afterMeasurement === 'function';

@@ -13,6 +13,7 @@ import {
   DialogModal,
   ErrorBanner,
   Heading,
+  OverlayScrollArea,
   PickListResults,
   SearchEmptyState,
   SearchField,
@@ -373,7 +374,9 @@ export function SearchPalette<T extends SearchPaletteItem>({
       onClose={onClose}
       header="content"
       titleId="command-palette-title"
-      placement="top"
+      // Centered in the window: the results keep one height in every scope
+      // and state, so the card never moves while the query changes.
+      placement="center"
       maxWidth="xl"
       inset="flush"
       scrollableBody={false}
@@ -439,21 +442,30 @@ export function SearchPalette<T extends SearchPaletteItem>({
           {/* Session replay records the results; a transcript or plan snippet
             row blocks its own snippet (`SearchPaletteRowContent`). */}
           {flatItems.length === 0 ? (
-            <SearchEmptyState
-              testId="command-palette-empty"
-              title={
-                scope === 'content' && parsedQuery.length === 0
-                  ? 'Type to search the text of your chats and plans.'
-                  : 'Nothing matches your search.'
-              }
-              actionLabel={query === '' ? undefined : 'Clear search'}
-              onAction={(): void => {
-                onQueryChange('');
-                resetSelection();
-                inputRef.current?.focus();
-              }}
-              actionTestId="command-palette-empty-clear"
-            />
+            // The results area gives way when the card is capped (a short
+            // window); the empty state scrolls inside it then, so Clear
+            // search never runs under the scope tabs.
+            <OverlayScrollArea
+              className="min-h-0 flex-1"
+              viewportClassName="overscroll-contain"
+              contentClassName="flex min-h-full flex-col"
+            >
+              <SearchEmptyState
+                testId="command-palette-empty"
+                title={
+                  scope === 'content' && parsedQuery.length === 0
+                    ? 'Type to search the text of your chats and plans.'
+                    : 'Nothing matches your search.'
+                }
+                actionLabel={query === '' ? undefined : 'Clear search'}
+                onAction={(): void => {
+                  onQueryChange('');
+                  resetSelection();
+                  inputRef.current?.focus();
+                }}
+                actionTestId="command-palette-empty-clear"
+              />
+            </OverlayScrollArea>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col px-2 py-1">
               <PickListResults

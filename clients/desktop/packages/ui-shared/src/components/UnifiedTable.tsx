@@ -132,6 +132,11 @@ export interface UnifiedTableProps {
   selectedKeys: Set<string>;
   onToggle: (key: string) => void;
   onView: (row: UnifiedTableRow) => void;
+  /**
+   * Keep every row's View action visible but disabled, such as while the
+   * host saves the selection and a details view opened now would be lost.
+   */
+  viewActionsDisabled?: boolean;
   showCollectionKind: boolean;
   loading?: boolean;
   defaultSelectedFilter?: UnifiedTableSelectedFilter;
@@ -367,6 +372,7 @@ interface RowViewProps {
   providerIconScope: ProviderSupportScope;
   onToggle: (key: string) => void;
   onView: (row: UnifiedTableRow) => void;
+  viewActionDisabled?: boolean;
   renderMcpLogo?: (row: UnifiedTableRow) => ReactNode;
   renderAppLogo?: () => ReactNode;
   measureRef?: (element: HTMLTableRowElement | null) => void;
@@ -385,6 +391,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
   providerIconScope,
   onToggle,
   onView,
+  viewActionDisabled = false,
   renderMcpLogo,
   renderAppLogo,
   measureRef,
@@ -593,6 +600,7 @@ const UnifiedTableRowView = memo(function UnifiedTableRowView({
               size="compact"
               aria-label={`View ${row.name}`}
               onClick={() => onView(row)}
+              disabled={viewActionDisabled}
             >
               View
             </Button>
@@ -747,6 +755,7 @@ export function UnifiedTable({
   selectedKeys,
   onToggle,
   onView,
+  viewActionsDisabled = false,
   showCollectionKind,
   loading = false,
   defaultSelectedFilter = 'all',
@@ -1103,6 +1112,7 @@ export function UnifiedTable({
                       providerIconScope={providerIconScope}
                       onToggle={stableToggle}
                       onView={stableView}
+                      viewActionDisabled={viewActionsDisabled}
                       renderMcpLogo={renderMcpLogo}
                       renderAppLogo={renderAppLogo}
                       measureRef={virtualized ? measureRow : undefined}

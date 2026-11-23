@@ -97,6 +97,7 @@ import {
   worktreeRemovalOutcome,
 } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
+  CHANNEL_UNAVAILABLE_CODE,
   isChannelUnavailableRejection,
   type RemoteIpcTransport,
 } from '@canopy/protocol/remote-control';
@@ -164,6 +165,10 @@ import {
   isChannelUnavailable,
 } from './shell-commands';
 import { createTerminalHandlers } from './terminal';
+import {
+  createMarketplaceMutationCommands,
+  createMarketplaceMutationQueries,
+} from './marketplace-mutations';
 import type {
   WireAddedWorkspace,
   WireChatCommandResult,
@@ -211,6 +216,54 @@ type SubscribeHandlers = {
 // copy for the same case (CAN-5986).
 const ARCHIVE_RETENTION_HOST_OUTDATED =
   'Update the desktop app to change how long deleted items are kept.';
+// A computer on an older release refuses the discard and journal channels
+// from a browser (CAN-7443); updating it is the only fix.
+const WORKTREE_DISCARD_HOST_OUTDATED =
+  'Update the desktop app to discard this worktree.';
+const PROJECT_DELETION_DISCARD_HOST_OUTDATED =
+  'Update the desktop app to discard the worktrees that block this deletion.';
+const LIFECYCLE_JOURNAL_HOST_OUTDATED =
+  'Update the desktop app to review this record.';
+// A computer on a CAN-7439 to CAN-7443 release lists its unfinished archives
+// but refuses Resolve and Finish from a browser (CAN-7444); updating it is the
+// only fix.
+const WORKTREE_RECOVERY_HOST_OUTDATED =
+  'Update the desktop app to resolve this archive.';
+
+/**
+ * An older computer's refusal, reworded as the fix. It keeps the refusal's
+ * `remote_channel_unavailable` code, so `isChannelUnavailable` still matches.
+ * `hostOutdated` marks it as the adapter's own mapping (CAN-7444): the shared
+ * UI trusts that nothing ran only for this error, never for every refusal
+ * that carries the code.
+ */
+class HostOutdatedError extends Error {
+  readonly code = CHANNEL_UNAVAILABLE_CODE;
+  readonly hostOutdated = true;
+}
+
+/**
+ * Runs `invoke`, reporting a refused channel as `message`; other errors pass.
+ * With `channel`, Electron's code-less rejection of that channel's own invoke
+ * matches too.
+ */
+async function onOutdatedHost<T>(
+  message: string,
+  invoke: () => Promise<T>,
+  channel?: string,
+): Promise<T> {
+  try {
+    return await invoke();
+  } catch (error) {
+    if (
+      isChannelUnavailable(error) ||
+      (channel !== undefined && isChannelUnavailableRejection(error, channel))
+    )
+      throw new HostOutdatedError(message);
+    throw error;
+  }
+}
+
 /** Why a client without the session port can't answer a secret form. */
 const SECRET_REQUESTS_UNAVAILABLE =
   "Secrets can't be sent on this connection. Provide them on your computer.";
@@ -976,6 +1029,8 @@ class PortableIpcCanopyClient implements CanopyClient {
       ...terminal.queries,
       // CAN-7433: the host's clone jobs, without remote URLs or host paths.
       'cloneJobs.list': () => readCloneJobs(channels),
+      // CAN-7442: installed-item status, parsed strictly.
+      ...createMarketplaceMutationQueries(channels),
       // CAN-7433: no argument; `workspaceLocalId` only picks the host.
       'providerUsage.get': async () =>
         readProviderUsage(
@@ -1235,6 +1290,8 @@ class PortableIpcCanopyClient implements CanopyClient {
         channels.invokeVoid(C.cloneJobsCancel, jobId),
       'cloneJobs.dismiss': ({ jobId }) =>
         channels.invokeVoid(C.cloneJobsDismiss, jobId),
+      // CAN-7442: installed-item changes and plugin installs with no URL.
+      ...createMarketplaceMutationCommands(channels),
       'repoRules.apply': (args) =>
         unwrapIpcError(
           channels.invoke(
@@ -1639,47 +1696,74 @@ class PortableIpcCanopyClient implements CanopyClient {
                 supersedeInterruptedDeletion: args.supersedeInterruptedDeletion,
               }
             : {};
-        if (item.type === 'single-repo') {
-          await channels.invokeVoid(C.projectDelete, {
-            projectId: args.workspaceId,
-            ...superseded,
-            ...pendingRecovery,
-          });
-        } else {
-          // Multi-repo and cowork workspaces share the workspace deletion path.
-          await channels.invokeVoid(C.workspaceDelete, {
-            workspaceId: args.workspaceId,
-            ...superseded,
-            ...pendingRecovery,
-          });
-        }
+        const remove = (): Promise<void> =>
+          item.type === 'single-repo'
+            ? channels.invokeVoid(C.projectDelete, {
+                projectId: args.workspaceId,
+                ...superseded,
+                ...pendingRecovery,
+              })
+            : // Multi-repo and cowork workspaces share the workspace deletion path.
+              channels.invokeVoid(C.workspaceDelete, {
+                workspaceId: args.workspaceId,
+                ...superseded,
+                ...pendingRecovery,
+              });
+        // A CAN-7439 to CAN-7443 computer refuses a browser's
+        // `discardPendingRecovery` (CAN-7444). Other deletions keep their
+        // current errors.
+        if (args.discardPendingRecovery)
+          await onOutdatedHost(PROJECT_DELETION_DISCARD_HOST_OUTDATED, remove);
+        else await remove();
         await this.invalidateSessionSnapshot();
       },
       'lifecycleJournal.inspect': () =>
-        channels.invoke(
-          C.lifecycleJournalInspect,
-          anyReply<CommandMap['lifecycleJournal.inspect']['result']>(),
+        onOutdatedHost(LIFECYCLE_JOURNAL_HOST_OUTDATED, () =>
+          channels.invoke(
+            C.lifecycleJournalInspect,
+            anyReply<CommandMap['lifecycleJournal.inspect']['result']>(),
+          ),
         ),
       'lifecycleJournal.quarantine': (args) =>
-        channels.invoke(
-          C.lifecycleJournalQuarantine,
-          anyReply<CommandMap['lifecycleJournal.quarantine']['result']>(),
-          args,
+        onOutdatedHost(LIFECYCLE_JOURNAL_HOST_OUTDATED, () =>
+          channels.invoke(
+            C.lifecycleJournalQuarantine,
+            anyReply<CommandMap['lifecycleJournal.quarantine']['result']>(),
+            args,
+          ),
         ),
       'worktree.recovery.list': async (args) => {
-        if (this.capabilities.worktreeRecoveryResolution !== true)
+        // Read only (CAN-7439): the list needs no action capability.
+        if (this.capabilities.worktreeRecoveryReads !== true)
           throw new UnsupportedOperationError(
             'worktree.recovery.list',
             'Archive recovery is unavailable on this target.',
           );
-        return channels.invoke(
-          C.worktreeRecoveryList,
-          reply<CommandMap['worktree.recovery.list']['result']>(
-            (value) =>
-              WorktreeRecoveryListResultSchema.safeParse(value).success,
-          ),
-          args,
-        );
+        try {
+          return await channels.invoke(
+            C.worktreeRecoveryList,
+            reply<CommandMap['worktree.recovery.list']['result']>(
+              (value) =>
+                WorktreeRecoveryListResultSchema.safeParse(value).success,
+            ),
+            args,
+          );
+        } catch (error) {
+          // A computer from before CAN-7439 refuses the channel to direct
+          // controllers; report it as unsupported, not as a failed check.
+          // The unscoped coded check is deliberate: this catch wraps only the
+          // list channel's own invoke, so any channel-unavailable code here
+          // is that refusal, and the panel hides rather than reports it.
+          if (
+            isChannelUnavailableRejection(error, C.worktreeRecoveryList) ||
+            isChannelUnavailable(error)
+          )
+            throw new UnsupportedOperationError(
+              'worktree.recovery.list',
+              'Archive recovery is unavailable on this computer.',
+            );
+          throw error;
+        }
       },
       'worktree.recovery.resolve': async (args) => {
         if (this.capabilities.worktreeRecoveryResolution !== true)
@@ -1687,13 +1771,19 @@ class PortableIpcCanopyClient implements CanopyClient {
             'worktree.recovery.resolve',
             'Archive recovery is unavailable on this target.',
           );
-        return channels.invoke(
+        // A CAN-7439 to CAN-7443 computer refuses the channel (CAN-7444).
+        return onOutdatedHost(
+          WORKTREE_RECOVERY_HOST_OUTDATED,
+          () =>
+            channels.invoke(
+              C.worktreeRecoveryResolve,
+              reply<CommandMap['worktree.recovery.resolve']['result']>(
+                (value) =>
+                  WorktreeRecoveryResolveResultSchema.safeParse(value).success,
+              ),
+              args,
+            ),
           C.worktreeRecoveryResolve,
-          reply<CommandMap['worktree.recovery.resolve']['result']>(
-            (value) =>
-              WorktreeRecoveryResolveResultSchema.safeParse(value).success,
-          ),
-          args,
         );
       },
       'worktree.recovery.finish': async (args) => {
@@ -1702,51 +1792,73 @@ class PortableIpcCanopyClient implements CanopyClient {
             'worktree.recovery.finish',
             'Archive recovery is unavailable on this target.',
           );
-        return channels.invoke(
+        return onOutdatedHost(
+          WORKTREE_RECOVERY_HOST_OUTDATED,
+          () =>
+            channels.invoke(
+              C.worktreeRecoveryFinish,
+              reply<CommandMap['worktree.recovery.finish']['result']>(
+                (value) =>
+                  WorktreeRecoveryFinishResultSchema.safeParse(value).success,
+              ),
+              args,
+            ),
           C.worktreeRecoveryFinish,
-          reply<CommandMap['worktree.recovery.finish']['result']>(
-            (value) =>
-              WorktreeRecoveryFinishResultSchema.safeParse(value).success,
-          ),
-          args,
         );
       },
+      // A CAN-7439 to CAN-7443 computer also refuses a browser's `recovery`
+      // here, with the same code, so the same update message covers it.
       'worktree.discard.describe': (args) =>
-        channels.invoke(
-          C.worktreeDiscardDescribe,
-          anyReply<CommandMap['worktree.discard.describe']['result']>(),
-          {
-            projectId: args.workspaceId,
-            worktreeId: args.worktreeId,
-            ...(args.recovery ? { recovery: args.recovery } : {}),
-            ...(args.retainedArchives === true
-              ? { retainedArchives: true }
-              : {}),
-          },
+        onOutdatedHost(WORKTREE_DISCARD_HOST_OUTDATED, () =>
+          channels.invoke(
+            C.worktreeDiscardDescribe,
+            anyReply<CommandMap['worktree.discard.describe']['result']>(),
+            {
+              projectId: args.workspaceId,
+              worktreeId: args.worktreeId,
+              // CAN-7443: `recovery` only where worktree recovery has
+              // settled, read per call. Elsewhere the computer answers the
+              // plain description, as an older host that ignores the field
+              // does, and a browser controller is refused the key outright,
+              // so it is omitted rather than sent as `undefined`.
+              ...(args.recovery && this.capabilities.worktreeRecovery === true
+                ? { recovery: args.recovery }
+                : {}),
+              ...(args.retainedArchives === true
+                ? { retainedArchives: true }
+                : {}),
+            },
+          ),
         ),
       'worktree.discard': (args) =>
-        channels.invoke(
-          C.worktreeDiscard,
-          anyReply<CommandMap['worktree.discard']['result']>(),
-          {
-            projectId: args.workspaceId,
-            worktreeId: args.worktreeId,
-            confirmation: args.confirmation,
-            ...(args.retainedArchives === true
-              ? { retainedArchives: true }
-              : {}),
-          },
+        onOutdatedHost(WORKTREE_DISCARD_HOST_OUTDATED, () =>
+          channels.invoke(
+            C.worktreeDiscard,
+            anyReply<CommandMap['worktree.discard']['result']>(),
+            {
+              projectId: args.workspaceId,
+              worktreeId: args.worktreeId,
+              confirmation: args.confirmation,
+              ...(args.retainedArchives === true
+                ? { retainedArchives: true }
+                : {}),
+            },
+          ),
         ),
       'workspace.delete.discard.describe': (args) =>
-        channels.invoke(
-          C.workspaceDeleteDiscardDescribe,
-          anyReply<CommandMap['workspace.delete.discard.describe']['result']>(),
-          {
-            workspaceId: args.workspaceId,
-            ...(args.retainedArchives === true
-              ? { retainedArchives: true }
-              : {}),
-          },
+        onOutdatedHost(PROJECT_DELETION_DISCARD_HOST_OUTDATED, () =>
+          channels.invoke(
+            C.workspaceDeleteDiscardDescribe,
+            anyReply<
+              CommandMap['workspace.delete.discard.describe']['result']
+            >(),
+            {
+              workspaceId: args.workspaceId,
+              ...(args.retainedArchives === true
+                ? { retainedArchives: true }
+                : {}),
+            },
+          ),
         ),
       'workspace.reorder': async (args) => {
         await channels.invokeVoid(C.workspaceReorder, args);
@@ -2373,6 +2485,11 @@ class PortableIpcCanopyClient implements CanopyClient {
           C.orgProjectsSetupProgress,
           isOrgProjectSetupProgress,
           (progress) => handler({ progress, occurredAt: progress.updatedAt }),
+        ),
+      // CAN-7442: a payload-free notice to read the status again.
+      'installedItems.changed': (handler) =>
+        channels.listen(C.installedItemsChanged, anyReply<unknown>(), () =>
+          handler({ occurredAt: this.now() }),
         ),
       'cloneJobs.changed': (handler) =>
         channels.listen(C.cloneJobsChanged, Array.isArray, (raw) => {

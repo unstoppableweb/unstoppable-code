@@ -142,6 +142,13 @@ export interface CloneJobsChangedEvent extends DomainEventBase {
   readonly jobs: readonly PortableCloneJob[];
 }
 
+/**
+ * The host's installed plugins, skills, collections or MCP servers changed
+ * (CAN-7442). It carries nothing to apply: read `installedItems.listStatus`
+ * again.
+ */
+export type InstalledItemsChangedEvent = DomainEventBase;
+
 /** Durable script-action state changed for this project/worktree. Refetch the list. */
 export interface ScriptActionsChangedEvent extends DomainEventBase {
   readonly projectId: string;
@@ -195,6 +202,7 @@ export interface DomainEventMap {
   'delegation.lifetimeChanged': DelegationLifetimeChangedEvent;
   'scriptActions.changed': ScriptActionsChangedEvent;
   'cloneJobs.changed': CloneJobsChangedEvent;
+  'installedItems.changed': InstalledItemsChangedEvent;
   'claudeMods.surface': ClaudeModSurfaceEvent;
   'appAdvisor.changed': AppAdvisorChangedEvent;
   'worktree.activityChanged': WorktreeActivityChangedEvent;

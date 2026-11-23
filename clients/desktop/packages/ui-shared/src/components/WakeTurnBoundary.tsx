@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import type { JSX, ReactNode } from 'react';
 import { AppAdvisorWatcherIcon } from '../icons/AppIcons';
 import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
 import { Button } from './Button';
@@ -17,6 +17,24 @@ export interface WakeTurnBoundaryProps {
   timestamp?: number;
   forceOpen?: boolean;
   onShowSpawningTurn?: () => void;
+  /** The wake is waiting behind the running turn: “Will wake”, status Queued. */
+  queued?: boolean;
+  /** Replaces a queued wake's Queued status, such as “Sending…”. */
+  status?: ReactNode;
+  /** Controls at the row's end, such as a queued wake's Clear. */
+  actions?: ReactNode;
+  /** More facts at the top of the details, such as why a wake waits. */
+  extraDetails?: ReactNode;
+}
+
+/**
+ * What a wake row names for a fired watcher: its kind, or “N watchers” for a
+ * batch the host delivered together (whose own kind reads “Multiple watchers
+ * fired (N)”). Every waiting and woken watcher row says it the same way.
+ */
+export function watcherWakeSummary(watcher: ChatWatcherFiredInfo): string {
+  const count = watcher.combinedWatchers?.length ?? 0;
+  return count > 1 ? `${count} watchers` : watcher.kind;
 }
 
 /** The shared transcript row for an agent turn started by a wake event. */
@@ -30,12 +48,14 @@ export function WakeTurnBoundary({
   timestamp,
   forceOpen,
   onShowSpawningTurn,
+  queued = false,
+  status,
+  actions,
+  extraDetails,
 }: WakeTurnBoundaryProps): JSX.Element {
   const watchers = watcher?.combinedWatchers ?? [];
   const summary = watcher
-    ? watchers.length > 1
-      ? `${watchers.length} watchers`
-      : watcher.kind
+    ? watcherWakeSummary(watcher)
     : toolsLoaded
       ? 'Loaded tools'
       : scheduled
@@ -55,10 +75,12 @@ export function WakeTurnBoundary({
     <TranscriptEventRow
       dataTestId="wake-turn-boundary"
       forceOpen={forceOpen}
+      status={status ?? (queued ? 'Queued' : undefined)}
+      actions={actions}
       icon={<AppAdvisorWatcherIcon size="sm" aria-hidden="true" />}
       label={
         <>
-          Woke up:{' '}
+          {queued ? 'Will wake:' : 'Woke up:'}{' '}
           <span className={watcher ? REPLAY_MASK_CLASS : undefined}>
             {summary}
           </span>
@@ -75,8 +97,13 @@ export function WakeTurnBoundary({
         )
       }
     >
-      {taskLabel || followUp || watchers.length > 0 || onShowSpawningTurn ? (
+      {taskLabel ||
+      followUp ||
+      watchers.length > 0 ||
+      onShowSpawningTurn ||
+      extraDetails != null ? (
         <div className="flex min-w-0 flex-col items-start gap-2">
+          {extraDetails}
           {taskLabel ? (
             <div className={REPLAY_BLOCK_CLASS}>{taskLabel}</div>
           ) : null}

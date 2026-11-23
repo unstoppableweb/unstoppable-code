@@ -512,6 +512,8 @@ export function BrowserProfilesSettings(): JSX.Element {
                   destructive
                   busy={busy}
                   errorMessage={inlineFailureText(error)}
+                  // The section banner records this failure.
+                  errorRecordingDisabled
                   {...(error?.details === undefined
                     ? {}
                     : { errorDetails: error.details })}

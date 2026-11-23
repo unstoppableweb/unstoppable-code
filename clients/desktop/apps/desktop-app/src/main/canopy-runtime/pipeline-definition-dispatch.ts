@@ -1,22 +1,41 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  CanopyClientError,
+  deliverCanopy,
+  toCanopyClientError,
+  type CanopyClientInstructionOptions,
+} from '@canopy/core-client';
+import {
+  CANOPY_OUTCOME_UNKNOWN_MESSAGE,
+  CanopyOutcomeUnknownError,
+} from '@canopy/core-client/outcome';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   pipelineDefinitionError,
   PipelineDefinitionSourceError,
 } from '@canopy/core-runtime/node/pipeline';
 import {
+  isUnknownKeyedWriteOutcome,
   PIPELINE_DEFINITION_LIST_MAX_LIMIT,
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
   type CanopyWorkspaceScope,
   type PipelineDefinition,
+  type PipelineDefinitionDeleteParams,
+  type PipelineDefinitionDeleteResult,
+  type PipelineDefinitionDuplicateParams,
+  type PipelineDefinitionDuplicateResult,
   type PipelineDefinitionListParams,
+  type PipelineDefinitionSetEnabledParams,
+  type PipelineDefinitionSetEnabledResult,
   type PipelineDefinitionSource,
   type PipelineDefinitionSummary,
+  type PipelineDefinitionUpsertParams,
+  type PipelineDefinitionUpsertResult,
 } from '@canopy/protocol/canopy-core';
 import type {
-  IPCResult,
+  IPCResultWithOutcome,
   Pipeline,
   PipelineData,
   PipelineInfo,
@@ -73,6 +92,116 @@ export const PIPELINE_DEFINITION_AGENT_CALLER: CanopyCallerDescriptor = {
   interfaceKind: 'mcp',
   grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
 };
+
+/** The definition writes main can send to a daemon route (CAN-7507). */
+export type PipelineDefinitionWriteOperation =
+  | 'upsert'
+  | 'delete'
+  | 'duplicate'
+  | 'setEnabled';
+
+/**
+ * The daemon route for main's definition writes. `serves` is the routing
+ * decision alone, read at each call: a session that is down still answers
+ * true, and the write then fails with the route's typed error.
+ */
+export interface PipelineDefinitionWriteRoute {
+  serves(operation: PipelineDefinitionWriteOperation): boolean;
+  upsert(
+    params: PipelineDefinitionUpsertParams,
+    options?: CanopyClientInstructionOptions,
+  ): Promise<PipelineDefinitionUpsertResult>;
+  delete(
+    params: PipelineDefinitionDeleteParams,
+    options?: CanopyClientInstructionOptions,
+  ): Promise<PipelineDefinitionDeleteResult>;
+  duplicate(
+    params: PipelineDefinitionDuplicateParams,
+    options?: CanopyClientInstructionOptions,
+  ): Promise<PipelineDefinitionDuplicateResult>;
+  setEnabled(
+    params: PipelineDefinitionSetEnabledParams,
+    options?: CanopyClientInstructionOptions,
+  ): Promise<PipelineDefinitionSetEnabledResult>;
+}
+
+let definitionWriteRoute: (() => PipelineDefinitionWriteRoute | null) | null =
+  null;
+
+/**
+ * Where main's definition writes go, set once: the same provider again is
+ * ignored and another one throws. With no provider, or a null route, the
+ * writes stay in process.
+ */
+export function setPipelineDefinitionRouteProvider(
+  provider: () => PipelineDefinitionWriteRoute | null,
+): void {
+  if (definitionWriteRoute === provider) return;
+  if (definitionWriteRoute !== null)
+    throw new Error('The pipeline definition route provider is already set.');
+  definitionWriteRoute = provider;
+}
+
+/**
+ * Sends one keyed write in process, or on the daemon route when it serves
+ * the operation. A routed write is resent with the same key when its reply
+ * is lost, so a retry answers with the first write's outcome. A routed write
+ * that may have landed fails as {@link CanopyOutcomeUnknownError} and is
+ * never resent under another key: once any attempt ends unknown, even if a
+ * later attempt is refused, or when delivery ends with an attempt still
+ * out, such as a reply that never comes before the deadline. It never falls
+ * back to the in-process writer: a daemon failure is the caller's typed
+ * error.
+ */
+async function sendDefinitionWrite<Result>(
+  operation: PipelineDefinitionWriteOperation,
+  idempotencyKey: string,
+  inProcess: () => Promise<Result>,
+  routed: (
+    route: PipelineDefinitionWriteRoute,
+    options: CanopyClientInstructionOptions,
+  ) => Promise<Result>,
+): Promise<Result> {
+  const route = definitionWriteRoute?.() ?? null;
+  if (!route?.serves(operation)) return inProcess();
+  let uncertain = false;
+  let inFlight = false;
+  return deliverCanopy(
+    async ({ signal }) => {
+      inFlight = true;
+      try {
+        return await routed(route, {
+          metadata: { idempotencyKey },
+          signal,
+        });
+      } catch (error) {
+        if (isUnknownKeyedWriteOutcome(toCanopyClientError(error).payload))
+          uncertain = true;
+        else if (!signal.aborted) inFlight = false;
+        throw error;
+      }
+    },
+    { replay: 'same_idempotency_key' },
+  ).catch((error: unknown) => {
+    throw uncertain ||
+      inFlight ||
+      (error instanceof CanopyClientError &&
+        isUnknownKeyedWriteOutcome(error.payload))
+      ? new CanopyOutcomeUnknownError()
+      : error;
+  });
+}
+
+/** A failed write's result; an unknown outcome is reported as unknown. */
+function failedDefinitionWrite(error: unknown): IPCResultWithOutcome<never> {
+  return error instanceof CanopyOutcomeUnknownError
+    ? {
+        success: false,
+        outcome: 'unknown',
+        error: CANOPY_OUTCOME_UNKNOWN_MESSAGE,
+      }
+    : { success: false, error: pipelineWriteErrorMessage(error) };
+}
 
 export interface UserPipelineWrite {
   /** Absent creates a pipeline under a new id. */
@@ -143,7 +272,7 @@ async function republishOwnerAutomation(pipelineId: string): Promise<void> {
 export async function saveUserPipeline(
   write: UserPipelineWrite,
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResult<PipelineInfo>> {
+): Promise<IPCResultWithOutcome<PipelineInfo>> {
   if (
     write.rawContent !== undefined &&
     rawContentMismatch(write.rawContent, write.content)
@@ -153,23 +282,30 @@ export async function saveUserPipeline(
       error: 'Raw pipeline document does not match parsed pipeline content.',
     };
   const idempotencyKey = randomUUID();
+  const params: PipelineDefinitionUpsertParams = {
+    definitionId: write.id ?? null,
+    expectedRevision: write.expectedRevision ?? null,
+    scope: {},
+    source: 'user',
+    name: write.name,
+    description: write.description,
+    icon: write.icon,
+    ...(write.enabled === undefined ? {} : { enabled: write.enabled }),
+    format: 'yaml',
+    document: write.rawContent ?? { pipeline: write.content },
+    _meta: { idempotencyKey },
+  };
   try {
-    const { definition } = await getDesktopCanopyRuntime().instruction(
-      'core.pipeline.definition.upsert',
-      {
-        definitionId: write.id ?? null,
-        expectedRevision: write.expectedRevision ?? null,
-        scope: {},
-        source: 'user',
-        name: write.name,
-        description: write.description,
-        icon: write.icon,
-        ...(write.enabled === undefined ? {} : { enabled: write.enabled }),
-        format: 'yaml',
-        document: write.rawContent ?? { pipeline: write.content },
-        _meta: { idempotencyKey },
-      },
-      { caller, metadata: { idempotencyKey } },
+    const { definition } = await sendDefinitionWrite(
+      'upsert',
+      idempotencyKey,
+      () =>
+        getDesktopCanopyRuntime().instruction(
+          'core.pipeline.definition.upsert',
+          params,
+          { caller, metadata: { idempotencyKey } },
+        ),
+      (route, options) => route.upsert(params, options),
     );
     void republishOwnerAutomation(definition.definitionId);
     return {
@@ -177,7 +313,7 @@ export async function saveUserPipeline(
       data: savedPipelineInfo(definition, write.content),
     };
   } catch (error) {
-    return { success: false, error: pipelineWriteErrorMessage(error) };
+    return failedDefinitionWrite(error);
   }
 }
 
@@ -258,17 +394,28 @@ export async function deleteUserPipeline(
   id: string,
   expectedRevision: number | null,
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResult> {
+): Promise<IPCResultWithOutcome> {
   const idempotencyKey = randomUUID();
+  const params: PipelineDefinitionDeleteParams = {
+    definitionId: id,
+    expectedRevision,
+    _meta: { idempotencyKey },
+  };
   try {
-    await getDesktopCanopyRuntime().instruction(
-      'core.pipeline.definition.delete',
-      { definitionId: id, expectedRevision, _meta: { idempotencyKey } },
-      { caller, metadata: { idempotencyKey } },
+    await sendDefinitionWrite(
+      'delete',
+      idempotencyKey,
+      () =>
+        getDesktopCanopyRuntime().instruction(
+          'core.pipeline.definition.delete',
+          params,
+          { caller, metadata: { idempotencyKey } },
+        ),
+      (route, options) => route.delete(params, options),
     );
     return { success: true };
   } catch (error) {
-    return { success: false, error: pipelineWriteErrorMessage(error) };
+    return failedDefinitionWrite(error);
   }
 }
 
@@ -347,23 +494,30 @@ export async function duplicatePipelineDefinition(
     expectedChecksum?: string;
   },
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResult<PipelineInfo>> {
+): Promise<IPCResultWithOutcome<PipelineInfo>> {
   const idempotencyKey = randomUUID();
+  const params: PipelineDefinitionDuplicateParams = {
+    sourceDefinitionId,
+    scope: options.scope ?? {},
+    ...(options.name === undefined ? {} : { name: options.name }),
+    ...(options.expectedChecksum === undefined
+      ? {}
+      : { expectedChecksum: options.expectedChecksum }),
+    _meta: { idempotencyKey },
+  };
   try {
     // The copy's provenance step reuses what its source read presented.
     const { definition } = await withPipelinePresentation(() =>
-      getDesktopCanopyRuntime().instruction(
-        'core.pipeline.definition.duplicate',
-        {
-          sourceDefinitionId,
-          scope: options.scope ?? {},
-          ...(options.name === undefined ? {} : { name: options.name }),
-          ...(options.expectedChecksum === undefined
-            ? {}
-            : { expectedChecksum: options.expectedChecksum }),
-          _meta: { idempotencyKey },
-        },
-        { caller, metadata: { idempotencyKey } },
+      sendDefinitionWrite(
+        'duplicate',
+        idempotencyKey,
+        () =>
+          getDesktopCanopyRuntime().instruction(
+            'core.pipeline.definition.duplicate',
+            params,
+            { caller, metadata: { idempotencyKey } },
+          ),
+        (route, callOptions) => route.duplicate(params, callOptions),
       ),
     );
     const stored = getStoredPipelineBySource('user', definition.definitionId);
@@ -374,7 +528,7 @@ export async function duplicatePipelineDefinition(
       };
     return { success: true, data: stored.data.info };
   } catch (error) {
-    return { success: false, error: pipelineWriteErrorMessage(error) };
+    return failedDefinitionWrite(error);
   }
 }
 
@@ -388,11 +542,22 @@ export async function setPipelineDefinitionEnabled(
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
 ): Promise<PreferencesData | undefined> {
   const idempotencyKey = randomUUID();
+  const params: PipelineDefinitionSetEnabledParams = {
+    definitionId,
+    enabled,
+    _meta: { idempotencyKey },
+  };
   return withPipelineEnablementCommit(async () => {
-    await getDesktopCanopyRuntime().instruction(
-      'core.pipeline.definition.setEnabled',
-      { definitionId, enabled, _meta: { idempotencyKey } },
-      { caller, metadata: { idempotencyKey } },
+    await sendDefinitionWrite(
+      'setEnabled',
+      idempotencyKey,
+      () =>
+        getDesktopCanopyRuntime().instruction(
+          'core.pipeline.definition.setEnabled',
+          params,
+          { caller, metadata: { idempotencyKey } },
+        ),
+      (route, options) => route.setEnabled(params, options),
     );
   });
 }

@@ -440,6 +440,15 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       'Controls whether desktop promotes writable chat scopes to storage format 4. Turning it off stops new promotions and never demotes a promoted scope.',
   },
+  canopyDesktopChatFormat4Sweep: {
+    key: 'canopy-desktop-chat-format4-sweep',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    localOnlyDefaultValue: false,
+    ownership: 'core',
+    description:
+      'Controls whether desktop sweeps chat scopes nobody opens to storage format 4 in the background. It needs canopy-desktop-chat-format4-promotion on too; turning it off stops the sweep before its next scope and never demotes a promoted scope.',
+  },
   canopyDesktopCursorHarness: {
     key: 'canopy-desktop-cursor-harness',
     launchDarklyDisabledDefaultValue: true,
@@ -970,6 +979,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
     .key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAntigravityHarness.key]: boolean;
@@ -1154,6 +1164,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
@@ -1395,6 +1408,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness
         .launchDarklyEnabledUnavailableValue,
@@ -1615,6 +1631,8 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarnessReleased.key]:

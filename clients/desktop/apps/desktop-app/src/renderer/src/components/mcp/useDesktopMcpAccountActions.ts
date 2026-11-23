@@ -109,6 +109,10 @@ export function useDesktopMcpAccountActions({
         return SAVE_FAILED;
       }
     };
+    // Whether the last removal's failure was reported here (or by the sign-in
+    // it cancelled). An older cloud's sign-out is not, so the confirmation
+    // records that one.
+    let removeReported = false;
     return {
       // The name dialog closes once the sign-in starts; its setup dialogs and
       // any failure show through `signIn`, like Connect's.
@@ -159,23 +163,34 @@ export function useDesktopMcpAccountActions({
         // cancelling it removes the row and ends the wait. Success is
         // reported only once the row is gone, since a cancellation the cloud
         // couldn't remove only signs the account out.
+        removeReported = false;
         const pendingKey = signIn.actions.pendingKeyForConnection({
           id: connectionId,
           serverKey,
           configId: '',
         });
         if (pendingKey) {
+          // Whether the cancellation reported its own failed removal; it
+          // leaves the row behind then, which is the same failure.
+          let cancelReported = false;
           try {
-            await signIn.actions.cancel(pendingKey, connectionId);
+            cancelReported = await signIn.actions.cancel(
+              pendingKey,
+              connectionId,
+            );
             const remaining = await window.mcpServers.listAccountConnections();
             await refresh();
-            return remaining.some(
-              (connection): boolean => connection.id === connectionId,
+            if (
+              !remaining.some(
+                (connection): boolean => connection.id === connectionId,
+              )
             )
-              ? REMOVE_FAILED
-              : null;
+              return null;
+            removeReported = cancelReported;
+            return REMOVE_FAILED;
           } catch (error) {
-            reportClientAppError(error);
+            if (!cancelReported) reportClientAppError(error);
+            removeReported = true;
             return REMOVE_FAILED;
           }
         }
@@ -186,9 +201,11 @@ export function useDesktopMcpAccountActions({
           return removed ? null : REMOVE_UNSUPPORTED;
         } catch (error) {
           reportClientAppError(error);
+          removeReported = true;
           return REMOVE_FAILED;
         }
       },
+      removeFailureRecorded: (): boolean => removeReported,
     };
   }, [firstOpen, refresh, serverKey, signIn]);
   return { actions, signIn, addPending };

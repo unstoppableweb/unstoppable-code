@@ -42,6 +42,8 @@ import {
   PIPELINE_PACKAGE_MAX_FILE_BYTES,
   PIPELINE_PACKAGE_MAX_TOTAL_BYTES,
   validatePipelinePackageManifest,
+  forEachPipelinePackageManifestText,
+  secretShapedTextMessage,
 } from '@canopy/protocol/pipelines';
 import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import {
@@ -50,10 +52,12 @@ import {
 } from '@canopy/execution-engine/pipelines/plugin-collections';
 import { getShareablePluginRefKey } from '@canopy/execution-engine/plugin-refs';
 import {
+  escapeDecodedCopy,
   findPackageFileCredentialRule,
-  findPackageTextCredentialRule,
+  findSharedMemberFileCredentialRule,
   packagedSkillSecretMessage,
   packageFileNameSecretMessage,
+  packageFileSecretMessage,
   packageFileUncheckedMessage,
   pluginSecretMessage,
   scanSharedSkillForSecrets,
@@ -796,17 +800,6 @@ function canonicalStepIds(
   return assignStepIds(steps, jobId).map((step) => step.id);
 }
 
-function stripControlCharacters(value: string): string {
-  return Array.from(value, (character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f ? '' : character;
-  }).join('');
-}
-
-function containsPipelinePackageSecretMaterial(text: string): boolean {
-  return findPackageTextCredentialRule(text) !== null;
-}
-
 function affectedStepsForIds(
   pipeline: Pipeline,
   stepIds: readonly string[] | undefined,
@@ -1043,7 +1036,8 @@ interface CollectMemberFilesOptions {
    * directories, symlinks, files whose content trips the secret scan and
    * (with `isIgnored`) git-ignored paths are left out and reported here
    * instead of blocking; native and opaque executables, escapes and package
-   * limits still block.
+   * limits still block. With `memberContent`, a content hit is withheld only
+   * when its `withholdHits` says so.
    */
   withhold?: (file: {
     relativePath: string;
@@ -1061,101 +1055,14 @@ interface CollectMemberFilesOptions {
    * set (a cloud copy) and blocks otherwise (a share).
    */
   sharedProfile?: { refuse: (message: string) => void };
-}
-
-const TEXT_ESCAPE =
-  /\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2})|\/)/g;
-
-/**
- * A copy of text with its `\uXXXX`, `\UXXXXXXXX`, `\xNN` and `\/` escapes
- * decoded, or null when it has none. YAML double-quoted strings and many
- * config formats decode these, so an escaped key could hide a credential
- * from the raw text. The copy is only checked, never kept or uploaded
- * (CAN-7226). An escape that names no character, such as `\U00110000`, is
- * malformed and stays as written.
- */
-function escapeDecodedCopy(text: string): string | null {
-  let decodedAny = false;
-  const decoded = text.replace(
-    TEXT_ESCAPE,
-    (
-      escape: string,
-      four: string | undefined,
-      eight: string | undefined,
-      two: string | undefined,
-    ): string => {
-      const hex = four ?? eight ?? two;
-      const codePoint = hex === undefined ? 0x2f : Number.parseInt(hex, 16);
-      if (codePoint > 0x10ffff) return escape;
-      decodedAny = true;
-      return String.fromCodePoint(codePoint);
-    },
-  );
-  return decodedAny ? decoded : null;
-}
-
-/** The rule text's escape-decoded copy trips with the shared check, or null. */
-function escapeDecodedSecretRule(
-  text: string,
-): SharedTextCredentialRule | null {
-  const decoded = escapeDecodedCopy(text);
-  return decoded === null ? null : findSharedTextCredentialRule(decoded);
-}
-
-/**
- * The rule a JSON text trips with the shared check once decoded, or null;
- * null too for text that isn't JSON. It names the rule only, never the
- * text. An escape such as `\/` or `\u0070` hides a credential from the raw
- * text, so the decoded text is checked whole, then each key, each string
- * value and each key beside its primitive value (CAN-7226). Text too deeply
- * nested to re-serialize can't be checked, so it reads as `unreadable`. The
- * walk is iterative, and the file was already capped at
- * PIPELINE_PACKAGE_MAX_FILE_BYTES.
- */
-function decodedJsonSecretRule(
-  text: string,
-): SharedTextCredentialRule | 'unreadable' | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  let decoded: string;
-  try {
-    decoded = JSON.stringify(parsed);
-  } catch {
-    return 'unreadable';
-  }
-  const whole = findSharedTextCredentialRule(decoded);
-  if (whole !== null) return whole;
-  const pending: unknown[] = [parsed];
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (typeof value === 'string') {
-      const rule = findSharedTextCredentialRule(value);
-      if (rule !== null) return rule;
-    } else if (Array.isArray(value)) {
-      for (const item of value) pending.push(item);
-    } else if (typeof value === 'object' && value !== null) {
-      for (const [key, item] of Object.entries(value)) {
-        const keyRule = findSharedTextCredentialRule(key);
-        if (keyRule !== null) return keyRule;
-        if (
-          typeof item === 'string' ||
-          typeof item === 'number' ||
-          typeof item === 'boolean'
-        ) {
-          const pairRule =
-            findSharedTextCredentialRule(`${key}: ${String(item)}`) ??
-            findSharedTextCredentialRule(`${key}=${String(item)}`);
-          if (pairRule !== null) return pairRule;
-        }
-        pending.push(item);
-      }
-    }
-  }
-  return null;
+  /**
+   * A workflow's asset, child pipeline or pipeline action (CAN-7492): file
+   * contents are read with the stricter shared check, and a hit names the
+   * owner, the rule and the file, never the value. Names and paths stay with
+   * the final check. A hit is withheld only when `withholdHits` is set (an
+   * asset in a cloud copy); otherwise it blocks.
+   */
+  memberContent?: { owner: PackageFileOwner; withholdHits: boolean };
 }
 
 /** A name that looks like a secret, as a blocker may show it. */
@@ -1233,73 +1140,11 @@ function blockSecretShapedNames(
     if (hit === undefined) hits.set(shown, { kinds: [kind], rule });
     else if (!hit.kinds.includes(kind)) hit.kinds.push(kind);
   };
-  // An id built from a key or asset id carries it too, so ids are checked
-  // wherever they appear.
-  const ids = (list: string[]): void =>
-    list.forEach((id, index) => check('id', id, (v) => (list[index] = v)));
-  for (const resource of manifest.resources) {
-    check('id', resource.id, (v) => (resource.id = v));
-    ids(resource.dependencyResourceIds);
-    check('name', resource.displayName, (v) => (resource.displayName = v));
-    check(
-      'source label',
-      resource.sourceLabel,
-      (v) => (resource.sourceLabel = v),
-    );
-    resource.invocationKeys.forEach((key, index) =>
-      check('invocation key', key, (v) => (resource.invocationKeys[index] = v)),
-    );
-    if (resource.pipelineKey !== undefined)
-      check(
-        'pipeline key',
-        resource.pipelineKey,
-        (v) => (resource.pipelineKey = v),
-      );
-    if (resource.assetId !== undefined)
-      check('asset id', resource.assetId, (v) => (resource.assetId = v));
-    for (const value of Object.values(resource.installedItemRef ?? {}))
-      if (typeof value === 'string')
-        check('installed item', value, () => delete resource.installedItemRef);
-    for (const tree of resource.trees) {
-      check('folder name', tree.rootName, (v) => (tree.rootName = v));
-      for (const entry of tree.entries)
-        check('file path', entry.path, (v) => (entry.path = v), true);
-    }
-  }
-  // Each location is replaced, not written, so one shared with a blocker or
-  // another note stays as it was.
-  const steps = (list: Array<{ jobId: string; stepId: string }>): void =>
-    list.forEach((step, index) => {
-      const shown = { ...step };
-      check('step name', step.jobId, (v) => (shown.jobId = v));
-      check('step name', step.stepId, (v) => (shown.stepId = v));
-      list[index] = shown;
-    });
-  for (const requirement of manifest.environmentRequirements) {
-    steps(requirement.affectedSteps);
-    check('requirement name', requirement.id, (v) => (requirement.id = v));
-    check(
-      'requirement name',
-      requirement.displayName,
-      (v) => (requirement.displayName = v),
-    );
-    check(
-      'requirement name',
-      requirement.setupHint,
-      (v) => (requirement.setupHint = v),
-    );
-  }
-  for (const binding of manifest.bindings) {
-    ids(binding.resourceIds);
-    if ('jobId' in binding) {
-      check('job name', binding.jobId, (v) => (binding.jobId = v));
-      check('step name', binding.stepId, (v) => (binding.stepId = v));
-    }
-  }
-  for (const note of manifest.publisherNotes ?? []) {
-    check('publisher note', note.label, (v) => (note.label = v));
-    steps(note.affectedSteps);
-  }
+  // Every manifest field, read from the list the hosted commit reads too.
+  forEachPipelinePackageManifestText(
+    manifest,
+    ({ kind, value, isPath, replace }) => check(kind, value, replace, isPath),
+  );
   for (const pipeline of summary.packagedPipelines ?? []) {
     check('id', pipeline.resourceId, (v) => (pipeline.resourceId = v));
     check('pipeline key', pipeline.key, (v) => (pipeline.key = v));
@@ -1320,18 +1165,16 @@ function blockSecretShapedNames(
   for (const location of locations)
     for (const value of [location.jobId, location.stepId])
       if (value !== undefined) check('step name', value, () => undefined);
-  return [...hits].map(([shown, { kinds, rule }]) => {
-    const label = sharedSkillSecretRuleLabel(rule);
-    const [kind = ''] = kinds;
-    return {
-      code: 'SUSPECTED_SECRET',
-      subject: shown,
-      message:
-        kinds.length === 1
-          ? `${/^[aeiou]/.test(kind) ? 'An' : 'A'} ${kind} in this package looks like it contains a secret (${label}). Rename it, then share again.`
-          : `${shown === REDACTED_PATH ? 'Paths' : 'Names'} in this package look like they contain a secret (${kinds.join(', ')}; ${label}). Rename them, then share again.`,
-    };
-  });
+  return [...hits].map(([shown, { kinds, rule }]) => ({
+    code: 'SUSPECTED_SECRET',
+    subject: shown,
+    message: secretShapedTextMessage({
+      kinds,
+      ruleLabel: sharedSkillSecretRuleLabel(rule),
+      isPath: shown === REDACTED_PATH,
+      verb: 'share',
+    }),
+  }));
 }
 
 async function collectMemberFiles(
@@ -1344,7 +1187,7 @@ async function collectMemberFiles(
   budget: CollectionBudget,
   options: CollectMemberFilesOptions = {},
 ): Promise<{ entries: PipelinePackageFileEntry[]; texts: string[] }> {
-  const { data, isIgnored, sharedProfile } = options;
+  const { data, isIgnored, sharedProfile, memberContent } = options;
   // A path that itself looks like a secret, such as a file or skill folder
   // named after a token, is never shown by a cloud copy, just as the
   // scanner redacts it (CAN-7226).
@@ -1965,29 +1808,42 @@ async function collectMemberFiles(
       return;
     }
     const contentRule =
-      findPackageFileCredentialRule(bytes) ??
-      (sharedProfile === undefined
-        ? null
-        : (findSharedTextCredentialRule(text) ??
-          decodedJsonSecretRule(text) ??
-          escapeDecodedSecretRule(text)));
+      sharedProfile === undefined && memberContent === undefined
+        ? findPackageFileCredentialRule(bytes)
+        : findSharedMemberFileCredentialRule(bytes);
     if (contentRule !== null) {
       if (
         withhold &&
-        !(sharedProfile !== undefined && isPluginSkillFile(normalized))
+        (memberContent === undefined
+          ? !(sharedProfile !== undefined && isPluginSkillFile(normalized))
+          : memberContent.withholdHits)
       ) {
         releaseFile(relativePath, stat.size);
         withhold({ relativePath, reason: 'suspected_secret' });
         return;
       }
+      // A workflow file's path is redacted here only: a withheld one keeps
+      // its path for the final check, which blocks on it (CAN-7476).
+      const shownFile =
+        memberContent === undefined
+          ? shownPath(relativePath)
+          : shownSecretPath(relativePath);
       blockers.push({
         code: 'SUSPECTED_SECRET',
         message:
-          sharedProfile === undefined
-            ? 'A dependency file may contain a credential.'
-            : memberFileSecretMessage(relativePath, contentRule),
-        subject: shownPath(relativePath),
-        relativePath: shownPath(relativePath),
+          memberContent !== undefined
+            ? contentRule === 'unreadable'
+              ? packageFileUncheckedMessage(memberContent.owner, shownFile)
+              : packageFileSecretMessage(
+                  memberContent.owner,
+                  shownFile,
+                  contentRule,
+                )
+            : sharedProfile === undefined
+              ? 'A dependency file may contain a credential.'
+              : memberFileSecretMessage(relativePath, contentRule),
+        subject: shownFile,
+        relativePath: shownFile,
       });
       return;
     }
@@ -2146,6 +2002,8 @@ interface CollectionContext {
   sourceStats: CapabilityPackageAnalysisInternal['sourceStats'];
   sourceDirectories: CapabilityPackageAnalysisInternal['sourceDirectories'];
   budget: CollectionBudget;
+  /** A cloud copy, which withholds an asset file a share blocks on. */
+  cloudCopy: boolean;
 }
 
 interface CollectedAutomationPipelines {
@@ -2153,6 +2011,29 @@ interface CollectedAutomationPipelines {
   resources: Array<{ resource: PipelinePackageResource; bindingKey?: string }>;
   packagedPipelines: PipelinePackagePackagedPipeline[];
   withheldFiles: PipelinePackageWithheldFile[];
+}
+
+/**
+ * How a share names a child pipeline or pipeline action file the stricter
+ * shared check catches (CAN-7492). One missing a file wouldn't run, so a
+ * cloud copy refuses it too rather than withholding the file.
+ */
+function portableMemberContent(
+  resource: Pick<
+    CapabilityPackagePortableResourceInput,
+    'kind' | 'displayName'
+  >,
+): NonNullable<CollectMemberFilesOptions['memberContent']> {
+  return {
+    owner: {
+      kind:
+        resource.kind === 'child_pipeline'
+          ? 'child pipeline'
+          : 'pipeline action',
+      name: shownSecretName(resource.displayName),
+    },
+    withholdHits: false,
+  };
 }
 
 /**
@@ -2259,6 +2140,10 @@ async function collectFileAsset(
     context.budget,
     {
       data: true,
+      memberContent: {
+        owner: { kind: 'asset', name: shownAsset, within: pipelineName },
+        withholdHits: context.cloudCopy,
+      },
       withhold: ({ relativePath, reason }) => {
         withheldFiles.push({
           pipelineKey: asset.pipelineKey,
@@ -2372,20 +2257,30 @@ async function collectAutomationPipelines(
       })
     )
       continue;
-    // The root YAML is scanned like any packaged file, so a literal token in
-    // `env` blocks while `${{ secrets.NAME }}` does not.
-    if (
-      containsPipelinePackageSecretMaterial(
-        stripControlCharacters(pipeline.rawContent),
-      )
-    ) {
+    // The root YAML is read as it uploads, with the stricter shared check the
+    // hosted commit also runs on these bytes (CAN-7492), so a literal token in
+    // `env`, an escaped one or a URL password blocks while
+    // `${{ secrets.NAME }}` does not.
+    const yamlRule = findSharedMemberFileCredentialRule(bytes);
+    if (yamlRule !== null) {
       // A name that looks like a secret is never shown (CAN-7476).
       const shownName = shownSecretName(name);
+      const owner: PackageFileOwner = { kind: 'pipeline', name: shownName };
       blockers.push({
         code: 'SUSPECTED_SECRET',
         subject: shownName,
         relativePath: AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
-        message: `"${shownName}" may contain a credential. Move it into a secret and reference it as \${{ secrets.NAME }}.`,
+        message:
+          yamlRule === 'unreadable'
+            ? packageFileUncheckedMessage(
+                owner,
+                AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+              )
+            : packageFileSecretMessage(
+                owner,
+                AUTOMATION_PIPELINE_TREE_ENTRY_PATH,
+                yamlRule,
+              ),
       });
       continue;
     }
@@ -2869,6 +2764,7 @@ async function analyzeCapabilityPackageOnce(
       sourceStats,
       sourceDirectories,
       collectionBudget,
+      { memberContent: portableMemberContent(resource) },
     );
     portableResources.push({
       input: resource,
@@ -2897,6 +2793,7 @@ async function analyzeCapabilityPackageOnce(
           sourceStats,
           sourceDirectories,
           budget: collectionBudget,
+          cloudCopy: input.cloudCopy !== undefined,
         },
       )
     : undefined;
@@ -2923,6 +2820,7 @@ async function analyzeCapabilityPackageOnce(
         sourceStats,
         sourceDirectories,
         collectionBudget,
+        { memberContent: portableMemberContent(resource) },
       );
       portableResources.push({
         input: { ...resource, bindingKey: definition.input.bindingKey },

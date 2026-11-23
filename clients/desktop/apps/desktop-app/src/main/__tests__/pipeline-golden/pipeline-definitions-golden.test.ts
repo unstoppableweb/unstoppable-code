@@ -23,7 +23,7 @@ import {
   saveStoredPipeline,
 } from '@canopy/execution-engine/pipelines/store';
 import { createHash } from 'node:crypto';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
 import { app } from 'electron';
@@ -494,6 +494,83 @@ describe('core definition writes', () => {
       success: false,
       error: `Workflow not found: ${id}`,
     });
+  });
+
+  // CAN-5239: a stored user pipeline is dated by its first save on this host.
+  it('dates a user definition by its first save, keeps that date on edits and lists it on its row only', async () => {
+    const input = {
+      name: 'Golden dated',
+      description: '',
+      icon: '',
+      content: parsePipelineText(GOLDEN_USER_PIPELINE_YAML),
+    };
+    const before = Date.now();
+    const created = (await invokeIpc(
+      PIPELINE_CHANNELS.SAVE,
+      input,
+    )) as IPCResult<PipelineInfo>;
+    const id = created.data?.id ?? '';
+    const firstSaved = Date.parse(created.data?.createdAt ?? '');
+    expect(firstSaved).toBeGreaterThanOrEqual(before);
+    expect(firstSaved).toBeLessThanOrEqual(Date.now());
+    // Stand in for a copy installed long ago, so a kept date is told apart
+    // from the time of a later save.
+    const installedAt = '2020-01-02T03:04:05.000Z';
+    const indexPath = join(world.dataDir, 'pipelines', 'index.json');
+    const index = JSON.parse(readFileSync(indexPath, 'utf8')) as {
+      pipelines: { id: string }[];
+    };
+    writeFileSync(
+      indexPath,
+      JSON.stringify(
+        {
+          ...index,
+          pipelines: index.pipelines.map((entry) =>
+            entry.id === id ? { ...entry, createdAt: installedAt } : entry,
+          ),
+        },
+        null,
+        2,
+      ),
+    );
+    // An edit keeps the stored date; the one its caller sends is never read.
+    expect(
+      await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        ...input,
+        id,
+        expectedRevision: 1,
+        name: 'Golden dated edit',
+        createdAt: '1999-01-01T00:00:00.000Z',
+      }),
+    ).toMatchObject({
+      success: true,
+      data: { revision: 2, createdAt: installedAt },
+    });
+    expect(getStoredPipeline(id).data?.info.createdAt).toBe(installedAt);
+    // The Remote Control rows carry the date for stored user pipelines only.
+    const { listPipelines } = await import('../../services/pipelines-service');
+    const rows = await listPipelines({
+      projectId: GOLDEN_WORKSPACE_ID,
+      worktreeId: GOLDEN_WORKTREE_ID,
+    });
+    expect(rows.find((row) => row.pipelineId === id)).toMatchObject({
+      origin: 'user',
+      installedAt,
+    });
+    const others = rows.filter((row) => row.origin !== 'user');
+    expect(others.map((row) => row.origin)).toEqual(
+      expect.arrayContaining(['bundled', 'project']),
+    );
+    expect(others.filter((row) => row.installedAt !== undefined)).toEqual([]);
+    // A removal ends the copy: the same id installed again is dated anew.
+    expect(await invokeIpc(PIPELINE_CHANNELS.DELETE, id)).toEqual({
+      success: true,
+    });
+    const reinstalled = saveStoredPipeline(input, { id });
+    expect(
+      Date.parse(reinstalled.data?.createdAt ?? ''),
+    ).toBeGreaterThanOrEqual(before);
+    expect(deleteStoredPipeline(id)).toEqual({ success: true });
   });
 });
 

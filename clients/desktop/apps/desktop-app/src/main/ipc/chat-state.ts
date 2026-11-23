@@ -602,6 +602,10 @@ const COMMAND_KEYS: Record<ChatCommand['type'], ReadonlySet<string>> = {
     'tabId',
     'patch',
     'expectedPendingPlanExitRequestId',
+    // The plugin-selections compare-and-set (CAN-7221). Any caller may send
+    // it: it can only refuse, since the service answers conflict on a
+    // mismatch (CAN-7431).
+    'expectedPluginSelections',
   ]),
   'chat.set_model': new Set([
     'executionHarness',
@@ -1237,14 +1241,7 @@ function validateCommand(
             'preserveModelSelectionMode',
             'autoRoutedMessageId',
           ])
-        : commandType === 'chat.patch_tab_settings' && allowMainOnlyFields
-          ? // core.chat.update's compare-and-set for plugin selections
-            // (CAN-7221); the service answers conflict on a mismatch.
-            new Set([
-              ...Array.from(COMMAND_KEYS[commandType]),
-              'expectedPluginSelections',
-            ])
-          : COMMAND_KEYS[commandType],
+        : COMMAND_KEYS[commandType],
     'command',
   );
 

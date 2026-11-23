@@ -63,6 +63,12 @@ export interface PersistedScriptRunFile {
   /** The process that started the run (CAN-5087). Earlier versions ignore it. */
   writer?: ScriptRunWriter;
   /**
+   * The host that started the run (CAN-7517), a `ScriptRunSpawner` as this
+   * version writes it. A record without it is an earlier version's; any
+   * other value is kept as written and read as another host's.
+   */
+  spawner?: string;
+  /**
    * `lost`: a restart interrupted the run, so its outcome is unknown. Its
    * status reads `failed`, which earlier versions show without this field.
    */
@@ -106,6 +112,17 @@ export interface ScriptRunWriter {
   readonly startIdentity: string;
 }
 
+/** The host that started a run: the daemon or Electron main (CAN-7517). */
+export type ScriptRunSpawner = 'daemon' | 'electron';
+
+/**
+ * `signal: false` proves a recorded child as a reap does but ends nothing,
+ * as for a run another host started (CAN-7517).
+ */
+export interface ScriptRunChildReapOptions {
+  readonly signal: boolean;
+}
+
 /** `unverifiable`: the inspector could not tell; the run is left as it is. */
 export type ScriptRunWriterState = 'running' | 'gone' | 'unverifiable';
 
@@ -115,6 +132,8 @@ export type ScriptRunWriterState = 'running' | 'gone' | 'unverifiable';
  * `script_runs`.
  */
 export interface ScriptRunWriterFence {
+  /** The host this fence runs in, recorded on each run it starts (CAN-7517). */
+  readonly spawner?: ScriptRunSpawner;
   /** This process; `null` when its identity cannot be read. Called once per store. */
   self(): Promise<ScriptRunWriter | null>;
   inspect(writer: ScriptRunWriter): Promise<ScriptRunWriterState>;
@@ -124,7 +143,10 @@ export interface ScriptRunWriterFence {
    * Ends a recorded child's process group only when everything recorded
    * matches what the OS reports now for that PID and group (CAN-6482).
    */
-  reapChild?(child: ScriptRunChild): Promise<ScriptRunChildReap>;
+  reapChild?(
+    child: ScriptRunChild,
+    options?: ScriptRunChildReapOptions,
+  ): Promise<ScriptRunChildReap>;
   /**
    * Stops an orphaned run's recorded process on a user's request (CAN-6482
    * part 2), as `stopScriptRunChild` does over the host's process services.
@@ -133,6 +155,12 @@ export interface ScriptRunWriterFence {
     child: ScriptRunChild,
     mode: ScriptRunChildStopMode,
   ): Promise<ScriptRunChildStop>;
+  /**
+   * This host signals only an identified record (CAN-7520): a Stop of a
+   * PID-only record answers `unverifiable` before any confirmation, and
+   * nothing is signalled. Absent, a confirmed Stop may signal that PID.
+   */
+  readonly refusesUnidentifiedStop?: true;
   /**
    * An orphaned run's live group members once its leader has exited, as
    * `listScriptRunGroup` reads them (CAN-6601). Absent without process groups.
@@ -225,6 +253,14 @@ function parseScriptRunWriter(value: unknown): ScriptRunWriter | null {
   )
     return null;
   return { pid: value.pid, startIdentity: value.startIdentity };
+}
+
+function parseScriptRunSpawner(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  // A value that cannot be kept as written still names another host.
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
+    ? value
+    : 'unreadable';
 }
 
 function boundedText(value: unknown, max: number): string | undefined {
@@ -401,6 +437,7 @@ function parsePersistedScriptRunFile(
   )
     return null;
   const writer = parseScriptRunWriter(value.writer);
+  const spawner = parseScriptRunSpawner(value.spawner);
   const child = parseScriptRunChild(value.child);
   return {
     version: 1,
@@ -420,6 +457,7 @@ function parsePersistedScriptRunFile(
       ? { instanceId: value.instanceId }
       : {}),
     ...(writer ? { writer } : {}),
+    ...(spawner ? { spawner } : {}),
     ...(value.outcome === 'lost' ? { outcome: value.outcome } : {}),
     ...(child ? { child } : {}),
     ...(value.orphaned === true && child ? { orphaned: true as const } : {}),
@@ -648,9 +686,13 @@ export class ScriptRunLogStore {
     };
     if (meta.child !== undefined) {
       const { writerFence } = this.options;
+      // Only the host that started a run ends its process; an earlier
+      // version's record, with no spawner, is reaped as before (CAN-7517).
+      const signal =
+        meta.spawner === undefined || meta.spawner === writerFence?.spawner;
       const reaped = writerFence?.reapChild
         ? await writerFence
-            .reapChild(meta.child)
+            .reapChild(meta.child, { signal })
             .catch((): ScriptRunChildReap => 'unproven')
         : 'unproven';
       if (reaped === 'unproven') {
@@ -714,6 +756,9 @@ export class ScriptRunLogStore {
       durationMs: 0,
       instanceId: this.instanceId,
       ...(writer ? { writer } : {}),
+      ...(this.options.writerFence?.spawner
+        ? { spawner: this.options.writerFence.spawner }
+        : {}),
     };
 
     await startRunLogFiles({
@@ -951,9 +996,10 @@ export class ScriptRunLogStore {
    * part 2), admitted from the record as written, never reconciling it
    * first; once its process is stopped or gone, it records the run as lost
    * itself. `absent` when the key's latest run is not `runId`, `not_orphaned`
-   * when it is not orphaned now, `unconfirmed` when the record cannot be
-   * verified (PID only) or the stop is forced without the user's confirmation,
-   * `unsupported` when this host cannot stop it.
+   * when it is not orphaned now, `unverifiable` for a PID-only record on a
+   * host that signals only identified ones, `unconfirmed` when the record
+   * cannot be verified (PID only) or the stop is forced without the user's
+   * confirmation, `unsupported` when this host cannot stop it.
    */
   async stopOrphan(args: {
     projectId: string;
@@ -979,9 +1025,10 @@ export class ScriptRunLogStore {
     if (typeof found === 'string') return found;
     const { child } = found;
     const identified = isScriptRunChildIdentified(child);
+    const fence = this.options.writerFence;
+    if (!identified && fence?.refusesUnidentifiedStop) return 'unverifiable';
     if ((args.mode === 'force' || !identified) && !args.confirmed)
       return 'unconfirmed';
-    const fence = this.options.writerFence;
     if (!fence?.stopChild) return 'unsupported';
     const outcome = await fence.stopChild(
       child,

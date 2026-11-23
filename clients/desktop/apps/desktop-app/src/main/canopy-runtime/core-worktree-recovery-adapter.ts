@@ -1,6 +1,7 @@
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { DesktopDomainAdapter } from './desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from './desktop-runtime-identity';
+import { isArchiveRecoveryReviewer } from './archive-recovery-reviewer';
 import { validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 
@@ -16,11 +17,7 @@ export function createCoreWorktreeRecoveryAdapter(): DesktopDomainAdapter {
   return {
     instructions: {
       'core.worktree.recovery.resolve': async (params, context) => {
-        if (
-          context.caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID ||
-          context.caller.principalId !== 'local-desktop-user' ||
-          !['desktop', 'portal'].includes(context.caller.interfaceKind)
-        )
+        if (!isArchiveRecoveryReviewer(context.caller, { portal: true }))
           throw new CanopyOperationError({
             kind: 'permission_denied',
             message: 'Archive resolution requires a user review.',
@@ -35,11 +32,7 @@ export function createCoreWorktreeRecoveryAdapter(): DesktopDomainAdapter {
         return result;
       },
       'core.worktree.recovery.finish': async (params, context) => {
-        if (
-          context.caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID ||
-          context.caller.principalId !== 'local-desktop-user' ||
-          !['desktop', 'portal'].includes(context.caller.interfaceKind)
-        )
+        if (!isArchiveRecoveryReviewer(context.caller, { portal: true }))
           throw new CanopyOperationError({
             kind: 'permission_denied',
             message: 'Archive Finish requires a user review.',

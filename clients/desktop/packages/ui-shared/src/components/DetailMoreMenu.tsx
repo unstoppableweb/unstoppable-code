@@ -39,6 +39,25 @@ export interface DetailMoreMenuItem {
   readonly destructive?: boolean;
 }
 
+/**
+ * One menu from a page's own rows and the rows its body contributes. The
+ * page's rows keep the order it chose; the body's join just above the page's
+ * first destructive row, so its Delete, Unshare or Remove stays last.
+ */
+export function orderDetailMoreItems(
+  own: readonly DetailMoreMenuItem[],
+  contributed: readonly DetailMoreMenuItem[],
+): readonly DetailMoreMenuItem[] {
+  if (contributed.length === 0) return own;
+  const firstDestructive = own.findIndex((row) => row.destructive === true);
+  if (firstDestructive === -1) return [...own, ...contributed];
+  return [
+    ...own.slice(0, firstDestructive),
+    ...contributed,
+    ...own.slice(firstDestructive),
+  ];
+}
+
 export interface DetailMoreMenuProps {
   /** The item's name, for the trigger's and menu's accessible names. */
   readonly name: string;

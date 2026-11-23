@@ -1,3 +1,4 @@
+import { findSharedTextCredentialRule } from '@canopy/protocol/shared-containers';
 import { POSTHOG_REPLAY_MASK_CLASS } from '../posthog-replay-privacy';
 
 const MAX_MASKED_ATTRIBUTE_LENGTH = 256;
@@ -70,6 +71,16 @@ function redactReplaySecrets(value: string): string {
 }
 
 /**
+ * The shared credential check names a rule, not where it matched, so text
+ * it still trips once the shape-keeping redaction has run is masked whole.
+ */
+function maskCredentialText(value: string): string {
+  return findSharedTextCredentialRule(value) === null
+    ? value
+    : value.replace(/\S/g, '*');
+}
+
+/**
  * Replay records text, with credentials redacted. `maskTextSelector: '*'`
  * routes every text node through this callback with its parent element; text
  * inside a {@link POSTHOG_REPLAY_MASK_CLASS} title is replaced with `*`,
@@ -81,7 +92,7 @@ export function recordReplayText(
   element?: HTMLElement | null,
 ): string {
   if (element?.closest(MASKED_TITLE_SELECTOR)) return text.replace(/\S/g, '*');
-  return redactReplaySecrets(text);
+  return maskCredentialText(redactReplaySecrets(text));
 }
 
 /** Empty every CSS `url(...)` that points at a local file. */
@@ -145,5 +156,5 @@ export function maskReplayAttribute(
   )
     return INPUT_VALUE_MASK;
   if (normalizedName === '_csstext') return sanitizeCssText(value);
-  return redactReplaySecrets(stripLocalFileUrls(value));
+  return maskCredentialText(redactReplaySecrets(stripLocalFileUrls(value)));
 }

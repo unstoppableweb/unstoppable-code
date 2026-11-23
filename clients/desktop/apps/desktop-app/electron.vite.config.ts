@@ -35,6 +35,7 @@ import {
   compileRendererReactWorkHook,
   rendererReactWorkHookPlugin,
 } from './src/main/build/renderer-react-work-hook';
+import { rendererStylesheetCredentialPlugin } from './src/main/build/renderer-stylesheet-credentials';
 
 function pdfWorkerAssetsPlugin(): Plugin {
   return {
@@ -1252,6 +1253,9 @@ export default defineConfig(({ mode }) => {
               ),
             ),
         }),
+        // Every build fails if a stylesheet trips the shared credential check,
+        // which session replay would otherwise mask from every recording.
+        rendererStylesheetCredentialPlugin(),
       ],
       root: resolve(repoRoot, 'apps/desktop-app/src/renderer'),
       define: {

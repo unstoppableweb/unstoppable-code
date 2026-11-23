@@ -61,6 +61,11 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
       default: m.McpPage,
     })),
   ),
+  'account.delegation': lazy(() =>
+    import('../delegation/DelegationPage').then((m) => ({
+      default: m.DelegationPage,
+    })),
+  ),
   'account.labs': lazy(() =>
     import('../labs/LabsPage').then((m) => ({
       default: m.LabsPage,
@@ -79,6 +84,11 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
   'account.security': lazy(() =>
     import('../account/SecurityPage').then((m) => ({
       default: m.SecurityPage,
+    })),
+  ),
+  'account.model-providers': lazy(() =>
+    import('../model-providers/AccountModelProvidersPage').then((m) => ({
+      default: m.AccountModelProvidersPage,
     })),
   ),
   'account.ai-gateway': lazy(() =>

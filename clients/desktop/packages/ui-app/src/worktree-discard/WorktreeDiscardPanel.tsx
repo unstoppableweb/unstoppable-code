@@ -81,6 +81,7 @@ export function WorktreeDiscardPanel({
             ? 'finish-cleanup'
             : view.unconfirmedAction
         }
+        hostOutdated={view.hostOutdated}
         outcome={view.outcome}
         canResolve={client.capabilities.worktreeRecoveryResolution === true}
         onAction={(action) => {
@@ -110,6 +111,13 @@ export function WorktreeDiscardPanel({
       description={view.description}
       busy={view.busy}
       errorMessage={errorText(view.error, view.description)}
+      // Only a failed attempt the host did not record is recorded: a changed
+      // or refused discard is a state the person is asked to review, not a
+      // failure.
+      {...(view.error === null ||
+      (view.error.kind === 'failed' && view.error.recorded !== true)
+        ? { errorSource: 'worktree-discard' }
+        : { errorRecordingDisabled: true as const })}
       onConfirm={() => {
         void discard().then((result) => {
           if (result && active.current === client)

@@ -267,6 +267,11 @@ export interface McpServerIndexEntry {
   urlHost?: string;
   /** Scheme of that URL without the colon (`https`); cloud needs `https`. */
   urlScheme?: string;
+  /**
+   * When this device copy was first saved, in UTC (CAN-5239). Edits keep it;
+   * absent on older entries and whenever the stored value is not a valid date.
+   */
+  createdAt?: string;
   updatedAt: string;
 }
 

@@ -1384,7 +1384,7 @@ export async function createDesktopChatWorktree(
   try {
     const created = await createAgentChatWorktree({
       ...request,
-      getWindow: runtime.getWindow,
+      interfacePort: runtime.interfacePort,
     });
     if (created.status === 'created')
       return { ok: true, worktreeId: created.worktreeId };

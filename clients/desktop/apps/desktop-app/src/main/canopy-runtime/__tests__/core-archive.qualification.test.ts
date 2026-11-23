@@ -2329,7 +2329,7 @@ persistenceIt(
   },
 );
 
-test('core.worktree.recovery.resolve grants no agent or remote resolution authority', async () => {
+test('core.worktree.recovery.resolve grants no agent, foreign or ungranted resolution authority', async () => {
   const runtime = runtimeWith(fakeHost().host);
   const { randomUUID } = await import('node:crypto');
   const request = {
@@ -2363,35 +2363,145 @@ test('core.worktree.recovery.resolve grants no agent or remote resolution author
   ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
 });
 
+const RECOVERY_REVIEW_TARGET = {
+  workspaceId: 'ws',
+  operationId: '00000000-0000-4000-8000-000000006479',
+  revision: 'a'.repeat(64),
+};
+const REMOTE_BRIDGE_REVIEWER: CanopyCallerDescriptor = {
+  principalId: 'remote-device:paired-controller',
+  clientInstanceId: 'remote-bridge:1',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.worktree.write'],
+};
+const LOCAL_DESKTOP_REVIEWER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+  interfaceKind: 'desktop',
+  grants: ['core.worktree.write'],
+};
+type RecoveryReviewOperation =
+  | 'core.worktree.recovery.resolve'
+  | 'core.worktree.recovery.finish';
+type SettledReview =
+  | { readonly settled: 'resolved'; readonly value: unknown }
+  | { readonly settled: 'rejected'; readonly payload: unknown };
+
+async function settleRecoveryReview(
+  runtime: DesktopCanopyDispatcher,
+  operation: RecoveryReviewOperation,
+  reviewer: CanopyCallerDescriptor,
+): Promise<SettledReview> {
+  const result =
+    operation === 'core.worktree.recovery.resolve'
+      ? runtime.instruction(
+          operation,
+          { ...RECOVERY_REVIEW_TARGET, action: 'release' },
+          { caller: reviewer },
+        )
+      : runtime.instruction(operation, RECOVERY_REVIEW_TARGET, {
+          caller: reviewer,
+        });
+  return result.then(
+    (value): SettledReview => ({ settled: 'resolved', value }),
+    (error: unknown): SettledReview => ({
+      settled: 'rejected',
+      payload:
+        typeof error === 'object' && error !== null && 'payload' in error
+          ? error.payload
+          : String(error),
+    }),
+  );
+}
+
 test.each([
   'core.worktree.recovery.resolve',
   'core.worktree.recovery.finish',
 ] as const)(
-  '%s refuses a granted remote bridge acting as the desktop interface',
+  '%s admits a granted remote bridge reviewer like the local desktop user (CAN-7444)',
   async (operation) => {
     const runtime = runtimeWith(fakeHost().host);
-    const remote: CanopyCallerDescriptor = {
-      principalId: 'remote-device:paired-controller',
-      clientInstanceId: 'remote-bridge:1',
-      authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
-      interfaceKind: 'desktop',
-      grants: ['core.worktree.write'],
-    };
-    const target = {
-      workspaceId: 'ws',
-      operationId: '00000000-0000-4000-8000-000000006479',
-      revision: 'a'.repeat(64),
-    };
-    const result =
-      operation === 'core.worktree.recovery.resolve'
-        ? runtime.instruction(
-            operation,
-            { ...target, action: 'release' },
-            { caller: remote },
-          )
-        : runtime.instruction(operation, target, { caller: remote });
-    await expect(result).rejects.toMatchObject({
-      payload: { kind: 'permission_denied' },
-    });
+    const remote = await settleRecoveryReview(
+      runtime,
+      operation,
+      REMOTE_BRIDGE_REVIEWER,
+    );
+    // Not the reviewer refusal ("Archive … requires a user review.").
+    expect(JSON.stringify(remote)).not.toMatch(/requires a user review/);
+    // Past the reviewer check, the bridge meets exactly what the local user meets.
+    expect(remote).toEqual(
+      await settleRecoveryReview(runtime, operation, LOCAL_DESKTOP_REVIEWER),
+    );
   },
 );
+
+const NON_REVIEWER_BRIDGE_LOOKALIKES: ReadonlyArray<
+  readonly [string, CanopyCallerDescriptor]
+> = [
+  [
+    'the remote core session',
+    { ...REMOTE_BRIDGE_REVIEWER, clientInstanceId: 'remote-session:x' },
+  ],
+  [
+    'the hosted chat caller',
+    { ...REMOTE_BRIDGE_REVIEWER, clientInstanceId: 'hosted-session:x' },
+  ],
+  [
+    'a bridge client id under another principal',
+    { ...REMOTE_BRIDGE_REVIEWER, principalId: 'agent:paired-controller' },
+  ],
+  [
+    'a bare remote-device principal',
+    { ...REMOTE_BRIDGE_REVIEWER, principalId: 'remote-device:' },
+  ],
+  [
+    'a bare remote-bridge client id',
+    { ...REMOTE_BRIDGE_REVIEWER, clientInstanceId: 'remote-bridge:' },
+  ],
+  [
+    'a bridge caller on the portal interface',
+    { ...REMOTE_BRIDGE_REVIEWER, interfaceKind: 'portal' },
+  ],
+  [
+    'a bridge caller on a foreign authority',
+    { ...REMOTE_BRIDGE_REVIEWER, authorityId: 'foreign' },
+  ],
+  [
+    'a bridge caller without the worktree write grant',
+    { ...REMOTE_BRIDGE_REVIEWER, grants: ['core.worktree.read'] },
+  ],
+];
+
+describe.each([
+  'core.worktree.recovery.resolve',
+  'core.worktree.recovery.finish',
+] as const)('%s refuses remote-device callers off the bridge', (operation) => {
+  test.each(NON_REVIEWER_BRIDGE_LOOKALIKES)(
+    'refuses %s',
+    async (_label, reviewer) => {
+      const runtime = runtimeWith(fakeHost().host);
+      expect(
+        await settleRecoveryReview(runtime, operation, reviewer),
+      ).toMatchObject({
+        settled: 'rejected',
+        payload: { kind: 'permission_denied' },
+      });
+    },
+  );
+
+  test('admits the local user on desktop and on portal', async () => {
+    const runtime = runtimeWith(fakeHost().host);
+    for (const interfaceKind of ['desktop', 'portal'] as const)
+      expect(
+        await settleRecoveryReview(runtime, operation, {
+          ...LOCAL_DESKTOP_REVIEWER,
+          interfaceKind,
+        }),
+      ).not.toMatchObject({
+        settled: 'rejected',
+        payload: { kind: 'permission_denied' },
+      });
+  });
+});

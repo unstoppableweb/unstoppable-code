@@ -4522,6 +4522,20 @@ export function getPanelLayoutViewModel(
 }
 
 /**
+ * The selected panel of the focused group: the one a panel chord such as
+ * close tab or tab cycling acts on. Null when the layout or its focused group
+ * has none.
+ */
+export function getActivePanelId(worktreeKey: string): string | null {
+  const viewModel = getPanelLayoutViewModel(worktreeKey);
+  if (viewModel === null || viewModel.activeGroupId === null) return null;
+  return (
+    viewModel.groups.find((group) => group.groupId === viewModel.activeGroupId)
+      ?.activePanelId ?? null
+  );
+}
+
+/**
  * Reactive view-model selector. The view-model is an eagerly derived stable
  * snapshot, so a plain selector suffices — a commit for another worktree
  * returns the same object reference and skips the re-render.

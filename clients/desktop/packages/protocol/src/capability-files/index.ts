@@ -93,6 +93,7 @@ export type SecretMaterialRule =
   | 'jwt'
   | 'github_token'
   | 'slack_token'
+  | 'npm_token'
   | 'aws_access_key'
   | 'api_key_prefix'
   | 'auth_header'
@@ -115,6 +116,7 @@ const SECRET_RULES: readonly {
   { rule: 'github_token', pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}/ },
   { rule: 'github_token', pattern: /\bgh[opusr]_[A-Za-z0-9]{20,}/ },
   { rule: 'slack_token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
+  { rule: 'npm_token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/ },
   { rule: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { rule: 'api_key_prefix', pattern: /\bsk-[A-Za-z0-9_-]{16,}/ },
   {

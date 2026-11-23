@@ -139,13 +139,12 @@ export function startProviderProcessHost(
     // An exited child's stdin is closed; its close reports the end.
     child.stdin?.on('error', () => undefined);
     child.stdout.on('data', (chunk: Buffer) => {
-      // A stopping child keeps being read so its pipe can end, but nothing
-      // past the credit window is relayed, and relayed stdout stays a prefix.
+      // Unacknowledged stdout never exceeds the credit window: a chunk that
+      // crosses it is cut there. A running child's rest waits, unread, for
+      // the launcher's ack. A stopping child keeps being read so its pipe can
+      // end, so its rest is dropped, and relayed stdout stays a prefix.
       if (hosted.stdoutTruncated) return;
-      const forwarded = hosted.draining
-        ? chunk.subarray(0, Math.max(hosted.credit, 0))
-        : chunk;
-      if (forwarded.length < chunk.length) hosted.stdoutTruncated = true;
+      const forwarded = chunk.subarray(0, Math.max(hosted.credit, 0));
       if (forwarded.length > 0)
         post({
           type: 'stdout',
@@ -153,6 +152,16 @@ export function startProviderProcessHost(
           dataBase64: forwarded.toString('base64'),
         });
       hosted.credit -= forwarded.length;
+      if (forwarded.length < chunk.length) {
+        if (hosted.draining) {
+          hosted.stdoutTruncated = true;
+          return;
+        }
+        // Paused first, so the rest is buffered rather than emitted again.
+        child.stdout.pause();
+        child.stdout.unshift(chunk.subarray(forwarded.length));
+        return;
+      }
       if (hosted.credit <= 0 && !hosted.draining) child.stdout.pause();
     });
     child.stderr.on('data', (chunk: Buffer) => {

@@ -64,6 +64,10 @@ import {
   projectControllerPush,
   projectControllerResult,
 } from './controller-remote-urls';
+import {
+  ControllerUrlWritebacks,
+  type StoredStartPages,
+} from './controller-url-writebacks';
 import type { MainWindowPushSource } from './main-window-pushes';
 import { createPushForwarder, type PushForwarder } from './push-forwarder';
 import { RemotePushSummaryAccumulator } from './push-summary';
@@ -135,6 +139,12 @@ export interface HostSessionOptions {
    * Without it the host answers that it does not serve the method.
    */
   secretRequests?: RemoteSecretRequestPort;
+  /**
+   * Reads the start pages a project stores, so a start page URL a controller
+   * sends back unchanged keeps its stored credential (CAN-7082). Without it a
+   * controller's start page URL is refused.
+   */
+  storedStartPages?: StoredStartPages;
 }
 
 /** The local form's settlement, which this session reaches for a person. */
@@ -237,8 +247,10 @@ export class RemoteHostSession {
   /** Each open core stream's close, by key, including ones still opening. */
   private readonly coreSubscriptions = new Map<string, () => void>();
   private readonly closedListeners = new Set<() => void>();
+  private readonly urlWritebacks: ControllerUrlWritebacks;
 
   constructor(private readonly options: HostSessionOptions) {
+    this.urlWritebacks = new ControllerUrlWritebacks(options.storedStartPages);
     this.rpc = new RpcPeer(options.session, {
       onRequest: (method: string, params: unknown): Promise<unknown> =>
         this.handleRequest(method, params),
@@ -523,7 +535,12 @@ export class RemoteHostSession {
         const bridge = await this.bridgeFor(surface ?? 'main');
         const urlResult = projectControllerResult(
           channel,
-          await bridge.invoke(channel, args),
+          await this.invokeWithStoredUrls(
+            bridge,
+            surface ?? 'main',
+            channel,
+            args,
+          ),
         );
         const result =
           this.options.kind === 'browser'
@@ -539,6 +556,7 @@ export class RemoteHostSession {
         if (!revoke) throw new UnknownRemoteMethodError(method);
         PairRevokeParamsSchema.parse(params);
         await revoke();
+        this.urlWritebacks.clear();
         const result: PairRevokeResult = { revoked: true };
         return result;
       }
@@ -779,8 +797,10 @@ export class RemoteHostSession {
     this.greeted = true;
     if (decision.outcome === 'incompatible') return hello;
     if (!this.compatible) {
+      // Desktop and browser (CAN-7437) controllers may agree the exact
+      // catalogue; hosted agents and mobile keep the legacy short names.
       this.exactWorktreeBaseBranch =
-        this.options.kind === 'desktop' &&
+        (this.options.kind === 'desktop' || this.options.kind === 'browser') &&
         parsed.data.exactWorktreeBaseBranch === true;
     }
     this.compatible = true;
@@ -794,6 +814,23 @@ export class RemoteHostSession {
   }
 
   /** A hosted session's chat dispatch, which this computer serves itself. */
+  /**
+   * Main's answer to a controller's call, the call's start page URLs merged
+   * with the stored ones first (CAN-7082).
+   */
+  private async invokeWithStoredUrls(
+    bridge: HostBridge,
+    surface: RemoteSurface,
+    channel: string,
+    args: readonly unknown[],
+  ): Promise<unknown> {
+    const sent = await this.urlWritebacks.merge(surface, channel, args);
+    const load = this.urlWritebacks.begin(surface, channel);
+    const delivered = await bridge.invoke(channel, [...sent]);
+    this.urlWritebacks.record(surface, channel, sent, delivered, load);
+    return delivered;
+  }
+
   private servesHostedChat(channel: string): boolean {
     return (
       this.options.kind === 'hosted' && channel === IPC_CHANNELS.chatCommand
@@ -874,6 +911,7 @@ export class RemoteHostSession {
   private handleClosed(reason: SessionCloseReason): void {
     if (this.closed) return;
     this.closed = true;
+    this.urlWritebacks.clear();
     this.pushSummary.close();
     for (const close of Array.from(this.coreSubscriptions.values())) close();
     this.coreSubscriptions.clear();

@@ -10,6 +10,8 @@ import type {
   ChatSearchCatalogEntry,
   LocalMemoryScopeRequest,
 } from '@canopy/desktop-shared/types';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { DESKTOP_LEDGER_NAVIGATOR } from '@/lib/ledger/ledger-navigator';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -74,6 +76,20 @@ async function catalogChats(
   return chats;
 }
 
+/**
+ * A rejection main recorded, rethrown with its record so the confirmation
+ * links to it instead of recording the same failure again.
+ */
+async function withRecordedFailure<T>(call: Promise<T>): Promise<T> {
+  try {
+    return await call;
+  } catch (error) {
+    throw Object.assign(new Error('Memory sync request failed.'), {
+      appError: toAppError(resolveClientAppError(error)),
+    });
+  }
+}
+
 /** Memory sync's port over the desktop memory sync IPC. */
 export const desktopMemorySyncClient: LocalMemorySyncClient = {
   state: () => window.api.getMemorySyncState(),
@@ -93,9 +109,12 @@ export const desktopMemorySyncClient: LocalMemorySyncClient = {
   settleConflict: (path, action) =>
     window.api.resolveMemorySyncConflict({ path, action }),
   history: (before) => window.api.listMemorySyncHistory({ before }),
-  restore: (revision) => window.api.restoreMemorySyncRevision({ revision }),
+  restore: (revision) =>
+    withRecordedFailure(window.api.restoreMemorySyncRevision({ revision })),
   deleteFromCloud: () =>
-    window.api.deleteMemorySyncFromCloud({ confirmed: true }),
+    withRecordedFailure(
+      window.api.deleteMemorySyncFromCloud({ confirmed: true }),
+    ),
 };
 
 /**

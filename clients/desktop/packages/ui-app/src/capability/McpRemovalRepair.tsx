@@ -1,6 +1,14 @@
 'use client';
 
-import { useEffect, useId, useRef, useState, type JSX } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type JSX,
+} from 'react';
 import type { CanopyClient } from '@canopy/app-core';
 import {
   McpRemovalCandidatesResultSchema,
@@ -19,20 +27,42 @@ import {
   Inline,
   LoadingButton,
   Notice,
+  NoticeButton,
   Stack,
   TextInput,
+  Tooltip,
 } from '@canopy/ui-shared/components';
-import { CheckIcon } from '@canopy/ui-shared/icons/AppIcons';
+import { CheckIcon, CloseIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  dismissMcpDeleteCleanup,
+  registerMcpDeleteCleanupSurface,
+  reportMcpDeleteCleanupComplete,
+  usePendingMcpDeleteCleanups,
+  type InstalledItemSnapshotState,
+  type McpDeleteCleanupIncomplete,
+} from '@canopy/ui-shared/lib';
 import { useCustomizeDiscoveryEnabled } from './CustomizeDiscoveryProvider';
 
 const repairRequested = 'canopy:mcp-removal-repair-requested';
 
-/** A failed ordinary deletion offers review, never implicit force or an account removal. */
-export function requestMcpRemovalRepair(serverId: string): void {
-  if (InspectMcpRemovalRequestSchema.safeParse({ serverId }).success)
-    window.dispatchEvent(
-      new CustomEvent(repairRequested, { detail: serverId }),
-    );
+function dispatchRepairRequest(
+  serverId: string,
+  fromCleanupNotice: boolean,
+): boolean {
+  if (!InspectMcpRemovalRequestSchema.safeParse({ serverId }).success)
+    return false;
+  // The panel cancels the event to acknowledge it synchronously.
+  return !window.dispatchEvent(
+    new CustomEvent(repairRequested, {
+      detail: { serverId, fromCleanupNotice },
+      cancelable: true,
+    }),
+  );
+}
+
+/** Review only. Returns whether an available Repair panel accepted the request. */
+export function requestMcpRemovalRepair(serverId: string): boolean {
+  return dispatchRepairRequest(serverId, false);
 }
 
 const stateLabels = {
@@ -44,11 +74,128 @@ const stateLabels = {
   unexpected: 'Unexpected file',
 };
 
+function mcpRemovalRepairAvailable(client: CanopyClient | null): boolean {
+  return (
+    client?.capabilities.mcpRemoval === true && client.mcpRemoval !== undefined
+  );
+}
+
+/**
+ * The latest device MCP server deleted with cleanup left incomplete
+ * (CAN-7362). Mount it with McpRemovalRepair, where it outlives the detail
+ * page the deletion may close. Notices are kept per server for the window,
+ * not this page, so leaving and reopening the page keeps the way back to
+ * Repair, and clearing one shows the previous server's again. Only a Delete
+ * started with a Repair-capable surface can report here. A notice clears
+ * when dismissed, when Repair finishes that server's uninstall, or when the
+ * host no longer holds a saved uninstall for it, as after an agent's retry.
+ * That is checked for every kept notice when one appears and again on each
+ * `installedItems` refresh, whether the inventory read succeeded or failed.
+ */
+export function useMcpDeleteCleanupNotice(
+  client: CanopyClient | null,
+  installedItems?: InstalledItemSnapshotState,
+): {
+  readonly notice: McpDeleteCleanupIncomplete | null;
+  readonly dismiss: () => void;
+} {
+  const canRepair = mcpRemovalRepairAvailable(client);
+  useEffect(
+    () => (canRepair ? registerMcpDeleteCleanupSurface() : undefined),
+    [canRepair],
+  );
+  const notices = usePendingMcpDeleteCleanups();
+  const notice = notices[notices.length - 1] ?? null;
+  const port = canRepair ? client?.mcpRemoval : undefined;
+  // Saved uninstalls do not depend on the inventory, so a failed inventory
+  // read is a refresh too; each one is a new state object.
+  const refreshed =
+    installedItems?.kind === 'ready' || installedItems?.kind === 'error'
+      ? installedItems
+      : null;
+  useEffect(() => {
+    if (notices.length === 0 || !port) return;
+    // A read answered after the notices changed may predate a receipt.
+    let active = true;
+    void port.candidates().then(
+      (listed) => {
+        const parsed = McpRemovalCandidatesResultSchema.safeParse(listed);
+        // Only a complete list proves a receipt is gone.
+        if (!active || !parsed.success || parsed.data.incomplete) return;
+        const pending = new Set(
+          parsed.data.candidates
+            .filter((candidate) => candidate.pendingUninstall)
+            .map((candidate) => candidate.serverId),
+        );
+        for (const kept of notices)
+          if (!pending.has(kept.serverId))
+            reportMcpDeleteCleanupComplete(kept.serverId);
+      },
+      // An unreadable list proves nothing; the notices and Repair stay.
+      () => undefined,
+    );
+    return (): void => {
+      active = false;
+    };
+  }, [notices, port, refreshed]);
+  const dismiss = useCallback((): void => {
+    if (notice) dismissMcpDeleteCleanup(notice.serverId);
+  }, [notice]);
+  return { notice, dismiss };
+}
+
+/** Says the server is gone and points to Repair; there is nothing to retry. */
+export function McpDeleteCleanupNotice({
+  client,
+  notice,
+  onDismiss,
+}: {
+  readonly client: CanopyClient | null;
+  readonly notice: McpDeleteCleanupIncomplete | null;
+  readonly onDismiss: () => void;
+}): JSX.Element | null {
+  if (!notice) return null;
+  const canRepair = mcpRemovalRepairAvailable(client);
+  return (
+    <Notice
+      intent="attention"
+      title={`${notice.serverName} was deleted from this device.`}
+      data-testid="mcp-delete-cleanup-notice"
+      onDismiss={onDismiss}
+      dismissLabel="Dismiss deletion notice"
+      dismissTestId="mcp-delete-cleanup-notice-dismiss"
+      actions={
+        canRepair ? (
+          <NoticeButton
+            variant="primary"
+            data-testid="mcp-delete-cleanup-notice-repair"
+            // Repair can be hidden before cleanup finishes, so the notice
+            // stays as the way back until it is dismissed or cleanup ends.
+            onClick={(): void => {
+              dispatchRepairRequest(notice.serverId, true);
+            }}
+          >
+            Open repair
+          </NoticeButton>
+        ) : undefined
+      }
+    >
+      Cleanup is incomplete.
+    </Notice>
+  );
+}
+
 /** Deliberately outside inventory/detail regions: damaged files must not hide repair. */
 export function McpRemovalRepair({
   client,
+  pageKey,
 }: {
   readonly client: CanopyClient | null;
+  /**
+   * The page the host shows, such as the selected entry. Leaving the page
+   * where a failed deletion opened this tool hides it again (CAN-7362).
+   */
+  readonly pageKey?: string | null;
 }): JSX.Element {
   const id = useId();
   const serverInput = useRef<HTMLInputElement | null>(null);
@@ -88,29 +235,79 @@ export function McpRemovalRepair({
   useEffect(() => {
     if (!canRemove) setConfirmation(null);
   }, [canRemove]);
-  useEffect(() => {
+  const openRepair = useCallback((requestedId: string): void => {
+    setServerId(requestedId);
+    setRevealed(true);
+    setInspection(null);
+    setOutcome(null);
+    setConfirmation(null);
+    setError(null);
+    setOpen(true);
+    setRepairRequest((previous) => previous + 1);
+  }, []);
+  // Use one path for idle and busy requests. Only the latest request on the
+  // current page and port can open Repair once there is no operation running.
+  const cleanupNotices = usePendingMcpDeleteCleanups();
+  const [pendingRequest, setPendingRequest] = useState<{
+    readonly serverId: string;
+    readonly port: NonNullable<typeof port>;
+    readonly pageKey: typeof pageKey;
+    readonly fromCleanupNotice: boolean;
+  } | null>(null);
+  useLayoutEffect(() => {
     const requested = (event: Event): void => {
+      if (!port || !(event instanceof CustomEvent)) return;
+      const detail: unknown = event.detail;
       if (
-        busy ||
-        !port ||
-        !(event instanceof CustomEvent) ||
-        typeof event.detail !== 'string'
+        !detail ||
+        typeof detail !== 'object' ||
+        !('serverId' in detail) ||
+        typeof detail.serverId !== 'string'
       )
         return;
-      setServerId(event.detail);
-      setRevealed(true);
-      setInspection(null);
-      setOutcome(null);
-      setConfirmation(null);
-      setOpen(true);
-      setRepairRequest((previous) => previous + 1);
+      event.preventDefault();
+      setPendingRequest({
+        serverId: detail.serverId,
+        port,
+        pageKey,
+        fromCleanupNotice:
+          'fromCleanupNotice' in detail && detail.fromCleanupNotice === true,
+      });
     };
     window.addEventListener(repairRequested, requested);
     return (): void => window.removeEventListener(repairRequested, requested);
-  }, [port, busy]);
+  }, [port, pageKey]);
+  const hide = useCallback((): void => {
+    setRevealed(false);
+    setOpen(false);
+    setConfirmation(null);
+  }, []);
+  const shownPage = useRef(pageKey);
+  useLayoutEffect(() => {
+    if (shownPage.current === pageKey) return;
+    shownPage.current = pageKey;
+    hide();
+  }, [pageKey, hide]);
+  useLayoutEffect(() => {
+    if (!pendingRequest) return;
+    const stillRelevant =
+      pendingRequest.port === port &&
+      pendingRequest.pageKey === pageKey &&
+      (!pendingRequest.fromCleanupNotice ||
+        cleanupNotices.some(
+          (notice) => notice.serverId === pendingRequest.serverId,
+        ));
+    if (busy && stillRelevant) return;
+    setPendingRequest((current) =>
+      current === pendingRequest ? null : current,
+    );
+    if (stillRelevant) openRepair(pendingRequest.serverId);
+  }, [busy, pendingRequest, port, pageKey, cleanupNotices, openRepair]);
   useEffect(() => {
     if (repairRequest > 0) serverInput.current?.focus();
   }, [repairRequest]);
+  // Each accepted request reloads, so a receipt saved since the last load
+  // still offers Finish saved uninstall for the requested server.
   useEffect(() => {
     if (!open || !port) return;
     let active = true;
@@ -126,7 +323,7 @@ export function McpRemovalRepair({
     return (): void => {
       active = false;
     };
-  }, [open, port, outcome]);
+  }, [open, port, outcome, repairRequest]);
   const inspect = async (): Promise<void> => {
     if (!port || busy) return;
     const request = InspectMcpRemovalRequestSchema.safeParse({
@@ -160,6 +357,8 @@ export function McpRemovalRepair({
     setError(null);
     try {
       const result = await port.force(confirmation);
+      if (result.status === 'complete' && result.uninstall === 'complete')
+        reportMcpDeleteCleanupComplete(result.serverId);
       if (activePort.current !== port) return;
       setOutcome(result);
       setConfirmation(null);
@@ -176,13 +375,13 @@ export function McpRemovalRepair({
     }
   };
   if (discoveryEnabled && !revealed) return <></>;
-  return (
+  const disclosure = (
     <Disclosure
       label="Repair device MCP removal"
       dataTestId="mcp-removal-repair"
       open={open}
       onOpenChange={setOpen}
-      className="max-w-prose"
+      className={discoveryEnabled ? 'min-w-0 flex-1' : 'max-w-prose'}
     >
       <div className="text-s text-pretty">
         <Stack gap="group">
@@ -445,5 +644,25 @@ export function McpRemovalRepair({
         </Stack>
       </div>
     </Disclosure>
+  );
+  // Off, the tool always shows; new Customize reveals it, so it can go again.
+  if (!discoveryEnabled) return disclosure;
+  return (
+    <div className="flex max-w-prose items-start gap-2">
+      {disclosure}
+      <Tooltip label="Dismiss repair">
+        <Button
+          variant="ghost"
+          size="sm"
+          iconOnly
+          disabled={busy}
+          onClick={hide}
+          aria-label="Dismiss repair"
+          data-testid="mcp-removal-repair-dismiss"
+        >
+          <CloseIcon size="md" aria-hidden="true" />
+        </Button>
+      </Tooltip>
+    </div>
   );
 }

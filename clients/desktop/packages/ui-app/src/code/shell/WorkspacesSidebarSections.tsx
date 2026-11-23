@@ -3002,14 +3002,16 @@ export function WorkspacesSidebarSections({
     const emphasis = getWorkspaceHeaderEmphasis?.(workspace.localId);
     // Only a workspace the host serves gets its menu rows; one it declines
     // (an organization catalog row) keeps the browser's own right-click.
+    // The item only opens the read-only list (CAN-7439); the panel registers
+    // its workspaces only while it can read them.
     const hostContextMenuItems =
       isWorkspaceContextMenuAvailable?.(workspace.localId) !== false &&
       (renderWorkspaceContextMenuItems ||
-        (workspaceCapabilities.worktreeRecoveryResolution === true &&
+        (workspaceCapabilities.worktreeRecoveryReads === true &&
           recoveryWorkspaceIds.has(workspace.localId)))
         ? (close: () => void): ReactNode => (
             <>
-              {workspaceCapabilities.worktreeRecoveryResolution === true &&
+              {workspaceCapabilities.worktreeRecoveryReads === true &&
               recoveryWorkspaceIds.has(workspace.localId) ? (
                 <DropdownMenuItem
                   data-testid="workspace-review-archive-recovery"

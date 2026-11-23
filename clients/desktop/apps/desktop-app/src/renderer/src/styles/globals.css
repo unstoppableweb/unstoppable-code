@@ -93,6 +93,17 @@
  * worktree top bar). Register the packages explicitly. */
 @source '../../../../../../packages';
 
+/* Tests and fixtures are not UI, but Tailwind would still compile their
+ * strings into this stylesheet: redaction placeholders such as
+ * `[secret:API_KEY]` became arbitrary-property rules that session replay's
+ * credential check flags (CAN-7593). */
+@source not '../../../../../../packages/**/{__tests__,__mocks__,fixtures,test-utils,tests}/**';
+@source not '../../../../../../packages/**/*.{test,spec}.*';
+@source not '../../**/{__tests__,__mocks__,fixtures,test-utils,tests}/**';
+@source not '../../**/*.{test,spec}.*';
+/* The redaction placeholder in production docs and tool text, not a credential. */
+@source not inline('[secret:NAME]');
+
 /* Desktop renderer-specific styles. All shared design tokens (themes, color
  * modes, animation keyframes, base element styles, scrollbar, ui-scale,
  * reduced-motion) live in @canopy/ui-shared/styles/canopy-tokens.css. */

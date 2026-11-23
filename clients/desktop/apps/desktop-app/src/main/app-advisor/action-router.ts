@@ -33,7 +33,6 @@ import {
   type dispatchActionSchema,
 } from './definitions';
 import { presentAppAdvisorAction } from './presentation-tools';
-import { resolveLegacyRemoteControlAlias } from './remote-control-aliases';
 import type { AppAdvisorToolRuntime } from './runtime';
 import {
   appAdvisorPipelineRunDispatch,
@@ -314,23 +313,6 @@ export async function routeAppAdvisorAction(
         ...(signal ? { signal } : {}),
       });
       return { text: jsonText(response), isError: response.ok !== true };
-    }
-    // CAN-7298: the legacy canopy_portal dialog names run their shared
-    // actions in order, stopping at the first refusal. The response names
-    // the step that answered. CAN-7345 removes the aliases.
-    const aliasSteps = resolveLegacyRemoteControlAlias(action);
-    if (aliasSteps) {
-      let last: CanopyInjectedToolTextResult | null = null;
-      for (const step of aliasSteps) {
-        last = await executeDesktopAgentActionTool(
-          'dispatch_action',
-          { action: step },
-          runtime,
-          call.context,
-        );
-        if (last.isError === true) return last;
-      }
-      if (last) return last;
     }
     if (presentation) {
       const presented = appAdvisorActionSchema.safeParse(action);

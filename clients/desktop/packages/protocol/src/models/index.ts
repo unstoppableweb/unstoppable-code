@@ -154,7 +154,8 @@ export interface ModelCatalogOption {
   harnessChoices?: readonly ModelCatalogHarnessChoice[];
   /** Capabilities after resolving a per-chat choice. */
   supportsImages?: boolean;
-  funding?: 'ai-credits' | 'org-gateway';
+  /** `provider-key`: a web cloud chat row on the person's own API key. */
+  funding?: 'ai-credits' | 'org-gateway' | 'provider-key';
   /**
    * For an `org-gateway` row, the well-known gateway preset that serves it
    * (`openrouter`, `vercel`, …), recognized from the gateway's base URL, so a

@@ -544,9 +544,13 @@ export class McpConfigRepository {
     });
   }
 
+  /** `prepare` also gets the stored server, read strictly; absent only when no file exists. */
   save(
     id: string,
-    prepare: (index: McpServersIndexFile) => {
+    prepare: (
+      index: McpServersIndexFile,
+      stored: McpServerData | undefined,
+    ) => {
       server: McpServerData;
       entry: McpServerIndexEntry;
     },
@@ -560,6 +564,7 @@ export class McpConfigRepository {
       );
       const { server, entry } = prepare(
         index?.index ?? { version: 1, servers: [] },
+        current?.file.server,
       );
       if (server.definition.id !== id || entry.id !== id)
         throw new Error('MCP server id changed during save.');

@@ -8,11 +8,18 @@ import { McpRemovalRepair } from '@canopy/ui-app/capability/McpRemovalRepair';
 import { McpServerManagementCard } from '@canopy/ui-app/capability/McpServerManagement';
 import { MarketplaceDetailPageShell } from '@canopy/ui-app/capability/MarketplaceDetailPageShell';
 import {
+  useDetailHeaderActionsClaim,
+  type DetailMoreMenuItem,
+} from '@canopy/ui-shared/components';
+import {
   CLOUD_REACH_BACK_APPROVAL_PROJECT_ID,
   type ApprovalRequestEvent,
   type CloudReachBackActivityView,
   type CloudReachBackServerView,
 } from '@canopy/desktop-shared/types';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { DeleteConfirmModal } from '../../shared/DeleteConfirmModal';
+import { DeleteAgentMessage } from '../../pages/DeleteAgentMessage';
 import { CloudReachBackApprovalHost } from '../CloudReachBackApprovalHost';
 import { CloudReachBackPanel } from '../CloudReachBackPanel';
 import { deleteDesktopMcpTarget } from '../mcpManagementOperations';
@@ -346,4 +353,114 @@ describe('the reach-back prompt queue (CAN-6176)', () => {
       'req-b',
     );
   });
+});
+
+describe('a Customize detail page menu (CAN-4686)', () => {
+  const row = (
+    id: string,
+    destructive: boolean,
+    onSelect: () => void = () => undefined,
+  ): DetailMoreMenuItem => ({
+    id,
+    label: id,
+    icon: null,
+    testId: `row-${id}`,
+    onSelect,
+    destructive,
+  });
+  /** New Customize's layout: it draws the shell's bar on its own title row. */
+  function TitleRow(): JSX.Element {
+    return <div>{useDetailHeaderActionsClaim()}</div>;
+  }
+
+  it('keeps the page’s own Delete in its one ⋯ menu, last', async () => {
+    const onDelete = jest.fn();
+    act(() => {
+      root.render(
+        <MarketplaceDetailPageShell
+          title="Release agent"
+          moreItems={[row('copy', false), row('delete', true, onDelete)]}
+        >
+          <TitleRow />
+        </MarketplaceDetailPageShell>,
+      );
+    });
+    const triggers = document.querySelectorAll(
+      '[data-testid="plugins-entry-detail-more"]',
+    );
+    expect(triggers).toHaveLength(1);
+    await act(async () => {
+      triggers[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    const rows = [...document.querySelectorAll('[data-testid^="row-"]')];
+    expect(rows.map((node) => node.getAttribute('data-testid'))).toEqual([
+      'row-copy',
+      'row-delete',
+    ]);
+    await act(async () => {
+      rows[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('masks the name-derived model ID in the Delete agent confirmation', () => {
+    act(() => {
+      root.render(
+        <DeleteConfirmModal
+          title="Delete agent"
+          message={<DeleteAgentMessage modelId="release-agent" />}
+          confirmLabel="Delete agent"
+          onCancel={() => undefined}
+          onConfirm={() => undefined}
+        />,
+      );
+    });
+    const masked = [
+      ...document.querySelectorAll(`.${POSTHOG_REPLAY_MASK_CLASS}`),
+    ];
+    expect(masked[0]?.parentElement?.textContent).toBe(
+      'Existing chats and workflows that use release-agent will fail until another model is selected.',
+    );
+    expect(masked.map((node) => node.textContent)).toEqual(['release-agent']);
+  });
+
+  it.each([
+    [true, 'More actions for this page', 'Actions for this page'],
+    [false, 'More actions for Secret agent', 'Actions for Secret agent'],
+  ])(
+    'names the menu from the title only when it is not private (private: %s)',
+    async (privateTitle, triggerLabel, menuLabel) => {
+      act(() => {
+        root.render(
+          <MarketplaceDetailPageShell
+            title="Secret agent"
+            privateTitle={privateTitle}
+            moreItems={[row('delete', true)]}
+          >
+            <TitleRow />
+          </MarketplaceDetailPageShell>,
+        );
+      });
+      const trigger = document.querySelector(
+        '[data-testid="plugins-entry-detail-more"]',
+      );
+      await act(async () => {
+        trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await Promise.resolve();
+      });
+      const menu = document.querySelector(
+        '[data-testid="plugins-entry-detail-menu"]',
+      );
+      expect(trigger?.getAttribute('aria-label')).toBe(triggerLabel);
+      expect(menu?.getAttribute('aria-label')).toBe(menuLabel);
+      if (privateTitle) {
+        for (const node of [trigger, menu]) {
+          const attrs = [...(node?.attributes ?? [])].map((a) => a.value);
+          expect(attrs.join(' ')).not.toContain('Secret agent');
+        }
+      }
+    },
+  );
 });

@@ -734,6 +734,34 @@ test('host_list reports the paired computer online; task_chat_send and task_chat
       status: 'running',
     });
 
+    // A host-wide task_list reads the desktop's chat activity and filters it
+    // before paging; host "all" reads every host in one call.
+    const working = await agentA.ok('task_list', {
+      host: target.host,
+      activity: ['active', 'blocked'],
+    });
+    const workingTask = working.items.find(
+      (item) => item.taskId === target.taskId,
+    );
+    expect(workingTask, JSON.stringify(working)).toBeTruthy();
+    expect(['active', 'blocked']).toContain(workingTask.activity.status);
+    expect(workingTask.activeChats.map((item) => item.chatId)).toContain(
+      chat.chatId,
+    );
+    const everyHost = await agentA.ok('task_list', {
+      host: 'all',
+      activity: ['active', 'blocked'],
+    });
+    expect(everyHost.hosts, JSON.stringify(everyHost)).toContainEqual({
+      host: target.host,
+      status: 'listed',
+    });
+    expect(
+      everyHost.items.some(
+        (item) => item.host === target.host && item.taskId === target.taskId,
+      ),
+    ).toBe(true);
+
     // Completion during the subscription: the wait is in flight when the
     // turn ends, and returns that completion rather than timing out.
     const waitStartedAt = Date.now();

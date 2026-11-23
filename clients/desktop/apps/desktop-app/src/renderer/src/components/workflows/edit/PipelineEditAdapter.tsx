@@ -517,6 +517,9 @@ export function PipelineEditAdapter({
   const { openWorkflowsRunModal, dispatchPipelineModal } =
     useDispatchPipelineModal();
   const [deleting, setDeleting] = useState(false);
+  // The shell's delete confirmation shows a failure only while the shell is
+  // rendered: the adapter can stay mounted and render the not-found page.
+  const shellShown = useRef(true);
   const [toggling, setToggling] = useState(false);
 
   const info = session.pipelineInfo;
@@ -595,7 +598,12 @@ export function PipelineEditAdapter({
         if (first !== undefined) {
           await automations.remove(first, { workflow: true });
           await pipelines.refresh();
-        } else await pipelines.remove(pipeline);
+        } else
+          // The shell's confirmation shows and records a failure, so the
+          // list's load error holds it only once the editor is gone.
+          await pipelines.remove(pipeline, {
+            callerShowsFailure: (): boolean => shellShown.current,
+          });
       } catch (error: unknown) {
         throw error instanceof Error
           ? error
@@ -692,7 +700,14 @@ export function PipelineEditAdapter({
   }, [editDetails, reportEdit]);
   useEffect(() => (): void => reportEdit(null), [reportEdit]);
 
-  if (!session.loading && session.notFound) {
+  const showsNotFound = !session.loading && session.notFound;
+  useEffect(() => {
+    shellShown.current = !showsNotFound;
+    return (): void => {
+      shellShown.current = false;
+    };
+  }, [showsNotFound]);
+  if (showsNotFound) {
     return <WorkflowEditNotFound kind="pipeline" backLabel={backLabel} />;
   }
 

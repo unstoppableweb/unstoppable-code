@@ -599,7 +599,10 @@ export function createPipelineDefinitionStore(
         description:
           typeof content.description === 'string' ? content.description : '',
         icon: '',
-        createdAt: modified,
+        // CAN-5239: a document has no install date, and its mtime is only
+        // the last edit. The rebuilt row's date stays unknown, as do later
+        // saves of it.
+        createdAt: '',
         updatedAt: modified,
         revision: 1,
         triggerTypes: getTriggerTypes(content.on),
@@ -609,7 +612,7 @@ export function createPipelineDefinitionStore(
     }
     entries.sort(
       (a, b) =>
-        a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+        a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id),
     );
     if (!reportedDamagedIndex) {
       reportedDamagedIndex = true;
@@ -1356,15 +1359,33 @@ export function createPipelineDefinitionStore(
         const raw = read.status === 'damaged' ? read.rebuilt : read.raw;
         const visible = visibleEntries(raw);
         const existing = visible.find((entry) => entry.id === requested);
+        // A create killed between its document and index installs leaves the
+        // document with no entry: the same request may adopt it as it is.
+        let adoptable = false;
         if (options.createId !== undefined) {
           let taken = false;
+          let regular = false;
           try {
-            lstatSync(path.join(userDir, `${options.createId}.yaml`));
+            regular = lstatSync(
+              path.join(userDir, `${options.createId}.yaml`),
+            ).isFile();
             taken = true;
           } catch (error) {
             if (errorCode(error) !== 'ENOENT') throw error;
           }
-          if (!requested || existing || taken)
+          const createId = options.createId;
+          adoptable =
+            taken &&
+            regular &&
+            !!requested &&
+            !existing &&
+            !raw.entries.some(
+              (value) =>
+                isRecord(value) &&
+                (value.id === createId ||
+                  value.filename === `${createId}.yaml`),
+            );
+          if (!requested || existing || (taken && !adoptable))
             return refused(
               'exists',
               'Pipeline create identity already exists or is invalid',
@@ -1394,22 +1415,36 @@ export function createPipelineDefinitionStore(
         const filePath = resolveUserPipelineFilePath(filename);
         if (!filePath)
           return refused('invalid', `Invalid pipeline path for id: ${id}`);
-        let previousBytes: string | null = null;
-        if (existing) {
+        let onDisk: Buffer | null = null;
+        if (existing || adoptable) {
           try {
-            previousBytes = readFileSync(filePath, 'utf8');
+            onDisk = readFileSync(filePath);
           } catch {
-            previousBytes = null;
+            onDisk = null;
           }
         }
+        const previousBytes =
+          existing && onDisk ? onDisk.toString('utf8') : null;
+        // Only a document holding exactly this create's bytes is adopted.
+        const adopted =
+          adoptable &&
+          onDisk !== null &&
+          onDisk.equals(Buffer.from(yamlContent, 'utf8'));
+        if (adoptable && !adopted)
+          return refused(
+            'exists',
+            'Pipeline create identity already exists or is invalid',
+          );
         if (read.status === 'damaged')
           installDurably(damagedCopyPath(userPipelineIndexPath()), read.bytes);
-        installDurably(filePath, yamlContent);
-        undo = existing
-          ? previousBytes === null
-            ? undefined
-            : (): void => installDurably(filePath, previousBytes)
-          : (): void => env.removeUserFile(userFileName(filePath));
+        if (!adopted) installDurably(filePath, yamlContent);
+        undo = adopted
+          ? undefined
+          : existing
+            ? previousBytes === null
+              ? undefined
+              : (): void => installDurably(filePath, previousBytes)
+            : (): void => env.removeUserFile(userFileName(filePath));
         const now = new Date().toISOString();
         const curatedOrigin = parseCuratedOrigin(
           input.curatedOrigin ?? existing?.curatedOrigin,
@@ -1420,6 +1455,9 @@ export function createPipelineDefinitionStore(
           filename,
           description: input.description,
           icon: input.icon,
+          // CAN-5239: the install date is this host's time at the copy's
+          // first save. Later saves keep the stored value, even an unknown
+          // one; the input carries no date.
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
           ...(curatedOrigin ? { curatedOrigin } : {}),

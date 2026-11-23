@@ -11,6 +11,7 @@ import {
 import { useShallow } from 'zustand/react/shallow';
 import type { TerminalShellProfileId } from '@canopy/protocol/terminal';
 import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import {
   ensureTerminalWorktreeHydrated,
   selectBucket,
@@ -47,6 +48,26 @@ interface TerminalSize {
   rows: number;
 }
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
+
+/**
+ * Hydration failures already recorded. Panels of one worktree, and a spawn
+ * joining the effect's load, share one hydration promise and so its error:
+ * one failed load records once, and a retry's fresh error records again.
+ */
+const recordedHydrationFailures = new WeakSet<object>();
+
+/** A hydration failure the panel moves past without showing anything. */
+function recordHydrationFailure(error: unknown): void {
+  if (typeof error === 'object' && error !== null) {
+    if (recordedHydrationFailures.has(error)) return;
+    recordedHydrationFailures.add(error);
+  }
+  recordSurfacedError({
+    chokePoint: 'notice',
+    identifier: 'terminal-panel-hydration',
+    error,
+  });
+}
 
 const isWholePositive = (value: number | undefined): value is number =>
   value !== undefined && Number.isInteger(value) && value > 0;
@@ -160,6 +181,16 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
   );
   const session = terminalId ? bucket?.sessions[terminalId] : undefined;
 
+  // Cleared when the panel closes or is replaced, so a start's hydration that
+  // rejects afterwards is a discarded load, not a failure.
+  const panelMountedRef = useRef(true);
+  useEffect(() => {
+    panelMountedRef.current = true;
+    return (): void => {
+      panelMountedRef.current = false;
+    };
+  }, []);
+
   // Automatic restore publishes success through the store, outside Restart.
   useEffect(() => {
     if (session?.live) setError(null);
@@ -185,7 +216,8 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         const preparation = host.prepareWorktree
           ? host.prepareWorktree(projectId, worktreeId, worktreeKey)
           : ensureTerminalWorktreeHydrated(projectId, worktreeId);
-        void preparation.catch(() => {
+        void preparation.catch((error: unknown) => {
+          if (isCurrent()) recordHydrationFailure(error);
           // Empty panels retry hydration before spawn. A persisted binding has no
           // equivalent user action, so keep its loading state and retry after a
           // short delay instead of leaving it permanently stranded.
@@ -228,8 +260,12 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       let lifetime: TerminalClientLifetime | undefined;
       try {
         lifetime = requireTerminalClientLifetime();
+        const hydrating = lifetime;
         await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
-          () => undefined,
+          (error: unknown) => {
+            if (panelMountedRef.current && hydrating.isCurrent())
+              recordHydrationFailure(error);
+          },
         );
         if (!lifetime.isCurrent()) throw clientChangedError();
         // A persisted terminal panel remains bound even while its session is
@@ -446,6 +482,9 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
   useEffect(() => {
     if (!active) return undefined;
     let running = false;
+    // Cleared when this effect is cleaned up (the tab closed), so a
+    // hydration that rejects afterwards is a discarded load, not a failure.
+    let effectActive = true;
     const consume = (): void => {
       if (running) return;
       let lifetime: TerminalClientLifetime;
@@ -465,7 +504,10 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       running = true;
       void (async (): Promise<void> => {
         await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
-          () => undefined,
+          (error: unknown) => {
+            if (effectActive && lifetime.isCurrent())
+              recordHydrationFailure(error);
+          },
         );
         if (!lifetime.isCurrent()) return;
         const current = selectBucket(
@@ -510,7 +552,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       });
     };
     consume();
-    return subscribeTerminalSpawnRequests((request) => {
+    const unsubscribe = subscribeTerminalSpawnRequests((request) => {
       if (
         terminalSpawnRequestTargets(
           request,
@@ -523,6 +565,10 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         consume();
       }
     });
+    return (): void => {
+      effectActive = false;
+      unsubscribe();
+    };
   }, [
     active,
     host,

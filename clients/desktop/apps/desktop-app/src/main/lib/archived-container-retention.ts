@@ -172,6 +172,54 @@ async function secureLedgerRestoreMapping(
 }
 
 /**
+ * How long a listing leaves an expired container whose purge threw before it
+ * tries again. The startup and periodic sweep always retries. In memory only:
+ * a relaunch retries everything.
+ */
+const EXPIRED_PURGE_RETRY_COOLDOWN_MS = 60 * 60 * 1_000;
+
+/** `projectId/containerId` -> wall-clock time of the last thrown purge. */
+const failedExpiredPurges = new Map<string, number>();
+
+function expiredPurgeKey(projectId: string, containerId: string): string {
+  return `${projectId}/${containerId}`;
+}
+
+function isInExpiredPurgeCooldown(key: string, nowMs: number): boolean {
+  const failedAtMs = failedExpiredPurges.get(key);
+  if (failedAtMs === undefined) return false;
+  const ageMs = nowMs - failedAtMs;
+  // A negative age means the clock moved back; treat the cooldown as elapsed.
+  return ageMs >= 0 && ageMs < EXPIRED_PURGE_RETRY_COOLDOWN_MS;
+}
+
+/**
+ * Whether any of these expired containers is due a purge attempt: false when
+ * the list is empty or every one failed within the cooldown. Also forgets
+ * failures for this project's containers that are no longer expired-listed,
+ * so the record stays bounded.
+ */
+export function hasExpiredPurgeToAttempt(
+  projectId: string,
+  containerIds: readonly string[],
+): boolean {
+  const listed = new Set(
+    containerIds.map((containerId) => expiredPurgeKey(projectId, containerId)),
+  );
+  const prefix = `${projectId}/`;
+  for (const key of [...failedExpiredPurges.keys()]) {
+    if (key.startsWith(prefix) && !listed.has(key)) {
+      failedExpiredPurges.delete(key);
+    }
+  }
+  const nowMs = Date.now();
+  for (const key of listed) {
+    if (!isInExpiredPurgeCooldown(key, nowMs)) return true;
+  }
+  return false;
+}
+
+/**
  * Purges the workspace's expired archived containers. It lists and decides
  * under the archive operation lock that restore and purge also take, so each
  * decision rests on the manifest as it is: a restore cannot commit
@@ -181,6 +229,7 @@ async function secureLedgerRestoreMapping(
 export async function purgeExpiredArchivedContainersForWorkspace(
   projectId: string,
   now = Date.now(),
+  options: { readonly skipRecentFailures?: boolean } = {},
 ): Promise<number> {
   validateId(projectId, 'projectId');
   const purged = await withArchivedWorkspaceOperationLock(
@@ -191,17 +240,29 @@ export async function purgeExpiredArchivedContainersForWorkspace(
         // Locked containers are exempt until the user unlocks them (which
         // also restarts the retention window from the unlock time).
         if (!isArchivedContainerExpired(manifest, now)) continue;
+        // `now` is the expiry clock callers pass; failures are timed by the
+        // wall clock.
+        const failureKey = expiredPurgeKey(projectId, manifest.id);
+        if (
+          options.skipRecentFailures === true &&
+          isInExpiredPurgeCooldown(failureKey, Date.now())
+        ) {
+          continue;
+        }
         if (await hasUnresolvedDestructiveRecovery(projectId, manifest.id)) {
           continue;
         }
         // Keep it until its Ledger mapping is durable elsewhere.
         if (!(await secureLedgerRestoreMapping(manifest))) continue;
         try {
-          if (await purgeArchivedContainer(projectId, manifest.id)) {
+          const removed = await purgeArchivedContainer(projectId, manifest.id);
+          failedExpiredPurges.delete(failureKey);
+          if (removed) {
             count += 1;
             notifyLedgerOfPurge(manifest);
           }
         } catch (error) {
+          failedExpiredPurges.set(failureKey, Date.now());
           // One inaccessible archive must not prevent other expired archives
           // from being purged or make archive listing fail.
           // eslint-disable-next-line no-console

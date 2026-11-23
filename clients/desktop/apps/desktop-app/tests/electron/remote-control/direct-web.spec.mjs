@@ -1963,6 +1963,190 @@ test('script review: a direct browser reviews detected scripts, and the desktop 
   }
 });
 
+/**
+ * A bare `origin` (cloned offline through its `file://` URL) whose default
+ * branch `main` and second branch `feature` have different tips. Returns the
+ * URL and both tips.
+ */
+function seedBaseBranchRepository(root, name) {
+  const git = (cwd, args) =>
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args],
+      { cwd, encoding: 'utf8' },
+    ).trim();
+  const source = path.join(root, `${name}-source`);
+  mkdirSync(source, { recursive: true });
+  git(source, ['init', '-q', '-b', 'main']);
+  writeFileSync(path.join(source, 'README.md'), 'main\n');
+  git(source, ['add', 'README.md']);
+  git(source, ['commit', '-q', '-m', 'main']);
+  const mainTip = git(source, ['rev-parse', 'HEAD']);
+  git(source, ['checkout', '-q', '-b', 'feature']);
+  writeFileSync(path.join(source, 'README.md'), 'feature\n');
+  git(source, ['commit', '-q', '-am', 'feature']);
+  const featureTip = git(source, ['rev-parse', 'HEAD']);
+  git(source, ['checkout', '-q', 'main']);
+  const remote = path.join(root, `${name}.git`);
+  git(root, ['clone', '-q', '--bare', source, remote]);
+  return { url: `file://${remote}`, mainTip, featureTip };
+}
+
+test('New Task base branches: the browser lists the computer’s branches, starts from its default and creates a task from a picked branch', async () => {
+  // CAN-7437: home:list-branch-targets joins the browser list, and the host
+  // agrees the exact (local:/remote:) base mode with a browser that offers it.
+  test.setTimeout(300_000);
+  const page = primary.page;
+  const name = `direct-web-bases-${randomBytes(3).toString('hex')}`;
+  const repositoryRoot = mkdtempSync(
+    path.join(os.tmpdir(), 'canopy-direct-web-bases-'),
+  );
+  let controller = null;
+  try {
+    const seeded = seedBaseBranchRepository(repositoryRoot, name);
+    expect(seeded.featureTip).not.toBe(seeded.mainTip);
+
+    // Clone it onto the computer from the browser.
+    await page.goto('/chat', { timeout: 120_000 });
+    await expect(projectRow(page)).toBeVisible({ timeout: 60_000 });
+    await page.getByTestId('remote-control-workspaces-header').hover();
+    await page.getByTestId('remote-control-add-workspace').click();
+    const dialog = page.getByTestId('chat-add-workspace-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId('chat-add-workspace-destination-device').click();
+    await dialog.getByTestId('chat-add-workspace-value').fill(seeded.url);
+    await dialog.getByTestId('chat-add-workspace-submit').click();
+    await expect(dialog).toBeHidden({ timeout: 90_000 });
+    const desktopWorkspace = () =>
+      desktop.window.evaluate(async (workspaceName) => {
+        const { items } = await window.api.loadProjects();
+        const item = items.find((entry) => entry.name === workspaceName);
+        return item
+          ? {
+              id: item.id,
+              type: item.type,
+              worktreeIds: (item.worktrees ?? []).map((each) => each.id),
+            }
+          : null;
+      }, name);
+    await expect.poll(desktopWorkspace, POLL).not.toBeNull();
+    const workspace = await desktopWorkspace();
+    expect(workspace.type).toBe('single-repo');
+
+    // Over the paired browser transport the catalogue is exact: the default
+    // branch, and a branch with both refs reports both.
+    const link = await openDesktopPairingLink();
+    const secret = /&secret=([A-Za-z0-9_-]{43})$/.exec(link)[1];
+    controller = await pairTestBrowserController({
+      relay,
+      userExternalId: await externalIdOf(userA.userId),
+      hostDeviceId: desktop.deviceId,
+      proofSecret: new Uint8Array(Buffer.from(secret, 'base64url')),
+    });
+    const session = await controller.openSession();
+    const read = await settle(
+      session.transport.invoke('home:list-branch-targets', {
+        workspaceId: workspace.id,
+      }),
+    );
+    expect(read.ok, read.message).toBe(true);
+    expect(read.value.supported).toBe(true);
+    expect(read.value.defaultBranch).toBe('main');
+    const entry = (branchName) =>
+      read.value.branches.find((each) => each.name === branchName);
+    expect(entry('main')).toMatchObject({
+      hasLocalRef: true,
+      hasRemoteRef: true,
+    });
+    expect(entry('feature')).toMatchObject({ hasRemoteRef: true });
+
+    // Web New Task starts from the computer's default branch.
+    await page.getByTestId('remote-control-create-task').click();
+    await expect(page.getByTestId('remote-control-new-task')).toBeVisible({
+      timeout: 60_000,
+    });
+    const workspacePicker = page.getByTestId(
+      'remote-control-new-task-workspace',
+    );
+    await expect(workspacePicker).toBeVisible({ timeout: 60_000 });
+    await workspacePicker.click();
+    await page
+      .getByTestId('remote-control-new-task-workspace-option')
+      .filter({ hasText: name })
+      .click();
+    await page.keyboard.press('Escape');
+    await expect(workspacePicker).toContainText(name);
+    const baseTrigger = page.getByTestId(
+      'remote-control-new-task-branch-button',
+    );
+    await expect(baseTrigger).toHaveAttribute('data-target-kind', 'branch', {
+      timeout: 60_000,
+    });
+    await expect(baseTrigger).toContainText('main');
+
+    // The Branches tab lists the computer's branches; pick `feature`.
+    await baseTrigger.click();
+    await page
+      .getByTestId('remote-control-new-task-branch-tab-branches')
+      .click();
+    await expect(
+      page.getByTestId('remote-control-new-task-branch-branch-main-local'),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.getByTestId('remote-control-new-task-branch-branch-main-remote'),
+    ).toBeVisible();
+    await page
+      .getByTestId('remote-control-new-task-branch-branch-feature')
+      .click();
+    await expect(baseTrigger).toContainText('feature');
+
+    // The task's new worktree starts at the picked branch's commit.
+    const { prompt } = await registerChatReply('Base');
+    const newTaskComposer = composer(page);
+    await expect(newTaskComposer).toHaveAttribute('contenteditable', 'true', {
+      timeout: 60_000,
+    });
+    await newTaskComposer.fill(prompt);
+    const send = page.getByTestId('remote-control-chat-send');
+    await expect(send).toBeEnabled();
+    await send.click();
+    await expect
+      .poll(async () => (await desktopWorkspace())?.worktreeIds.length, {
+        ...POLL,
+        timeout: 90_000,
+      })
+      .toBeGreaterThan(workspace.worktreeIds.length);
+    const created = (await desktopWorkspace()).worktreeIds.find(
+      (id) => !workspace.worktreeIds.includes(id),
+    );
+    const worktreePath = await desktop.window.evaluate(
+      (request) => window.api.getWorktreePath(request),
+      { projectId: workspace.id, worktreeId: created },
+    );
+    await expect
+      .poll(
+        () => {
+          try {
+            return execFileSync('git', ['rev-parse', 'HEAD'], {
+              cwd: worktreePath,
+              encoding: 'utf8',
+            }).trim();
+          } catch {
+            return null;
+          }
+        },
+        { ...POLL, timeout: 60_000 },
+      )
+      .toBe(seeded.featureTip);
+  } finally {
+    if (controller !== null) {
+      controller.stop();
+      await forgetController(controller.device.identity.deviceId);
+    }
+    rmSync(repositoryRoot, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Sign-out, other accounts, revocation
 // ---------------------------------------------------------------------------

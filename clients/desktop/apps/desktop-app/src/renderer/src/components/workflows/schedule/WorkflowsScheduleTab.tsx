@@ -8,6 +8,7 @@ import {
   FilterDropdown,
   type FilterOption,
 } from '@canopy/ui-shared/components';
+import { POSTHOG_REPLAY_MASK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { WORKFLOW_NO_PROJECT } from '@canopy/ui-app/workflows';
 import type { AutomationScope } from '@/hooks/useAutomationScope';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
@@ -135,6 +136,7 @@ export function WorkflowsScheduleTab({
             }
             onClear={(): void => setProject(null)}
             testId="workflows-schedule-project"
+            replayPrivacy={{ maskClassName: POSTHOG_REPLAY_MASK_CLASS }}
           />
         }
       />

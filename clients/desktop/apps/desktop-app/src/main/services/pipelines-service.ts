@@ -55,6 +55,7 @@ import {
   hasOnlyLocalPipelineTriggers,
   portablePipelineTriggerTypes,
 } from '@canopy/protocol/pipelines';
+import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import { sanitizePipelineSummaryForSync } from './sync-safe-pipeline-summary';
 import { join, resolve } from 'node:path';
 import {
@@ -1235,7 +1236,12 @@ export async function listPipelinesStrict(
   for (const summary of summaries) {
     if (
       summary &&
-      !exceedsSerializedBudget(summary, STRICT_PIPELINE_SUMMARY_MAX_BYTES)
+      // CAN-5239: the optional install date never decides whether a row
+      // fits, so dating a pipeline cannot remove it from the inventory.
+      !exceedsSerializedBudget(
+        withoutInstalledAt(summary),
+        STRICT_PIPELINE_SUMMARY_MAX_BYTES,
+      )
     ) {
       // Durable cloud storage, built unattended from repository-controlled
       // YAML: credential-like input defaults, options and descriptions
@@ -1270,6 +1276,14 @@ export async function listPipelinesStrict(
     // besides, so it has no truncation contract to report here.
     truncated: discovered.truncated || localPipelineCount < summaries.length,
   };
+}
+
+function withoutInstalledAt(
+  summary: RemoteControlPipelineSummary,
+): RemoteControlPipelineSummary {
+  const undated = { ...summary };
+  delete undated.installedAt;
+  return undated;
 }
 
 /**
@@ -1350,6 +1364,13 @@ async function summarizePipelines(
         const planReadyInputs = definition
           ? getTriggerInputDefs(definition.on, 'plan_ready')
           : undefined;
+        // CAN-5239: only a stored user pipeline is an installed copy, dated
+        // by its store entry's first save. An unknown or invalid date is
+        // left out; bundled, checkout and shared rows are never dated.
+        const installedAt =
+          pipeline.source === 'user'
+            ? normalizeInstalledAt(pipeline.createdAt)
+            : undefined;
         return {
           workspaceLocalId,
           worktreeLocalId,
@@ -1399,6 +1420,7 @@ async function summarizePipelines(
           ...(pipeline.source === 'user' && owned.has(pipeline.id)
             ? { ownedByAutomation: true }
             : {}),
+          ...(installedAt === undefined ? {} : { installedAt }),
           // `PipelineInputDef.default` is wider than the browser-safe portal
           // projection (`RemoteControlPipelineInputDefinition` stays scalar and keeps
           // its four input types). Narrow through the protocol's own projector

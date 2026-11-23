@@ -12,7 +12,10 @@ import {
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useEffect, useState, type JSX } from 'react';
 import { buildDocxPreviewSrcDoc, sanitizeDocxHtml } from './docx-sanitize';
-import { parseOfficeDocument } from './office-parse-client';
+import {
+  officePreviewRenderFailure,
+  parseOfficeDocument,
+} from './office-parse-client';
 import { OfficePreviewBanner } from './OfficePreviewBanner';
 import { OfficeDocumentFrame } from './OfficeDocumentSurface';
 
@@ -21,7 +24,11 @@ export interface DocxPreviewProps {
   readonly fileName: string;
   readonly createWorker: () => Worker;
   readonly copy?: OfficePreviewCopy;
-  readonly onRenderFailure: (failure: OfficePreviewRenderFailure) => void;
+  /** `error` accompanies a `worker-defect` only, for the host to record. */
+  readonly onRenderFailure: (
+    failure: OfficePreviewRenderFailure,
+    error?: unknown,
+  ) => void;
 }
 
 type State =
@@ -55,8 +62,11 @@ export function DocxPreview({
           bytes,
           srcDoc: buildDocxPreviewSrcDoc(sanitizeDocxHtml(result.html)),
         });
-      } catch {
-        if (!controller.signal.aborted) onRenderFailure('parse-failed');
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (officePreviewRenderFailure(error) === 'worker-defect')
+          onRenderFailure('worker-defect', error);
+        else onRenderFailure('parse-failed');
       }
     })();
     return (): void => controller.abort();

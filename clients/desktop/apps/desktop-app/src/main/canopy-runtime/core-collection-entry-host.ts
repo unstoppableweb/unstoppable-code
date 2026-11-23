@@ -103,7 +103,9 @@ function storedEntry(collection: RevisedCollection): StoredCollectionEntry {
         configId,
       })),
     },
-    createdAt: collection.createdAt,
+    ...(collection.createdAt === undefined
+      ? {}
+      : { createdAt: collection.createdAt }),
     updatedAt: collection.updatedAt,
     sharedSource: sharedSource
       ? {

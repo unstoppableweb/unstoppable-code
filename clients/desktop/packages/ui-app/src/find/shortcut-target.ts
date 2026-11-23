@@ -6,6 +6,7 @@
  */
 
 import { isMacPlatform } from '@canopy/ui-shared/lib/shortcut-platform';
+import { PANEL_CONTENT_HOST_ATTRIBUTE } from '@canopy/ui-shared/panels';
 
 // One platform check for matching and hint display, owned by the shared
 // shortcut registry.
@@ -108,4 +109,39 @@ export function isDialogTarget(target: EventTarget | null): boolean {
   }
 
   return target.closest('[role="dialog"], [aria-modal="true"]') !== null;
+}
+
+/**
+ * Whether a panel chord (close tab, tab cycling) would act behind a modal.
+ * The chords act on the focused group's selected panel (`actingPanelId`), not
+ * on wherever focus sits, and focus can fall to the page while a modal is
+ * open, as it does once the media viewer's picture or a dialog's scrim is
+ * clicked. So: focus inside any dialog holds the chord, and so does a modal
+ * that covers the window. One contained in a panel (a `DialogModal` with
+ * `containment="parent"`, such as the browser pane's sign-in) holds it only
+ * when it sits in the panel the chord acts on: another group keeps its
+ * chords, and a dialog left open in a background tab holds nothing. With no
+ * selected panel to act on (`actingPanelId` null), no contained modal is in
+ * it, so none holds.
+ */
+export function isBehindModal(
+  target: EventTarget | null,
+  ownerDocument: Document,
+  actingPanelId: string | null,
+): boolean {
+  if (isDialogTarget(target)) return true;
+  for (const modal of ownerDocument.querySelectorAll('[aria-modal="true"]')) {
+    const contained = modal.closest(
+      '[data-canopy-overlay-containment="parent"]',
+    );
+    if (contained === null) return true;
+    // Every panel's content sits in its own host, hidden tabs included.
+    const host = contained.closest(`[${PANEL_CONTENT_HOST_ATTRIBUTE}]`);
+    // A contained modal outside any panel cannot be placed: hold.
+    if (host === null) return true;
+    if (host.getAttribute(PANEL_CONTENT_HOST_ATTRIBUTE) === actingPanelId) {
+      return true;
+    }
+  }
+  return false;
 }

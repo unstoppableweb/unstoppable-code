@@ -50,6 +50,8 @@ export {
   type ScriptRunWriter,
   type ScriptRunChild,
   type ScriptRunChildReap,
+  type ScriptRunChildReapOptions,
+  type ScriptRunSpawner,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,
 } from './script-run-log';

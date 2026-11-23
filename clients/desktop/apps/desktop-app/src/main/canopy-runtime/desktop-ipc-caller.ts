@@ -105,6 +105,16 @@ const DESKTOP_GRANTS: CanopyCallerDescriptor['grants'] = [
   'core.chat.write',
 ];
 
+/** The principal prefix every remote-control controller acts under. */
+export const REMOTE_DEVICE_PRINCIPAL_PREFIX = 'remote-device:';
+/**
+ * The client instance prefix minted only for a remote-control bridge call.
+ * Nothing else may produce it: archive recovery review relies on it to tell
+ * the bridge apart from the remote core session and hosted chat callers that
+ * share the `remote-device:` principal.
+ */
+export const REMOTE_BRIDGE_CLIENT_INSTANCE_PREFIX = 'remote-bridge:';
+
 function deriveRemoteBridgeCaller(
   event: DesktopIpcEvent,
   options: DesktopIpcCallerOptions,
@@ -118,8 +128,8 @@ function deriveRemoteBridgeCaller(
   // A paired controller acts with the desktop interface's grants through the
   // bridge, under its own principal so its actions stay attributable.
   return {
-    principalId: `remote-device:${controllerDeviceId}`,
-    clientInstanceId: `remote-bridge:${sender.id}`,
+    principalId: `${REMOTE_DEVICE_PRINCIPAL_PREFIX}${controllerDeviceId}`,
+    clientInstanceId: `${REMOTE_BRIDGE_CLIENT_INSTANCE_PREFIX}${sender.id}`,
     authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
     interfaceKind: 'desktop',
     grants: [...DESKTOP_GRANTS],

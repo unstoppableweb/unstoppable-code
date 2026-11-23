@@ -33,9 +33,17 @@ import {
 } from '@canopy/remote-session';
 import {
   BROWSER_CONTROLLER_CHANNELS,
+  BROWSER_PENDING_RECOVERY_FIELD_MAX_LENGTH,
+  BROWSER_PENDING_RECOVERY_MAX_ENTRIES,
+  HOSTED_CHAT_COMMAND_FIELDS,
   HOSTED_CONTROLLER_CHANNELS,
   HOSTED_IPC_CHANNELS,
+  HOSTED_TASK_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
+  hostedInvocationAllowed,
+  browserInvocationAllowed,
+  browserWorkspaceDeleteAllowed,
+  browserWorktreeDiscardDescribeAllowed,
 } from '@canopy/protocol/remote-control/channels';
 import { toPortableCloneJobs } from '@canopy/protocol/clone-jobs';
 import { REPOSITORY_CLONE_FAILURE_MESSAGE } from '@canopy/protocol/remote-control/shell';
@@ -46,6 +54,16 @@ import type {
   ClaudeModSurfacePushEvent,
 } from '@canopy/protocol/extension-ui';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
+import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
+import { INSTALLED_ITEM_CHANNELS } from '@canopy/desktop-shared/types/installed-items';
+import {
+  PLUGIN_NOT_IN_MARKETPLACE_MESSAGE,
+  REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE,
+  REMOTE_PLUGIN_SOURCE_REFUSAL,
+  RemoteBuiltInPluginInstallResultSchema,
+  RemotePluginInstallResultSchema,
+} from '@canopy/protocol/plugins/remote-install';
+import { InstalledItemMutationResultSchema } from '@canopy/protocol/installed-items';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type {
   ChatCommandExecutionOptions,
@@ -75,7 +93,10 @@ import {
 import { decodeEnvelope } from '../transport/envelope';
 import type { HostBridge } from '../host/bridge-window';
 import { pairingProofFor } from '../host/controller-profile';
+import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
+  HOSTED_CHAT_COMMAND_REFUSAL,
+  HOSTED_MODEL_PROVIDER_REFUSAL,
   HOSTED_SECRET_ANSWER_REFUSAL,
   createHostedChatDispatcher,
   type HostedChatAttribution,
@@ -114,6 +135,19 @@ const MOBILE_ONLY_CHANNEL = 'account-proxy:status';
 const ACCOUNT_USER_ID = '00000000-0000-4000-8000-0000000000ab';
 /** The model Portal's create would start a new chat on here. */
 const DEFAULT_MODEL = 'default-model';
+/** A model whose create seed carries plugin selections (CAN-7445). */
+const SEEDED_MODEL = 'seeded-model';
+const SEED_PLUGIN_SELECTIONS = {
+  collectionIds: ['seed-collection'],
+  skillRefs: [],
+  pluginRefs: [],
+};
+/** The provider this computer knows for a model, as `getProviderForModel`. */
+function fixtureModelProvider(model: string): string | undefined {
+  if (model.startsWith('claude-')) return 'claude';
+  if (model.startsWith('gpt-')) return 'codex';
+  return undefined;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory relay
@@ -230,6 +264,8 @@ interface FakeBridgeLog {
   /** Arguments of each invoke, in order. */
   invokeArgs: unknown[][];
   posts: string[];
+  /** Each bridge created, with its controller and exact base-branch mode. */
+  created: Array<{ controllerDeviceId: string; exact: boolean }>;
   emitPush: (channel: string, args: unknown[]) => void;
 }
 
@@ -268,6 +304,8 @@ interface HostOptions {
   /** The signed-in account key; an account with a user ID by default. */
   signedInAccount?: string;
   invokeResult?: unknown;
+  /** A reply per channel; takes precedence over `invokeResult`. */
+  invokeResultFor?: (channel: string) => unknown;
   settings?: Partial<RemoteControlFile>;
   portalReads?: LegacyPortalOptInRead[];
   pairingWindowMs?: number;
@@ -354,6 +392,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     invokes: [],
     invokeArgs: [],
     posts: [],
+    created: [],
     emitPush: (channel, args): void => {
       for (const listener of Array.from(pushListeners)) listener(channel, args);
     },
@@ -419,7 +458,9 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
       Promise.resolve(
         model === undefined
           ? { model: DEFAULT_MODEL, defaultStampModel: DEFAULT_MODEL }
-          : { model },
+          : model === SEEDED_MODEL
+            ? { model, pluginSelections: SEED_PLUGIN_SELECTIONS }
+            : { model },
       ),
     modelRefusal: (_target, model) =>
       Promise.resolve(
@@ -427,6 +468,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
           ? 'This model is blocked by your organization policy.'
           : null,
       ),
+    modelProvider: fixtureModelProvider,
     pendingQuestion: (_scope, chatId, questionId) => {
       const question = hostedChat.questions.get(questionId);
       return Promise.resolve(
@@ -471,14 +513,23 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     log: (message: string, context?: unknown): void => {
       logs.push(`${message} ${JSON.stringify(context ?? null)}`);
     },
-    createBridge: (): Promise<HostBridge> =>
-      Promise.resolve({
+    createBridge: (
+      controllerDeviceId: string,
+      _surface: unknown,
+      exact: boolean,
+    ): Promise<HostBridge> => {
+      bridge.created.push({ controllerDeviceId, exact });
+      return Promise.resolve({
         getChatInterest: (): undefined => undefined,
         window: null,
         invoke: (channel: string, args: unknown[]): Promise<unknown> => {
           bridge.invokes.push(channel);
           bridge.invokeArgs.push(args);
-          return Promise.resolve(options.invokeResult ?? 'ok');
+          return Promise.resolve(
+            options.invokeResultFor
+              ? options.invokeResultFor(channel)
+              : (options.invokeResult ?? 'ok'),
+          );
         },
         post: (channel: string): void => {
           bridge.posts.push(channel);
@@ -491,7 +542,8 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
         },
         onClosed: (): (() => void) => (): void => undefined,
         destroy: (): void => undefined,
-      }),
+      });
+    },
     mainWindowPushes: {
       subscribe: (listener): (() => void) => {
         mainListeners.add(listener);
@@ -1113,10 +1165,19 @@ describe('browser controller channels', () => {
     expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(
       IPC_CHANNELS.appAdvisorSettingsChanged,
     );
+    // The plugin catalog, worktree activity entities and hook pause also
+    // serve the hosted Tasks tools (CAN-7445); the rest stay browser-only.
+    const alsoHosted: readonly string[] = [
+      added.pluginCatalogList,
+      added.worktreeActivityEntities,
+      added.hookChangePause,
+    ];
     for (const channel of Object.values(added)) {
       expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
       expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
-      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+      if (alsoHosted.includes(channel))
+        expect(HOSTED_CONTROLLER_CHANNELS).toContain(channel);
+      else expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
     }
     const hub = new Hub();
     const browser = addController(hub, 'browser');
@@ -1438,6 +1499,173 @@ describe('browser controller channels', () => {
     expect(host.bridge.invokes).toEqual([channel]);
   });
 
+  it('serves the archive recovery list, Resolve and Finish to browsers and desktops only (CAN-7439, CAN-7444)', async () => {
+    // The list is a read under the bridge's `core.worktree.read`; the
+    // revision tokens it returns are accepted only by Resolve and Finish.
+    // The bridge principal is the same for every controller kind, so the
+    // profile lists alone keep mobile and hosted controllers out.
+    const list = IPC_CHANNELS.worktreeRecoveryList;
+    const actions = [
+      IPC_CHANNELS.worktreeRecoveryResolve,
+      IPC_CHANNELS.worktreeRecoveryFinish,
+    ];
+    expect(list).toBe('worktree:recovery-list');
+    expect(getRemoteChannelDisposition(list)).toBe('tunnel');
+    expect(BROWSER_CONTROLLER_CHANNELS).toContain(list);
+    expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(list);
+    expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(list);
+    for (const action of actions) {
+      expect(getRemoteChannelDisposition(action)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(action);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(action);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(action);
+    }
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const desktop = addController(hub, 'desktop');
+    const root = generateDeviceKeyPair();
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+          pinned(desktop),
+          {
+            deviceId: root.deviceId,
+            name: 'Agents',
+            platform: 'linux',
+            kind: 'hosted',
+            publicKey: root.publicKey,
+            pairedAt: new Date(0).toISOString(),
+          },
+        ],
+      },
+    });
+    const agent = addController(hub, 'hosted');
+    const fromHosted = await control(
+      host,
+      agent,
+      delegate(root, agent.identity.publicKey, Date.now() + 60_000),
+    );
+    await hello(fromHosted.rpc);
+    for (const channel of [list, ...actions])
+      expect(await invokeCode(fromHosted.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const channel of [list, ...actions])
+      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    expect(host.bridge.invokes).toEqual([]);
+    const fromDesktop = await control(host, desktop);
+    await hello(fromDesktop.rpc, { version: VERSION });
+    for (const action of actions)
+      expect(await invokeCode(fromDesktop.rpc, action)).toBe('ok');
+    expect(host.bridge.invokes).toEqual(actions);
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const action of actions)
+      expect(await invokeCode(fromBrowser.rpc, action)).toBe('ok');
+    expect(await invokeCode(fromBrowser.rpc, list)).toBe('ok');
+    expect(host.bridge.invokes).toEqual([...actions, ...actions, list]);
+  });
+
+  it('passes only code-shaped archive Finish checks to browsers (CAN-7444)', async () => {
+    const finished = {
+      status: 'finished',
+      operationId: '00000000-0000-4000-8000-000000007444',
+      cleanupRequired: false,
+      gitCleanupPending: false,
+    };
+    const results: readonly (readonly [unknown, unknown])[] = [
+      // A W5 refusal's `check` is whatever string its thrower set.
+      [
+        { status: 'refused', check: '/Users/someone/code/app/.git' },
+        { status: 'refused', check: 'finish-refused' },
+      ],
+      [
+        { status: 'interrupted', check: 'C:\\Users\\someone' },
+        { status: 'interrupted', check: 'finish-refused' },
+      ],
+      [
+        { status: 'refused', check: 'storage admission' },
+        { status: 'refused', check: 'finish-refused' },
+      ],
+      [
+        { status: 'refused', check: '~/code' },
+        { status: 'refused', check: 'finish-refused' },
+      ],
+      [
+        { status: 'refused', check: 'a'.repeat(65) },
+        { status: 'refused', check: 'finish-refused' },
+      ],
+      [
+        { status: 'refused', check: 42 },
+        { status: 'refused', check: 'finish-refused' },
+      ],
+      // Whatever the status, a present `check` is projected.
+      [
+        { ...finished, check: '/Users/someone' },
+        { ...finished, check: 'finish-refused' },
+      ],
+      [
+        { status: 'refused', check: 'review-changed' },
+        { status: 'refused', check: 'review-changed' },
+      ],
+      [
+        { status: 'interrupted', check: 'browser-retirement-timeout' },
+        { status: 'interrupted', check: 'browser-retirement-timeout' },
+      ],
+      [finished, finished],
+    ];
+    for (const kind of ['browser', 'desktop'] as const)
+      for (const [sent, projected] of results) {
+        const hub = new Hub();
+        const controller = addController(hub, kind);
+        const host = await createHost(hub, {
+          settings: {
+            pairedControllers: [
+              kind === 'browser'
+                ? pinned(controller, kind)
+                : pinned(controller),
+            ],
+          },
+          invokeResult: sent,
+        });
+        const { rpc } = await control(host, controller);
+        await hello(
+          rpc,
+          kind === 'browser'
+            ? {
+                version: VERSION,
+                controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+              }
+            : { version: VERSION },
+        );
+        expect(
+          await rpc.request(REMOTE_METHODS.invoke, {
+            channel: IPC_CHANNELS.worktreeRecoveryFinish,
+            args: [
+              {
+                workspaceId: 'ws',
+                operationId: '00000000-0000-4000-8000-000000007444',
+                revision: 'a'.repeat(64),
+              },
+            ],
+          }),
+        ).toEqual(kind === 'browser' ? projected : sent);
+      }
+  });
+
   it('serves the narrow tips and suggestions reads and their writes to browsers, never preferences:load', async () => {
     // CAN-7434: the browser reads only the tips or suggestions state and
     // writes only those fields; every preference stays desktop-only.
@@ -1498,6 +1726,15 @@ describe('browser controller channels', () => {
       'workspace:set-archive-retention',
       IPC_CHANNELS.workspaceSetArchiveRetention,
     ],
+    // Web discard and journal quarantine (CAN-7443), under the same rule.
+    ['worktree:discard-describe', IPC_CHANNELS.worktreeDiscardDescribe],
+    ['worktree:discard', IPC_CHANNELS.worktreeDiscard],
+    [
+      'workspace:delete-discard-describe',
+      IPC_CHANNELS.workspaceDeleteDiscardDescribe,
+    ],
+    ['lifecycle-journal:inspect', IPC_CHANNELS.lifecycleJournalInspect],
+    ['lifecycle-journal:quarantine', IPC_CHANNELS.lifecycleJournalQuarantine],
   ])(
     'serves %s to browsers and refuses mobile and hosted controllers',
     async (name, channel) => {
@@ -1921,6 +2158,227 @@ describe('browser controller channels', () => {
     expect(host.bridge.invokes).toEqual(invoked.map(([channel]) => channel));
   });
 
+  it('serves browsers recovery on discard and deletion only in the adapter shapes, never narrowing a desktop (CAN-7443, CAN-7444)', async () => {
+    const describe = IPC_CHANNELS.worktreeDiscardDescribe;
+    const deletes = [IPC_CHANNELS.workspaceDelete, IPC_CHANNELS.projectDelete];
+    const target = { projectId: 'project-1', worktreeId: 'worktree-1' };
+    const operationId = '00000000-0000-4000-8000-000000007444';
+    const recovery = {
+      intent: 'delete',
+      expectedCreatedAt: '2026-11-21T00:00:00.000Z',
+    };
+    const pendingEntry = { operationId, confirmation: 'b'.repeat(64) };
+    // A recovery request is checked key for key; the handler's own schema
+    // strips unknown keys instead of refusing them.
+    const badRecoveries: readonly unknown[] = [
+      undefined,
+      null,
+      false,
+      [recovery],
+      'recovery',
+      { ...recovery, extra: true },
+      { expectedCreatedAt: '2026-11-21T00:00:00.000Z' },
+      { ...recovery, intent: 'discard' },
+      { ...recovery, intent: undefined },
+      { intent: 'archive' },
+      { ...recovery, expectedCreatedAt: '' },
+      { ...recovery, expectedCreatedAt: 1 },
+      { ...recovery, operationId: 'op-1' },
+      { ...recovery, operationId: undefined },
+      { operationId },
+    ];
+    const badPending: readonly unknown[] = [
+      undefined,
+      null,
+      false,
+      pendingEntry,
+      'pending',
+      Array.from(
+        { length: BROWSER_PENDING_RECOVERY_MAX_ENTRIES + 1 },
+        () => pendingEntry,
+      ),
+      [{ ...pendingEntry, extra: true }],
+      [{ operationId }],
+      [{ confirmation: pendingEntry.confirmation }],
+      [{ ...pendingEntry, operationId: '' }],
+      [{ ...pendingEntry, confirmation: '' }],
+      [{ ...pendingEntry, confirmation: 1 }],
+      [
+        {
+          ...pendingEntry,
+          confirmation: 'c'.repeat(
+            BROWSER_PENDING_RECOVERY_FIELD_MAX_LENGTH + 1,
+          ),
+        },
+      ],
+      [null],
+    ];
+    const refused: readonly (readonly [string, readonly unknown[]])[] = [
+      ...badRecoveries.map(
+        (bad) => [describe, [{ ...target, recovery: bad }]] as const,
+      ),
+      // Only the first argument may carry it.
+      [describe, [target, { recovery }]],
+      [describe, [{ ...target, recovery }, { recovery }]],
+      ...deletes.flatMap((channel) => [
+        ...badPending.map(
+          (pending) =>
+            [
+              channel,
+              [{ workspaceId: 'workspace-1', discardPendingRecovery: pending }],
+            ] as const,
+        ),
+        [
+          channel,
+          [{ projectId: 'project-1' }, { discardPendingRecovery: [] }],
+        ] as const,
+        [
+          channel,
+          [
+            { projectId: 'project-1', discardPendingRecovery: [pendingEntry] },
+            { discardPendingRecovery: [pendingEntry] },
+          ],
+        ] as const,
+      ]),
+    ];
+    // What the adapter sends, and shapes the first-argument key check passes:
+    // the handler reads only the first argument's own keys.
+    const served: readonly (readonly [string, readonly unknown[]])[] = [
+      [describe, [{ ...target, recovery }]],
+      [describe, [{ ...target, recovery: { ...recovery, operationId } }]],
+      [
+        describe,
+        [
+          {
+            ...target,
+            recovery: { intent: 'archive', expectedCreatedAt: null },
+          },
+        ],
+      ],
+      ...deletes.flatMap((channel) => [
+        [
+          channel,
+          [
+            {
+              workspaceId: 'workspace-1',
+              discardPendingRecovery: [pendingEntry],
+            },
+          ],
+        ] as const,
+        // An empty list confirms no pending recovery; the computer refuses
+        // it when any is pending.
+        [
+          channel,
+          [{ workspaceId: 'workspace-1', discardPendingRecovery: [] }],
+        ] as const,
+        [
+          channel,
+          [
+            {
+              projectId: 'project-1',
+              supersedeInterruptedDeletion: 'op-1',
+              discardPendingRecovery: Array.from(
+                { length: BROWSER_PENDING_RECOVERY_MAX_ENTRIES },
+                () => pendingEntry,
+              ),
+            },
+          ],
+        ] as const,
+      ]),
+      [describe, [target]],
+      [describe, [{ ...target, retainedArchives: true }]],
+      [describe, [{ ...target, nested: { recovery: true } }]],
+      [describe, [null]],
+      [describe, [['recovery']]],
+      [describe, ['recovery']],
+      [describe, []],
+      [IPC_CHANNELS.workspaceDelete, [{ workspaceId: 'workspace-1' }]],
+      [IPC_CHANNELS.projectDelete, [{ projectId: 'project-1' }]],
+      [
+        IPC_CHANNELS.workspaceDelete,
+        [{ workspaceId: 'workspace-1', supersedeInterruptedDeletion: 'op-1' }],
+      ],
+      [
+        IPC_CHANNELS.projectDelete,
+        [{ projectId: 'project-1', supersedeInterruptedDeletion: 'op-1' }],
+      ],
+      [IPC_CHANNELS.projectDelete, [null]],
+      [IPC_CHANNELS.workspaceDelete, []],
+      [
+        IPC_CHANNELS.workspaceDeleteDiscardDescribe,
+        [{ workspaceId: 'workspace-1', retainedArchives: true }],
+      ],
+    ];
+    for (const [channel, args] of refused)
+      expect([channel, browserInvocationAllowed(channel, args)]).toEqual([
+        channel,
+        false,
+      ]);
+    for (const [channel, args] of served)
+      expect([channel, browserInvocationAllowed(channel, args)]).toEqual([
+        channel,
+        true,
+      ]);
+    expect(browserWorktreeDiscardDescribeAllowed([{ recovery: 1 }])).toBe(
+      false,
+    );
+    expect(browserWorktreeDiscardDescribeAllowed([{ recovery }])).toBe(true);
+    expect(browserWorkspaceDeleteAllowed([{ discardPendingRecovery: 1 }])).toBe(
+      false,
+    );
+    expect(
+      browserWorkspaceDeleteAllowed([
+        { discardPendingRecovery: [pendingEntry] },
+      ]),
+    ).toBe(true);
+
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [pinned(browser, 'browser'), pinned(desktop)],
+      },
+    });
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const [channel, args] of refused)
+      expect([
+        channel,
+        await invokeCodeWith(fromBrowser.rpc, channel, [...args]),
+      ]).toEqual([channel, 'remote_channel_unavailable']);
+    expect(host.bridge.invokes).toEqual([]);
+    for (const [channel, args] of served)
+      expect([
+        channel,
+        await invokeCodeWith(fromBrowser.rpc, channel, [...args]),
+      ]).toEqual([channel, 'ok']);
+    expect(host.bridge.invokes).toEqual(served.map(([channel]) => channel));
+
+    // A desktop controller keeps the local recovery arguments.
+    const fromDesktop = await control(host, desktop);
+    await hello(fromDesktop.rpc);
+    const desktopArgs: readonly (readonly [string, unknown[]])[] = [
+      [describe, [{ ...target, recovery: { operationId: 'op-1' } }]],
+      [
+        IPC_CHANNELS.workspaceDelete,
+        [{ workspaceId: 'workspace-1', discardPendingRecovery: [] }],
+      ],
+      [
+        IPC_CHANNELS.projectDelete,
+        [{ projectId: 'project-1', discardPendingRecovery: [] }],
+      ],
+    ];
+    for (const [channel, args] of desktopArgs)
+      expect([
+        channel,
+        await invokeCodeWith(fromDesktop.rpc, channel, args),
+      ]).toEqual([channel, 'ok']);
+  });
+
   it('blanks clone destinations for browsers only (CAN-7433)', async () => {
     // The `CloneJobSnapshot` wire shape: a running job carries `error: null`.
     const job = {
@@ -2018,6 +2476,481 @@ describe('browser controller channels', () => {
     }
   });
 
+  it('serves installed items and plugin installs to browsers only, with the arguments the adapter sends (CAN-7442)', async () => {
+    const target = {
+      kind: 'plugin',
+      marketplaceId: 'acme',
+      pluginName: 'lint',
+    };
+    const invoked: readonly (readonly [string, readonly unknown[]])[] = [
+      [INSTALLED_ITEM_CHANNELS.LIST_STATUS, []],
+      [INSTALLED_ITEM_CHANNELS.SET_STATUS, [{ target, status: 'disabled' }]],
+      [INSTALLED_ITEM_CHANNELS.UNINSTALL, [{ target }]],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 'lint', '']],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: ['claude', 'codex'],
+          },
+        ],
+      ],
+    ];
+    for (const channel of [
+      ...invoked.map(([channel]) => channel),
+      INSTALLED_ITEM_CHANNELS.CHANGED,
+    ]) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+      expect(BROWSER_CONTROLLER_CHANNELS).toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(HOSTED_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+    // No URL, marketplace add, harness record or Codex compatibility.
+    const browserRefused = [
+      PLUGINS_CHANNELS.ADD,
+      PLUGINS_CHANNELS.INSTALL_FOR_HARNESSES,
+      PLUGINS_CHANNELS.RETRY_HARNESS_INSTALL,
+      PLUGINS_CHANNELS.PREPARE_CODEX_COMPATIBILITY,
+      PLUGINS_CHANNELS.SET_CODEX_COMPAT_DISABLED,
+      PLUGINS_CHANNELS.READ_COMPONENT,
+    ];
+    for (const channel of browserRefused)
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+
+    const invokeWith = async (
+      rpc: RpcPeer,
+      channel: string,
+      args: readonly unknown[],
+    ): Promise<string> => {
+      try {
+        await rpc.request(REMOTE_METHODS.invoke, { channel, args });
+        return 'ok';
+      } catch (error) {
+        return error instanceof RpcRemoteError
+          ? (error.code ?? error.message)
+          : 'failed';
+      }
+    };
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(browser, 'browser'),
+          pinned(phone, 'mobile'),
+        ],
+      },
+    });
+    const fromPhone = await control(host, phone);
+    await hello(fromPhone.rpc, {
+      version: VERSION,
+      controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const [channel, args] of invoked)
+      expect(await invokeWith(fromPhone.rpc, channel, args)).toBe(
+        'remote_channel_unavailable',
+      );
+    expect(host.bridge.invokes).toEqual([]);
+
+    const fromBrowser = await control(host, browser);
+    await hello(fromBrowser.rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    for (const [channel, args] of invoked)
+      expect([
+        channel,
+        await invokeWith(fromBrowser.rpc, channel, args),
+      ]).toEqual([channel, 'ok']);
+    for (const channel of browserRefused)
+      expect(await invokeWith(fromBrowser.rpc, channel, [])).toBe(
+        'remote_channel_unavailable',
+      );
+    // A browser names no source URL and sends nothing beside the request.
+    const refused: readonly (readonly [string, readonly unknown[]])[] = [
+      [
+        PLUGINS_CHANNELS.INSTALL_PLUGIN,
+        ['acme', 'lint', 'https://github.com/acme/lint.git'],
+      ],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 'lint', '  ']],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 'lint']],
+      [
+        PLUGINS_CHANNELS.INSTALL_PLUGIN,
+        ['acme', 'lint', '', { disableRedirects: false }],
+      ],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['', 'lint', '']],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 42, '']],
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 'x'.repeat(257), '']],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: [],
+          },
+        ],
+      ],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: ['claude', 'claude'],
+          },
+        ],
+      ],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: ['cursor'],
+          },
+        ],
+      ],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: ['claude'],
+            sourceUrl: 'https://github.com/acme/notes.git',
+          },
+        ],
+      ],
+      [
+        PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+        [
+          {
+            marketplaceId: 'curated/cloud',
+            pluginName: 'notes',
+            providers: ['claude'],
+          },
+          {},
+        ],
+      ],
+      [INSTALLED_ITEM_CHANNELS.LIST_STATUS, [{}]],
+      [INSTALLED_ITEM_CHANNELS.SET_STATUS, []],
+      [INSTALLED_ITEM_CHANNELS.UNINSTALL, [{ target }, {}]],
+    ];
+    for (const [channel, args] of refused)
+      expect([
+        channel,
+        await invokeWith(fromBrowser.rpc, channel, args),
+      ]).toEqual([channel, 'remote_channel_unavailable']);
+    expect(host.bridge.invokes).toEqual(invoked.map(([channel]) => channel));
+
+    // The change notice reaches the browser.
+    host.mainPush(INSTALLED_ITEM_CHANNELS.CHANGED, []);
+    await until(() => browser.pushPayloads.length > 0);
+    expect(browser.pushPayloads).toEqual([
+      { channel: INSTALLED_ITEM_CHANNELS.CHANGED, args: [] },
+    ]);
+  });
+
+  it('sends a browser only the path-free install and change results, and a desktop the full ones (CAN-7442)', async () => {
+    const HOME = '/Users/someone';
+    const hostPlugin = {
+      name: 'lint',
+      displayName: 'Lint',
+      marketplaceId: 'acme',
+      version: '1.0.0',
+      sourcePath: `${HOME}/.claude/plugins/marketplaces/acme/lint`,
+      cachePath: `${HOME}/.claude/plugins/cache/lint`,
+      details: { readme: `${HOME}/README.md` },
+      externalSource: { url: 'https://github.com/acme/lint.git' },
+      harnessInstalls: { codex: { path: `${HOME}/.codex/plugins/lint` } },
+      providerSupport: { claude: 'native', codex: 'none' },
+      facets: {
+        claude: {
+          provider: 'claude',
+          mode: 'native',
+          cachePath: `${HOME}/.claude/plugins/cache/lint`,
+          installLocation: `${HOME}/.claude/plugins/lint`,
+          sourcePath: `${HOME}/src/lint`,
+        },
+      },
+      globalInstallStatus: {
+        checkedAt: '2026-11-20T00:00:00.000Z',
+        claude: {
+          available: true,
+          installed: true,
+          enabled: true,
+          installPath: `${HOME}/.claude/plugins/lint`,
+          error: `EACCES ${HOME}/.claude`,
+        },
+      },
+      cachedAt: '2026-11-20T00:00:00.000Z',
+      // A field a newer host adds is never sent to a browser.
+      hostOnly: `${HOME}/secret`,
+    };
+    const browserPlugin = {
+      name: 'lint',
+      displayName: 'Lint',
+      marketplaceId: 'acme',
+      version: '1.0.0',
+      providerSupport: { claude: 'native', codex: 'none' },
+      globalInstallStatus: {
+        checkedAt: '2026-11-20T00:00:00.000Z',
+        claude: { available: true, installed: true, enabled: true },
+      },
+      cachedAt: '2026-11-20T00:00:00.000Z',
+    };
+    const target = {
+      kind: 'plugin',
+      marketplaceId: 'acme',
+      pluginName: 'lint',
+    };
+    const snapshot = {
+      items: [
+        {
+          target,
+          status: 'active',
+          removable: true,
+          uninstallTarget: target,
+          notices: [],
+        },
+      ],
+    };
+    const replies: Record<string, unknown> = {
+      [PLUGINS_CHANNELS.INSTALL_PLUGIN]: {
+        success: true,
+        data: hostPlugin,
+        appError: { code: 'x', detail: HOME },
+      },
+      [PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN]: {
+        success: true,
+        data: {
+          plugin: hostPlugin,
+          providerOutcomes: {
+            claude: { installed: true },
+            codex: {
+              installed: false,
+              error: `codex: spawn ${HOME}/.local/bin/codex ENOENT`,
+            },
+          },
+        },
+      },
+      [INSTALLED_ITEM_CHANNELS.LIST_STATUS]: snapshot,
+      [INSTALLED_ITEM_CHANNELS.SET_STATUS]: {
+        success: false,
+        requestedStatus: 'disabled',
+        snapshot,
+        removed: [],
+        errors: [
+          {
+            target,
+            code: 'transition_failed',
+            message: `Couldn't turn it off for Claude: EACCES ${HOME}/.claude/settings.json`,
+            retryable: true,
+          },
+          {
+            target,
+            code: 'refresh_failed',
+            message:
+              'The change was saved, but the catalog could not be refreshed. Retry to reconcile its state.',
+            retryable: true,
+          },
+        ],
+      },
+      [INSTALLED_ITEM_CHANNELS.UNINSTALL]: {
+        success: true,
+        snapshot: { items: [] },
+        removed: [target],
+        errors: [],
+      },
+    };
+    const results = async (
+      kind: 'browser' | 'desktop',
+    ): Promise<Record<string, unknown>> => {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResultFor: (channel) => replies[channel] ?? 'ok',
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      const calls: readonly (readonly [string, readonly unknown[]])[] = [
+        [PLUGINS_CHANNELS.INSTALL_PLUGIN, ['acme', 'lint', '']],
+        [
+          PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+          [
+            {
+              marketplaceId: 'acme',
+              pluginName: 'lint',
+              providers: ['claude', 'codex'],
+            },
+          ],
+        ],
+        [INSTALLED_ITEM_CHANNELS.LIST_STATUS, []],
+        [INSTALLED_ITEM_CHANNELS.SET_STATUS, [{ target, status: 'disabled' }]],
+        [INSTALLED_ITEM_CHANNELS.UNINSTALL, [{ target }]],
+      ];
+      const received: Record<string, unknown> = {};
+      for (const [channel, args] of calls)
+        received[channel] = await rpc.request(REMOTE_METHODS.invoke, {
+          channel,
+          args,
+        });
+      return received;
+    };
+
+    const browser = await results('browser');
+    expect(JSON.stringify(browser)).not.toContain(HOME);
+    expect(browser[PLUGINS_CHANNELS.INSTALL_PLUGIN]).toEqual({
+      success: true,
+      data: browserPlugin,
+    });
+    expect(browser[PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN]).toEqual({
+      success: true,
+      data: {
+        plugin: browserPlugin,
+        providerOutcomes: {
+          claude: { installed: true },
+          codex: {
+            installed: false,
+            error: REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE,
+          },
+        },
+      },
+    });
+    // The web adapter's strict parsers accept every browser result.
+    expect(
+      RemotePluginInstallResultSchema.safeParse(
+        browser[PLUGINS_CHANNELS.INSTALL_PLUGIN],
+      ).success,
+    ).toBe(true);
+    expect(
+      RemoteBuiltInPluginInstallResultSchema.safeParse(
+        browser[PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN],
+      ).success,
+    ).toBe(true);
+    expect(browser[INSTALLED_ITEM_CHANNELS.LIST_STATUS]).toEqual(snapshot);
+    const changed = InstalledItemMutationResultSchema.parse(
+      browser[INSTALLED_ITEM_CHANNELS.SET_STATUS],
+    );
+    expect(changed.errors.map((error) => error.message)).toEqual([
+      "Couldn't change this item. Check the desktop app for details.",
+      'The change was saved, but the catalog could not be refreshed. Retry to reconcile its state.',
+    ]);
+    expect(browser[INSTALLED_ITEM_CHANNELS.UNINSTALL]).toEqual(
+      replies[INSTALLED_ITEM_CHANNELS.UNINSTALL],
+    );
+
+    // A desktop controller still receives the full result.
+    const desktop = await results('desktop');
+    expect(desktop[PLUGINS_CHANNELS.INSTALL_PLUGIN]).toEqual(
+      replies[PLUGINS_CHANNELS.INSTALL_PLUGIN],
+    );
+    expect(desktop[INSTALLED_ITEM_CHANNELS.SET_STATUS]).toEqual(
+      replies[INSTALLED_ITEM_CHANNELS.SET_STATUS],
+    );
+  });
+
+  it('passes a browser only the fixed install messages (CAN-7442)', async () => {
+    const failures: readonly (readonly [unknown, string])[] = [
+      [PLUGIN_NOT_IN_MARKETPLACE_MESSAGE, PLUGIN_NOT_IN_MARKETPLACE_MESSAGE],
+      [
+        `${PLUGIN_NOT_IN_MARKETPLACE_MESSAGE} at /Users/someone/.claude`,
+        REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE,
+      ],
+      [
+        `${REMOTE_PLUGIN_SOURCE_REFUSAL} https://10.0.0.5/acme/lint.git resolves to a private address.`,
+        REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE,
+      ],
+      [
+        "fatal: could not create work tree dir '/Users/someone/.claude/plugins'",
+        REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE,
+      ],
+      [undefined, REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE],
+      [{ path: '/Users/someone' }, REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE],
+    ];
+    for (const [error, expected] of failures) {
+      const hub = new Hub();
+      const controller = addController(hub, 'browser');
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, 'browser')] },
+        invokeResultFor: (channel) =>
+          channel === PLUGINS_CHANNELS.INSTALL_PLUGIN
+            ? { success: false, error, appError: { detail: '/Users/someone' } }
+            : {
+                success: false,
+                error,
+                data: {
+                  plugin: { name: 'notes', marketplaceId: 'curated/cloud' },
+                  providerOutcomes: { claude: { installed: false, error } },
+                },
+              },
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      expect(
+        await rpc.request(REMOTE_METHODS.invoke, {
+          channel: PLUGINS_CHANNELS.INSTALL_PLUGIN,
+          args: ['acme', 'lint', ''],
+        }),
+      ).toEqual({ success: false, error: expected });
+      expect(
+        await rpc.request(REMOTE_METHODS.invoke, {
+          channel: PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+          args: [
+            {
+              marketplaceId: 'curated/cloud',
+              pluginName: 'notes',
+              providers: ['claude'],
+            },
+          ],
+        }),
+      ).toEqual({
+        success: false,
+        error: expected,
+        data: {
+          plugin: { name: 'notes', marketplaceId: 'curated/cloud' },
+          // An absent provider error stays absent.
+          providerOutcomes: {
+            claude: {
+              installed: false,
+              ...(error === undefined ? {} : { error: expected }),
+            },
+          },
+        },
+      });
+    }
+    // A reply that is not an install result reaches a browser as the
+    // generic failure.
+    const hub = new Hub();
+    const controller = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(controller, 'browser')] },
+      invokeResult: '/Users/someone/.claude/plugins/lint',
+    });
+    const { rpc } = await control(host, controller);
+    await hello(rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    expect(
+      await rpc.request(REMOTE_METHODS.invoke, {
+        channel: PLUGINS_CHANNELS.INSTALL_PLUGIN,
+        args: ['acme', 'lint', ''],
+      }),
+    ).toEqual({ success: false, error: REMOTE_PLUGIN_INSTALL_FAILED_MESSAGE });
+  });
+
   it('fails closed on clone job shapes it does not expect (CAN-7433)', async () => {
     // A job without a `destinationPath` key still has its free-text `error`
     // reduced to a safe clone message, and only job records reach a browser.
@@ -2084,6 +3017,195 @@ describe('browser controller channels', () => {
           ],
         ],
       },
+    ]);
+  });
+
+  it('lists New Task base branches for browsers and agrees the exact base mode only with browsers that offer it (CAN-7437)', async () => {
+    const branchTargets = IPC_CHANNELS.homeListBranchTargets;
+    expect(branchTargets).toBe('home:list-branch-targets');
+    expect(BROWSER_CONTROLLER_CHANNELS).toContain(branchTargets);
+    expect(MOBILE_CONTROLLER_CHANNELS).toContain(branchTargets);
+    // Hosted agents read it for task_create_ref_list (CAN-7445).
+    expect(HOSTED_CONTROLLER_CHANNELS).toContain(branchTargets);
+    // The browser profile offers the exact mode; the hosted agent does not.
+    expect(webControllerProfile('browser', 'web').exactWorktreeBaseBranch).toBe(
+      true,
+    );
+    expect(
+      webControllerProfile('hosted', 'web').exactWorktreeBaseBranch,
+    ).toBeUndefined();
+
+    const hub = new Hub();
+    const offering = addController(hub, 'browser');
+    const silent = addController(hub, 'browser');
+    const phone = addController(hub, 'mobile');
+    const root = generateDeviceKeyPair();
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [
+          pinned(offering, 'browser'),
+          pinned(silent, 'browser'),
+          pinned(phone, 'mobile'),
+          {
+            deviceId: root.deviceId,
+            name: 'Agents',
+            platform: 'linux',
+            kind: 'hosted',
+            publicKey: root.publicKey,
+            pairedAt: new Date(0).toISOString(),
+          },
+        ],
+      },
+    });
+    const featuresOf = (answer: Record<string, unknown>): unknown =>
+      HelloResultSchema.parse(answer).features?.exactWorktreeBaseBranch;
+    const exactCreates: Array<[string, Record<string, unknown>]> = [
+      [
+        IPC_CHANNELS.worktreeCreate,
+        { projectId: 'project', baseBranch: 'remote:main' },
+      ],
+      [
+        IPC_CHANNELS.workspaceCreateWorktree,
+        { workspaceId: 'project', baseBranch: 'local:feature' },
+      ],
+    ];
+    const refused = 'Update both desktops to use this base branch.';
+
+    // A browser that offers the mode gets it echoed, a bridge in exact
+    // mode, and its exact bases forwarded unchanged.
+    const fromOffering = await control(host, offering);
+    expect(
+      featuresOf(
+        await hello(fromOffering.rpc, {
+          version: VERSION,
+          controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+          exactWorktreeBaseBranch: true,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      await invokeCodeWith(fromOffering.rpc, branchTargets, [
+        { workspaceId: 'project' },
+      ]),
+    ).toBe('ok');
+    for (const [channel, request] of exactCreates) {
+      expect(await invokeCodeWith(fromOffering.rpc, channel, [request])).toBe(
+        'ok',
+      );
+    }
+    expect(host.bridge.invokes).toEqual([
+      branchTargets,
+      ...exactCreates.map(([channel]) => channel),
+    ]);
+    expect(host.bridge.invokeArgs).toEqual([
+      [{ workspaceId: 'project' }],
+      ...exactCreates.map(([, request]) => [request]),
+    ]);
+    expect(host.bridge.created).toContainEqual({
+      controllerDeviceId: offering.deviceId,
+      exact: true,
+    });
+    // The other base-branch channels the mode affects stay off for browsers.
+    for (const channel of [
+      IPC_CHANNELS.worktreeListBranches,
+      IPC_CHANNELS.worktreeCreateBranch,
+      IPC_CHANNELS.preferencesLoad,
+    ]) {
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(await invokeCode(fromOffering.rpc, channel)).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    const servedToOffering = host.bridge.invokes.length;
+
+    // A browser that does not offer it keeps the legacy mode: the catalogue
+    // read is served, and an exact base is refused before the bridge.
+    const fromSilent = await control(host, silent);
+    expect(
+      featuresOf(
+        await hello(fromSilent.rpc, {
+          version: VERSION,
+          controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      await invokeCodeWith(fromSilent.rpc, branchTargets, [
+        { workspaceId: 'project' },
+      ]),
+    ).toBe('ok');
+    for (const [channel, request] of exactCreates) {
+      expect(await invokeCodeWith(fromSilent.rpc, channel, [request])).toBe(
+        refused,
+      );
+    }
+    expect(host.bridge.invokes.slice(servedToOffering)).toEqual([
+      branchTargets,
+    ]);
+    expect(host.bridge.created).toContainEqual({
+      controllerDeviceId: silent.deviceId,
+      exact: false,
+    });
+    const servedToBrowsers = host.bridge.invokes.length;
+
+    // Mobile and hosted sessions that offer the mode are never agreed.
+    const fromPhone = await control(host, phone);
+    expect(
+      featuresOf(
+        await hello(fromPhone.rpc, {
+          version: VERSION,
+          controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
+          exactWorktreeBaseBranch: true,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      await invokeCodeWith(fromPhone.rpc, branchTargets, [
+        { workspaceId: 'project' },
+      ]),
+    ).toBe('ok');
+    const agent = addController(hub, 'hosted');
+    const fromAgent = await control(
+      host,
+      agent,
+      delegate(root, agent.identity.publicKey, Date.now() + 60_000),
+    );
+    expect(
+      featuresOf(
+        await hello(fromAgent.rpc, {
+          version: VERSION,
+          controller: { kind: 'hosted', minVersion: REMOTE_PROTOCOL_VERSION },
+          exactWorktreeBaseBranch: true,
+        }),
+      ),
+    ).toBeUndefined();
+    // A hosted session reads the legacy catalogue, with exactly its
+    // workspace argument (CAN-7445).
+    expect(await invokeCode(fromAgent.rpc, branchTargets)).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(
+      await invokeCodeWith(fromAgent.rpc, branchTargets, [
+        { workspaceId: 'project', exact: true },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    expect(
+      await invokeCodeWith(fromAgent.rpc, branchTargets, [
+        { workspaceId: 'project' },
+      ]),
+    ).toBe('ok');
+    expect(host.bridge.created).toContainEqual({
+      controllerDeviceId: agent.deviceId,
+      exact: false,
+    });
+    for (const rpc of [fromPhone.rpc, fromAgent.rpc]) {
+      for (const [channel, request] of exactCreates) {
+        expect(await invokeCodeWith(rpc, channel, [request])).toBe(refused);
+      }
+    }
+    expect(host.bridge.invokes.slice(servedToBrowsers)).toEqual([
+      branchTargets,
+      branchTargets,
     ]);
   });
 });
@@ -3015,6 +4137,521 @@ describe('hosted delegation', () => {
         (channel) => getRemoteChannelDisposition(channel) !== 'tunnel',
       ),
     ).toEqual([]);
+    // The Tasks channels (CAN-7445) are the desktop's own channels; two of
+    // them are not in the protocol's REMOTE_IPC_CHANNELS.
+    expect(HOSTED_TASK_CHANNELS).toEqual({
+      pluginCatalogList: IPC_CHANNELS.pluginCatalogList,
+      homeListBranchTargets: IPC_CHANNELS.homeListBranchTargets,
+      worktreeActivityEntities: IPC_CHANNELS.worktreeActivityEntities,
+      hookChangePause: IPC_CHANNELS.hookChangePause,
+      chatQueueCancel: IPC_CHANNELS.chatQueueCancel,
+      chatQueueEdit: IPC_CHANNELS.chatQueueEdit,
+      chatQueueForce: IPC_CHANNELS.chatQueueForce,
+      worktreeSetLabel: IPC_CHANNELS.worktreeSetLabel,
+      worktreeSetHidden: IPC_CHANNELS.worktreeSetHidden,
+      worktreeSetTrackedBaseBranch: IPC_CHANNELS.worktreeSetTrackedBaseBranch,
+      workEntriesUpdate: IPC_CHANNELS.workEntriesUpdate,
+      sidebarItemGroupsCreate: IPC_CHANNELS.sidebarItemGroupsCreate,
+      sidebarItemGroupsMoveItem: IPC_CHANNELS.sidebarItemGroupsMoveItem,
+    });
+    for (const channel of Object.values(HOSTED_TASK_CHANNELS))
+      expect(HOSTED_CONTROLLER_CHANNELS).toContain(channel);
+    // Four of them are on no other controller list: they stay hosted-only.
+    for (const channel of [
+      HOSTED_TASK_CHANNELS.sidebarItemGroupsCreate,
+      HOSTED_TASK_CHANNELS.sidebarItemGroupsMoveItem,
+      HOSTED_TASK_CHANNELS.workEntriesUpdate,
+      HOSTED_TASK_CHANNELS.worktreeSetTrackedBaseBranch,
+    ]) {
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(channel);
+    }
+  });
+
+  it('admits the hosted Tasks channels with exactly their reviewed arguments (CAN-7445)', async () => {
+    // A hosted delegation authorizes the session for the whole computer, as
+    // the earlier hosted channels are: no channel is held to a subset of
+    // workspaces, whichever key (projectId, workspaceId or
+    // scope.workspaceLocalId) addresses it. The policy holds the shape.
+    const { host, invoke } = await delegatedSession();
+    const channels = HOSTED_TASK_CHANNELS;
+    const worktree = { projectId: 'project-1', worktreeId: 'worktree-1' };
+    const entry = { ...worktree, chatId: 'chat-1', entryId: 'entry-1' };
+    const base = { workspaceId: 'project-1', worktreeId: 'worktree-1' };
+    const title = { projectId: 'project-1', entryId: 'entry-1' };
+    const scope = { workspaceLocalId: 'project-1' };
+    const item = { scope, itemId: 'worktree-1' };
+    const accepted: Array<[string, Record<string, unknown>]> = [
+      [channels.pluginCatalogList, { projectId: 'project-1' }],
+      [channels.homeListBranchTargets, { workspaceId: 'project-1' }],
+      [channels.worktreeActivityEntities, worktree],
+      [channels.hookChangePause, { ...worktree, kind: 'pause', hookKey: 'h' }],
+      [channels.hookChangePause, { ...worktree, kind: 'resume', all: true }],
+      [channels.chatQueueCancel, entry],
+      [channels.chatQueueEdit, { ...entry, text: 'Run the tests' }],
+      [channels.chatQueueForce, entry],
+      [channels.worktreeSetLabel, { ...worktree, label: 'Fix login' }],
+      [channels.worktreeSetLabel, worktree],
+      [channels.worktreeSetHidden, { ...worktree, hidden: true }],
+      [channels.worktreeSetTrackedBaseBranch, { ...base, baseBranch: 'rel/2' }],
+      [channels.workEntriesUpdate, { ...title, title: 'Notes' }],
+      [channels.workEntriesUpdate, { ...title, title: null }],
+      [
+        channels.sidebarItemGroupsCreate,
+        { ...item, name: 'Bugs', color: 'categorical-2' },
+      ],
+      [channels.sidebarItemGroupsCreate, { ...item, name: 'Bugs' }],
+      [channels.sidebarItemGroupsMoveItem, { ...item, groupId: 'grp-1' }],
+      [channels.sidebarItemGroupsMoveItem, { ...item, groupId: null }],
+    ];
+    for (const [channel, arg] of accepted)
+      expect(await invoke(channel, [arg])).toBe('ok');
+    expect(host.bridge.invokes).toEqual(accepted.map(([channel]) => channel));
+    expect(host.bridge.invokeArgs).toEqual(accepted.map(([, arg]) => [arg]));
+
+    const refused: Array<[string, unknown[]]> = [
+      ...Object.values(channels).flatMap(
+        (channel): Array<[string, unknown[]]> => [
+          [channel, []],
+          [channel, [null]],
+        ],
+      ),
+      [channels.pluginCatalogList, [{ projectId: 'project-1' }, {}]],
+      [channels.pluginCatalogList, [{ projectId: 'project-1', refresh: true }]],
+      [channels.homeListBranchTargets, [{ workspaceId: '' }]],
+      [channels.homeListBranchTargets, [{ projectId: 'project-1' }]],
+      [channels.worktreeActivityEntities, [{ projectId: 'project-1' }]],
+      [
+        channels.hookChangePause,
+        [{ ...worktree, kind: 'pause', hookKey: 'h', all: true }],
+      ],
+      [channels.hookChangePause, [{ ...worktree, kind: 'pause' }]],
+      [channels.hookChangePause, [{ ...worktree, kind: 'pause', all: false }]],
+      [channels.hookChangePause, [{ ...worktree, kind: 'delete', all: true }]],
+      [channels.chatQueueCancel, [{ ...entry, queuedMessageRevision: 1 }]],
+      [channels.chatQueueEdit, [entry]],
+      [channels.chatQueueEdit, [{ ...entry, text: '' }]],
+      [
+        channels.chatQueueEdit,
+        [{ ...entry, text: 'x', attachmentPaths: ['/etc/hosts'] }],
+      ],
+      [channels.chatQueueEdit, [{ ...entry, text: 'x', fileReferences: [] }]],
+      [channels.chatQueueEdit, [{ ...entry, text: 'x', inputMode: 'voice' }]],
+      [
+        channels.chatQueueEdit,
+        [{ ...entry, text: 'x', attachmentPromptContexts: [] }],
+      ],
+      [channels.chatQueueForce, [{ ...worktree, chatId: 'chat-1' }]],
+      [channels.worktreeSetLabel, [{ ...worktree, label: '' }]],
+      [channels.worktreeSetLabel, [{ ...worktree, label: 'a\nb' }]],
+      [channels.worktreeSetLabel, [{ ...worktree, label: null }]],
+      [channels.worktreeSetHidden, [{ ...worktree, hidden: 'yes' }]],
+      [channels.worktreeSetHidden, [worktree]],
+      ...[
+        { ...base, baseBranch: 'main', repoId: 'repo-1' },
+        { ...base, baseBranch: null },
+        { ...base, baseBranch: '' },
+        { ...base, baseBranch: '-c' },
+        { ...base, baseBranch: 'main dev' },
+        { ...base, baseBranch: 'a..b' },
+        { ...base, baseBranch: 'main.lock' },
+        { ...base, baseBranch: 'feat/' },
+        { ...base, baseBranch: 'a:b' },
+        { ...worktree, baseBranch: 'main' },
+      ].map((arg): [string, unknown[]] => [
+        channels.worktreeSetTrackedBaseBranch,
+        [arg],
+      ]),
+      [channels.workEntriesUpdate, [{ ...title, title: 'x', status: 'done' }]],
+      [channels.workEntriesUpdate, [{ ...title, title: 'x', pinned: true }]],
+      [channels.workEntriesUpdate, [title]],
+      [channels.workEntriesUpdate, [{ ...title, title: '' }]],
+      [channels.sidebarItemGroupsCreate, [item]],
+      [channels.sidebarItemGroupsCreate, [{ ...item, name: '   ' }]],
+      [
+        channels.sidebarItemGroupsCreate,
+        [{ ...item, name: 'Bugs', labelHidden: true }],
+      ],
+      [
+        channels.sidebarItemGroupsCreate,
+        [{ ...item, name: 'Bugs', scope: { appAdvisor: true } }],
+      ],
+      [
+        channels.sidebarItemGroupsCreate,
+        [{ ...item, name: 'Bugs', color: 'red' }],
+      ],
+      [
+        channels.sidebarItemGroupsMoveItem,
+        [{ ...item, groupId: 'grp-1', before: 'worktree-2' }],
+      ],
+      [channels.sidebarItemGroupsMoveItem, [{ ...item, groupId: 'group-1' }]],
+      [channels.sidebarItemGroupsMoveItem, [item]],
+      // The rest of the group channels stay off.
+      ['sidebar-item-groups:ungroup', [{ scope, groupId: 'grp-1' }]],
+      ['sidebar-item-groups:update', [{ scope, groupId: 'grp-1', name: 'x' }]],
+      ['sidebar-item-groups:move-group', [{ scope, groupId: 'grp-1' }]],
+      ['chat:queue-set-edit-lock', [{ ...entry, locked: true }]],
+    ];
+    for (const [channel, args] of refused)
+      expect([channel, await invoke(channel, args)]).toEqual([
+        channel,
+        'remote_channel_unavailable',
+      ]);
+    expect(host.bridge.invokes).toHaveLength(accepted.length);
+  });
+
+  it('serves the hosted chat settings commands itself, rebuilt from the reviewed fields (CAN-7445)', async () => {
+    const { host, request, invoke } = await delegatedSession();
+    const selections = {
+      collectionIds: ['collection-1'],
+      skillRefs: [],
+      pluginRefs: [{ marketplaceId: 'market', pluginName: 'lint' }],
+      mcpServerRefs: [],
+    };
+    const commandOf = (index: number): unknown =>
+      host.hostedChat.dispatched[index]?.request.command;
+    // The agent's plugin selections replace the create seed's.
+    expect(
+      await request('chat:command', [
+        envelope({
+          type: 'chat.create_tab',
+          tabId: 'chat-1',
+          model: SEEDED_MODEL,
+          pluginSelections: selections,
+        }),
+      ]),
+    ).toMatchObject({ outcome: 'applied' });
+    expect(commandOf(0)).toEqual({
+      type: 'chat.create_tab',
+      tabId: 'chat-1',
+      model: SEEDED_MODEL,
+      pluginSelections: selections,
+    });
+    // A model change runs the create preflight and refuses a provider that
+    // does not serve the model; an unknown model keeps the requested one.
+    const setModel = {
+      type: 'chat.set_model',
+      tabId: 'chat-1',
+      model: 'claude-model',
+      providerType: 'claude',
+    };
+    expect(await request('chat:command', [envelope(setModel)])).toMatchObject({
+      outcome: 'applied',
+    });
+    expect(host.hostedChat.dispatched[1]?.request).toMatchObject({
+      origin: 'portal',
+      command: setModel,
+    });
+    expect(
+      await request('chat:command', [
+        envelope({ ...setModel, model: 'blocked-model' }),
+      ]),
+    ).toMatchObject({
+      outcome: 'rejected',
+      reason: 'This model is blocked by your organization policy.',
+    });
+    expect(
+      await request('chat:command', [
+        envelope({ ...setModel, providerType: 'codex' }),
+      ]),
+    ).toMatchObject({
+      outcome: 'rejected',
+      reason: HOSTED_MODEL_PROVIDER_REFUSAL,
+    });
+    expect(
+      await request('chat:command', [
+        envelope({
+          ...setModel,
+          model: 'gateway-model',
+          providerType: 'codex',
+        }),
+      ]),
+    ).toMatchObject({ outcome: 'applied' });
+    expect(host.hostedChat.dispatched).toHaveLength(3);
+    // Each reviewed patch key, alone or together.
+    const patches: Array<Record<string, unknown>> = [
+      { modelSelectionMode: 'auto' },
+      { modelConfig: { thinkingLevel: 'high' } },
+      { modelConfig: { fastMode: true } },
+      { planMode: true },
+      { planMode: false },
+      { pluginSelections: selections },
+      {
+        planMode: true,
+        modelConfig: { thinkingLevel: 'low', fastMode: false },
+      },
+    ];
+    for (const patch of patches) {
+      const before = host.hostedChat.dispatched.length;
+      expect(
+        await request('chat:command', [
+          envelope({ type: 'chat.patch_tab_settings', tabId: 'chat-1', patch }),
+        ]),
+      ).toMatchObject({ outcome: 'applied' });
+      expect(host.hostedChat.dispatched[before]?.request).toMatchObject({
+        origin: 'portal',
+      });
+      expect(commandOf(before)).toEqual({
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch,
+      });
+    }
+    // Open point D: turning plan mode off while a plan waits for review is
+    // dispatched exactly as asked, as on Portal. The patch carries no plan
+    // review or pending plan exit field, so the pending request is neither
+    // approved nor discarded; the review is only hidden while plan mode is off.
+    const dispatchedBefore = host.hostedChat.dispatched.length;
+    expect(
+      await request('chat:command', [
+        envelope({
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { planMode: false },
+        }),
+      ]),
+    ).toMatchObject({ outcome: 'applied' });
+    expect(host.hostedChat.dispatched).toHaveLength(dispatchedBefore + 1);
+    const planOff = host.hostedChat.dispatched[dispatchedBefore]?.request;
+    expect(planOff).toMatchObject({
+      origin: 'portal',
+      command: {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: false },
+      },
+    });
+    expect(planOff).not.toHaveProperty('expectedPendingPlanExitRequestId');
+    expect(commandOf(dispatchedBefore)).toEqual({
+      type: 'chat.patch_tab_settings',
+      tabId: 'chat-1',
+      patch: { planMode: false },
+    });
+    // Steering a queued message.
+    const steer = {
+      type: 'chat.steer_queued_message',
+      chatId: 'chat-1',
+      queuedMessageId: 'entry-1',
+      queuedMessageRevision: 2,
+    };
+    expect(await request('chat:command', [envelope(steer)])).toMatchObject({
+      outcome: 'applied',
+    });
+    expect(commandOf(host.hostedChat.dispatched.length - 1)).toEqual(steer);
+    const served = host.hostedChat.dispatched.length;
+
+    // Refused by the argument policy before the dispatcher: everything
+    // CAN-7435 locks out, and anything beyond the reviewed keys.
+    const patchOf = (patch: unknown): Record<string, unknown> =>
+      envelope({ type: 'chat.patch_tab_settings', tabId: 'chat-1', patch });
+    const refused: unknown[] = [
+      patchOf({ proposalMode: true }),
+      patchOf({ pendingPlanExit: null }),
+      patchOf({ pendingPlanExitRequestId: null }),
+      patchOf({ trackedPlanImplementation: null }),
+      patchOf({ trackedPlanReviewStatus: 'approved' }),
+      patchOf({ autoArchive: true }),
+      patchOf({ deferredToolsAllowed: true }),
+      patchOf({ title: 'Mine' }),
+      patchOf({ customTitle: 'Mine' }),
+      patchOf({ model: 'claude-model' }),
+      patchOf({ approvalMode: 'bypassPermissions' }),
+      patchOf({ modelSelectionMode: 'manual' }),
+      patchOf({ modelSelectionMode: null }),
+      patchOf({ modelConfig: { speed: 'fast' } }),
+      patchOf({ modelConfig: {} }),
+      patchOf({ modelConfig: { fastMode: 'yes' } }),
+      patchOf({}),
+      patchOf({ planMode: true, customTitle: 'Mine' }),
+      patchOf({ planMode: 'true' }),
+      patchOf({ pluginSelections: { ...selections, bundleIds: [] } }),
+      patchOf({
+        pluginSelections: {
+          ...selections,
+          collectionIds: Array.from({ length: 101 }, (_, i) => `c-${i}`),
+        },
+      }),
+      patchOf({ pluginSelections: { ...selections, collectionIds: [1] } }),
+      patchOf({
+        pluginSelections: {
+          ...selections,
+          pluginRefs: [{ marketplaceId: 'm', pluginName: 'p', owner: 'x' }],
+        },
+      }),
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: true },
+        expectedPluginSelections: selections,
+      }),
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: false },
+        expectedPendingPlanExitRequestId: 'request-1',
+      }),
+      envelope({
+        type: 'chat.create_tab',
+        tabId: 'chat-3',
+        pluginSelections: { collectionIds: [], skillRefs: [] },
+      }),
+      envelope({ ...setModel, providerType: undefined }),
+      envelope({ ...setModel, settings: { thinkingLevel: 'high' } }),
+      envelope({
+        ...setModel,
+        notice: { id: 'notice-1', timestamp: 1, text: 'Changed' },
+      }),
+      envelope({ ...steer, queuedMessageRevision: -1 }),
+      envelope({ ...steer, queuedMessageRevision: 1.5 }),
+      envelope({
+        type: 'chat.force_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+      }),
+      envelope({
+        type: 'chat.cancel_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+      }),
+      envelope({ type: 'chat.mark_read', chatId: 'chat-1' }),
+    ];
+    for (const args of refused)
+      expect(await invoke('chat:command', [args])).toBe(
+        'remote_channel_unavailable',
+      );
+    expect(host.hostedChat.dispatched).toHaveLength(served);
+    expect(host.bridge.invokes).toEqual([]);
+    expect(host.bridge.posts).toEqual([]);
+  });
+
+  it('keeps hosted chat fields within desktop validation and drops unreviewed patch keys past the policy (CAN-7445)', async () => {
+    const selections = {
+      collectionIds: ['collection-1'],
+      skillRefs: [],
+      pluginRefs: [{ marketplaceId: 'market', pluginName: 'lint' }],
+      mcpServerRefs: [],
+    };
+    // Every field the hosted policy admits for these command types is one
+    // the desktop's chat command validation (COMMAND_KEYS) accepts. The
+    // hosted send's `model` is not, a known gap left out of scope.
+    const full: Array<Record<string, unknown> & { type: string }> = [
+      {
+        type: 'chat.create_tab',
+        tabId: 'chat-1',
+        model: 'claude-model',
+        planMode: true,
+        pluginSelections: selections,
+      },
+      {
+        type: 'chat.set_model',
+        tabId: 'chat-1',
+        model: 'claude-model',
+        providerType: 'claude',
+        executionHarness: 'claude',
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: {
+          modelSelectionMode: 'auto',
+          modelConfig: { thinkingLevel: 'high', fastMode: true },
+          planMode: true,
+          pluginSelections: selections,
+        },
+      },
+      {
+        type: 'chat.steer_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+        queuedMessageRevision: 1,
+      },
+    ];
+    for (const command of full) {
+      expect(Object.keys(command).sort()).toEqual(
+        [...(HOSTED_CHAT_COMMAND_FIELDS.get(command.type) ?? [])].sort(),
+      );
+      expect(hostedInvocationAllowed('chat:command', [envelope(command)])).toBe(
+        true,
+      );
+      expect(() => validateChatCommandRequest(envelope(command))).not.toThrow();
+    }
+
+    // The dispatcher rebuilds a patch from the reviewed keys even when the
+    // policy check is bypassed, and refuses one with none left.
+    const dispatched: ChatCommandRequest[] = [];
+    const dispatcher = createHostedChatDispatcher({
+      validate: (value) => validateChatCommandRequest(value),
+      dispatch: (value) => {
+        dispatched.push(value);
+        return Promise.resolve({
+          commandId: value.commandId,
+          revision: 1,
+          outcome: 'applied',
+        });
+      },
+      createSeed: () => Promise.resolve({ model: DEFAULT_MODEL }),
+      modelRefusal: () => Promise.resolve(null),
+      modelProvider: fixtureModelProvider,
+      pendingQuestion: () => Promise.resolve(undefined),
+      answerQuestion: () => Promise.reject(new Error('not answered here')),
+    });
+    const attribution: HostedChatAttribution = {
+      sender: {
+        kind: 'external_agent',
+        connectionId: '00000000-0000-4000-8000-000000000001',
+        clientName: 'Agents',
+        verified: false,
+        userId: ACCOUNT_USER_ID,
+      },
+      rootDeviceId: 'root-device',
+      sessionDeviceId: 'session-device',
+    };
+    expect(
+      await dispatcher(
+        envelope({
+          type: 'chat.patch_tab_settings',
+          tabId: 'chat-1',
+          patch: { planMode: true, customTitle: 'Mine', autoArchive: true },
+        }),
+        attribution,
+      ),
+    ).toMatchObject({ outcome: 'applied' });
+    expect(dispatched[0]).toMatchObject({
+      origin: 'portal',
+      command: {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: true },
+      },
+    });
+    expect(dispatched[0]?.command).toEqual({
+      type: 'chat.patch_tab_settings',
+      tabId: 'chat-1',
+      patch: { planMode: true },
+    });
+    for (const command of [
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { customTitle: 'Mine' },
+      },
+      { type: 'chat.mark_read', chatId: 'chat-1' },
+    ]) {
+      expect(await dispatcher(envelope(command), attribution)).toMatchObject({
+        outcome: 'rejected',
+        reason: HOSTED_CHAT_COMMAND_REFUSAL,
+      });
+    }
+    expect(dispatched).toHaveLength(1);
+    // The desktop merges a partial modelConfig field-wise
+    // (`applySettingsPatch` uses this merge), so a hosted thinking change
+    // keeps the chat's speed.
+    expect(
+      mergeAgentModelConfig(
+        { thinkingLevel: 'high', fastMode: true },
+        { thinkingLevel: 'low' },
+      ),
+    ).toMatchObject({ thinkingLevel: 'low', fastMode: true });
   });
 
   it("stops only the expected turn: Portal's exact stop for a worktree, the exact user Stop for Cowork", async () => {

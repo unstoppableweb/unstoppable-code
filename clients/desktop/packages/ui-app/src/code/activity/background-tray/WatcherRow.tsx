@@ -193,6 +193,7 @@ export function WatcherRow({
           destructive
           busy={busy}
           errorMessage={error}
+          errorSource="watcher-delete"
           onConfirm={(): void => {
             void remove();
           }}

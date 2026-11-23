@@ -93,6 +93,7 @@ import {
   readPersonalCollectionIndex,
 } from '../collections/collection-store';
 import { loadSkills } from '../skills/skill-service';
+import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import { loadMarketplaces } from '../plugins/plugin-service';
 import { getMcpServersIndexFilePath } from '../lib/paths';
 import { isErrnoException } from '../lib/type-guards';
@@ -980,6 +981,15 @@ function selectRemoteControlMcpStatus(
 }
 
 /**
+ * The date an index row stores for its copy (CAN-5239). Rows written before
+ * the index carried it, and invalid values, stay unknown: the field is absent.
+ */
+function storedCreatedAt(value: unknown): { createdAt?: string } {
+  const createdAt = normalizeInstalledAt(value);
+  return createdAt ? { createdAt } : {};
+}
+
+/**
  * Build `portal.mcp.list_servers` from the persisted device index and the
  * existing account inventory cache, plus the existing advertised provider read.
  * Optional provider discovery gets only a short wait; it never starts OAuth.
@@ -1049,6 +1059,7 @@ export async function listRemoteControlMcpServers(): Promise<RemoteControlMcpLis
       ...(typeof server.urlScheme === 'string'
         ? { urlScheme: server.urlScheme }
         : {}),
+      ...storedCreatedAt(server.createdAt),
     });
   }
   // Account-only rows have no device index entry. Carry their cached auth
@@ -1759,6 +1770,7 @@ async function buildRemoteControlCollectionsList(
       id: entry.id,
       name: entry.name,
       description: entry.description,
+      ...storedCreatedAt(entry.createdAt),
       updatedAt: entry.updatedAt,
       ...(entry.revision ? { revision: entry.revision } : {}),
       skillCount: entry.skillCount,

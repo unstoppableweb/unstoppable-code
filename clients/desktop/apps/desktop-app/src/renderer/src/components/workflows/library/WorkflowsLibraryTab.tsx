@@ -203,6 +203,15 @@ export function WorkflowsLibraryTab({
   );
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The delete confirmation lives here, so it shows a failure only while this
+  // tab is mounted.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return (): void => {
+      mounted.current = false;
+    };
+  }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [compact, setCompact] = useState(false);
@@ -593,12 +602,18 @@ export function WorkflowsLibraryTab({
     if (!pendingDelete) return;
     const { target } = pendingDelete;
     setDeleteBusy(true);
+    setDeleteError(null);
     void (async (): Promise<void> => {
       try {
         if (target.kind === 'automation') {
           await removeAutomationRow(target.activity);
         } else if (target.kind === 'pipeline') {
-          await pipelines.remove(target.pipeline);
+          // The confirmation shows and records a failure, so the list's load
+          // error, which this tab would raise again, holds it only once the
+          // confirmation is gone.
+          await pipelines.remove(target.pipeline, {
+            callerShowsFailure: (): boolean => mounted.current,
+          });
         }
         setPendingDelete(null);
       } catch (error) {
@@ -755,6 +770,7 @@ export function WorkflowsLibraryTab({
           busy={deleteBusy}
           confirmDisabled={deletePlan?.ok === false}
           errorMessage={deleteError}
+          errorSource="workflow-library-delete"
           destructive
           dataTestId="workflows-library-delete"
           onCancel={(): void => setPendingDelete(null)}

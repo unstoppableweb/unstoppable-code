@@ -72,6 +72,7 @@ import { isErrnoException } from './type-guards';
 import { validateId } from './validation';
 import { sendToAllWindows } from './window-send';
 import { isTrackedPlansFile } from './plan-persistence';
+import { rebaseArchivedManifestRepositoryPaths } from './archived-container-root-migration';
 import {
   assertArchivedGitStateManifestIdentity,
   assertArchivedGitStatePurgeable,
@@ -553,7 +554,9 @@ async function readManifestFile(
   ) {
     throw new Error(`Invalid archived container manifest: ${filePath}`);
   }
-  return parsed;
+  // Archives made before the internal data-root migration still record the
+  // old root; every reader sees their repository paths on the current root.
+  return rebaseArchivedManifestRepositoryPaths(parsed);
 }
 
 export async function readArchivedContainerManifest(
@@ -656,9 +659,21 @@ export async function listArchivedContainers(
     (manifest) => !isArchivedContainerExpired(manifest, now),
   );
   if (live.length !== manifests.length) {
-    const { purgeExpiredArchivedContainersForWorkspace } =
-      await import('./archived-container-retention');
-    await purgeExpiredArchivedContainersForWorkspace(projectId, now);
+    const {
+      hasExpiredPurgeToAttempt,
+      purgeExpiredArchivedContainersForWorkspace,
+    } = await import('./archived-container-retention');
+    const expiredIds = manifests
+      .filter((manifest) => isArchivedContainerExpired(manifest, now))
+      .map((manifest) => manifest.id);
+    // A purge that just failed is retried by the periodic sweep, not on every
+    // listing: each attempt takes the archive operation lock and rereads
+    // every manifest.
+    if (hasExpiredPurgeToAttempt(projectId, expiredIds)) {
+      await purgeExpiredArchivedContainersForWorkspace(projectId, now, {
+        skipRecentFailures: true,
+      });
+    }
   }
   // Archives that predate disk-usage measurement (or whose post-commit
   // measurement never landed) are measured lazily in the background; the

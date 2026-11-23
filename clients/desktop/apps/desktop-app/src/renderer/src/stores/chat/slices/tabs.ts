@@ -1,4 +1,8 @@
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  reportClientAppError,
+  resolveClientAppError,
+} from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import { inlineFailureText } from '@/lib/inline-app-error';
 import { prepareOpenCodeVisibleFork } from '@canopy/desktop-shared/lib/opencode-fork-context';
 import { chatStoreApi } from '../store-ref';
@@ -3202,13 +3206,13 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     isStillWanted?: () => boolean,
   ): Promise<ContinueTabOnProviderResult> => {
     const stale = (): ContinueTabOnProviderResult => ({
-      status: 'failed',
+      status: 'refused',
       message: 'This model choice is no longer current.',
     });
     if (isStillWanted?.() === false) return stale();
     const sel = target ?? get().selectedWorktree;
     if (!sel) {
-      return { status: 'failed', message: 'No chat target is selected.' };
+      return { status: 'refused', message: 'No chat target is selected.' };
     }
 
     const key = worktreeKey(sel);
@@ -3270,6 +3274,8 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         return {
           status: 'failed',
           message: extractIpcErrorMessage(error),
+          recorded:
+            toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
         };
       }
       // A refresh failure resolves to null even when a slightly-stale index is
@@ -3291,21 +3297,24 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     const wc = get().worktreeChats[key];
     if (!wc) {
       return {
-        status: 'failed',
+        status: 'refused',
         message: 'The source chat state is unavailable.',
       };
     }
 
     const source = wc.tabs.find((t) => t.id === sourceTabId);
     if (!source || source.kind === 'file') {
-      return { status: 'failed', message: 'The source chat no longer exists.' };
+      return {
+        status: 'refused',
+        message: 'The source chat no longer exists.',
+      };
     }
 
     const sourceProviderType = resolveTabProviderType(source);
     const targetProviderType = getProviderForModel(targetModel);
     if (!targetProviderType) {
       return {
-        status: 'failed',
+        status: 'refused',
         message: `Unknown model provider: ${targetModel}`,
       };
     }
@@ -3338,19 +3347,19 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       sel.projectId,
     );
     if (!eligibility.ok) {
-      return { status: 'failed', message: eligibility.reason };
+      return { status: 'refused', message: eligibility.reason };
     }
     // `canContinueOnOtherHarness` only passes once the source resolves to a
     // locked provider, which is the same derivation as `resolveTabProviderType`.
     // Narrow it here so the handoff prompt below cannot fall back to a default
     // that would mislabel a Codex source as Claude.
     if (!sourceProviderType) {
-      return { status: 'failed', message: 'The source chat has no provider.' };
+      return { status: 'refused', message: 'The source chat has no provider.' };
     }
 
     const selection = selectMessagesForForkOrBranch(source);
     if (!selection) {
-      return { status: 'failed', message: 'This chat has nothing to carry.' };
+      return { status: 'refused', message: 'This chat has nothing to carry.' };
     }
     const { messagesToClone } = selection;
 
@@ -3362,7 +3371,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     const conversationText = buildHandoffSummaryInput(messagesToClone);
     if (!conversationText.trim()) {
       return {
-        status: 'failed',
+        status: 'refused',
         message: 'This chat has no conversation text to summarize.',
       };
     }
@@ -3398,12 +3407,15 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       return {
         status: 'failed',
         message: extractIpcErrorMessage(error),
+        recorded:
+          toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
       };
     }
     if (!summary) {
       return {
         status: 'failed',
         message: 'Summary generation returned no content.',
+        recorded: false,
       };
     }
 
@@ -3412,7 +3424,10 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
     const currentWc = get().worktreeChats[key];
     const currentSource = currentWc?.tabs.find((t) => t.id === sourceTabId);
     if (!currentSource || currentSource.kind === 'file') {
-      return { status: 'failed', message: 'The source chat no longer exists.' };
+      return {
+        status: 'refused',
+        message: 'The source chat no longer exists.',
+      };
     }
     const recheck = canContinueOnOtherHarness(
       {
@@ -3423,7 +3438,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
       sel.projectId,
     );
     if (!recheck.ok) {
-      return { status: 'failed', message: recheck.reason };
+      return { status: 'refused', message: recheck.reason };
     }
     const currentLastMessageId =
       currentSource.messages.length > 0
@@ -3446,7 +3461,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         conversationText;
     if (structureChanged || contentChanged || currentSelection === null) {
       return {
-        status: 'failed',
+        status: 'refused',
         message:
           'This chat changed while the summary was being prepared. Try continuing it again.',
       };
@@ -3520,6 +3535,7 @@ export const createTabsSlice: StateCreator<ChatState, [], [], ChatTabsSlice> = (
         status: 'failed',
         message:
           'Could not check which plugins work on the other harness. Try continuing this chat again.',
+        recorded: false,
       };
     }
     const targetPluginSelections = sanitizePluginSelectionsForProvider(
@@ -3724,10 +3740,13 @@ ${summary}
       destinationTab: continuationMetadata,
     });
     if (canonicalCreation !== 'accepted') {
-      return {
-        status: 'failed',
-        message: 'The continued transcript could not be saved.',
-      };
+      // The dispatch drops the error behind its answer: a transport failure is
+      // an IPC rejection main already recorded, and a conflict or rejection is
+      // a refusal.
+      const message = 'The continued transcript could not be saved.';
+      return canonicalCreation === 'transport_failed'
+        ? { status: 'failed', message, recorded: true }
+        : { status: 'refused', message };
     }
 
     set((latest) => {

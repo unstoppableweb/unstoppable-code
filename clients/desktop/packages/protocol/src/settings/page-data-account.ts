@@ -1,4 +1,5 @@
 import { personalAiGatewayConfigSchema } from '../model-gateway';
+import { CoreIntegrationProviderKeyListResultSchema } from '../canopy-core/core/integration/provider-key';
 import { z } from 'zod';
 import type { SettingsRoute } from './routes';
 import type { PublicProfileSettings } from './account';
@@ -34,7 +35,9 @@ export const ACCOUNT_PAGE_DATA_KINDS = [
   'account.integrations',
   'account.plugins',
   'account.mcp',
+  'account.delegation',
   'account.security',
+  'account.model-providers',
   'account.ai-gateway',
   'account.billing',
   'account.invoice',
@@ -201,6 +204,15 @@ export const accountAppearancePageDataSchema = z.looseObject({
   data: z.looseObject({}),
 });
 
+/**
+ * `/account/delegation`. The page loads the saved cloud delegation limits
+ * client-side through `account.settings.delegation.read`.
+ */
+export const accountDelegationPageDataSchema = z.looseObject({
+  kind: z.literal('account.delegation'),
+  data: z.looseObject({}),
+});
+
 /** `/account/integrations` → `GitHubCloudSettings` props. */
 export const accountIntegrationsPageDataSchema = z.looseObject({
   kind: z.literal('account.integrations'),
@@ -282,6 +294,18 @@ export const accountInvoicePageDataSchema = z.looseObject({
   }),
 });
 
+/**
+ * `/account/model-providers`: the person's own Anthropic and OpenAI keys for
+ * cloud chats, as status only. The key itself is write-only and never read.
+ */
+export const accountModelProvidersPageDataSchema = z.looseObject({
+  kind: z.literal('account.model-providers'),
+  data: CoreIntegrationProviderKeyListResultSchema,
+});
+export type AccountModelProvidersPageData = z.infer<
+  typeof accountModelProvidersPageDataSchema
+>;
+
 export const accountAiGatewayPageDataSchema = z.looseObject({
   kind: z.literal('account.ai-gateway'),
   data: z.looseObject({
@@ -302,7 +326,9 @@ export const accountPageDataSchema = z.discriminatedUnion('kind', [
   accountIntegrationsPageDataSchema,
   accountPluginsPageDataSchema,
   accountMcpPageDataSchema,
+  accountDelegationPageDataSchema,
   accountSecurityPageDataSchema,
+  accountModelProvidersPageDataSchema,
   accountAiGatewayPageDataSchema,
   accountBillingPageDataSchema,
   accountInvoicePageDataSchema,
@@ -330,6 +356,9 @@ export type AccountPluginsPageData = z.infer<
   typeof accountPluginsPageDataSchema
 >;
 export type AccountMcpPageData = z.infer<typeof accountMcpPageDataSchema>;
+export type AccountDelegationPageData = z.infer<
+  typeof accountDelegationPageDataSchema
+>;
 export type AccountSecurityPageData = z.infer<
   typeof accountSecurityPageDataSchema
 >;
@@ -371,8 +400,12 @@ export function accountPageDataKindForRoute(
       return 'account.plugins';
     case 'mcp':
       return 'account.mcp';
+    case 'delegation':
+      return 'account.delegation';
     case 'security':
       return 'account.security';
+    case 'model-providers':
+      return 'account.model-providers';
     case 'ai-gateway':
       return 'account.ai-gateway';
     case 'billing':

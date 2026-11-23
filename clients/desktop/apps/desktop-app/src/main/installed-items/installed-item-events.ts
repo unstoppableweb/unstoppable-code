@@ -3,8 +3,11 @@ import { refreshInvocableInventoryAfterMutation } from '../plugins/invocable-inv
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
 import { sendToAllWindows } from '../lib/window-send';
+import { INSTALLED_ITEM_CHANNELS } from '@canopy/desktop-shared/types/installed-items';
 
-export const INSTALLED_ITEMS_CHANGED_CHANNEL = 'installed-items:changed';
+// Sent to every window, including the main window whose pushes Remote
+// Control forwards to controllers.
+export const INSTALLED_ITEMS_CHANGED_CHANNEL = INSTALLED_ITEM_CHANNELS.CHANGED;
 export function notifyInstalledItemsChanged(): void {
   bumpGlobalPluginDefaultsRevision();
   refreshInvocableInventoryAfterMutation('installed-items');

@@ -507,10 +507,18 @@ export function MemoryPanel({
           setHidden((currentHidden) => settled.reduce(without, currentHidden));
         }
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!current) return;
         setListError("Couldn't load memories. Try again.");
         setLoading(false);
+        // A watcher refresh can fail while another view replaces the list,
+        // so only a list that is on screen shows this as an inline error.
+        recordSurfacedError({
+          chokePoint: 'notice',
+          ...(listShownRef.current ? { surface: 'inline' as const } : {}),
+          identifier: 'memory-panel-list-load',
+          error,
+        });
       });
     return (): void => {
       current = false;
@@ -532,7 +540,15 @@ export function MemoryPanel({
       .then((next) => {
         if (current) setStatus(next);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // The panel keeps its last status, so nothing shows.
+        if (current)
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'memory-panel-status-load',
+            error,
+          });
+      });
     return (): void => {
       current = false;
     };
@@ -574,7 +590,15 @@ export function MemoryPanel({
       .then((found) => {
         if (current) setChats(found);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // Rows keep the chats they knew, so nothing shows.
+        if (current)
+          recordSurfacedError({
+            chokePoint: 'notice',
+            identifier: 'memory-panel-chats-lookup',
+            error,
+          });
+      });
     return (): void => {
       current = false;
     };
@@ -649,6 +673,17 @@ export function MemoryPanel({
   // The file under an open editor went away (deleted or archived elsewhere).
   const removedWhileEditing =
     view.kind === 'detail' && view.editing && !loading && !listedEntry;
+  // History, conflicts and an open memory replace the list, and with it the
+  // list's error state.
+  const listShown =
+    !(
+      (view.kind === 'conflicts' || view.kind === 'history') &&
+      client.sync !== undefined
+    ) && !openEntry;
+  const listShownRef = useRef(listShown);
+  useEffect(() => {
+    listShownRef.current = listShown;
+  }, [listShown]);
 
   const readDocument = useCallback(
     async (entry: MemoryEntry): Promise<LocalMemoryFileDocument> =>

@@ -6,7 +6,7 @@ import type {
   WorktreeDiscardRefusal,
   WorktreeDiscardResult,
 } from '@canopy/protocol/remote-control/shell/worktree-discard';
-import { describesRetainedArchive, failureText } from './discard-store';
+import { describesRetainedArchive, failedAttempt } from './discard-store';
 import type { ProjectDeletionDiscardOffer } from './project-deletion-offer';
 
 /**
@@ -44,7 +44,12 @@ export type ProjectDeletionDiscardError =
       readonly reason: WorktreeDiscardRefusal;
     }
   | { readonly kind: 'changed'; readonly worktreeName?: string }
-  | { readonly kind: 'failed'; readonly message: string | null };
+  | {
+      readonly kind: 'failed';
+      readonly message: string | null;
+      /** The host already recorded this failure. */
+      readonly recorded?: true;
+    };
 
 export type ProjectDeletionDiscardView =
   | { readonly phase: 'closed' }
@@ -255,12 +260,8 @@ function createProjectDeletionDiscardStore(
             retainedArchives: true,
           })
           .catch(() => undefined);
-        if (fresh)
-          refreshDescription(current, fresh, {
-            kind: 'failed',
-            message: failureText(error),
-          });
-        else stop(current, { kind: 'failed', message: failureText(error) });
+        if (fresh) refreshDescription(current, fresh, failedAttempt(error));
+        else stop(current, failedAttempt(error));
         return 'done';
       }
       if (current === generation) {
@@ -307,14 +308,11 @@ function createProjectDeletionDiscardStore(
             })
             .catch(() => undefined);
           if (fresh) {
-            refreshDescription(current, fresh, {
-              kind: 'failed',
-              message: failureText(error),
-            });
+            refreshDescription(current, fresh, failedAttempt(error));
             return 'stop';
           }
         }
-        stop(current, { kind: 'failed', message: failureText(error) });
+        stop(current, failedAttempt(error));
         return 'stop';
       }
       if (result.status === 'discarded') {
@@ -519,12 +517,8 @@ function createProjectDeletionDiscardStore(
                 retainedArchives: true,
               })
               .catch(() => undefined);
-            if (fresh)
-              refreshDescription(current, fresh, {
-                kind: 'failed',
-                message: failureText(error),
-              });
-            else stop(current, { kind: 'failed', message: failureText(error) });
+            if (fresh) refreshDescription(current, fresh, failedAttempt(error));
+            else stop(current, failedAttempt(error));
             return;
           }
           if (current === generation) {

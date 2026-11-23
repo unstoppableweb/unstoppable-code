@@ -122,6 +122,9 @@ function isOwnGatewayRow(option: ModelCatalogOption): boolean {
   );
 }
 const OWN_GATEWAY_LABEL = 'AI gateway';
+/** The person's own API key rows follow an own gateway, before AI Credits. */
+const PROVIDER_KEY_SORT_ORDER = 260;
+const PROVIDER_KEY_VENDOR = 'provider-key';
 const ZAI_SORT_ORDER = 300;
 const OTHER_SORT_ORDER = 400;
 
@@ -421,6 +424,18 @@ export function RemoteControlModelPicker({
           ? { ...identity, isDefault: true }
           : identity;
         const source = optionSource(option);
+        if (option.funding === 'provider-key') {
+          // The person's own API key bills these, not AI Credits: a section
+          // per key, headed by the row's family label ("Your Claude key"),
+          // never the hosted vendor's section beside the credits rows.
+          const section = option.family ?? PROVIDER_KEY_VENDOR;
+          return {
+            ...option,
+            family: section,
+            vendor: section,
+            sortOrder: PROVIDER_KEY_SORT_ORDER,
+          };
+        }
         if (option.funding === 'org-gateway') {
           // An own gateway is not AI Credits: its rows get their own section,
           // never the brand's, even when a model shares a hosted vendor.
@@ -643,7 +658,8 @@ export function RemoteControlModelPicker({
             libraryLocked: false,
             usableNow: rowReadiness.usableNow(option.id),
             creditsRoute:
-              option.funding === 'org-gateway'
+              option.funding === 'org-gateway' ||
+              option.funding === 'provider-key'
                 ? 'no'
                 : optionSource(option) === 'ai-gateway'
                   ? 'yes'

@@ -10,13 +10,17 @@ import type { CreditsCheckFeedbackKind } from './types';
  * - `no_billing_source`: nothing this chat can run has a billing source.
  * - `model_locked`: an advanced model needs a purchase (or sign-in) first.
  * - `queued_held`: a queued message waits on credits.
+ * - `own_key_limit`: a send on the person's own key or gateway at 0 credits,
+ *   past this month's own-key compute allowance (CAN-7502). Only credits can
+ *   pay now, so it offers the purchase and no provider choice.
  */
 export type CreditsPromptCondition =
   | 'out_of_credits'
   | 'quota_limit'
   | 'no_billing_source'
   | 'model_locked'
-  | 'queued_held';
+  | 'queued_held'
+  | 'own_key_limit';
 
 /**
  * Why a prompt is resolved: one of the {@link CreditsPromptCondition}s, or

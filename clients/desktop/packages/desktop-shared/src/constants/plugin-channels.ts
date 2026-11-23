@@ -1,3 +1,5 @@
+import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
+
 /**
  * IPC channel names for the plugins / marketplaces subsystem.
  *
@@ -29,8 +31,10 @@ export const PLUGINS_CHANNELS = {
    * repository listing and native manifests, read without cloning (spec 3b).
    */
   PREVIEW_MANIFEST: 'plugins:preview-manifest',
-  INSTALL_PLUGIN: 'plugins:install-plugin',
-  INSTALL_BUILT_IN_PLUGIN: 'plugins:install-built-in-plugin',
+  // Remote Control reaches both installs through the portable adapter
+  // (CAN-7442).
+  INSTALL_PLUGIN: REMOTE_IPC_CHANNELS.pluginsInstallPlugin,
+  INSTALL_BUILT_IN_PLUGIN: REMOTE_IPC_CHANNELS.pluginsInstallBuiltInPlugin,
   PREPARE_CODEX_COMPATIBILITY: 'plugins:prepare-codex-compatibility',
   SET_CODEX_COMPAT_DISABLED: 'plugins:set-codex-compat-disabled',
   // One Add for every harness, for plugins and skills (CAN-6816).

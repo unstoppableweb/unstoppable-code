@@ -1,5 +1,6 @@
 export {
   hasClosestMethod,
+  isBehindModal,
   isDialogTarget,
   isMacPlatform,
   isShortcutEvent,

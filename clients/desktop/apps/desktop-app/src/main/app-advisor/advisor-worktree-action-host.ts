@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { IPC_CHANNELS, type WorktreeData } from '@canopy/desktop-shared/types';
+import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 import { createAgentChatWorktree } from '../lib/agent-chat-worktree';
 import {
   launchCiCheckFixChat,
@@ -91,7 +92,7 @@ export function mainAdvisorWorktreeActionHost(options: {
       const created = await createAgentChatWorktree({
         ...request,
         callerSource: 'app-advisor',
-        getWindow: options.getMainWindow,
+        interfacePort: windowAgentInterfacePort(options.getMainWindow),
       });
       // Windows reload worktrees on a debounce; send the full list, which
       // they apply at once, so a following select finds the new row.

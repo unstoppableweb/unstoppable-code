@@ -19,6 +19,8 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import { getDocument } from '@canopy/ui-shared/panels';
 import type { AutomationMutationResponse } from '@canopy/desktop-shared/types';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
 import type { ChatBannerTarget } from '@/stores/aiCreditsBannerStore';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -156,6 +158,9 @@ export function ScheduledAutomationsNoticeView({
   const [pauseId, setPauseId] = useState<string | null>(null);
   const [pauseBusy, setPauseBusy] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
+  // The shown text is an answer main gave or an IPC failure it already
+  // recorded, so the dialog must not record it again. Reset with `pauseError`.
+  const [pauseErrorRecorded, setPauseErrorRecorded] = useState(false);
 
   const single = recurring.length === 1 ? recurring[0] : undefined;
   const singleId = single?.automationId;
@@ -185,26 +190,35 @@ export function ScheduledAutomationsNoticeView({
     if (!singleId) return;
     setMenuOpen(false);
     setPauseError(null);
+    setPauseErrorRecorded(false);
     setPauseId(singleId);
   }, [singleId]);
 
   const handleCancelPause = useCallback((): void => {
     setPauseId(null);
     setPauseError(null);
+    setPauseErrorRecorded(false);
   }, []);
 
   const handleConfirmPause = useCallback(async (): Promise<void> => {
     if (!pauseId) return;
     setPauseBusy(true);
     setPauseError(null);
+    setPauseErrorRecorded(false);
     try {
       const result = await onPause(pauseId);
       if (result.ok) {
         setPauseId(null);
       } else {
+        // The store turns a rejected IPC call into this answer after main
+        // recorded it, and main's own refusals are not failures.
+        setPauseErrorRecorded(true);
         setPauseError(result.error || PAUSE_FAILED_FALLBACK);
       }
-    } catch {
+    } catch (error: unknown) {
+      setPauseErrorRecorded(
+        toAppError(resolveClientAppError(error))?.recordedBy !== undefined,
+      );
       setPauseError(PAUSE_FAILED_FALLBACK);
     } finally {
       setPauseBusy(false);
@@ -346,6 +360,9 @@ export function ScheduledAutomationsNoticeView({
           busy={pauseBusy}
           busyLabel="Pausing…"
           errorMessage={pauseError}
+          {...(pauseErrorRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'scheduled-automations-pause' })}
           onConfirm={(): void => void handleConfirmPause()}
           onCancel={handleCancelPause}
           ownerDocument={getDocument(moreButtonRef.current)}

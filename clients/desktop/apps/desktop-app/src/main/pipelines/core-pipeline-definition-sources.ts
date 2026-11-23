@@ -76,6 +76,7 @@ import {
 import {
   copyPackageInstall,
   dropPackageInstallInBackground,
+  listPackageInstalls,
   readPublicPipelineShareRemote,
   removePackageInstall,
 } from './pipeline-package-service';
@@ -1051,7 +1052,9 @@ function sharedPort(): PipelineDefinitionSourcePort {
 }
 
 /** Core pipeline definitions over the desktop's sources. */
-async function assertWritableContext(definitionId: string): Promise<void> {
+export async function assertWritableContext(
+  definitionId: string,
+): Promise<void> {
   try {
     await assertStoredPipelineContext(definitionId);
   } catch (error) {
@@ -1097,7 +1100,7 @@ export async function applyUserPipelineDeleteEffects(
   );
 }
 
-async function assertPersonalProjectCopy(
+export async function assertPersonalProjectCopy(
   workspaceId: string | undefined,
 ): Promise<void> {
   let owner: Awaited<ReturnType<typeof readProjectPipelineOwner>>;
@@ -1115,6 +1118,72 @@ async function assertPersonalProjectCopy(
       'core.pipeline.contextMismatch',
       'Workflow unavailable (context-mismatch)',
     );
+}
+
+/**
+ * What the desktop keeps about a copy's origin, keyed by the copy (CAN-7522):
+ * a share's install receipt, or the install origin a stored source carries.
+ * A project file has none. Recording it again changes nothing; `onRollback`
+ * takes its undo.
+ */
+export async function recordPipelineCopyOrigin(
+  origin: PipelineDefinitionCopy['origin'],
+  definitionId: string,
+  onRollback?: (undo: () => Promise<void>) => void,
+): Promise<void> {
+  // A share's read already fetched the detail its receipt records.
+  const share = presentedPipeline('read', 'shared', origin.definitionId);
+  if (
+    origin.source === 'shared' &&
+    share?.kind === 'shared' &&
+    'rawPipeline' in share.pipeline
+  )
+    await recordSharedPipelineInstall(share.pipeline, definitionId, onRollback);
+  else if (origin.source !== 'project')
+    await copyPipelineInstallOrigin(
+      origin.definitionId,
+      definitionId,
+      onRollback,
+    );
+}
+
+/**
+ * A copy's source as only this app can read it (CAN-7522): a curated, shared
+ * or project definition, through the port that reads it here. `undefined`
+ * for a bundled or user source, which the store's own reader reads.
+ */
+export async function readPipelineCopySource(
+  origin: PipelineDefinitionCopy['origin'],
+  scope: CanopyWorkspaceScope,
+  signal: AbortSignal,
+): Promise<
+  | Pick<
+      PipelineDefinitionSourceDocument,
+      'name' | 'description' | 'icon' | 'format' | 'text'
+    >
+  | undefined
+> {
+  if (origin.source === 'user' || origin.source === 'bundled') return undefined;
+  const port = [projectPort(), curatedPort(), sharedPort()].find((candidate) =>
+    candidate.sources.includes(origin.source),
+  );
+  if (!port)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.sourceUnavailable',
+      `This app cannot read ${origin.source} workflows.`,
+    );
+  const document = await port.read(origin.source, origin.definitionId, {
+    scope,
+    signal,
+    sources: [origin.source],
+  });
+  if (!document)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.definitionNotFound',
+      `Workflow not found: ${origin.definitionId}`,
+    );
+  const { name, description, icon, format, text } = document;
+  return { name, description, icon, format, text };
 }
 
 /** The store steps of a copy, so a test can stand in for the store. */
@@ -1144,25 +1213,7 @@ export async function copyPipelineWithProvenance<T>(
   };
   let created: T | undefined;
   try {
-    // A share's read already fetched the detail its receipt records; a
-    // project file has no install receipt to carry.
-    const share = presentedPipeline('read', 'shared', origin.definitionId);
-    if (
-      origin.source === 'shared' &&
-      share?.kind === 'shared' &&
-      'rawPipeline' in share.pipeline
-    )
-      await recordSharedPipelineInstall(
-        share.pipeline,
-        definitionId,
-        onRollback,
-      );
-    else if (origin.source !== 'project')
-      await copyPipelineInstallOrigin(
-        origin.definitionId,
-        definitionId,
-        onRollback,
-      );
+    await recordPipelineCopyOrigin(origin, definitionId, onRollback);
     created = await store.create();
     if (store.idOf(created) !== definitionId)
       throw new Error('Pipeline create identity mismatch');
@@ -1217,6 +1268,35 @@ export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
             sources: ['user'],
           })) ?? written,
       });
+    },
+    // As copyPipelineWithProvenance stores it: a stored source with a
+    // package install gives its copy the source's own bytes.
+    copiedText: async (copy): Promise<string> => {
+      if (copy.origin.source !== 'user' && copy.origin.source !== 'bundled')
+        return copy.text;
+      const installed = (await listPackageInstalls()).some(
+        (install) => install.localPipelineId === copy.origin.definitionId,
+      );
+      if (!installed) return copy.text;
+      const source = localPipelines.getPipelineText(copy.origin.definitionId);
+      if (!source.success || source.data === undefined)
+        throw new PipelineDefinitionSourceError(
+          'core.pipeline.sourceUnavailable',
+          source.error ?? 'Failed to read the source workflow',
+        );
+      return source.data;
+    },
+    // A crash between the copy's package bytes and its install record leaves
+    // the record unwritten; a copy that has one is left as it is.
+    finishCopy: async (copy): Promise<void> => {
+      if (copy.origin.source !== 'user' && copy.origin.source !== 'bundled')
+        return;
+      const installs = await listPackageInstalls();
+      const recorded = (localPipelineId: string): boolean =>
+        installs.some((install) => install.localPipelineId === localPipelineId);
+      if (!recorded(copy.origin.definitionId) || recorded(copy.definitionId))
+        return;
+      await copyPackageInstall(copy.origin.definitionId, copy.definitionId);
     },
     upsert: async (
       write,

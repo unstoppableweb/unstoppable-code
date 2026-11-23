@@ -409,7 +409,8 @@ export interface PluginsAPI {
     installLocation: string,
     pluginSourcePath: string,
     componentFile: string,
-  ): Promise<IPCResult<PluginComponentContent>>;
+    mode?: 'catalog-checkout',
+  ): Promise<IPCResult<PluginComponentContent & { truncated?: true }>>;
   /** Customize's light preview of a catalog plugin not added yet. */
   previewManifest(
     marketplaceId: string,

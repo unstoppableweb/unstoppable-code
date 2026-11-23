@@ -66,9 +66,9 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyWrites: count((d) => d.kind === 'legacy' && d.access === 'write'),
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
-      coreWrites: 182,
+      coreWrites: 180,
       coreReads: 120,
-      hostPresentation: 8,
+      hostPresentation: 5,
       presentation: 87,
       legacyWrites: 36,
       legacyReads: 9,
@@ -96,19 +96,40 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
     });
   });
 
-  // CAN-7298: the Remote Control dialog actions and their legacy aliases run
-  // in main through the shared engine, never as renderer presentation.
-  it('the Remote Control dialog actions and canopy_portal aliases run through the shared engine', () => {
-    for (const type of [
-      ...REMOTE_CONTROL_ACTION_TYPES,
-      'canopy_portal.open',
-      'canopy_portal.close',
-      'canopy_portal.open_account_settings',
-    ])
+  // CAN-7298: the Remote Control dialog actions run in main through the
+  // shared engine, never as renderer presentation.
+  it('the Remote Control dialog actions run through the shared engine', () => {
+    for (const type of REMOTE_CONTROL_ACTION_TYPES)
       expect(APP_ADVISOR_ACTION_DISPOSITIONS[type]).toEqual({
         kind: 'host_presentation',
         executor: 'shared-engine',
       });
+  });
+
+  // CAN-7345: the Portal-era aliases are gone from every list.
+  it('no canopy_portal action has a disposition or a catalog entry', () => {
+    const removed: readonly string[] = [
+      'canopy_portal.open',
+      'canopy_portal.close',
+      'canopy_portal.open_account_settings',
+      'canopy_portal.start',
+      'canopy_portal.stop',
+    ];
+    expect(
+      Object.keys(APP_ADVISOR_ACTION_DISPOSITIONS).filter((type) =>
+        type.startsWith('canopy_portal.'),
+      ),
+    ).toEqual([]);
+    expect(
+      APP_ADVISOR_ACTION_CATALOG.map((entry) => entry.type).filter((type) =>
+        type.startsWith('canopy_portal.'),
+      ),
+    ).toEqual([]);
+    for (const name of removed)
+      expect({
+        name,
+        present: Object.hasOwn(APP_ADVISOR_ACTION_DISPOSITIONS, name),
+      }).toEqual({ name, present: false });
   });
 
   it("the grant set is exactly the union of the writes' grants", () => {

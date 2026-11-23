@@ -4,11 +4,20 @@
     "app-advisor:get-state": ["url"],
     "app-advisor:settings-view": ["sourceUrl", "url"],
     "canopy-json:read": ["url"],
+    "chat-project:blueprints-list": ["url"],
+    "chat-project:blueprints-refresh": ["url"],
+    "chat-project:create": ["url"],
+    "chat-project:create-from-template": ["url"],
+    "chat-project:list": ["url"],
+    "chat-project:template-build": ["url"],
     "chat:session-cloud-export-list": ["remoteUrl"],
     "chat:session-import-inspect": ["remoteUrl"],
     "clone-jobs:changed": ["remoteUrl"],
     "clone-jobs:list": ["remoteUrl"],
     "mcp-servers:list-detected": ["url"],
+    "mcp-servers:load-server": ["authorizationUrl", "tokenUrl", "url"],
+    "mcp-servers:save-server": ["authorizationUrl", "tokenUrl", "url"],
+    "mcp-servers:start-account": ["authorizationUrl"],
     "model-registry:get": ["baseUrl"],
     "model-registry:updated": ["baseUrl"],
     "plugin-catalog:list": ["sourceUrl", "url"],
@@ -22,27 +31,32 @@
     "plugins:removeMarketplace": ["sourceUrl", "url"],
     "plugins:set-codex-compat-disabled": ["url"],
     "plugins:updateMarketplace": ["sourceUrl", "url"],
-    "projects:load": ["manifestUrl"],
-    "projects:save": ["manifestUrl"],
+    "projects:load": ["manifestUrl", "url"],
+    "projects:save": ["manifestUrl", "url"],
     "repo:get-remote-url": ["remoteUrl"],
     "resource-monitor:get-snapshot": ["displayUrl"],
     "resource-monitor:snapshot": ["displayUrl"],
-    "workspace:add-from-folder": ["manifestUrl"],
-    "workspace:add-from-remote": ["manifestUrl"],
+    "standalone-chat:import-project": ["url"],
+    "start-page:resolve": ["url"],
+    "workspace:add-from-folder": ["manifestUrl", "url"],
+    "workspace:add-from-remote": ["manifestUrl", "url"],
     "workspace:add-repo": ["manifestUrl"],
-    "workspace:combine-worktree-with-existing-worktree": ["manifestUrl"],
-    "workspace:combine-worktree-with-workspace": ["manifestUrl"],
-    "workspace:create": ["manifestUrl"],
-    "workspace:create-new": ["manifestUrl"],
-    "workspace:create-temporary-from-repos": ["manifestUrl"],
-    "workspace:create-temporary-worktree-from-repos": ["manifestUrl"],
-    "workspace:create-temporary-worktree-from-workspaces": ["manifestUrl"],
-    "workspace:import-from-repo": ["manifestUrl"],
+    "workspace:combine-worktree-with-existing-worktree": ["manifestUrl", "url"],
+    "workspace:combine-worktree-with-workspace": ["manifestUrl", "url"],
+    "workspace:create": ["manifestUrl", "url"],
+    "workspace:create-new": ["manifestUrl", "url"],
+    "workspace:create-temporary-from-repos": ["manifestUrl", "url"],
+    "workspace:create-temporary-worktree-from-repos": ["manifestUrl", "url"],
+    "workspace:create-temporary-worktree-from-workspaces": [
+      "manifestUrl",
+      "url"
+    ],
+    "workspace:import-from-repo": ["manifestUrl", "url"],
     "workspace:init-git": ["url"],
-    "workspace:promote-temporary": ["manifestUrl"],
-    "workspace:read-settings-data": ["manifestUrl", "remoteUrl"],
+    "workspace:promote-temporary": ["manifestUrl", "url"],
+    "workspace:read-settings-data": ["manifestUrl", "remoteUrl", "url"],
     "workspace:reference-repo-status-event": ["remoteUrl"],
-    "workspace:set-private-memory": ["manifestUrl"]
+    "workspace:set-private-memory": ["manifestUrl", "url"]
   },
   "exempt": [
     {
@@ -494,61 +508,9 @@
     },
     {
       "field": "url",
-      "reason": "(d) A user-saved MCP server's URL can carry a credential, and mcp-servers:save-server takes it back from the controller, so it needs CAN-7082's write-side merge before it can be stripped. Detected and plugin-bundled servers' URLs are out-only and projected.",
-      "ticket": "CAN-7082",
-      "channels": ["mcp-servers:load-server", "mcp-servers:save-server"]
-    },
-    {
-      "field": "url",
       "reason": "(g) The agent's browser.wait_for target in an interface-tool call the controller's renderer runs. CAN-7082 refuses controller-run tool inputs that carry URLs (its third PR).",
       "ticket": "CAN-7082",
       "channels": ["app-advisor:tool-request"]
-    },
-    {
-      "field": "url",
-      "reason": "User-entered project start page URL (ProjectStartPage kind url); it can carry a token in its query and round-trips through projects:save.",
-      "ticket": "CAN-7082",
-      "channels": [
-        "chat-project:blueprints-list",
-        "chat-project:blueprints-refresh",
-        "chat-project:create",
-        "chat-project:create-from-template",
-        "chat-project:list",
-        "chat-project:template-build",
-        "projects:load",
-        "projects:save",
-        "standalone-chat:import-project",
-        "start-page:resolve",
-        "workspace:add-from-folder",
-        "workspace:add-from-remote",
-        "workspace:combine-worktree-with-existing-worktree",
-        "workspace:combine-worktree-with-workspace",
-        "workspace:create",
-        "workspace:create-new",
-        "workspace:create-temporary-from-repos",
-        "workspace:create-temporary-worktree-from-repos",
-        "workspace:create-temporary-worktree-from-workspaces",
-        "workspace:import-from-repo",
-        "workspace:promote-temporary",
-        "workspace:read-settings-data",
-        "workspace:set-private-memory"
-      ]
-    },
-    {
-      "field": "authorizationUrl",
-      "reason": "OAuth authorization endpoint on a user-saved MCP server; user-entered, so it can carry a token in its query.",
-      "ticket": "CAN-7082",
-      "channels": [
-        "mcp-servers:load-server",
-        "mcp-servers:save-server",
-        "mcp-servers:start-account"
-      ]
-    },
-    {
-      "field": "tokenUrl",
-      "reason": "OAuth token endpoint on a user-saved MCP server; user-entered, so it can carry a token in its query.",
-      "ticket": "CAN-7082",
-      "channels": ["mcp-servers:load-server", "mcp-servers:save-server"]
     }
   ],
   "refused": [
@@ -556,6 +518,163 @@
       "field": "embeddedUrl",
       "reason": "An embedded mcp-servers:start-account mints an authenticated portal link for this computer's cloud account. The host session refuses every controller request on the channel that is not the external sign-in, before it reaches main, so no link is minted or sent; the external sign-in returns no embeddedUrl.",
       "channels": ["mcp-servers:start-account"]
+    }
+  ],
+  "written": [
+    {
+      "field": "url",
+      "merge": "kept-or-stored-as-sent",
+      "reason": "A start page URL. One the controller sent back exactly as it got it keeps the stored value it came from, byte for byte; any other is stored as sent, without the old credential (controller-url-writebacks.ts).",
+      "channels": [
+        "chat-project:update",
+        "project:apply-source-changes",
+        "projects:save",
+        "workspace:apply-source-changes",
+        "workspace:set-start-page"
+      ]
+    },
+    {
+      "field": "url",
+      "merge": "kept-or-refused",
+      "reason": "A saved MCP server's URL or OAuth endpoint. One the controller sent back exactly as it got it keeps the stored value, byte for byte; a changed one is refused while the stored value held a credential, so it never reaches a new URL (mergeControllerServerUrls, inside the server's lease).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "authorizationUrl",
+      "merge": "kept-or-refused",
+      "reason": "A saved MCP server's URL or OAuth endpoint. One the controller sent back exactly as it got it keeps the stored value, byte for byte; a changed one is refused while the stored value held a credential, so it never reaches a new URL (mergeControllerServerUrls, inside the server's lease).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "tokenUrl",
+      "merge": "kept-or-refused",
+      "reason": "A saved MCP server's URL or OAuth endpoint. One the controller sent back exactly as it got it keeps the stored value, byte for byte; a changed one is refused while the stored value held a credential, so it never reaches a new URL (mergeControllerServerUrls, inside the server's lease).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "url",
+      "merge": "as-sent",
+      "reason": "A template's start page, which the controller got without its credential: a project made from it, or a template it shares, starts without this computer's credential.",
+      "channels": [
+        "chat-project:create-from-template",
+        "chat-project:template-package-analyze",
+        "chat-project:template-share-get",
+        "chat-project:template-share-publish"
+      ]
+    },
+    {
+      "field": "url",
+      "merge": "as-sent",
+      "reason": "A page, dialog or artifact URL the controller's own window reports or opens; it is chat or agent content, never a stored value sent back.",
+      "channels": [
+        "app-advisor:open-agent-artifact",
+        "app-advisor:tool-response",
+        "chat:send-message"
+      ]
+    },
+    {
+      "field": "htmlUrl",
+      "merge": "as-sent",
+      "reason": "A GitHub pull request or workflow run page the controller reports or opens; it is chat or agent content, never a stored value sent back.",
+      "channels": [
+        "app-advisor:open-agent-artifact",
+        "chat:fork-open-worktree-tabs",
+        "claude-terminal:launch"
+      ]
+    },
+    {
+      "field": "prUrl",
+      "merge": "as-sent",
+      "reason": "A pull request page in the controller window's reported state; chat or agent content, never a stored value sent back.",
+      "channels": ["app-advisor:tool-response", "chat:send-message"]
+    },
+    {
+      "field": "dataUrl",
+      "merge": "as-sent",
+      "reason": "data: URI holding image content already in the payload, not a location.",
+      "channels": ["chat:fork-open-worktree-tabs", "claude-terminal:launch"]
+    },
+    {
+      "field": "darkDataUrl",
+      "merge": "as-sent",
+      "reason": "data: URI holding image content, which controllers get unchanged (exempt).",
+      "channels": ["preferences:save", "terminal:update-settings"]
+    },
+    {
+      "field": "lightDataUrl",
+      "merge": "as-sent",
+      "reason": "data: URI holding image content, which controllers get unchanged (exempt).",
+      "channels": ["preferences:save", "terminal:update-settings"]
+    },
+    {
+      "field": "url",
+      "merge": "as-sent",
+      "reason": "Account proxy endpoint, which controllers get unchanged (exempt); normalizeAccountProxyUrl refuses userinfo, query and fragment.",
+      "channels": ["preferences:save"]
+    },
+    {
+      "field": "authorUrl",
+      "merge": "as-sent",
+      "reason": "Display link a user saved with the server, which controllers get unchanged (exempt).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "docsUrl",
+      "merge": "as-sent",
+      "reason": "Display link a user saved with the server, which controllers get unchanged (exempt).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "logoUrl",
+      "merge": "as-sent",
+      "reason": "Display link a user saved with the server, which controllers get unchanged (exempt).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "privacyPolicyUrl",
+      "merge": "as-sent",
+      "reason": "Display link a user saved with the server, which controllers get unchanged (exempt).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "supportUrl",
+      "merge": "as-sent",
+      "reason": "Display link a user saved with the server, which controllers get unchanged (exempt).",
+      "channels": ["mcp-servers:save-server"]
+    },
+    {
+      "field": "baseUrl",
+      "merge": "as-sent",
+      "reason": "The model gateway's base URL, sent with the API key it is saved or checked with. Controllers get it stripped (model-registry:get), so a write-back can only drop a URL credential, never carry one.",
+      "channels": [
+        "model-gateway:save-credential",
+        "model-gateway:validate-credential"
+      ]
+    },
+    {
+      "field": "posthogReplayUrl",
+      "merge": "as-sent",
+      "reason": "The controller app's own session replay link, sent with its feedback; never a value this computer stores.",
+      "channels": ["feedback:report-submit", "feedback:submit"]
+    },
+    {
+      "field": "remoteUrl",
+      "merge": "as-sent",
+      "reason": "A Git remote the person enters to clone, add or attach: a new value, stored as typed, credential included.",
+      "channels": [
+        "repo:add-remote",
+        "repo:link-remote",
+        "repo:probe-clone-destination",
+        "workspace:add-from-remote",
+        "workspace:apply-source-changes",
+        "workspace:attach-origin"
+      ]
+    },
+    {
+      "field": "manifestUrl",
+      "merge": "as-sent",
+      "reason": "projects:save admits only display metadata and the start page (sidebar-save-adapter.ts), so a sidebar item's manifest URL is never written.",
+      "channels": ["projects:save"]
     }
   ]
 }

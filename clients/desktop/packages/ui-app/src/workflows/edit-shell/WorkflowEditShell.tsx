@@ -606,6 +606,7 @@ export function WorkflowEditShell({
           busyLabel="Deleting…"
           busy={confirmingDelete.busy}
           errorMessage={confirmingDelete.error}
+          errorSource="workflow-delete"
           destructive
           dataTestId="workflow-edit-delete-dialog"
           confirmTestId={`${testId('delete')}-confirm`}

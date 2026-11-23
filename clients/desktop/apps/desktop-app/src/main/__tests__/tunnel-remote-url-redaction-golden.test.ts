@@ -3,6 +3,10 @@
 // URL without its userinfo, and no URL for a local remote. The trusted local
 // window keeps the URL as Git printed it. Real data root, workspace records
 // and Git checkouts; only IPC registration is mocked.
+//
+// CAN-7443: the lifecycle journal's inspect and quarantine answer a remote
+// bridge sender with the portable `<data>/…` label, never a host path; the
+// local window keeps its local label. Only the bridge lookup is replaced.
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -29,8 +33,16 @@ jest.mock('../ipc/register', () => ({
     mockHandlers.set(channel, handler);
   },
 }));
+// Sender ids the bridge lookup reports as a paired controller's bridge.
+const mockBridgeSenderIds = new Set<number>();
+jest.mock('../remote-control/host/bridge-window', () => ({
+  ...jest.requireActual<object>('../remote-control/host/bridge-window'),
+  resolveRemoteBridgeSender: (sender: { id: number }): string | null =>
+    mockBridgeSenderIds.has(sender.id) ? 'device-1' : null,
+}));
 
 import { registerRepoHandlers } from '../ipc/repos';
+import { registerLifecycleJournalHandlers } from '../ipc/lifecycle-journal';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -136,6 +148,7 @@ beforeAll(() => {
     });
 
   runtime = createDesktopRuntime();
+  registerLifecycleJournalHandlers();
   registerRepoHandlers({
     dispatcher: runtime,
     resolveCaller: (event): CanopyCallerDescriptor => resolve(event),
@@ -295,5 +308,128 @@ describe('repo:get-remote-url with the caller main derives (CAN-7017)', () => {
     await expect(
       remoteUrlFrom(bridgeWindowSender, repos.token),
     ).rejects.toThrow();
+  });
+});
+
+describe('lifecycle journal labels through the remote-control bridge (CAN-7443)', () => {
+  const LOCAL_SENDER = { id: 1 };
+  const BRIDGE_SENDER = { id: 7 };
+
+  async function invoke(
+    channel: string,
+    sender: { id: number },
+    request?: unknown,
+  ): Promise<unknown> {
+    const handler = mockHandlers.get(channel);
+    if (!handler) throw new Error(`${channel} was not registered`);
+    return handler({ sender }, request);
+  }
+
+  function unreadableEntry(name: string): void {
+    const journal = join(dataDir, 'w5', 'destructive-lifecycles');
+    mkdirSync(journal, { recursive: true });
+    writeFileSync(join(journal, name), '{ not json');
+  }
+
+  function entriesOf(
+    inspection: unknown,
+  ): { name: string; identity: string }[] {
+    if (
+      typeof inspection !== 'object' ||
+      inspection === null ||
+      !('entries' in inspection) ||
+      !Array.isArray(inspection.entries)
+    )
+      throw new Error('no unreadable entries');
+    const entries: unknown[] = inspection.entries;
+    return entries.flatMap((entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      'name' in entry &&
+      typeof entry.name === 'string' &&
+      'identity' in entry &&
+      typeof entry.identity === 'string'
+        ? [{ name: entry.name, identity: entry.identity }]
+        : [],
+    );
+  }
+
+  beforeEach(() => {
+    mockBridgeSenderIds.clear();
+    mockBridgeSenderIds.add(BRIDGE_SENDER.id);
+  });
+  afterAll(() => {
+    mockBridgeSenderIds.clear();
+  });
+
+  it('labels inspect and quarantine for a bridge with <data>, and locally with the host location', async () => {
+    const journal = join(dataDir, 'w5', 'destructive-lifecycles');
+    const quarantine = join(dataDir, 'w5', 'quarantined-lifecycles');
+    expect(
+      await invoke(IPC_CHANNELS.lifecycleJournalInspect, BRIDGE_SENDER),
+    ).toEqual({
+      status: 'clear',
+      locationLabel: '<data>/w5/destructive-lifecycles',
+    });
+    // The test data root is outside the home folder, so the local label is
+    // the location as is.
+    expect(
+      await invoke(IPC_CHANNELS.lifecycleJournalInspect, LOCAL_SENDER),
+    ).toEqual({ status: 'clear', locationLabel: journal });
+
+    unreadableEntry(`${'a'.repeat(64)}.json`);
+    unreadableEntry(`${'b'.repeat(64)}.json`);
+    const remote = await invoke(
+      IPC_CHANNELS.lifecycleJournalInspect,
+      BRIDGE_SENDER,
+    );
+    expect(remote).toMatchObject({
+      status: 'unreadable-entries',
+      locationLabel: '<data>/w5/destructive-lifecycles',
+      quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+    });
+    expect(JSON.stringify(remote)).not.toContain(dir);
+    const local = await invoke(
+      IPC_CHANNELS.lifecycleJournalInspect,
+      LOCAL_SENDER,
+    );
+    expect(local).toMatchObject({
+      locationLabel: journal,
+      quarantineLocationLabel: quarantine,
+    });
+
+    const [first, second] = entriesOf(remote);
+    if (!first || !second) throw new Error('expected two unreadable entries');
+    const moved = await invoke(
+      IPC_CHANNELS.lifecycleJournalQuarantine,
+      BRIDGE_SENDER,
+      { name: first.name, identity: first.identity },
+    );
+    expect(moved).toMatchObject({
+      status: 'quarantined',
+      name: first.name,
+      quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+    });
+    expect(JSON.stringify(moved)).not.toContain(dir);
+    expect(
+      await invoke(IPC_CHANNELS.lifecycleJournalQuarantine, LOCAL_SENDER, {
+        name: second.name,
+        identity: second.identity,
+      }),
+    ).toMatchObject({
+      status: 'quarantined',
+      quarantineLocationLabel: quarantine,
+    });
+
+    // A refusal carries no location either.
+    const refusal = invoke(
+      IPC_CHANNELS.lifecycleJournalQuarantine,
+      BRIDGE_SENDER,
+      { name: first.name, identity: first.identity },
+    );
+    await expect(refusal).rejects.toThrow('This record is no longer there');
+    await refusal.catch((error: unknown) => {
+      expect(String(error)).not.toContain(dir);
+    });
   });
 });

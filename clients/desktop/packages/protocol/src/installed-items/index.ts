@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { UnifiedEntryRef } from '../unified-entry';
 
+export { normalizeInstalledAt, parseInstalledAt } from './installed-at';
+
 const identity = z.string().min(1).max(2048);
 export const InstalledItemStatusSchema = z.enum([
   'active',

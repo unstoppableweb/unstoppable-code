@@ -11,6 +11,7 @@ import {
   type AgentProviderType,
   type ChatCommand,
   type ChatModel,
+  type ModelHarness,
 } from '@canopy/desktop-shared/types';
 import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import {
@@ -66,6 +67,8 @@ export type RemoteCreateTabSeed =
 export interface RemoteCreateTabModel {
   model: ChatModel;
   providerType?: AgentProviderType;
+  /** The harness the request chose; the model's default when omitted. */
+  executionHarness?: ModelHarness;
 }
 
 /** Billing defaults for a remotely created tab on `providerType`. */
@@ -212,14 +215,16 @@ export async function remoteCreateTabModelRefusal(
     );
     await assertAgentModelAdmission(model, {
       ...target,
-      executionHarness: getExecutionHarnessForModel(model),
+      executionHarness:
+        requested.executionHarness ?? getExecutionHarnessForModel(model),
     });
   } catch (error) {
     if (error instanceof AgentModelSelectionError) return error.message;
     throw error;
   }
   const provider = requested.providerType ?? getProviderForModel(model);
-  const harness = getExecutionHarnessForModel(model);
+  const harness =
+    requested.executionHarness ?? getExecutionHarnessForModel(model);
   if (
     (provider === 'cursor' || harness === 'cursor') &&
     !(await isCursorRuntimeAvailable())

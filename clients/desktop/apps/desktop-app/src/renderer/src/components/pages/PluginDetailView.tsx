@@ -24,6 +24,7 @@ import {
   ClaudeModAdmissionControl,
   PluginDetailHost,
   type PluginDetailHostPlugin,
+  type PluginDetailHostProps,
   type PluginDetailInstallRequest,
   type PluginDetailInstallResult,
 } from '@canopy/ui-app/capability';
@@ -82,6 +83,7 @@ export function PluginDetailView({
   shareAction,
   mcpTarget,
   renderPrimaryAction,
+  renderProviderCatalog,
   alternatives,
   onOpenEntryId,
   onOpenSource,
@@ -125,6 +127,7 @@ export function PluginDetailView({
     onInstall: () => void;
     busy: boolean;
   }) => ReactNode;
+  renderProviderCatalog?: PluginDetailHostProps['renderProviderCatalog'];
   /** The same app from other catalogs (CAN-3653). */
   alternatives?: readonly UnifiedEntryAlternative[];
   onOpenEntryId?: (entryId: string) => void;
@@ -139,12 +142,13 @@ export function PluginDetailView({
     [marketplace, plugin],
   );
   const needsInstall = pluginNeedsInstall(plugin);
+  const showingProviderCatalog = renderProviderCatalog !== undefined;
   const mcpConnectTarget = useMemo(
     () =>
-      needsInstall
+      needsInstall || showingProviderCatalog
         ? undefined
         : { marketplaceId: marketplace.id, pluginName: plugin.name },
-    [marketplace.id, needsInstall, plugin.name],
+    [marketplace.id, needsInstall, plugin.name, showingProviderCatalog],
   );
   const mcpServerHealth = usePluginMcpServerHealth(
     bundledServerRows,
@@ -283,6 +287,7 @@ export function PluginDetailView({
   useEffect(() => {
     setCompatibilityError('');
     if (
+      showingProviderCatalog ||
       needsInstall ||
       plugin.providerSupport.codex !== 'compat' ||
       plugin.codexCompatDisabled === true ||
@@ -309,7 +314,7 @@ export function PluginDetailView({
     return (): void => {
       cancelled = true;
     };
-  }, [needsInstall, onPluginUpdated, plugin]);
+  }, [needsInstall, onPluginUpdated, plugin, showingProviderCatalog]);
 
   const readComponent = useCallback(
     async (
@@ -454,6 +459,7 @@ export function PluginDetailView({
         relatedContent={relatedContent}
         headerActions={headerActions}
         renderPrimaryAction={renderPrimaryAction}
+        renderProviderCatalog={renderProviderCatalog}
         alternatives={alternatives}
         // New Customize: an installed plugin's missing native copies, added
         // through the same one Add for every harness.

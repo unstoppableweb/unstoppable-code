@@ -1,5 +1,9 @@
 import { parseCollectionIndexSharedSource } from '@canopy/protocol/collections';
 import {
+  normalizeInstalledAt,
+  parseInstalledAt,
+} from '@canopy/protocol/installed-items';
+import {
   resourceContextEnabled,
   resourceContextSnapshot,
   assertResourceContextSnapshot,
@@ -105,11 +109,20 @@ export class CollectionMutationError extends Error {
 
 const SAFE_ID_RE = /^[a-f0-9-]+$/;
 
-function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
+function toIndexEntry(
+  collection: CollectionConfig,
+  includeCreatedAt = false,
+): CollectionIndexEntry {
+  // Only mutations persist this optional field. Existing index repairs and
+  // migrations triggered by reads are not installation-date backfills.
+  const createdAt = includeCreatedAt
+    ? normalizeInstalledAt(collection.createdAt)
+    : undefined;
   return {
     id: collection.id,
     name: collection.name,
     description: collection.description,
+    ...(createdAt ? { createdAt } : {}),
     updatedAt: collection.updatedAt,
     ...(collection.revision ? { revision: collection.revision } : {}),
     skillCount: new Set(
@@ -138,6 +151,19 @@ function toIndexEntry(collection: CollectionConfig): CollectionIndexEntry {
         }
       : {}),
   };
+}
+
+/**
+ * A row re-projected from its config by a read keeps the date the index
+ * already stores for it (CAN-5239); it never gains one from the config.
+ */
+function withStoredCreatedAt(
+  row: CollectionIndexEntry,
+  stored: CollectionIndexEntry,
+): CollectionIndexEntry {
+  return stored.createdAt === undefined
+    ? row
+    : { ...row, createdAt: stored.createdAt };
 }
 
 // Stored files are unvalidated. The web rejects the whole Collections list for
@@ -350,7 +376,7 @@ async function migrateLegacyBundles(): Promise<CollectionIndexFile> {
 
   const indexFile: CollectionIndexFile = {
     version: 2,
-    collections: collections.map(toIndexEntry),
+    collections: collections.map((collection) => toIndexEntry(collection)),
   };
   await writeCollectionIndexFile(indexFile.collections);
   return indexFile;
@@ -369,7 +395,8 @@ async function repairIndexEntrySchema(
     currentIndex.collections.map(async (entry) => {
       try {
         const file = await readCollectionConfigUnfiltered(entry.id, false);
-        if (file) return toIndexEntry(file.collection);
+        if (file)
+          return withStoredCreatedAt(toIndexEntry(file.collection), entry);
       } catch {
         // Keep the stored entry; the config stays readable through its own path.
       }
@@ -451,6 +478,7 @@ async function reconcileIndexWithConfigs(
       if (file?.collection.id !== id) return null;
       // The row drops a falsy revision, so check the stored one too.
       if (!isValidRevision(file.collection.revision)) return null;
+      // CAN-5239: a rebuilt row stays undated; a backfill is a follow-up.
       const row = toIndexEntry(file.collection);
       return isListableRow(row)
         ? { createdAt: String(file.collection.createdAt), row }
@@ -478,7 +506,7 @@ async function reconcileIndexWithConfigs(
     }
     const projected = projections.get(entry.id);
     if (projected && projected.row.revision !== entry.revision) {
-      collections.push(projected.row);
+      collections.push(withStoredCreatedAt(projected.row, entry));
       changed = true;
     } else {
       collections.push(entry);
@@ -553,7 +581,18 @@ async function readListedCollectionIndex(): Promise<CollectionIndexFile> {
       'Some Collection configs could not be read; collections/index.json is still being rebuilt.',
     );
   }
-  return index;
+  // CAN-5239: an invalid stored date is unknown; the row itself is kept.
+  return {
+    ...index,
+    collections: index.collections.map((entry) => {
+      if (entry.createdAt === undefined) return entry;
+      const createdAt = normalizeInstalledAt(entry.createdAt);
+      if (createdAt === entry.createdAt) return entry;
+      const next: CollectionIndexEntry = { ...entry };
+      delete next.createdAt;
+      return createdAt ? { ...next, createdAt } : next;
+    }),
+  };
 }
 
 async function readCollectionIndexUnfiltered(): Promise<CollectionIndexFile> {
@@ -857,6 +896,16 @@ async function saveCollectionConfigUnlocked(
   }
   const remote = input.remote ?? existing?.collection.remote;
   const sharedSource = input.sharedSource ?? existing?.collection.sharedSource;
+  // CAN-5239: set once, on the copy's first save. A re-save keeps a stored
+  // valid date; an unknown one (missing, null, not a date) stays absent, so no
+  // value the core contract rejects is written. A caller's date never wins.
+  const storedCreatedAt = existing?.collection.createdAt;
+  const createdAt = existing
+    ? typeof storedCreatedAt === 'string' &&
+      parseInstalledAt(storedCreatedAt) !== undefined
+      ? storedCreatedAt
+      : undefined
+    : now;
   const collection: CollectionConfig = {
     revision: randomUUID(),
     id,
@@ -865,9 +914,7 @@ async function saveCollectionConfigUnlocked(
     skills: Array.isArray(input.skills) ? input.skills : [],
     plugins: Array.isArray(input.plugins) ? input.plugins : [],
     mcpServers: Array.isArray(input.mcpServers) ? input.mcpServers : [],
-    createdAt: input.id
-      ? (input.createdAt ?? existing?.collection.createdAt ?? now)
-      : now,
+    ...(createdAt === undefined ? {} : { createdAt }),
     updatedAt: now,
     ...(remote ? { remote } : {}),
     ...(sharedSource ? { sharedSource } : {}),
@@ -922,10 +969,10 @@ async function saveCollectionConfigUnlocked(
   await assertMutationContext();
   // Preserve stable index order, including multiple copies of the same source.
   const nextEntries = index.collections.map((entry) =>
-    entry.id === id ? toIndexEntry(collection) : entry,
+    entry.id === id ? toIndexEntry(collection, true) : entry,
   );
   if (!nextEntries.some((entry) => entry.id === id))
-    nextEntries.push(toIndexEntry(collection));
+    nextEntries.push(toIndexEntry(collection, true));
   let writeStarted = false;
   try {
     await writeCollectionConfigFile(
@@ -1002,7 +1049,7 @@ async function writeCollectionRemoteMetadataUnlocked(
     });
     await writeCollectionIndexFile(
       index.collections.map((entry) =>
-        entry.id === id ? toIndexEntry(collection) : entry,
+        entry.id === id ? toIndexEntry(collection, true) : entry,
       ),
       indexSchemaComplete(index),
     );
@@ -1053,7 +1100,7 @@ async function clearCollectionRemoteMetadataByRemoteIdUnlocked(
       await writeCollectionConfigFile(collection, undefined, () => {
         changedCollections.push(file.collection);
       });
-      nextEntries[entryIndex] = toIndexEntry(collection);
+      nextEntries[entryIndex] = toIndexEntry(collection, true);
       count += 1;
     }
     if (count > 0)

@@ -45,6 +45,43 @@ export interface UseDetectedMcpServersOptions {
   isCurrent?: () => Promise<boolean>;
   /** A detail-owned flow is cancelled when that detail leaves the screen. */
   cancelOnDispose?: boolean;
+  /**
+   * The generation of the scope the host resolves these reads under (for
+   * Customize, a counter that moves whenever the app-wide MCP auth default
+   * changes). Each read takes it when it starts and publishes it with the
+   * state it applies, as `appliedScope`.
+   */
+  scope?: number;
+  /**
+   * The saved-server revisions behind the selections (for Customize, one key
+   * per saved server and its last save). A save that keeps the same server and
+   * configuration ids leaves the selections equal, so the reads would not move
+   * with it: a change here re-reads, and each read publishes the revisions it
+   * started under as `appliedRevisions`.
+   */
+  revisions?: ReadonlySet<string>;
+  /**
+   * The saved revision (one of `revisions`) of the server a sign-in is for, or
+   * null when it is not saved. A sign-in attempt takes it when it starts and
+   * hands it to its failure as `revision`, so the failure is judged against
+   * its own server and no other. Without it every failure's `revision` is
+   * null.
+   */
+  revisionOf?: (server: DetectedMcpServerInfo) => string | null;
+}
+
+/**
+ * One failed OAuth sign-in. `seq` grows with every failure, so a caller can
+ * tell a new failure from the same one it already saw. `scope` and `revision`
+ * are what the attempt started under (the `scope` option and the `revisionOf`
+ * option for the attempted server alone), so a caller can tell a failure of a
+ * superseded configuration from one of the current.
+ */
+export interface SignInFailure {
+  readonly seq: number;
+  readonly message: string;
+  readonly scope: number;
+  readonly revision: string | null;
 }
 
 export interface UseDetectedMcpServersResult {
@@ -53,6 +90,35 @@ export interface UseDetectedMcpServersResult {
   warnings: string[];
   loading: boolean;
   error: string | null;
+  /**
+   * The `scope` the servers above were read under: published together with
+   * them by a read that applied. Null while no read has applied (the first
+   * one, or one for new selections), after the latest read failed, and for
+   * reads that were superseded: only a read that applied can say what scope
+   * the servers belong to, so a caller never reads it from where a request
+   * settled.
+   */
+  appliedScope: number | null;
+  /**
+   * The `revisions` the servers above were read under, published with them the
+   * way `appliedScope` is: null while no read has applied or after the latest
+   * one failed. A read that started before a save never describes the saved
+   * server, however its scope compares.
+   */
+  appliedRevisions: ReadonlySet<string> | null;
+  /**
+   * The message of the last inventory read that failed, kept until a read
+   * applies: it is what marks `error` as the read's own (a sign-in attempt's
+   * error never sets it), so a caller can show it for exactly that long even
+   * while the next read is pending and `error` is empty. Null otherwise.
+   */
+  inventoryError: string | null;
+  /**
+   * The last failed sign-in attempt, kept apart from `error` for a caller that
+   * must not lose it: no read sets, hides or clears it. Only the next sign-in
+   * attempt or a change of owner or selections does. Null otherwise.
+   */
+  signInFailure: SignInFailure | null;
   connectingKey: string | null;
   /**
    * Server key currently being toggled between Canopy proxy and provider auth.
@@ -88,7 +154,12 @@ interface InternalState {
   warnings: string[];
   loading: boolean;
   error: string | null;
+  appliedScope: number | null;
+  appliedRevisions: ReadonlySet<string> | null;
+  inventoryError: string | null;
 }
+
+const NO_REVISIONS: ReadonlySet<string> = new Set();
 
 const EMPTY_STATE: InternalState = {
   ownerKey: null,
@@ -98,6 +169,9 @@ const EMPTY_STATE: InternalState = {
   warnings: [],
   loading: false,
   error: null,
+  appliedScope: null,
+  appliedRevisions: null,
+  inventoryError: null,
 };
 
 function findMatchingServer(
@@ -148,6 +222,9 @@ interface LocalAttempt {
   readonly owner: string;
   /** The selections this attempt started under. */
   readonly selectionKey: string | null;
+  /** The scope and the attempted server's saved revision it started under. */
+  readonly scope: number;
+  readonly revision: string | null;
   cancelled: boolean;
   cancelFlow: boolean;
   flowId?: string;
@@ -160,11 +237,33 @@ export function useDetectedMcpServers(
 ): UseDetectedMcpServersResult {
   const [state, setState] = useState<InternalState>(EMPTY_STATE);
   const [connectingKey, setConnectingKey] = useState<string | null>(null);
+  const [signInFailure, setSignInFailure] = useState<SignInFailure | null>(
+    null,
+  );
+  const signInFailureSeq = useRef(0);
+  const failSignIn = useCallback(
+    (message: string, attempt: LocalAttempt): void => {
+      signInFailureSeq.current += 1;
+      setSignInFailure({
+        seq: signInFailureSeq.current,
+        message,
+        scope: attempt.scope,
+        revision: attempt.revision,
+      });
+    },
+    [],
+  );
   const [signInUrl, setSignInUrl] = useState<string | undefined>();
   const [awaitingAuthorization, setAwaitingAuthorization] = useState(false);
   const localAttempt = useRef<LocalAttempt | null>(null);
   const ownerRef = useRef(options.ownerKey ?? 'default');
   ownerRef.current = options.ownerKey ?? 'default';
+  const scopeRef = useRef(options.scope ?? 0);
+  scopeRef.current = options.scope ?? 0;
+  const revisionsRef = useRef(options.revisions ?? NO_REVISIONS);
+  revisionsRef.current = options.revisions ?? NO_REVISIONS;
+  const revisionOfRef = useRef(options.revisionOf);
+  revisionOfRef.current = options.revisionOf;
   const isCurrentRef = useRef(options.isCurrent);
   isCurrentRef.current = options.isCurrent;
   const cancelOnDisposeRef = useRef(options.cancelOnDispose === true);
@@ -213,6 +312,7 @@ export function useDetectedMcpServers(
     stopAttempt(cancelOnDisposeRef.current);
     requestSeqRef.current += 1;
     setState({ ...EMPTY_STATE });
+    setSignInFailure(null);
   }, [options.ownerKey, stopAttempt]);
   const [proxyUpdatingKey, setProxyUpdatingKey] = useState<string | null>(null);
 
@@ -237,6 +337,9 @@ export function useDetectedMcpServers(
         return null;
       }
       const owner = ownerRef.current;
+      // Taken at the start: the read answers for the scope it began under.
+      const scope = scopeRef.current;
+      const revisions = revisionsRef.current;
       const seq = requestSeqRef.current + 1;
       requestSeqRef.current = seq;
       inventoryFailure.current = null;
@@ -248,6 +351,9 @@ export function useDetectedMcpServers(
         warnings: prev.warnings,
         loading: true,
         error: null,
+        appliedScope: prev.appliedScope,
+        appliedRevisions: prev.appliedRevisions,
+        inventoryError: prev.inventoryError,
       }));
       try {
         const response: ListDetectedMcpServersResponse =
@@ -266,6 +372,9 @@ export function useDetectedMcpServers(
           warnings: response.warnings,
           loading: false,
           error: null,
+          appliedScope: scope,
+          appliedRevisions: revisions,
+          inventoryError: null,
         });
         return response;
       } catch (err: unknown) {
@@ -288,6 +397,9 @@ export function useDetectedMcpServers(
           warnings: [],
           loading: false,
           error: message,
+          appliedScope: null,
+          appliedRevisions: null,
+          inventoryError: message,
         });
         return null;
       }
@@ -357,10 +469,15 @@ export function useDetectedMcpServers(
   // Refetch whenever selections change. Use a stable JSON snapshot so we
   // don't re-run on object identity changes that produce equal contents.
   const selectionsKey = selections ? JSON.stringify(selections) : null;
+  // The same for the revisions: a new Set with equal contents is no change.
+  const revisionsKey = [...(options.revisions ?? NO_REVISIONS)]
+    .sort()
+    .join('|');
   useEffect((): void => {
     void fetchInventory();
-    // selectionsKey intentionally captures the structural identity.
-  }, [fetchInventory, selectionsKey, options.ownerKey]);
+    // selectionsKey and revisionsKey intentionally capture the structural
+    // identity. A changed revision re-reads once: nothing else polls.
+  }, [fetchInventory, selectionsKey, revisionsKey, options.ownerKey]);
 
   useEffect(
     () =>
@@ -423,13 +540,15 @@ export function useDetectedMcpServers(
       stopAttempt(false);
       // Removing it from the selections is the user's own doing; vanishing
       // from the same selections leaves the attempt unfinished, so say so.
-      if (state.selectionKey === attempt.selectionKey)
+      if (state.selectionKey === attempt.selectionKey) {
         setState((previous) => ({
           ...previous,
           error: TARGET_UNAVAILABLE_MESSAGE,
         }));
+        failSignIn(TARGET_UNAVAILABLE_MESSAGE, attempt);
+      }
     }
-  }, [state, stopAttempt]);
+  }, [state, stopAttempt, failSignIn]);
 
   // Clearing the selections removes every server, but the empty inventory is
   // never initialized, so the check above can't see it. End the attempt here
@@ -437,6 +556,11 @@ export function useDetectedMcpServers(
   useEffect(() => {
     if (selectionsKey === null) stopAttempt(false);
   }, [selectionsKey, stopAttempt]);
+
+  // A failure belongs to the selections it happened under.
+  useEffect(() => {
+    setSignInFailure(null);
+  }, [selectionsKey]);
 
   const refresh = useCallback(async (): Promise<void> => {
     await fetchInventory();
@@ -494,12 +618,15 @@ export function useDetectedMcpServers(
         selectionKey: selectionsRef.current
           ? JSON.stringify(selectionsRef.current)
           : null,
+        scope: scopeRef.current,
+        revision: revisionOfRef.current?.(server) ?? null,
         cancelled: false,
         cancelFlow: false,
       };
       localAttempt.current = attempt;
       setConnectingKey(server.key);
       setState((prev) => ({ ...prev, error: null }));
+      setSignInFailure(null);
       try {
         if (isCurrentRef.current && !(await isCurrentRef.current()))
           return false;
@@ -551,8 +678,10 @@ export function useDetectedMcpServers(
           err instanceof Error && err.message.length > 0
             ? extractIpcErrorMessage(err)
             : DEFAULT_LOGIN_FAILED_MESSAGE;
-        if (validAttempt(attempt))
+        if (validAttempt(attempt)) {
           setState((prev) => ({ ...prev, error: message }));
+          failSignIn(message, attempt);
+        }
         return false;
       } finally {
         if (localAttempt.current === attempt) {
@@ -565,7 +694,7 @@ export function useDetectedMcpServers(
         }
       }
     },
-    [fetchInventory, pollUntilOAuthCompletes, validAttempt],
+    [fetchInventory, pollUntilOAuthCompletes, validAttempt, failSignIn],
   );
 
   const connectOnDevice = useCallback(
@@ -575,6 +704,8 @@ export function useDetectedMcpServers(
       stillCurrent?: () => boolean,
     ): Promise<void> => {
       const owner = ownerRef.current;
+      const scope = scopeRef.current;
+      const revisions = revisionsRef.current;
       const response = await window.mcpServers.listDetected({
         selections: accepted,
       });
@@ -600,7 +731,11 @@ export function useDetectedMcpServers(
         warnings: response.warnings,
         loading: false,
         error: null,
+        appliedScope: scope,
+        appliedRevisions: revisions,
+        inventoryError: null,
       });
+      setSignInFailure(null);
       if (server.authStatus !== 'connected') await connect(server);
     },
     [connect],
@@ -671,6 +806,12 @@ export function useDetectedMcpServers(
       loading: hasSelections && (state.loading || initializing),
       initializing,
       error: !hasSelections || initializing ? null : state.error,
+      appliedScope: !hasSelections || initializing ? null : state.appliedScope,
+      appliedRevisions:
+        !hasSelections || initializing ? null : state.appliedRevisions,
+      inventoryError:
+        !hasSelections || initializing ? null : state.inventoryError,
+      signInFailure: !hasSelections || initializing ? null : signInFailure,
       connectingKey,
       proxyUpdatingKey,
       refresh,
@@ -688,6 +829,10 @@ export function useDetectedMcpServers(
       state.loading,
       initializing,
       state.error,
+      state.appliedScope,
+      state.appliedRevisions,
+      state.inventoryError,
+      signInFailure,
       connectingKey,
       proxyUpdatingKey,
       refresh,

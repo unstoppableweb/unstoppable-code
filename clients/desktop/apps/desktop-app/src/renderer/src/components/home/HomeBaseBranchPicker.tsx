@@ -9,6 +9,7 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import type { PullRequestSummary } from '@canopy/desktop-shared/types';
 import {
   BaseBranchPicker,
+  baseBranchCatalogueState,
   type BaseBranchPickerBranchState,
   type BaseBranchPickerPullRequests,
   type BaseBranchPickerWorktree,
@@ -23,7 +24,6 @@ import {
   type JSX,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { collapseBranchDuplicates } from '../worktree/branch-options';
 
 const BASE_BRANCH_TOOLTIP = (
   <div>
@@ -80,24 +80,15 @@ export function HomeBaseBranchPicker(): JSX.Element | null {
         : [],
     [project],
   );
-  const branches = useMemo((): BaseBranchPickerBranchState => {
-    if (branchTargetsStatus === 'loading') return { kind: 'loading' };
-    if (branchTargetsStatus === 'error')
-      return { kind: 'error', message: "Couldn't load branches." };
-    const discovered =
-      branchTargets?.supported === true
-        ? collapseBranchDuplicates(branchTargets.branches)
-        : [];
-    if (!hasExactWorktreeBaseCatalogue(branchTargets)) {
-      return {
-        kind: 'ready',
-        branches: discovered
-          .filter((branch) => branch.hasLocalRef)
-          .map((branch) => ({ ...branch, hasRemoteRef: false })),
-      };
-    }
-    return { kind: 'ready', branches: discovered };
-  }, [branchTargets, branchTargetsStatus]);
+  const branches = useMemo(
+    (): BaseBranchPickerBranchState =>
+      baseBranchCatalogueState({
+        status: branchTargetsStatus,
+        catalogue: branchTargets,
+        exact: hasExactWorktreeBaseCatalogue(branchTargets),
+      }),
+    [branchTargets, branchTargetsStatus],
+  );
 
   useEffect(() => {
     prRequestIdRef.current += 1;

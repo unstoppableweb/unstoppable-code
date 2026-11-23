@@ -43,6 +43,7 @@ export {
   type IView as ISplitViewView,
 } from './splitview';
 
+export { setPanelErrorSink, type PanelErrorSink } from './panel-error-sink';
 export * from './dnd-observer';
 export * from './drop-geometry';
 export * from './panel-content-adoption';

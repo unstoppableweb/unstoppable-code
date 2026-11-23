@@ -177,7 +177,24 @@ interface FilterRowsProps<T extends string> {
   readonly onClear: () => void;
   readonly multiple: boolean;
   readonly testId: string;
-  readonly replayPrivacy?: { readonly blockClassName: string };
+  readonly replayPrivacy?: FilterReplayPrivacy;
+}
+
+/**
+ * Host-owned replay markers for option labels that name user content: the
+ * block class for personal data, the mask class for user-authored titles
+ * such as project names.
+ */
+interface FilterReplayPrivacy {
+  readonly blockClassName?: string;
+  readonly maskClassName?: string;
+}
+
+/** The markers as one class list, empty when the host supplies none. */
+function replayPrivacyClassName(privacy?: FilterReplayPrivacy): string {
+  return [privacy?.blockClassName, privacy?.maskClassName]
+    .filter((name): name is string => Boolean(name))
+    .join(' ');
 }
 
 /** The "any" row, then one checkable row per value with its count. */
@@ -191,7 +208,7 @@ function FilterRows<T extends string>({
   testId,
   replayPrivacy,
 }: FilterRowsProps<T>): JSX.Element {
-  const valueClassName = replayPrivacy?.blockClassName ?? '';
+  const valueClassName = replayPrivacyClassName(replayPrivacy);
   const active = selected.length > 0;
   return (
     <>
@@ -208,14 +225,14 @@ function FilterRows<T extends string>({
           <span className="truncate">{anyLabel}</span>
         </DropdownMenuItem>
       )}
-      {options.map((option) => {
+      {options.map((option, index) => {
         const checked = selected.includes(option.value);
         return (
           <DropdownMenuItem
             key={option.value}
             role={multiple ? 'menuitemcheckbox' : 'menuitemradio'}
             aria-checked={checked}
-            data-testid={`${testId}-option-${option.value}`}
+            data-testid={`${testId}-option-${valueClassName ? String(index) : option.value}`}
             onClick={(): void => onToggle(option.value)}
           >
             <DropdownMenuItemIcon>
@@ -260,11 +277,13 @@ export interface FilterDropdownProps<T extends string> {
   /** The trigger takes the accent tint while a value is picked. */
   readonly pill?: boolean;
   /**
-   * Blocks the picked value and each option's label from session replay,
-   * for values such as people's names; the accessible name then carries
-   * only the title.
+   * Keeps the picked value and each option's label out of session replay,
+   * for values such as people's names or project titles; the accessible name
+   * then carries only the title. With a marker set, an option's test id
+   * carries its position instead of its value, since replay records the
+   * attribute as is.
    */
-  readonly replayPrivacy?: { readonly blockClassName: string };
+  readonly replayPrivacy?: FilterReplayPrivacy;
 }
 
 /**
@@ -298,7 +317,9 @@ export function FilterDropdown<T extends string>({
         pill={pill}
         label={
           active && replayPrivacy ? (
-            <span className={replayPrivacy.blockClassName}>{label}</span>
+            <span className={replayPrivacyClassName(replayPrivacy)}>
+              {label}
+            </span>
           ) : (
             label
           )

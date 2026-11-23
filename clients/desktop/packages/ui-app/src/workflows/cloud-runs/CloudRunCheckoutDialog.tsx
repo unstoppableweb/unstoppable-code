@@ -1,5 +1,8 @@
 import type { JSX } from 'react';
-import { ConfirmDialog } from '@canopy/ui-shared/components';
+import {
+  ConfirmDialog,
+  type ConfirmDialogErrorProps,
+} from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 /**
@@ -53,14 +56,16 @@ export function cloudRunCheckoutMessage(state: CloudRunCheckoutState): string {
     .join(' ');
 }
 
-export interface CloudRunCheckoutDialogProps {
+interface CloudRunCheckoutDialogBaseProps {
   readonly state: CloudRunCheckoutState;
   /** The push or start is running. */
   readonly busy?: boolean;
-  readonly errorMessage?: string | null;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }
+
+export type CloudRunCheckoutDialogProps = CloudRunCheckoutDialogBaseProps &
+  ConfirmDialogErrorProps;
 
 /**
  * Warns before a task's run in the cloud about what isn't on GitHub, and
@@ -69,9 +74,9 @@ export interface CloudRunCheckoutDialogProps {
 export function CloudRunCheckoutDialog({
   state,
   busy = false,
-  errorMessage = null,
   onConfirm,
   onCancel,
+  ...errorProps
 }: CloudRunCheckoutDialogProps): JSX.Element {
   const push = cloudRunCheckoutNeedsPush(state);
   const branch = <span className={REPLAY_MASK_CLASS}>{state.branch}</span>;
@@ -88,7 +93,7 @@ export function CloudRunCheckoutDialog({
       confirmLabel={push ? 'Push and run' : 'Run in cloud'}
       busyLabel={push ? 'Pushing…' : 'Starting…'}
       busy={busy}
-      errorMessage={errorMessage}
+      {...errorProps}
       onConfirm={onConfirm}
       onCancel={onCancel}
       dataTestId={CLOUD_RUN_CHECKOUT_DIALOG_TEST_IDS.dialog}

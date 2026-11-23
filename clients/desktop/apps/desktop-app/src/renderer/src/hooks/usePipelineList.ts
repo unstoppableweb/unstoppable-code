@@ -25,7 +25,15 @@ interface UsePipelineListReturn {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  deletePipeline: (id: string) => Promise<boolean>;
+  /**
+   * `callerShowsFailure`: asked when the delete fails, whether the caller
+   * shows (and records) the failure itself, so it is not also kept as the
+   * list's load error. False once its confirmation is gone.
+   */
+  deletePipeline: (
+    id: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
   duplicatePipeline: (pipeline: PipelineInfo) => Promise<PipelineInfo | null>;
 
   /**
@@ -42,7 +50,10 @@ interface UsePipelineListReturn {
    * Delete a shared pipeline, refresh the local list (in case the server
    * also dropped local references), and optimistically remove the row.
    */
-  deleteSharedPipeline: (remoteId: string) => Promise<boolean>;
+  deleteSharedPipeline: (
+    remoteId: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
   setSharedFilters: (filters: SharedListFilters) => void;
   refreshSharedList: () => Promise<void>;
   loadMoreShared: () => Promise<void>;
@@ -199,16 +210,21 @@ export function usePipelineList(
   }, [refresh, shared.cloudAccount, contextEnabled]);
 
   const deletePipeline = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (
+      id: string,
+      options: { callerShowsFailure?: () => boolean } = {},
+    ): Promise<boolean> => {
       try {
         const result = await window.pipelines.delete(id);
         if (result.success) {
           await refresh();
           return true;
         }
-        setError(result.error || 'Failed to delete workflow');
+        if (!options.callerShowsFailure?.())
+          setError(result.error || 'Failed to delete workflow');
       } catch (err) {
-        setError(getErrorMessage(err, 'Failed to delete workflow'));
+        if (!options.callerShowsFailure?.())
+          setError(getErrorMessage(err, 'Failed to delete workflow'));
       }
       return false;
     },
@@ -250,16 +266,21 @@ export function usePipelineList(
   );
 
   const deleteSharedPipeline = useCallback(
-    async (remoteId: string): Promise<boolean> => {
+    async (
+      remoteId: string,
+      options: { callerShowsFailure?: () => boolean } = {},
+    ): Promise<boolean> => {
       try {
         const result = await window.pipelines.deleteShared({ remoteId });
         if (result.success) {
           shared.removeSharedRow(remoteId);
           return true;
         }
-        setError(result.error || 'Failed to delete shared workflow');
+        if (!options.callerShowsFailure?.())
+          setError(result.error || 'Failed to delete shared workflow');
       } catch (err) {
-        setError(getErrorMessage(err, 'Failed to delete shared workflow'));
+        if (!options.callerShowsFailure?.())
+          setError(getErrorMessage(err, 'Failed to delete shared workflow'));
       }
       return false;
     },

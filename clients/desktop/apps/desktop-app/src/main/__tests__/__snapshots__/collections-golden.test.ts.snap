@@ -232,6 +232,7 @@ exports[`with organization projects off hosted calls and installs skip the conte
     "step": "load the index",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "",
         "hasExistingShare": false,
         "hasSharedSource": true,
@@ -1526,6 +1527,7 @@ exports[`with organization projects on, the unconfigured default capability pack
     "step": "the installed collection is listed",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "Release kit description",
         "hasExistingShare": true,
         "id": "<uuid:6>",
@@ -1544,6 +1546,7 @@ exports[`with organization projects on, the unconfigured default capability pack
         "updatedAt": "<time>",
       },
       {
+        "createdAt": "<time>",
         "description": "Deploy kit description",
         "hasExistingShare": false,
         "id": "<uuid:8>",
@@ -1555,6 +1558,7 @@ exports[`with organization projects on, the unconfigured default capability pack
         "updatedAt": "<time>",
       },
       {
+        "createdAt": "<time>",
         "description": "From a share",
         "hasExistingShare": false,
         "hasSharedSource": true,
@@ -2326,6 +2330,7 @@ exports[`with organization projects on, the unconfigured default hosted sharing:
     "step": "the local link after the update",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "Release kit description",
         "hasExistingShare": true,
         "id": "<uuid:2>",
@@ -2344,6 +2349,7 @@ exports[`with organization projects on, the unconfigured default hosted sharing:
         "updatedAt": "<time>",
       },
       {
+        "createdAt": "<time>",
         "description": "Connected kit description",
         "hasExistingShare": false,
         "id": "<uuid:4>",
@@ -2777,6 +2783,7 @@ exports[`with organization projects on, the unconfigured default local collectio
     "step": "load the index",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "For releases",
         "hasExistingShare": false,
         "id": "<uuid:2>",
@@ -2939,6 +2946,7 @@ exports[`with organization projects on, the unconfigured default local collectio
     "step": "index after duplicate",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "",
         "hasExistingShare": false,
         "id": "<uuid:2>",
@@ -2950,6 +2958,7 @@ exports[`with organization projects on, the unconfigured default local collectio
         "updatedAt": "<time>",
       },
       {
+        "createdAt": "<time>",
         "description": "",
         "hasExistingShare": false,
         "id": "<uuid:6>",
@@ -2989,6 +2998,7 @@ exports[`with organization projects on, the unconfigured default local collectio
     "step": "index after delete",
     "value": [
       {
+        "createdAt": "<time>",
         "description": "",
         "hasExistingShare": false,
         "id": "<uuid:6>",

@@ -24,7 +24,7 @@ export const MARKETPLACE_PUBLIC_SHARE_PREFIXES = {
   pipeline: '/portal/plugins/pipelines/shared',
   collection: '/portal/plugins/collections/shared',
   agent: '/portal/plugins/agents',
-  automation: '/portal/plugins/automations',
+  automation: '/portal/plugins/workflows',
   blueprint: '/portal/plugins/project-templates',
 } as const;
 
@@ -35,6 +35,9 @@ export const LEGACY_PUBLIC_PIPELINE_SHARE_PATH_PREFIX = '/share/pipelines';
 export const LEGACY_PUBLIC_COLLECTION_SHARE_PATH_PREFIX = '/share/collections';
 export const LEGACY_PUBLIC_AGENT_SHARE_PATH_PREFIX = '/share/agents';
 export const LEGACY_PUBLIC_AUTOMATION_SHARE_PATH_PREFIX = '/share/automations';
+/** Pre-CAN-7533 detail path for shared and curated workflows (then automations). */
+export const LEGACY_PORTAL_AUTOMATION_DETAIL_PATH_PREFIX =
+  '/portal/plugins/automations';
 export const LEGACY_PUBLIC_WORKSPACE_TEMPLATE_SHARE_PATH_PREFIX =
   '/share/project-templates';
 

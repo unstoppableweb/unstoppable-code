@@ -42,7 +42,9 @@ function accountRoutePath(route: AccountSettingsRoute): string {
     case 'integrations':
     case 'plugins':
     case 'mcp':
+    case 'delegation':
     case 'security':
+    case 'model-providers':
     case 'ai-gateway':
     case 'labs':
     case 'appearance':

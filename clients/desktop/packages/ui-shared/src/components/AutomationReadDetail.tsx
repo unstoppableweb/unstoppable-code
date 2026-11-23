@@ -4,9 +4,13 @@ import type { JSX, ReactNode } from 'react';
 import type { SharedAutomationDocument } from '@canopy/protocol/automations';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { AutomationDefinitionSummary } from './AutomationDefinitionSummary';
-import { CapabilityDetailLayout } from './CapabilityDetailLayout';
+import {
+  CapabilityDetailLayout,
+  DetailVersionUpdateFact,
+} from './CapabilityDetailLayout';
 import { ComponentSection } from './ComponentSection';
 import { DetailFact } from './DetailFact';
+import { useItemStateMarks } from './ItemStateMark';
 import { DetailEntityTypeProvider } from './MarketplaceTypeLabel';
 
 export interface AutomationReadDetailProps {
@@ -32,8 +36,16 @@ export interface AutomationReadDetailProps {
   readonly lastRun?: ReactNode;
   /** Formatted; omitted while it's off or when nothing is scheduled. */
   readonly nextRun?: string;
-  /** The Version row, shown only when an update is available. */
+  /**
+   * The Version row. Without it the row says the update status is unknown:
+   * a host with no status to report still shows where it would be.
+   */
   readonly version?: ReactNode;
+  /**
+   * The host compared an installed copy with its source and found it current.
+   * Only says so in the default row; leave it out when no comparison was made.
+   */
+  readonly verifiedCurrent?: boolean;
   /** A failure of the page's own reads, said under the facts. */
   readonly notice?: ReactNode;
   /** What it does: the definition, when the host has it. */
@@ -65,6 +77,7 @@ export function AutomationReadDetail({
   lastRun,
   nextRun,
   version,
+  verifiedCurrent = false,
   notice,
   definition,
   summary,
@@ -73,6 +86,7 @@ export function AutomationReadDetail({
   related,
   dataTestId = 'automation-detail',
 }: AutomationReadDetailProps): JSX.Element {
+  const marks = useItemStateMarks();
   return (
     <DetailEntityTypeProvider kind="automation">
       <CapabilityDetailLayout
@@ -100,7 +114,15 @@ export function AutomationReadDetail({
               </span>
             </DetailFact>
           ) : undefined,
-          version,
+          // Flag off, as it was: no row without an update to say.
+          version:
+            version ??
+            (marks ? (
+              <DetailVersionUpdateFact
+                testId="automation-catalog-update"
+                update={{ state: verifiedCurrent ? 'current' : 'unknown' }}
+              />
+            ) : undefined),
           entity:
             schedule || lastRun || nextRun ? (
               <>

@@ -208,6 +208,15 @@ export interface PublicShareLanding {
   /** Re-reads the share and its installed state, as a fresh review. */
   refresh: () => void;
   installed: PublicShareInstalledTarget | null;
+  /**
+   * An agent share may have a local copy that is not the exact reviewed one:
+   * an older revision, an edited copy, an import that lost its link, or one
+   * the installed-copy read failed to rule out; or GitHub skill or plugin refs,
+   * whose install would replace a copy the reader has. Such an install could
+   * replace or duplicate what the reader has, so it waits for the reader's own
+   * click. Always false for every other kind.
+   */
+  mayHaveOtherCopy: boolean;
   installing: boolean;
   installError: string;
   /**
@@ -325,6 +334,85 @@ const SKILL_COPY_MISSING_MESSAGE =
   'Your installed copy of this skill is missing. Restore it, then try again.';
 const SKILL_COPY_UNVERIFIED_MESSAGE =
   'Your installed copy of this skill could not be checked. Try again.';
+const AGENT_CHANGED_MESSAGE =
+  'This agent changed while you were reviewing it. Refresh and review it again.';
+
+/**
+ * The revision of a shared agent an in-app Install was clicked on: the hash
+ * of the definition the page or card showed and, once the page read it, the
+ * package it brings: a digest, `null` for none, or absent when the click only
+ * had a list summary (unknown, so any package the share brings is unconfirmed).
+ */
+export interface InAppAgentRevision {
+  readonly contentHash: string;
+  readonly packageDigest?: string | null;
+}
+
+/**
+ * The revision behind each shared agent's latest in-app Install, by share id.
+ * Every in-app agent Install sets or clears its own entry and the review
+ * forgets it once it decides, so nothing here outlives the click it describes.
+ */
+const inAppAgentRevisions = new Map<
+  string,
+  { revision: InAppAgentRevision; accountEpoch: number }
+>();
+
+/**
+ * Opens the install review for a shared agent's in-app Install. The click
+ * confirms only the revision it was made on: the review installs on its own
+ * when it resolves to that same revision, and otherwise asks again. Without
+ * a known revision (`null`) it always asks.
+ */
+export function openInAppAgentInstall(
+  link: DeepLinkShareOpenEvent,
+  revision: InAppAgentRevision | null,
+): void {
+  if (revision === null) inAppAgentRevisions.delete(link.externalId);
+  else
+    inAppAgentRevisions.set(link.externalId, {
+      revision,
+      // The click confirms what the account it was made under saw.
+      accountEpoch: useWorkspaceContextStore.getState().accountEpoch,
+    });
+  useNavigationStore.getState().openShareInstall(link, 'in-app');
+}
+
+/**
+ * Whether the review resolved to the very revision the in-app click saw, still
+ * under the account that clicked: after an account change a resolved share
+ * stays and is detected again, and that must be a new explicit Install.
+ */
+export function isClickedAgentRevision(
+  link: DeepLinkShareOpenEvent,
+  snapshot: PublicShareSnapshot,
+): boolean {
+  const clicked = inAppAgentRevisions.get(link.externalId);
+  if (
+    snapshot.entity !== 'agent' ||
+    clicked === undefined ||
+    clicked.accountEpoch !== useWorkspaceContextStore.getState().accountEpoch
+  )
+    return false;
+  const { revision } = clicked;
+  return (
+    snapshot.contentHash === revision.contentHash &&
+    // `undefined` is an unknown package (a list summary carries none): the
+    // click then confirmed no package at all, so a package the share brings
+    // now was never seen and needs its own explicit Install.
+    (snapshot.package?.digest ?? null) === (revision.packageDigest ?? null) &&
+    // Packages with runnable scripts stop on the review for an explicit
+    // Install (docs/capability-packages.md), however the click was made.
+    !(snapshot.package?.resources ?? []).some(
+      ({ executableFiles }) => (executableFiles?.length ?? 0) > 0,
+    )
+  );
+}
+
+/** The review decided: the click's revision has nothing left to confirm. */
+export function forgetClickedAgentRevision(link: DeepLinkShareOpenEvent): void {
+  inAppAgentRevisions.delete(link.externalId);
+}
 
 /** Detection that must block Install rather than fall back to it. */
 class InstalledStateUnverifiedError extends Error {}
@@ -515,6 +603,83 @@ async function detectInstalled(
 }
 
 /**
+ * Whether the reader already has a copy that belongs to this agent share,
+ * whatever its revision: an older import, one the reader edited, or an import
+ * that never recorded the link back. The exact current copy is `installed`;
+ * this is every other one.
+ */
+async function hasOtherLocalAgentCopy(
+  snapshot: Extract<PublicShareSnapshot, { entity: 'agent' }>,
+): Promise<boolean> {
+  const { agents } = await window.agents.list();
+  const remoteId = snapshot.sourceRemoteId;
+  return agents.some((agent) =>
+    remoteId !== undefined
+      ? agent.importedFromRemoteId === remoteId || agent.remoteId === remoteId
+      : agent.publicShareExternalId === snapshot.externalId,
+  );
+}
+
+/**
+ * Whether the agent needs a skill or plugin fetched from GitHub. The import
+ * installs every such ref it needs and the installer replaces an installed
+ * copy, with the reader's edits and local files, so the check is by kind, not
+ * by what is installed. A Codex plugin ref is counted too: its install runs
+ * from an external source, not a bundled one.
+ */
+function referencesGitHubPackages(
+  snapshot: Extract<PublicShareSnapshot, { entity: 'agent' }>,
+): boolean {
+  return snapshot.agent.plugins.some((ref) => {
+    switch (ref.type) {
+      case 'skill':
+        return ref.source.type === 'github';
+      case 'plugin':
+      case 'claude_plugin':
+        return ref.marketplace.type === 'github';
+      case 'codex_plugin':
+        return true;
+    }
+  });
+}
+
+/**
+ * The installed target and, for an agent, whether a copy other than that
+ * target may be here, or whether installing would replace a GitHub skill or
+ * plugin the reader may have. A failed agent read rules nothing out: Install stays the person's own
+ * click, as it was before the read could fail, and nothing installs unasked
+ * over or beside a copy the read could not see.
+ */
+async function detectInstalledState(
+  snapshot: PublicShareSnapshot,
+  audience?: DeepLinkShareOpenEvent['audience'],
+  skillTarget?: InstalledSharedSkillTarget,
+): Promise<{
+  installed: PublicShareInstalledTarget | null;
+  mayHaveOtherCopy: boolean;
+}> {
+  if (snapshot.entity !== 'agent') {
+    return {
+      installed: await detectInstalled(snapshot, audience, skillTarget),
+      mayHaveOtherCopy: false,
+    };
+  }
+  try {
+    const installed = await detectInstalled(snapshot, audience, skillTarget);
+    return {
+      installed,
+      mayHaveOtherCopy:
+        installed === null &&
+        (referencesGitHubPackages(snapshot) ||
+          (await hasOtherLocalAgentCopy(snapshot))),
+    };
+  } catch (error) {
+    reportClientAppError(error);
+    return { installed: null, mayHaveOtherCopy: true };
+  }
+}
+
+/**
  * A pipeline snapshot is packaged when the server explicitly says so. Missing
  * `distributionMode` is legacy definition-only data — never a package whose
  * fields were dropped, because a server that knows the share is packaged
@@ -566,6 +731,7 @@ export function usePublicShareLanding(
   const [refreshCount, setRefreshCount] = useState(0);
   const [installed, setInstalledState] =
     useState<PublicShareInstalledTarget | null>(null);
+  const [mayHaveOtherCopy, setMayHaveOtherCopy] = useState(false);
   const installedRef = useRef<PublicShareInstalledTarget | null>(null);
   const setInstalled = useCallback(
     (target: PublicShareInstalledTarget | null): void => {
@@ -749,6 +915,7 @@ export function usePublicShareLanding(
     resolvingRef.current = true;
     setState({ phase: 'loading' });
     setInstalled(null);
+    setMayHaveOtherCopy(false);
     // This resolve owns detection now; an older one may have stopped mid-way.
     setDetecting(false);
     setVerificationError('');
@@ -882,12 +1049,15 @@ export function usePublicShareLanding(
           isCurrent() && detection === reviewGenerationRef.current;
         setDetecting(true);
         try {
-          const found = await detectInstalled(
+          const found = await detectInstalledState(
             result.snapshot,
             recovery.request.audience,
             recovery.skillTarget,
           );
-          if (isCurrentDetection()) setInstalled(found);
+          if (isCurrentDetection()) {
+            setInstalled(found.installed);
+            setMayHaveOtherCopy(found.mayHaveOtherCopy);
+          }
         } catch (error) {
           // A receipted copy that cannot be verified must block installation
           // so that recovery cannot create a duplicate installed skill.
@@ -963,13 +1133,15 @@ export function usePublicShareLanding(
       setRecordedInstallError('');
     }
     setDetecting(true);
-    void detectInstalled(
+    void detectInstalledState(
       reviewed,
       recovery.request.audience,
       recovery.skillTarget,
     )
       .then((found): void => {
-        if (isCurrent()) setInstalled(found);
+        if (!isCurrent()) return;
+        setInstalled(found.installed);
+        setMayHaveOtherCopy(found.mayHaveOtherCopy);
       })
       .catch((error: unknown): void => {
         if (isCurrent() && error instanceof InstalledStateUnverifiedError)
@@ -1400,6 +1572,18 @@ export function usePublicShareLanding(
                       (await window.agents.inspectImport(agentId)).agent,
                   )
                 : (await window.agents.inspectImport(agentId)).agent;
+            // The review card and the package readiness describe the
+            // resolved snapshot. A share republished before this read is a
+            // different revision from the one reviewed: only a refresh, and a
+            // new look at it, may continue.
+            if (
+              reviewedAgent.contentHash !== snapshot.contentHash ||
+              reviewedAgent.package?.digest !== snapshot.package?.digest
+            ) {
+              setNeedsRefresh(true);
+              setInstallError(AGENT_CHANGED_MESSAGE);
+              return null;
+            }
             const response = await window.agents.importShared({
               agentId,
               installMissing: true,
@@ -2187,6 +2371,7 @@ export function usePublicShareLanding(
     needsRefresh,
     refresh,
     installed,
+    mayHaveOtherCopy,
     installing,
     installError,
     recordedInstallError,

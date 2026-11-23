@@ -1,6 +1,10 @@
+import { recordedErrorOf } from '@canopy/ui-shared';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { MARKETPLACE_SHARE_BLOCKED_REASONS } from '@canopy/protocol/sharing';
-import { MCP_MANAGEMENT_REASONS } from '@canopy/ui-shared/lib/mcp-card-display';
+import {
+  isMcpNoConfigTestError,
+  MCP_MANAGEMENT_REASONS,
+} from '@canopy/ui-shared/lib/mcp-card-display';
 import {
   type ComponentType,
   type JSX,
@@ -51,6 +55,7 @@ import {
   type CustomizeRowMenuItem,
   type CustomizeRowSplitAction,
   type CustomizeRowFailure,
+  CustomizeRowSignInStatus,
   type CustomizeRowSignIn,
   type CustomizeRowUpdate,
   type PluginsEntryStatusBinding,
@@ -62,12 +67,14 @@ import { displayVersion } from '@canopy/ui-shared/lib/display-version';
 import type { HostAction } from '@canopy/ui-shared/lib/host-action';
 import {
   mcpHasMultipleTargets,
+  formatMcpResultAge,
   mcpRowHasDeviceServer,
   mcpRowHealthModel,
 } from '@canopy/ui-shared/lib/mcp-row-health';
 import {
   CUSTOM_SKILL_EDIT_UNAVAILABLE_REASON,
   INSTALLED_ITEM_STATUS_DESCRIPTION_LINE,
+  captureMcpDeleteCleanupReporter,
   createdByViewer,
   formatDateOrEmpty,
   bundledSkillStatusReason,
@@ -154,12 +161,36 @@ export interface CustomizeMcpRowActions {
    * Resolves `'opened'` when it only opened the row's details (several
    * targets to pick from) instead of testing a connection.
    */
-  readonly test: (
-    entry: UnifiedPluginEntry,
-  ) => HostAction<() => Promise<void | 'opened'>>;
+  readonly test: (entry: UnifiedPluginEntry) =>
+    | { readonly available: false; readonly reason: string }
+    | {
+        readonly available: true;
+        readonly target: McpTestTarget;
+        /** The probe alone: its outcome is the result the row keeps. */
+        readonly run: () => Promise<void>;
+        /**
+         * Re-reads the host's status after the probe. A failure is reported
+         * through `onError` and never changes the kept result.
+         */
+        readonly refresh?: () => Promise<void>;
+      }
+    | {
+        readonly available: true;
+        readonly target: undefined;
+        readonly run: () => Promise<'opened'>;
+        readonly refresh?: undefined;
+      };
+  /**
+   * Resolves `'cancelled'` when it ended before any probe started (the person
+   * cancelled the sign-in). The host calls `onProbeStarted` immediately before
+   * starting a probe, so a later probe or refresh failure cannot restore an
+   * older result.
+   */
   readonly connect: (
     entry: UnifiedPluginEntry,
-  ) => HostAction<() => void | Promise<void>>;
+  ) => HostAction<
+    (onProbeStarted: () => void) => void | Promise<void | McpConnectCancelled>
+  >;
   /** Only the exact target currently signing in; other rows remain gated. */
   readonly pending?: (
     entry: UnifiedPluginEntry,
@@ -205,8 +236,87 @@ interface McpRowPresentation {
   readonly unreachable?: CustomizeRowFailure;
 }
 
-/** How long a passed Test connection reads "Connected" on the row. */
-const MCP_TEST_CONNECTED_MS = 3000;
+/** What a connect action resolves when the person cancelled before any probe. */
+export type McpConnectCancelled = 'cancelled';
+
+/** How often a row's "Connected · 2 min ago" re-reads its age. */
+const MCP_RESULT_TICK_MS = 30_000;
+
+/**
+ * What a test ran against. `revision` is the host's token for the server's
+ * saved configuration and the route its test takes (such as an inherited
+ * auth default), so a result kept for one endpoint is not shown after either
+ * changes.
+ */
+export interface McpTestTarget {
+  readonly serverId: string;
+  readonly configId: string | undefined;
+  readonly revision: string;
+}
+
+/** A test the person started on a row: running, or finished at a time. */
+
+type McpUserTest = { readonly target: McpTestTarget } & (
+  | {
+      readonly phase: 'checking';
+      /** Started from the row's Reconnect chip, which stays mounted. */
+      readonly viaRetry: boolean;
+    }
+  | {
+      readonly phase: 'done';
+      readonly at: number;
+      readonly result: 'connected' | 'failed';
+      /**
+       * The failure is main's refusal to test a server with no configuration:
+       * nothing was probed, so the row offers no Reconnect.
+       */
+      readonly needsConfig?: true;
+    }
+);
+
+/**
+ * A Test's Checking… or kept result on the row's status line. Beside Sign in
+ * the result may shrink and clip so the Sign in control (shrink-0) stays whole
+ * on a narrow row; without Sign in, or with no result, the wrapper generates
+ * no box, so the line lays out as if it were absent.
+ *
+ * The tree is the same in every case, so React keeps the result's
+ * role="status" element from Checking… to the result (the change is
+ * announced), and keeps the focused Sign in button while the result beside it
+ * comes and goes.
+ */
+function KeptResultBesideSignIn({
+  entryId,
+  signIn,
+  children,
+}: {
+  readonly entryId: string;
+  readonly signIn: ReactNode;
+  readonly children: ReactNode;
+}): JSX.Element {
+  const clips = signIn !== null && children !== null;
+  return (
+    <>
+      <span
+        data-testid={clips ? `customize-row-kept-result-${entryId}` : undefined}
+        className={clips ? 'flex min-w-0 overflow-hidden' : 'contents'}
+      >
+        {children}
+      </span>
+      {signIn}
+    </>
+  );
+}
+
+function sameMcpTestTarget(left: McpTestTarget, right: McpTestTarget): boolean {
+  return (
+    left.serverId === right.serverId &&
+    left.configId === right.configId &&
+    left.revision === right.revision
+  );
+}
+
+type McpRowActionOutcome = 'completed' | 'failed' | 'already-running';
 
 /** The longest New Customize's first-load spinner waits for the reads. */
 const SETTLE_DEADLINE_MS = 15_000;
@@ -607,6 +717,19 @@ export function CustomizeTabSections({
   );
 }
 
+/** Reports, while it is mounted, that what it sits beside is on screen. */
+function PresenceFlag({
+  onShownChange,
+}: {
+  readonly onShownChange: (shown: boolean) => void;
+}): null {
+  useEffect(() => {
+    onShownChange(true);
+    return (): void => onShownChange(false);
+  }, [onShownChange]);
+  return null;
+}
+
 function CustomizeTabSectionsBody(
   props: CustomizeTabSectionsProps & { readonly hold: CustomizeFirstLoadHold },
 ): JSX.Element {
@@ -983,6 +1106,8 @@ function CustomizeTabSectionsBody(
       return next;
     });
   const [removal, setRemoval] = useState<PendingRemoval | null>(null);
+  // The host recorded the failure the removal confirmation shows.
+  const [removalRecorded, setRemovalRecorded] = useState(false);
   // A pending confirmation belongs to the host scope it was opened in. When
   // the host withdraws removal (web consent turned off) or moves to another
   // desktop or project, it stops rendering at once, and the effect drops it
@@ -1072,6 +1197,13 @@ function CustomizeTabSectionsBody(
   // One busy set per workflow row covers its switch, Run, Run now and
   // Delete…, so a second activation while one is in flight is a no-op.
   const workflowInFlight = useRef(new Set<string>());
+  // Whether the delete confirmation is on screen. The page can stay mounted
+  // yet render a loading or empty state instead of it, so this is set by the
+  // confirmation itself rather than by this component being mounted.
+  const deleteConfirmationShown = useRef(false);
+  const setDeleteConfirmationShown = useCallback((shown: boolean): void => {
+    deleteConfirmationShown.current = shown;
+  }, []);
   const [workflowBusyIds, setWorkflowBusyIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
@@ -1107,7 +1239,10 @@ function CustomizeTabSectionsBody(
       workflowInFlight.current.add(entry.id);
       setWorkflowBusyIds(new Set(workflowInFlight.current));
       try {
-        return await onDelete(entry);
+        return await onDelete(
+          entry,
+          (): boolean => deleteConfirmationShown.current,
+        );
       } finally {
         workflowInFlight.current.delete(entry.id);
         setWorkflowBusyIds(new Set(workflowInFlight.current));
@@ -1214,20 +1349,22 @@ function CustomizeTabSectionsBody(
     async (
       entry: UnifiedPluginEntry,
       action: () => unknown,
-    ): Promise<boolean> => {
-      if (mcpRowInFlight.current.has(entry.id)) return false;
+      onStart?: () => void,
+    ): Promise<McpRowActionOutcome> => {
+      if (mcpRowInFlight.current.has(entry.id)) return 'already-running';
       mcpRowInFlight.current.add(entry.id);
       setMcpRowBusyIds(new Set(mcpRowInFlight.current));
       try {
+        onStart?.();
         await action();
-        return true;
+        return 'completed';
       } catch (error) {
         mcpRowActions?.onError?.(
           error instanceof Error && error.message !== ''
             ? error.message
             : MCP_ROW_ACTION_FAILED,
         );
-        return false;
+        return 'failed';
       } finally {
         mcpRowInFlight.current.delete(entry.id);
         setMcpRowBusyIds(new Set(mcpRowInFlight.current));
@@ -1236,44 +1373,172 @@ function CustomizeTabSectionsBody(
     [mcpRowActions],
   );
 
-  // New Customize (Sergii's QA): a Test connection the person starts shows
-  // "Checking…" on the row, then "Connected" for a few seconds on success.
-  // Background checks never touch the row.
+  // New Customize: a Test connection the person started shows "Checking…" on
+  // the row, then its result until they run another test or leave the page
+  // (CAN-7363). In-session state only, never stored. Keeping the failed result
+  // here prevents a previous Connected projection from flashing after a later
+  // test fails while the host refresh catches up. Background checks never
+  // touch the row.
   const [mcpUserTests, setMcpUserTests] = useState<
-    ReadonlyMap<string, 'checking' | 'done'>
+    ReadonlyMap<string, McpUserTest>
   >(new Map());
+  // A slow clock for relative time, ticking only while a kept success still
+  // matches its row's current target, the only case that shows an age.
+  const hasMcpTimedResult =
+    discoveryEnabled &&
+    mcpRowActions !== undefined &&
+    [...mcpUserTests].some(([entryId, kept]) => {
+      if (kept.phase !== 'done' || kept.result !== 'connected') return false;
+      const row = entries.find((candidate) => candidate.id === entryId);
+      if (row === undefined) return false;
+      const current = mcpRowActions.test(row);
+      return (
+        current.available &&
+        current.target !== undefined &&
+        sameMcpTestTarget(kept.target, current.target)
+      );
+    });
+  const [mcpClock, setMcpClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasMcpTimedResult) return undefined;
+    setMcpClock(Date.now());
+    const timer = window.setInterval(
+      () => setMcpClock(Date.now()),
+      MCP_RESULT_TICK_MS,
+    );
+    return (): void => window.clearInterval(timer);
+  }, [hasMcpTimedResult]);
   const runUserMcpTest = useCallback(
     async (
       entry: UnifiedPluginEntry,
-      run: () => Promise<void | 'opened'>,
+      target: McpTestTarget,
+      run: () => Promise<void>,
+      refresh: (() => Promise<void>) | undefined,
+      viaRetry = false,
     ): Promise<void> => {
-      setMcpUserTests((current) => new Map(current).set(entry.id, 'checking'));
-      let opened = false;
-      const ok = await runMcpRowAction(entry, async () => {
-        opened = (await run()) === 'opened';
-      });
-      // "Connected" only follows a test that ran and finished; a failure
-      // shows the row's error state, and opening details tests nothing.
-      if (!ok || opened) {
+      await runMcpRowAction(
+        entry,
+        async () => {
+          let probeFailure: { readonly error: unknown } | undefined;
+          try {
+            await run();
+            setMcpUserTests((current) =>
+              new Map(current).set(entry.id, {
+                target,
+                phase: 'done',
+                at: Date.now(),
+                result: 'connected',
+              }),
+            );
+          } catch (error) {
+            setMcpUserTests((current) =>
+              new Map(current).set(entry.id, {
+                target,
+                phase: 'done',
+                at: Date.now(),
+                result: 'failed',
+                // Only a target with no configuration can be refused for that;
+                // a configured server's probe error may merely carry the text.
+                ...(target.configId === undefined &&
+                isMcpNoConfigTestError(error)
+                  ? { needsConfig: true }
+                  : {}),
+              }),
+            );
+            probeFailure = { error };
+          }
+          // Re-read after a failed probe too, and keep the probe's error when
+          // the refresh also fails: the person asked for the probe. The host's
+          // refresh reports its own failure before it rejects.
+          try {
+            await refresh?.();
+          } catch (refreshError) {
+            if (probeFailure === undefined) throw refreshError;
+          }
+          if (probeFailure !== undefined) throw probeFailure.error;
+        },
+        () =>
+          setMcpUserTests((current) =>
+            new Map(current).set(entry.id, {
+              phase: 'checking',
+              target,
+              viaRetry,
+            }),
+          ),
+      );
+    },
+    [runMcpRowAction],
+  );
+  // Rows whose Sign in, pressed beside a Test result, stays in that result's
+  // slot until its action ends: clearing the result must not remount the
+  // focused button in the row-level sign-in slot.
+  const [mcpSignInHeld, setMcpSignInHeld] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  /**
+   * Connect, Reconnect and Sign in replace a kept test result: the action's
+   * own outcome (and the status refresh after it) is the row's truth now.
+   * `holdSignIn`: started from the Sign in beside the result.
+   */
+  const runMcpConnectAction = useCallback(
+    async (
+      entry: UnifiedPluginEntry,
+      action: (onProbeStarted: () => void) => unknown,
+      holdSignIn = false,
+    ): Promise<void> => {
+      const previous = mcpUserTests.get(entry.id);
+      // Set in the same batch as `forget` clears the result.
+      const holds = holdSignIn && !mcpRowInFlight.current.has(entry.id);
+      if (holds) setMcpSignInHeld((current) => new Set(current).add(entry.id));
+      const forget = (): void => {
         setMcpUserTests((current) => {
           if (!current.has(entry.id)) return current;
           const next = new Map(current);
           next.delete(entry.id);
           return next;
         });
-        return;
-      }
-      setMcpUserTests((current) => new Map(current).set(entry.id, 'done'));
-      window.setTimeout(() => {
-        setMcpUserTests((current) => {
-          if (current.get(entry.id) !== 'done') return current;
-          const next = new Map(current);
+      };
+      // Only an action that ended before any probe started left the last test
+      // result true: a cancelled sign-in, or an error before the probe. A
+      // probe that ran and failed replaced it, and the refreshed health says so.
+      let endedBeforeProbe = false;
+      let probeStarted = false;
+      const outcome = await runMcpRowAction(
+        entry,
+        async () => {
+          try {
+            const result = await action(() => {
+              probeStarted = true;
+            });
+            endedBeforeProbe = result === 'cancelled';
+          } catch (actionError) {
+            endedBeforeProbe = !probeStarted;
+            throw actionError;
+          }
+        },
+        forget,
+      );
+      if (
+        outcome !== 'already-running' &&
+        endedBeforeProbe &&
+        previous !== undefined
+      )
+        // Restore it unless another action produced a newer result meanwhile.
+        setMcpUserTests((current) =>
+          current.has(entry.id)
+            ? current
+            : new Map(current).set(entry.id, previous),
+        );
+      // Released in the same synchronous block as the restore, so the
+      // restored result and Sign in render together, in the same slot.
+      if (holds)
+        setMcpSignInHeld((current) => {
+          const next = new Set(current);
           next.delete(entry.id);
           return next;
         });
-      }, MCP_TEST_CONNECTED_MS);
     },
-    [runMcpRowAction],
+    [mcpUserTests, runMcpRowAction],
   );
 
   /** The plugin entry an MCP row came with, when the catalog still lists it. */
@@ -1370,8 +1635,25 @@ function CustomizeTabSectionsBody(
             disabledReason: test.available ? undefined : test.reason,
             onSelect: () => {
               if (!test.available) return;
-              if (discoveryEnabled) void runUserMcpTest(entry, test.run);
-              else void runMcpRowAction(entry, test.run);
+              if (discoveryEnabled && test.target !== undefined)
+                void runUserMcpTest(entry, test.target, test.run, test.refresh);
+              else
+                void runMcpRowAction(entry, async () => {
+                  // Re-read statuses after a failed probe too, and keep the
+                  // probe's error when the refresh also fails.
+                  let probeFailure: { readonly error: unknown } | undefined;
+                  try {
+                    await test.run();
+                  } catch (error) {
+                    probeFailure = { error };
+                  }
+                  try {
+                    await test.refresh?.();
+                  } catch (refreshError) {
+                    if (probeFailure === undefined) throw refreshError;
+                  }
+                  if (probeFailure !== undefined) throw probeFailure.error;
+                });
             },
           },
           {
@@ -1591,7 +1873,7 @@ function CustomizeTabSectionsBody(
       mcpRowBusyIds,
       runMcpRowAction,
       runUserMcpTest,
-      mcpUserTests,
+      discoveryEnabled,
       workflowActions,
       onEditCollection,
       updateIds,
@@ -1665,6 +1947,9 @@ function CustomizeTabSectionsBody(
     const verb = removalVerb(entry, target);
     return (
       <UninstallConfirmDialog
+        {...(removalRecorded
+          ? { errorRecordingDisabled: true as const }
+          : { errorSource: 'customize-row-remove' })}
         title={removalConfirmTitle(entry, target)}
         message={
           entry.kind === 'collection'
@@ -1678,7 +1963,27 @@ function CustomizeTabSectionsBody(
         confirmTestId="customize-row-remove-confirm"
         cancelTestId="customize-row-remove-cancel"
         onConfirm={async (): Promise<string | null> => {
+          const reportCleanup = captureMcpDeleteCleanupReporter();
           const outcome = await onUninstall(target);
+          // A rejection main recorded stays on the outcome's `cause`.
+          setRemovalRecorded(
+            !outcome.ok &&
+              recordedErrorOf(Reflect.get(outcome, 'cause')) !== undefined,
+          );
+          // A deleted device server leaves nothing here to retry: close
+          // once the page's notice takes it and offers Repair (CAN-7362).
+          // Without one, as in remote windows, keep the retry below.
+          if (
+            outcome.cleanupIncomplete === true &&
+            target.kind === 'mcp-server' &&
+            reportCleanup
+          ) {
+            reportCleanup({
+              serverId: target.serverId,
+              serverName: entry.name,
+            });
+            return null;
+          }
           return outcome.ok
             ? null
             : (outcome.message ?? removalFallbackError(verb));
@@ -1790,40 +2095,97 @@ function CustomizeTabSectionsBody(
               // must act or something is wrong (Sergii's QA): sign-in and
               // Couldn't connect. Not checked yet, Checking and Connected show
               // the publisher; the detail page keeps the full health.
-              const userTest = discoveryEnabled
+              const keptTest = discoveryEnabled
                 ? mcpUserTests.get(entry.id)
                 : undefined;
+              const userTest =
+                keptTest !== undefined &&
+                test.available &&
+                test.target !== undefined &&
+                sameMcpTestTarget(keptTest.target, test.target)
+                  ? keptTest
+                  : undefined;
+              const showUserTestResult =
+                !disabled && mcpConnection.disabled !== true;
+              // A kept failed result is a failure whatever the cached health
+              // says (it may still read Connected), so the row keeps its
+              // Reconnect retry; the chip stands in for the result line.
+              // Checking and Connected results replace it. A row asking for
+              // sign-in keeps Sign in beside the result instead: its status
+              // line would otherwise lose that action.
+              const keptFailure =
+                userTest?.phase === 'done' &&
+                userTest.result === 'failed' &&
+                model.tone !== 'attention';
+              const cachedFailure =
+                model.tone === 'destructive' && userTest === undefined;
+              // A retry from the chip keeps the chip mounted, busy, so the
+              // focused button survives the probe; a Test from the menu or
+              // the detail page shows Checking… as before.
+              const retryRunning =
+                userTest?.phase === 'checking' &&
+                userTest.viaRetry &&
+                model.tone !== 'attention';
+              const cachedDestructive = model.tone === 'destructive';
+              const failureText = cachedDestructive
+                ? model.text
+                : "Couldn't connect";
+              // Main refused the Test before probing (no configuration): a
+              // Reconnect would rerun the same refusal, so the row says what to
+              // add and offers no retry.
+              const needsConfig =
+                keptFailure &&
+                userTest?.phase === 'done' &&
+                userTest.needsConfig === true;
               const unreachable: CustomizeRowFailure | undefined =
                 discoveryEnabled &&
                 !disabled &&
                 mcpConnection.disabled !== true &&
-                model.tone === 'destructive' &&
-                pending === undefined
-                  ? {
-                      label: model.text,
-                      reason: `${model.text} to ${entry.name}.${
-                        model.checkedAt !== undefined &&
-                        mcpRowActions.formatTimestamp
-                          ? ` Checked ${mcpRowActions.formatTimestamp(model.checkedAt)}.`
-                          : ''
-                      }`,
-                      tone: 'destructive',
-                      alongsideSignIn: true,
-                      retryLabel: 'Reconnect',
-                      retryBusyLabel: 'Reconnecting…',
-                      retryBusy:
-                        mcpRowBusyIds.has(entry.id) || userTest === 'checking',
-                      ...(mcpHasMultipleTargets(entry)
-                        ? mcpRowActions.reconnectsInDetails?.(entry) === false
-                          ? {}
-                          : { retry: (): void => onSelectEntry(entry) }
-                        : test.available
-                          ? {
-                              retry: (): void =>
-                                void runUserMcpTest(entry, test.run),
-                            }
-                          : {}),
-                    }
+                pending === undefined &&
+                (cachedFailure || keptFailure || retryRunning)
+                  ? needsConfig
+                    ? {
+                        label: 'Needs a configuration',
+                        reason: MCP_MANAGEMENT_REASONS.noConfig,
+                        tone: 'destructive',
+                        alongsideSignIn: true,
+                      }
+                    : {
+                        label: failureText,
+                        reason: `${failureText} to ${entry.name}.${
+                          cachedDestructive &&
+                          model.checkedAt !== undefined &&
+                          mcpRowActions.formatTimestamp
+                            ? ` Checked ${mcpRowActions.formatTimestamp(model.checkedAt)}.`
+                            : ''
+                        }`,
+                        tone: 'destructive',
+                        alongsideSignIn: true,
+                        retryLabel: 'Reconnect',
+                        retryBusyLabel: 'Reconnecting…',
+                        retryBusy: mcpRowBusyIds.has(entry.id) || retryRunning,
+                        ...(mcpHasMultipleTargets(entry)
+                          ? mcpRowActions.reconnectsInDetails?.(entry) === false
+                            ? {}
+                            : { retry: (): void => onSelectEntry(entry) }
+                          : // A Test rerun by design, not a sign-in: it is gated by
+                            // Test eligibility alone and runs the menu Test's
+                            // probe. Sign-in has its own Connect gate.
+                            test.available && test.target !== undefined
+                            ? {
+                                retry: (): void => {
+                                  if (test.target !== undefined)
+                                    void runUserMcpTest(
+                                      entry,
+                                      test.target,
+                                      test.run,
+                                      test.refresh,
+                                      true,
+                                    );
+                                },
+                              }
+                            : {}),
+                      }
                   : undefined;
               const hideHealth =
                 discoveryEnabled &&
@@ -1859,10 +2221,73 @@ function CustomizeTabSectionsBody(
                           busy,
                           onClick: (): void => {
                             if (connectAction.available)
-                              void runMcpRowAction(entry, connectAction.run);
+                              void runMcpConnectAction(
+                                entry,
+                                connectAction.run,
+                              );
                           },
                         }
                       : undefined;
+              const signInAction =
+                inline && !pending?.authorizationUrl
+                  ? { busy: inline.busy, run: inline.onClick }
+                  : undefined;
+              // Sign-in is needed but its action is unavailable (another
+              // sign-in runs): the attention status and its reason replace
+              // the old result, which would hide that sign-in is required.
+              const keptResultShown =
+                userTest?.phase === 'done' &&
+                !pending?.authorizationUrl &&
+                showUserTestResult &&
+                !(attention && signInAction === undefined);
+              // Checking… and the kept result share one slot, so the
+              // role="status" element stays from one to the other.
+              const resultNode =
+                userTest?.phase === 'checking' ? (
+                  <McpRowCheckFeedback
+                    kind="checking"
+                    testId={`customize-row-health-${entry.id}`}
+                  />
+                ) : userTest?.phase === 'done' && keptResultShown ? (
+                  userTest.result === 'connected' ? (
+                    <McpRowCheckFeedback
+                      kind="connected"
+                      checkedAgo={formatMcpResultAge(userTest.at, mcpClock)}
+                      testId={`customize-row-health-${entry.id}`}
+                    />
+                  ) : (
+                    <McpRowCheckFeedback
+                      kind="failed"
+                      testId={`customize-row-health-${entry.id}`}
+                    />
+                  )
+                ) : null;
+              // The probe's own outcome stays visible beside a stale cached
+              // sign-in prompt; Sign in remains available next to it. A Sign
+              // in pressed there stays in this slot while its action runs,
+              // so clearing the result does not remount the focused button.
+              const slotSignIn =
+                signInAction !== undefined &&
+                (resultNode !== null || mcpSignInHeld.has(entry.id)) ? (
+                  <CustomizeRowSignInStatus
+                    entryId={entry.id}
+                    signIn={{
+                      accessibleName: `Sign in to ${entry.name}`,
+                      busy: signInAction.busy,
+                      run:
+                        !severalConnections && connectAction.available
+                          ? (): void => {
+                              if (connectAction.available)
+                                void runMcpConnectAction(
+                                  entry,
+                                  connectAction.run,
+                                  true,
+                                );
+                            }
+                          : signInAction.run,
+                    }}
+                  />
+                ) : null;
               const checkedLabel =
                 model.checkedAt !== undefined && mcpRowActions.formatTimestamp
                   ? `Checked ${mcpRowActions.formatTimestamp(model.checkedAt)}`
@@ -1870,15 +2295,16 @@ function CustomizeTabSectionsBody(
               return {
                 connectLabel,
                 ...(unreachable ? { unreachable } : {}),
-                ...(inline && !pending?.authorizationUrl
-                  ? { signIn: { busy: inline.busy, run: inline.onClick } }
+                // Keep Sign in beside the result in the health node.
+                ...(signInAction && slotSignIn === null
+                  ? { signIn: signInAction }
                   : {}),
                 cancelSignIn: pending?.onCancel,
                 connectRun:
                   signsIn && inline === undefined && connectAction.available
                     ? (): void => {
                         if (severalConnections) onSelectEntry(entry);
-                        else void runMcpRowAction(entry, connectAction.run);
+                        else void runMcpConnectAction(entry, connectAction.run);
                       }
                     : undefined,
                 connectReason:
@@ -1886,16 +2312,13 @@ function CustomizeTabSectionsBody(
                     ? connectAction.reason
                     : undefined,
                 node:
-                  userTest === 'checking' ? (
-                    <McpRowCheckFeedback
-                      kind="checking"
-                      testId={`customize-row-health-${entry.id}`}
-                    />
-                  ) : userTest === 'done' && model.tone === 'positive' ? (
-                    <McpRowCheckFeedback
-                      kind="connected"
-                      testId={`customize-row-health-${entry.id}`}
-                    />
+                  resultNode !== null || slotSignIn !== null ? (
+                    <KeptResultBesideSignIn
+                      entryId={entry.id}
+                      signIn={slotSignIn}
+                    >
+                      {resultNode}
+                    </KeptResultBesideSignIn>
                   ) : hideHealth &&
                     !(
                       discoveryEnabled && pending?.authorizationUrl
@@ -2277,9 +2700,11 @@ function CustomizeTabSectionsBody(
       openPlugin,
       mcpRowActions,
       mcpRowBusyIds,
-      runMcpRowAction,
+      runMcpConnectAction,
       runUserMcpTest,
       mcpUserTests,
+      mcpSignInHeld,
+      mcpClock,
       hrefForEntry,
       menuItems,
       onAddEntry,
@@ -2672,19 +3097,23 @@ function CustomizeTabSectionsBody(
         )}
       {remainingBrowseActions}
       {deleteTarget && (
-        <UninstallConfirmDialog
-          title={`Delete "${deleteTarget.name}"?`}
-          message="This cannot be undone."
-          confirmLabel="Delete"
-          busyLabel="Deleting…"
-          fallbackErrorMessage={`Couldn't delete ${deleteTarget.name}`}
-          dataTestId="customize-workflow-delete"
-          confirmTestId="customize-workflow-delete-confirm"
-          cancelTestId="customize-workflow-delete-cancel"
-          onConfirm={() => deleteWorkflow(deleteTarget)}
-          onUninstalled={() => setDeleteTarget(null)}
-          onCancel={() => setDeleteTarget(null)}
-        />
+        <>
+          <PresenceFlag onShownChange={setDeleteConfirmationShown} />
+          <UninstallConfirmDialog
+            errorSource="customize-workflow-delete"
+            title={`Delete "${deleteTarget.name}"?`}
+            message="This cannot be undone."
+            confirmLabel="Delete"
+            busyLabel="Deleting…"
+            fallbackErrorMessage={`Couldn't delete ${deleteTarget.name}`}
+            dataTestId="customize-workflow-delete"
+            confirmTestId="customize-workflow-delete-confirm"
+            cancelTestId="customize-workflow-delete-cancel"
+            onConfirm={() => deleteWorkflow(deleteTarget)}
+            onUninstalled={() => setDeleteTarget(null)}
+            onCancel={() => setDeleteTarget(null)}
+          />
+        </>
       )}
       {renderRemovalDialog()}
     </Stack>

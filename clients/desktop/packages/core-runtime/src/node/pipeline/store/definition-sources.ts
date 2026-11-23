@@ -2,6 +2,7 @@ import type {
   PipelineIndexEntry,
   PipelineInfo,
 } from '@canopy/protocol/pipelines';
+import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import {
   PipelineDefinitionSourceError,
   type PipelineDefinitionSourceDocument,
@@ -30,6 +31,19 @@ function isoTimestamp(value: string | undefined): string | null {
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
 }
 
+/**
+ * A user copy's install date (CAN-5239), read by the rule the Remote Control
+ * rows use. Unknown (null) is a stored value that is not a valid instant, and
+ * an instant whose year the core contract's timestamp cannot carry (outside
+ * 0000 to 9999): passing that one on would fail the whole list.
+ */
+function installedTimestamp(value: string | undefined): string | null {
+  const installedAt = normalizeInstalledAt(value);
+  return installedAt !== undefined && /^\d{4}-/.test(installedAt)
+    ? installedAt
+    : null;
+}
+
 function storedEntry(
   entry: PipelineIndexEntry,
   source: 'user' | 'bundled',
@@ -46,7 +60,10 @@ function storedEntry(
     readonly: source === 'bundled',
     revision: entry.revision ?? 0,
     owner: owner(),
-    createdAt: isoTimestamp(entry.createdAt),
+    createdAt:
+      source === 'user'
+        ? installedTimestamp(entry.createdAt)
+        : isoTimestamp(entry.createdAt),
     updatedAt: isoTimestamp(entry.updatedAt),
     ...(entry.triggerTypes ? { triggerTypes: entry.triggerTypes } : {}),
     ...(entry.scopes ? { executionScopes: entry.scopes } : {}),
@@ -199,7 +216,9 @@ export function createStoredPipelineDefinitionWriter(
             rawContent: write.text,
           },
           write.definitionId === null
-            ? {}
+            ? write.createId === undefined
+              ? {}
+              : { createId: write.createId }
             : {
                 expectedRevision: write.expectedRevision,
                 requireExisting: true,

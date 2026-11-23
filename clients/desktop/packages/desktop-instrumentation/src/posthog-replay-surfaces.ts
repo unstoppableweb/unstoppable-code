@@ -172,8 +172,13 @@ export const HOSTED_SETTINGS_PAGE_REPLAY_PRIVACY = Object.freeze({
   // Installed names and counts, like Customize and the local sections.
   'account/plugins': 'reviewed',
   'account/mcp': 'reviewed',
+  // Two numeric pickers; nothing personal.
+  'account/delegation': 'reviewed',
   // API keys and backup codes carry their own blocks.
   'account/security': 'reviewed',
+  // Own provider keys: the key editor and its suffix, blocked whole. Desktop
+  // hides the page today (web-only nav flag).
+  'account/model-providers': 'blocked',
   // Gateway name, URL and key suffix carry their own masks.
   'account/ai-gateway': 'reviewed',
   'account/billing': 'reviewed',

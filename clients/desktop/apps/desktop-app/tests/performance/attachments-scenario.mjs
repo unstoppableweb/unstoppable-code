@@ -646,25 +646,32 @@ export function attachmentsScenarios({
           }
           scroller.setAttribute('data-perf-attachments-scroller', '');
           const rect = scroller.getBoundingClientRect();
-          // The nearest point to the middle that is inside the scroller and
-          // on no item: an edge, or a gap between rows.
-          const middle = rect.top + rect.height / 2;
-          for (let dy = 0; dy < rect.height / 2; dy += 2) {
-            for (const y of [middle + dy, middle - dy]) {
-              for (let x = rect.left + 1; x < rect.right - 1; x += 1) {
-                const hit = document.elementFromPoint(x, y);
-                if (hit && scroller.contains(hit) && !hit.closest(selector)) {
-                  return {
-                    x: Math.round(x),
-                    y: Math.round(y),
-                    maxTop: scroller.scrollHeight - scroller.clientHeight,
-                  };
-                }
-              }
+          // A fixed point on no item, checked with one hit test each, so the
+          // lookup costs nothing next to the measured work: the gap between
+          // the first two rows, else the scroller's bottom or left edge.
+          const items = scroller.querySelectorAll(selector);
+          const firstBox = items[0]?.getBoundingClientRect();
+          const secondBox = items[1]?.getBoundingClientRect();
+          const middleX = rect.left + rect.width / 2;
+          const candidates = [
+            ...(firstBox && secondBox && secondBox.top > firstBox.bottom
+              ? [[middleX, (firstBox.bottom + secondBox.top) / 2]]
+              : []),
+            [middleX, rect.bottom - 1],
+            [rect.left + 1, rect.top + rect.height / 2],
+          ];
+          for (const [x, y] of candidates) {
+            const hit = document.elementFromPoint(x, y);
+            if (hit && scroller.contains(hit) && !hit.closest(selector)) {
+              return {
+                x: Math.round(x),
+                y: Math.round(y),
+                maxTop: scroller.scrollHeight - scroller.clientHeight,
+              };
             }
           }
           const hit = document.elementFromPoint(
-            rect.left + rect.width / 2,
+            middleX,
             rect.top + rect.height / 2,
           );
           return {

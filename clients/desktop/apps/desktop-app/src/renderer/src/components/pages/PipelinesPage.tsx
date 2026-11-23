@@ -254,7 +254,15 @@ export interface PipelinesPageListApi {
   readonly startInterview: () => void;
   readonly interviewPending: boolean;
   readonly edit: (pipeline: PipelineInfo) => void;
-  readonly remove: (pipeline: PipelineInfo) => Promise<void>;
+  /**
+   * `callerShowsFailure`: asked when the delete fails, whether the caller's
+   * confirmation still shows (and records) it, so the list's load error does
+   * not also raise it.
+   */
+  readonly remove: (
+    pipeline: PipelineInfo,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<void>;
   readonly duplicate: (pipeline: PipelineInfo) => Promise<void>;
   readonly share: (pipeline: PipelineInfo) => void;
   /** Source-qualified `<source>:<id>` of the row whose Share is loading. */
@@ -767,12 +775,15 @@ export function PipelinesPage({
     widthPercent: Math.round(chatPanelWidthPercent),
   });
   // Throws when nothing was deleted, so the caller's dialog stays open.
-  const handleRowDelete = async (pipeline: PipelineInfo): Promise<void> => {
+  const handleRowDelete = async (
+    pipeline: PipelineInfo,
+    options?: { callerShowsFailure?: () => boolean },
+  ): Promise<void> => {
     const deleted =
       pipeline.source === 'shared'
         ? pipeline.remoteId !== undefined &&
-          (await deleteSharedPipeline(pipeline.remoteId))
-        : await deletePipeline(pipeline.id);
+          (await deleteSharedPipeline(pipeline.remoteId, options))
+        : await deletePipeline(pipeline.id, options);
     if (!deleted) throw new Error('The workflow could not be deleted.');
   };
   const handleRowEdit = (pipeline: PipelineInfo): void =>

@@ -31,6 +31,7 @@ import {
   CHAT_FORMAT4_PAUSE_REASONS,
   CHAT_FORMAT4_REASONS,
   CHAT_FORMAT4_REMAINING_BUCKETS,
+  CHAT_FORMAT4_TRIGGERS,
   chatFormat4Labels,
   recordChatFormat4Outcome,
   type ChatFormat4Outcome,
@@ -67,6 +68,7 @@ const FIELDS = [
   'format4_duration_bucket',
   'format4_remaining_bucket',
   'format4_pause_reason',
+  'format4_trigger',
 ];
 
 const settle = (): Promise<void> =>
@@ -96,6 +98,9 @@ function expectOnlyDeclaredFields(context: unknown): void {
   expect(CHAT_FORMAT4_PAUSE_REASONS).toContain(
     Reflect.get(context, 'format4_pause_reason'),
   );
+  expect(CHAT_FORMAT4_TRIGGERS).toContain(
+    Reflect.get(context, 'format4_trigger'),
+  );
   expect(Number.isInteger(attempt)).toBe(true);
   expect(attempt).toBeGreaterThanOrEqual(0);
   expect(attempt).toBeLessThanOrEqual(6);
@@ -107,7 +112,7 @@ beforeEach(() => {
 });
 
 describe('format 4 telemetry payloads', () => {
-  it('declares exactly the six content-free keys', () => {
+  it('declares exactly the seven content-free keys', () => {
     expect(DESKTOP_OPERATIONS['canopy.chat_storage_format4']).toEqual({
       kind: 'product',
       posthogEvent: 'chat:storage_format4_update',
@@ -143,6 +148,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'load',
       },
       {
         format4_event: 'promotion_failed',
@@ -151,6 +157,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'load',
       },
       {
         format4_event: 'retries_exhausted',
@@ -159,6 +166,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'load',
       },
       {
         format4_event: 'newer_format_refused',
@@ -167,6 +175,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'load',
       },
       {
         format4_event: 'slow_checkpoint',
@@ -175,6 +184,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: '5s_30s',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'load',
       },
       {
         format4_event: 'sweep_pass_completed',
@@ -183,6 +193,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: '6_20',
         format4_pause_reason: 'none',
+        format4_trigger: 'sweep',
       },
       {
         format4_event: 'sweep_paused',
@@ -191,6 +202,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'battery',
+        format4_trigger: 'sweep',
       },
       {
         format4_event: 'sweep_scope_backed_off',
@@ -199,6 +211,7 @@ describe('format 4 telemetry payloads', () => {
         format4_duration_bucket: 'none',
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
+        format4_trigger: 'sweep',
       },
     ]);
     for (const context of sentContexts()) expectOnlyDeclaredFields(context);
@@ -212,6 +225,28 @@ describe('format 4 telemetry payloads', () => {
     expect(sent).not.toContain('no space left');
     for (const [name] of succeedDesktopOperation.mock.calls)
       expect(name).toBe('canopy.chat_storage_format4');
+  });
+
+  it('labels what started the work with exactly three fixed values, never anything a caller passes (CAN-7178 PR 1b)', () => {
+    expect(CHAT_FORMAT4_TRIGGERS).toEqual(['sweep', 'load', 'pre-handoff']);
+    const forged: ChatFormat4Outcome = { event: 'promoted', attempt: 1 };
+    Reflect.set(forged, 'trigger', '/Users/someone');
+    expect(chatFormat4Labels(forged).format4_trigger).toBe('load');
+    expect(
+      chatFormat4Labels({ event: 'promoted', attempt: 1, trigger: 'sweep' })
+        .format4_trigger,
+    ).toBe('sweep');
+    expect(
+      chatFormat4Labels({
+        event: 'promoted',
+        attempt: 1,
+        trigger: 'pre-handoff',
+      }).format4_trigger,
+    ).toBe('pre-handoff');
+    expect(
+      chatFormat4Labels({ event: 'sweep_paused', reason: 'disk' })
+        .format4_trigger,
+    ).toBe('sweep');
   });
 
   it('classifies a failure by its type and code alone', () => {
@@ -332,9 +367,28 @@ describe('format 4 outcomes from the repository', () => {
   it('reports a promotion under the format 4 kind', async () => {
     const { target, outcomes, kinds } = repository({});
     await target.getState(scope);
-    expect(outcomes).toContainEqual({ event: 'promoted', attempt: 1 });
+    expect(outcomes).toContainEqual({
+      event: 'promoted',
+      attempt: 1,
+      trigger: 'load',
+    });
     expect(kinds).toContain('format4_promoted');
     expect(kinds).not.toContain('delta_journal_promoted');
+  });
+
+  it('labels a promotion the sweep started as sweep, and one an open started as load (CAN-7178 PR 1b)', async () => {
+    const swept = repository({});
+    expect(await swept.target.sweepFormat4(scope)).toEqual({
+      outcome: 'promoted',
+    });
+    expect(swept.outcomes).toContainEqual({
+      event: 'promoted',
+      attempt: 1,
+      trigger: 'sweep',
+    });
+    expect(
+      swept.outcomes.filter((outcome) => outcome.trigger === 'load'),
+    ).toEqual([]);
   });
 
   it('reports a published promotion even when the reload after it fails', async () => {
@@ -358,7 +412,11 @@ describe('format 4 outcomes from the repository', () => {
         },
       });
       await expect(target.getState(scope)).rejects.toThrow();
-      expect(outcomes).toContainEqual({ event: 'promoted', attempt: 1 });
+      expect(outcomes).toContainEqual({
+        event: 'promoted',
+        attempt: 1,
+        trigger: 'load',
+      });
       expect(
         outcomes.some((outcome) => outcome.event === 'promotion_failed'),
       ).toBe(false);
@@ -388,7 +446,11 @@ describe('format 4 outcomes from the repository', () => {
         },
       });
       await expect(target.getState(scope)).rejects.toThrow();
-      expect(outcomes).toContainEqual({ event: 'promoted', attempt: 1 });
+      expect(outcomes).toContainEqual({
+        event: 'promoted',
+        attempt: 1,
+        trigger: 'load',
+      });
       expect(
         outcomes.some((outcome) => outcome.event === 'promotion_failed'),
       ).toBe(false);
@@ -433,6 +495,7 @@ describe('format 4 outcomes from the repository', () => {
       expect(outcomes).toContainEqual({
         event: 'retries_exhausted',
         attempt: 1,
+        trigger: 'load',
       });
     } finally {
       reopen.mockRestore();
@@ -463,8 +526,13 @@ describe('format 4 outcomes from the repository', () => {
       format4_duration_bucket: 'none',
       format4_remaining_bucket: 'none',
       format4_pause_reason: 'none',
+      format4_trigger: 'load',
     });
-    expect(outcomes).toContainEqual({ event: 'retries_exhausted', attempt: 1 });
+    expect(outcomes).toContainEqual({
+      event: 'retries_exhausted',
+      attempt: 1,
+      trigger: 'load',
+    });
     expect(kinds).toEqual(
       expect.arrayContaining([
         'format4_promotion_failed',
@@ -579,7 +647,10 @@ describe('format 4 sweep telemetry from a real failing load (SWAN, 17 Nov)', () 
     let now = 0;
     const sweep = new ChatFormat4Sweep({
       dataDir: root,
-      target: repositoryChatFormat4SweepTarget(target, () => true),
+      target: {
+        ...repositoryChatFormat4SweepTarget(target, () => true),
+        sweepAllowed: (): boolean => true,
+      },
       resolveStore: (): ChatStorageV2 =>
         ChatStorageV2.fromLegacyPaths(pathsFor()),
       report: recordChatFormat4Outcome,

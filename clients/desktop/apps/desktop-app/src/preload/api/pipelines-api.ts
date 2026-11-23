@@ -33,6 +33,7 @@ import type {
   PipelineSaveInput,
   CancelMatrixVariantRequest,
   IPCResult,
+  IPCResultWithOutcome,
   ListPipelineCapabilityRefsRequest,
   ListPipelineCapabilityRefsResponse,
   ListSharedOrganizationsRequest,
@@ -95,9 +96,11 @@ export interface PipelinesAPI {
   list(): Promise<IPCResult<PipelineInfo[]>>;
   discoverProject(cwd: string): Promise<IPCResult<PipelineInfo[]>>;
   get(request: PipelineLookupRequest): Promise<IPCResult<PipelineData>>;
-  save(input: PipelineSaveInput): Promise<IPCResult<PipelineInfo>>;
-  delete(id: string): Promise<IPCResult>;
-  duplicate(request: PipelineLookupRequest): Promise<IPCResult<PipelineInfo>>;
+  save(input: PipelineSaveInput): Promise<IPCResultWithOutcome<PipelineInfo>>;
+  delete(id: string): Promise<IPCResultWithOutcome>;
+  duplicate(
+    request: PipelineLookupRequest,
+  ): Promise<IPCResultWithOutcome<PipelineInfo>>;
   resolveAction(
     usesRef: string,
     repoPath?: string,

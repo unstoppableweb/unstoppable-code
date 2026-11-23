@@ -54,6 +54,10 @@ jest.mock('../daemon-pipeline-owner', () => ({
     };
   },
 }));
+// CAN-7522: the definitions' owner requests register before the open.
+jest.mock('../daemon-definition-owner-requests', () => ({
+  registerDaemonDefinitionOwnerRequests: (): void => undefined,
+}));
 const mockFallbacks: [string, string][] = [];
 jest.mock('../../canopy-runtime/electron-daemon-health', () => ({
   getElectronDaemonHealth: (): unknown => ({

@@ -130,9 +130,15 @@ export function RemoteAccessTab(): JSX.Element {
         const failure = inlineFailure(appError, fallback);
         const message = inlineFailureText(failure);
         if (message === null) return null;
-        return failure.details === undefined
-          ? { message }
-          : { message, details: failure.details };
+        return {
+          message,
+          ...(failure.details === undefined
+            ? {}
+            : { details: failure.details }),
+          ...(appError.recordedBy === undefined
+            ? {}
+            : { recorded: true as const }),
+        };
       },
     }),
     [openMachine, forgetDevice, openPairDialog],

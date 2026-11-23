@@ -4,12 +4,14 @@ import type {
   SetInstalledItemStatusRequest,
   UninstallInstalledItemRequest,
 } from '@canopy/protocol/installed-items';
+import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
 
+/** Remote Control reaches these through the portable adapter (CAN-7442). */
 export const INSTALLED_ITEM_CHANNELS = {
-  LIST_STATUS: 'installed-items:list-status',
-  SET_STATUS: 'installed-items:set-status',
-  UNINSTALL: 'installed-items:uninstall',
-  CHANGED: 'installed-items:changed',
+  LIST_STATUS: REMOTE_IPC_CHANNELS.installedItemsListStatus,
+  SET_STATUS: REMOTE_IPC_CHANNELS.installedItemsSetStatus,
+  UNINSTALL: REMOTE_IPC_CHANNELS.installedItemsUninstall,
+  CHANGED: REMOTE_IPC_CHANNELS.installedItemsChanged,
 } as const;
 
 export interface InstalledItemsAPI {

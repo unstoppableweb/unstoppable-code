@@ -1,5 +1,5 @@
 import { canopyPermissionDeniedError } from '@canopy/core-runtime';
-import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { isArchiveRecoveryReviewer } from '../canopy-runtime/archive-recovery-reviewer';
 import {
   type CanopyCallerDescriptor,
   WorktreeRecoveryListParamsSchema,
@@ -25,15 +25,17 @@ import { describeWorktreeDiscard } from '../lib/worktree-discard';
 import { discardWorktreeFromInterface } from '../lib/worktree-discard-interface';
 import { registerIpcHandler } from './register';
 
-/** Grant only this reviewed mutation, never the renderer or a remote bridge. */
+/**
+ * Grant only this reviewed mutation, for an archive recovery reviewer: the
+ * local desktop user or a paired controller through the remote-control bridge
+ * (CAN-7444). The caller's own principal is kept, so a controller's action
+ * stays attributed to its `remote-device:<id>`. The renderer relay, agents,
+ * MCP, the remote core session and hosted chat callers stay refused.
+ */
 function recoveryWriteCaller(
   caller: CanopyCallerDescriptor,
 ): CanopyCallerDescriptor {
-  if (
-    caller.authorityId !== LOCAL_DESKTOP_AUTHORITY_ID ||
-    caller.principalId !== 'local-desktop-user' ||
-    caller.interfaceKind !== 'desktop'
-  )
+  if (!isArchiveRecoveryReviewer(caller))
     throw canopyPermissionDeniedError(
       'Archive recovery requires a local user review.',
     );

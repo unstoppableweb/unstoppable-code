@@ -2055,3 +2055,38 @@ describe("a local plugin's cloud copy withholds what a share would block on (CAN
     expect(recorded.asked).toEqual([]);
   });
 });
+
+describe('a cloud refusal of a secret reads as the secret refusal (CAN-7583)', () => {
+  it('maps a 422 collection_skill_secret_detected to publish-secret-detected, uploading once', async () => {
+    let uploads = 0;
+    const { deps } = fakes({
+      upload: () => {
+        uploads += 1;
+        return Promise.reject(
+          new CanopyCloudClientError(
+            'http-error',
+            'The plugin "notes" looks like it contains a secret (a credential variable in skills/notes/notes.md). Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}, then share again.',
+            422,
+            'collection_skill_secret_detected',
+          ),
+        );
+      },
+    });
+    await expect(
+      refusal(publishPluginPackageToCloud(TARGET, PKG, SOURCE, deps)),
+    ).resolves.toBe('publish-secret-detected');
+    expect(uploads).toBe(1);
+  });
+
+  it('keeps any other 422 as the cloud being unavailable', async () => {
+    const { deps } = fakes({
+      upload: () =>
+        Promise.reject(
+          new CanopyCloudClientError('http-error', 'Unprocessable', 422),
+        ),
+    });
+    await expect(
+      refusal(publishPluginPackageToCloud(TARGET, PKG, SOURCE, deps)),
+    ).resolves.toBe('publish-remote-unavailable');
+  });
+});

@@ -122,6 +122,7 @@ import { RemoteAppAdvisorSurface } from './host/app-advisor-surface';
 import { chatDriver } from './host/chat-drivers';
 import { accountProxyRemoteSignInTarget } from './host/account-proxy-sign-in-target';
 import { createHostFileReader } from './host/file-reads';
+import { readStoredStartPages } from './host/stored-start-pages';
 import { listRemoteDirectory } from './host/list-directory';
 import { createMainWindowPushSource } from './host/main-window-pushes';
 import { RemoteUploadStore } from './host/uploads';
@@ -464,6 +465,7 @@ export function initializeRemoteControl(options: {
       authorize: authorizeExternalFileRead,
       maxBytes: REMOTE_FILE_OPEN_MAX_BYTES,
     }),
+    storedStartPages: readStoredStartPages,
     openedFiles: new RemoteUploadStore(
       join(dataDir, 'remote-control-opened-files'),
       {

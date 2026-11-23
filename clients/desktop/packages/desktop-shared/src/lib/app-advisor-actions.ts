@@ -58,10 +58,6 @@ import { MAX_ARCHIVE_RETENTION_DAYS } from './archive-retention';
 const appName = BRAND.displayName;
 
 const cloudName = `${appName} Cloud`;
-const remoteControlDisplayName = REMOTE_CONTROL_LABEL;
-// Lowercase form for mid-sentence prose; remoteControlDisplayName stays proper-cased
-// for sentence-start usage.
-const remoteControlDisplayNameInline = REMOTE_CONTROL_LABEL.toLowerCase();
 
 /**
  * Page ids that only survive as compatibility aliases opening another
@@ -349,10 +345,6 @@ export const APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES = [
   'browser.start_recording',
   'browser.stop_recording',
   'browser.open_external',
-  'canopy_portal.open',
-  'canopy_portal.close',
-  'canopy_portal.start',
-  'canopy_portal.stop',
   'canopy_cloud.load_account',
   'canopy_cloud.validate_api_key',
   'canopy_cloud.save_api_key',
@@ -360,7 +352,6 @@ export const APP_ADVISOR_REVISION_AGNOSTIC_ACTION_TYPES = [
   'canopy_cloud.start_oauth_login',
   'canopy_cloud.cancel_oauth_login',
   'canopy_cloud.disconnect',
-  'canopy_portal.open_account_settings',
   'app_advisor.open',
   'app_advisor.close',
   'watcher.list',
@@ -10059,74 +10050,6 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'oauth',
         'api key',
       ],
-    },
-    {
-      type: 'canopy_portal.open',
-      category: 'remote-control',
-      summary: `Open the ${remoteControlDisplayNameInline} modal.`,
-      fields: [],
-      example: { type: 'canopy_portal.open' },
-      keywords: ['open', 'modal'],
-      notes: [
-        'Legacy alias of remote_control.open_dialog, retained for one release; new callers should use remote_control.open_dialog.',
-      ],
-    },
-    {
-      type: 'canopy_portal.close',
-      category: 'remote-control',
-      summary: `Close the ${remoteControlDisplayNameInline} modal.`,
-      fields: [],
-      example: { type: 'canopy_portal.close' },
-      keywords: ['close', 'modal'],
-      notes: [
-        'Legacy alias of remote_control.close_dialog, retained for one release; new callers should use remote_control.close_dialog.',
-      ],
-    },
-    {
-      type: 'canopy_portal.start',
-      category: 'portal',
-      summary: `Turn on Allow incoming in ${remoteControlDisplayName}, so paired computers can control this one.`,
-      fields: [],
-      example: { type: 'canopy_portal.start' },
-      keywords: [
-        'portal',
-        'start',
-        'remote control',
-        'allow incoming',
-        'remote access',
-      ],
-      notes: [
-        'Legacy alias of remote_control.set_allow_incoming with enabled true, retained for older callers; new callers should use remote_control.set_allow_incoming. The result is { allowIncoming }.',
-      ],
-    },
-    {
-      type: 'canopy_portal.stop',
-      category: 'portal',
-      summary: `Turn off Allow incoming in ${remoteControlDisplayName} and end the sessions of computers controlling this one.`,
-      fields: [],
-      example: { type: 'canopy_portal.stop' },
-      keywords: [
-        'portal',
-        'stop',
-        'remote control',
-        'allow incoming',
-        'remote access',
-      ],
-      notes: [
-        'Legacy alias of remote_control.set_allow_incoming with enabled false, retained for older callers; new callers should use remote_control.set_allow_incoming. The result is { allowIncoming }.',
-      ],
-    },
-    {
-      type: 'canopy_portal.open_account_settings',
-      category: 'remote-control',
-      summary: `Close ${remoteControlDisplayNameInline} and open Accounts settings.`,
-      fields: [],
-      example: { type: 'canopy_portal.open_account_settings' },
-      notes: [
-        'Legacy alias, retained for one release: closes the Remote Control dialog, then runs settings.open with destination { scope: account, page: account }. New callers should use settings.open.',
-        'Signed out, settings.open refuses with authentication_failed after the dialog has closed; sign in with canopy_cloud.start_oauth_login first.',
-      ],
-      keywords: ['accounts settings', 'canopy cloud', 'account', 'api key'],
     },
     {
       type: 'app_advisor.open',

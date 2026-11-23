@@ -16,7 +16,8 @@
  *    the `scrollbarVisibility` option is dropped.
  *  - `ISplitViewStyles.separatorBorder` is a CSS color string instead of the
  *    upstream `Color` class.
- *  - View `layout`/`setVisible` errors are swallowed (upstream logs them via
+ *  - View `layout`/`setVisible` errors are contained and go to the host's
+ *    panel error sink, once per view (upstream logs them via
  *    `console.error`, which Canopy lint forbids).
  *--------------------------------------------------------------------------------------------*/
 
@@ -31,6 +32,7 @@ import {
 import { addDisposableListener } from './dom';
 import { Emitter, Event } from './emitter';
 import { clamp } from './numbers';
+import { reportPanelError } from './panel-error-sink';
 import {
   type ISashEvent as IBaseSashEvent,
   Orientation,
@@ -281,9 +283,9 @@ abstract class ViewItem<TLayoutContext, TView extends IView<TLayoutContext>> {
 
     try {
       this.view.setVisible?.(visible);
-    } catch {
-      // Ignore: a throwing view must not break the split view
-      // (upstream logs via console.error, which Canopy lint forbids).
+    } catch (error) {
+      // A throwing view must not break the split view.
+      reportPanelError(this.view, error);
     }
   }
 
@@ -340,9 +342,9 @@ abstract class ViewItem<TLayoutContext, TView extends IView<TLayoutContext>> {
 
     try {
       this.view.layout(this.size, offset, layoutContext);
-    } catch {
-      // Ignore: a throwing view must not break the split view
-      // (upstream logs via console.error, which Canopy lint forbids).
+    } catch (error) {
+      // A throwing view must not break the split view.
+      reportPanelError(this.view, error);
     }
   }
 

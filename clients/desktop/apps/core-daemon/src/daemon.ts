@@ -84,6 +84,7 @@ import {
   isDaemonPipelineDefinitionOwner,
   type DaemonPipelineDefinitionHostOptions,
 } from '@canopy/core-runtime/node/pipeline/daemon';
+import { createPipelineOwnerChannel } from '@canopy/core-runtime/node/pipeline';
 import type { StorageOwnershipRow } from '@canopy/core-runtime/storage';
 import { isAgentDaemonHostingRequired } from '@canopy/core-runtime/node/agent/hosting';
 import {
@@ -146,6 +147,7 @@ import { createDaemonScriptProcessServices } from './script-processes';
 import { createDaemonScriptModule } from './scripts';
 import { createDaemonTerminalModule } from './terminals';
 import { createDaemonPipelineModule } from './pipelines';
+import { productionPipelineDefinitions } from './pipeline-definition-production';
 import {
   codeGraphGenerationReportFit,
   codeGraphReadReportFit,
@@ -468,9 +470,9 @@ export interface StartCanopyDaemonOptions extends CanopyDaemonArguments {
   };
   /**
    * Trusted test composition only (CAN-5092 S1b): ownership rows that replace
-   * the compiled ones for the definitions' gate, and the store's sources,
-   * which the daemon does not carry. Main never supplies them, so production
-   * keeps the compiled rows, which leave the definitions with Electron main
+   * the compiled ones for the definitions' gate, and the store's sources.
+   * Main never supplies them, so production takes its own composition
+   * (CAN-7522), whose compiled rows leave the definitions with Electron main
    * and the CLI, and composes nothing.
    */
   readonly pipelineDefinitions?: {
@@ -603,18 +605,19 @@ function selectOperationLedger(options: StartCanopyDaemonOptions):
 
 /**
  * What lets this daemon serve `core.pipeline.definition.*`, or undefined:
- * compiled ownership, never a runtime opt-in, and sources only a trusted
- * composition supplies. The compiled rows keep pipeline_definitions legacy,
- * so production composes nothing and never touches the store or its replay
- * receipts. Split mode serves none.
+ * compiled ownership, never a runtime opt-in. Without a trusted test
+ * composition, the daemon's production composition (CAN-7522): the compiled
+ * rows keep pipeline_definitions legacy, so production composes nothing and
+ * never touches the store or its replay receipts. Split mode serves none.
  */
 function selectPipelineDefinitions(
   options: StartCanopyDaemonOptions,
 ): StartCanopyDaemonOptions['pipelineDefinitions'] {
   if (options.splitWorker) return undefined;
-  const seam = options.pipelineDefinitions;
-  if (!seam || !isDaemonPipelineDefinitionOwner(seam.ownership))
-    return undefined;
+  const seam =
+    options.pipelineDefinitions ??
+    productionPipelineDefinitions({ dataRoot: options.dataRoot });
+  if (!isDaemonPipelineDefinitionOwner(seam.ownership)) return undefined;
   return seam;
 }
 
@@ -1215,6 +1218,12 @@ async function startOwnedDaemon(
         );
       }
       const definitions = selectPipelineDefinitions(options);
+      // The daemon keeps one owner subscription: where pipelines and the
+      // definitions both compose, they share its channel (CAN-7522).
+      const owner =
+        definitions && options.pipelines
+          ? createPipelineOwnerChannel()
+          : undefined;
       if (definitions)
         pipelineDefinitions = createCorePipelineDefinitionModule(
           createDaemonPipelineDefinitionHost({
@@ -1222,6 +1231,7 @@ async function startOwnedDaemon(
             authorityId,
             flushDirectory: (folder) => flushDirectory(folder, { os }),
             ...definitions,
+            ...(owner && { owner }),
           }),
         );
       if (options.scripts)
@@ -1266,6 +1276,7 @@ async function startOwnedDaemon(
           dataRoot: canonicalDataRoot,
           codexMcpLauncher: daemonCodexMcpLauncher(options.pipelines.shell),
           obligations: pipelineObligations,
+          ...(owner && { owner }),
         });
       }
       runtime = await createCanopyDaemonGraph({

@@ -129,6 +129,7 @@ import type { ChatStorageV2 } from '../lib/chat-storage-v2';
 import { createHash, randomUUID } from 'node:crypto';
 import { isE2eBuild } from '../lib/e2e-gate';
 import { isChatFormat4PromotionEnabled } from './chat-format4-promotion-flag';
+import { isChatFormat4SweepEnabled } from './chat-format4-sweep-flag';
 import { recordChatFormat4Outcome } from './chat-format4-telemetry';
 import { recordChatStorageFailure } from './chat-storage-failure-telemetry';
 import { startChatFormat4Sweep } from './chat-format4-sweep';
@@ -3717,6 +3718,7 @@ export class ChatStateService implements ChatStateCommandPort {
       startChatFormat4Sweep(
         this.repository,
         isChatFormat4PromotionEnabled,
+        isChatFormat4SweepEnabled,
         (scope): boolean =>
           this.deletingScopeIds.has(chatScopeLifecycleKey(scope)),
       );

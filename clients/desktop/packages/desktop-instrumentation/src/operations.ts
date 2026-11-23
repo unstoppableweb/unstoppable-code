@@ -584,6 +584,7 @@ export const DESKTOP_OPERATIONS = {
       'format4_duration_bucket',
       'format4_remaining_bucket',
       'format4_pause_reason',
+      'format4_trigger',
     ],
   },
   // The chat automation migration (CAN-5479): one event per run with

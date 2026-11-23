@@ -4,7 +4,12 @@ export interface OfficePreviewCopy {
   readonly truncationRecovery: string;
 }
 
-export type OfficePreviewRenderFailure = 'parse-failed';
+/**
+ * `parse-failed` is a document the parser refused or could not finish;
+ * `worker-defect` is a parser defect or worker crash, which hosts record.
+ * Both show the same recovery card.
+ */
+export type OfficePreviewRenderFailure = 'parse-failed' | 'worker-defect';
 
 export const DEFAULT_OFFICE_PREVIEW_COPY: OfficePreviewCopy = {
   banner:

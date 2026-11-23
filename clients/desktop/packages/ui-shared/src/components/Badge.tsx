@@ -14,6 +14,7 @@ import {
   type CountTone,
   type DotSize,
   type DotTone,
+  type DotVariant,
 } from '../lib/badge';
 
 export type {
@@ -155,6 +156,11 @@ export interface DotProps {
    * for a row's leading icon.
    */
   size?: DotSize;
+  /**
+   * `solid` (default) or `ring`, the outline only: a still shape for a live
+   * state whose motion is off, distinct from a resting solid dot.
+   */
+  variant?: DotVariant;
   /** Motion for a status that is in progress. */
   pulse?: boolean;
   /**
@@ -175,12 +181,13 @@ export interface DotProps {
 export function Dot({
   tone,
   size = 'regular',
+  variant = 'solid',
   pulse = false,
   label,
   className,
   'data-testid': testId,
 }: DotProps): JSX.Element {
-  const base = dotClassName(tone, size);
+  const base = dotClassName(tone, size, variant);
   const cls = [base, pulse ? 'canopy-status-pulse' : undefined, className]
     .filter(Boolean)
     .join(' ');
@@ -191,6 +198,7 @@ export function Dot({
         aria-label={label}
         data-testid={testId}
         data-dot-tone={tone}
+        data-dot-variant={variant}
         className={cls}
       />
     );
@@ -200,6 +208,7 @@ export function Dot({
       aria-hidden
       data-testid={testId}
       data-dot-tone={tone}
+      data-dot-variant={variant}
       className={cls}
     />
   );

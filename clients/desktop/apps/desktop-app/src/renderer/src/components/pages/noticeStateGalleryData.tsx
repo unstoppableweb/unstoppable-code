@@ -1134,6 +1134,16 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         live: false,
       },
       {
+        id: 'mcp-delete-cleanup-incomplete',
+        title: 'MCP server: deleted, cleanup incomplete',
+        note: 'CAN-7362: the server is gone, so nothing offers a retry. Customize shows this above the list once the delete dialog closes.',
+        intent: 'attention',
+        heading: 'Tracker was deleted from this device.',
+        message: 'Cleanup is incomplete.',
+        actions: [{ label: 'Open repair', variant: 'primary' }],
+        dismissible: true,
+      },
+      {
         id: 'usage-fetch-error',
         title: 'Usage: fetch failed',
         intent: 'attention',

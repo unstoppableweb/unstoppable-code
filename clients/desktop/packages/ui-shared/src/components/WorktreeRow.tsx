@@ -294,8 +294,8 @@ export interface WorktreeRowProps {
   /** True when chat is actively streaming. Drives the thinking spinner. */
   isStreaming?: boolean;
   /**
-   * Live background tasks in the worktree's chats: the neutral background
-   * spinner while no turn runs (turn-state D15). Hosts without the data omit
+   * Live background tasks in the worktree's chats: the pulsing grey
+   * background dot while no turn runs (turn-state D15). Hosts without the data omit
    * it.
    */
   backgroundTasks?: number;
@@ -831,8 +831,8 @@ export function WorktreeRowPrimaryIndicator({
   if (uiStatus === 'working') {
     // Working means a workflow is running in the background (a streaming
     // chat shows the accent spinner instead, upstream of this branch), so the
-    // indicator is the shared Running glyph: the neutral spinner the sidebar
-    // already uses for background work, never the accent.
+    // indicator is the shared Running glyph: a neutral spinner, never the
+    // accent.
     return withStatusTooltip(
       'Working',
       <span
@@ -1487,7 +1487,7 @@ export function WorktreeRowActionChip({
       data-always-visible={alwaysVisible || undefined}
       className={
         inline
-          ? 'relative inline-flex shrink-0 items-center justify-end gap-0.5'
+          ? 'relative inline-flex shrink-0 items-center justify-end'
           : displayMode === 'list'
             ? // The controls sit as far from the row's right edge as from its
               // top: 2px beside the label line, 4px centered in a one-line row.
@@ -1495,7 +1495,7 @@ export function WorktreeRowActionChip({
               // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
               // pointers instead center the 44px hitbox in the 44px row; lifting
               // that full hitbox overlaps the workspace-header actions above it.
-              `absolute right-0.5 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end gap-0.5 group-data-[worktree-single-line=true]:right-1 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
+              `absolute right-0.5 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end group-data-[worktree-single-line=true]:right-1 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
                 // While the row's own menu is open the actions are hidden: the
                 // menu already identifies its row, and its trigger holds focus,
                 // so `group-focus-within` would otherwise keep the whole cluster
@@ -1506,7 +1506,7 @@ export function WorktreeRowActionChip({
                 // over these) is redundant once they are invisible.
                 menuOpen ? 'opacity-0' : ''
               }`
-            : `flex w-full items-center gap-0.5 ${menuOpen ? 'opacity-0' : ''}`
+            : `flex w-full items-center ${menuOpen ? 'opacity-0' : ''}`
       }
     >
       {children}
@@ -1936,18 +1936,18 @@ function WorktreeRowImpl(
     actionChipButtonCount <= 1
       ? 'pr-8'
       : actionChipButtonCount === 2
-        ? 'pr-15.5'
+        ? 'pr-15'
         : actionChipButtonCount === 3
-          ? 'pr-23'
-          : 'pr-30.5';
+          ? 'pr-22'
+          : 'pr-29';
   const actionChipHoverPadding =
     actionChipButtonCount <= 1
       ? 'pointer-fine:group-hover:pr-8 pointer-fine:group-focus-within:pr-8'
       : actionChipButtonCount === 2
-        ? 'pointer-fine:group-hover:pr-15.5 pointer-fine:group-focus-within:pr-15.5'
+        ? 'pointer-fine:group-hover:pr-15 pointer-fine:group-focus-within:pr-15'
         : actionChipButtonCount === 3
-          ? 'pointer-fine:group-hover:pr-23 pointer-fine:group-focus-within:pr-23'
-          : 'pointer-fine:group-hover:pr-30.5 pointer-fine:group-focus-within:pr-30.5';
+          ? 'pointer-fine:group-hover:pr-22 pointer-fine:group-focus-within:pr-22'
+          : 'pointer-fine:group-hover:pr-29 pointer-fine:group-focus-within:pr-29';
   const showPrBadge = lastKnownPrStatus !== undefined && !isDone;
   const prColorClass = lastKnownPrStatus
     ? prStatusColorClass(lastKnownPrStatus)
@@ -2655,7 +2655,7 @@ function WorktreeRowImpl(
     const classicStreamingSpinner =
       !classicHasSetupLoader &&
       (isStreaming || (uiStatus === 'working' && pipelineStatus !== 'running'));
-    // Background work alone draws the neutral spinner in the same slot.
+    // Background work alone draws the pulsing grey dot in the same slot.
     const classicBackgroundSpinner =
       !classicHasSetupLoader && !classicStreamingSpinner && backgroundTasks > 0;
     // Classic has no unread subtitle badge; the blue unread dot itself hosts
@@ -3014,10 +3014,13 @@ function WorktreeRowImpl(
             : 'filter';
     const focusedGlyph =
       focusedRowStatus === 'working' || focusedRowStatus === 'background' ? (
-        // The ring keeps the status slot's 12px.
-        <ThinkingSpinner
-          tone={focusedRowStatus === 'working' ? 'accent' : 'tertiary'}
+        // The badge around it names the state. The working ring keeps the
+        // status slot's 12px.
+        <AgentStateGlyph
+          state={focusedRowStatus}
+          backgroundTasks={backgroundTasks}
           sizePx={12}
+          tooltip={false}
         />
       ) : (
         <Dot tone={focusedDotTone} />
@@ -3447,6 +3450,8 @@ function WorktreeRowImpl(
                   'worktree-row-pinned-badge',
                   testIdSuffix,
                 )}
+                footprint="status"
+                className="group-data-[worktree-single-line=true]:mr-0.5"
               />
             )}
             {/* Last element before the status cluster, so an idle row lands
@@ -3458,7 +3463,7 @@ function WorktreeRowImpl(
             {!focusedStatus && sharedTitleBadge}
             {hasTrailingMeta && (
               <span
-                className={`ml-auto inline-flex h-5 shrink-0 items-center gap-1.5 ${
+                className={`ml-auto inline-flex h-5 shrink-0 items-center gap-1.5 group-data-[worktree-single-line=true]:mr-0.5 ${
                   actionChipSlot !== undefined
                     ? 'group-hover/sidebar-item:hidden group-focus-within/sidebar-item:hidden pointer-coarse:hidden'
                     : ''
@@ -3585,14 +3590,13 @@ function WorktreeRowImpl(
                     <GitMergeIcon size={BRANCH_GLYPH_SIZE_PX} />
                   </span>
                 )}
-                {/* Pinned sits last, beside the age, so it lands exactly
-                    under the hover Pin button: the age's 24px cell is the
-                    Archive button's, and the 6px gap is the button's 4px inset
-                    plus the 2px gap between buttons. */}
+                {/* Pinned sits last, beside the age, so its center lands on
+                    the hover Pin button's icon while the age sits under
+                    Archive's. */}
                 {focusedPinned && (
                   <span
-                    className={`${TRAILING_GLYPH_SLOT_CLASS} fg-quaternary ${
-                      lastActivityAt === undefined ? 'pr-1' : ''
+                    className={`${TRAILING_GLYPH_SLOT_CLASS} fg-secondary ${
+                      lastActivityAt === undefined ? 'pr-0.5' : ''
                     }`}
                     role="img"
                     aria-label="Pinned"
@@ -3629,7 +3633,9 @@ function WorktreeRowImpl(
                 // revealed action buttons instead of hiding under them. The
                 // title pays the badge width on top of the chip reserve —
                 // status visibility wins over those extra characters.
-                className="inline-flex h-5 shrink-0 items-center justify-end gap-0.5 -mr-0.5"
+                // A one-line row centers its buttons 4px from the edge, so
+                // its status sits 2px further in to stay under their icons.
+                className="inline-flex h-5 shrink-0 items-center justify-end gap-0.5 -mr-0.5 group-data-[worktree-single-line=true]:mr-0"
                 data-testid={withTestIdSuffix(
                   'worktree-row-trailing-slot',
                   testIdSuffix,

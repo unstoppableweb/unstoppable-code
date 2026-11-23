@@ -37,6 +37,7 @@ jest.mock('../../observability', () => ({
 import type { HostBridge } from '../host/bridge-window';
 import {
   CONTROLLER_REMOTE_URL_PROJECTIONS,
+  CONTROLLER_SENT_BACK_URL_CHANNELS,
   controllerCredentialFreeGitUrl,
   controllerCredentialFreeText,
   controllerCredentialFreeUrl,
@@ -552,6 +553,8 @@ describe('remote URLs a paired controller receives (CAN-7030)', () => {
         ...new Set([
           ...Object.keys(RESULTS),
           ...OUT_ONLY.keys(),
+          // Driven by controller-url-writebacks-golden.test.ts.
+          ...CONTROLLER_SENT_BACK_URL_CHANNELS,
           IPC_CHANNELS.workspaceReferenceRepoStatusEvent,
           IPC_CHANNELS.cloneJobsChanged,
         ]),
@@ -659,7 +662,32 @@ describe('credential parts of URLs a paired controller receives (CAN-7082)', () 
     'ssh://user:sekA/sekB@sekC/sekD@example.invalid/x',
     '//user:sekA/sekB@sekC?ref=sekD@example.invalid/x',
   ];
+  /** A sent-back URL's shape on its channel, beside the channel's own fields. */
   function callerPayload(channel: string, url: string): unknown {
+    const payload = channelPayload(channel, url);
+    if (channel === MCP_SERVER_CHANNELS.START_ACCOUNT)
+      return { authorizationUrl: url };
+    if (
+      channel === MCP_SERVER_CHANNELS.LOAD_SERVER ||
+      channel === MCP_SERVER_CHANNELS.SAVE_SERVER
+    )
+      return {
+        server: {
+          definition: {
+            url,
+            oauth: { authorizationUrl: url, tokenUrl: url },
+          },
+        },
+      };
+    return CONTROLLER_SENT_BACK_URL_CHANNELS.includes(channel) &&
+      typeof payload === 'object' &&
+      payload !== null &&
+      !Array.isArray(payload)
+      ? { ...payload, startPage: { kind: 'url', url } }
+      : payload;
+  }
+
+  function channelPayload(channel: string, url: string): unknown {
     const repos = [{ name: 'r', remoteUrl: url }];
     const byChannel: Record<string, unknown> = {
       [IPC_CHANNELS.repoGetRemoteUrl]: { remoteUrl: url },
@@ -1028,6 +1056,36 @@ describe('credential parts of URLs a paired controller receives (CAN-7082)', () 
         expect(JSON.stringify([received, installed])).not.toContain(SECRET);
       },
     );
+
+    // A browser controller never names a source: it sends '' and the host
+    // installs from the one it stored (CAN-7442).
+    it('installs from the stored source when the controller sends an empty source', async () => {
+      const host = installHost(STORED_SOURCE);
+      current = await harness(OUT_ONLY_RESULTS, host.handlers);
+      const installed = await request(PLUGINS_CHANNELS.INSTALL_PLUGIN, [
+        'acme',
+        'p',
+        '',
+      ]);
+      expect(host.clones).toEqual([STORED_SOURCE]);
+      expect(installed).toEqual({
+        success: true,
+        data: { name: 'p', externalSource: { url: SEEN_SOURCE } },
+      });
+      expect(JSON.stringify(installed)).not.toContain(SECRET);
+    });
+
+    it('refuses an empty source for a plugin the host has no source for, and clones nothing', async () => {
+      const host = installHost(STORED_SOURCE);
+      current = await harness(OUT_ONLY_RESULTS, host.handlers);
+      const installed = await request(PLUGINS_CHANNELS.INSTALL_PLUGIN, [
+        'acme',
+        'unknown',
+        '',
+      ]);
+      expect(host.clones).toEqual([]);
+      expect(installed).toMatchObject({ success: false });
+    });
 
     // A plugin's source can be an scp-style Git remote, whose
     // userinfo a URL parser doesn't see.

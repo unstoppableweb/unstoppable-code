@@ -274,10 +274,12 @@ export function AccountDeviceSettings({
       return <IntegrationsPageDeviceSettings />;
     case 'digests':
     case 'security':
+    case 'model-providers':
     case 'ai-gateway':
     case 'billing':
     case 'plugins':
     case 'mcp':
+    case 'delegation':
     case 'labs':
     case 'appearance':
       return null;

@@ -110,6 +110,7 @@ import type { prepareNativePipelineStartAdmission } from './daemon-pipeline-star
 import { desktopPipelineHostActionsOf } from './pipeline-host-requests';
 import { isErrnoException } from '../lib/type-guards';
 import { attachDaemonPipelineOwnerRun } from './daemon-pipeline-model-owner';
+import { registerDaemonDefinitionOwnerRequests } from './daemon-definition-owner-requests';
 import { resolveCodexRuntimeEnvironmentProfile } from '../lib/user-environment-runtime';
 import { buildModelRegistrySnapshot } from '@canopy/execution-engine/node/pipelines/executor/model-registry-snapshot';
 import { resolvePipelineMockEnvOverride } from '@canopy/execution-engine/node/e2e-mock-env';
@@ -888,6 +889,8 @@ async function startPipelineRoute(
     }
     // Nothing was sent: an owner that cannot settle is no background warning.
     try {
+      // The subscription says it serves the definitions' requests (CAN-7522).
+      registerDaemonDefinitionOwnerRequests();
       await ensureDaemonPipelineOwnerSettlement();
     } catch {
       note('owner_unavailable');

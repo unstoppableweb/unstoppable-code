@@ -44,6 +44,9 @@
 //     bootstrap: 'ok' | 'unsupported' | 'viewer-mismatch',
 //     integrationsEnabled: true,   // false: bootstrap reports Integrations
 //                                  // off and its page data answers 404
+//     delegationEnabled: false,    // true: bootstrap lists Delegation and
+//                                  // /api/v1/settings/delegation answers
+//     delegation: { maxDepth, maxConcurrent }, // saved limits; default 3, 5
 //     viewer: { id?, name?, email? },
 //     incomingInvitations: [...],  // { id, organization, role, invitedByName, createdAt, expiresAt }
 //     organizations: [...],        // defaultHostedSettingsOrganizations() shape
@@ -303,6 +306,11 @@ function initialState(config, scenario) {
   return {
     incomingInvitations,
     aiGatewayEnabled: config.aiGatewayEnabled === true,
+    delegationEnabled: config.delegationEnabled === true,
+    delegation: {
+      maxDepth: config.delegation?.maxDepth ?? 3,
+      maxConcurrent: config.delegation?.maxConcurrent ?? 5,
+    },
     personalGateway: clone(config.personalGateway ?? null),
     cloudGatewayKeys: clone(config.cloudGatewayKeys ?? null),
     gatewayRevision: 0,
@@ -793,6 +801,42 @@ const OPERATION_ROUTES = [
       const id = decodeURIComponent(match[1]);
       keys[id] = 'none';
       respond(ctx, 200, { status: keys[id] });
+    },
+  },
+
+  {
+    operation: 'account.settings.delegation.read',
+    method: 'GET',
+    path: /^\/api\/v1\/settings\/delegation$/,
+    handle(ctx) {
+      if (!ctx.state.delegationEnabled)
+        return respond(ctx, 404, { error: 'Not found' });
+      respond(ctx, 200, clone(ctx.state.delegation));
+    },
+  },
+  {
+    operation: 'account.settings.delegation.update',
+    method: 'PATCH',
+    path: /^\/api\/v1\/settings\/delegation$/,
+    handle(ctx) {
+      if (!ctx.state.delegationEnabled)
+        return respond(ctx, 404, { error: 'Not found' });
+      if (!isRecord(ctx.body))
+        return respond(ctx, 400, { error: 'Body is required' });
+      const { maxDepth, maxConcurrent } = ctx.body;
+      const inRange = (value, max) =>
+        value === undefined ||
+        (Number.isInteger(value) && value >= 1 && value <= max);
+      if (
+        (maxDepth === undefined && maxConcurrent === undefined) ||
+        !inRange(maxDepth, 8) ||
+        !inRange(maxConcurrent, 64)
+      )
+        return respond(ctx, 400, { error: 'Limits are invalid' });
+      if (maxDepth !== undefined) ctx.state.delegation.maxDepth = maxDepth;
+      if (maxConcurrent !== undefined)
+        ctx.state.delegation.maxConcurrent = maxConcurrent;
+      respond(ctx, 200, clone(ctx.state.delegation));
     },
   },
 

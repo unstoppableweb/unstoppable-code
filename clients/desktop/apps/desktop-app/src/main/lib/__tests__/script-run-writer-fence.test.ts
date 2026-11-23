@@ -41,6 +41,22 @@ describePosix('desktopScriptRunWriterFence', () => {
     ).resolves.toBe('gone');
   });
 
+  it('names Electron main on the runs it starts, and still never kills when a reap may signal (CAN-7517)', async () => {
+    expect(desktopScriptRunWriterFence.spawner).toBe('electron');
+    const live = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
+    const pid = live.pid;
+    if (pid === undefined) throw new Error('No sleep process.');
+    try {
+      await expect(
+        desktopScriptRunWriterFence.reapChild?.({ pid }, { signal: true }),
+      ).resolves.toBe('unproven');
+      expect(live.exitCode).toBeNull();
+      expect(live.signalCode).toBeNull();
+    } finally {
+      live.kill('SIGKILL');
+    }
+  });
+
   it('never kills a process the daemon left, and reports it gone once it exits (CAN-6482)', async () => {
     const live = spawn('/bin/sleep', ['30'], { stdio: 'ignore' });
     const pid = live.pid;

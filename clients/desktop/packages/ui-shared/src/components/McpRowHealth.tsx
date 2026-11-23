@@ -19,6 +19,12 @@ const TONE_CLASS = {
   neutral: 'fg-secondary',
 } as const;
 
+const MCP_CHECK_FEEDBACK_TEXT = {
+  checking: 'Checking…',
+  connected: 'Connected',
+  failed: "Couldn't connect",
+} as const;
+
 export interface McpRowHealthProps {
   readonly name: string;
   readonly model: McpRowHealthModel;
@@ -138,29 +144,47 @@ export function McpRowHealth({
 /**
  * New Customize's feedback for a Test connection the person started
  * (Sergii's QA): "Checking…" with a spinner while it runs, then a green
- * "Connected" for a few seconds. A failure shows the row's usual error
- * state instead; background checks show nothing.
+ * "Connected · 2 min ago" that stays until another test or the page closes.
+ * A failure beside Sign in is the `failed` kind ("Couldn't connect"): the same
+ * status element, so the end of the check is announced. Without Sign in the
+ * row's usual error state shows instead; background checks show nothing.
  */
 export function McpRowCheckFeedback({
   kind,
   testId,
+  checkedAgo,
 }: {
-  readonly kind: 'checking' | 'connected';
+  readonly kind: 'checking' | 'connected' | 'failed';
   readonly testId: string;
+  /** The finished test's age, already worded ("2 min ago"). */
+  readonly checkedAgo?: string;
 }): JSX.Element {
+  // New Customize: the dot carries the failure color; the text stays plain.
+  const neutralText = useItemStateMarks();
+  // The age sits outside the live region: its text changes every tick and
+  // would re-announce an unchanged result.
   return (
     <span
-      role="status"
-      data-testid={testId}
-      data-check-feedback={kind}
-      className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs fg-secondary"
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs ${kind === 'failed' && !neutralText ? TONE_CLASS.destructive : 'fg-secondary'}`}
     >
-      {kind === 'checking' ? (
-        <LoadingSpinner sizePx={12} decorative />
-      ) : (
-        <CheckIcon size="xs" aria-hidden className="fg-success" />
-      )}
-      <span>{kind === 'checking' ? 'Checking…' : 'Connected'}</span>
+      <span
+        role="status"
+        data-testid={testId}
+        data-check-feedback={kind}
+        className="inline-flex items-center gap-1.5"
+      >
+        {kind === 'checking' ? (
+          <LoadingSpinner sizePx={12} decorative />
+        ) : kind === 'failed' ? (
+          <Dot tone={DOT_TONE.destructive} data-testid={`${testId}-dot`} />
+        ) : (
+          <CheckIcon size="xs" aria-hidden className="fg-success" />
+        )}
+        <span>{MCP_CHECK_FEEDBACK_TEXT[kind]}</span>
+      </span>
+      {kind === 'connected' && checkedAgo !== undefined ? (
+        <span data-testid={`${testId}-age`}>· {checkedAgo}</span>
+      ) : null}
     </span>
   );
 }

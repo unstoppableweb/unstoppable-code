@@ -1,4 +1,4 @@
-import type { Unsubscribe } from '@canopy/app-core';
+import { OPERATION_UNSUPPORTED_CODE, type Unsubscribe } from '@canopy/app-core';
 import { restoreIpcRejection } from '@canopy/protocol/app-errors/ipc-rejection';
 import type { RemoteIpcChannel } from '@canopy/protocol/remote-control/channels';
 import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
@@ -8,7 +8,7 @@ export type Decoder<T> = (value: unknown) => value is T;
 
 export const REMOTE_IPC_UNAUTHORIZED_CODE = 'remote_ipc_channel_unauthorized';
 export const REMOTE_IPC_MALFORMED_REPLY_CODE = 'remote_ipc_malformed_reply';
-export const OPERATION_UNSUPPORTED_CODE = 'operation_unsupported';
+export { OPERATION_UNSUPPORTED_CODE };
 
 /**
  * This controller may not use the channel. Raised before anything reaches the

@@ -6,15 +6,17 @@ import {
   resolveMcpConnectionBadge,
 } from '@canopy/ui-shared/lib/mcp-card-display';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import type {
-  AccountMcpConnection,
-  McpServerDataView,
-  McpServerIndexEntry,
-  McpServerStatusEntry,
+import {
+  AccountMcpConnectionError,
+  type AccountMcpConnection,
+  type McpServerDataView,
+  type McpServerIndexEntry,
+  type McpServerStatusEntry,
 } from '@canopy/execution-engine/types/mcp-servers';
 import {
   CopyMcpServerDialog,
   mcpServerCopySlots,
+  McpActionRefusedError,
   McpServerManagementCard,
   type McpAction,
   type McpTestConnectionOutcome,
@@ -493,13 +495,17 @@ export function DesktopMcpManagementSections({
               ? { available: false, reason: cloudReason }
               : {
                   available: true,
-                  run: (): Promise<void> =>
-                    withIpcErrorMessage(async (): Promise<void> => {
-                      const expectedAccountId = await deleteAccount.current;
-                      if (deleteConnection && !expectedAccountId)
-                        throw new Error(
-                          'Sign in to delete this cloud connection.',
-                        );
+                  run: async (): Promise<void> => {
+                    const expectedAccountId = await withIpcErrorMessage(
+                      () => deleteAccount.current,
+                    );
+                    // Refused before any delete is attempted, so thrown outside
+                    // the wrapper that rewraps failures: not a failed delete.
+                    if (deleteConnection && !expectedAccountId)
+                      throw new McpActionRefusedError(
+                        'Sign in to delete this cloud connection.',
+                      );
+                    await withIpcErrorMessage(async (): Promise<void> => {
                       try {
                         await deleteDesktopMcpTarget({
                           ...(server ? { serverId: server.definition.id } : {}),
@@ -509,8 +515,12 @@ export function DesktopMcpManagementSections({
                           ...(expectedAccountId ? { expectedAccountId } : {}),
                           // New Customize hides Uninstall beside this Delete,
                           // so Delete prunes saved selections as it would.
-                          ...(newCustomize
-                            ? { uninstallDeviceServer: true }
+                          ...(newCustomize && server
+                            ? {
+                                uninstallDeviceServer: {
+                                  serverName: server.definition.name,
+                                },
+                              }
                             : {}),
                         });
                       } catch (error) {
@@ -519,12 +529,14 @@ export function DesktopMcpManagementSections({
                         await refresh();
                         throw error;
                       }
-                    }),
+                      // Inventory can replace this management subtree before
+                      // the response arrives. Notify the detail from the
+                      // operation, not from the keyed confirmation dialog.
+                      onDeleted?.();
+                      void refresh();
+                    });
+                  },
                 },
-          onDeleted: (): void => {
-            onDeleted?.();
-            void refresh();
-          },
           busy:
             busy ||
             operating ||
@@ -559,7 +571,15 @@ export function DesktopMcpManagementSections({
           onCopy={async (secretSlots): Promise<void> => {
             const config = server.configs[0];
             if (!config) return;
-            await requireCapturedMcpAccount(copying.accountId);
+            try {
+              await requireCapturedMcpAccount(copying.accountId);
+            } catch (error) {
+              // Checked before the copy starts: a refusal, not a failed copy.
+              throw error instanceof AccountMcpConnectionError &&
+                error.code === 'account-changed'
+                ? new McpActionRefusedError(error.message)
+                : error;
+            }
             await copyMcpServerToCloud({
               serverId: server.definition.id,
               url: server.definition.url ?? '',

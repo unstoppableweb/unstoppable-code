@@ -17,7 +17,7 @@ import {
   setSessionInterfaceToolRegistry,
 } from '../interface-tool-binding';
 import { windowAgentInterfacePort } from '../agent-interface-port';
-import { sendToWindow } from '../../lib/window-send';
+import { sendToAllWindows, sendToWindow } from '../../lib/window-send';
 import {
   INGESTION_LAG_EVENT_TYPE,
   IPC_CHANNELS,
@@ -34,6 +34,7 @@ import {
 jest.mock('../../lib/window-send', () => ({
   ...jest.requireActual<Record<string, unknown>>('../../lib/window-send'),
   sendToWindow: jest.fn(),
+  sendToAllWindows: jest.fn(),
 }));
 
 jest.mock('../claude-session', () => ({
@@ -249,6 +250,57 @@ describe('agent interface port over the main window (CAN-6995)', () => {
     expect(send.mock.calls[5]?.[2]).not.toHaveProperty('worktree');
   });
 
+  it("sends a created worktree's notices on their channels with the payloads createAgentChatWorktree sent itself", () => {
+    const send = jest.mocked(sendToWindow);
+    const sendAll = jest.mocked(sendToAllWindows);
+    send.mockReset();
+    sendAll.mockReset();
+    const port = windowAgentInterfacePort(() => null);
+    const ready: WorktreeGitReadyEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+    };
+    const failed: WorktreeGitFailedEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      error: 'git failed',
+    };
+    const repair: WorktreeNeedsRepairEvent = {
+      projectId: 'ws',
+      worktreeId: 'wt-new',
+      branchName: 'agent/continue',
+      repairIssues: [],
+    };
+    port.publishCreatedWorktreeGitReady(ready);
+    port.publishCreatedWorktreeGitFailed(failed);
+    port.publishCreatedWorktreeNeedsRepair(repair);
+    // The window doesn't take the list: it goes to every window.
+    send.mockReturnValueOnce(false);
+    port.publishCreatedWorktree('ws');
+    // The window takes it: no broadcast.
+    send.mockReturnValueOnce(true);
+    port.publishCreatedWorktree('ws');
+    expect(send.mock.calls).toEqual([
+      [null, IPC_CHANNELS.worktreeGitReady, ready],
+      [null, IPC_CHANNELS.worktreeGitFailed, failed],
+      [null, IPC_CHANNELS.worktreeNeedsRepair, repair],
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated, { workspaceId: 'ws' }],
+      [null, IPC_CHANNELS.workspaceWorktreesUpdated, { workspaceId: 'ws' }],
+    ]);
+    expect(send.mock.calls[0]?.[2]).toBe(ready);
+    expect(send.mock.calls[1]?.[2]).toBe(failed);
+    expect(send.mock.calls[2]?.[2]).toBe(repair);
+    expect(JSON.stringify(send.mock.calls[3]?.[2])).toBe(
+      JSON.stringify({ workspaceId: 'ws' }),
+    );
+    expect(sendAll.mock.calls).toEqual([
+      [IPC_CHANNELS.workspaceWorktreesUpdated, { workspaceId: 'ws' }],
+    ]);
+    // The broadcast carries the same object the window send did.
+    expect(sendAll.mock.calls[0]?.[1]).toBe(send.mock.calls[3]?.[2]);
+  });
+
   async function proposeOpenCodePlan(applied: boolean): Promise<{
     committed: PlanExitRequestEvent[];
     presented: PlanExitRequestEvent[];
@@ -352,6 +404,7 @@ const WORKTREE_ACTION_FILES: ReadonlySet<string> = new Set([
   'canopy-tools/start-split-agent-runtime.ts',
   'canopy-tools/worktree-script-actions.ts',
   'lib/shared-plan-sync.ts',
+  'lib/agent-chat-worktree.ts',
 ]);
 
 interface WindowSite {
@@ -432,6 +485,14 @@ const WINDOW_SITES: readonly WindowSite[] = Object.freeze([
     at: 'getWindow',
     count: 3,
     debt: 'secret requests (S3-2b, security), file-comment replies (S3-3), worktree actions (S3-2c)',
+  },
+  {
+    kind: 'legacyWindow',
+    file: 'lib/agent-chat-worktree.ts',
+    method: 'createAgentChatWorktree',
+    at: 'getWindow',
+    count: 1,
+    debt: "worktree creation's hook and branch-namer path, whose option types still take a window accessor (S3-2c-2, after Mike's say on his callers)",
   },
   ...(
     [

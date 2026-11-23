@@ -83,7 +83,10 @@ export function resolveRemoteBridgeSender(sender: {
   return bridgesByWebContentsId.get(sender.id)?.controllerDeviceId ?? null;
 }
 
-/** Local windows and negotiated desktop bridges use the exact catalogue. */
+/**
+ * Local windows and bridges whose desktop or browser controller negotiated
+ * the exact mode use the exact catalogue.
+ */
 export function usesExactWorktreeBaseCatalogue(sender: {
   id: number;
 }): boolean {

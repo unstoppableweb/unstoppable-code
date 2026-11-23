@@ -43,14 +43,14 @@ export const SIDEBAR_LIST_ICON_CLASSNAME =
  *
  * A fixed 24px cell, one hover action button wide, so the hover Archive button
  * takes exactly this spot and the pin icon beside it stays put when the row's
- * buttons appear. Text sits right-aligned 4px inside the cell, off the row's
- * very edge. The rare labels wider than 24px (`11mo`, `12mo`, `999`, about
+ * buttons appear. Text sits right-aligned 3px inside the cell, so it ends
+ * exactly where that button's icon ends. The rare labels wider than 24px (`11mo`, `12mo`, `999`, about
  * 27px) spill left into the gap rather than widening the cell, so every title
  * truncates at the same point. h-5 matches the status slots and the title
  * line.
  */
 export const SIDEBAR_ROW_TRAILING_CELL_CLASSNAME =
-  'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-1 text-2xs tabular-nums fg-quaternary';
+  'ml-auto inline-flex h-5 w-6 shrink-0 items-center justify-end whitespace-nowrap pr-0.75 text-2xs tabular-nums fg-quaternary';
 
 /**
  * Where a nav row's trailing shortcut hint ends, so New task's `⌘N` lines up

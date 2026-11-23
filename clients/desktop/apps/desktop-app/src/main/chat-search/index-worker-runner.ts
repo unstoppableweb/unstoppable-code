@@ -11,6 +11,14 @@ interface Pending {
   reject: (error: Error) => void;
 }
 
+/**
+ * The runner refused a request because it is closing or its queue is full.
+ * The runner has not failed, and the request says nothing about its source.
+ */
+export class ChatSearchIndexWorkerUnavailableError extends Error {
+  override readonly name = 'ChatSearchIndexWorkerUnavailableError';
+}
+
 /** One bounded FIFO and one SQLite connection; failure never falls back to blocking main. */
 export class ChatSearchIndexWorkerRunner {
   readonly ready: Promise<string>;
@@ -67,9 +75,13 @@ export class ChatSearchIndexWorkerRunner {
     const rejection =
       this.failure ??
       (this.closing && method !== 'close'
-        ? new Error('Search index worker is closing')
+        ? new ChatSearchIndexWorkerUnavailableError(
+            'Search index worker is closing',
+          )
         : method !== 'close' && this.pending.length >= 256
-          ? new Error('Search index worker queue is full')
+          ? new ChatSearchIndexWorkerUnavailableError(
+              'Search index worker queue is full',
+            )
           : undefined);
     if (rejection) {
       const rejected = Promise.reject(rejection);

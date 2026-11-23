@@ -277,7 +277,7 @@ const settingsOpenDispatchJsonSchema: AgentActionFamilyJsonSchema = {
     destination: {
       type: 'object',
       description:
-        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings (subtab ai-gateway for the AI gateway).',
+        'Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, model-providers, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings (subtab ai-gateway for the AI gateway).',
       properties: {
         scope: {
           type: 'string',

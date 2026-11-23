@@ -6,13 +6,20 @@ import {
   useState,
   type JSX,
 } from 'react';
-import type { CanopyClient, SessionViewModel } from '@canopy/app-core';
+import {
+  isUnsupportedOperation,
+  type CanopyClient,
+  type SessionViewModel,
+} from '@canopy/app-core';
 import {
   offerWorktreeDiscard,
   registerArchiveRecoveryReview,
   useArchiveRecoveryReviewRequest,
 } from '@canopy/app-state';
-import { worktreeDiscardStoreFor } from '@canopy/app-state/worktree-discard';
+import {
+  worktreeDiscardStoreFor,
+  worktreeRecoveryHostOutdatedMessage,
+} from '@canopy/app-state/worktree-discard';
 import type { WorktreeRecoveryListResult } from '@canopy/protocol/canopy-core';
 import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
 import { formatWorktreeRecoveryReason } from '@canopy/protocol/remote-control/shell/worktree-recovery';
@@ -209,7 +216,13 @@ export function WorktreeRecoveryPanel({
   readonly service?: W5RecoveryNoticeProps['service'];
   readonly dismissalStore: WorkspaceRecoveryDismissalStore;
 }): JSX.Element {
-  const supported = client.capabilities.worktreeRecoveryResolution === true;
+  // The list is read only (CAN-7439); every action needs live resolution.
+  const supported = client.capabilities.worktreeRecoveryReads === true;
+  const canResolve = client.capabilities.worktreeRecoveryResolution === true;
+  // A computer that refuses the list (from before CAN-7439) has no archive
+  // recovery to show: hide the panel rather than report a failed check.
+  const [refused, setRefused] = useState(false);
+  const available = supported && !refused;
   const [, setDismissalRevision] = useState(0);
   const [projects, setProjects] = useState<RecoveryProject[]>([]);
   const [open, setOpen] = useState(false);
@@ -218,13 +231,17 @@ export function WorktreeRecoveryPanel({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<RecoveryHold | null>(null);
+  // An older computer's update message (CAN-7444), cleared by the next read.
+  const hostOutdated = useRef<string | null>(null);
   const projectsClient = useRef<CanopyClient | null>(null);
   const reviewRequest = useArchiveRecoveryReviewRequest(client);
   const answeredReview = useRef(reviewRequest);
   const active = useRef(0);
   const reading = useRef(false);
   const mutating = useRef(false);
+  const refusedList = useRef(false);
   const lastCompleted = useRef<number | null>(null);
+  const resetFor = useRef<CanopyClient | null>(null);
   const shellSnapshot = useRef(snapshot);
   useEffect(() => {
     shellSnapshot.current = snapshot;
@@ -236,6 +253,7 @@ export function WorktreeRecoveryPanel({
     async (explicit = false): Promise<void> => {
       if (
         !supported ||
+        refusedList.current ||
         reading.current ||
         (!explicit && mutating.current) ||
         shellSnapshot.current === null
@@ -251,6 +269,11 @@ export function WorktreeRecoveryPanel({
       let didRead = shellSnapshot.current === undefined;
       reading.current = true;
       setChecking(true);
+      if (hostOutdated.current !== null) {
+        const shown = hostOutdated.current;
+        hostOutdated.current = null;
+        setMessage((current) => (current === shown ? null : current));
+      }
       try {
         // Only the hidden legacy desktop sidebar lacks a reusable shell snapshot.
         const currentSnapshot =
@@ -274,7 +297,19 @@ export function WorktreeRecoveryPanel({
               ),
             });
             incomplete ||= result.check !== 'ok';
-          } catch {
+          } catch (cause) {
+            if (isUnsupportedOperation(cause)) {
+              // Latched until the client or its support changes; a stale
+              // read must not latch the generation that replaced it.
+              if (generation === active.current) {
+                refusedList.current = true;
+                projectsClient.current = client;
+                setProjects([]);
+                setError(false);
+                setRefused(true);
+              }
+              return;
+            }
             incomplete = true;
             next.push({
               workspaceId: workspace.localId,
@@ -308,16 +343,35 @@ export function WorktreeRecoveryPanel({
     active.current += 1;
     reading.current = false;
     mutating.current = false;
-    lastCompleted.current = null;
-    projectsClient.current = null;
-    setProjects([]);
+    // A computer updated in place, or another one attached, is probed again.
+    refusedList.current = false;
+    setRefused(false);
     setOpen(false);
     setMessage(null);
+    hostOutdated.current = null;
     setDeleting(null);
     setBusy(false);
     setChecking(false);
-    setError(false);
-    if (!supported) return;
+    // Support can flap with a remote link (CAN-7439). Only a new client drops
+    // its records and the passive read gap, so a flapping link never reads
+    // more often than the gap allows.
+    if (resetFor.current !== client) {
+      resetFor.current = client;
+      lastCompleted.current = null;
+      projectsClient.current = null;
+      setProjects([]);
+      setError(false);
+    }
+    if (!supported) {
+      // A read that failed as the link dropped must not survive the gap as a
+      // "couldn't check" banner, or as its placeholder rows, once the link
+      // returns. Records the computer reported are kept.
+      setError(false);
+      setProjects((current) =>
+        current.filter((project) => project.check !== 'list-unavailable'),
+      );
+      return;
+    }
     const onFocus = (): void => {
       void refresh();
     };
@@ -353,7 +407,7 @@ export function WorktreeRecoveryPanel({
     };
   }, [refresh, snapshotReady]);
   useEffect(() => {
-    if (!supported || projectsClient.current !== client) return;
+    if (!available || projectsClient.current !== client) return;
     return registerArchiveRecoveryReview(
       client,
       projects
@@ -365,27 +419,30 @@ export function WorktreeRecoveryPanel({
         )
         .map((project) => project.workspaceId),
     );
-  }, [client, projects, supported]);
+  }, [available, client, projects]);
   useEffect(() => {
     if (
-      !supported ||
+      !available ||
       !reviewRequest ||
       reviewRequest === answeredReview.current
     )
       return;
     answeredReview.current = reviewRequest;
     setOpen(true);
-  }, [reviewRequest, supported]);
+  }, [available, reviewRequest]);
   const resolveHold = useCallback(
     async (
       hold: RecoveryHold,
       action: 'keep-worktree' | 'release' | 'delete-hold',
     ): Promise<void> => {
-      if (mutating.current || reading.current || error) return;
+      // Only a target that resolves archive recovery sends an action
+      // (CAN-7444); a read-only list never does.
+      if (!canResolve || mutating.current || reading.current || error) return;
       const generation = active.current;
       mutating.current = true;
       setBusy(true);
       setMessage(null);
+      hostOutdated.current = null;
       try {
         const result = await client.command('worktree.recovery.resolve', {
           workspaceId: hold.workspaceId,
@@ -397,10 +454,14 @@ export function WorktreeRecoveryPanel({
         setMessage(worktreeRecoveryResultCopy(result, action));
         setDeleting(null);
         await refresh(true);
-      } catch {
+      } catch (failure) {
         if (generation === active.current) {
-          setMessage(worktreeRecoveryUnconfirmedCopy(action));
-          setError(true);
+          // An older computer refused the action, so nothing ran (CAN-7444):
+          // say how to fix it and keep the list usable.
+          const outdated = worktreeRecoveryHostOutdatedMessage(failure);
+          hostOutdated.current = outdated;
+          setMessage(outdated ?? worktreeRecoveryUnconfirmedCopy(action));
+          if (outdated === null) setError(true);
           setDeleting(null);
         }
       } finally {
@@ -410,19 +471,26 @@ export function WorktreeRecoveryPanel({
         }
       }
     },
-    [client, error, refresh],
+    [canResolve, client, error, refresh],
   );
   const finishCleanup = useCallback(
     async (
       project: RecoveryProject,
       recovery: WorktreeRecoveryListResult['entries'][number],
     ): Promise<void> => {
-      if (mutating.current || reading.current || error || !recovery.diagnosis)
+      if (
+        !canResolve ||
+        mutating.current ||
+        reading.current ||
+        error ||
+        !recovery.diagnosis
+      )
         return;
       const generation = active.current;
       mutating.current = true;
       setBusy(true);
       setMessage(null);
+      hostOutdated.current = null;
       try {
         const result = await client.command('worktree.recovery.finish', {
           workspaceId: project.workspaceId,
@@ -432,10 +500,14 @@ export function WorktreeRecoveryPanel({
         if (generation !== active.current) return;
         setMessage(worktreeRecoveryResultCopy(result, 'finish-cleanup'));
         await refresh(true);
-      } catch {
+      } catch (failure) {
         if (generation === active.current) {
-          setMessage(worktreeRecoveryUnconfirmedCopy('finish-cleanup'));
-          setError(true);
+          const outdated = worktreeRecoveryHostOutdatedMessage(failure);
+          hostOutdated.current = outdated;
+          setMessage(
+            outdated ?? worktreeRecoveryUnconfirmedCopy('finish-cleanup'),
+          );
+          if (outdated === null) setError(true);
         }
       } finally {
         if (generation === active.current) {
@@ -444,10 +516,10 @@ export function WorktreeRecoveryPanel({
         }
       }
     },
-    [client, error, refresh],
+    [canResolve, client, error, refresh],
   );
   const showArchiveRecovery =
-    supported && hasNewRecovery(client, projects, error);
+    available && hasNewRecovery(client, projects, error);
   // Shell snapshots update read inputs, not the already-reviewed recovery UI.
   return useMemo(() => {
     const cleanupOnly =
@@ -473,6 +545,7 @@ export function WorktreeRecoveryPanel({
               ? {
                   unavailable: error,
                   cleanupOnly,
+                  readOnly: !canResolve,
                   onDismiss: () => {
                     dismissRecovery(client, projects, error);
                     setDismissalRevision((revision) => revision + 1);
@@ -484,8 +557,9 @@ export function WorktreeRecoveryPanel({
               : undefined
           }
         />
-        {open || deleting ? (
+        {available && (open || deleting) ? (
           <WorktreeRecoveryListDialog
+            readOnly={!canResolve}
             projects={projects}
             checking={checking}
             error={error}
@@ -499,6 +573,7 @@ export function WorktreeRecoveryPanel({
               void refresh(true);
             }}
             onReview={(project, recovery) => {
+              if (!canResolve) return;
               setOpen(false);
               offerWorktreeDiscard({
                 workspaceId: project.workspaceId,
@@ -508,7 +583,9 @@ export function WorktreeRecoveryPanel({
                 recovery,
               });
             }}
-            onDelete={setDeleting}
+            onDelete={(hold) => {
+              if (canResolve) setDeleting(hold);
+            }}
             onFinishCleanup={(project, recovery) => {
               void finishCleanup(project, recovery);
             }}
@@ -523,8 +600,10 @@ export function WorktreeRecoveryPanel({
       </>
     );
   }, [
+    available,
     busy,
     canRecover,
+    canResolve,
     checking,
     client,
     coldBusy,
@@ -546,6 +625,7 @@ export function WorktreeRecoveryPanel({
 
 /** Shared presentation kept separate from live reads and recovery commands. */
 export function WorktreeRecoveryListDialog({
+  readOnly = false,
   projects,
   checking,
   error,
@@ -560,6 +640,11 @@ export function WorktreeRecoveryListDialog({
   onCancelDelete,
   onFinishCleanup,
 }: {
+  /**
+   * The target lists recovery but takes no recovery action (CAN-7439): rows
+   * show their details without Finish, Review, Keep, Release or Delete.
+   */
+  readonly readOnly?: boolean;
   readonly projects: readonly RecoveryProject[];
   readonly checking: boolean;
   readonly error: boolean;
@@ -592,7 +677,7 @@ export function WorktreeRecoveryListDialog({
   );
   return (
     <>
-      {!deleting ? (
+      {!deleting || readOnly ? (
         <DialogModal
           title="Archive recovery"
           onClose={onClose}
@@ -614,11 +699,22 @@ export function WorktreeRecoveryListDialog({
             </LoadingButton>
           }
         >
-          <p className="text-pretty">
-            Finish leftover cleanup, continue an unfinished archive, or copy
-            details to share with support. Saved recovery material can be
-            deleted separately.
-          </p>
+          {readOnly ? (
+            // Read only (CAN-7439): no action here, so name where the reader
+            // can act instead of promising one. Worded to stay true when the
+            // list is empty or holds only retained material.
+            <p className="text-pretty">
+              Archives that didn't finish on the connected computer are listed
+              here. To finish or discard them, open the app on that computer.
+              You can copy details here to share with support.
+            </p>
+          ) : (
+            <p className="text-pretty">
+              Finish leftover cleanup, continue an unfinished archive, or copy
+              details to share with support. Saved recovery material can be
+              deleted separately.
+            </p>
+          )}
           {error ? (
             <>
               <ErrorBanner
@@ -697,30 +793,32 @@ export function WorktreeRecoveryListDialog({
                         references,
                       )}
                       actions={
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={
-                            busy ||
-                            checking ||
-                            (error &&
+                        readOnly ? undefined : (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={
+                              busy ||
+                              checking ||
+                              (error &&
+                                recovery.diagnosis?.check ===
+                                  'completed-turn-diff-cleanup')
+                            }
+                            onClick={() =>
                               recovery.diagnosis?.check ===
-                                'completed-turn-diff-cleanup')
-                          }
-                          onClick={() =>
-                            recovery.diagnosis?.check ===
+                              'completed-turn-diff-cleanup'
+                                ? onFinishCleanup(project, recovery)
+                                : onReview(project, recovery)
+                            }
+                          >
+                            {recovery.diagnosis?.check ===
                             'completed-turn-diff-cleanup'
-                              ? onFinishCleanup(project, recovery)
-                              : onReview(project, recovery)
-                          }
-                        >
-                          {recovery.diagnosis?.check ===
-                          'completed-turn-diff-cleanup'
-                            ? 'Finish cleanup'
-                            : recovery.check === 'completed-turn-diff-cleanup'
-                              ? 'View cleanup details'
-                              : 'Review archive'}
-                        </Button>
+                              ? 'Finish cleanup'
+                              : recovery.check === 'completed-turn-diff-cleanup'
+                                ? 'View cleanup details'
+                                : 'Review archive'}
+                          </Button>
+                        )
                       }
                     >
                       <span className={REPLAY_MASK_CLASS}>
@@ -733,7 +831,10 @@ export function WorktreeRecoveryListDialog({
                         recovery.check === 'completed-turn-diff-cleanup'
                           ? recovery.diagnosis?.check ===
                             'completed-turn-diff-cleanup'
-                            ? 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.'
+                            ? readOnly
+                              ? // Read only (CAN-7439): the cleanup runs on the computer.
+                                'The archive finished and the worktree was removed. Leftover saved change data can be cleaned up in the app on the connected computer.'
+                              : 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.'
                             : "The archive finished, but leftover saved change data couldn't be safely cleaned up. Copy the recovery details to share with support."
                           : formatWorktreeRecoveryReason(recovery)
                       }
@@ -759,7 +860,7 @@ export function WorktreeRecoveryListDialog({
                           references,
                         )}
                         actions={
-                          hold.stage === 'completed' ? (
+                          readOnly ? undefined : hold.stage === 'completed' ? (
                             <Button
                               variant="secondary"
                               size="sm"
@@ -805,7 +906,10 @@ export function WorktreeRecoveryListDialog({
                         reason={
                           hold.stage === 'completed'
                             ? `${hold.retainedSnapshots} saved Git ${hold.retainedSnapshots === 1 ? 'snapshot' : 'snapshots'}. ${hold.retainedPayload ? 'A saved working-file copy is also retained.' : 'No working-file copy is retained.'}`
-                            : 'Recovery has not finished. Continue the same choice to check and resume it.'
+                            : readOnly
+                              ? // Read only (CAN-7439): the choice resumes on the computer.
+                                'Recovery has not finished. Continue it in the app on the connected computer.'
+                              : 'Recovery has not finished. Continue the same choice to check and resume it.'
                         }
                       />
                     </Stack>
@@ -815,7 +919,7 @@ export function WorktreeRecoveryListDialog({
           })}
         </DialogModal>
       ) : null}
-      {deleting ? (
+      {deleting && !readOnly ? (
         <ConfirmDialog
           title="Delete retained recovery material?"
           message="Permanently delete the saved Git snapshots and working-file copy for this archive attempt. This does not delete a live worktree."

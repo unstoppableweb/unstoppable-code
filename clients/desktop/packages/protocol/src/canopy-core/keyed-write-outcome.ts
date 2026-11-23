@@ -58,6 +58,13 @@ export const NOT_APPLIED_MARKS: readonly NotAppliedMark[] = [
     code: 'core.chat.attachment.busy',
     source: 'apps/web/src/lib/web-core/chat-attachments.ts:67-75',
   },
+  // CAN-7522: the broker refused before raising anything, so no owner was
+  // asked and the daemon wrote nothing.
+  {
+    code: 'core.pipeline.ownerUnavailable',
+    source:
+      'packages/core-runtime/src/node/pipeline/daemon-definitions.ts:113-124, :186-187',
+  },
 ];
 
 function detail(payload: CanopyErrorPayload, name: string): unknown {

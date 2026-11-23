@@ -322,6 +322,10 @@ describe('Antigravity plan proposals', () => {
       publishWorktreeNeedsRepair: (): void => undefined,
       publishWorkspaceWorktrees: (): void => undefined,
       publishHookPauseChanged: (): void => undefined,
+      publishCreatedWorktreeGitReady: (): void => undefined,
+      publishCreatedWorktreeGitFailed: (): void => undefined,
+      publishCreatedWorktreeNeedsRepair: (): void => undefined,
+      publishCreatedWorktree: (): void => undefined,
       legacyWindow: () => null,
     };
     session = new AntigravityProvider().createSession(

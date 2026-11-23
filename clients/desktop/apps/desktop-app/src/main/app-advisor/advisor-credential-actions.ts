@@ -20,8 +20,6 @@ export const ADVISOR_CREDENTIAL_ACTION_TYPES = [
   'canopy_cloud.start_oauth_login',
   'canopy_cloud.cancel_oauth_login',
   'canopy_cloud.disconnect',
-  'canopy_portal.start',
-  'canopy_portal.stop',
   'remote_control.get_state',
   'remote_control.set_allow_incoming',
   'opencode.connection',
@@ -158,10 +156,7 @@ const REMOTE_CONTROL_UNAVAILABLE: Response = {
   },
 };
 
-/**
- * What a Remote Control action asks for. `canopy_portal.start` and `stop`
- * keep their names but turn Allow incoming on and off (CAN-5986).
- */
+/** What a Remote Control action asks for. */
 type RemoteControlRequest =
   | { kind: 'get_state' }
   | { kind: 'set_allow_incoming'; enabled: boolean };
@@ -259,16 +254,6 @@ async function run(
         ok: true,
         result: toAdvisorJson(await host.disconnectCloudAccount()),
       };
-    case 'canopy_portal.start':
-      return remoteControlAction(
-        { kind: 'set_allow_incoming', enabled: true },
-        host,
-      );
-    case 'canopy_portal.stop':
-      return remoteControlAction(
-        { kind: 'set_allow_incoming', enabled: false },
-        host,
-      );
     case 'remote_control.get_state':
       return remoteControlAction({ kind: 'get_state' }, host);
     case 'remote_control.set_allow_incoming':

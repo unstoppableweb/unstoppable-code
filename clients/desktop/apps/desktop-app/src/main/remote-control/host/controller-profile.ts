@@ -80,7 +80,10 @@ export function controllerMayUseChannel(
  * chats and send messages but never answer approvals, archive or reset work.
  * Browser and mobile file reads use the same scoped-read policy as hosted controllers.
  * Browsers also pass their own argument policies (`browserInvocationAllowed`):
- * the repository owner lookup takes exactly `{ remoteUrl }` (CAN-7433).
+ * the repository owner lookup takes exactly `{ remoteUrl }` (CAN-7433);
+ * `worktree:discard-describe` takes `recovery`, and `workspace:delete` and
+ * `project:delete` take `discardPendingRecovery`, only on the first argument
+ * and only in the exact shapes the adapter sends (CAN-7443, CAN-7444).
  * No controller of any kind may answer a Mod's composer request, and a Mod
  * surface command whose kind cannot be read is refused (CAN-7436).
  */

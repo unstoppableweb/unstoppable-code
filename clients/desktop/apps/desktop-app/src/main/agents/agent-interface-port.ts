@@ -9,7 +9,7 @@ import {
   type WorktreeGitReadyEvent,
   type WorktreeNeedsRepairEvent,
 } from '@canopy/desktop-shared/types';
-import { sendToWindow } from '../lib/window-send';
+import { sendToAllWindows, sendToWindow } from '../lib/window-send';
 import type { DelegationLiveClass } from './delegation/live-frame-class';
 
 /**
@@ -77,6 +77,15 @@ export interface AgentInterfacePort {
     worktree: WorktreeData | undefined,
   ): void;
   /**
+   * A worktree an agent chat or App Advisor created: its Git setup became
+   * ready, failed or needs repair, and then its project's worktree list,
+   * which goes to every window when the main window doesn't take it.
+   */
+  publishCreatedWorktreeGitReady(event: WorktreeGitReadyEvent): void;
+  publishCreatedWorktreeGitFailed(event: WorktreeGitFailedEvent): void;
+  publishCreatedWorktreeNeedsRepair(event: WorktreeNeedsRepairEvent): void;
+  publishCreatedWorktree(workspaceId: string): void;
+  /**
    * The window, for the intents still to move onto this port: approvals
    * (including a delegate's), questions, a delegate's detached transcript
    * updates and the other worktree actions.
@@ -126,6 +135,26 @@ export function windowAgentInterfacePort(
         workspaceId,
         ...(worktree ? { worktree } : {}),
       });
+    },
+    publishCreatedWorktreeGitReady: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitReady, event);
+    },
+    publishCreatedWorktreeGitFailed: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeGitFailed, event);
+    },
+    publishCreatedWorktreeNeedsRepair: (event): void => {
+      sendToWindow(getWindow(), IPC_CHANNELS.worktreeNeedsRepair, event);
+    },
+    publishCreatedWorktree: (workspaceId): void => {
+      const update = { workspaceId };
+      if (
+        !sendToWindow(
+          getWindow(),
+          IPC_CHANNELS.workspaceWorktreesUpdated,
+          update,
+        )
+      )
+        sendToAllWindows(IPC_CHANNELS.workspaceWorktreesUpdated, update);
     },
     legacyWindow: getWindow,
   };

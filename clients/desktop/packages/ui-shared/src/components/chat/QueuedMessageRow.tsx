@@ -19,6 +19,7 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import type { QueuedMessageForceKind } from '../../lib/queued-message-force';
 import {
+  AppAdvisorWatcherIcon,
   DragHandleIcon,
   ArrowUpIcon,
   CopyIcon,
@@ -47,7 +48,8 @@ import {
 } from './MessageEditEntry';
 import { ATTACHMENT_TILE_EDGE_CLASS } from './MessageImageAttachments';
 import { hostMessagePresentation } from './SteeringRequestTitle';
-import { WatcherFiredTitle } from './WatcherFiredTitle';
+import { CombinedWatchersTooltip } from './WatcherFiredTitle';
+import { watcherWakeSummary } from '../WakeTurnBoundary';
 import { QueuedMessageSettingsHeldWarning } from './QueuedMessageSettingsHeldWarning';
 import {
   QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP,
@@ -305,6 +307,17 @@ export function QueuedMessageAttachments({
   );
 }
 
+/** A watcher message's readable label: its lines after the generated banner. */
+function watcherLabel(text: string): string {
+  const lines = text.split('\n');
+  const bannered =
+    lines.length > 1 && /watcher fired\.?$/i.test(lines[0].trim());
+  return (bannered ? lines.slice(1) : lines)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** The row's ••• menu: the less common actions, after the ChatGPT queue. */
 function QueuedMessageMoreMenu({
   items,
@@ -446,18 +459,63 @@ export const QueuedMessageRow = forwardRef<
   },
   ref,
 ): JSX.Element {
+  // A fired watcher waiting here reads as the wake row it becomes
+  // (chat-blocks.md, Watchers): its glyph and “Will wake: …”, with no Edit or
+  // Copy, since its text is generated. A sender's label keeps the old row.
+  const watcherWake =
+    watcherFired !== undefined && label === undefined
+      ? watcherFired
+      : undefined;
+  const editHandler = watcherWake ? undefined : onEdit;
+  // A single watcher's own label tells rows of one kind apart (two scheduled
+  // wakeups, two runs of one workflow): its message without the generated
+  // “<app> watcher fired.” first line, when it has one. A one-line update (a
+  // workflow's outcome) is its own label. A batch names its watchers in its
+  // details.
+  const watcherDetail =
+    watcherWake && !watcherWake.combinedWatchers?.length
+      ? watcherLabel(text)
+      : '';
   const gesture = useDoubleClickToEdit(
-    editLockAdvisory || sending ? undefined : onEdit,
+    editLockAdvisory || sending ? undefined : editHandler,
   );
   // A delegate's steering request or a fired watcher that reached the queue
   // as its own text shows its readable part after its label.
   const hostMessage = hostMessagePresentation(text, undefined, 'inline');
-  const preview =
-    (hostMessage?.text ?? text).replace(/\s+/g, ' ').trim() || 'Attached files';
+  // The label tells rows of one kind apart (a workflow's outcome, a pull
+  // request's event), so it gets the room first: the summary takes only
+  // what the whole label leaves, down to a few words, and the label then
+  // truncates at its end in reading order. Its full text opens in a tooltip.
+  const preview = watcherWake ? (
+    <span className="flex min-w-0">
+      <span className="min-w-24 max-w-max shrink grow basis-0 truncate">
+        Will wake: {watcherWakeSummary(watcherWake)}
+      </span>
+      {watcherDetail ? (
+        <>
+          <span aria-hidden="true" className="shrink-0 fg-tertiary">
+            {'\u00a0·\u00a0'}
+          </span>
+          <span
+            data-testid="queued-message-watcher-label"
+            className="min-w-0 truncate fg-tertiary"
+          >
+            {watcherDetail}
+          </span>
+        </>
+      ) : null}
+    </span>
+  ) : (
+    (hostMessage?.text ?? text).replace(/\s+/g, ' ').trim() || 'Attached files'
+  );
   const leading =
     label ??
-    (watcherFired ? (
-      <WatcherFiredTitle watcherFired={watcherFired} layout="inline" />
+    (watcherWake ? (
+      <AppAdvisorWatcherIcon
+        size="sm"
+        className="shrink-0 fg-secondary"
+        aria-hidden="true"
+      />
     ) : (
       hostMessage?.title
     ));
@@ -491,18 +549,18 @@ export const QueuedMessageRow = forwardRef<
           },
         ]
       : []),
-    ...(onEdit
+    ...(editHandler
       ? [
           {
             id: 'edit',
             label: surface === 'drawer' ? 'Edit' : 'Edit message',
             icon: PencilIcon,
-            onSelect: (): void => void onEdit(),
+            onSelect: (): void => void editHandler(),
             afterClose: true,
           },
         ]
       : []),
-    ...(surface === 'drawer'
+    ...(surface === 'drawer' && !watcherWake
       ? [
           {
             id: 'copy',
@@ -655,12 +713,49 @@ export const QueuedMessageRow = forwardRef<
       {attachments.length > 0 ? (
         <QueuedMessageAttachments attachments={attachments} />
       ) : null}
-      <span
-        data-testid="queued-message-preview"
-        className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate fg-primary`}
-      >
-        {preview}
-      </span>
+      {watcherWake?.combinedWatchers?.length ? (
+        // A batch of watchers keeps its details: each one's kind and report
+        // open from the summary on hover or focus.
+        <CombinedWatchersTooltip
+          combinedWatchers={watcherWake.combinedWatchers}
+        >
+          <span
+            data-testid="queued-message-preview"
+            // Focusable so the details open from the keyboard too; it opens a
+            // tooltip, not an action, so it is not a button.
+            tabIndex={0}
+            data-no-double-click-edit
+            className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 cursor-help truncate rounded-sm fg-primary focus-ring`}
+          >
+            {preview}
+          </span>
+        </CombinedWatchersTooltip>
+      ) : watcherDetail ? (
+        // A long label can still truncate in a narrow drawer: the whole of
+        // it opens from the row on hover or focus.
+        <Tooltip
+          label={<span className={REPLAY_BLOCK_CLASS}>{watcherDetail}</span>}
+          allowShrink
+          className="min-w-0 flex-1"
+          delay="long"
+        >
+          <span
+            data-testid="queued-message-preview"
+            tabIndex={0}
+            data-no-double-click-edit
+            className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate rounded-sm fg-primary focus-ring`}
+          >
+            {preview}
+          </span>
+        </Tooltip>
+      ) : (
+        <span
+          data-testid="queued-message-preview"
+          className={`${REPLAY_BLOCK_CLASS} min-w-0 flex-1 truncate fg-primary`}
+        >
+          {preview}
+        </span>
+      )}
       {status ? (
         // A flex slot centers a rich status (an inline reason's tooltip
         // trigger) on the row's axis. Plain text truncates in its own span.

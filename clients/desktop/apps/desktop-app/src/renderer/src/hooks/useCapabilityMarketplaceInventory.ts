@@ -127,10 +127,20 @@ export interface CapabilityMarketplaceInventory {
   /** Pipelines switched off for launch, curated templates included. */
   disabledPipelineIds: ReadonlySet<string>;
   setPipelineEnabled: (id: string, enabled: boolean) => Promise<void>;
-  /** Deletes a local pipeline; resolves false when it was not deleted. */
-  deletePipeline: (id: string) => Promise<boolean>;
+  /**
+   * Deletes a local pipeline; resolves false when it was not deleted.
+   * `callerShowsFailure`, while true as it fails, keeps the failure out of the
+   * list's load error.
+   */
+  deletePipeline: (
+    id: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
   /** Deletes a team-shared pipeline; resolves false when it was not deleted. */
-  deleteSharedPipeline: (remoteId: string) => Promise<boolean>;
+  deleteSharedPipeline: (
+    remoteId: string,
+    options?: { callerShowsFailure?: () => boolean },
+  ) => Promise<boolean>;
   refreshSharedSkills: () => Promise<void>;
   refreshSharedCollections: () => Promise<void>;
 }

@@ -11,7 +11,9 @@ import {
 import { Button } from './Button';
 import { DetailFact, DetailFactList } from './DetailFact';
 import { ExternalTextLink } from './ExternalTextLink';
-import { ItemStateMark } from './ItemStateMark';
+import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
+import { RefreshSpinner } from './RefreshSpinner';
+import { Tooltip } from './Tooltip';
 import {
   DetailActionBarIntoShell,
   useDetailHeaderActionsClaim,
@@ -306,13 +308,44 @@ export function ClampedDescription({
   );
 }
 
-/** An available update, for the Version row. `run` omitted shows no CTA. */
+/**
+ * One update state, for the Version row of every entity (skill, plugin,
+ * automation): `available` (the icon updates), `current` or `unknown` (the
+ * icon checks, where the host can), and `checking` or `applying` (it spins).
+ */
+export type DetailUpdateState =
+  | 'available'
+  | 'current'
+  | 'unknown'
+  | 'checking'
+  | 'applying';
+
+/** An update state for the Version row; omit actions when unsupported. */
 export interface DetailVersionUpdate {
   readonly version?: string;
+  /** Defaults to `available`, the only state before there was a status. */
+  readonly state?: DetailUpdateState;
+  /** "Checked 5m ago", from a host that knows when its check ran. */
+  readonly checked?: string;
   readonly busy?: boolean;
+  /** Applies the available update. */
   readonly run?: () => void;
+  /** Looks for an update. */
+  readonly check?: () => void;
   /** The last update's failure, said on this row. */
   readonly error?: string;
+  /** A failure with its tone and the row's "Try again"; wins as `error` does. */
+  readonly failure?: {
+    readonly text: string;
+    /** A diagnostic that may name the item: kept under replay's block. */
+    readonly detail?: string;
+    readonly tone?: 'failed' | 'attention';
+    readonly retry?: {
+      readonly label: string;
+      readonly run: () => void;
+      readonly disabled: boolean;
+    };
+  };
   /** Why it can't be updated here, said after the state. */
   readonly note?: string;
   /**
@@ -322,9 +355,35 @@ export interface DetailVersionUpdate {
   readonly versionReplay?: 'block';
 }
 
+/** What each state says, and its icon's accessible name (never the item's). */
+const UPDATE_STATE_PARTS: Record<
+  DetailUpdateState,
+  {
+    readonly text: string;
+    readonly label: string;
+    readonly mark?: 'update' | 'installed';
+    readonly working?: true;
+  }
+> = {
+  available: { text: 'Update available', label: 'Update', mark: 'update' },
+  current: {
+    text: 'Up to date',
+    label: 'Check for updates',
+    mark: 'installed',
+  },
+  unknown: { text: 'Update status unknown', label: 'Check for updates' },
+  checking: {
+    text: 'Checking for updates…',
+    label: 'Checking for updates…',
+    working: true,
+  },
+  applying: { text: 'Updating…', label: 'Updating…', working: true },
+};
+
 /**
- * "Version 1.1.1 · ↻ Update available · Update": the Version row, shown only
- * while an update is available (New Customize hides the version otherwise).
+ * "Version 1.1.1 · ✓ Up to date ↻": the one place every entity says whether
+ * it is current, with a reload icon that checks or updates. With the flag
+ * off it is the older "Version 1.1.1 · ↻ Update available · Update" row.
  */
 export function DetailVersionUpdateFact({
   update,
@@ -332,13 +391,38 @@ export function DetailVersionUpdateFact({
   testId = 'detail-version-update',
 }: {
   readonly update: DetailVersionUpdate;
-  /** The item's name, for the Update button's accessible name. */
-  readonly name: string;
+  /** The flag-off row's Update name; New Customize never names the item. */
+  readonly name?: string;
   readonly testId?: string;
 }): JSX.Element {
+  const marks = useItemStateMarks();
+  // `busy` is the older callers' way of saying the state's work runs.
+  const idle = update.state ?? 'available';
+  const state: DetailUpdateState =
+    !update.busy || idle === 'checking' || idle === 'applying'
+      ? idle
+      : idle === 'available'
+        ? 'applying'
+        : 'checking';
+  const { text, label, mark, working } = UPDATE_STATE_PARTS[state];
+  const action =
+    state === 'available'
+      ? update.run
+      : state === 'current' || state === 'unknown'
+        ? update.check
+        : undefined;
+  // No icon for a caller with nothing to run.
+  const showIcon =
+    action !== undefined ||
+    (working && (update.run !== undefined || update.check !== undefined));
+  const failure =
+    update.failure ?? (update.error ? { text: update.error } : undefined);
   return (
     <DetailFact label="Version" testId={testId}>
-      <span className="inline-flex min-w-0 flex-wrap items-center gap-1.5">
+      <span
+        className="inline-flex min-w-0 flex-wrap items-center gap-1.5"
+        data-state={marks ? state : undefined}
+      >
         {update.version && (
           <span
             className={
@@ -349,9 +433,9 @@ export function DetailVersionUpdateFact({
           </span>
         )}
         {update.version && <span aria-hidden>·</span>}
-        <ItemStateMark tone="update" />
-        <span>Update available</span>
-        {update.run !== undefined && (
+        {!marks && <ItemStateMark tone="update" />}
+        {!marks && <span>Update available</span>}
+        {!marks && update.run !== undefined && (
           <>
             <span aria-hidden>·</span>
             <Button
@@ -359,11 +443,75 @@ export function DetailVersionUpdateFact({
               onClick={update.run}
               disabled={update.busy}
               aria-busy={update.busy || undefined}
-              aria-label={`Update ${name}`}
+              aria-label={name === undefined ? 'Update' : `Update ${name}`}
               data-testid={`${testId}-run`}
             >
               {update.busy ? 'Updating…' : 'Update'}
             </Button>
+          </>
+        )}
+        {marks && (
+          <>
+            {/* A failure wins over every state, beside the same icon. */}
+            {failure ? (
+              <DetailFactError
+                error={failure.text}
+                {...(failure.detail ? { detail: failure.detail } : {})}
+                tone={failure.tone}
+                testId={`${testId}-error`}
+              />
+            ) : (
+              <span
+                role="status"
+                className="inline-flex min-w-0 items-center gap-1.5"
+              >
+                {/* The icon after an available update is its own glyph. */}
+                {mark && !(showIcon && state === 'available') && (
+                  <ItemStateMark tone={mark} />
+                )}
+                {text}
+              </span>
+            )}
+            {showIcon && (
+              // One tree for every state, so the focused control survives
+              // its click: busy is `aria-disabled` (focusable, runs nothing).
+              <Tooltip label={label} suppressed={working}>
+                <Button
+                  iconOnly
+                  variant="ghost"
+                  size="compact"
+                  busyAppearance="preserved"
+                  onClick={action}
+                  aria-busy={working || undefined}
+                  aria-disabled={working || undefined}
+                  aria-label={label}
+                  data-testid={`${testId}-run`}
+                >
+                  <RefreshSpinner spinning={working} />
+                </Button>
+              </Tooltip>
+            )}
+            {failure?.retry && (
+              <>
+                <span aria-hidden>·</span>
+                <Button
+                  variant="link"
+                  onClick={failure.retry.run}
+                  disabled={failure.retry.disabled}
+                  data-testid={`${testId}-retry`}
+                >
+                  {failure.retry.label}
+                </Button>
+              </>
+            )}
+            {update.checked !== undefined && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="fg-tertiary" data-testid={`${testId}-checked`}>
+                  {update.checked}
+                </span>
+              </>
+            )}
           </>
         )}
         {update.note && (
@@ -371,7 +519,7 @@ export function DetailVersionUpdateFact({
             {update.note}
           </span>
         )}
-        {update.error && (
+        {!marks && update.error && (
           <DetailFactError error={update.error} testId={`${testId}-error`} />
         )}
       </span>
@@ -382,10 +530,13 @@ export function DetailVersionUpdateFact({
 /** A fact row's failure: "⚠ reason", plain text with a colored icon. */
 export function DetailFactError({
   error,
+  detail,
   testId,
   tone = 'failed',
 }: {
   readonly error: string;
+  /** After the reason, under replay's block; never in the tooltip. */
+  readonly detail?: string;
   readonly testId?: string;
   /** Red when it failed; amber when a retry or another step may fix it. */
   readonly tone?: 'failed' | 'attention';
@@ -393,12 +544,23 @@ export function DetailFactError({
   return (
     <span
       role="status"
-      className="inline-flex min-w-0 items-center gap-1 fg-secondary"
+      className={`inline-flex min-w-0 ${detail ? 'items-start' : 'items-center'} gap-1 fg-secondary`}
       data-testid={testId}
     >
       <ItemStateMark tone={tone === 'failed' ? 'failed' : 'sign-in'} />
-      <span className="truncate" title={error}>
+      {/* A diagnostic wraps so a long path stays readable: it can't go in a
+          tooltip, which replay could record. */}
+      <span
+        className={detail ? 'min-w-0 break-words' : 'truncate'}
+        title={error}
+      >
         {error}
+        {detail && (
+          <>
+            {': '}
+            <span className={REPLAY_BLOCK_CLASS}>{detail}</span>
+          </>
+        )}
       </span>
     </span>
   );

@@ -25403,11 +25403,6 @@ export type AppAdvisorAction =
   | { type: 'canopy_cloud.start_oauth_login' }
   | { type: 'canopy_cloud.cancel_oauth_login' }
   | { type: 'canopy_cloud.disconnect' }
-  | { type: 'canopy_portal.open' }
-  | { type: 'canopy_portal.close' }
-  | { type: 'canopy_portal.start' }
-  | { type: 'canopy_portal.stop' }
-  | { type: 'canopy_portal.open_account_settings' }
   | { type: 'app_advisor.open' }
   | { type: 'app_advisor.close' }
   | { type: 'app_advisor.toggle' }

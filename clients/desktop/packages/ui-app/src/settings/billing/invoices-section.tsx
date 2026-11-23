@@ -25,8 +25,14 @@ import type {
   InvoiceListItem,
   InvoicePage,
 } from '@canopy/protocol/settings/billing';
+import { classifyError } from '@canopy/protocol/app-errors';
+import { SettingsOperationError } from '@canopy/protocol/settings/errors';
+import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { SettingsLink, useSettingsHost, type SettingsLogger } from '../host';
 import { logSettingsError } from '../errors';
+
+/** The first page failed; the section shows this with Try again. */
+export const INVOICES_LOAD_ERROR = "Couldn't load invoices. Try again.";
 
 /** "Load more" failed; the button stays to try again. */
 export const INVOICES_LOAD_MORE_ERROR =
@@ -57,6 +63,11 @@ export function InvoicesSection({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // The first page failed, until a load of it succeeds; Try again bumps the
+  // reload count and runs while `retryingFirstPage`.
+  const [firstPageFailed, setFirstPageFailed] = useState(false);
+  const [retryingFirstPage, setRetryingFirstPage] = useState(false);
+  const [firstPageReload, setFirstPageReload] = useState(0);
   const host = useSettingsHost();
   const log = useMemo(
     (): SettingsLogger => host.logger('billing:invoices'),
@@ -71,26 +82,45 @@ export function InvoicesSection({
         if (cancelled) return;
         setInvoices(page.invoices);
         setNextCursor(page.nextCursor);
+        setFirstPageFailed(false);
       } catch (error) {
         if (cancelled) return;
-        // A first-page failure leaves the section unrendered rather than
-        // showing a broken shell above a working Transactions list — but it is
-        // logged, because silently rendering nothing makes a fully broken
-        // invoices API indistinguishable from "this account has no invoices",
-        // in the UI and in incident triage alike.
-        log.error('Failed to load first invoices page', { error });
+        // A first-page failure shows a Couldn't load state with Try again,
+        // because silently rendering nothing makes a fully broken invoices
+        // API indistinguishable from "this account has no invoices", in the
+        // UI and in incident triage alike. It is logged, and each failed
+        // load records once; a load this section dropped records nothing.
+        log.warn('Failed to load first invoices page', { error });
+        recordSurfacedError({
+          chokePoint: 'banner',
+          identifier: 'invoices-section-load',
+          surface: 'banner',
+          // The recorder reads the error itself, so an offline rejection is
+          // classified on the error: it is the network, not an app defect.
+          error:
+            error instanceof SettingsOperationError && error.code === 'offline'
+              ? classifyError(error, 'external.offline')
+              : error,
+        });
         setInvoices([]);
         setNextCursor(null);
+        setFirstPageFailed(true);
       } finally {
         if (!cancelled) {
           setLoaded(true);
+          setRetryingFirstPage(false);
         }
       }
     })();
     return (): void => {
       cancelled = true;
     };
-  }, [loadPage, log]);
+  }, [loadPage, log, firstPageReload]);
+
+  const handleRetryFirstPage = useCallback((): void => {
+    setRetryingFirstPage(true);
+    setFirstPageReload((count) => count + 1);
+  }, []);
 
   const handleLoadMore = useCallback(async (): Promise<void> => {
     if (loadingMore || nextCursor === null) {
@@ -112,6 +142,26 @@ export function InvoicesSection({
       setLoadingMore(false);
     }
   }, [loadPage, loadingMore, nextCursor, log]);
+
+  if (loaded && firstPageFailed) {
+    // The failure already recorded above, so the banner records nothing.
+    return (
+      <div data-testid={testId}>
+        <p className="text-s font-medium fg-primary">Invoices</p>
+        <div className="pt-2">
+          <ErrorBanner
+            errorSource="invoices-section-load"
+            className=""
+            error={INVOICES_LOAD_ERROR}
+            onRetry={handleRetryFirstPage}
+            retrying={retryingFirstPage}
+            errorRecordingDisabled
+            testId={`${testId}-load-error`}
+          />
+        </div>
+      </div>
+    );
+  }
 
   if (!loaded || invoices.length === 0) {
     return null;

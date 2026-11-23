@@ -11,11 +11,12 @@ import {
   UnsafeExternalPluginUrlError,
 } from './external-plugin-url';
 
-export const REMOTE_PLUGIN_SOURCE_REFUSAL =
-  'Remote control can only install plugins from public https sources. Install it on this computer to use a private or local source.';
+import {
+  REMOTE_PLUGIN_SOURCE_MISMATCH,
+  REMOTE_PLUGIN_SOURCE_REFUSAL,
+} from '@canopy/protocol/plugins/remote-install';
 
-export const REMOTE_PLUGIN_SOURCE_MISMATCH =
-  'Remote control can only install this plugin from the source this computer has for it. Refresh its marketplace on this computer, then try again.';
+export { REMOTE_PLUGIN_SOURCE_MISMATCH, REMOTE_PLUGIN_SOURCE_REFUSAL };
 
 /** The install `plugins:install-plugin` runs, as `plugin-service` exposes it. */
 export type PluginSourceInstall = (
@@ -95,8 +96,11 @@ function remoteInstallFailure(stored: string, reason: string): string {
  *
  * A remote principal only ever sees plugin sources without their credentials
  * (CAN-7082), so the URL it sends picks this computer's own record and is
- * never cloned itself: it must be the stored source, or the stored source as
- * a controller sees it. The clone uses the stored source. A failure from a
+ * never cloned itself: it must be the stored source, the stored source as
+ * a controller sees it, or exactly `''`, which a browser controller always
+ * sends (CAN-7442) and which means "the source you have stored". The clone
+ * uses the stored source, so an empty URL passes every check a named one
+ * does. A failure from a
  * stored source that holds a credential part, or any `@`, reaches the
  * controller only as a fixed message, and its details, scrubbed, are in this
  * computer's log (which can leave the machine in a bug report, so it never
@@ -119,7 +123,8 @@ export async function installPluginForPrincipal(
   const stored = await readStoredSource(marketplaceId, pluginName);
   if (
     stored === undefined ||
-    (sourceUrl !== stored &&
+    (sourceUrl !== '' &&
+      sourceUrl !== stored &&
       sourceUrl !== controllerCredentialFreeGitUrl(stored))
   )
     return { success: false, error: REMOTE_PLUGIN_SOURCE_MISMATCH };

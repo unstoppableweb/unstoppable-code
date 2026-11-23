@@ -70,6 +70,7 @@ import {
 } from './host/controller-profile';
 import type { HostedChatAttribution } from './host/hosted-chat-dispatch';
 import type { HostFileReader } from './host/file-reads';
+import type { StoredStartPages } from './host/controller-url-writebacks';
 import {
   RemoteHostSession,
   type RemoteSecretRequestPort,
@@ -193,6 +194,8 @@ export interface RemoteControlServiceDeps {
   uploads: RemoteUploadStore;
   /** Serves controllers' reads of files they open in their own apps. */
   readHostFile: HostFileReader;
+  /** The start pages a project stores, for controllers' writes (CAN-7082). */
+  storedStartPages?: StoredStartPages;
   /** Copies of the controlled computers' files opened on this one. */
   openedFiles: RemoteUploadStore;
   /** Marks a copy the way the OS marks a download; failing refuses the open. */
@@ -1380,6 +1383,12 @@ export class RemoteControlService {
       this.disallowingIncoming += 1;
       this.incomingEpoch += 1;
       this.setSettingsCache({ ...this.settingsCache, allowIncoming: false });
+      // Announce from the cache just updated, before ending sessions, so
+      // controllers see this computer stop accepting control and do not
+      // reconnect into a refusal they would read as a removed pairing. The
+      // relay can still deliver it late or drop it; web controllers also
+      // forget such a refusal once this computer comes back.
+      this.relay?.announce();
       this.endPairingWindow('disabled');
       this.endAllControl();
     }
@@ -1803,6 +1812,7 @@ export class RemoteControlService {
       mainWindowPushes: this.deps.mainWindowPushes,
       uploads: this.deps.uploads,
       readFile: this.deps.readHostFile,
+      storedStartPages: this.deps.storedStartPages,
       disposition: getRemoteChannelDisposition,
       kind: grant.kind,
       attributedDeviceId,

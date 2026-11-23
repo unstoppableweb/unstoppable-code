@@ -992,6 +992,10 @@ export function PanelGridSurface({
           errorMessage={
             archiveTaskStatus === 'failed' ? archiveTaskFailure : null
           }
+          // The failure reaches here as display text only, so typed refusals and
+          // offline failures can't be told apart from defects; recording here
+          // would log expected outcomes as defects.
+          errorRecordingDisabled
           onCancel={(): void => {
             setArchiveTaskStatus('idle');
             setArchiveTaskTitle(null);

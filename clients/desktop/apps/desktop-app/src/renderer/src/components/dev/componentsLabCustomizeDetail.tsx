@@ -619,7 +619,6 @@ function AgentPage(): JSX.Element {
       }
       source="Local"
       baseModel="Claude Opus"
-      model="agent_model_code_reviewer"
       items={[
         { key: 'skill', label: 'Skill: code-review' },
         { key: 'plugin', label: 'Plugin: github' },

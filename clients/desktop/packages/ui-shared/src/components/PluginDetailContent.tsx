@@ -3,10 +3,12 @@ import { Stack } from './Stack';
 import { pluginDisplayName } from '../lib/plugin-display-name';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import {
+  type ComponentPropsWithoutRef,
   type JSX,
   type ReactNode,
   type RefObject,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -34,7 +36,7 @@ import {
   detailWebsiteHost,
   type CapabilityDetailFacts,
 } from './CapabilityDetailLayout';
-import { DetailEntityType } from './MarketplaceTypeLabel';
+import { DetailEntityType, MarketplaceTypeLabel } from './MarketplaceTypeLabel';
 import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
@@ -43,6 +45,7 @@ import { PluginModNotice, pluginModRows } from './PluginModMembers';
 import { EmptyStateText, ErrorBanner } from './StatusBlocks';
 import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
+import { TabBar } from './TabBar';
 import { Tooltip } from './Tooltip';
 import { McpServerLogo } from './McpServerLogo';
 import { StatusToneText, useItemStateMarks } from './ItemStateMark';
@@ -54,8 +57,11 @@ import {
   PluginHarnessVia,
   type PluginWorksWithRow,
 } from './PluginHarnessConnections';
-import { ChevronLeftMediumIcon } from '../icons/AppIcons';
-import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
+import {
+  ChevronLeftMediumIcon,
+  CommandIcon,
+  HookIcon,
+} from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { mcpEndpointKey } from '../lib/mcp-endpoint-key';
 import type { UnifiedEntryBundledServerRow } from '../lib/unified-plugin-entry';
@@ -269,8 +275,10 @@ function TruncatedNotice(): JSX.Element {
   );
 }
 
-function ComponentContentView({
+export function ComponentContentView({
   markdownOptions,
+  catalogPreview = false,
+  privateTitle = catalogPreview,
   titleAs = 'h2',
   name,
   componentType,
@@ -280,6 +288,9 @@ function ComponentContentView({
   onReadComponent,
 }: {
   markdownOptions?: MarkdownProps['options'];
+  catalogPreview?: boolean;
+  /** The name is the publisher's: private in session replay. */
+  privateTitle?: boolean;
   titleAs?: 'h1' | 'h2';
   name: string;
   componentType: PluginDetailComponentType;
@@ -356,14 +367,16 @@ function ComponentContentView({
         ref={titleRef}
         id="plugin-detail-title"
         tabIndex={-1}
-        className="break-words text-lg font-semibold fg-primary outline-none"
+        className={`break-words text-lg font-semibold fg-primary outline-none${privateTitle ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
       >
         {name}
       </Title>
 
       <div className={REPLAY_BLOCK_CLASS}>
         <MarkdownFrontmatterContent
-          markdownOptions={markdownOptions}
+          markdownOptions={
+            catalogPreview ? PREVIEW_ONLY_MARKDOWN_OPTIONS : markdownOptions
+          }
           loading={loading}
           error={error}
           errorDetails={errorDetails}
@@ -391,6 +404,7 @@ function ReadmeSection({
   onReadComponent,
   preloaded,
   defaultExpanded = false,
+  bare = false,
 }: {
   markdownOptions?: MarkdownProps['options'];
   activeFacet: PluginDetailFacetSlot | undefined;
@@ -398,6 +412,8 @@ function ReadmeSection({
   /** Already-fetched README body; skips the lazy read entirely. */
   preloaded?: { body: string; truncated?: boolean };
   defaultExpanded?: boolean;
+  /** The body alone, for a tab panel that already names it. */
+  bare?: boolean;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [content, setContent] = useState<string | null>(
@@ -447,6 +463,43 @@ function ReadmeSection({
     await loadContent();
   };
 
+  const body = (
+    // Takes focus when a retry unmounts the error banner.
+    <div ref={bodyRef} tabIndex={-1} role="group" aria-label="README">
+      {loading && (
+        // A spinner, not a measured skeleton: the README's shape is unknown until it loads.
+        <DelayedLoadingPlaceholder slowNote="Still loading README…">
+          <CenteredLoadingSpinner spacing="section" />
+        </DelayedLoadingPlaceholder>
+      )}
+      <ErrorBanner
+        errorSource="readme-section"
+        className=""
+        error={error}
+        {...(errorDetails ? { details: errorDetails } : {})}
+        onRetry={() => {
+          // The banner and its button unmount while the README reloads.
+          bodyRef.current?.focus();
+          void loadContent();
+        }}
+      />
+      {content !== null && !loading && (
+        <div
+          className={`${REPLAY_BLOCK_CLASS} canopy-readme-prose prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_:not(pre)>code]:bg-secondary [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded prose-pre:fg-primary/80 [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h2]:text-s [&_h2]:font-semibold [&_h3]:text-s [&_h3]:font-medium [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_img]:outline-1 [&_img]:-outline-offset-1 [&_img]:outline-line-base [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
+        >
+          <Markdown options={markdownOptions}>{content}</Markdown>
+        </div>
+      )}
+      {content !== null && !loading && truncated && <TruncatedNotice />}
+    </div>
+  );
+  if (bare) {
+    return (
+      <div data-testid="plugin-detail-readme" className="min-w-0">
+        {body}
+      </div>
+    );
+  }
   return (
     <Disclosure
       variant="box"
@@ -459,35 +512,119 @@ function ReadmeSection({
       onOpenChange={() => void handleToggle()}
       dataTestId="plugin-detail-readme"
     >
-      {/* Takes focus when a retry unmounts the error banner. */}
-      <div ref={bodyRef} tabIndex={-1} role="group" aria-label="README">
-        {loading && (
-          // A spinner, not a measured skeleton: the README's shape is unknown until it loads.
-          <DelayedLoadingPlaceholder slowNote="Still loading README…">
-            <CenteredLoadingSpinner spacing="section" />
-          </DelayedLoadingPlaceholder>
-        )}
-        <ErrorBanner
-          errorSource="readme-section"
-          className=""
-          error={error}
-          {...(errorDetails ? { details: errorDetails } : {})}
-          onRetry={() => {
-            // The banner and its button unmount while the README reloads.
-            bodyRef.current?.focus();
-            void loadContent();
-          }}
-        />
-        {content !== null && !loading && (
-          <div
-            className={`${REPLAY_BLOCK_CLASS} canopy-readme-prose prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none text-s fg-primary prose-code:before:content-none prose-code:after:content-none [&_a]:fg-accent [&_a:hover]:underline [&_:not(pre)>code]:bg-secondary [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5 [&_:not(pre)>code]:rounded prose-pre:fg-primary/80 [&_pre]:bg-secondary [&_pre]:p-3 [&_pre]:rounded-md [&_pre]:overflow-x-auto [&_h1]:text-m [&_h1]:font-semibold [&_h2]:text-s [&_h2]:font-semibold [&_h3]:text-s [&_h3]:font-medium [&_li]:my-0.5 [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:fg-secondary [&_img]:max-w-full [&_img]:rounded [&_img]:outline-1 [&_img]:-outline-offset-1 [&_img]:outline-line-base [&_table]:w-full [&_th]:text-left [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1`}
-          >
-            <Markdown options={markdownOptions}>{content}</Markdown>
-          </div>
-        )}
-        {content !== null && !loading && truncated && <TruncatedNotice />}
-      </div>
+      {body}
     </Disclosure>
+  );
+}
+
+/**
+ * A README image as its alt text, never its source. A not-added plugin's
+ * README comes from its publisher, so opening the preview must not request
+ * images from hosts the publisher controls (a tracking pixel).
+ */
+function ReadmeImageAltText({
+  alt,
+}: ComponentPropsWithoutRef<'img'>): JSX.Element | null {
+  const text = alt?.trim();
+  return text ? <span className="fg-secondary">{text}</span> : null;
+}
+
+const PREVIEW_ONLY_MARKDOWN_OPTIONS: MarkdownProps['options'] = {
+  disableParsingRawHTML: true,
+  overrides: { img: ReadmeImageAltText },
+};
+
+/**
+ * A README already read (a not-added plugin's preview). Its images show as
+ * their alt text and are never loaded.
+ */
+export function PluginPreloadedReadme({
+  body,
+  truncated,
+  bare = true,
+}: {
+  body: string;
+  truncated?: boolean;
+  bare?: boolean;
+}): JSX.Element {
+  return (
+    <ReadmeSection
+      bare={bare}
+      defaultExpanded
+      markdownOptions={PREVIEW_ONLY_MARKDOWN_OPTIONS}
+      activeFacet={undefined}
+      onReadComponent={() => Promise.resolve(null)}
+      preloaded={{ body, ...(truncated ? { truncated } : {}) }}
+    />
+  );
+}
+
+type PluginDetailTab = 'contents' | 'readme';
+
+/**
+ * New Customize: Contents and README as two tabs, for a plugin that has both.
+ * The README mounts the first time its tab opens (a lazy read starts there)
+ * and stays mounted, so switching back and forth doesn't read it again.
+ */
+export function PluginDetailTabs({
+  contents,
+  renderReadme,
+  selection,
+}: {
+  contents: ReactNode;
+  renderReadme: () => ReactNode;
+  selection?: {
+    value: PluginDetailTab;
+    onChange: (tab: PluginDetailTab) => void;
+  };
+}): JSX.Element {
+  const [localTab, setLocalTab] = useState<PluginDetailTab>('contents');
+  const tab = selection?.value ?? localTab;
+  const [readmeOpened, setReadmeOpened] = useState(tab === 'readme');
+  const idPrefix = useId();
+  const panelId = `${idPrefix}-panel`;
+  const tabId = (id: PluginDetailTab): string => `${idPrefix}-tab-${id}`;
+  return (
+    <div data-testid="plugin-detail-tabs-section">
+      <TabBar
+        items={[
+          {
+            id: 'contents',
+            label: 'Contents',
+            dataTestId: 'plugin-detail-tab-contents',
+            tabId: tabId('contents'),
+            panelId,
+          },
+          {
+            id: 'readme',
+            label: 'README',
+            dataTestId: 'plugin-detail-tab-readme',
+            tabId: tabId('readme'),
+            panelId,
+          },
+        ]}
+        value={tab}
+        onChange={(id) => {
+          if (selection) selection.onChange(id);
+          else setLocalTab(id);
+          if (id === 'readme') setReadmeOpened(true);
+        }}
+        label="Plugin details"
+        panelId={panelId}
+        dataTestId="plugin-detail-tabs"
+      />
+      <div
+        id={panelId}
+        role="tabpanel"
+        tabIndex={0}
+        aria-labelledby={tabId(tab)}
+        data-testid="plugin-detail-panel"
+        className="pt-4"
+      >
+        <div hidden={tab !== 'contents'}>{contents}</div>
+        {readmeOpened && <div hidden={tab !== 'readme'}>{renderReadme()}</div>}
+      </div>
+    </div>
   );
 }
 
@@ -540,6 +677,8 @@ function slotForTab(
 
 /** One row of a component table: the item and every harness that gets it. */
 interface ListedComponent<T> {
+  /** Unique among one kind's rows; stable while the member stays. */
+  readonly key: string;
   readonly item: T;
   readonly harnesses: string[];
   /** The version a row opens: Claude's when both have it. */
@@ -595,20 +734,42 @@ function mergeFacetComponents<T>(
   keyOf: (item: T) => string,
   isSupported: (harness: string) => boolean,
   cursorKind: CursorLoadedKind | undefined,
+  /**
+   * New Customize: each member's file, so members are told apart by file
+   * rather than by name (`byFileMergeKeys`).
+   */
+  fileOf?: (item: T) => string,
 ): ListedComponent<T>[] {
   if (!slots.some((slot) => slot.facet.details)) {
-    return (fallback ? (read(fallback) ?? []) : []).map((item) => ({
+    const items = fallback ? (read(fallback) ?? []) : [];
+    if (fileOf) {
+      return byFileMergeKeys([items], keyOf, fileOf)[0].map(
+        ({ key, item }) => ({ key, item, harnesses: [], slotKinds: [] }),
+      );
+    }
+    return items.map((item) => ({
+      key: keyOf(item),
       item,
       harnesses: [],
       slotKinds: [],
     }));
   }
+  const withDetails = slots.flatMap((slot, index) =>
+    slot.facet.details ? [{ slot, index, details: slot.facet.details }] : [],
+  );
+  const keyed = fileOf
+    ? byFileMergeKeys(
+        withDetails.map(({ details }) => read(details) ?? []),
+        keyOf,
+        fileOf,
+      )
+    : withDetails.map(({ details }) =>
+        (read(details) ?? []).map((item) => ({ key: keyOf(item), item })),
+      );
   const merged = new Map<string, ListedComponent<T>>();
-  slots.forEach((slot, index) => {
-    if (!slot.facet.details) return;
+  withDetails.forEach(({ slot, index }, version) => {
     const harnesses = slotHarnesses(slot, index, isSupported, cursorKind);
-    for (const item of read(slot.facet.details) ?? []) {
-      const key = keyOf(item);
+    for (const { key, item } of keyed[version] ?? []) {
       const existing = merged.get(key);
       if (existing) {
         existing.harnesses.push(...harnesses);
@@ -618,6 +779,7 @@ function mergeFacetComponents<T>(
         });
       } else {
         merged.set(key, {
+          key,
           item,
           harnesses: [...harnesses],
           slot,
@@ -627,6 +789,52 @@ function mergeFacetComponents<T>(
     }
   });
   return [...merged.values()];
+}
+
+/**
+ * New Customize: each version's members keyed so that a key is one row.
+ * A file listed twice in one version (a manifest naming `commands/` and
+ * `commands/build.md`) is one member. Versions share a row by name only when
+ * no version lists that name twice; otherwise only the same file under the
+ * same name is shared, and each other file is its own row. Each key is a
+ * tagged tuple, so no name can spell another member's key.
+ */
+function byFileMergeKeys<T>(
+  versions: readonly (readonly T[])[],
+  nameOf: (item: T) => string,
+  fileOf: (item: T) => string,
+): { readonly key: string; readonly item: T }[][] {
+  const members = versions.map((items) => {
+    const files = new Set<string>();
+    return items.filter((item) => {
+      const file = fileOf(item);
+      if (file === '') return true;
+      if (files.has(file)) return false;
+      files.add(file);
+      return true;
+    });
+  });
+  const sharedByName = new Map<string, boolean>();
+  for (const items of members) {
+    const counts = new Map<string, number>();
+    for (const item of items)
+      counts.set(nameOf(item), (counts.get(nameOf(item)) ?? 0) + 1);
+    for (const [name, count] of counts)
+      sharedByName.set(name, (sharedByName.get(name) ?? true) && count === 1);
+  }
+  return members.map((items, version) =>
+    items.map((item, index) => {
+      const name = nameOf(item);
+      const file = fileOf(item);
+      const key =
+        sharedByName.get(name) === true
+          ? ['name', name]
+          : file !== ''
+            ? ['file', name, file]
+            : ['item', version, index];
+      return { key: JSON.stringify(key), item };
+    }),
+  );
 }
 
 /** Keep publisher instructions available without letting them overwhelm the list. */
@@ -701,35 +909,45 @@ export function PluginDetailContent({
   const [viewingComponent, setViewingComponent] = useState<ComponentRef | null>(
     null,
   );
-  // The row that opened the component view, so Back can focus it again.
-  const openerKey = useRef<string | null>(null);
+  // The row that opened the component view, so Back can focus it again: a
+  // table's opener value, or New Customize's Contents row key, kept here
+  // because the list's opener ids are places that can move meanwhile.
+  const openerKey = useRef<{
+    readonly kind: 'opener' | 'row';
+    readonly key: string;
+    /** The plugin a Contents row belongs to; another's same key is not it. */
+    readonly owner?: string;
+  } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const openComponent = (component: ComponentRef): void => {
-    const active = document.activeElement;
-    openerKey.current =
-      active
-        ?.closest('[data-component-opener]')
-        ?.getAttribute('data-component-opener') ?? null;
+  const openComponent = (component: ComponentRef, rowKey?: string): void => {
+    if (rowKey !== undefined) {
+      openerKey.current = {
+        kind: 'row',
+        key: rowKey,
+        owner: `${plugin.marketplaceId}/${plugin.name}`,
+      };
+    } else {
+      const opener =
+        document.activeElement
+          ?.closest('[data-component-opener]')
+          ?.getAttribute('data-component-opener') ?? null;
+      openerKey.current =
+        opener === null ? null : { kind: 'opener', key: opener };
+    }
     setViewingComponent(component);
   };
-  useEffect(() => {
-    const key = openerKey.current;
-    if (viewingComponent !== null || key === null) return;
-    openerKey.current = null;
-    Array.from(
-      rootRef.current?.querySelectorAll('[data-component-opener]') ?? [],
-    )
-      .find((opener) => opener.getAttribute('data-component-opener') === key)
-      ?.querySelector<HTMLElement>('button')
-      ?.focus();
-  }, [viewingComponent]);
 
   const slots = useMemo(() => collectFacets(plugin), [plugin]);
+
+  const tabOwner = `${plugin.marketplaceId}/${plugin.name}`;
+  const [readmeTabOwner, setReadmeTabOwner] = useState<string | null>(null);
+  const detailTab = readmeTabOwner === tabOwner ? 'readme' : 'contents';
 
   // Close an open component when the plugin identity changes (e.g. the user
   // re-opens a different plugin).
   useEffect(() => {
     setViewingComponent(null);
+    setReadmeTabOwner(null);
   }, [plugin.marketplaceId, plugin.name]);
 
   // The header and README read the facet matching the plugin's top-level merged
@@ -777,7 +995,7 @@ export function PluginDetailContent({
   const displayDetails: PluginDetails | undefined =
     facetForDisplay?.details ?? plugin.details ?? undefined;
 
-  const mcpRows = useRef(new Map<string, HTMLTableRowElement>());
+  const mcpRows = useRef(new Map<string, HTMLElement>());
   const consumedMcpTarget = useRef<string | null>(null);
   const [mcpTargetError, setMcpTargetError] = useState(false);
   // New Customize: status text stays plain; only its icon is colored.
@@ -792,6 +1010,11 @@ export function PluginDetailContent({
     }
     const request = `${plugin.marketplaceId}/${plugin.name}/${mcpTarget.requestId}`;
     if (consumedMcpTarget.current === request) return;
+    // Reveal the row before focusing it; hidden tab panels cannot take focus.
+    if (layout && detailTab !== 'contents') {
+      setReadmeTabOwner(null);
+      return;
+    }
     const requestedSlot = mcpTarget.provider
       ? slotForTab(slots, mcpTarget.provider)
       : activeSlot;
@@ -826,6 +1049,8 @@ export function PluginDetailContent({
     plugin.details,
     activeSlot,
     slots,
+    layout,
+    detailTab,
   ]);
 
   const listedSlots = codexCompatDisabled
@@ -840,6 +1065,8 @@ export function PluginDetailContent({
     read: (details: PluginDetails) => readonly T[] | undefined,
     keyOf: (item: T) => string,
     cursorKind?: CursorLoadedKind,
+    /** New Customize's Contents tells files that share a name apart. */
+    fileOf?: (item: T) => string,
   ): ListedComponent<T>[] =>
     mergeFacetComponents(
       listedSlots,
@@ -848,29 +1075,45 @@ export function PluginDetailContent({
       keyOf,
       isHarnessSupported,
       cursorKind,
+      layout ? fileOf : undefined,
     );
+  const fileOfMember = (member: { filePath: string }): string =>
+    member.filePath;
   const listedSkills = listComponents(
     (d) => d.skills,
     (c) => c.name,
     'skills',
+    (c) => c.path,
   );
   const listedAgents = listComponents(
     (d) => d.agents,
     (c) => c.name,
+    undefined,
+    fileOfMember,
   );
   const listedCommands = listComponents(
     (d) => d.commands,
     (c) => c.name,
     'commands',
+    fileOfMember,
   );
   const listedApps = listComponents(
     (d) => d.apps,
     (c) => c.name,
+    undefined,
+    fileOfMember,
   );
   const listedHooks = listComponents(
     (d) => d.hooks,
+    // New Customize's Contents lists hooks that differ only in `async` apart.
     (h) =>
-      JSON.stringify([h.event, h.matcher ?? '', h.hookType, h.command ?? '']),
+      JSON.stringify([
+        h.event,
+        h.matcher ?? '',
+        h.hookType,
+        h.command ?? '',
+        layout && h.async === true,
+      ]),
   );
   const listedMods = listComponents(
     (d) => d.mods,
@@ -923,6 +1166,134 @@ export function PluginDetailContent({
     plugin.sourcePath ?? '',
   ].join('|');
 
+  // New Customize's Contents rows. Names, endpoints and command lines come
+  // from the plugin's files, so each name is private in session replay.
+  const contentsRows: PluginContentsRow[] = [
+    ...listedSkills.map(({ key: member, item: s, harnesses, slot }) => {
+      const key = `skill:${member}`;
+      return {
+        key,
+        type: 'Skill',
+        name: s.name,
+        replayBlockName: true,
+        command: s.userInvocable === false ? undefined : s.name,
+        description: s.description,
+        harnesses,
+        onOpen: (): void =>
+          openComponent(
+            {
+              name: s.name,
+              componentType: 'skill',
+              file: `${s.path}/SKILL.md`,
+              slot,
+            },
+            key,
+          ),
+      };
+    }),
+    ...(
+      [
+        ['Agent', 'agent', listedAgents],
+        ['Command', 'command', listedCommands],
+        ['App', 'app', listedApps],
+      ] as const
+    ).flatMap(([type, componentType, listed]) =>
+      listed.map(({ key: member, item, harnesses, slot }) => {
+        const key = `${componentType}:${member}`;
+        return {
+          key,
+          type,
+          name: item.name,
+          replayBlockName: true,
+          ...(componentType === 'command' ? { command: item.name } : {}),
+          description: item.description,
+          harnesses,
+          onOpen: item.filePath
+            ? (): void =>
+                openComponent(
+                  {
+                    name: item.name,
+                    componentType,
+                    file: item.filePath,
+                    slot,
+                  },
+                  key,
+                )
+            : undefined,
+        };
+      }),
+    ),
+    ...listedHooks.map(({ item: h, harnesses }, index) => ({
+      key: `hook:${h.event}:${String(index)}`,
+      type: 'Hook',
+      name: h.event,
+      replayBlockName: true,
+      description: [
+        h.matcher,
+        h.hookType,
+        // Only New Customize lists the async twin as its own row.
+        layout && h.async === true ? 'async' : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      harnesses,
+    })),
+    ...pluginModRows(listedMods.map(({ item }) => item)).map((mod) => ({
+      key: `mod:${mod.key}`,
+      type: 'Mod',
+      name: mod.module,
+      replayBlockName: true,
+      description: mod.hooksFile,
+      harnesses: [],
+    })),
+    ...listedLspServers.map(({ item: server, harnesses }) => ({
+      key: `lsp:${lspDefinitionKey(server)}`,
+      type: 'LSP server',
+      replayBlock: true,
+      name: server.name,
+      replayBlockName: true,
+      description: [
+        `${server.command}${server.args?.length ? ` ${server.args.join(' ')}` : ''}`,
+        server.languages?.join(', '),
+      ]
+        .filter(Boolean)
+        .join(' · '),
+      harnesses,
+    })),
+  ];
+  const currentContentsRows = useRef<{
+    readonly owner: string;
+    readonly rows: readonly PluginContentsRow[];
+  }>({ owner: tabOwner, rows: [] });
+  useEffect(() => {
+    currentContentsRows.current = { owner: tabOwner, rows: contentsRows };
+  });
+  // Back from a component: focus the row that opened it, if it is still
+  // there. New Customize finds the row by its key among the current rows of
+  // the same plugin; another plugin's page focuses its Contents tab or list.
+  useEffect(() => {
+    const opened = openerKey.current;
+    if (viewingComponent !== null || opened === null) return;
+    openerKey.current = null;
+    if (opened.kind === 'row') {
+      const { owner, rows } = currentContentsRows.current;
+      focusPluginContentsOpener(
+        rootRef.current,
+        opened.owner === owner ? rows : [],
+        opened.key,
+      );
+      return;
+    }
+    Array.from(
+      rootRef.current?.querySelectorAll('[data-component-opener]') ?? [],
+    )
+      .find(
+        (opener) => opener.getAttribute('data-component-opener') === opened.key,
+      )
+      ?.querySelector<HTMLElement>('button')
+      ?.focus();
+  }, [viewingComponent]);
+
   const handleChromeBack = (): void => {
     if (viewingComponent) {
       setViewingComponent(null);
@@ -966,6 +1337,8 @@ export function PluginDetailContent({
         {chrome}
         <ComponentContentView
           markdownOptions={markdownOptions}
+          // New Customize: a member's name is private in session replay.
+          privateTitle={layout}
           titleAs={titleAs}
           name={viewingComponent.name}
           componentType={viewingComponent.componentType}
@@ -1006,6 +1379,46 @@ export function PluginDetailContent({
       preloaded={readme}
       defaultExpanded={!hasComponents}
     />
+  );
+  const contentsVisible =
+    !!layout &&
+    ((showComponentsSection && !!displayDetails) ||
+      showMcpServers ||
+      !!mcpTargetNotice);
+  const tabbed = contentsVisible && !!displayDetails?.hasReadme;
+  const contentsInner = (
+    <>
+      {/* A target that is gone is said above the table. */}
+      {mcpTargetNotice}
+      {listedMods.length > 0 && (
+        <>
+          <PluginModNotice />
+          {modsControl}
+        </>
+      )}
+      {hasNonMcpComponents || showMcpServers ? (
+        <PluginContentsTable
+          commandHint={commandHint}
+          {...(showMcpServers
+            ? {
+                mcp: {
+                  servers: listedMcpServers,
+                  via: companionMcpVia ?? [],
+                  bundledServerRows,
+                  onOpenEntryId,
+                  renderStatus: renderMcpServerStatus,
+                  rowRefs: mcpRows,
+                },
+              }
+            : {})}
+          rows={contentsRows}
+        />
+      ) : displayDetails && !displayDetails.hasReadme ? (
+        <p className="text-s">
+          <EmptyStateText title="No components found." tone="secondary" />
+        </p>
+      ) : null}
+    </>
   );
 
   return (
@@ -1411,119 +1824,33 @@ export function PluginDetailContent({
         </div>
       )}
 
-      {layout &&
-        ((showComponentsSection && displayDetails) ||
-          showMcpServers ||
-          mcpTargetNotice) && (
-          <ComponentSection title="Contents">
-            {/* A target that is gone is said above the table. */}
-            {mcpTargetNotice}
-            {listedMods.length > 0 && (
-              <>
-                <PluginModNotice />
-                {modsControl}
-              </>
-            )}
-            {hasNonMcpComponents || showMcpServers ? (
-              <PluginContentsTable
-                commandHint={commandHint}
-                {...(showMcpServers
-                  ? {
-                      mcp: {
-                        servers: listedMcpServers,
-                        via: companionMcpVia ?? [],
-                        bundledServerRows,
-                        onOpenEntryId,
-                        renderStatus: renderMcpServerStatus,
-                        rowRefs: mcpRows,
-                      },
-                    }
-                  : {})}
-                rows={[
-                  ...listedSkills.map(({ item: s, harnesses, slot }) => ({
-                    key: `skill:${s.path}`,
-                    type: 'Skill',
-                    name: s.name,
-                    command: s.userInvocable === false ? undefined : s.name,
-                    description: s.description,
-                    harnesses,
-                    onOpen: (): void =>
-                      openComponent({
-                        name: s.name,
-                        componentType: 'skill',
-                        file: `${s.path}/SKILL.md`,
-                        slot,
-                      }),
-                  })),
-                  ...(
-                    [
-                      ['Agent', 'agent', listedAgents],
-                      ['Command', 'command', listedCommands],
-                      ['App', 'app', listedApps],
-                    ] as const
-                  ).flatMap(([type, componentType, listed]) =>
-                    listed.map(({ item, harnesses, slot }, index) => ({
-                      key: `${componentType}:${item.filePath || String(index)}`,
-                      type,
-                      name: item.name,
-                      ...(componentType === 'command'
-                        ? { command: item.name }
-                        : {}),
-                      description: item.description,
-                      harnesses,
-                      onOpen: item.filePath
-                        ? (): void =>
-                            openComponent({
-                              name: item.name,
-                              componentType,
-                              file: item.filePath,
-                              slot,
-                            })
-                        : undefined,
-                    })),
-                  ),
-                  ...listedHooks.map(({ item: h, harnesses }, index) => ({
-                    key: `hook:${h.event}:${String(index)}`,
-                    type: 'Hook',
-                    name: h.event,
-                    description: [h.matcher, h.hookType]
-                      .filter(Boolean)
-                      .join(' · '),
-                    harnesses,
-                  })),
-                  ...pluginModRows(listedMods.map(({ item }) => item)).map(
-                    (mod) => ({
-                      key: `mod:${mod.key}`,
-                      type: 'Mod',
-                      name: mod.module,
-                      description: mod.hooksFile,
-                      harnesses: [],
-                    }),
-                  ),
-                  ...listedLspServers.map(({ item: server, harnesses }) => ({
-                    key: `lsp:${lspDefinitionKey(server)}`,
-                    type: 'LSP server',
-                    replayBlock: true,
-                    name: server.name,
-                    description: [
-                      `${server.command}${server.args?.length ? ` ${server.args.join(' ')}` : ''}`,
-                      server.languages?.join(', '),
-                    ]
-                      .filter(Boolean)
-                      .join(' · '),
-                    harnesses,
-                  })),
-                ]}
+      {contentsVisible &&
+        (tabbed ? (
+          <PluginDetailTabs
+            key={tabOwner}
+            contents={contentsInner}
+            selection={{
+              value: detailTab,
+              onChange: (tab) =>
+                setReadmeTabOwner(tab === 'readme' ? tabOwner : null),
+            }}
+            renderReadme={() => (
+              <ReadmeSection
+                bare
+                markdownOptions={markdownOptions}
+                key={contentRootsKey}
+                activeFacet={activeSlot}
+                onReadComponent={onReadComponent}
+                preloaded={readme}
+                defaultExpanded
               />
-            ) : displayDetails && !displayDetails.hasReadme ? (
-              <p className="text-s">
-                <EmptyStateText title="No components found." tone="secondary" />
-              </p>
-            ) : null}
-          </ComponentSection>
-        )}
+            )}
+          />
+        ) : (
+          <ComponentSection title="Contents">{contentsInner}</ComponentSection>
+        ))}
       {layout && sharedContent}
-      {layout && readmeBlock}
+      {layout && !tabbed && readmeBlock}
 
       {relatedContent}
       <DetailHostRelated />
@@ -1640,7 +1967,7 @@ function NameDescriptionTable({
   );
 }
 
-/** One row of New Customize's grouped Contents table. */
+/** One row of New Customize's grouped Contents list. */
 export interface PluginContentsRow extends NameDescriptionItem {
   /** The kind it is, which groups the rows: Skill, Agent, Command… */
   readonly type: string;
@@ -1648,6 +1975,49 @@ export interface PluginContentsRow extends NameDescriptionItem {
   readonly replayBlock?: boolean;
   /** Names copied from installed files are private in session replay. */
   readonly replayBlockName?: boolean;
+  /** An MCP server's URL or command line, shown as installed rows show it. */
+  readonly endpoint?: PluginContentsEndpoint;
+  /**
+   * The file a host can open for this row, before the plugin is added; the
+   * host that reads it makes the row's `onOpen`.
+   */
+  readonly component?: {
+    readonly componentType: PluginDetailComponentType;
+    readonly file: string;
+    /** The version whose files list it, which the host reads it from. */
+    readonly facet?: PluginDetailFacetSlot;
+  };
+}
+
+/** An MCP server's endpoint: its URL, or its command and args. */
+export interface PluginContentsEndpoint {
+  readonly type: 'http' | 'command';
+  readonly url?: string;
+  readonly command?: string;
+  readonly args?: readonly string[];
+}
+
+/**
+ * An MCP server's URL or command line, in mono, wrapping anywhere. Both are
+ * private in session replay: a hosted server's URL path can carry a per-user
+ * credential, and replay redacts only query values.
+ */
+function McpEndpointText({
+  server,
+}: {
+  server: PluginContentsEndpoint;
+}): JSX.Element {
+  const args = server.args?.map((arg) => (arg === '' ? '""' : arg)).join(' ');
+  return (
+    <span
+      className={`${REPLAY_BLOCK_CLASS} block min-w-0 break-all font-mono text-xs`}
+    >
+      {/* The Portal drops a URL it can't parse. */}
+      {(server.type === 'http'
+        ? server.url
+        : `${server.command ?? ''}${args ? ` ${args}` : ''}`) || '—'}
+    </span>
+  );
 }
 
 const CONTENTS_TYPE_ORDER = [
@@ -1661,7 +2031,66 @@ const CONTENTS_TYPE_ORDER = [
   'LSP server',
 ];
 
-/** The plugin's MCP servers, as rows of the Contents table. */
+const contentsOrder = (type: string): number =>
+  CONTENTS_TYPE_ORDER.indexOf(type);
+
+/** The Contents list's rows in display order: by kind, then by name. */
+function sortContentsRows(
+  rows: readonly PluginContentsRow[],
+): PluginContentsRow[] {
+  return rows
+    .slice()
+    .sort(
+      (a, b) =>
+        contentsOrder(a.type) - contentsOrder(b.type) ||
+        a.name.localeCompare(b.name),
+    );
+}
+
+/**
+ * Each row's `data-component-opener` value, by row key: its place in the
+ * list. A key carries publisher names and paths, which must not reach the
+ * DOM. A place moves when the rows change, so a host remembers the key it
+ * opened and finds its opener again with `focusPluginContentsOpener`.
+ */
+function pluginContentsOpenerIds(
+  rows: readonly PluginContentsRow[],
+): ReadonlyMap<string, string> {
+  return new Map(
+    sortContentsRows(rows).map((row, index) => [row.key, String(index)]),
+  );
+}
+
+/**
+ * Back from a Contents row's file: focus that row's opener, found by its key
+ * among the rows as they are now (a refresh may have moved it). When the row
+ * or its opener is gone, focus goes to the Contents tab, else the list.
+ */
+export function focusPluginContentsOpener(
+  root: HTMLElement | null,
+  rows: readonly PluginContentsRow[],
+  key: string,
+): void {
+  if (!root) return;
+  const id = pluginContentsOpenerIds(rows).get(key);
+  const opener =
+    id === undefined
+      ? undefined
+      : Array.from(root.querySelectorAll('[data-component-opener]'))
+          .find(
+            (element) => element.getAttribute('data-component-opener') === id,
+          )
+          ?.querySelector<HTMLElement>('button');
+  (
+    opener ??
+    root.querySelector<HTMLElement>(
+      '[data-testid="plugin-detail-tab-contents"]',
+    ) ??
+    root.querySelector<HTMLElement>('[data-testid="plugin-detail-contents"] ul')
+  )?.focus();
+}
+
+/** The plugin's MCP servers, as rows of the Contents list. */
 interface PluginContentsMcp {
   readonly servers: readonly ListedComponent<PluginMcpServerInfo>[];
   readonly via: readonly PluginMcpServerVia[];
@@ -1670,14 +2099,12 @@ interface PluginContentsMcp {
   readonly renderStatus?: (
     server: PluginMcpServerInfo,
   ) => ReactNode | undefined;
-  readonly rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
+  readonly rowRefs: RefObject<Map<string, HTMLElement>>;
 }
 
 /**
- * New Customize's one Contents table: every component kind in one table,
- * grouped by kind in a fixed order (Skills, Agents, Commands, MCP servers,
- * Hooks…), then by name. MCP server rows keep their endpoint, health and
- * Test connection in a Status column.
+ * New Customize's Contents list groups each kind in a fixed order, then by
+ * name. MCP server rows keep their endpoint, health and connection action.
  */
 export function PluginContentsTable({
   rows,
@@ -1693,213 +2120,258 @@ export function PluginContentsTable({
     ? mcp.servers.slice().sort((a, b) => a.item.name.localeCompare(b.item.name))
     : [];
   const via = mcp?.via ?? [];
-  const hasMcp = mcpServers.length > 0 || via.length > 0;
   const showHarness =
     via.length > 0 ||
     rows.some((row) => row.harnesses?.length) ||
     mcpServers.some((server) => server.harnesses.length > 0);
-  const order = (type: string): number => CONTENTS_TYPE_ORDER.indexOf(type);
-  const sorted = rows
-    .slice()
-    .sort(
-      (a, b) => order(a.type) - order(b.type) || a.name.localeCompare(b.name),
-    );
-  const before = sorted.filter((row) => order(row.type) <= order('MCP server'));
-  const after = sorted.filter((row) => order(row.type) > order('MCP server'));
+  const sorted = sortContentsRows(rows);
+  const openers = pluginContentsOpenerIds(rows);
+  const mcpOrder = contentsOrder('MCP server');
+  const before = sorted.filter((row) => contentsOrder(row.type) <= mcpOrder);
+  const after = sorted.filter((row) => contentsOrder(row.type) > mcpOrder);
   const componentRow = (row: PluginContentsRow): JSX.Element => (
-    <DataTableRow key={row.key} verticalAlign="top">
-      <DataTableCell>
-        <span className="fg-secondary">{row.type}</span>
-      </DataTableCell>
-      <DataTableCell tone="primary" overflow="wrap">
-        {row.onOpen ? (
-          <span data-component-opener={row.key}>
+    <ContentsListRow
+      key={row.key}
+      type={row.type}
+      name={
+        row.onOpen ? (
+          <span data-component-opener={openers.get(row.key)}>
             <ClickableName
               name={row.command ?? row.name}
-              mono={row.command !== undefined}
+              mono={row.command !== undefined || row.type === 'Command'}
+              privateName={row.replayBlockName === true}
               onClick={row.onOpen}
             />
           </span>
         ) : (
           <span
             className={`${
-              row.command ? 'font-mono text-xs font-medium' : 'font-medium'
+              row.command || row.type === 'Command'
+                ? 'font-mono text-xs font-medium'
+                : 'font-medium'
             }${row.replayBlockName ? ` ${REPLAY_BLOCK_CLASS}` : ''}`}
           >
             {row.command ?? row.name}
           </span>
-        )}
-      </DataTableCell>
-      {showHarness && (
-        <DataTableCell>
-          <HarnessLogoList harnesses={row.harnesses ?? []} />
-        </DataTableCell>
-      )}
-      <DataTableCell overflow="wrap" colSpan={hasMcp ? 2 : 1}>
-        {/* Read from the plugin's own files: replay keeps a placeholder. */}
-        <div className={REPLAY_BLOCK_CLASS}>
-          <ComponentDescription name={row.name} description={row.description} />
-        </div>
-      </DataTableCell>
-    </DataTableRow>
+        )
+      }
+      harnesses={
+        showHarness ? <HarnessLogoList harnesses={row.harnesses ?? []} /> : null
+      }
+      detail={
+        row.endpoint || row.description ? (
+          <>
+            {row.endpoint && <McpEndpointText server={row.endpoint} />}
+            {row.description && (
+              /* Read from the plugin's own files: replay keeps a placeholder. */
+              <div className={REPLAY_BLOCK_CLASS}>
+                <ComponentDescription
+                  name={row.name}
+                  description={row.description}
+                />
+              </div>
+            )}
+          </>
+        ) : null
+      }
+    />
   );
   return (
-    <DataTableFrame
-      caption="Contents"
-      layout="fixed"
-      testId="plugin-detail-contents"
-    >
-      <DataTableHead>
-        <DataTableHeaderCell width="7rem">Type</DataTableHeaderCell>
-        <DataTableHeaderCell width="30%">
-          {hasCommands && commandHint ? (
-            <span className="inline-flex items-center gap-1">
-              Name or command
-              <Tooltip label={commandHint} showOnPress showOnTouch>
-                <span
-                  tabIndex={0}
-                  aria-label={commandHint}
-                  role="img"
-                  data-testid="plugin-detail-contents-hint-name"
-                  className="focus-ring relative inline-flex rounded-sm fg-tertiary pointer-coarse:before:absolute pointer-coarse:before:-inset-x-4 pointer-coarse:before:-top-4 pointer-coarse:before:bottom-0 pointer-coarse:before:content-['']"
-                >
-                  <IconCircleQuestionmark size={12} />
-                </span>
-              </Tooltip>
-            </span>
-          ) : hasCommands ? (
-            'Name or command'
-          ) : (
-            'Name'
-          )}
-        </DataTableHeaderCell>
-        {showHarness && (
-          <DataTableHeaderCell width={HARNESS_COLUMN_WIDTH}>
-            Harness
-          </DataTableHeaderCell>
-        )}
-        <DataTableHeaderCell>Description</DataTableHeaderCell>
-        {hasMcp && (
-          <DataTableHeaderCell width="22%" align="right">
-            Status
-          </DataTableHeaderCell>
-        )}
-      </DataTableHead>
-      <DataTableBody>
-        {before.map(componentRow)}
-        {mcp &&
-          mcpServers.map(({ item: s, harnesses, slotKinds }) => {
-            const settings = mcp.onOpenEntryId
-              ? mcp.bundledServerRows?.find(
-                  (candidate) =>
-                    candidate.serverName === s.name &&
-                    candidate.endpoint === mcpEndpointKey(s),
-                )
-              : undefined;
-            const status = mcp.renderStatus?.(s);
-            const open = mcp.onOpenEntryId;
-            return (
-              <DataTableRow
-                key={`mcp:${mcpDefinitionKey(s)}`}
-                focusable
-                verticalAlign="top"
-                data-mcp-member={s.name}
-                ref={(node): void => {
-                  for (const key of [
-                    s.name,
-                    ...slotKinds.map((kind) => mcpRowKey(kind, s.name)),
-                  ]) {
-                    if (node) mcp.rowRefs.current.set(key, node);
-                    else mcp.rowRefs.current.delete(key);
+    <Stack gap="inline" className="min-w-0">
+      {hasCommands && commandHint && (
+        <p
+          data-testid="plugin-detail-contents-hint-name"
+          className="text-xs fg-tertiary"
+        >
+          {commandHint}.
+        </p>
+      )}
+      <div
+        data-testid="plugin-detail-contents"
+        className="min-w-0 overflow-hidden rounded-xl border border-line-base bg-base bg-clip-padding"
+      >
+        {/* Focusable for Back when the row that opened a file is gone. */}
+        <ul
+          aria-label="Contents"
+          tabIndex={-1}
+          className="m-0 list-none p-0 focus-visible:outline-none"
+        >
+          {before.map(componentRow)}
+          {mcp &&
+            mcpServers.map(({ item: s, harnesses, slotKinds }) => {
+              const settings = mcp.onOpenEntryId
+                ? mcp.bundledServerRows?.find(
+                    (candidate) =>
+                      candidate.serverName === s.name &&
+                      candidate.endpoint === mcpEndpointKey(s),
+                  )
+                : undefined;
+              const status = mcp.renderStatus?.(s);
+              const open = mcp.onOpenEntryId;
+              return (
+                <ContentsListRow
+                  key={`mcp:${mcpDefinitionKey(s)}`}
+                  type="MCP server"
+                  focusable
+                  // Navigation finds the row through `rowRefs`, never by
+                  // name: a server's name is the plugin config's, and no
+                  // attribute here is private in session replay.
+                  rowRef={(node): void => {
+                    for (const key of [
+                      s.name,
+                      ...slotKinds.map((kind) => mcpRowKey(kind, s.name)),
+                    ]) {
+                      if (node) mcp.rowRefs.current.set(key, node);
+                      else mcp.rowRefs.current.delete(key);
+                    }
+                  }}
+                  name={
+                    // The server's name comes from the plugin's config.
+                    <span className="font-medium">
+                      {settings && open ? (
+                        <span data-testid="plugin-detail-mcp-server-settings">
+                          <ClickableName
+                            name={s.name}
+                            description="Open server settings"
+                            privateName
+                            onClick={() => open(settings.entryId)}
+                          />
+                        </span>
+                      ) : (
+                        <span className={REPLAY_BLOCK_CLASS}>{s.name}</span>
+                      )}
+                    </span>
                   }
-                }}
-              >
-                <DataTableCell>
-                  <span className="fg-secondary">MCP server</span>
-                </DataTableCell>
-                <DataTableCell tone="primary" overflow="wrap">
-                  <div className="font-medium">
-                    {settings && open ? (
-                      <span
-                        data-testid={`plugin-detail-mcp-server-settings-${s.name}`}
-                      >
-                        <ClickableName
-                          name={s.name}
-                          description="Open server settings"
-                          onClick={() => open(settings.entryId)}
-                        />
-                      </span>
-                    ) : (
-                      s.name
-                    )}
-                  </div>
-                </DataTableCell>
-                {showHarness && (
-                  <DataTableCell>
-                    <HarnessLogoList harnesses={harnesses} />
-                  </DataTableCell>
-                )}
-                <DataTableCell overflow="wrap">
-                  <span
-                    className={`${s.type === 'http' ? '' : REPLAY_BLOCK_CLASS} min-w-0 break-all font-mono text-xs`}
-                  >
-                    {/* The Portal drops a URL it can't parse. */}
-                    {(s.type === 'http'
-                      ? s.url
-                      : `${s.command ?? ''}${s.args?.length ? ` ${s.args.join(' ')}` : ''}`) ||
-                      '—'}
-                  </span>
-                </DataTableCell>
-                <DataTableCell overflow="wrap" align="right">
-                  <div className="flex justify-end">
-                    {status ?? (
+                  harnesses={
+                    showHarness ? (
+                      <HarnessLogoList harnesses={harnesses} />
+                    ) : null
+                  }
+                  detail={<McpEndpointText server={s} />}
+                  trailing={
+                    status ?? (
                       <span
                         data-testid="plugin-detail-mcp-status-unavailable"
                         className="text-xs fg-tertiary"
                       >
                         {PLUGIN_DETAIL_MCP_NOT_CONFIGURED}
                       </span>
-                    )}
-                  </div>
-                </DataTableCell>
-              </DataTableRow>
-            );
-          })}
-        {/* A harness served by another copy's server: one line naming it. */}
-        {via.map((entry) => (
-          <DataTableRow
-            key={`mcp-via-${entry.harness}`}
-            data-testid={`plugin-detail-mcp-via-${entry.harness}`}
-          >
-            <DataTableCell>
-              <span className="fg-secondary">MCP server</span>
-            </DataTableCell>
-            <DataTableCell overflow="truncate">
-              <span className="fg-tertiary">Another copy</span>
-            </DataTableCell>
-            {showHarness && (
-              <DataTableCell>
-                <HarnessLogoList harnesses={[entry.harness]} />
-              </DataTableCell>
-            )}
-            <DataTableCell overflow="truncate">
-              <span className="flex min-w-0">
-                <PluginHarnessVia
-                  via={entry.via}
-                  testId={`plugin-detail-mcp-via-${entry.harness}-copy`}
+                    )
+                  }
                 />
-              </span>
-            </DataTableCell>
-            <DataTableCell align="right">
-              <span className="text-xs fg-tertiary">
-                {entry.installed ? 'Installed' : 'Not installed'}
-              </span>
-            </DataTableCell>
-          </DataTableRow>
-        ))}
-        {after.map(componentRow)}
-      </DataTableBody>
-    </DataTableFrame>
+              );
+            })}
+          {/* A harness served by another copy's server: one line naming it. */}
+          {via.map((entry) => (
+            <ContentsListRow
+              key={`mcp-via-${entry.harness}`}
+              type="MCP server"
+              testId={`plugin-detail-mcp-via-${entry.harness}`}
+              name={<span className="fg-tertiary">Another copy</span>}
+              harnesses={
+                showHarness ? (
+                  <HarnessLogoList harnesses={[entry.harness]} />
+                ) : null
+              }
+              detail={
+                <span className="flex min-w-0">
+                  <PluginHarnessVia
+                    via={entry.via}
+                    testId={`plugin-detail-mcp-via-${entry.harness}-copy`}
+                  />
+                </span>
+              }
+              trailing={
+                <span className="text-xs fg-tertiary">
+                  {entry.installed ? 'Installed' : 'Not installed'}
+                </span>
+              }
+            />
+          ))}
+          {after.map(componentRow)}
+        </ul>
+      </div>
+    </Stack>
+  );
+}
+
+/** The kind of a Contents item, marked as the Customize tiles mark it. */
+function ContentsTypeLabel({ type }: { type: string }): JSX.Element {
+  switch (type) {
+    case 'Skill':
+      return <MarketplaceTypeLabel kind="skill" label={type} />;
+    case 'Agent':
+      return <MarketplaceTypeLabel kind="agent" label={type} />;
+    case 'MCP server':
+      return <MarketplaceTypeLabel kind="app" label={type} />;
+    case 'Command':
+      return (
+        <MarketplaceTypeLabel
+          glyph={<CommandIcon size="xs" ariaHidden />}
+          label={type}
+        />
+      );
+    case 'Hook':
+      return (
+        <MarketplaceTypeLabel
+          glyph={<HookIcon size="xs" ariaHidden />}
+          label={type}
+        />
+      );
+    default:
+      return <MarketplaceTypeLabel label={type} />;
+  }
+}
+
+/**
+ * One item of New Customize's Contents list. The name, kind and harnesses lead
+ * the first line; what it is (a description, a URL or a command) takes the
+ * full width of the second; its status and action sit at the row's end.
+ * Every part wraps rather than clips, so a long command or a long error stays
+ * readable.
+ */
+function ContentsListRow({
+  type,
+  name,
+  harnesses,
+  detail,
+  trailing,
+  focusable = false,
+  rowRef,
+  testId,
+}: {
+  type: string;
+  name: ReactNode;
+  harnesses?: ReactNode;
+  detail?: ReactNode;
+  trailing?: ReactNode;
+  focusable?: boolean;
+  rowRef?: (node: HTMLLIElement | null) => void;
+  testId?: string;
+}): JSX.Element {
+  return (
+    <li
+      ref={rowRef}
+      tabIndex={focusable ? -1 : undefined}
+      data-testid={testId}
+      className={`grid items-start gap-x-4 gap-y-1 border-t border-line-base px-4 py-3 first:border-t-0 focus-visible:outline-none ${
+        trailing ? 'grid-cols-[minmax(0,1fr)_fit-content(50%)]' : 'grid-cols-1'
+      }`}
+    >
+      <div className="col-start-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        {name}
+        <ContentsTypeLabel type={type} />
+        {harnesses}
+      </div>
+      {trailing && (
+        <div className="col-start-2 row-span-2 row-start-1 flex min-w-0 max-w-sm items-center justify-end self-center text-right wrap-anywhere">
+          {trailing}
+        </div>
+      )}
+      {detail && (
+        <div className="col-start-1 min-w-0 text-s fg-secondary">{detail}</div>
+      )}
+    </li>
   );
 }
 
@@ -1923,7 +2395,7 @@ function McpServersSection({
   bundledServerRows?: readonly UnifiedEntryBundledServerRow[];
   onOpenEntryId?: (entryId: string) => void;
   renderStatus?: (server: PluginMcpServerInfo) => ReactNode | undefined;
-  rowRefs: RefObject<Map<string, HTMLTableRowElement>>;
+  rowRefs: RefObject<Map<string, HTMLElement>>;
 }): JSX.Element {
   const showHarness =
     via.length > 0 || servers.some((server) => server.harnesses.length > 0);

@@ -91,6 +91,20 @@ export const WORKTREE_STATE_GALLERY_SECTIONS: WorktreeGallerySection[] = [
         props: { uiStatus: 'unread', hasUnread: true },
       },
       {
+        id: 'background',
+        label: 'Background work',
+        description:
+          'The turn ended but background tasks still run — pulsing grey dot, named by the task count.',
+        props: { uiStatus: 'idle', backgroundTasks: 2 },
+      },
+      {
+        id: 'background-unread',
+        label: 'Background work, unread',
+        description:
+          'Background tasks still run after a reply you have not seen. Classic rows show the grey dot beside the blue unread dot; focused rows show only the blue dot, since unread outranks background work.',
+        props: { uiStatus: 'unread', hasUnread: true, backgroundTasks: 2 },
+      },
+      {
         id: 'question',
         label: 'Needs your answer',
         description:

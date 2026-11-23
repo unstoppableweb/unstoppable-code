@@ -65,7 +65,9 @@ export function WorkEntryRemovalConfirmDialog({
       confirmDisabled={confirmDisabled || blockedReason !== undefined}
       onConfirm={onConfirm}
       onCancel={onCancel}
+      // `blockedReason` is a precondition that disables Confirm, not a failure.
       errorMessage={blockedReason}
+      errorRecordingDisabled
       dataTestId={`${rowTestId}-delete-dialog`}
       confirmTestId={workEntryRowTestId(
         rowTestId,

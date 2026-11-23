@@ -294,8 +294,8 @@ export const WorktreeActionsMenu = forwardRef<
       )}
       {itemCount > 0 && (
         // RailIconButton sits in a tooltip wrapper, so the wrapper is what
-        // leaves fine pointers; a hidden button alone would keep the chip's
-        // 2px gap and push the last hover action 4px off the row's edge.
+        // leaves fine pointers, and no empty item stays in the chip to push
+        // the last hover action off the row's edge.
         <span
           className={
             hideTriggerForFinePointer ? 'flex pointer-fine:hidden' : 'contents'

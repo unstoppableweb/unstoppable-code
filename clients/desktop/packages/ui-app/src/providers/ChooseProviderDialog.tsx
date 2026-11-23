@@ -22,7 +22,7 @@ import {
   type ProviderChoiceRowError,
 } from './ProviderChoiceList';
 
-export interface SwitchProviderDialogProps<TModel extends ProviderChoiceModel> {
+export interface ChooseProviderDialogProps<TModel extends ProviderChoiceModel> {
   readonly open: boolean;
   readonly onClose: () => void;
   /** The resolved rows, the current source and the recommended row. */
@@ -55,6 +55,13 @@ export interface SwitchProviderDialogProps<TModel extends ProviderChoiceModel> {
   readonly dataTestId?: string;
   /** The clock for "resets at", so a past reset drops its clause. */
   readonly now?: () => number;
+  /** Inline editors under a row, as in {@link ProviderChoiceList}. */
+  readonly rowChildren?: (row: ProviderChoiceRow<TModel>) => ReactNode;
+  /** A host row, as in {@link ProviderChoiceList}. */
+  readonly renderRow?: (
+    row: ProviderChoiceRow<TModel>,
+    defaultRow: ReactNode,
+  ) => ReactNode;
 }
 
 /**
@@ -78,7 +85,7 @@ function dialogSubtitle<TModel extends ProviderChoiceModel>({
   readonly formatResetsAt: ((resetsAt: number) => string) | undefined;
   readonly now: () => number;
 }): ReactNode {
-  if (target.kind === 'run-model') return undefined;
+  if (target.kind === 'run-model' || target.kind === 'set-up') return undefined;
   if (
     condition === 'quota_limit' &&
     current !== null &&
@@ -106,9 +113,11 @@ function dialogSubtitle<TModel extends ProviderChoiceModel>({
  * action (Reconnect, Buy). Primary actions only, so it has no footer; the X
  * or the backdrop dismisses it (docs/design/overlays.md). Hosts close it
  * before opening anything a row starts (a sign-in, a switch dialog, a
- * checkout), so two modals never stack.
+ * checkout), so two modals never stack. A `set-up` target (opened from any
+ * flow to connect providers) reads "Choose a provider" with no subtitle, in
+ * the flat layout.
  */
-export function SwitchProviderDialog<TModel extends ProviderChoiceModel>({
+export function ChooseProviderDialog<TModel extends ProviderChoiceModel>({
   open,
   onClose,
   choices,
@@ -122,7 +131,9 @@ export function SwitchProviderDialog<TModel extends ProviderChoiceModel>({
   footer,
   dataTestId = 'switch-provider-dialog',
   now = Date.now,
-}: SwitchProviderDialogProps<TModel>): JSX.Element | null {
+  rowChildren,
+  renderRow,
+}: ChooseProviderDialogProps<TModel>): JSX.Element | null {
   if (!open) return null;
   const modelLabel =
     target.kind === 'run-model' ? target.model.label : undefined;
@@ -142,13 +153,16 @@ export function SwitchProviderDialog<TModel extends ProviderChoiceModel>({
   return (
     <DialogModal
       title={switchProviderDialogTitle({
-        condition,
+        condition: target.kind === 'set-up' ? null : condition,
         ...(modelLabel !== undefined ? { modelLabel } : {}),
       })}
       {...(subtitle !== undefined ? { subtitle } : {})}
       onClose={onClose}
       maxWidth="md"
       dataTestId={dataTestId}
+      // Focus moves into the list when it opens, including when a host
+      // opens it on its own, and returns on close.
+      trapFocus
       {...(restoreFocusRef !== undefined ? { restoreFocusRef } : {})}
     >
       <div className="flex flex-col gap-3">
@@ -166,6 +180,11 @@ export function SwitchProviderDialog<TModel extends ProviderChoiceModel>({
           rowError={errorHasRow ? rowError : null}
           {...(footer !== undefined ? { footer } : {})}
           dataTestId="provider-choice-list"
+          {...(target.kind === 'set-up'
+            ? { layout: 'flat' as const, surface: 'plain' as const }
+            : {})}
+          {...(rowChildren !== undefined ? { rowChildren } : {})}
+          {...(renderRow !== undefined ? { renderRow } : {})}
         />
         <ErrorBanner
           error={rowError !== null && !errorHasRow ? rowError.message : null}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type JSX } from 'react';
+import { useId, useState, type JSX } from 'react';
 import { WORKSPACE_LABEL, WORKSPACE_LABEL_PLURAL } from '@canopy/protocol';
 import { Button, SettingsSelect } from '@canopy/ui-shared';
 import { ErrorBanner } from '@canopy/ui-shared/components';
@@ -43,6 +43,7 @@ export function McpWorkspaceDefaultsSection({
   const [targetId, setTargetId] = useState<string | null>(null);
   const [pending, setPending] = useState<'add' | 'remove' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const removeLabelId = useId();
   const target =
     workspaces.find((workspace): boolean => workspace.id === targetId) ??
     workspaces[0];
@@ -120,16 +121,30 @@ export function McpWorkspaceDefaultsSection({
             />
           )}
           {target.enabled === true ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={pending !== null}
-              aria-label={`Remove from ${target.name}`}
-              onClick={(): void => void run('remove')}
-              data-testid={`${testId}-remove`}
-            >
-              {pending === 'remove' ? 'Removing…' : 'Remove'}
-            </Button>
+            <>
+              {/* The button's name repeats the project's: it comes from a
+                  masked label, never an attribute replay would record. */}
+              <span id={`${removeLabelId}-action`} hidden>
+                Remove from
+              </span>
+              <span
+                id={`${removeLabelId}-name`}
+                className={REPLAY_MASK_CLASS}
+                hidden
+              >
+                {target.name}
+              </span>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={pending !== null}
+                aria-labelledby={`${removeLabelId}-action ${removeLabelId}-name`}
+                onClick={(): void => void run('remove')}
+                data-testid={`${testId}-remove`}
+              >
+                {pending === 'remove' ? 'Removing…' : 'Remove'}
+              </Button>
+            </>
           ) : (
             <Button
               variant="primary"

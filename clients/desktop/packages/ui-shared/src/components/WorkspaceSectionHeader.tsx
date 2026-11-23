@@ -851,13 +851,38 @@ export function WorkspaceSectionHeader({
             // One trailing group, so the pin sits just left of the count
             // instead of splitting the free space with the counter's own
             // `ml-auto`. Unpinned headers keep the bare counter.
-            <span className="ml-auto flex shrink-0 items-center">
+            // The gap centers the pin on the hover Settings button's icon,
+            // as the count ends where the Add button's icon ends.
+            <span className="ml-auto flex shrink-0 items-center gap-2">
               <SidebarPinnedBadge
                 testId={`workspace-section-pinned-badge${testIdSuffix}`}
                 fadeOnRowHover={false}
                 className={atRestTrailingClassName}
               />
-              {sidebarCounter}
+              {/* A hover ••• between Settings and Add takes one more button's
+                  room: this spacer and its gap (20px + 8px) keep the pin
+                  under Settings. Touch, where the buttons stay, needs none. */}
+              {onSettings &&
+              onOptions &&
+              onAdd &&
+              !hideOptionsForFinePointer &&
+              !hasPersistentControls ? (
+                <span
+                  aria-hidden="true"
+                  className={`w-5 shrink-0 pointer-coarse:hidden ${atRestTrailingClassName}`}
+                />
+              ) : null}
+              {/* With the count hidden its cell stays, empty, so the pin
+                  still sits under Settings rather than under Add when the
+                  buttons replace them on hover. Buttons already on screen
+                  (touch, or a header that keeps them at rest) need no cell. */}
+              {sidebarCounter ??
+                (onAdd && !hasPersistentControls ? (
+                  <span
+                    aria-hidden="true"
+                    className={`${SIDEBAR_ROW_TRAILING_CELL_CLASSNAME} mr-0.5 pointer-coarse:hidden ${atRestTrailingClassName}`}
+                  />
+                ) : null)}
             </span>
           ) : (
             sidebarCounter
@@ -874,13 +899,13 @@ export function WorkspaceSectionHeader({
           // padding holds its resting count, so only the controls move out.
           className={`${
             hasPersistentControls
-              ? 'flex shrink-0 items-center gap-0.5 -mr-0.5'
+              ? 'flex shrink-0 items-center -mr-0.5'
               : defersPointerHoverActions
                 ? // Once revealed this overlay sits above the primary button
                   // and swallows presses that land between the controls, so
                   // the trailing region cannot reach the collapse toggle.
-                  'flex shrink-0 items-center gap-0.5 pointer-fine:invisible pointer-fine:absolute pointer-fine:inset-y-0 pointer-fine:-right-0.5 pointer-fine:group-hover/sidebar-item:visible pointer-fine:group-focus-within/sidebar-item:visible pointer-fine:focus-within:visible'
-                : 'hidden shrink-0 items-center gap-0.5 -mr-0.5 group-hover/sidebar-item:flex group-focus-within/sidebar-item:flex focus-within:flex pointer-coarse:flex'
+                  'flex shrink-0 items-center pointer-fine:invisible pointer-fine:absolute pointer-fine:inset-y-0 pointer-fine:-right-0.5 pointer-fine:group-hover/sidebar-item:visible pointer-fine:group-focus-within/sidebar-item:visible pointer-fine:focus-within:visible'
+                : 'hidden shrink-0 items-center -mr-0.5 group-hover/sidebar-item:flex group-focus-within/sidebar-item:flex focus-within:flex pointer-coarse:flex'
           } pointer-coarse:gap-0`}
           onPointerDownCapture={handleActionPointerDownCapture}
           onPointerCancelCapture={handleActionPointerCancelCapture}

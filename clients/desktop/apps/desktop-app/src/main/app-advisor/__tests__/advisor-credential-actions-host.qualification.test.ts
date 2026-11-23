@@ -116,13 +116,19 @@ describe('App Advisor credential action host (CAN-6008)', () => {
     ]);
   });
 
-  it('turns Allow incoming on for Portal start and off for stop (CAN-5986)', async () => {
+  it('turns Allow incoming on and off with remote_control.set_allow_incoming (CAN-5986)', async () => {
     const h = host();
     await expect(
-      dispatchAdvisorCredentialAction({ type: 'canopy_portal.start' }, h),
+      dispatchAdvisorCredentialAction(
+        { type: 'remote_control.set_allow_incoming', enabled: true },
+        h,
+      ),
     ).resolves.toEqual({ ok: true, result: { allowIncoming: true } });
     await expect(
-      dispatchAdvisorCredentialAction({ type: 'canopy_portal.stop' }, h),
+      dispatchAdvisorCredentialAction(
+        { type: 'remote_control.set_allow_incoming', enabled: false },
+        h,
+      ),
     ).resolves.toEqual({ ok: true, result: { allowIncoming: false } });
     expect(mockCalls).toEqual([
       ['remoteGetState', { discover: false }],
@@ -132,10 +138,13 @@ describe('App Advisor credential action host (CAN-6008)', () => {
     ]);
   });
 
-  it("answers a Remote Control refusal as the Portal action's error", async () => {
+  it("answers a Remote Control refusal as the action's error", async () => {
     mockRemote.refusal = new Error('Sign in before allowing incoming control.');
     await expect(
-      dispatchAdvisorCredentialAction({ type: 'canopy_portal.start' }, host()),
+      dispatchAdvisorCredentialAction(
+        { type: 'remote_control.set_allow_incoming', enabled: true },
+        host(),
+      ),
     ).resolves.toEqual({
       ok: false,
       error: {

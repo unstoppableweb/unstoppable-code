@@ -16,6 +16,7 @@ import {
   Button,
   ConfirmDialog,
   McpConnectionStatusBadge,
+  recordedErrorOf,
   SettingsSelect,
 } from '@canopy/ui-shared';
 import {
@@ -37,6 +38,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { TrashIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
+  MCP_MANAGEMENT_REASONS,
   mcpAuthStatusBadgeClass,
   mcpAuthStatusBadgeTone,
   mcpAuthStatusLabel,
@@ -55,6 +57,18 @@ import type { HostAction } from '@canopy/ui-shared/lib/host-action';
  * apply to this server; an unavailable port renders disabled with its reason.
  */
 export type McpAction<F> = HostAction<F>;
+
+/**
+ * A host action's refusal, thrown before the operation was attempted (signed
+ * out, account changed). Its message is shown but is not an operation failure,
+ * so the confirmation does not record it.
+ */
+export class McpActionRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'McpActionRefusedError';
+  }
+}
 
 /** Cached status, structurally satisfied by desktop entries and the Portal projection. */
 export interface McpHealthStatusInput extends McpConnectionStatusSource {
@@ -295,7 +309,7 @@ function McpServerHealthSectionForTarget({
       : !testConnection.available
         ? testConnection.reason
         : testable.length === 0
-          ? 'Add a configuration before testing this server.'
+          ? MCP_MANAGEMENT_REASONS.noConfig
           : undefined;
   const authRows = (status?.configs ?? []).flatMap((config) => {
     if (!isAuthStatus(config.authStatus)) return [];
@@ -639,7 +653,15 @@ function McpServerManagementActionsForTarget({
   const pendingRef = useRef<ManagementActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // `failed` is false for a refusal checked before the delete runs (including
+  // one the host's action throws as an `McpActionRefusedError`), which is
+  // shown but not recorded as a failure. `recorded` is a failure the host
+  // already recorded, shown without recording it again.
+  const [deleteError, setDeleteError] = useState<{
+    readonly text: string;
+    readonly failed: boolean;
+    readonly recorded?: boolean;
+  } | null>(null);
   useEffect(
     (): (() => void) | undefined =>
       registerErrorClearer?.((): void => {
@@ -698,11 +720,13 @@ function McpServerManagementActionsForTarget({
     // Recheck at submission: capability or target may have changed.
     const current = deleteRef.current;
     if (current?.available !== true) {
-      setDeleteError(
-        current?.available === false
-          ? current.reason
-          : 'This server can no longer be deleted here.',
-      );
+      setDeleteError({
+        text:
+          current?.available === false
+            ? current.reason
+            : 'This server can no longer be deleted here.',
+        failed: false,
+      });
       return;
     }
     if (!begin('delete')) return;
@@ -711,7 +735,11 @@ function McpServerManagementActionsForTarget({
       await current.run();
     } catch (caught) {
       if (!mounted.current) return;
-      setDeleteError(errorText(caught, 'The server could not be deleted.'));
+      setDeleteError({
+        text: errorText(caught, 'The server could not be deleted.'),
+        failed: !(caught instanceof McpActionRefusedError),
+        recorded: recordedErrorOf(caught) !== undefined,
+      });
       end();
       return;
     }
@@ -887,7 +915,15 @@ function McpServerManagementActionsForTarget({
             confirmLabel="Delete"
             busyLabel="Deleting…"
             busy={pending === 'delete'}
-            errorMessage={deleteError}
+            {...(deleteError?.failed === false || deleteError?.recorded === true
+              ? {
+                  errorMessage: deleteError.text,
+                  errorRecordingDisabled: true as const,
+                }
+              : {
+                  errorMessage: deleteError?.text,
+                  errorSource: 'mcp-server-delete',
+                })}
             destructive
             dataTestId="mcp-management-delete-dialog"
             confirmTestId="mcp-management-delete-confirm"

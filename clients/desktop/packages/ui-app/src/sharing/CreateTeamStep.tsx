@@ -58,7 +58,9 @@ function ProjectRow({
  * The inline step that turns Personal into a team: a name, the Personal
  * projects to include (all chosen at first).
  * Loading and failure never read as an empty project list, and a refresh
- * keeps the person's choices.
+ * keeps the person's choices. When the host's build predates Personal project
+ * conversion, the step asks to update the desktop app and offers only
+ * continuing without projects, since trying again cannot help (CAN-7469).
  */
 export function CreateTeamStep({
   name,
@@ -97,6 +99,7 @@ export function CreateTeamStep({
       );
     }
     const failed = projects.status === 'error';
+    const hostOutdated = projects.status === 'host-outdated';
     const loading = projects.status === 'loading' || projects.status === 'idle';
     return (
       <Fieldset
@@ -124,6 +127,19 @@ export function CreateTeamStep({
             }
           >
             {COPY.projectsFailed}
+          </Notice>
+        )}
+        {hostOutdated && (
+          <Notice
+            intent="attention"
+            data-testid={`${p}-projects-host-outdated`}
+            actions={
+              <NoticeButton onClick={onContinueWithoutProjects}>
+                {COPY.projectsSkip}
+              </NoticeButton>
+            }
+          >
+            {COPY.projectsHostOutdated}
           </Notice>
         )}
         {loading && projects.items.length === 0 && (

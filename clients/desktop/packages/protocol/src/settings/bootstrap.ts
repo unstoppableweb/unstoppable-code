@@ -91,6 +91,8 @@ export const settingsBootstrapSchema = z.looseObject({
     billingEnabled: z.boolean(),
     digestsEnabled: z.boolean(),
     integrationsEnabled: z.boolean(),
+    /** Cloud managed delegation is on: the Delegation page is listed (CAN-7571). */
+    delegationEnabled: z.boolean().optional(),
     /** @deprecated Retained for shipped clients, which require it; the server always sends `true`. */
     freeAccess: z.boolean(),
   }),

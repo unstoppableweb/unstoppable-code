@@ -17,6 +17,7 @@ import {
   type JSX,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -43,6 +44,8 @@ import {
   MarketplaceUnshareAction,
   PluginCatalogAddAction,
   PluginCatalogDetail,
+  pluginNotAddedYet,
+  pluginOpensCatalogSummary,
   CustomizeRelatedSection,
   CustomizeManifestPreview,
   customizeCatalogContents,
@@ -85,6 +88,9 @@ import {
   CustomizeEntryWorksWith,
   CustomizePublisher,
   DelayedLoadingPlaceholder,
+  type PluginDetailComponentContent,
+  type PluginDetailFacetSlot,
+  type PluginDetailReadComponent,
   DetailEntityTypeProvider,
   DetailFactError,
 } from '@canopy/ui-shared/components';
@@ -97,6 +103,7 @@ import {
   DetailMoreItemsContributionProvider,
   DetailMoreItemsProvider,
   DetailMoreMenu,
+  orderDetailMoreItems,
   DetailPageActions,
   ErrorBanner,
   ExecutionActionButton,
@@ -124,6 +131,7 @@ import {
   CURATED_PLUGIN_MARKETPLACE_ID,
   type MarketplaceInfo,
   type PluginInfo,
+  type PluginProviderFacet,
 } from '@canopy/execution-engine/types/plugins';
 import type {
   McpServerIndexEntry,
@@ -160,6 +168,7 @@ import { entryIdForSelection } from '@/lib/relatedCapabilities';
 import { PipelineCatalogDetail } from '../pipeline/PipelineCatalogDetail';
 import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import type { DesktopPublisherSkill } from '@canopy/desktop-shared/types/skills';
 import {
   AutomationCatalogDetail,
   CuratedAutomationMarketplaceDetail,
@@ -311,6 +320,8 @@ export interface PluginEntryDetailProps {
   workflowActions?: CustomizeWorkflowActions;
   /** New Customize: the list's entries, which Related reads. */
   relatedEntries?: readonly UnifiedPluginEntry[];
+  /** New Customize: publisher skills, for a local agent's skill tiles. */
+  publisherSkills?: readonly DesktopPublisherSkill[];
   returnToMarketplace?: CapabilityMarketplaceReturnTarget;
   /**
    * Where Back goes, whatever the host decides that is: pop its detail stack
@@ -357,6 +368,120 @@ export interface PluginEntryDetailProps {
 interface ResolvedPlugin {
   marketplace: MarketplaceInfo;
   plugin: PluginInfo;
+}
+
+/**
+ * The versions of a not-added plugin whose files the marketplace's scan read,
+ * Claude's first. A Codex compatibility version is generated from Claude's
+ * into a cache, not read from the checkout, so its members are Claude's.
+ */
+function catalogFacets(plugin: PluginInfo): PluginDetailFacetSlot[] {
+  const slots: PluginDetailFacetSlot[] = [];
+  if (plugin.facets.claude?.details)
+    slots.push({ kind: 'claude', facet: plugin.facets.claude });
+  if (plugin.facets.codex?.details)
+    slots.push({ kind: 'codex', facet: plugin.facets.codex });
+  return slots;
+}
+
+/** The version a not-added plugin's README and unversioned rows read. */
+function catalogDefaultFacet(
+  plugin: PluginInfo,
+): PluginProviderFacet | undefined {
+  return plugin.facets.claude?.details
+    ? plugin.facets.claude
+    : (plugin.facets.codex ?? plugin.facets.claude);
+}
+
+/** The marketplace checkout and plugin path one version reads from. */
+function catalogFacetCheckout(
+  plugin: PluginInfo,
+  marketplace: MarketplaceInfo,
+  facet: PluginProviderFacet | undefined,
+): { readonly checkout: string; readonly sourcePath: string } {
+  // Match the README lookup. A facet's installLocation is already the
+  // plugin directory, so relative source paths must not be joined to it.
+  const status = facet && marketplace.providerStatus?.[facet.provider];
+  return {
+    checkout:
+      status?.state === 'valid' && status.installLocation
+        ? status.installLocation
+        : marketplace.installLocation,
+    sourcePath: facet?.sourcePath ?? plugin.sourcePath,
+  };
+}
+
+/**
+ * A not-added plugin's source as this page reads it: the marketplace and
+ * name the preview asks for, where the marketplace comes from, and the
+ * checkout and path each version's files are read from. A refresh can change
+ * any of them under the same entry.
+ */
+function catalogSourceKey(
+  plugin: PluginInfo,
+  marketplace: MarketplaceInfo,
+): string {
+  const { checkout, sourcePath } = catalogFacetCheckout(
+    plugin,
+    marketplace,
+    catalogDefaultFacet(plugin),
+  );
+  const versions = (['claude', 'codex'] as const).map((kind) => {
+    const facet = plugin.facets[kind];
+    if (!facet) return null;
+    const read = catalogFacetCheckout(plugin, marketplace, facet);
+    return [kind, read.checkout, read.sourcePath];
+  });
+  return JSON.stringify([
+    marketplace.id,
+    plugin.name,
+    marketplace.sourceType,
+    marketplace.sourceUrl,
+    checkout,
+    sourcePath,
+    plugin.externalSource ?? null,
+    versions,
+  ]);
+}
+
+/**
+ * Reads a not-yet-added plugin's component file from its marketplace
+ * checkout, the way the full detail view does (main keeps the read inside the
+ * plugin's folder): from the checkout of the version whose scan listed it.
+ */
+function readCheckoutComponent(
+  plugin: PluginInfo,
+  marketplace: MarketplaceInfo,
+): PluginDetailReadComponent {
+  const unversioned = catalogFacetCheckout(
+    plugin,
+    marketplace,
+    catalogDefaultFacet(plugin),
+  );
+  const versions = new Map(
+    catalogFacets(plugin).map(({ kind, facet }) => [
+      kind,
+      catalogFacetCheckout(plugin, marketplace, facet),
+    ]),
+  );
+  return async (
+    _componentType,
+    componentFile,
+    activeFacet,
+  ): Promise<PluginDetailComponentContent | null> => {
+    // A version this plugin no longer has has no files to read.
+    const read = activeFacet ? versions.get(activeFacet.kind) : unversioned;
+    if (!read) return null;
+    const result = await window.plugins.readComponentContent(
+      read.checkout,
+      read.sourcePath,
+      componentFile,
+      'catalog-checkout',
+    );
+    if (result.success && result.data) return result.data;
+    if (result.error) throw new Error(result.error);
+    return null;
+  };
 }
 
 function findMarketplace(
@@ -446,11 +571,17 @@ function DetailShell({
 }): JSX.Element {
   const slots = useDetailActionSlots();
   const contributedMore = useDetailMoreItemContributions();
+  // The page's own rows and the body's join ONE menu; the page's Delete or
+  // Unshare stays last.
+  // A private title stays out of the menu's aria-labels, which session replay
+  // does not mask.
+  const menuName = privateTitle ? 'this page' : title;
+  const menuRows = orderDetailMoreItems(moreItems ?? [], contributedMore.items);
   const fallbackMore =
-    slots.moreDeclared === 0 && contributedMore.items.length > 0 ? (
+    slots.moreDeclared === 0 && menuRows.length > 0 ? (
       <DetailMoreMenu
-        name={title}
-        items={contributedMore.items}
+        name={menuName}
+        items={menuRows}
         triggerTestId="plugins-entry-detail-more"
         menuTestId="plugins-entry-detail-menu"
         placement="bottom-right"
@@ -702,6 +833,8 @@ function PluginEntryDetailContent({
   sharedBlueprints = [],
   onClose,
   onOpenEntry,
+  relatedEntries,
+  publisherSkills,
   onOpenMarketplaceSource,
   onOpenPipeline,
   returnToMarketplace,
@@ -750,6 +883,18 @@ function PluginEntryDetailContent({
   const [pluginAddOpen, setPluginAddOpen] = useState(false);
   const [curatedEditorOpen, setCuratedEditorOpen] = useState(false);
   const [curatedDetailBusy, setCuratedDetailBusy] = useState(false);
+  const activeEntryId = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    activeEntryId.current = entry.id;
+    return (): void => {
+      activeEntryId.current = null;
+    };
+  }, [entry.id]);
+  // A Status row's uninstall may end after the user opened another detail;
+  // it closes only the detail that started it (CAN-7362).
+  const closeAfterUninstall = (): void => {
+    if (activeEntryId.current === entry.id) onClose();
+  };
   const [selectedAccountConnectionId, setSelectedAccountConnectionId] =
     useState<string | null | undefined>(undefined);
   // Add through a folded provider connector installs the folded plugin as
@@ -902,6 +1047,16 @@ function PluginEntryDetailContent({
     () => resolvePlugin(marketplaces, ref),
     [marketplaces, ref],
   );
+  const catalogReadComponent = useMemo(():
+    | PluginDetailReadComponent
+    | undefined => {
+    if (!customizeLogoPlate || !resolved) return undefined;
+    const plugin = pluginOverride ?? resolved.plugin;
+    if (!pluginNotAddedYet({ state: entry.state, plugin })) return undefined;
+    return plugin.externalSource
+      ? undefined
+      : readCheckoutComponent(plugin, resolved.marketplace);
+  }, [customizeLogoPlate, entry.state, pluginOverride, resolved]);
   // The source list is these same rows, so a marketplace outside them has no
   // page to open and its name stays plain text.
   const openSource = (sourceId: string): (() => void) | undefined =>
@@ -925,7 +1080,7 @@ function PluginEntryDetailContent({
     );
   }, [ownSharedPlugins, pluginOverride, resolved]);
 
-  const localServer = useMemo(
+  const resolvedLocalServer = useMemo(
     () =>
       ref.type === 'local-mcp'
         ? flattenMcpServerRows(mcpServers).find(
@@ -939,6 +1094,18 @@ function PluginEntryDetailContent({
         : undefined,
     [mcpServers, ref],
   );
+  // Installed-items publishes before Delete returns. Keep the active detail
+  // mounted during that refresh so its confirmation can finish and navigate
+  // back, rather than replacing it with MissingEntryDetail mid-delete.
+  const [retainedLocalServer, setRetainedLocalServer] =
+    useState<typeof resolvedLocalServer>(undefined);
+  useEffect(() => {
+    if (resolvedLocalServer || !curatedDetailBusy)
+      setRetainedLocalServer(resolvedLocalServer);
+  }, [curatedDetailBusy, resolvedLocalServer]);
+  const localServer =
+    resolvedLocalServer ??
+    (curatedDetailBusy ? retainedLocalServer : undefined);
   const curatedEntry = useMemo(() => {
     const key = ref.type === 'curated-mcp' ? ref.key : localServer?.curatedKey;
     return key
@@ -1235,6 +1402,15 @@ function PluginEntryDetailContent({
               ...layoutIdentity,
               loadFailed,
               ...(onRetryLocalAgents ? { onRetry: onRetryLocalAgents } : {}),
+              // The agent's plugins and skills open their own pages.
+              ...(relatedEntries && onOpenEntry
+                ? {
+                    entries: relatedEntries,
+                    ...(publisherSkills ? { publisherSkills } : {}),
+                    onOpenEntry: (picked: UnifiedPluginEntry): void =>
+                      onOpenEntry(picked.id),
+                  }
+                : {}),
             }}
           />
         ) : (
@@ -1649,253 +1825,304 @@ function PluginEntryDetailContent({
         }
       />
     );
-    if (
-      preferCatalogDetail &&
+    // New Customize: every plugin not added yet opens the catalog summary,
+    // whose light preview fills Works with and Contents before Add (spec 3b).
+    const currentPlugin = pluginOverride ?? resolved.plugin;
+    // One answer for the summary, its preview and the checkout reader.
+    const notAddedYet = pluginNotAddedYet({
+      state: entry.state,
+      plugin: currentPlugin,
+    });
+    const catalogFirst = pluginOpensCatalogSummary({
+      preferCatalogDetail,
+      discovery: customizeLogoPlate,
+      notAddedYet,
+    });
+    const showCatalog =
+      catalogFirst &&
       mcpTarget === undefined &&
       initialIntent === 'view' &&
       !pluginAddOpen &&
-      entry.state === 'available'
-    ) {
-      return (
-        <DetailShell
-          title={entry.name}
-          presentation={presentation}
-          onClose={onClose}
-          onNavigateBack={onNavigateBack}
-          shareAction={shareAction}
-          // New Customize: the page offers the tile's main action, Add.
-          primaryAction={
-            customizeLogoPlate ? (
-              <PluginCatalogAddAction
-                entry={entry}
-                // This row's own Add opens here; another provider's copy
-                // opens its own page with its Add started, as the tile's
-                // "Add from …" does.
-                onAdd={(listing) =>
-                  listing.id === entry.id
-                    ? setPluginAddOpen(true)
-                    : onOpenEntry?.(listing.id, 'add')
-                }
-              />
-            ) : (
-              pluginTryIt()
-            )
-          }
-        >
-          <CustomizeManifestPreview
-            // New Customize: a light read of the plugin's repository fills
-            // Works with and Contents before Add (spec 3b).
-            entry={shownLogo}
-            enabled={customizeLogoPlate}
-            load={async () => {
-              const read = await window.plugins.previewManifest(
-                resolved.marketplace.id,
-                resolved.plugin.name,
-              );
-              return read.success ? (read.data ?? null) : null;
+      notAddedYet;
+    const providerAdd =
+      customizeLogoPlate &&
+      !currentPlugin.externalSource &&
+      (currentPlugin.curated === true || currentPlugin.builtIn === true);
+    // The preview and an opened member belong to this source; a refresh that
+    // changes it under the same entry drops both.
+    const catalogSource = catalogSourceKey(currentPlugin, resolved.marketplace);
+    // Each version's scan, so a row opens from the version that lists it.
+    const catalogVersions = catalogFacets(currentPlugin);
+    const catalogScanned =
+      catalogVersions.length > 0 ? catalogVersions : currentPlugin.details;
+    const renderCatalog = (installError?: ReactNode): JSX.Element => (
+      <CustomizeManifestPreview
+        key={customizeLogoPlate ? entry.id : undefined}
+        // New Customize: a light read of the plugin's repository fills
+        // Works with and Contents before Add (spec 3b).
+        entry={shownLogo}
+        enabled={customizeLogoPlate}
+        notAddedYet={notAddedYet}
+        sourceKey={catalogSource}
+        load={async () => {
+          const read = await window.plugins.previewManifest(
+            resolved.marketplace.id,
+            resolved.plugin.name,
+          );
+          return read.success ? (read.data ?? null) : null;
+        }}
+      >
+        {(shown, checking, preview) => (
+          <PluginCatalogDetail
+            entry={{
+              name: entry.name,
+              // The entry already carries the product-over-publisher
+              // attribution the card shows; reading the raw plugin here made
+              // the detail contradict the tile the user just clicked.
+              author: entry.authorName ?? currentPlugin.author,
+              description: entry.description,
+              homepage: currentPlugin.homepage,
+              logoUrl: shownLogo.logoUrl,
+              bundledLogo: shownLogo.bundledLogo,
+              brandMark: shownLogo.brandMark,
+              categories: entry.categories,
+              components: entry.components,
+              ...(customizeLogoPlate
+                ? {
+                    publisher: <CustomizePublisher entry={shownLogo} />,
+                    // Names from this listing or an installed copy, then
+                    // what the marketplace's scan of the listing found,
+                    // then the preview.
+                    items: customizeCatalogContents(
+                      shownLogo,
+                      preview,
+                      catalogScanned,
+                    ),
+                    ...(preview?.readme ? { readme: preview.readme } : {}),
+                  }
+                : {}),
             }}
-          >
-            {(shown, checking, preview) => (
-              <PluginCatalogDetail
-                entry={{
-                  name: entry.name,
-                  // The entry already carries the product-over-publisher
-                  // attribution the card shows; reading the raw plugin here made
-                  // the detail contradict the tile the user just clicked.
-                  author:
-                    entry.authorName ??
-                    (pluginOverride ?? resolved.plugin).author,
-                  description: entry.description,
-                  homepage: (pluginOverride ?? resolved.plugin).homepage,
-                  logoUrl: shownLogo.logoUrl,
-                  bundledLogo: shownLogo.bundledLogo,
-                  brandMark: shownLogo.brandMark,
-                  categories: entry.categories,
-                  components: entry.components,
-                  ...(customizeLogoPlate
-                    ? {
-                        publisher: <CustomizePublisher entry={shownLogo} />,
-                        marketplace: {
-                          name: marketplaceDisplayName(
-                            resolved.marketplace.name,
-                          ),
-                          onOpen: openSource(resolved.marketplace.id),
-                        },
-                        // Names from this listing or an installed copy.
-                        items: customizeCatalogContents(shown, preview),
-                      }
-                    : {}),
-                }}
-                {...(customizeLogoPlate
-                  ? {
-                      layout: true,
-                      logo: (
-                        <CustomizeEntryLogo
-                          entry={shownLogo}
-                          McpServerLogoComponent={McpServerLogo}
-                        />
-                      ),
-                      // Before Add, as the tile's chips read it.
-                      worksWith: (
-                        <CustomizeEntryWorksWith
-                          entry={shown}
-                          checking={checking}
-                        />
-                      ),
-                      // A partial removal's notice, as on the Portal.
-                      status: (
-                        <InstalledEntryStatusSection
-                          entry={entry}
-                          onUninstalled={onClose}
-                          onManageSource={openSource(resolved.marketplace.id)}
-                        />
-                      ),
-                    }
-                  : {})}
-                alternatives={entry.alsoAvailableFrom}
-                onOpenEntryId={onOpenEntry}
-                McpServerLogoComponent={McpServerLogo}
-              />
-            )}
-          </CustomizeManifestPreview>
-        </DetailShell>
-      );
-    }
+            {...(customizeLogoPlate
+              ? {
+                  layout: true,
+                  // A local listing's files open from its marketplace
+                  // checkout, as the full detail view opened them.
+                  readComponent: catalogReadComponent,
+                  sourceKey: catalogSource,
+                  logo: (
+                    <CustomizeEntryLogo
+                      entry={shownLogo}
+                      McpServerLogoComponent={McpServerLogo}
+                    />
+                  ),
+                  // Before Add, as the tile's chips read it.
+                  worksWith: (
+                    <>
+                      <CustomizeEntryWorksWith
+                        entry={shown}
+                        checking={checking}
+                        notAddedYet={notAddedYet}
+                      />
+                      {installError}
+                    </>
+                  ),
+                  // A partial removal's notice, as on the Portal.
+                  status: (
+                    <InstalledEntryStatusSection
+                      entry={entry}
+                      onUninstalled={closeAfterUninstall}
+                      onManageSource={openSource(resolved.marketplace.id)}
+                      sourceName={marketplaceDisplayName(
+                        resolved.marketplace.name,
+                      )}
+                    />
+                  ),
+                }
+              : {})}
+            alternatives={entry.alsoAvailableFrom}
+            onOpenEntryId={onOpenEntry}
+            McpServerLogoComponent={McpServerLogo}
+          />
+        )}
+      </CustomizeManifestPreview>
+    );
+    const catalogAdd = (onInstall?: () => void, busy = false): JSX.Element => (
+      <PluginCatalogAddAction
+        entry={entry}
+        busy={busy}
+        onAdd={(listing): void => {
+          if (listing.id !== entry.id) {
+            onOpenEntry?.(listing.id, 'add');
+            return;
+          }
+          setPluginAddOpen(true);
+          onInstall?.();
+        }}
+      />
+    );
     return (
       <DetailShell
         title={entry.name}
         presentation={presentation}
         onClose={onClose}
-        // `PluginDetailView` draws its own Back; the shell must not stack a
-        // second one above it (the web portal detail follows the same rule).
-        // Its `onBack` below carries the destination instead.
+        // Full detail draws its own Back; the shell only supplies it on the
+        // summary. Keep the provider host mounted across the transition.
+        onNavigateBack={showCatalog ? onNavigateBack : undefined}
+        shareAction={showCatalog ? shareAction : undefined}
+        primaryAction={
+          showCatalog && !providerAdd
+            ? customizeLogoPlate
+              ? catalogAdd()
+              : pluginTryIt()
+            : undefined
+        }
       >
-        <PluginDetailView
-          mcpTarget={mcpTarget}
-          {...(entry.chatGptAppStandIn !== undefined
-            ? { standIn: pluginStandInCandidate(entry.chatGptAppStandIn) }
-            : {})}
-          autoInstall={initialIntent === 'add' || pluginAddOpen}
-          plugin={pluginOverride ?? resolved.plugin}
-          sharedContent={
-            ownPluginShare ? (
-              <SharedByYou
-                kind="plugin"
-                shareId={ownPluginShare.externalId}
-                name={ownPluginShare.name}
-                facts={ownPluginShare}
-                // The installed plugin stays; only its share goes.
-                onUnshared={(audience): void => {
-                  if (audience.id === 'public') {
-                    afterPublicLinkRemoved('plugin', ownPluginShare.name);
-                    return;
-                  }
-                  onSharedResourceUnshared?.(
-                    'plugin',
-                    ownPluginShare.externalId,
-                  );
-                  refreshSharedList('plugin');
-                  postShareToast({
-                    tone: 'success',
-                    message: marketplaceUnsharedNotice(ownPluginShare.name),
-                    blockMessageFromReplay: true,
-                  });
-                }}
-              />
-            ) : undefined
-          }
-          headerIcon={
-            customizeLogoPlate ? (
-              <CustomizeEntryLogo
-                entry={shownLogo}
-                McpServerLogoComponent={McpServerLogo}
-              />
-            ) : (
-              <McpServerLogo
-                logoUrl={shownLogo.logoUrl}
-                bundledLogo={shownLogo.bundledLogo}
-                brandMark={shownLogo.brandMark}
-                name={entry.name}
-                size={40}
-                fallback="monogram"
-                fit="contain"
-              />
-            )
-          }
-          // New Customize: the page names the publisher its tile does.
-          {...(customizeLogoPlate
-            ? {
-                publisher: <CustomizePublisher entry={shownLogo} />,
-                // As on the tile: a changed shared source reads "Update
-                // available"; plugins have no update to run from here yet,
-                // so neither offers the button.
-                ...(entry.shareUpdateAvailable === true
-                  ? { versionUpdate: { version: entry.version } }
-                  : {}),
-              }
-            : {})}
-          marketplace={resolved.marketplace}
-          shareAction={shareAction}
-          renderPrimaryAction={({ onInstall, busy }) =>
-            // New Customize: Add until it is added, as on the tile.
-            customizeLogoPlate && entry.state === 'available' ? (
-              <PluginCatalogAddAction
-                entry={entry}
-                busy={busy}
-                // This row's own Add installs here; another provider's copy
-                // opens its own page.
-                onAdd={(listing) =>
-                  listing.id === entry.id
-                    ? onInstall()
-                    : onOpenEntry?.(listing.id)
+        {showCatalog && !providerAdd ? (
+          renderCatalog()
+        ) : (
+          <PluginDetailView
+            mcpTarget={mcpTarget}
+            {...(entry.chatGptAppStandIn !== undefined
+              ? { standIn: pluginStandInCandidate(entry.chatGptAppStandIn) }
+              : {})}
+            autoInstall={initialIntent === 'add' || pluginAddOpen}
+            plugin={currentPlugin}
+            renderProviderCatalog={
+              showCatalog && providerAdd
+                ? ({ onInstall, busy, error }): JSX.Element => (
+                    <>
+                      <DetailPageActions
+                        primary={catalogAdd(onInstall, busy)}
+                      />
+                      {renderCatalog(error)}
+                    </>
+                  )
+                : undefined
+            }
+            sharedContent={
+              ownPluginShare ? (
+                <SharedByYou
+                  kind="plugin"
+                  shareId={ownPluginShare.externalId}
+                  name={ownPluginShare.name}
+                  facts={ownPluginShare}
+                  // The installed plugin stays; only its share goes.
+                  onUnshared={(audience): void => {
+                    if (audience.id === 'public') {
+                      afterPublicLinkRemoved('plugin', ownPluginShare.name);
+                      return;
+                    }
+                    onSharedResourceUnshared?.(
+                      'plugin',
+                      ownPluginShare.externalId,
+                    );
+                    refreshSharedList('plugin');
+                    postShareToast({
+                      tone: 'success',
+                      message: marketplaceUnsharedNotice(ownPluginShare.name),
+                      blockMessageFromReplay: true,
+                    });
+                  }}
+                />
+              ) : undefined
+            }
+            headerIcon={
+              customizeLogoPlate ? (
+                <CustomizeEntryLogo
+                  entry={shownLogo}
+                  McpServerLogoComponent={McpServerLogo}
+                />
+              ) : (
+                <McpServerLogo
+                  logoUrl={shownLogo.logoUrl}
+                  bundledLogo={shownLogo.bundledLogo}
+                  brandMark={shownLogo.brandMark}
+                  name={entry.name}
+                  size={40}
+                  fallback="monogram"
+                  fit="contain"
+                />
+              )
+            }
+            // New Customize: the page names the publisher its tile does.
+            {...(customizeLogoPlate
+              ? {
+                  publisher: <CustomizePublisher entry={shownLogo} />,
+                  // As on the tile: a changed shared source reads "Update
+                  // available"; plugins have no update to run from here yet,
+                  // so neither offers the button.
+                  ...(entry.shareUpdateAvailable === true
+                    ? { versionUpdate: { version: entry.version } }
+                    : {}),
                 }
+              : {})}
+            marketplace={resolved.marketplace}
+            shareAction={shareAction}
+            renderPrimaryAction={({ onInstall, busy }) =>
+              // New Customize: Add until it is added, as on the tile.
+              customizeLogoPlate && notAddedYet ? (
+                <PluginCatalogAddAction
+                  entry={entry}
+                  busy={busy}
+                  // This row's own Add installs here; another provider's copy
+                  // opens its own page.
+                  onAdd={(listing) =>
+                    listing.id === entry.id
+                      ? onInstall()
+                      : onOpenEntry?.(listing.id)
+                  }
+                />
+              ) : (
+                pluginTryIt(onInstall, busy)
+              )
+            }
+            alternatives={entry.alsoAvailableFrom}
+            onOpenSource={openSource(resolved.marketplace.id)}
+            onOpenEntryId={onOpenEntry}
+            bundledServerRows={entry.bundledServerRows}
+            // A page leaves through its breadcrumb (CAN-4261); the plugin's
+            // own Back still closes an open component view.
+            onBack={
+              catalogFirst &&
+              initialIntent === 'view' &&
+              (!customizeLogoPlate ||
+                (notAddedYet && pluginAddOpen && !mcpTarget))
+                ? (): void => setPluginAddOpen(false)
+                : (onNavigateBack ??
+                  (presentation === 'page' ? undefined : onClose))
+            }
+            onPluginUpdated={(updated) =>
+              handlePluginUpdated(
+                resolved.marketplace.id,
+                marketplacePluginName,
+                updated,
+              )
+            }
+            statusContent={
+              <InstalledEntryStatusSection
+                entry={entry}
+                onUninstalled={closeAfterUninstall}
+                onManageSource={openSource(resolved.marketplace.id)}
+                sourceName={marketplaceDisplayName(resolved.marketplace.name)}
               />
-            ) : (
-              pluginTryIt(onInstall, busy)
-            )
-          }
-          alternatives={entry.alsoAvailableFrom}
-          onOpenSource={openSource(resolved.marketplace.id)}
-          onOpenEntryId={onOpenEntry}
-          bundledServerRows={entry.bundledServerRows}
-          // A page leaves through its breadcrumb (CAN-4261); the plugin's
-          // own Back still closes an open component view.
-          onBack={
-            preferCatalogDetail && initialIntent === 'view'
-              ? (): void => setPluginAddOpen(false)
-              : (onNavigateBack ??
-                (presentation === 'page' ? undefined : onClose))
-          }
-          onPluginUpdated={(updated) =>
-            handlePluginUpdated(
-              resolved.marketplace.id,
-              marketplacePluginName,
-              updated,
-            )
-          }
-          statusContent={
-            <InstalledEntryStatusSection
-              entry={entry}
-              onUninstalled={onClose}
-              onManageSource={openSource(resolved.marketplace.id)}
-            />
-          }
-          relatedContent={
-            <CapabilityRelatedSections
-              flush
-              presentation="list"
-              subject={{
-                kind: 'plugin',
-                marketplaceId: resolved.marketplace.id,
-                pluginName: marketplacePluginName,
-              }}
-              subjectEntryId={entry.id}
-              onBeforeNavigate={onClose}
-              onOpenEntry={onOpenEntry}
-              onOpenPipeline={onOpenPipeline}
-            />
-          }
-        />
+            }
+            relatedContent={
+              <CapabilityRelatedSections
+                flush
+                presentation="list"
+                subject={{
+                  kind: 'plugin',
+                  marketplaceId: resolved.marketplace.id,
+                  pluginName: marketplacePluginName,
+                }}
+                subjectEntryId={entry.id}
+                onBeforeNavigate={onClose}
+                onOpenEntry={onOpenEntry}
+                onOpenPipeline={onOpenPipeline}
+              />
+            }
+          />
+        )}
       </DetailShell>
     );
   }
@@ -1942,7 +2169,7 @@ function PluginEntryDetailContent({
               statusContent: (
                 <InstalledEntryStatusSection
                   entry={entry}
-                  onUninstalled={onClose}
+                  onUninstalled={closeAfterUninstall}
                   headerOwnsRemoval
                 />
               ),
@@ -1953,7 +2180,7 @@ function PluginEntryDetailContent({
             {!customizeLogoPlate && (
               <InstalledEntryStatusSection
                 entry={entry}
-                onUninstalled={onClose}
+                onUninstalled={closeAfterUninstall}
                 headerOwnsRemoval
               />
             )}
@@ -2404,7 +2631,7 @@ function PluginEntryDetailContent({
           statusContent={
             <InstalledEntryStatusSection
               entry={entry}
-              onUninstalled={onClose}
+              onUninstalled={closeAfterUninstall}
               onManageSource={
                 entry.ref.type === 'marketplace-plugin'
                   ? openSource(entry.ref.marketplaceId)
@@ -2479,7 +2706,12 @@ function PluginEntryDetailContent({
           onServersChanged={onServersChanged}
           onEditorOpenChange={setCuratedEditorOpen}
           onBusyChange={setCuratedDetailBusy}
-          onDeleted={onNavigateBack ?? onClose}
+          onDeleted={(): void => {
+            // The Delete may outlive its management section, but must not
+            // navigate away from a different detail the user has opened.
+            if (activeEntryId.current === entry.id)
+              (onNavigateBack ?? onClose)();
+          }}
         />
       </>
     </DetailShell>

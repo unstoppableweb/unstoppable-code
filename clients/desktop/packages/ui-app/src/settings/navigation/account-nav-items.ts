@@ -4,7 +4,9 @@ import {
   ExperimentIcon,
   Eye,
   FileText,
+  ForkSplitIcon,
   Globe,
+  KeyIcon,
   Lock,
   Mail,
   Network,
@@ -34,7 +36,9 @@ export type AccountNavKey =
   | 'externalAgents'
   | 'plugins'
   | 'mcp'
+  | 'delegation'
   | 'security'
+  | 'model-providers'
   | 'ai-gateway'
   | 'billing'
   | 'labs'
@@ -72,7 +76,8 @@ export interface AccountNavItem {
  * AI gateway sits directly above Billing: it is the other source of the
  * models agents run on, beside the AI credits Billing sells.
  * Plugins and MCP servers follow External agents: they say what agents load,
- * and they are read-only views of what is managed in Customize.
+ * and they are read-only views of what is managed in Customize. Delegation
+ * follows them: it says how far agents in cloud chats may hand work on.
  *
  * Labs comes last: it holds features still being tried, not settings of
  * the account itself.
@@ -140,12 +145,27 @@ export const ACCOUNT_NAV_ITEMS: readonly AccountNavItem[] = [
     icon: McpIcon,
   },
   {
+    key: 'delegation',
+    label: 'Delegation',
+    description:
+      'How many delegates agents in your cloud chats can run at once, and how many levels deep.',
+    href: '/account/delegation',
+    icon: ForkSplitIcon,
+  },
+  {
     key: 'security',
     label: 'Security',
     description:
       'Manage how you sign in, two-factor authentication and API keys.',
     href: '/account/security',
     icon: Lock,
+  },
+  {
+    key: 'model-providers',
+    label: 'Model providers',
+    description: 'Use your own Claude and ChatGPT API keys in cloud chats.',
+    href: '/account/model-providers',
+    icon: KeyIcon,
   },
   {
     key: 'ai-gateway',
@@ -196,12 +216,15 @@ export function visibleAccountNavItems(
   return ACCOUNT_NAV_ITEMS.filter((item) => {
     if (item.key === 'billing') return flags.billingEnabled;
     if (item.key === 'ai-gateway') return flags.aiGatewayEnabled === true;
+    // Gated by the `providerApiKeys` capability, as the page's route is.
+    if (item.key === 'model-providers') return flags.providerApiKeys === true;
     if (item.key === 'digests') return flags.digestsEnabled;
     if (item.key === 'integrations') return flags.integrationsEnabled;
     if (item.key === 'externalAgents')
       return flags.externalAgentsEnabled === true;
     if (item.key === 'plugins') return flags.pluginsEnabled === true;
     if (item.key === 'mcp') return flags.mcpEnabled === true;
+    if (item.key === 'delegation') return flags.delegationEnabled === true;
     if (item.key === 'labs') return flags.labsEnabled === true;
     if (item.key === 'appearance') return flags.appearanceEnabled === true;
     return true;

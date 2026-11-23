@@ -1051,6 +1051,9 @@ export function DialogModal({
     <div
       data-canopy-browser-native-overlay="true"
       data-canopy-overlay-root="modal"
+      // Whether the modal covers the window or only the pane it sits in, for
+      // window-wide shortcuts that must hold still behind the first kind.
+      data-canopy-overlay-containment={containment}
       data-testid={overlayDataTestId}
       className={`${containment === 'parent' ? 'absolute' : 'fixed'} inset-0 z-modal flex ${placementClass} justify-center bg-overlay-scrim ${overlayPadClass} ${overlayClassName}`}
       {...backdropDismiss}
@@ -1229,6 +1232,7 @@ export function WindowPage({
       inert={!open}
       data-canopy-browser-native-overlay={open ? 'true' : undefined}
       data-canopy-overlay-root={open ? 'modal' : undefined}
+      data-canopy-overlay-containment="window"
       data-testid={dataTestId}
       className={`fixed inset-0 z-modal flex ${open ? '' : 'pointer-events-none'}`}
     >

@@ -121,6 +121,7 @@ const RULE_LABELS: Readonly<Record<SecretRuleId, string>> = {
   jwt: 'a signed token',
   github_token: 'a GitHub token',
   slack_token: 'a Slack token',
+  npm_token: 'an npm token',
   aws_access_key: 'an AWS access key',
   api_key_prefix: 'an API key',
   auth_header: 'an authorization header',
@@ -136,6 +137,14 @@ export function sharedSkillSecretRuleLabel(rule: SecretRuleId): string {
   return RULE_LABELS[rule];
 }
 
+// A placeholder in an authorization header is still refused (CAN-7314), so
+// that rule's advice is to drop the value rather than swap it.
+function secretNextStep(rule: SecretRuleId): string {
+  return rule === 'auth_header'
+    ? 'Remove the header line, or say which header to send without writing its value'
+    : 'Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}';
+}
+
 /**
  * Why sharing stopped. It says something looks like a secret; it never
  * claims a skill is free of secrets, and it never quotes the match.
@@ -146,13 +155,7 @@ export function sharedSkillSecretMessage(
   // The name can't be shown, so the message never quotes or redacts it.
   if (finding.nameRule !== undefined)
     return `This skill's name looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.nameRule)}). Rename the skill, then share again.`;
-  // A placeholder in an authorization header is still refused (CAN-7314),
-  // so that rule's advice is to drop the value rather than swap it.
-  const nextStep =
-    finding.rule === 'auth_header'
-      ? 'Remove the header line, or say which header to send without writing its value'
-      : 'Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}';
-  return `The skill "${finding.skillName}" looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.rule)} in ${finding.file}). ${nextStep}, then share again.`;
+  return `The skill "${finding.skillName}" looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.rule)} in ${finding.file}). ${secretNextStep(finding.rule)}, then share again.`;
 }
 
 /**
@@ -188,20 +191,44 @@ export function packagedSkillSecretMessage(
 export function pluginSecretMessage(finding: SharedSkillSecretFinding): string {
   if (finding.nameRule !== undefined)
     return `This plugin's name looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.nameRule)}). Rename the plugin, then share again.`;
-  // As for a skill, a placeholder in an authorization header is still
-  // refused (CAN-7314), so that rule's advice is to drop the value.
-  const nextStep =
-    finding.rule === 'auth_header'
-      ? 'Remove the header line, or say which header to send without writing its value'
-      : 'Remove it, or replace it with a placeholder such as ${{ secrets.NAME }}';
-  return `The plugin "${finding.skillName}" looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.rule)} in ${finding.file}). ${nextStep}, then share again.`;
+  return `The plugin "${finding.skillName}" looks like it contains a secret (${sharedSkillSecretRuleLabel(finding.rule)} in ${finding.file}). ${secretNextStep(finding.rule)}, then share again.`;
 }
 
-/** A skill or plugin a package file belongs to, as a share names it. */
+/**
+ * What a package file belongs to, as a share names it: a skill or plugin, or
+ * a workflow's asset, pipeline, child pipeline or pipeline action (CAN-7492).
+ */
 export interface PackageFileOwner {
-  readonly kind: 'skill' | 'plugin';
-  /** The skill or plugin name; one that looks like a secret is never passed. */
+  readonly kind:
+    | 'skill'
+    | 'plugin'
+    | 'asset'
+    | 'pipeline'
+    | 'child pipeline'
+    | 'pipeline action';
+  /** Its name; one that looks like a secret is never passed. */
   readonly name: string;
+  /** The pipeline an asset belongs to, when known; never one that looks like a secret. */
+  readonly within?: string;
+}
+
+const ownerPhrase = (owner: PackageFileOwner): string =>
+  `${owner.kind} "${owner.name}"${owner.within === undefined ? '' : ` in "${owner.within}"`}`;
+
+/**
+ * Why a share stopped for a package file whose content looks like a secret:
+ * the owner, the rule and the file, never the value. A skill or plugin keeps
+ * its own wording.
+ */
+export function packageFileSecretMessage(
+  owner: PackageFileOwner,
+  file: string,
+  rule: SharedSkillSecretFinding['rule'],
+): string {
+  const finding = { skillName: owner.name, file, rule };
+  if (owner.kind === 'skill') return sharedSkillSecretMessage(finding);
+  if (owner.kind === 'plugin') return pluginSecretMessage(finding);
+  return `The ${ownerPhrase(owner)} looks like it contains a secret (${sharedSkillSecretRuleLabel(rule)} in ${file}). ${secretNextStep(rule)}, then share again.`;
 }
 
 /**
@@ -223,7 +250,7 @@ export function packageFileUncheckedMessage(
   owner: PackageFileOwner,
   file: string,
 ): string {
-  return `The ${owner.kind} "${owner.name}" has a file, ${file}, that is nested too deeply to check for secrets. Simplify it, then share again.`;
+  return `The ${ownerPhrase(owner)} has a file, ${file}, that is nested too deeply to check for secrets. Simplify it, then share again.`;
 }
 
 /**
@@ -318,6 +345,121 @@ export function findPackageFileCredentialRule(
   bytes: Uint8Array,
 ): SecretMaterialRule | null {
   return findPackageTextCredentialRule(decodePackageFile(bytes));
+}
+
+const TEXT_ESCAPE =
+  /\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2})|\/)/g;
+
+/**
+ * A copy of text with its `\uXXXX`, `\UXXXXXXXX`, `\xNN` and `\/` escapes
+ * decoded, or null when it has none. YAML double-quoted strings and many
+ * config formats decode these, so an escaped key could hide a credential
+ * from the raw text. The copy is only checked, never kept or uploaded
+ * (CAN-7226). An escape that names no character, such as `\U00110000`, is
+ * malformed and stays as written.
+ */
+export function escapeDecodedCopy(text: string): string | null {
+  let decodedAny = false;
+  const decoded = text.replace(
+    TEXT_ESCAPE,
+    (
+      escape: string,
+      four: string | undefined,
+      eight: string | undefined,
+      two: string | undefined,
+    ): string => {
+      const hex = four ?? eight ?? two;
+      const codePoint = hex === undefined ? 0x2f : Number.parseInt(hex, 16);
+      if (codePoint > 0x10ffff) return escape;
+      decodedAny = true;
+      return String.fromCodePoint(codePoint);
+    },
+  );
+  return decodedAny ? decoded : null;
+}
+
+/** The rule text's escape-decoded copy trips with the shared check, or null. */
+function escapeDecodedSecretRule(
+  text: string,
+): SharedTextCredentialRule | null {
+  const decoded = escapeDecodedCopy(text);
+  return decoded === null ? null : findSharedTextCredentialRule(decoded);
+}
+
+/**
+ * The rule a JSON text trips with the shared check once decoded, or null;
+ * null too for text that isn't JSON. It names the rule only, never the
+ * text. An escape such as `\/` or `\u0070` hides a credential from the raw
+ * text, so the decoded text is checked whole, then each key, each string
+ * value and each key beside its primitive value (CAN-7226). Text too deeply
+ * nested to re-serialize can't be checked, so it reads as `unreadable`. The
+ * walk is iterative, and the file was already capped at
+ * PIPELINE_PACKAGE_MAX_FILE_BYTES.
+ */
+function decodedJsonSecretRule(
+  text: string,
+): SharedTextCredentialRule | 'unreadable' | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  let decoded: string;
+  try {
+    decoded = JSON.stringify(parsed);
+  } catch {
+    return 'unreadable';
+  }
+  const whole = findSharedTextCredentialRule(decoded);
+  if (whole !== null) return whole;
+  const pending: unknown[] = [parsed];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      const rule = findSharedTextCredentialRule(value);
+      if (rule !== null) return rule;
+    } else if (Array.isArray(value)) {
+      for (const item of value) pending.push(item);
+    } else if (typeof value === 'object' && value !== null) {
+      for (const [key, item] of Object.entries(value)) {
+        const keyRule = findSharedTextCredentialRule(key);
+        if (keyRule !== null) return keyRule;
+        if (
+          typeof item === 'string' ||
+          typeof item === 'number' ||
+          typeof item === 'boolean'
+        ) {
+          const pairRule =
+            findSharedTextCredentialRule(`${key}: ${String(item)}`) ??
+            findSharedTextCredentialRule(`${key}=${String(item)}`);
+          if (pairRule !== null) return pairRule;
+        }
+        pending.push(item);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The secret rule a supporting file of a shared skill or plugin trips, or
+ * null: the package profile first, then the stricter shared check on the
+ * text, its decoded JSON and its escape-decoded copy. `unreadable` means the
+ * file is JSON too deeply nested to check. The desktop analysis runs this on
+ * every member file of a share or cloud copy, so the hosted side can run the
+ * same check (CAN-7482).
+ */
+export function findSharedMemberFileCredentialRule(
+  bytes: Uint8Array,
+): SecretMaterialRule | SharedTextCredentialRule | 'unreadable' | null {
+  const text = decodePackageFile(bytes);
+  return (
+    findPackageTextCredentialRule(text) ??
+    findSharedTextCredentialRule(text) ??
+    decodedJsonSecretRule(text) ??
+    escapeDecodedSecretRule(text)
+  );
 }
 
 /** Which secret check a package entry tripped. */

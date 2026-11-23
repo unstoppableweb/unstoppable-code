@@ -8,6 +8,8 @@
  */
 export * from './ProviderSourceRow';
 export * from './ProviderChoiceList';
-export * from './SwitchProviderDialog';
+export * from './ChooseProviderDialog';
+export * from './ProviderChooser';
 export * from './ProviderChoiceContinueMenu';
 export * from './provider-choice-primary';
+export * from './ProviderKeyRow';

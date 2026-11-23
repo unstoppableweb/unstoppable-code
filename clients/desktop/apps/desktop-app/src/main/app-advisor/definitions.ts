@@ -2666,11 +2666,6 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('canopy_cloud.start_oauth_login') }),
   z.object({ type: z.literal('canopy_cloud.cancel_oauth_login') }),
   z.object({ type: z.literal('canopy_cloud.disconnect') }),
-  z.object({ type: z.literal('canopy_portal.open') }),
-  z.object({ type: z.literal('canopy_portal.close') }),
-  z.object({ type: z.literal('canopy_portal.start') }),
-  z.object({ type: z.literal('canopy_portal.stop') }),
-  z.object({ type: z.literal('canopy_portal.open_account_settings') }),
   z.object({ type: z.literal('app_advisor.open') }),
   z.object({ type: z.literal('app_advisor.close') }),
   z.object({ type: z.literal('app_advisor.toggle') }),
@@ -2978,7 +2973,7 @@ export const searchActionsJsonSchema: JsonValue = {
     category: {
       type: 'string',
       description:
-        'Optional action category filter such as projects, bots, navigation, skills, sharing, workspace, worktree, worktree-chat, tracked-plan, pipeline-assistant-chat, standalone-chat, pipeline, file, terminal, panel, portal, app-advisor, watchers, or automations. Common singular aliases such as automation and watcher are accepted.',
+        'Optional action category filter such as projects, bots, navigation, skills, sharing, workspace, worktree, worktree-chat, tracked-plan, pipeline-assistant-chat, standalone-chat, pipeline, file, terminal, panel, app-advisor, watchers, or automations. Common singular aliases such as automation and watcher are accepted.',
     },
     actionType: {
       type: 'string',

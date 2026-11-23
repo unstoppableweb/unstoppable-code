@@ -77,7 +77,7 @@ export function createPipelineOwnerChannel(): PipelineOwnerChannel {
         createWorkerPipelineHostRequestHandlers(broker).instructions,
       streams: {
         'worker.pipeline.hostRequests': (
-          _params,
+          params,
           _context,
           sink,
         ): Promise<() => void> => {
@@ -98,9 +98,12 @@ export function createPipelineOwnerChannel(): PipelineOwnerChannel {
             },
           };
           current = subscription;
-          stop = broker.subscribe((item) => {
-            if (sink.emit(item) === null) release(subscription);
-          });
+          stop = broker.subscribe(
+            (item) => {
+              if (sink.emit(item) === null) release(subscription);
+            },
+            params.serves ? { serves: params.serves } : {},
+          );
           if (stopped) stop();
           sync();
           return Promise.resolve(() => release(subscription));

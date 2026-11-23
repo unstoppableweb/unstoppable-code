@@ -177,7 +177,10 @@ describe('a scope someone else holds (the lease rule)', () => {
 
     const pass = await new ChatFormat4Sweep({
       dataDir,
-      target: repositoryChatFormat4SweepTarget(target, () => promotion),
+      target: {
+        ...repositoryChatFormat4SweepTarget(target, () => promotion),
+        sweepAllowed: (): boolean => true,
+      },
       resolveStore: storeFor,
       conditions: {
         turnInFlight: (): boolean => false,
@@ -280,6 +283,7 @@ describe('the working set during a sweep', () => {
       dataDir,
       target: {
         promotionAllowed: (): boolean => true,
+        sweepAllowed: (): boolean => true,
         async sweepFormat4(scope): Promise<ChatFormat4SweepAttempt> {
           const attempt = await admission.sweepFormat4(scope);
           afterEachStep.push(resident());
@@ -322,6 +326,7 @@ describe('a scope whose load fails (review round 1)', () => {
         dataDir,
         target: {
           promotionAllowed: (): boolean => true,
+          sweepAllowed: (): boolean => true,
           async sweepFormat4(scope): Promise<ChatFormat4SweepAttempt> {
             offered += 1;
             const attempt = await repositoryChatFormat4SweepTarget(

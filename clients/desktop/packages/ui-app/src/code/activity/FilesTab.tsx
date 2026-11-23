@@ -267,6 +267,24 @@ export function FilesTab({
     'x' | 'y'
   > | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // The host error from a failed delete that the dialog recorded because an
+  // inline editor hid the notice. The notice still shows it once the dialog
+  // and editor close but does not record it again; the host clears its error
+  // before every command, so a later failure records normally.
+  const [dialogRecordedError, setDialogRecordedError] = useState<string | null>(
+    null,
+  );
+  const hostError = mutations?.error ?? null;
+  if (dialogRecordedError !== null && hostError !== dialogRecordedError)
+    setDialogRecordedError(null);
+  else if (
+    dialogRecordedError === null &&
+    hostError !== null &&
+    deleteTarget !== null &&
+    editor !== null &&
+    deleteError === hostError
+  )
+    setDialogRecordedError(hostError);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -621,6 +639,9 @@ export function FilesTab({
     )
       return;
     submittingRef.current = true;
+    // Only an error from this attempt may show or record: the host clears its
+    // own error while the command runs, so a kept one would stop matching it.
+    setDeleteError(null);
     try {
       await mutations.onDelete(
         deleteTarget.relativePath,
@@ -1149,6 +1170,7 @@ export function FilesTab({
         <div className="px-2 py-2">
           <Notice
             errorSource="files-tree-mutation-error"
+            errorRecordingDisabled={mutations.error === dialogRecordedError}
             intent="destructive"
             data-testid="files-tree-mutation-error"
             dismissLabel="Dismiss file error"
@@ -1185,7 +1207,17 @@ export function FilesTab({
           busyLabel="Deleting…"
           destructive
           busy={mutations.busy}
-          errorMessage={deleteError}
+          // A rejected command also sets the host's mutation error, which the
+          // notice above records; the dialog records only what it alone shows,
+          // such as a refusal the host throws before setting that error.
+          {...(editor === null &&
+          deleteError !== null &&
+          mutations.error === deleteError
+            ? {
+                errorMessage: deleteError,
+                errorRecordingDisabled: true as const,
+              }
+            : { errorMessage: deleteError, errorSource: 'files-tab-delete' })}
           dataTestId="files-tree-delete-dialog"
           confirmTestId="files-tree-delete-confirm"
           onCancel={(): void => setDeleteTarget(null)}

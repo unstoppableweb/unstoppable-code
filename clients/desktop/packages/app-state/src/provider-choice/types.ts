@@ -102,6 +102,12 @@ export interface ProviderSourceFacts<
   readonly connection: ProviderConnection;
   /** The host can start this source's connect (or gateway set-up) flow. */
   readonly connectable: boolean;
+  /**
+   * The source lists its models only once connected (an own API key), so
+   * before that "no runnable model" still offers Connect, the step that
+   * would find one. A gateway always behaves this way.
+   */
+  readonly modelsAfterConnect?: boolean;
 }
 
 /** What the credits balance read found. A failed read is `unknown`, never empty. */
@@ -137,7 +143,13 @@ export type ProviderChoiceTarget<
    */
   | { readonly kind: 'continue-chat'; readonly model?: TModel }
   /** A locked-model pick: only sources that run exactly this model are usable. */
-  | { readonly kind: 'run-model'; readonly model: TModel };
+  | { readonly kind: 'run-model'; readonly model: TModel }
+  /**
+   * Setting up providers before any chat (first run, the web first-visit
+   * card): every source is listed in the host's order, connected ones
+   * included, and no row is recommended. There is no model to keep.
+   */
+  | { readonly kind: 'set-up' };
 
 export interface ProviderChoiceInput<
   TModel extends ProviderChoiceModel = ProviderChoiceModel,

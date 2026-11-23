@@ -4,10 +4,14 @@
 import {
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_OWNER_ACTIONS,
+  WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX,
   WORKER_PIPELINE_STREAM_DEFINITIONS,
+  WorkerPipelineExecutionStartParamsSchema,
   WorkerPipelineHostActionRequestSchema,
+  WorkerPipelineHostRequestsParamsSchema,
   WorkerPipelineHostResultSchema,
   type WorkerPipelineHostRequest,
+  type WorkerPipelineHostRequestsItem,
   type WorkerPipelineHostRespondResult,
   type WorkerPipelineHostResult,
 } from '@canopy/protocol/canopy-core';
@@ -17,6 +21,7 @@ import { CanopyOperationError } from '../../../../runtime/errors';
 import type { CanopyDispatcher } from '../../../../runtime/types';
 import {
   PipelineHostRequestBroker,
+  PipelineHostUnavailableError,
   createWorkerPipelineHostRequestHandlers,
   pipelineHostCoreCaller,
   settlePipelineHostRequests,
@@ -276,6 +281,16 @@ describe('pipeline owner requests', () => {
         request: { sha256: 'a'.repeat(64), byteSize: 4 },
         logicalJobId: 'review',
       },
+      'owner.definition.precheck': {
+        op: 'delete',
+        definitionId: 'definition-1',
+        scope: {},
+      },
+      'owner.definition.effects': {
+        op: 'reconcile',
+        phase: 'reconcile',
+        definitionId: null,
+      },
     };
     for (const action of WORKER_PIPELINE_OWNER_ACTIONS) {
       expect(
@@ -409,5 +424,234 @@ describe('pipeline owner requests', () => {
       const settlement = await settle(request, value);
       expect(JSON.stringify(settlement)).not.toContain(HEADER);
     }
+  });
+
+  // CAN-7522: definition requests belong to no run. They ride a reserved
+  // scope, reach only an owner that says it serves them, and a scope holds a
+  // bounded number pending.
+  const DEFINITIONS_SCOPE = 'core:pipeline-definitions';
+  const SERVES = [
+    { kind: 'owner.definition.precheck', revision: 1 },
+    { kind: 'owner.definition.effects', revision: 1 },
+  ];
+  const precheck = {
+    action: 'owner.definition.precheck',
+    op: 'delete',
+    definitionId: 'definition-1',
+    scope: {},
+  } as const;
+  const allowed: WorkerPipelineHostResult = {
+    status: 'owner',
+    value: { kind: 'definition.precheck', answer: { allowed: true } },
+  };
+
+  function scopeRequest(requestId: string): WorkerPipelineHostRequest {
+    return {
+      ...hostRequest(requestId, precheck),
+      executionId: DEFINITIONS_SCOPE,
+      jobId: '_run',
+      stepId: '_run',
+    };
+  }
+
+  function ids(items: readonly WorkerPipelineHostRequestsItem[]): string[] {
+    return items.map((item) => item.requestId);
+  }
+
+  it('a definition request reaches only an owner that serves it; every owner still gets the rest (CAN-7522)', async () => {
+    const broker = new PipelineHostRequestBroker();
+    const signal = new AbortController().signal;
+    const legacy: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => legacy.push(item));
+    await expect(
+      broker.raiseOwner(scopeRequest('definition-0'), signal),
+    ).rejects.toBeInstanceOf(PipelineHostUnavailableError);
+    expect(legacy).toEqual([]);
+
+    const unknownOnly: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => unknownOnly.push(item), {
+      serves: [{ kind: 'owner.future.kind', revision: 7 }],
+    });
+    const serving: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => serving.push(item), { serves: SERVES });
+    const raised = broker.raiseOwner(scopeRequest('definition-1'), signal);
+    expect(ids(serving)).toEqual(['definition-1']);
+    expect(legacy).toEqual([]);
+    expect(unknownOnly).toEqual([]);
+
+    // A pending definition request reaches a later owner only if it serves it.
+    const lateLegacy: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => lateLegacy.push(item));
+    const lateServing: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => lateServing.push(item), { serves: SERVES });
+    expect(lateLegacy).toEqual([]);
+    expect(ids(lateServing)).toEqual(['definition-1']);
+
+    // Every owner still receives the requests every owner answers.
+    const run = broker.raiseOwner(hostRequest('owner-1', invocation), signal);
+    for (const items of [legacy, unknownOnly, serving, lateLegacy, lateServing])
+      expect(ids(items)).toContain('owner-1');
+
+    expect(broker.respond(DEFINITIONS_SCOPE, 'definition-1', allowed)).toEqual(
+      expect.objectContaining({ outcome: 'applied' }),
+    );
+    await expect(raised).resolves.toEqual({ result: allowed });
+    broker.respond('execution-1', 'owner-1', {
+      status: 'owner',
+      value: invocationValue,
+    });
+    await run;
+  });
+
+  it('the owner names what it serves when it opens the stream (CAN-7522)', async () => {
+    const broker = new PipelineHostRequestBroker();
+    const dispatcher = compose(broker);
+    const received: unknown[] = [];
+    const handle = await dispatcher.openStream(
+      'worker.pipeline.hostRequests',
+      { serves: SERVES },
+      {
+        caller,
+        onFrame: (frame) => {
+          if (frame.kind === 'item') received.push(frame.item);
+        },
+      },
+    );
+    const raised = broker.raiseOwner(
+      scopeRequest('definition-2'),
+      new AbortController().signal,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(received).toEqual([
+      expect.objectContaining({ requestId: 'definition-2' }),
+    ]);
+    broker.respond(DEFINITIONS_SCOPE, 'definition-2', allowed);
+    await raised;
+    handle.close();
+    await dispatcher.shutdown();
+
+    expect(
+      WorkerPipelineHostRequestsParamsSchema.safeParse({
+        serves: Array.from({ length: 65 }, () => SERVES[0]),
+      }).success,
+    ).toBe(false);
+    expect(
+      WorkerPipelineHostRequestsParamsSchema.safeParse({
+        serves: [{ kind: 'owner.definition.precheck', revision: 0 }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('a scope holds at most 64 pending requests, and the 65th is refused before anyone sees it (CAN-7522)', async () => {
+    expect(WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX).toBe(64);
+    const broker = new PipelineHostRequestBroker();
+    const seen: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => seen.push(item), { serves: SERVES });
+    const controller = new AbortController();
+    const raised = Array.from({ length: 64 }, (_, index) =>
+      broker.raiseOwner(scopeRequest(`definition-${index}`), controller.signal),
+    );
+    await expect(
+      broker.raiseOwner(scopeRequest('definition-64'), controller.signal),
+    ).rejects.toBeInstanceOf(PipelineHostUnavailableError);
+    expect(seen).toHaveLength(64);
+    expect(ids(seen)).not.toContain('definition-64');
+
+    // A run's own requests never count against a scope.
+    const runs = Array.from({ length: 65 }, (_, index) =>
+      broker.raiseOwner(
+        hostRequest(`owner-${index}`, invocation),
+        controller.signal,
+      ),
+    );
+    expect(seen).toHaveLength(129);
+
+    // Settling one makes room for one more.
+    broker.respond(DEFINITIONS_SCOPE, 'definition-0', allowed);
+    await expect(raised[0]).resolves.toEqual({ result: allowed });
+    const next = broker.raiseOwner(
+      scopeRequest('definition-65'),
+      controller.signal,
+    );
+    expect(ids(seen)).toContain('definition-65');
+    controller.abort(new Error('test over'));
+    await Promise.allSettled([...raised, ...runs, next]);
+  });
+
+  it('a scope request withdrawn at its deadline is announced, and a late answer is already settled (CAN-7522)', async () => {
+    const broker = new PipelineHostRequestBroker({ announceWithdrawals: true });
+    const seen: WorkerPipelineHostRequestsItem[] = [];
+    broker.subscribe((item) => seen.push(item), { serves: SERVES });
+    const controller = new AbortController();
+    const raised = broker.raiseOwner(
+      scopeRequest('definition-late'),
+      controller.signal,
+    );
+    controller.abort(new Error('deadline'));
+    await expect(raised).rejects.toThrow('deadline');
+    expect(seen).toEqual([
+      expect.objectContaining({ requestId: 'definition-late' }),
+      {
+        withdrawn: true,
+        executionId: DEFINITIONS_SCOPE,
+        requestId: 'definition-late',
+      },
+    ]);
+    expect(
+      broker.respond(DEFINITIONS_SCOPE, 'definition-late', allowed),
+    ).toEqual(expect.objectContaining({ outcome: 'already_settled' }));
+  });
+
+  it('a run id never takes a reserved scope (CAN-7522)', () => {
+    const start = {
+      executionId: '0f8fad5b-d9cb-469f-a165-70867728950e',
+      pipelineId: 'pipeline-1',
+      definitionSource: 'user',
+      runScope: 'global',
+      workspaceId: null,
+      worktreeId: null,
+      owner: 'personal',
+      initiationSource: 'user',
+    };
+    expect(
+      WorkerPipelineExecutionStartParamsSchema.safeParse(start).success,
+    ).toBe(true);
+    for (const executionId of ['run-1', 'exec_42', 'scheduled:abc', 'Core:x'])
+      expect(
+        WorkerPipelineExecutionStartParamsSchema.safeParse({
+          ...start,
+          executionId,
+        }).success,
+      ).toBe(true);
+    for (const executionId of [
+      'core:pipeline-definitions',
+      'core:operation-ledger',
+      'core:anything',
+    ])
+      expect(
+        WorkerPipelineExecutionStartParamsSchema.safeParse({
+          ...start,
+          executionId,
+        }).success,
+      ).toBe(false);
+    const child = {
+      action: 'run-pipeline',
+      pipelineId: 'child',
+      document: '{"name":"Child"}',
+      inputs: {},
+      target: { scope: 'global' },
+    };
+    expect(
+      WorkerPipelineHostActionRequestSchema.safeParse({
+        ...child,
+        childExecutionId: 'child-1',
+      }).success,
+    ).toBe(true);
+    expect(
+      WorkerPipelineHostActionRequestSchema.safeParse({
+        ...child,
+        childExecutionId: 'core:pipeline-definitions',
+      }).success,
+    ).toBe(false);
   });
 });

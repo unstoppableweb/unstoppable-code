@@ -12,7 +12,9 @@ import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
  * Local windows never pass through here, so they keep the URL as Git printed
  * it. CAN-7082 adds the URL fields a controller only reads: each reaches it
  * without userinfo, fragment or any query value outside an allowlist, and a
- * Git remote URL's query is stripped the same way.
+ * Git remote URL's query is stripped the same way. A start page's or a saved
+ * MCP server's URLs are stripped too: a controller sends them back, and
+ * controller-url-writebacks.ts keeps the stored credential when it does.
  * `check:remote-control-remote-urls` fails when a tunnelled channel adds a
  * URL-named field that is neither projected here nor exempted.
  */
@@ -131,13 +133,34 @@ function authorityPrefix(
   };
 }
 
-function isSafeQueryPair(pair: string): boolean {
+/**
+ * The OAuth request parameters of an authorization URL this computer mints for
+ * a sign-in the controller opens (RFC 6749 4.1.1, RFC 7636 4.3, RFC 8707, and
+ * OpenID Connect's `prompt`, with Google's `access_type`, which a provider
+ * needs to issue a refresh token). The sign-in fails or degrades without
+ * them, and none is a stored credential.
+ */
+const CONTROLLER_OAUTH_REQUEST_PARAMS: ReadonlySet<string> = new Set([
+  'access_type',
+  'client_id',
+  'code_challenge',
+  'code_challenge_method',
+  'prompt',
+  'redirect_uri',
+  'resource',
+  'response_type',
+  'scope',
+  'state',
+]);
+
+function isSafeQueryPair(
+  pair: string,
+  safe: ReadonlySet<string> = CONTROLLER_SAFE_QUERY_PARAMS,
+): boolean {
   const separator = pair.indexOf('=');
   const name = separator === -1 ? pair : pair.slice(0, separator);
   try {
-    return CONTROLLER_SAFE_QUERY_PARAMS.has(
-      decodeURIComponent(name.replace(/\+/g, ' ')),
-    );
+    return safe.has(decodeURIComponent(name.replace(/\+/g, ' ')));
   } catch {
     return false;
   }
@@ -181,6 +204,19 @@ function isCutShortUserinfo(authority: string): boolean {
  * input is first read as the URL standard reads it (`urlStandardInput`).
  */
 export function controllerCredentialFreeUrl(value: string): string {
+  return credentialFreeUrl(value, CONTROLLER_SAFE_QUERY_PARAMS);
+}
+
+/**
+ * An OAuth authorization URL minted for a sign-in the controller opens, as it
+ * may see it: stripped as `controllerCredentialFreeUrl` strips, keeping only
+ * the OAuth request parameters in its query.
+ */
+export function controllerOAuthRequestUrl(value: string): string {
+  return credentialFreeUrl(value, CONTROLLER_OAUTH_REQUEST_PARAMS);
+}
+
+function credentialFreeUrl(value: string, safe: ReadonlySet<string>): string {
   const parts = urlParts(value);
   if (parts === undefined) return value;
   // Fail closed rather than guess: an `@` still left after a cut-short
@@ -195,7 +231,7 @@ export function controllerCredentialFreeUrl(value: string): string {
     return '';
   const kept = parts.query
     .split('&')
-    .filter((pair) => pair !== '' && isSafeQueryPair(pair));
+    .filter((pair) => pair !== '' && isSafeQueryPair(pair, safe));
   return `${parts.prefix}${parts.hostAndPath}${kept.length > 0 ? `?${kept.join('&')}` : ''}`;
 }
 
@@ -326,6 +362,40 @@ function percentDecoded(text: string): string {
   } catch {
     return text;
   }
+}
+
+/** What a URL a controller sends back stores (CAN-7082). */
+export type ControllerUrlMerge =
+  | { readonly kind: 'carry'; readonly value: string }
+  | { readonly kind: 'as-sent' }
+  | { readonly kind: 'changed' };
+
+/**
+ * A URL a controller sends back, against the values `stored` for the same
+ * field, most recent first. The controller only ever got each one through
+ * `controllerCredentialFreeUrl`. The first whose controller form is exactly
+ * `sent`, byte for byte, decides, and the search stops there: one holding
+ * credential parts is kept whole (same scheme, host, port, path, kept query
+ * and all), and one without is the URL as sent. A URL carrying credential
+ * parts of its own is one the controller typed, and is stored as sent. Any
+ * other URL, where a stored value held credential parts, is `changed`: its
+ * old credential is never carried to it, and the write stores it as sent or
+ * refuses it.
+ */
+export function mergeControllerUrl(
+  sent: string,
+  stored: readonly string[],
+): ControllerUrlMerge {
+  let storedCredential = false;
+  for (const value of stored) {
+    const free = controllerCredentialFreeUrl(value);
+    if (sent === free)
+      return free === value ? { kind: 'as-sent' } : { kind: 'carry', value };
+    if (free !== value) storedCredential = true;
+  }
+  return storedCredential && controllerCredentialParts(sent).length === 0
+    ? { kind: 'changed' }
+    : { kind: 'as-sent' };
 }
 
 /** `part` as a pattern, with every `%XX` escape matched in either hex case. */
@@ -477,8 +547,7 @@ const referenceRepoStatus: Projection = (status) =>
  * URL fields a controller only reads (CAN-7082): no tunnelled channel takes
  * them back from a caller, so stripping their credential parts can't
  * overwrite a stored value. Fields a controller sends back (start pages, a
- * saved MCP server's URLs) need a write-side merge first and stay ticketed in
- * remote-url-fields.json.
+ * saved MCP server's URLs) are stripped by path in `SENT_BACK_PROJECTIONS`.
  */
 const OUT_ONLY_GIT_URL_FIELDS: Readonly<Record<string, readonly string[]>> = {
   // canopy.json clone URLs, which a team writes and which can hold a token.
@@ -612,58 +681,202 @@ function withOutOnlyFields(
   return Object.freeze(combined);
 }
 
-export const CONTROLLER_REMOTE_URL_PROJECTIONS: Readonly<
-  Record<string, ChannelProjection>
-> = withOutOnlyFields({
-  // Its handler already redacts for every caller but the local window; this
-  // keeps the tunnel's answer redacted whichever caller main derived.
-  [IPC_CHANNELS.repoGetRemoteUrl]: {
-    fields: ['remoteUrl'],
-    result: (value: unknown): unknown =>
-      isRecord(value) && 'remoteUrl' in value
-        ? { ...value, remoteUrl: controllerRemoteUrl(value.remoteUrl) ?? null }
-        : value,
+/** `value` as the session wire carries it (JSON), as `stripUrlFields` reads it. */
+function wireCopy(value: unknown): unknown {
+  if (value === undefined) return value;
+  const wire: unknown = JSON.parse(JSON.stringify(value));
+  return wire;
+}
+
+function withStringField(
+  record: unknown,
+  field: string,
+  strip: (url: string) => string,
+): unknown {
+  if (!isRecord(record) || typeof record[field] !== 'string') return record;
+  return { ...record, [field]: strip(record[field]) };
+}
+
+/** Every `startPage: { kind: 'url', url }` at any depth, its URL stripped. */
+const startPagesForController: Projection = (value) => {
+  const walk = (entry: unknown, key: string | undefined): unknown => {
+    if (Array.isArray(entry)) return entry.map((item) => walk(item, undefined));
+    if (!isRecord(entry)) return entry;
+    if (key === 'startPage' && entry.kind === 'url')
+      return withStringField(entry, 'url', controllerCredentialFreeUrl);
+    const copy: Record<string, unknown> = {};
+    for (const [name, child] of Object.entries(entry))
+      copy[name] = walk(child, name);
+    return copy;
+  };
+  return walk(wireCopy(value), undefined);
+};
+
+/** A saved MCP server's URL and OAuth endpoints, stripped. */
+const mcpServerFileForController: Projection = (file) =>
+  withField(wireCopy(file), 'server', (server) =>
+    withField(server, 'definition', (definition) =>
+      withField(
+        withStringField(definition, 'url', controllerCredentialFreeUrl),
+        'oauth',
+        (oauth) =>
+          withStringField(
+            withStringField(
+              oauth,
+              'authorizationUrl',
+              controllerCredentialFreeUrl,
+            ),
+            'tokenUrl',
+            controllerCredentialFreeUrl,
+          ),
+      ),
+    ),
+  );
+
+/** The channels whose replies carry a start page a controller can send back. */
+const START_PAGE_CHANNELS: readonly string[] = [
+  IPC_CHANNELS.chatProjectBlueprintsList,
+  IPC_CHANNELS.chatProjectBlueprintsRefresh,
+  IPC_CHANNELS.chatProjectCreate,
+  IPC_CHANNELS.chatProjectCreateFromTemplate,
+  IPC_CHANNELS.chatProjectList,
+  IPC_CHANNELS.chatProjectTemplateBuild,
+  IPC_CHANNELS.projectsLoad,
+  IPC_CHANNELS.projectsSave,
+  IPC_CHANNELS.standaloneChatImportProject,
+  IPC_CHANNELS.startPageResolve,
+  IPC_CHANNELS.workspaceAddFromFolder,
+  IPC_CHANNELS.workspaceAddFromRemote,
+  IPC_CHANNELS.workspaceCombineWorktreeWithExistingWorktree,
+  IPC_CHANNELS.workspaceCombineWorktreeWithWorkspace,
+  IPC_CHANNELS.workspaceCreate,
+  IPC_CHANNELS.workspaceCreateNew,
+  IPC_CHANNELS.workspaceCreateTemporaryFromRepos,
+  IPC_CHANNELS.workspaceCreateTemporaryWorktreeFromRepos,
+  IPC_CHANNELS.workspaceCreateTemporaryWorktreeFromWorkspaces,
+  IPC_CHANNELS.workspaceImportFromRepo,
+  IPC_CHANNELS.workspacePromoteTemporary,
+  IPC_CHANNELS.workspaceReadSettingsData,
+  IPC_CHANNELS.workspaceSetPrivateMemory,
+];
+
+/**
+ * URL fields a controller can send back (CAN-7082), stripped by path so other
+ * fields of the same name pass as the registry records them. A start page and
+ * a saved MCP server's URLs come back through the writes in
+ * controller-url-writebacks.ts, which keep the stored credential. The sign-in
+ * URL `mcp-servers:start-account` mints keeps its OAuth request parameters,
+ * which the sign-in the controller opens needs.
+ */
+const SENT_BACK_PROJECTIONS: Readonly<Record<string, ChannelProjection>> = {
+  ...Object.fromEntries(
+    START_PAGE_CHANNELS.map((channel): [string, ChannelProjection] => [
+      channel,
+      { fields: ['url'], result: startPagesForController },
+    ]),
+  ),
+  [MCP_SERVER_CHANNELS.LOAD_SERVER]: {
+    fields: ['authorizationUrl', 'tokenUrl', 'url'],
+    result: mcpServerFileForController,
   },
-  [IPC_CHANNELS.workspaceReferenceRepoStatusEvent]: {
-    fields: ['remoteUrl'],
-    push: (event: unknown): unknown =>
-      withField(event, 'status', referenceRepoStatus),
+  [MCP_SERVER_CHANNELS.SAVE_SERVER]: {
+    fields: ['authorizationUrl', 'tokenUrl', 'url'],
+    result: mcpServerFileForController,
   },
-  [IPC_CHANNELS.workspaceReadSettingsData]: {
-    fields: ['remoteUrl'],
-    result: (data: unknown): unknown =>
-      withField(data, 'referenceRepoStatus', referenceRepoStatus),
-  },
-  [IPC_CHANNELS.cloneJobsList]: {
-    fields: ['remoteUrl'],
-    result: cloneJobsForController,
-  },
-  [IPC_CHANNELS.cloneJobsChanged]: {
-    fields: ['remoteUrl'],
-    push: cloneJobsForController,
-  },
-  [IPC_CHANNELS.chatSessionCloudExportList]: {
-    fields: ['remoteUrl'],
-    result: (list: unknown): unknown =>
-      withField(list, 'data', (data) =>
-        mapArray(data, (summary) =>
-          withField(summary, 'repos', repoRemoteUrls),
-        ),
+  [MCP_SERVER_CHANNELS.START_ACCOUNT]: {
+    fields: ['authorizationUrl'],
+    result: (response: unknown): unknown =>
+      withStringField(
+        wireCopy(response),
+        'authorizationUrl',
+        controllerOAuthRequestUrl,
       ),
   },
-  [IPC_CHANNELS.chatSessionImportInspect]: {
-    fields: ['remoteUrl'],
-    result: (inspection: unknown): unknown => {
-      const manifest = withField(inspection, 'manifestSummary', (summary) =>
-        withField(summary, 'repos', repoRemoteUrls),
-      );
-      const workspace = withField(manifest, 'workspaceSummary', (summary) =>
-        withField(summary, 'repos', repoRemoteUrls),
-      );
-      return withField(workspace, 'missingRepos', repoRemoteUrls);
+};
+
+/** The channels whose replies carry a URL a controller can send back. */
+export const CONTROLLER_SENT_BACK_URL_CHANNELS: readonly string[] = Object.keys(
+  SENT_BACK_PROJECTIONS,
+);
+
+/** The projections so far, then the sent-back fields' strips on top. */
+function withSentBackFields(
+  projections: Readonly<Record<string, ChannelProjection>>,
+): Readonly<Record<string, ChannelProjection>> {
+  const combined: Record<string, ChannelProjection> = { ...projections };
+  for (const [channel, sentBack] of Object.entries(SENT_BACK_PROJECTIONS)) {
+    const existing = combined[channel];
+    const strip = sentBack.result;
+    const first = existing?.result;
+    combined[channel] = {
+      fields: [...new Set([...(existing?.fields ?? []), ...sentBack.fields])],
+      result:
+        strip && first
+          ? (value: unknown): unknown => strip(first(value))
+          : (strip ?? first),
+      ...(existing?.push ? { push: existing.push } : {}),
+    };
+  }
+  return Object.freeze(combined);
+}
+
+export const CONTROLLER_REMOTE_URL_PROJECTIONS: Readonly<
+  Record<string, ChannelProjection>
+> = withSentBackFields(
+  withOutOnlyFields({
+    // Its handler already redacts for every caller but the local window; this
+    // keeps the tunnel's answer redacted whichever caller main derived.
+    [IPC_CHANNELS.repoGetRemoteUrl]: {
+      fields: ['remoteUrl'],
+      result: (value: unknown): unknown =>
+        isRecord(value) && 'remoteUrl' in value
+          ? {
+              ...value,
+              remoteUrl: controllerRemoteUrl(value.remoteUrl) ?? null,
+            }
+          : value,
     },
-  },
-});
+    [IPC_CHANNELS.workspaceReferenceRepoStatusEvent]: {
+      fields: ['remoteUrl'],
+      push: (event: unknown): unknown =>
+        withField(event, 'status', referenceRepoStatus),
+    },
+    [IPC_CHANNELS.workspaceReadSettingsData]: {
+      fields: ['remoteUrl'],
+      result: (data: unknown): unknown =>
+        withField(data, 'referenceRepoStatus', referenceRepoStatus),
+    },
+    [IPC_CHANNELS.cloneJobsList]: {
+      fields: ['remoteUrl'],
+      result: cloneJobsForController,
+    },
+    [IPC_CHANNELS.cloneJobsChanged]: {
+      fields: ['remoteUrl'],
+      push: cloneJobsForController,
+    },
+    [IPC_CHANNELS.chatSessionCloudExportList]: {
+      fields: ['remoteUrl'],
+      result: (list: unknown): unknown =>
+        withField(list, 'data', (data) =>
+          mapArray(data, (summary) =>
+            withField(summary, 'repos', repoRemoteUrls),
+          ),
+        ),
+    },
+    [IPC_CHANNELS.chatSessionImportInspect]: {
+      fields: ['remoteUrl'],
+      result: (inspection: unknown): unknown => {
+        const manifest = withField(inspection, 'manifestSummary', (summary) =>
+          withField(summary, 'repos', repoRemoteUrls),
+        );
+        const workspace = withField(manifest, 'workspaceSummary', (summary) =>
+          withField(summary, 'repos', repoRemoteUrls),
+        );
+        return withField(workspace, 'missingRepos', repoRemoteUrls);
+      },
+    },
+  }),
+);
 
 /** A tunnelled invoke's result as the controller may see it. */
 export function projectControllerResult(

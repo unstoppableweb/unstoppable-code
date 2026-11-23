@@ -738,6 +738,7 @@ export function WorkflowsLibraryToolbar({
         }),
       onClear: (): void => onFiltersChange({ ...filters, project: null }),
       testId: 'workflows-library-filter-project',
+      replayPrivacy: { maskClassName: REPLAY_MASK_CLASS },
     }),
     pageFilter<WorkflowLibrarySource>({
       key: 'source',

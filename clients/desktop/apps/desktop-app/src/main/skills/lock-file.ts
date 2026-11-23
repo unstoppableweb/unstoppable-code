@@ -521,9 +521,25 @@ export function assertLockWritable(): void {
 // Entry management
 // ---------------------------------------------------------------------------
 
-/** Add or replace entries by lock key in one durable write. */
+/**
+ * Add or replace entries by lock key in one durable write. The lock decides
+ * installedAt (CAN-5239): an existing entry keeps its stored date, even an
+ * empty legacy one, and a new key gets the host time. A caller-sent date is
+ * ignored.
+ */
 export function addLockEntries(entries: Record<string, SkillLockEntry>): void {
-  writeLockFile({ ...readLockForWrite(), ...entries });
+  const skills = readLockForWrite();
+  const now = new Date().toISOString();
+  for (const [key, entry] of Object.entries(entries)) {
+    const previous = skills[key];
+    const installedAt = isRecord(previous)
+      ? typeof previous.installedAt === 'string'
+        ? previous.installedAt
+        : ''
+      : now;
+    skills[key] = { ...entry, installedAt };
+  }
+  writeLockFile(skills);
 }
 
 export function addLockEntry(

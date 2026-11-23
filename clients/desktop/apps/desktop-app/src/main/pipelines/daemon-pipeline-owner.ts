@@ -1,10 +1,16 @@
-import type { CanopyClientStreamHandle } from '@canopy/core-client';
 import {
+  toCanopyClientError,
+  type CanopyClientStreamHandle,
+} from '@canopy/core-client';
+import {
+  WORKER_PIPELINE_OWNER_SERVED_REVISIONS,
   isWorkerPipelineHostWithdrawal,
+  isWorkerPipelineOwnerScope,
   type CanopyHostExecution,
   type WorkerPipelineHostRequest,
   type WorkerPipelineHostRequestsItem,
   type WorkerPipelineHostResult,
+  type WorkerPipelineOwnerScope,
 } from '@canopy/protocol/canopy-core';
 import {
   applyPortableHostRequest,
@@ -96,7 +102,14 @@ const unsent = new Map<
     readonly answer: DaemonPipelineOwnerAnswer;
   }
 >();
-let ownerRequestHandler: OwnerRequestHandler | null = null;
+/**
+ * Owner request handlers by scope (CAN-7522): `run` answers a run's `owner.*`
+ * requests, and each reserved scope its own. Each is set once.
+ */
+const ownerHandlers = new Map<
+  'run' | WorkerPipelineOwnerScope,
+  OwnerRequestHandler
+>();
 let subscription: OwnerSubscription | null = null;
 /** Counts the owner subscriptions opened; a capability bound under one ends with it (CAN-6168). */
 let generation = 0;
@@ -114,11 +127,44 @@ export function daemonPipelineOwnerGeneration(): number {
   return generation;
 }
 
+function setOwnerHandler(
+  scope: 'run' | WorkerPipelineOwnerScope,
+  handler: OwnerRequestHandler | null,
+): void {
+  if (handler === null) {
+    ownerHandlers.delete(scope);
+    return;
+  }
+  const current = ownerHandlers.get(scope);
+  if (current === handler) return;
+  if (current)
+    throw new Error(`An owner request handler is already set for ${scope}.`);
+  ownerHandlers.set(scope, handler);
+}
+
+/** The run scope's handler: the same one again is kept, another throws. */
 export function setDaemonPipelineOwnerRequestHandler(
   handler: OwnerRequestHandler | null,
 ): void {
-  ownerRequestHandler = handler;
+  setOwnerHandler('run', handler);
 }
+
+/**
+ * A reserved scope's handler (CAN-7522), set once like the run scope's;
+ * `null` clears only that scope. Without one, the scope's requests are
+ * answered as unhandled.
+ */
+export function setDaemonPipelineOwnerScopeHandler(
+  scope: WorkerPipelineOwnerScope,
+  handler: OwnerRequestHandler | null,
+): void {
+  setOwnerHandler(scope, handler);
+}
+
+/** The owner requests this app serves beyond the ones every owner answers. */
+const SERVES = Object.entries(WORKER_PIPELINE_OWNER_SERVED_REVISIONS).map(
+  ([kind, revision]) => ({ kind, revision }),
+);
 
 /** Opens the owner session and its host request subscription once; resolves when it is open. */
 export function ensureDaemonPipelineOwnerSettlement(): Promise<void> {
@@ -139,18 +185,32 @@ async function open(): Promise<void> {
   // Set before the stream opens: its first frames can precede the open result.
   subscription = opened;
   generation += 1;
-  try {
-    opened.stream = await client.openStream(
-      'worker.pipeline.hostRequests',
-      {},
-      {
-        onFrame: (frame) => {
-          if (subscription !== opened) return;
-          if (frame.kind === 'end') closed(opened);
-          else receive(opened.client, frame.item);
-        },
+  const openWith = (params: {
+    serves?: typeof SERVES;
+  }): Promise<
+    CanopyClientStreamHandle<WorkerPipelineHostRequestsItem, object>
+  > =>
+    client.openStream('worker.pipeline.hostRequests', params, {
+      onFrame: (frame) => {
+        if (subscription !== opened) return;
+        if (frame.kind === 'end') closed(opened);
+        else receive(opened.client, frame.item);
       },
-    );
+    });
+  try {
+    try {
+      opened.stream = await openWith({ serves: SERVES });
+    } catch (error) {
+      // A daemon from before CAN-7522 refuses `serves`, the open's only
+      // parameter, as invalid: it then opens without it, and never raises
+      // the requests this app would have said it serves.
+      if (
+        toCanopyClientError(error).payload.kind !== 'invalid_argument' ||
+        subscription !== opened
+      )
+        throw error;
+      opened.stream = await openWith({});
+    }
   } catch (error) {
     if (subscription === opened) subscription = null;
     throw error;
@@ -378,10 +438,19 @@ export async function routeDaemonPipelineHostRequest(
   request: WorkerPipelineHostRequest,
   signal: AbortSignal,
 ): Promise<DaemonPipelineOwnerAnswer> {
-  if (request.request.action.startsWith('owner.'))
-    return ownerRequestHandler
-      ? ownerRequestHandler(request, signal)
+  // A reserved scope's request belongs to no run (CAN-7522).
+  if (isWorkerPipelineOwnerScope(request.executionId)) {
+    const handler = ownerHandlers.get(request.executionId);
+    return handler
+      ? handler(request, signal)
       : { result: OWNER_REQUEST_UNHANDLED };
+  }
+  if (request.request.action.startsWith('owner.')) {
+    const handler = ownerHandlers.get('run');
+    return handler
+      ? handler(request, signal)
+      : { result: OWNER_REQUEST_UNHANDLED };
+  }
   const target = hostStepsTargetOf(request.executionId);
   if (
     !target ||

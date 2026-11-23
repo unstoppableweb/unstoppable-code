@@ -16,6 +16,8 @@ import {
   worktreeRecoveryResolutionAction,
   type WorktreeRecoveryDescription,
 } from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import { isHostRecordedFailure } from '../host-recorded-failure';
+import { worktreeRecoveryHostOutdatedMessage } from './host-outdated';
 import { offerLifecycleJournalQuarantine } from '../lifecycle-journal/quarantine-offer';
 
 /**
@@ -25,7 +27,12 @@ import { offerLifecycleJournalQuarantine } from '../lifecycle-journal/quarantine
 export type WorktreeDiscardAttemptError =
   | { readonly kind: 'refused'; readonly reason: WorktreeDiscardRefusal }
   | { readonly kind: 'changed' }
-  | { readonly kind: 'failed'; readonly message: string | null };
+  | {
+      readonly kind: 'failed';
+      readonly message: string | null;
+      /** The host already recorded this failure. */
+      readonly recorded?: true;
+    };
 
 /** A finished discard's report for the host's own cleanup. */
 interface WorktreeDiscardFinished {
@@ -58,6 +65,11 @@ export type WorktreeDiscardView =
         | WorktreeRecoveryResolveResult;
       readonly error: 'transport-failed' | 'unconfirmed' | null;
       readonly unconfirmedAction?: 'keep-worktree' | 'release' | 'finish';
+      /**
+       * An older computer refused the last action or check, so nothing ran
+       * (CAN-7444): its update message. The reviewed recovery is kept.
+       */
+      readonly hostOutdated?: string;
     }
   | {
       readonly phase: 'open';
@@ -135,6 +147,19 @@ export function failureText(error: unknown): string | null {
   return text || null;
 }
 
+/** The `failed` attempt error for a rejected command. */
+export function failedAttempt(error: unknown): {
+  readonly kind: 'failed';
+  readonly message: string | null;
+  readonly recorded?: true;
+} {
+  return {
+    kind: 'failed',
+    message: failureText(error),
+    ...(isHostRecordedFailure(error) ? { recorded: true as const } : {}),
+  };
+}
+
 function sameRecoverySubject(
   description: WorktreeDiscardDescription | undefined,
   recovery: WorktreeRecoveryDescription,
@@ -165,7 +190,10 @@ function createWorktreeDiscardStore(
       );
     const inspect = async (
       view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
-    ): Promise<WorktreeDiscardDescription | undefined> =>
+    ): Promise<{
+      readonly description?: WorktreeDiscardDescription;
+      readonly hostOutdated: string | null;
+    }> =>
       client
         .command('worktree.discard.describe', {
           workspaceId: view.offer.workspaceId,
@@ -178,7 +206,12 @@ function createWorktreeDiscardStore(
               : {}),
           },
         })
-        .catch(() => undefined);
+        .then(
+          (description) => ({ description, hostOutdated: null }),
+          (error: unknown) => ({
+            hostOutdated: worktreeRecoveryHostOutdatedMessage(error),
+          }),
+        );
     const admitted = (
       view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
       value: unknown,
@@ -270,7 +303,7 @@ function createWorktreeDiscardStore(
               view: {
                 ...view,
                 busy: false,
-                error: { kind: 'failed', message: failureText(error) },
+                error: failedAttempt(error),
               },
             });
           return null;
@@ -311,7 +344,7 @@ function createWorktreeDiscardStore(
             set({ view: { ...previous, recovery: unavailable(previous) } });
             return null;
           }
-          const description = await inspect(previous);
+          const { description } = await inspect(previous);
           if (current !== generation) return null;
           const recovery = admitted(
             previous,
@@ -348,10 +381,24 @@ function createWorktreeDiscardStore(
             outcome: undefined,
             error: null,
             unconfirmedAction: undefined,
+            hostOutdated: undefined,
           },
         });
-        const description = await inspect(view);
+        const { description, hostOutdated } = await inspect(view);
         if (current !== generation) return;
+        if (hostOutdated !== null) {
+          set({
+            view: {
+              ...view,
+              outcome: undefined,
+              unconfirmedAction: undefined,
+              busy: null,
+              error: null,
+              hostOutdated,
+            },
+          });
+          return;
+        }
         const recovery = admitted(view, description?.recovery);
         if (!routeReview(recovery))
           set({
@@ -362,6 +409,7 @@ function createWorktreeDiscardStore(
               unconfirmedAction: undefined,
               busy: null,
               error: description?.recovery ? null : 'transport-failed',
+              hostOutdated: undefined,
             },
           });
       },
@@ -375,9 +423,13 @@ function createWorktreeDiscardStore(
         )
           return;
         const current = generation;
-        set({ view: { ...view, busy: 'discard' } });
-        const description = await inspect(view);
+        set({ view: { ...view, busy: 'discard', hostOutdated: undefined } });
+        const { description, hostOutdated } = await inspect(view);
         if (current !== generation) return;
+        if (hostOutdated !== null) {
+          set({ view: { ...view, busy: null, error: null, hostOutdated } });
+          return;
+        }
         const recovery = admitted(
           view,
           sameRecoverySubject(description, view.recovery)
@@ -405,12 +457,16 @@ function createWorktreeDiscardStore(
               recovery,
               busy: null,
               error: description ? null : 'transport-failed',
+              hostOutdated: undefined,
             },
           });
       },
       recover: async (action): Promise<WorktreeDiscardFinished | null> => {
-        const view = get().view;
-        if (view.phase !== 'recovery' || view.busy || view.outcome) return null;
+        const showing = get().view;
+        if (showing.phase !== 'recovery' || showing.busy || showing.outcome)
+          return null;
+        // A new action replaces the last refusal's update message.
+        const view = { ...showing, hostOutdated: undefined };
         const resolution =
           client.capabilities.worktreeRecoveryResolution === true
             ? worktreeRecoveryResolutionAction(view.recovery)
@@ -451,8 +507,14 @@ function createWorktreeDiscardStore(
                   ? { expectedCreatedAt: view.recovery.subject.createdAt }
                   : {}),
               };
-          } catch {
-            if (current === generation)
+          } catch (failure) {
+            if (current !== generation) return null;
+            // An older computer refused the action, so nothing ran: the
+            // reviewed recovery stays as it was (CAN-7444).
+            const hostOutdated = worktreeRecoveryHostOutdatedMessage(failure);
+            if (hostOutdated !== null)
+              set({ view: { ...view, busy: null, error: null, hostOutdated } });
+            else
               set({
                 view: {
                   ...view,

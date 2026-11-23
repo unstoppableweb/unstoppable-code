@@ -15,6 +15,8 @@ import {
   type InstalledEntryStatusState,
   type InstalledItemMutationOutcome,
 } from '../lib/installed-item-status';
+import { captureMcpDeleteCleanupReporter } from '../lib/mcp-delete-cleanup';
+import { recordedErrorOf } from '../lib/surfaced-error-port';
 import {
   removalBusyLabel,
   removalFallbackError,
@@ -46,7 +48,9 @@ import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
 import { ArrowUpRightIcon } from '../icons/AppIcons';
 import { ErrorBanner } from './StatusBlocks';
 import { Tooltip } from './Tooltip';
+import { DataTable } from './DataTable';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 
 /**
  * Installed-item status surfaces (CAN-4255).
@@ -341,7 +345,30 @@ function ManageSourceMoreMenu({
   );
 }
 
+/** One installed copy an uninstall removes, for the confirmation's list. */
+export interface InstalledItemRemovalScopeRow {
+  readonly id: string;
+  /** The copy's plugin name. */
+  readonly name: string;
+  /** The copy's publisher, shown after the name and hidden from replay. */
+  readonly publisher?: string;
+  readonly harness?: string;
+  /** The marketplace the copy comes from. */
+  readonly source?: string;
+}
+
 export interface InstalledItemStatusRowProps {
+  /**
+   * Lets the displayed status be chosen again, when the row speaks for more
+   * than its own item and another copy still needs it. Defaults to whether
+   * the item has a retryable notice.
+   */
+  readonly retryCurrent?: boolean;
+  /**
+   * The installed copies one Uninstall removes together. With more than one,
+   * the confirmation lists each with its harness and marketplace.
+   */
+  readonly removalScope?: readonly InstalledItemRemovalScopeRow[];
   /** Opens the marketplace that owns an item this page can't remove. */
   readonly onManageSource?: () => void;
   readonly itemName: string;
@@ -365,11 +392,14 @@ export function InstalledItemStatusRow({
   onUninstall,
   onUninstalled,
   configurationLabel,
+  removalScope,
+  retryCurrent,
   testId = 'installed-item-status-row',
 }: InstalledItemStatusRowProps): JSX.Element | null {
   const [error, setError] = useState<string | null>(null);
   // The verb of the menu row that opened the confirmation, if one is open.
   const [confirming, setConfirming] = useState<RemovalVerb | null>(null);
+  const [removalRecorded, setRemovalRecorded] = useState(false);
   const uninstallRef = useRef<HTMLSpanElement>(null);
   if (!state) return null;
 
@@ -421,7 +451,9 @@ export function InstalledItemStatusRow({
       <InstalledItemStatusPicker
         itemName={itemName}
         status={itemStatus}
-        retryCurrent={item.notices.some((notice) => notice.retryable)}
+        retryCurrent={
+          retryCurrent ?? item.notices.some((notice) => notice.retryable)
+        }
         busy={pendingKeys.has(installedItemTargetKey(item.target))}
         testId={`${testId}-picker`}
         menuPlacement="bottom-left"
@@ -590,9 +622,57 @@ export function InstalledItemStatusRow({
       )}
       {confirming && uninstallTarget && onUninstall && ready && (
         <UninstallConfirmDialog
+          {...(removalRecorded
+            ? { errorRecordingDisabled: true as const }
+            : { errorSource: 'installed-item-uninstall' })}
           title={`${confirming} ${itemName}?`}
           message={
-            ready.item.uninstallDescription ?? `This removes ${itemName}.`
+            removalScope && removalScope.length > 1 ? (
+              <span className="flex flex-col gap-3 text-left">
+                <span>{`This removes ${itemName} from all of these:`}</span>
+                <DataTable
+                  testId={`${testId}-uninstall-scope`}
+                  caption={`Copies of ${itemName} that Uninstall removes`}
+                  layout="fixed"
+                  rows={removalScope}
+                  rowKey={(row) => row.id}
+                  columns={[
+                    {
+                      key: 'plugin',
+                      header: 'Plugin',
+                      rowHeader: true,
+                      overflow: 'wrap',
+                      render: (row) =>
+                        row.publisher ? (
+                          <>
+                            {`${row.name} (`}
+                            <span className={REPLAY_BLOCK_CLASS}>
+                              {row.publisher}
+                            </span>
+                            )
+                          </>
+                        ) : (
+                          row.name
+                        ),
+                    },
+                    {
+                      key: 'harness',
+                      header: 'Harness',
+                      overflow: 'wrap',
+                      render: (row) => row.harness ?? '',
+                    },
+                    {
+                      key: 'marketplace',
+                      header: 'Marketplace',
+                      overflow: 'wrap',
+                      render: (row) => row.source ?? '',
+                    },
+                  ]}
+                />
+              </span>
+            ) : (
+              (ready.item.uninstallDescription ?? `This removes ${itemName}.`)
+            )
           }
           confirmLabel={confirming}
           busyLabel={removalBusyLabel(confirming)}
@@ -602,7 +682,27 @@ export function InstalledItemStatusRow({
           confirmTestId={`${testId}-uninstall-confirm`}
           cancelTestId={`${testId}-uninstall-cancel`}
           onConfirm={async (): Promise<string | null> => {
+            const reportCleanup = captureMcpDeleteCleanupReporter();
             const outcome = await onUninstall(uninstallTarget);
+            // A rejection main recorded stays on the outcome's `cause`.
+            setRemovalRecorded(
+              !outcome.ok &&
+                recordedErrorOf(Reflect.get(outcome, 'cause')) !== undefined,
+            );
+            // A deleted device server leaves nothing here to retry: close
+            // once the page's notice takes it and offers Repair (CAN-7362).
+            // Without one, as in remote windows, keep the retry below.
+            if (
+              outcome.cleanupIncomplete === true &&
+              uninstallTarget.kind === 'mcp-server' &&
+              reportCleanup
+            ) {
+              reportCleanup({
+                serverId: uninstallTarget.serverId,
+                serverName: itemName,
+              });
+              return null;
+            }
             return outcome.ok
               ? null
               : (outcome.message ?? removalFallbackError(confirming));

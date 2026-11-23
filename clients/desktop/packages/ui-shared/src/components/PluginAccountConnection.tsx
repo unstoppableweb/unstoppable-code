@@ -1,5 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { CheckIcon } from '../icons/AppIcons';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { DetailFact, DetailFactList } from './DetailFact';
 import { Disclosure } from './Disclosure';
 import { Notice } from './Notice';
@@ -110,7 +111,11 @@ export function PluginConnectionNotice({
             label="Technical details"
             dataTestId="plugin-connection-technical-details"
           >
-            <p className="whitespace-pre-wrap break-words font-mono">{error}</p>
+            <p
+              className={`whitespace-pre-wrap break-words font-mono ${REPLAY_BLOCK_CLASS}`}
+            >
+              {error}
+            </p>
           </Disclosure>
         ) : undefined
       }

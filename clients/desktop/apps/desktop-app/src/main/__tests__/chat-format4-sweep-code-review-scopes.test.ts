@@ -162,11 +162,14 @@ function sweep(
     clock,
     sweep: new ChatFormat4Sweep({
       dataDir,
-      target: repositoryChatFormat4SweepTarget(
-        target,
-        (): boolean => true,
-        admission,
-      ),
+      target: {
+        ...repositoryChatFormat4SweepTarget(
+          target,
+          (): boolean => true,
+          admission,
+        ),
+        sweepAllowed: (): boolean => true,
+      },
       resolveStore: storeFor,
       conditions: {
         turnInFlight: (): boolean => false,

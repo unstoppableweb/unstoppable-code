@@ -30,6 +30,7 @@ export * from './QueuedMessageActions';
 export * from './QueuedMessageReason';
 export * from './StatusAnnouncer';
 export * from './QueuedMessageBubble';
+export * from './QueuedWatcherRow';
 export * from './QueuedMessageSettingsHeldWarning';
 export * from './FirstSendFailedNotice';
 export * from './UserBubbleCancelledNote';

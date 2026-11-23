@@ -61,6 +61,7 @@ import { getTriggerTypes } from '@canopy/pipeline-interop/document';
 export type {
   IPCResult,
   IPCResultWithAppError,
+  IPCResultWithOutcome,
   PipelineData,
   PipelineIndex,
   PipelineSaveInput,

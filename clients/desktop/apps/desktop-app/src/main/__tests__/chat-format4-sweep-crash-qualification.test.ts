@@ -278,10 +278,10 @@ async function runSweep(
 ): Promise<ChatFormat4SweepPassResult> {
   const repository = repositoryAt(root, onBoundary);
   try {
-    return await sweepAt(
-      root,
-      repositoryChatFormat4SweepTarget(repository, () => true),
-    ).runPass();
+    return await sweepAt(root, {
+      ...repositoryChatFormat4SweepTarget(repository, () => true),
+      sweepAllowed: (): boolean => true,
+    }).runPass();
   } finally {
     await repository.drainAll().catch(() => undefined);
   }

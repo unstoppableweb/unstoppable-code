@@ -22,7 +22,10 @@ import {
 } from 'node:v8';
 import { getMemoryReportsDir } from '../lib/paths';
 import type { MemoryDiagnosticsHost } from './index';
-import { logMainProcessError } from '../lib/main-process-logging';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import type {
   CreateMemoryReportResult,
   MemoryDiagnosticsStatus,
@@ -40,6 +43,12 @@ import {
 const AUTO_DUMP_INTERVAL_MS = 15_000;
 const AUTO_DUMP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const AUTO_DUMP_HEAP_THRESHOLD = 0.8;
+/**
+ * V8 needs roughly the heap's size again to write a snapshot, and fails fatally
+ * (killing the process) when it can't. Above this fraction of the heap limit the
+ * manual report skips main's snapshot rather than risk that crash.
+ */
+const MAIN_SNAPSHOT_MAX_HEAP_FRACTION = 0.5;
 const SAMPLING_INTERVAL_BYTES = 512 * 1024;
 const GIBIBYTE_BYTES = 1024 * 1024 * 1024;
 const ESTIMATED_SECONDS_PER_GIBIBYTE = 25;
@@ -131,6 +140,26 @@ interface MemoryDiagnosticsProcessHistory {
   readonly processUptimeSeconds: number;
 }
 
+type MainSnapshotSkippedReason = 'insufficient-heap-headroom';
+
+/**
+ * The main-snapshot decision and the heap reading it used, taken just before
+ * the snapshot (after the renderer snapshots), so it can differ from
+ * `heapStatistics`.
+ */
+type MainSnapshotSummary =
+  | {
+      readonly included: true;
+      readonly usedHeapBytes: number;
+      readonly heapLimitBytes: number;
+    }
+  | {
+      readonly included: false;
+      readonly skippedReason: MainSnapshotSkippedReason;
+      readonly usedHeapBytes: number;
+      readonly heapLimitBytes: number;
+    };
+
 interface MemoryDiagnosticsSummaryFile {
   readonly version: 1;
   readonly reportId: string;
@@ -154,6 +183,8 @@ interface MemoryDiagnosticsSummaryFile {
   readonly processHistory?: MemoryDiagnosticsProcessHistory;
   /** Manual reports only: one Chromium memory-infra dump, before any snapshot. */
   readonly nativeMemory?: NativeMemorySummary;
+  /** Manual reports only, set once main's snapshot is written or skipped. */
+  readonly mainSnapshot?: MainSnapshotSummary;
   readonly sampling: {
     readonly active: boolean;
     readonly included: boolean;
@@ -1425,35 +1456,61 @@ class MemoryDiagnosticsServiceImpl {
         });
       }
 
-      // Renderer snapshots have already consumed disk space. Re-check that
-      // enough remains for the main snapshot before asking V8 to write it.
-      const remainingFilesystem = await statfs(root);
-      const remainingBytes =
-        remainingFilesystem.bavail * remainingFilesystem.bsize;
-      if (remainingBytes < measurements.heapStatistics.used_heap_size * 2) {
-        await this.removeOutputDirectory(directory);
-        directory = null;
-        return {
-          ok: false,
-          reason: 'insufficient-disk',
-          message:
-            'There is not enough free disk space to create a memory report.',
+      // Read the heap again: `measurements` predates the native dump and the
+      // renderer snapshots. A snapshot needs about the heap's size again, and
+      // V8 aborts the whole process when it runs out, so skip main's snapshot
+      // when headroom is low or the limit is unknown.
+      const mainHeap = getHeapStatistics();
+      const usedHeapBytes = mainHeap.used_heap_size;
+      const heapLimitBytes = mainHeap.heap_size_limit;
+      const mainSnapshotAllowed =
+        Number.isFinite(heapLimitBytes) &&
+        heapLimitBytes > 0 &&
+        usedHeapBytes <= heapLimitBytes * MAIN_SNAPSHOT_MAX_HEAP_FRACTION;
+      let mainSnapshot: MainSnapshotSummary;
+      if (mainSnapshotAllowed) {
+        // Renderer snapshots have already consumed disk space. Re-check that
+        // enough remains for the main snapshot before asking V8 to write it.
+        const remainingFilesystem = await statfs(root);
+        const remainingBytes =
+          remainingFilesystem.bavail * remainingFilesystem.bsize;
+        if (remainingBytes < usedHeapBytes * 2) {
+          await this.removeOutputDirectory(directory);
+          directory = null;
+          return {
+            ok: false,
+            reason: 'insufficient-disk',
+            message:
+              'There is not enough free disk space to create a memory report.',
+          };
+        }
+        const mainSnapshotPath = safeDirectChild(
+          directory.path,
+          'main.heapsnapshot',
+        );
+        const writtenSnapshotPath = writeHeapSnapshot(mainSnapshotPath);
+        // Even a report that later fails has left V8's main snapshot pages behind.
+        this.mainSnapshotsWritten += 1;
+        if (resolve(writtenSnapshotPath) !== resolve(mainSnapshotPath)) {
+          throw new Error(
+            'V8 wrote the main snapshot outside the report directory.',
+          );
+        }
+        ensurePrivateRegularFile(mainSnapshotPath);
+        await chmod(mainSnapshotPath, FILE_MODE);
+        mainSnapshot = { included: true, usedHeapBytes, heapLimitBytes };
+      } else {
+        logMainProcessWarn(
+          'Memory diagnostics skipped the main heap snapshot: not enough heap headroom',
+          { usedHeapBytes, heapLimitBytes },
+        );
+        mainSnapshot = {
+          included: false,
+          skippedReason: 'insufficient-heap-headroom',
+          usedHeapBytes,
+          heapLimitBytes,
         };
       }
-      const mainSnapshotPath = safeDirectChild(
-        directory.path,
-        'main.heapsnapshot',
-      );
-      const writtenSnapshotPath = writeHeapSnapshot(mainSnapshotPath);
-      // Even a report that later fails has left V8's main snapshot pages behind.
-      this.mainSnapshotsWritten += 1;
-      if (resolve(writtenSnapshotPath) !== resolve(mainSnapshotPath)) {
-        throw new Error(
-          'V8 wrote the main snapshot outside the report directory.',
-        );
-      }
-      ensurePrivateRegularFile(mainSnapshotPath);
-      await chmod(mainSnapshotPath, FILE_MODE);
 
       const summaryWithoutReport = this.makeSummaryWithoutReport(
         directory,
@@ -1464,6 +1521,7 @@ class MemoryDiagnosticsServiceImpl {
         processHistory,
         profileContents !== null,
         nativeMemory,
+        mainSnapshot,
       );
       const report = await finalizeSummaryFile(
         directory.path,
@@ -1501,6 +1559,7 @@ class MemoryDiagnosticsServiceImpl {
     processHistory: MemoryDiagnosticsProcessHistory,
     samplingIncluded: boolean,
     nativeMemory?: NativeMemorySummary,
+    mainSnapshot?: MainSnapshotSummary,
   ): Omit<MemoryDiagnosticsSummaryFile, 'report'> {
     return {
       version: 1,
@@ -1524,6 +1583,7 @@ class MemoryDiagnosticsServiceImpl {
       rendererSnapshots,
       processHistory,
       ...(nativeMemory ? { nativeMemory } : {}),
+      ...(mainSnapshot ? { mainSnapshot } : {}),
       sampling: {
         active: this.samplingActive,
         included: samplingIncluded,

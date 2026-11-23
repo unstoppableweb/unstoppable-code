@@ -15,6 +15,13 @@ export {
   UnsupportedOperationError,
 } from './channel-client';
 export {
+  INSTALLED_ITEM_CHANGE_HOST_OUTDATED,
+  INSTALLED_ITEM_STATUS_HOST_OUTDATED,
+  PLUGIN_INSTALL_HOST_OUTDATED,
+  REMOTE_HOST_OUTDATED_CODE,
+  RemoteHostOutdatedError,
+} from './marketplace-mutations';
+export {
   CHAT_HISTORY_INVALID_CURSOR_CODE,
   ChatHistoryCursorError,
 } from './chat-history';

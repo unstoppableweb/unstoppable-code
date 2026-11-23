@@ -336,6 +336,7 @@ export function ConfirmDialogSpecimen(): JSX.Element {
           errorMessage={
             open === 'error' ? 'Couldn’t archive the chat.' : undefined
           }
+          errorRecordingDisabled
           errorDetails={open === 'error' ? 'ENOENT: chat index' : undefined}
           onConfirm={close}
           onCancel={close}
