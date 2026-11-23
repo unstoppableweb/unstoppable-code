@@ -11,9 +11,11 @@ repository, an account, or any credentials.
 - [Flutter](https://docs.flutter.dev/get-started/install) 3.44.4 (stable
   channel), which includes the matching Dart SDK
 - Node.js 24, to check the generated API bindings
-- For Android: Java 17 and the Android SDK
-- For iOS: a Mac with Xcode, plus [Rust](https://rustup.rs). The first iOS build
-  compiles a Rust dependency and needs network access.
+- [Rustup](https://rustup.rs) for the Computer Connect core in `packages/mobile-core`.
+  The first build needs network access to fetch the pinned toolchain and dependencies.
+- For Android: Java 17, the Android SDK, and NDK 28.2.13676358. Set
+  `ANDROID_NDK_HOME` to that NDK's directory before building.
+- For iOS: a Mac with Xcode
 
 ## Build and test
 

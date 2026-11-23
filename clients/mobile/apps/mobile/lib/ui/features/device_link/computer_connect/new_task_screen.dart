@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/device_link/worktrees/repository.dart';
+import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/ui/core/activity/worktree_activity_context.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_draft.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';
@@ -126,7 +126,7 @@ class _DeviceNewTaskScreenState extends State<DeviceNewTaskScreen> {
           glyph: CanopyGlyph.macbook,
           location: 'Computer chat',
           text: widget.project.name,
-          computer: model.connection.host?['name'] as String?,
+          computer: model.connection.hostName,
         ),
       ),
       // The scaffold's insets are only visible below it.
@@ -143,9 +143,7 @@ class _DeviceNewTaskScreenState extends State<DeviceNewTaskScreen> {
                   )
                 : !_model.flat || _model.sending
                 ? ChatTranscriptLoading(
-                    label: _model.attempt.worktreeId == null
-                        ? 'Creating worktree…'
-                        : 'Setting up worktree…',
+                    label: _model.statusLabel,
                     labelKey: const ValueKey('creating-worktree-status'),
                   )
                 : const ChatEmptyTranscript(isNewChat: true),

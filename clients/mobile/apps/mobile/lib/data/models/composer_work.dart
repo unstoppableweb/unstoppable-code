@@ -1,112 +1,40 @@
-/// Display vocabulary for the desktop composer's grouped work drawer.
-enum WorkGroup {
-  needsYou('Needs you'),
-  queued('Queued'),
-  running('Running'),
-  pullRequests('Pull requests'),
-  watching('Watching');
+/// Display vocabulary for the desktop composer's grouped work drawer. The
+/// rows are the core's work types (`cc-domain::work`, P7), which the Dart
+/// work drawer builds too; the drawer keeps its own static labels.
+library;
 
-  const WorkGroup(this.label);
-  final String label;
+import 'package:computer_connect_core/computer_connect_core.dart';
+
+export 'package:computer_connect_core/computer_connect_core.dart'
+    show
+        WorkAction,
+        WorkActionLabelView,
+        WorkDetailView,
+        WorkDrawerView,
+        WorkGroup,
+        WorkGroupCountView,
+        WorkItemView,
+        WorkKind,
+        WorkTone;
+
+extension WorkGroupLabel on WorkGroup {
+  String get label => switch (this) {
+    WorkGroup.needsYou => 'Needs you',
+    WorkGroup.queued => 'Queued',
+    WorkGroup.running => 'Running',
+    WorkGroup.pullRequests => 'Pull requests',
+    WorkGroup.watching => 'Watching',
+  };
 }
 
-enum WorkKind {
-  agent,
-  command,
-  workflow,
-  task,
-  pipeline,
-  github,
-  pullRequest,
-  watcher,
-  message,
+extension WorkDrawerCounts on WorkDrawerView {
+  /// Unfinished items in [group], counted as the core counted them.
+  int count(WorkGroup group) =>
+      counts.where((c) => c.group == group).firstOrNull?.count ?? 0;
 }
 
-enum WorkTone { neutral, running, attention, success, failed, merged, info }
-
-enum WorkAction {
-  stopTask,
-  stopDelegate,
-  stopDelegates,
-  deleteWatcher,
-  cancelQueued,
-  forceQueued,
-  steerQueued,
-}
-
-final class WorkItem {
-  const WorkItem({
-    required this.id,
-    required this.group,
-    required this.kind,
-    required this.title,
-    this.subtitle,
-    this.status,
-    this.tone = WorkTone.neutral,
-    this.details = const {},
-    this.action,
-    this.actionId,
-    this.url,
-    this.pipelineId,
-    this.watcherCount = 0,
-    this.count = 1,
-    this.finished = false,
-    this.extraActions = const [],
-    this.actionLabels = const {},
-  });
-
-  final String id, title;
-  final WorkGroup group;
-  final WorkKind kind;
-  final String? subtitle, status;
-  final WorkTone tone;
-  final Map<String, String> details;
-  final WorkAction? action;
-  final String? actionId, url, pipelineId;
-  final int watcherCount, count;
-  final bool finished;
-  final List<WorkAction> extraActions;
-  final Map<WorkAction, String> actionLabels;
-
-  WorkItem withWatcherCount(int value) => WorkItem(
-    id: id,
-    group: group,
-    kind: kind,
-    title: title,
-    subtitle: subtitle,
-    status: status,
-    tone: tone,
-    details: details,
-    action: action,
-    actionId: actionId,
-    url: url,
-    pipelineId: pipelineId,
-    watcherCount: value,
-    count: count,
-    finished: finished,
-    extraActions: extraActions,
-    actionLabels: actionLabels,
-  );
-}
-
-final class WorkDrawerState {
-  const WorkDrawerState({this.items = const [], this.errors = const []});
-  final List<WorkItem> items;
-  final List<String> errors;
-  int count(WorkGroup group) => items
-      .where((i) => i.group == group && !i.finished)
-      .fold(0, (n, i) => n + i.count);
-  // Like the shared desktop and web drawer, errors only annotate work; alone
-  // they never show the drawer.
-  bool get visible => items.any((i) => !i.finished);
-  String get summary => [
-    for (final group in [
-      WorkGroup.queued,
-      WorkGroup.running,
-      WorkGroup.pullRequests,
-      WorkGroup.watching,
-      WorkGroup.needsYou,
-    ])
-      if (count(group) > 0) '${group.label} ${count(group)}',
-  ].join(' | ');
+extension WorkItemActionLabel on WorkItemView {
+  /// The item's own label for [action], if it has one.
+  String? actionLabel(WorkAction action) =>
+      actionLabels.where((l) => l.action == action).firstOrNull?.label;
 }

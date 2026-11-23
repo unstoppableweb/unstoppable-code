@@ -1,22 +1,16 @@
 import 'package:mobile/device_link/protocol.dart';
-import 'package:mobile/ui/core/widgets/computer_connection_title.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
-import 'package:mobile/core/design-system/button/canopy_button.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
-import 'package:mobile/core/design-system/text-field/canopy_text_field.dart';
-import 'package:mobile/device_link/worktrees/repository.dart';
-import 'package:mobile/ui/core/widgets/inline_notice.dart';
-import '../desktop_link_model.dart';
+import 'package:mobile/device_link/worktrees/models.dart';
 import 'controller.dart';
-import 'account.dart';
+import 'account_model.dart';
 import 'connection_view.dart';
 import 'computer_switcher.dart';
 import 'overview.dart';
@@ -31,56 +25,20 @@ class ComputerConnectScreen extends StatefulWidget {
   const ComputerConnectScreen({
     super.key,
     required this.controller,
-    required this.apiOrigin,
-    this.account,
+    required this.account,
   });
-  final ComputerConnectController controller;
-  final String apiOrigin;
-  final ComputerConnectAccount? account;
+  final ComputerConnectController? controller;
+  final ComputerAccountModel account;
   @override
   State<ComputerConnectScreen> createState() => _ComputerConnectScreenState();
 }
 
 class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
-  late final _origin = TextEditingController(text: widget.apiOrigin);
-  final _apiKey = TextEditingController();
-  bool _enterKey = false;
-  bool _readingClipboard = false;
   bool _opening = false;
   String? _openError;
-  @override
-  void dispose() {
-    _origin.dispose();
-    _apiKey.dispose();
-    super.dispose();
-  }
-
-  Future<void> _find(String key) async {
-    FocusManager.instance.primaryFocus?.unfocus();
-    _apiKey.clear();
-    setState(() => _enterKey = false);
-    await widget.controller.findComputers(_origin.text, key);
-  }
-
-  Future<void> _pasteAndFind() async {
-    setState(() => _readingClipboard = true);
-    String key;
-    try {
-      key = (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '';
-    } on PlatformException {
-      key = '';
-    }
-    if (!mounted) return;
-    setState(() => _readingClipboard = false);
-    if (key.trim().isEmpty) {
-      setState(() => _enterKey = true);
-      return;
-    }
-    await _find(key);
-  }
 
   Future<void> _open(DeviceWorktree worktree) async {
-    if (_opening || !widget.controller.chats.online || !_includes(worktree)) {
+    if (_opening || !widget.controller!.chats.online || !_includes(worktree)) {
       _explainPendingScope();
       return;
     }
@@ -88,11 +46,11 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       _opening = true;
       _openError = null;
     });
-    final controller = widget.controller;
+    final controller = widget.controller!;
     controller.enterChat();
     var generation = controller.chats.chats.selectionGeneration;
     try {
-      await controller.worktrees.load(worktree);
+      await controller.loadWorktree(worktree);
       if (!_includes(worktree)) {
         _explainPendingScope();
         return;
@@ -143,7 +101,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
 
   Future<void> _newTask(DeviceProject project) async {
     if (_opening ||
-        !widget.controller.chats.online ||
+        !widget.controller!.chats.online ||
         !_includesProject(project)) {
       _explainPendingScope();
       return;
@@ -152,7 +110,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       _opening = true;
       _openError = null;
     });
-    final controller = widget.controller;
+    final controller = widget.controller!;
     controller.enterChat();
     var generation = controller.chats.chats.selectionGeneration;
     try {
@@ -176,7 +134,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   }
 
   Future<void> _openChat(DeviceChatRef ref) async {
-    if (_opening || !widget.controller.chats.online || !_includesChat(ref)) {
+    if (_opening || !widget.controller!.chats.online || !_includesChat(ref)) {
       _explainPendingScope();
       return;
     }
@@ -184,7 +142,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       _opening = true;
       _openError = null;
     });
-    final controller = widget.controller;
+    final controller = widget.controller!;
     controller.enterChat();
     var generation = controller.chats.chats.selectionGeneration;
     try {
@@ -199,7 +157,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     }
   }
 
-  void _manageComputers(ComputerConnectAccount account) => unawaited(
+  void _manageComputers(ComputerAccountModel account) => unawaited(
     Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => CanopyScaffold(
@@ -214,7 +172,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   );
 
   Future<void> _showChat([DeviceWorktree? worktree]) {
-    final controller = widget.controller;
+    final controller = widget.controller!;
     final ref = controller.chats.state?.ref;
     final included = worktree == null
         ? ref != null && _includesChat(ref)
@@ -228,7 +186,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
     return Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => DeviceChatScreen(
-          model: widget.controller.chats,
+          model: widget.controller!.chats,
           locationLabel: worktree?.name,
           worktree: controller.activityContext(ref),
         ),
@@ -238,53 +196,48 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
 
   bool _includes(DeviceWorktree worktree) =>
       mounted &&
-      widget.controller
+      widget.controller!
           .scopeFor(context.read<WorkspaceContext?>())
           .includesWorktree(worktree);
 
   bool _includesProject(DeviceProject project) =>
       mounted &&
-      widget.controller
+      widget.controller!
           .scopeFor(context.read<WorkspaceContext?>())
           .projects
           .any((p) => p.id == project.id);
 
   bool _includesChat(DeviceChatRef ref) =>
       mounted &&
-      widget.controller
+      widget.controller!
           .scopeFor(context.read<WorkspaceContext?>())
           .includesChat(ref);
 
   void _explainPendingScope() {
-    if (mounted && widget.controller.active && widget.controller.scopePending) {
+    if (mounted &&
+        widget.controller?.active == true &&
+        widget.controller?.scopePending == true) {
       setState(() => _openError = deviceScopeRefreshingMessage);
     }
   }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([widget.controller, ?widget.account]),
+    listenable: Listenable.merge([?widget.controller, widget.account]),
     builder: (context, _) {
       final controller = widget.controller;
-      final connection = controller.chats.connection;
-      final online = controller.chats.online;
+      final connection = controller?.chats.connection;
+      final online = controller?.chats.online == true;
       final navigation = HomeNavigationScope.maybeOf(context);
       final account = widget.account;
       final retainingComputer =
-          online ||
-          connection.reconnecting ||
-          account?.hasSelectedComputer == true;
-      final hostName = retainingComputer
-          ? (connection.host?['name'] as String?)
-          : null;
-      final title = hostName ?? account?.selectedName ?? 'Computer connect';
-      final status = online
-          ? 'Connected'
-          : account != null
-          ? ''
-          : connection.reconnecting
-          ? 'Reconnecting…'
-          : 'Not connected';
+          controller != null &&
+          (online ||
+              connection?.reconnecting == true ||
+              account.hasSelectedComputer);
+      final hostName = retainingComputer ? connection?.hostName : null;
+      final title = hostName ?? account.selectedName ?? 'Computer connect';
+      final status = online ? 'Connected' : '';
       return CanopyScaffold(
         appBar: CanopyAppBar(
           // Hosted in the home shell, the drawer is the way out, as on
@@ -298,21 +251,12 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                   onPressed: navigation.openDrawer,
                 ),
           automaticallyImplyLeading: navigation == null,
-          content:
-              account != null &&
-                  (retainingComputer || account.selectableComputers.isNotEmpty)
+          content: retainingComputer || account.selectableComputers.isNotEmpty
               ? ComputerSwitcher(
                   account: account,
                   title: title,
                   label: status,
                   onManage: () => _manageComputers(account),
-                )
-              : retainingComputer
-              ? ComputerConnectionTitle(
-                  title: title,
-                  label: status,
-                  titleKey: const ValueKey('computer-connect-device-name'),
-                  labelKey: const ValueKey('computer-connect-device-status'),
                 )
               : const Text('Computer connect'),
           trailing: retainingComputer
@@ -339,11 +283,11 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                     ),
                     MenuItemButton(
                       leadingIcon: const SizedBox(width: 24, height: 24),
-                      onPressed: widget.account != null
-                          ? () => widget.account!.disconnect(
-                              widget.account!.engine.selectedId!,
-                            )
-                          : controller.disconnect,
+                      onPressed: () {
+                        if (account.sessions.selectedId case final id?) {
+                          unawaited(account.disconnect(id));
+                        }
+                      },
                       child: const Text('Disconnect'),
                     ),
                   ],
@@ -362,138 +306,9 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                   onCreateTask: (project) => unawaited(_newTask(project)),
                   onOpenChat: _openChat,
                 )
-              : widget.account != null
-              ? ComputerConnectionView(account: widget.account!)
-              : ListView(
-                  padding:
-                      CanopyScaffold.contentPaddingOf(context) +
-                      const EdgeInsets.all(24),
-                  children: [
-                    Text(
-                      'Connect to your computer',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'Turn on Remote access on your computer. Use a temporary manual API key from the same account to find it.',
-                    ),
-                    const SizedBox(height: 20),
-                    CanopyTextField(
-                      key: const ValueKey('computer-connect-origin'),
-                      controller: _origin,
-                      labelText: 'Server URL',
-                      onChanged: (_) => unawaited(controller.disconnect()),
-                      enabled: !controller.discovering && !connection.busy,
-                    ),
-                    const SizedBox(height: 12),
-                    if (!connection.busy)
-                      CanopyButton(
-                        label: 'Paste API key and find computers',
-                        loading: controller.discovering || _readingClipboard,
-                        onPressed: controller.discovering || _readingClipboard
-                            ? null
-                            : _pasteAndFind,
-                      ),
-                    if (_enterKey && !connection.busy) ...[
-                      const SizedBox(height: 16),
-                      const Text('Enter the temporary API key below.'),
-                      const SizedBox(height: 12),
-                      CanopyTextField(
-                        key: const ValueKey('computer-connect-api-key'),
-                        controller: _apiKey,
-                        labelText: 'API key',
-                        obscureText: true,
-                        enabled: !controller.discovering,
-                        textInputAction: TextInputAction.done,
-                      ),
-                      const SizedBox(height: 12),
-                      ValueListenableBuilder(
-                        valueListenable: _apiKey,
-                        builder: (context, value, _) => CanopyButton(
-                          label: 'Find computers',
-                          onPressed:
-                              controller.discovering ||
-                                  value.text.trim().isEmpty
-                              ? null
-                              : () => _find(value.text),
-                        ),
-                      ),
-                    ],
-                    if (controller.error ?? connection.error case final error?)
-                      _notice(error),
-                    if (connection.busy) ...[
-                      const SizedBox(height: 20),
-                      Semantics(
-                        liveRegion: true,
-                        child: Text(
-                          connection.phase == DesktopLinkPhase.pairing
-                              ? 'Compare the code on your computer'
-                              : 'Connecting…',
-                        ),
-                      ),
-                      if (connection.code case final code?)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Text(
-                            code,
-                            key: const ValueKey('computer-connect-code'),
-                            style: Theme.of(context).textTheme.headlineLarge,
-                          ),
-                        ),
-                      if (connection.code != null)
-                        const Text(
-                          'Allow only when both codes match. Your computer will grant this device control.',
-                        ),
-                      CanopyButton(
-                        label: 'Cancel',
-                        variant: CanopyButtonVariant.inline,
-                        onPressed: controller.disconnect,
-                      ),
-                    ],
-                    for (final computer in controller.computers)
-                      ListTile(
-                        key: ValueKey('computer-connect-peer-${computer.id}'),
-                        title: Text(computer.name),
-                        subtitle: const Text('Remote access is on'),
-                        onTap: () => controller.connect(computer),
-                      ),
-                    if (!controller.discovering &&
-                        controller.computers.isEmpty &&
-                        controller.error == null &&
-                        !connection.busy)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 16),
-                        child: Text(
-                          'Only online computers with Remote access enabled appear here.',
-                        ),
-                      ),
-                    if (connection.canReconnect && !connection.busy)
-                      CanopyButton(
-                        label: 'Reconnect',
-                        variant: CanopyButtonVariant.inline,
-                        onPressed: connection.reconnect,
-                      ),
-                    if (!connection.busy)
-                      CanopyButton(
-                        label: 'Forget pairing',
-                        variant: CanopyButtonVariant.inline,
-                        onPressed: () async {
-                          await controller.disconnect();
-                          await connection.forget();
-                        },
-                      ),
-                    const SizedBox(height: 16),
-                    const Text(
-                      'The API key stays in memory until you disconnect or close this version. Pairing keys are stored separately from Remote Control. Revoke the temporary API key on your computer when finished.',
-                    ),
-                  ],
-                ),
+              : ComputerConnectionView(account: account),
         ),
       );
     },
-  );
-  Widget _notice(String message) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 12),
-    child: InlineNotice(glyph: CanopyGlyph.circleInfo, state: message),
   );
 }

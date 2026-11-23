@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/device_link/protocol.dart';
-import 'package:mobile/device_link/worktrees/repository.dart';
-import 'package:mobile/device_link/worktrees/row_projection.dart';
+import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/workspaces/worktree_archive_menu.dart';
 import 'package:mobile/ui/core/workspaces/worktree_row.dart';
@@ -72,7 +71,7 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
     final enabled = controller.canArchiveWorktree(widget.worktree);
     final pending = controller.isArchivingWorktree(widget.worktree);
     final notifications = context.read<SpaceNotificationsViewModel?>();
-    final row = deviceWorktreeRow(widget.worktree);
+    final row = controller.overview.row(widget.worktree);
     final spaceId = row.notificationSpaceId;
     _menuOpen = true;
     try {
@@ -146,10 +145,11 @@ class _DeviceWorktreeArchiveRowState extends State<DeviceWorktreeArchiveRow> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             WorktreeRow(
-              worktree: deviceWorktreeRow(worktree),
+              worktree: controller.overview.row(worktree),
               needsAnswer: worktree.pendingQuestion,
-              codeGraphBuilding: controller.worktrees.codeGraphBuilding
-                  .contains(worktree.key),
+              codeGraphBuilding: controller.overview.codeGraphBuilding(
+                worktree,
+              ),
               onTap: pending ? null : widget.onTap,
               contextLabel: widget.contextLabel,
             ),

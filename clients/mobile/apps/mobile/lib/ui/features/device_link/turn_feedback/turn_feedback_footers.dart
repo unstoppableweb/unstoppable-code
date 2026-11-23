@@ -1,12 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/data/models/turn_feedback.dart';
 import 'package:mobile/data/repositories/turn_feedback_repository.dart';
 import 'package:mobile/device_link/chats/models.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/chat_feed_model.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_feedback_controller.dart';
-import 'package:mobile/ui/core/chat/view_models/turn_grouping.dart';
 import 'package:mobile/ui/core/chat/widgets/turn_feedback_row.dart';
 import 'package:mobile/ui/core/chat/widgets/turn_feedback_sheet.dart';
 import 'package:provider/provider.dart';
@@ -22,7 +21,7 @@ import 'package:provider/provider.dart';
 /// A turn qualifies when it has assistant content (a failed or cancelled turn
 /// counts, as on desktop) and is not the in-flight turn.
 Map<String, String> completedTurnKeys(
-  List<ChatMessage> messages,
+  List<FeedMessageOutline> messages,
   bool running,
 ) {
   final result = <String, String>{};
@@ -35,7 +34,7 @@ Map<String, String> completedTurnKeys(
   }
 
   for (final message in messages) {
-    if (message.role == ChatRole.user) {
+    if (message.user) {
       if (!message.continuesTurn) {
         close(last: false);
         opener = message.messageId;
@@ -46,7 +45,7 @@ Map<String, String> completedTurnKeys(
       }
       continue;
     }
-    if (opener != null && hasRenderableContent(message)) content = true;
+    if (opener != null && message.renderable) content = true;
   }
   close(last: true);
   return result;
@@ -104,7 +103,7 @@ class DeviceTurnFeedbackFooters extends StatefulWidget {
   final DeviceChatRef ref;
 
   /// The transcript as the feed presents it, so turns key the same way.
-  final List<ChatMessage> messages;
+  final List<FeedMessageOutline> messages;
   final bool running;
 
   /// The desktop tab: its `turnFeedback` seeds ratings, `readOnly` hides the

@@ -39,7 +39,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('chat tab creation $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('idle', 'Idle')],
           transcripts: {
@@ -63,7 +64,7 @@ void main() {
 
       await tester.startNewChatFromSheet();
       await tester.finishSheetDismiss();
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
 
       expect(harness.computer.tabs, hasLength(2));
       final created = harness.computer.tabs.last['id'];

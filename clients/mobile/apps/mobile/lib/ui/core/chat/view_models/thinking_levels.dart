@@ -4,6 +4,9 @@
 /// `packages/protocol/src/models/index.ts` and
 /// `packages/protocol/src/thinking/index.ts`. Remote Control and Computer Connect resolve their levels here, so the level a composer shows is
 /// the level it sends.
+///
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::composer (selection); keep both in step until cleanup C5.
 library;
 
 import 'package:mobile/data/models/chat_message.dart';

@@ -9,20 +9,15 @@ import 'pipelines/chat_activity.dart';
 import 'computer_connect/work_composer.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/button/canopy_button.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
-import 'package:mobile/device_link/chats/presentation.dart';
-import 'package:mobile/device_link/chats/turn_ends.dart';
-import 'package:mobile/device_link/files/reader.dart';
-import 'package:mobile/device_link/files/tabs.dart';
+import 'computer_connect/files_model.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';
-import 'package:mobile/ui/core/chat/widgets/chat_feed.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_input.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_location_subtitle.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_provisioning.dart';
@@ -37,9 +32,8 @@ import 'package:mobile/ui/core/chat/widgets/chat_attachment_input.dart';
 import 'chats_view_model.dart';
 import 'device_chat_satisfaction_host.dart';
 import 'computer_connect/chat_controls.dart';
-import 'computer_connect/composer_sources.dart';
+import 'computer_connect/chat_feed_view.dart';
 import 'computer_connect/file_screen.dart';
-import 'computer_connect/reconnect_notice_delay.dart';
 import 'computer_connect/settings_notice.dart';
 import 'device_chat_attachment_uploader.dart';
 import 'turn_feedback/turn_feedback_footers.dart';
@@ -73,10 +67,12 @@ class DeviceChatScreen extends StatefulWidget {
 class _DeviceChatScreenState extends State<DeviceChatScreen>
     with WidgetsBindingObserver {
   late final _composer = TextEditingController(text: widget.model.draft);
-  late final _composerSources = DeviceComposerSources(widget.model);
-  late final _reconnectNotice = DeviceReconnectNoticeDelay(
-    widget.model.connection,
-    WidgetsBinding.instance.lifecycleState == null ||
+  late final _composerSources = widget.model.composer.createSources(
+    widget.model,
+  );
+  late final _reconnectNotice = widget.model.connection.reconnectNotice(
+    foreground:
+        WidgetsBinding.instance.lifecycleState == null ||
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
   );
   late final _changes = Listenable.merge([
@@ -86,7 +82,6 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
   ]);
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   late final _locationTarget = widget.model.state?.ref;
-  final _expanded = <String>{};
   @override
   void initState() {
     super.initState();
@@ -242,22 +237,25 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         summaries: model.tabs,
         selectedChatId: model.state?.ref.id,
         chatState: model,
-        resolveLiveState: () => ChatTabsLiveState(
-          working: {
-            for (final tab in model.tabs)
-              if (model.state!.scope.running(tab.id)) tab.id,
-          },
-          unread: {
-            for (final tab in model.tabs)
-              if (model.state!.scope.tab(tab.id)['unread'] == true) tab.id,
-          },
-          needsAnswer: {
-            for (final tab in model.tabs)
-              if (model.state!.scope.needsInput(tab.id) ||
-                  model.pendingQuestionsFor(tab.id).isNotEmpty)
-                tab.id,
-          },
-        ),
+        resolveLiveState: () {
+          final tabs = model.state?.openTabs ?? const [];
+          return ChatTabsLiveState(
+            working: {
+              for (final tab in tabs)
+                if (tab.running) tab.id,
+            },
+            unread: {
+              for (final tab in tabs)
+                if (tab.unread) tab.id,
+            },
+            needsAnswer: {
+              for (final tab in tabs)
+                if (tab.needsInput ||
+                    model.pendingQuestionsFor(tab.id).isNotEmpty)
+                  tab.id,
+            },
+          );
+        },
         onSelect: (id) {
           final ref = model.tabs.where((t) => t.id == id).firstOrNull;
           if (ref != null && ref.key != model.state?.ref.key) {
@@ -270,7 +268,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         onClose: model.online ? (id) => unawaited(model.closeTab(id)) : null,
         files: model.fileTabs,
         onOpenFile: (id) {
-          final tab = model.fileTabs.where((t) => t.id == id).firstOrNull;
+          final tab = model.fileTabs
+              .where((t) => t.fileTabId == id)
+              .firstOrNull;
           if (tab != null) unawaited(_openFile(tab));
         },
       ),
@@ -279,7 +279,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
 
   /// Finds the file's worktree root first, so the viewer can resolve the
   /// files it links to.
-  Future<void> _openFile(DeviceFileTab tab) async {
+  Future<void> _openFile(ComputerFileTab tab) async {
     final model = widget.model;
     final messenger = ScaffoldMessenger.of(context);
     void tell(String message) => messenger
@@ -290,18 +290,17 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
       return;
     }
     try {
-      final location = await model.files.locate(tab);
-      if (!mounted) return;
+      final location = await model.files.open(tab);
+      if (!mounted) {
+        location.close();
+        return;
+      }
       await Navigator.of(context).push<void>(
         MaterialPageRoute(
-          builder: (_) => DeviceFileScreen(
-            model: model,
-            reader: model.files.reader(tab),
-            location: location,
-          ),
+          builder: (_) => DeviceFileScreen(model: model, location: location),
         ),
       );
-    } on DeviceFileReadException {
+    } on ComputerFileOutsideWorktree {
       tell("This file is outside the worktree, so it can't open here.");
     } on DeviceLinkException {
       tell("Couldn't open this file. Try again.");
@@ -406,19 +405,11 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
         if (state?.hasPendingDecision == true && questions.isEmpty)
           _notice('This turn needs a response on your computer.'),
         if (state?.runtimeError case final error?) _notice(error),
-        if (model.composerSettings.failure != null ||
+        if (model.composer.failure != null ||
             model.settingsCatalogError != null)
           DeviceSettingsNotice(model: model),
       ];
       final hasTabs = model.tabs.isNotEmpty;
-      // Presented once for the feed and its turn footers.
-      final presented = state == null
-          ? const <ChatMessage>[]
-          : deviceChatPresentation(
-              state.ref.id,
-              state.messages,
-              endReasons: deviceTurnEndReasons(state.tab),
-            );
       return CanopyScaffold(
         scaffoldKey: _scaffoldKey,
         onEndDrawerChanged: (open) {
@@ -453,7 +444,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                     _locationTarget?.worktreeId == state?.ref.worktreeId
                 ? widget.locationLabel
                 : null,
-            computer: model.connection.host?['name'] as String?,
+            computer: model.connection.hostName,
           ),
           trailing: worktree != null
               ? CanopyIconButton(
@@ -507,21 +498,20 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                   online: model.online && model.chats.ready,
                                   builder: (footers) => DeviceTurnFeedbackFooters(
                                     ref: state.ref,
-                                    messages: presented,
+                                    messages: model.feed.outline,
                                     running: state.running,
                                     tab: state.tab,
                                     workspaceKind: model.activity.workspaceKind(
                                       state.ref.projectId,
                                     ),
                                     footers: footers,
-                                    builder: (footers) => ChatFeed(
+                                    builder: (footers) => ComputerChatFeedView(
                                       turnFooters: footers,
                                       key: ValueKey(
                                         'device-chat-transcript-${state.ref.key}',
                                       ),
                                       chatId: state.ref.id,
-                                      onForkResponse:
-                                          state.tab['readOnly'] == true
+                                      onForkResponse: state.readOnly
                                           ? null
                                           : model.forkResponse,
                                       forkEnabled:
@@ -536,14 +526,8 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                       bottomActionInset: hasTabs
                                           ? CanopyOverlayAction.stackOffset
                                           : 0,
-                                      messages: presented,
-                                      expandedTurns: _expanded,
-                                      turnInProgress: state.running,
-                                      onToggleTurn: (id) => setState(() {
-                                        if (!_expanded.remove(id)) {
-                                          _expanded.add(id);
-                                        }
-                                      }),
+                                      feed: model.feed,
+                                      onToggleTurn: model.toggleTurn,
                                       onLoadOlder:
                                           state.before != null && model.online
                                           ? () => unawaited(
@@ -584,11 +568,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                               right: CanopyOverlayAction.gutter,
                               bottom: 0,
                               child: ChatTabsFab(
-                                hasUnread: state!.scope.tabs.any(
-                                  (t) => t['unread'] == true,
-                                ),
-                                needsAnswer: model.tabs.any(
-                                  (t) => state.scope.needsInput(t.id),
+                                hasUnread: state!.hasUnreadTabs,
+                                needsAnswer: state.openTabs.any(
+                                  (tab) => tab.needsInput,
                                 ),
                                 onPressed: _tabs,
                               ),

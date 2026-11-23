@@ -1,12 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:mobile/device_link/files/reader.dart';
-import 'package:mobile/device_link/files/rooted_path.dart';
 import 'package:mobile/ui/core/file_viewer/file_viewer_screen.dart';
 import 'package:mobile/ui/core/file_viewer/file_viewer_view_model.dart';
 import '../chats_view_model.dart';
-import 'file_viewer_source.dart';
+import 'files_model.dart';
 
 /// [FileViewerScreen] for a file the computer has open in a worktree, read
 /// over the computer connection. Reads are stateless, so a reconnect resumes
@@ -15,13 +13,11 @@ class DeviceFileScreen extends StatefulWidget {
   const DeviceFileScreen({
     super.key,
     required this.model,
-    required this.reader,
     required this.location,
   });
 
   final DeviceChatsViewModel model;
-  final DeviceFileReader reader;
-  final DeviceRootedPath location;
+  final ComputerFileLocation location;
 
   @override
   State<DeviceFileScreen> createState() => _DeviceFileScreenState();
@@ -29,11 +25,8 @@ class DeviceFileScreen extends StatefulWidget {
 
 class _DeviceFileScreenState extends State<DeviceFileScreen> {
   late final FileViewerViewModel _file = FileViewerViewModel(
-    source: DeviceFileViewerSource(
-      reader: widget.reader,
-      location: widget.location,
-    ),
-    path: widget.location.relativePath,
+    source: widget.location.source,
+    path: widget.location.path,
     online: widget.model.online,
   );
 
@@ -47,7 +40,7 @@ class _DeviceFileScreenState extends State<DeviceFileScreen> {
   @override
   void dispose() {
     widget.model.removeListener(_onModelChanged);
-    widget.reader.close();
+    widget.location.close();
     _file.dispose();
     super.dispose();
   }

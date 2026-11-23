@@ -1,4 +1,3 @@
-import 'package:mobile/data/models/agent_model_selection.dart';
 import 'dart:async';
 import 'package:flutter/widgets.dart';
 import 'package:mobile/data/models/chat_drafts.dart';
@@ -31,15 +30,17 @@ final class ComputerHomeLaunch {
   final WorkspaceContext context;
 }
 
+/// One context's Home draft: the composer's text controller, bound to the
+/// draft store.
 final class _HomeDraft {
-  _HomeDraft(this.target, ChatDraftStore store) {
+  _HomeDraft(this.target, ChatDraftPort store) {
     _binding = ComposerDraftBinding(controller: controller, store: store)
       ..bind(target);
   }
   final ComputerHomeDraftTarget target;
   final controller = TextEditingController();
   late ComposerDraftBinding _binding;
-  void bindStore(ChatDraftStore store) {
+  void bindStore(ChatDraftPort store) {
     _binding.dispose();
     _binding = ComposerDraftBinding(controller: controller, store: store)
       ..adopt(target);
@@ -51,21 +52,14 @@ final class _HomeDraft {
   }
 }
 
-/// One computer session owns launch admission, scoped durable drafts and delivery
-/// observation. Replacing Home never releases an unresolved send or its draft.
-final class ComputerHomeLauncher extends ChangeNotifier {
-  ComputerHomeLauncher(this.controller, this.computerId, this._store) {
-    controller.chats.addListener(_changed);
-  }
-  final ComputerConnectController controller;
+/// Home's composer drafts of one computer, one per navigation context.
+/// Text controllers are widget state; the store keeps the text.
+final class ComputerHomeDrafts {
+  ComputerHomeDrafts(this.computerId, this._store);
   final String computerId;
-  ChatDraftStore _store;
+  ChatDraftPort _store;
   final _drafts = <WorkspaceContext, _HomeDraft>{};
-  DeviceChatDelivery? _delivery;
-  bool _busy = false, _disposed = false;
-  String? error;
-  bool get busy => _busy;
-  DeviceChatRef? get pendingRef => controller.chats.chats.pendingSend?.ref;
+  ChatDraftPort get store => _store;
 
   TextEditingController draftFor(WorkspaceContext context) => _drafts
       .putIfAbsent(
@@ -82,7 +76,13 @@ final class ComputerHomeLauncher extends ChangeNotifier {
       )
       .controller;
 
-  void bindDraftStore(ChatDraftStore store) {
+  /// The controller of the context [contextId] names, if one exists.
+  TextEditingController? existing(String contextId) => _drafts.values
+      .where((d) => d.target.contextId == contextId)
+      .firstOrNull
+      ?.controller;
+
+  void bindStore(ChatDraftPort store) {
     if (identical(store, _store)) return;
     _store = store;
     for (final draft in _drafts.values) {
@@ -90,118 +90,33 @@ final class ComputerHomeLauncher extends ChangeNotifier {
     }
   }
 
-  Future<ComputerHomeLaunch?> begin(ComputerChatHomeModel choices) async {
-    if (_disposed ||
-        _busy ||
-        pendingRef != null ||
-        !identical(choices.controller, controller) ||
-        !choices.canStart) {
-      return null;
-    }
-    final draft = draftFor(choices.context);
-    if (draft.text.trim().isEmpty) return null;
-    _busy = true;
-    error = null;
-    _changed();
-    try {
-      await choices.save();
-      final saved = await _store.flush();
-      if (_disposed || pendingRef != null || !choices.canStart) {
-        _busy = false;
-        _changed();
-        return null;
-      }
-      if (!saved) {
-        error =
-            'The draft could not be saved. It may not survive an app restart.';
-      }
-      final text = draft.text;
-      _delivery?.dispose();
-      final delivery = DeviceChatDelivery(
-        controller.chats.chats,
-        onConfirmed: () {
-          if (draft.text == text) draft.clear();
-        },
-        onChanged: _changed,
-      );
-      _delivery = delivery;
-      controller.enterChat();
-      return ComputerHomeLaunch(
-        project: choices.project!,
-        worktree: choices.worktree,
-        baseBranch: choices.baseBranch,
-        model: selectionModelOption(
-          choices.models,
-          choices.modelId,
-          executionHarness: choices.executionHarness,
-        ),
-        thinkingLevel: choices.thinkingLevel,
-        text: text,
-        delivery: delivery,
-        context: choices.context,
-      );
-    } catch (_) {
-      error = 'Could not prepare the chat. Try again.';
-      _busy = false;
-      _changed();
-      return null;
-    }
-  }
-
-  bool _allowed(DeviceChatRef ref, WorkspaceContext context) =>
-      controller.active &&
-      controller.chats.online &&
-      !controller.scopePending &&
-      controller
-          .scopeFor(context)
-          .projects
-          .any((project) => project.id == ref.projectId);
-
-  Future<DeviceChatRef?> resume(WorkspaceContext context) async {
-    final ref = pendingRef;
-    if (_disposed || _busy || ref == null) return null;
-    if (!_allowed(ref, context)) {
-      error = 'This chat is not available in the selected account context.';
-      _changed();
-      return null;
-    }
-    _busy = true;
-    error = null;
-    _changed();
-    controller.enterChat();
-    final opened = await controller.chats.open(ref);
-    if (_disposed || !_allowed(ref, context) || !opened) {
-      error =
-          'Could not open the chat. Check the account context and try again.';
-      await finish();
-      return null;
-    }
-    return ref;
-  }
-
-  Future<void> finish() async {
-    if (_disposed) return;
-    try {
-      await controller.chats.leaveChat();
-      if (!_disposed) await controller.watchOverview();
-    } finally {
-      _busy = false;
-      _changed();
-    }
-  }
-
-  void _changed() {
-    if (!_disposed) notifyListeners();
-  }
-
-  @override
   void dispose() {
-    _disposed = true;
-    controller.chats.removeListener(_changed);
-    _delivery?.dispose();
     for (final draft in _drafts.values) {
       draft.dispose();
     }
-    super.dispose();
   }
+}
+
+/// One computer session owns launch admission, scoped durable drafts and
+/// delivery observation. Replacing Home never releases an unresolved send
+/// or its draft.
+abstract interface class ComputerHomeLauncher implements Listenable {
+  ComputerConnectController get controller;
+  bool get busy;
+  String? get error;
+
+  /// The chat of the computer's unconfirmed send, which blocks a launch.
+  DeviceChatRef? get pendingRef;
+  TextEditingController draftFor(WorkspaceContext context);
+  void bindDraftStore(ChatDraftPort store);
+
+  /// Starts a launch from [choices]; `null` when none may start.
+  Future<ComputerHomeLaunch?> begin(ComputerChatHomeModel choices);
+
+  /// Opens the unconfirmed send's chat in [context].
+  Future<DeviceChatRef?> resume(WorkspaceContext context);
+
+  /// Leaves the launched or resumed chat.
+  Future<void> finish();
+  void dispose();
 }

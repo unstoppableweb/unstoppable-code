@@ -5,14 +5,13 @@ import 'package:provider/provider.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/device_link/store.dart';
 import 'package:mobile/services/attachment_picker.dart';
 import 'package:mobile/services/platform_attachment_picker.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_controller.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
 import '../chats_screen.dart';
-import 'account.dart';
+import 'account_model.dart';
 import 'computer_switcher.dart';
 import 'connection_view.dart';
 import 'details_picker.dart';
@@ -27,16 +26,14 @@ class ComputerChatHome extends StatefulWidget {
   const ComputerChatHome({
     super.key,
     required this.account,
-    required this.selectionStore,
     this.attachmentPicker,
   });
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
 
   /// Device pickers behind the composer's `+` sheet. Null uses
   /// [PlatformAttachmentPicker].
   final AttachmentPicker? attachmentPicker;
-  final DeviceLinkStore Function(String computerId, WorkspaceContext context)
-  selectionStore;
+
   @override
   State<ComputerChatHome> createState() => _ComputerChatHomeState();
 }
@@ -69,7 +66,7 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
     ComputerChatHomeModel model,
     ChatAttachmentController attachments,
   ) async {
-    final launcher = widget.account.engine.homeLauncher;
+    final launcher = widget.account.sessions.homeLauncher;
     final launch = await launcher.begin(model);
     if (launch == null) return;
     try {
@@ -137,22 +134,22 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.account,
     builder: (context, _) {
-      final account = widget.account, controller = account.engine.selected;
+      final account = widget.account, controller = account.sessions.selected;
       final workspaceContext =
           context.watch<WorkspaceContext?>() ??
           const WorkspaceContext.personal();
       final hasComputers = account.hasSelectedComputer;
-      final launcher = account.engine.selectedId == null
+      final launcher = account.sessions.selectedId == null
           ? null
-          : account.engine.homeLauncher;
-      final connection = controller.chats.connection;
+          : account.sessions.homeLauncher;
+      final connection = controller?.chats.connection;
       final title =
-          (controller.chats.online || connection.reconnecting
-              ? (connection.host?['name'] as String?)
+          (controller?.chats.online == true || connection?.reconnecting == true
+              ? connection?.hostName
               : null) ??
           account.selectedName ??
           'Choose a computer';
-      final status = controller.chats.online ? 'Connected' : '';
+      final status = controller?.chats.online == true ? 'Connected' : '';
       return ListenableBuilder(
         listenable: launcher ?? account,
         builder: (context, _) => CanopyScaffold(
@@ -174,26 +171,14 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
               : Builder(
                   builder: (context) => Padding(
                     padding: CanopyScaffold.contentPaddingOf(context),
-                    child: launcher == null
-                        ? ComputerHomeIntro(
-                            children: [
-                              if (launcher?.error case final error?)
-                                InlineNotice(
-                                  glyph: CanopyGlyph.circleInfo,
-                                  state: error,
-                                ),
-                            ],
-                          )
+                    child: launcher == null || controller == null
+                        ? const ComputerHomeIntro(children: [])
                         : ComputerHomeComposer(
                             key: ValueKey(
-                              '${account.engine.selectedId}:${workspaceContext.organizationId}',
+                              '${account.sessions.selectedId}:${workspaceContext.organizationId}',
                             ),
                             controller: controller,
                             workspaceContext: workspaceContext,
-                            store: widget.selectionStore(
-                              account.engine.selectedId!,
-                              workspaceContext,
-                            ),
                             draft: launcher.draftFor(workspaceContext),
                             opening: launcher.busy,
                             pendingDelivery: launcher.pendingRef != null,
@@ -208,7 +193,7 @@ class _ComputerChatHomeState extends State<ComputerChatHome> {
                                 ),
                             ],
                             attachments: _attachmentsFor(
-                              '${account.engine.selectedId}:${workspaceContext.organizationId}',
+                              '${account.sessions.selectedId}:${workspaceContext.organizationId}',
                             ),
                             onStart: _start,
                           ),

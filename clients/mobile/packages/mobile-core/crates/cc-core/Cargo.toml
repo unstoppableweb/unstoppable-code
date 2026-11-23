@@ -1,0 +1,26 @@
+[package]
+name = "cc-core"
+description = "Computer Connect composition root: opens the store, auth and relay and wires the app services."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+diagnostics = ["cc-app/diagnostics"]
+# A scripted computer in place of the account relay (`test_desktop`), for
+# the Flutter goldens only: the app's build hook enables it for host
+# builds, which only `flutter test` makes. Android and iOS never have it.
+test-desktop = ["dep:cc-protocol", "dep:serde_json", "tokio/sync", "tokio/time"]
+
+[dependencies]
+cc-app.workspace = true
+cc-infra.workspace = true
+cc-protocol = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni.workspace = true
+
+[lints]
+workspace = true

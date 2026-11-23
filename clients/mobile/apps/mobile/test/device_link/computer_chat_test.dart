@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/ui/features/device_link/chats_view_model.dart';
@@ -8,22 +9,25 @@ import '../support/fake_desktop_computer.dart';
 // Golden: a Computer connect chat on a connected computer shows the chat's
 // transcript and its sibling chats, a sent message reaches the computer and
 // the reply the computer streams back renders in the transcript, and the tabs
-// sheet switches to another chat's transcript. Everything below the tunneled
-// IPC boundary is real: the repository, the view model and the screen.
+// sheet switches to another chat's transcript. The production Rust core
+// connects to a scripted desktop that supplies the replies and pushes.
 void main() {
   for (final mode in [ThemeMode.light, ThemeMode.dark]) {
     group('Computer connect chat ($mode)', () {
       late DeviceChatHarness harness;
       late FakeDesktopComputer computer;
       late DeviceChatsViewModel model;
+      DeviceChatHarness? built;
 
-      setUp(() {
-        harness = buildDeviceChatHarness();
+      setUp(() async {
+        built = null;
+        harness = await buildChatHarness();
+        built = harness;
         computer = harness.computer;
         model = harness.model;
       });
 
-      tearDown(() => harness.dispose());
+      tearDown(() async => built?.dispose());
 
       Future<void> openChat(WidgetTester tester, String id) =>
           harness.open(tester, id, mode: mode);
@@ -44,7 +48,7 @@ void main() {
         semantics.dispose();
         expect(find.text('Run the auth tests'), findsNothing);
         await tester.tap(find.byKey(const ValueKey('turn-steps-seed-1')));
-        await tester.pumpAndSettle();
+        await harness.settle(tester);
         expect(find.text('Run the auth tests'), findsOneWidget);
         expect(find.text('npm test -- auth'), findsOneWidget);
 
@@ -67,16 +71,32 @@ void main() {
 
       testWidgets('sends a message and streams the reply', (tester) async {
         await openChat(tester, 'chat-pkce');
+        computer.heldReply = Completer<void>();
 
         await tester.enterText(
           find.byKey(const ValueKey('composer-draft')),
           'Deploy the fix',
         );
-        await tester.pump();
+        await harness.settle(tester);
         await tester.tap(find.byKey(const ValueKey('composer-send')));
-        await tester.runAsync(() => computer.replied.future);
-        await tester.pumpAndSettle();
+        await tester.runAsync(
+          () =>
+              computer.partialReply.future.timeout(const Duration(seconds: 5)),
+        );
+        for (var i = 0; i < 10; i++) {
+          await tester.runAsync(
+            () => Future<void>.delayed(const Duration(milliseconds: 20)),
+          );
+          await tester.pump(const Duration(milliseconds: 100));
+        }
 
+        expect(find.text('Deploying now.'), findsOneWidget);
+        expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
+        computer.heldReply!.complete();
+        await tester.runAsync(
+          () => computer.replied.future.timeout(const Duration(seconds: 5)),
+        );
+        await harness.settle(tester);
         final send = computer.calls
             .lastWhere((c) => c.channel == 'chat:send-message')
             .args
@@ -104,7 +124,7 @@ void main() {
         await tester.runAsync(
           () => Future<void>.delayed(const Duration(milliseconds: 20)),
         );
-        await tester.pumpAndSettle();
+        await harness.settle(tester);
 
         expect(model.state?.ref.id, 'chat-cleanup');
         expect(find.text('Remove the flaky widget tests'), findsOneWidget);

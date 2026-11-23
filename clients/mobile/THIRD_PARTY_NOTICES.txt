@@ -285,6 +285,10 @@ boolean_selector
 Version: 2.1.2
 Source: https://pub.dev
 
+build_cli_annotations
+Version: 2.1.1
+Source: https://pub.dev
+
 characters
 Version: 1.4.1
 Source: https://pub.dev
@@ -309,16 +313,16 @@ collection
 Version: 1.19.1
 Source: https://pub.dev
 
+computer_connect_core
+Version: 0.1.0
+Source: packages/computer_connect_core
+
 cross_file
 Version: 0.3.5+5
 Source: https://pub.dev
 
 crypto
 Version: 3.0.7
-Source: https://pub.dev
-
-cryptography
-Version: 2.9.0
 Source: https://pub.dev
 
 csslib
@@ -493,6 +497,10 @@ flutter_plugin_android_lifecycle
 Version: 2.0.35
 Source: https://pub.dev
 
+flutter_rust_bridge
+Version: 2.13.0
+Source: https://pub.dev
+
 flutter_secure_storage
 Version: 10.3.4
 Source: https://pub.dev
@@ -536,6 +544,10 @@ Source: https://pub.dev
 flutter_web_plugins
 Version: 0.0.0
 Source: Flutter SDK
+
+freezed_annotation
+Version: 3.1.0
+Source: https://pub.dev
 
 fuchsia_remote_debug_protocol
 Version: 0.0.0
@@ -655,6 +667,10 @@ Source: https://pub.dev
 
 mime
 Version: 2.1.0
+Source: https://pub.dev
+
+native_toolchain_rust
+Version: 1.0.4+0
 Source: https://pub.dev
 
 nested
@@ -835,6 +851,10 @@ Source: https://pub.dev
 
 test_api
 Version: 0.7.11
+Source: https://pub.dev
+
+toml
+Version: 0.18.0
 Source: https://pub.dev
 
 typed_data

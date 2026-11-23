@@ -102,7 +102,7 @@ class _DeviceChatSearchScreenState extends State<DeviceChatSearchScreen> {
               : null),
       onRetry: _retry,
       items: [
-        for (final ref in scope.chats(model.chats.catalog))
+        for (final ref in scope.chats(widget.controller.overview.catalog))
           ChatSearchItem(
             id: ref.id,
             title: ref.title,
@@ -111,7 +111,7 @@ class _DeviceChatSearchScreenState extends State<DeviceChatSearchScreen> {
                     .where((w) => w.key == '${ref.projectId}/${ref.worktreeId}')
                     .map((w) => '${w.projectName} · ${w.name}')
                     .firstOrNull ??
-                model.chats.workspaces
+                widget.controller.overview.catalogWorkspaces
                     .where((w) => w.id == ref.projectId)
                     .map((w) => w.name)
                     .firstOrNull ??

@@ -1,13 +1,12 @@
 import 'dart:async';
 
 import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/device_link/chats/recents.dart';
+import 'package:mobile/device_link/chats/recent_chat.dart';
+import 'package:mobile/device_link/desktop/saved_computer.dart';
 import 'package:mobile/ui/core/navigation/home_chat_open_request.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
-import 'account.dart';
+import 'account_model.dart';
 import 'computer_chat_row.dart';
-import 'controller.dart';
-import 'recent_chat_inventory.dart';
 
 /// Opens a notification's chat on the saved computer that owns it.
 ///
@@ -23,7 +22,7 @@ final class ComputerPushChatRouter implements PushChatRouter {
     this.createTimer = Timer.new,
   });
 
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
   final ComputerChatRows rows;
 
   /// The whole budget for one tap: restoring saved computers, reconnecting,
@@ -44,21 +43,18 @@ final class ComputerPushChatRouter implements PushChatRouter {
     try {
       // On a cold start the saved computers are still being read.
       if (!await _until(() => account.ready, expired.future)) return null;
-      if (!account.saved.computers.containsKey(computerId)) return null;
-      // Selection takes effect synchronously; persisting it must not hold
-      // the tap on secure storage I/O.
+      if (_saved(computerId) == null) return null;
+      // The resolved row waits for the selection before it opens the chat;
+      // persisting it must not hold the tap on secure storage I/O.
       unawaited(account.select(computerId));
       if (!await _until(() => _ready(computerId), expired.future)) return null;
       final found = _find(computerId, clientChatId, workspaceContext);
       if (found != null) return found;
       // A push often names a chat newer than the cached inventory.
-      final controller = account.engine.sessions[computerId];
+      final controller = account.sessions.sessions[computerId];
       if (controller == null || expired.isCompleted) return null;
       await Future.any<void>([
-        Future.wait([
-          controller.recents.refresh(),
-          controller.chats.chats.refreshCatalog(),
-        ]).catchError((Object _) => const <void>[]),
+        controller.overview.refresh().catchError((Object _) {}),
         expired.future,
       ]);
       return _find(computerId, clientChatId, workspaceContext);
@@ -69,11 +65,14 @@ final class ComputerPushChatRouter implements PushChatRouter {
     }
   }
 
+  SavedComputer? _saved(String computerId) =>
+      account.computers.where((c) => c.id == computerId).firstOrNull;
+
   bool _ready(String computerId) {
-    final controller = account.engine.sessions[computerId];
+    final controller = account.sessions.sessions[computerId];
     return controller != null &&
         controller.chats.online &&
-        (controller.recents.hasInventory || !controller.scopePending);
+        (controller.overview.hasRecents || !controller.scopePending);
   }
 
   /// [account] notifies when a session connects or its inventory changes.
@@ -97,19 +96,19 @@ final class ComputerPushChatRouter implements PushChatRouter {
     String chatId,
     WorkspaceContext? workspaceContext,
   ) {
-    final controller = account.engine.sessions[computerId];
-    final computer = account.saved.computers[computerId];
+    final controller = account.sessions.sessions[computerId];
+    final computer = _saved(computerId);
     if (controller == null || computer == null) return null;
     DeviceRecentChat? chat;
     if (workspaceContext != null) {
-      chat = _inventory(
-        controller,
-        workspaceContext,
-      ).where((chat) => chat.ref.id == chatId).firstOrNull;
+      chat = controller.overview
+          .recents(workspaceContext)
+          .where((chat) => chat.ref.id == chatId)
+          .firstOrNull;
     }
     // The search catalog follows the computer's own context; the row opens
     // only if the phone's context includes it.
-    chat ??= switch (controller.chats.chats.catalog
+    chat ??= switch (controller.overview.catalog
         .where((ref) => ref.id == chatId)
         .firstOrNull) {
       final ref? => DeviceRecentChat(
@@ -122,14 +121,4 @@ final class ComputerPushChatRouter implements PushChatRouter {
     };
     return chat == null ? null : rows.row(computerId, computer.name, chat);
   }
-
-  List<DeviceRecentChat> _inventory(
-    ComputerConnectController controller,
-    WorkspaceContext workspaceContext,
-  ) => buildComputerRecentChatInventory(
-    context: workspaceContext,
-    summaries: controller.recents.chats(workspaceContext),
-    projects: controller.worktrees.projects,
-    worktrees: controller.worktrees.worktrees,
-  );
 }

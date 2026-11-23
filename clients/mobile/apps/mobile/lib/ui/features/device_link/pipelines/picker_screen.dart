@@ -4,7 +4,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/data/models/computer_activity/pipeline_dispatch.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/device_link/pipelines/repository.dart';
+import '../computer_connect/pipelines_model.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_picker_body.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_dispatch_form.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_run_view.dart';
@@ -16,7 +16,7 @@ class DevicePipelinePickerScreen extends StatefulWidget {
     required this.repository,
     required this.ref,
   });
-  final DevicePipelineRepository repository;
+  final ComputerPipelines repository;
   final DeviceChatRef ref;
   @override
   State<DevicePipelinePickerScreen> createState() =>
@@ -93,7 +93,7 @@ class _DispatchScreen extends StatefulWidget {
     required this.ref,
     required this.pipeline,
   });
-  final DevicePipelineRepository repository;
+  final ComputerPipelines repository;
   final DeviceChatRef ref;
   final RemotePipelineDescriptor pipeline;
   @override
@@ -203,6 +203,7 @@ class _DispatchScreenState extends State<_DispatchScreen> {
             degraded: !widget.repository.connected,
             dispatchError: _error,
             onRun: (inputs) => unawaited(_run(inputs)),
+            formRules: widget.repository.formRules,
           );
         },
       ),

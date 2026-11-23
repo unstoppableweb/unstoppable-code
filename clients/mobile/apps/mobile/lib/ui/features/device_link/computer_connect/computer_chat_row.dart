@@ -4,16 +4,16 @@ import 'package:flutter/widgets.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/device_link/chats/recents.dart';
+import 'package:mobile/device_link/chats/recent_chat.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import '../chats_screen.dart';
-import 'account.dart';
+import 'account_model.dart';
 
 /// Builds the shell's row for one computer chat. The drawer's Recents and
 /// notification taps share it, so a chat opens the same way from either.
 final class ComputerChatRows {
   ComputerChatRows(this.account);
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
   bool _opening = false;
 
   HomeRecentChat row(
@@ -23,8 +23,8 @@ final class ComputerChatRows {
   ) => HomeRecentChat(
     key: 'computer-$computerId-${chat.ref.key}',
     isCurrent: () =>
-        account.engine.selectedId == computerId &&
-        account.engine.sessions[computerId]?.chats.state?.ref.key ==
+        account.sessions.selectedId == computerId &&
+        account.sessions.sessions[computerId]?.chats.state?.ref.key ==
             chat.ref.key,
     title: chat.ref.title,
     computerName: computerName,
@@ -49,17 +49,21 @@ final class ComputerChatRows {
     String? worktreeName,
     Future<void> Function(Widget page) showChat,
   ) async {
-    final controller = account.engine.sessions[computerId];
+    final controller = account.sessions.sessions[computerId];
     if (_opening || controller == null || !controller.chats.online) return;
     final workspaceContext = context.read<WorkspaceContext?>();
     _opening = true;
     try {
-      // Selection takes effect synchronously. Persisting the next cold-start
-      // choice must not hold up the chat page on secure storage I/O.
-      unawaited(account.select(computerId));
+      // The Rust core selects when its service answers; the Dart account
+      // selects at once and then persists the next cold-start choice, which
+      // must not hold up the chat page on secure storage I/O.
+      final selecting = account.select(computerId);
+      if (!identical(account.sessions.selected, controller)) await selecting;
       // Open only what the current context still shows after switching
-      // computers; selection listeners may have changed the shell.
+      // computers; selection listeners may have changed the shell, and a
+      // later selection may have replaced this one.
       if (!context.mounted ||
+          !identical(account.sessions.selected, controller) ||
           context.read<WorkspaceContext?>() != workspaceContext ||
           !controller.scopeFor(workspaceContext).includesChat(ref)) {
         return;

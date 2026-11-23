@@ -119,6 +119,8 @@ const _defaultModelRegistry = {
 /// into [FakeDesktopComputer.answers].
 Map<String, Object? Function(List<Object?> args)> fakeInventoryAnswers({
   String branch = 'feature/auth',
+  String? label,
+  String? notificationSpaceId,
 }) => {
   'projects:load': (_) => {
     'items': [
@@ -141,6 +143,8 @@ Map<String, Object? Function(List<Object?> args)> fakeInventoryAnswers({
         'localId': fakeWorktreeId,
         'workspaceLocalId': fakeProjectId,
         'branch': branch,
+        'label': ?label,
+        'notificationSpaceId': ?notificationSpaceId,
       },
     ],
   },
@@ -205,6 +209,8 @@ final class FakeDesktopComputer implements DesktopIpc {
   final calls = <({String channel, List<Object?> args})>[];
   final unanswered = <String>[];
   final replied = Completer<void>();
+  final partialReply = Completer<void>();
+  Completer<void>? heldReply;
   var _revision = 1;
 
   /// The scope's tabs; a test that pushes `tab.upserted` adds the tab here
@@ -337,7 +343,7 @@ final class FakeDesktopComputer implements DesktopIpc {
   /// The pushes a desktop sends while its agent answers: the accepted user
   /// message and a running turn, a partial reply, then the finished reply and
   /// an idle turn.
-  void _reply(Map<String, dynamic> request) {
+  void _reply(Map<String, dynamic> request) async {
     final chatId = request['chatId'] as String;
     final userId = request['userMessageId'] as String;
     Map<String, dynamic> runtime(String status) => {
@@ -363,6 +369,8 @@ final class FakeDesktopComputer implements DesktopIpc {
         ], streaming: true),
       ),
     ]);
+    if (!partialReply.isCompleted) partialReply.complete();
+    await heldReply?.future;
     _change([
       upsert(
         fakeMessage('reply-1', 'assistant', [

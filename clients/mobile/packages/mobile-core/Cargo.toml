@@ -1,0 +1,52 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/cc-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+cc-domain = { path = "crates/cc-domain" }
+cc-protocol = { path = "crates/cc-protocol" }
+cc-app = { path = "crates/cc-app" }
+cc-infra = { path = "crates/cc-infra" }
+cc-core = { path = "crates/cc-core" }
+
+aes-gcm = "0.10"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+sha2 = "0.10"
+hkdf = "0.12"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+tokio = { version = "1", default-features = false }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+flate2 = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
+url = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
+jni = { version = "0.22", default-features = false }
+# The codegen, this crate and the Dart runtime must be the same version.
+flutter_rust_bridge = "=2.13.0"
+
+[workspace.lints.rust]
+unreachable_pub = "deny"
+# Allowed only in cc-ffi-dart (the C ABI and generated bindings).
+unsafe_code = "deny"
+# `cc_scratch` includes a crate's gitignored `src/__scratch__/mod.rs` for
+# local unit tests (`RUSTFLAGS="--cfg cc_scratch" cargo test`); FRB-generated
+# code checks `frb_expand`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(cc_scratch)', 'cfg(frb_expand)'] }
+
+[workspace.lints.clippy]
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"

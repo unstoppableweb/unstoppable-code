@@ -85,7 +85,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('agent input card $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Chat tabs')],
           pendingQuestions: [_question],
@@ -120,7 +121,7 @@ void main() {
       final other = find.text('Other');
       expect(other, findsOneWidget);
       await tester.tap(other);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(
         find.descendant(
           of: find.byType(PendingQuestionCard),
@@ -130,14 +131,14 @@ void main() {
       );
       await capture('other-selected');
       await tester.tap(other);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
 
       // The card travels with the conversation when the transcript scrolls.
       await tester.drag(
         find.byKey(const ValueKey('remote-chat-transcript')),
         const Offset(0, 220),
       );
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.byType(PendingQuestionCard), findsOneWidget);
       await capture('scrolled');
       await tester.pumpWidget(const SizedBox());

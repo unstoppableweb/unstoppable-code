@@ -33,8 +33,9 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('pending send $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final held = Completer<void>();
-      final harness = buildDeviceChatHarness(
+      final held = (await tester.runAsync(() async => Completer<void>()))!;
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(heldSend: held),
       );
       addTearDown(harness.dispose);
@@ -52,7 +53,7 @@ void main() {
         find.byKey(const ValueKey('composer-draft')),
         'Deploy the fix',
       );
-      await tester.pump();
+      await harness.settle(tester);
       await tester.tap(find.byKey(const ValueKey('composer-send')));
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -75,8 +76,8 @@ void main() {
       );
 
       held.complete();
-      await tester.runAsync(() => harness.computer.replied.future);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
+      expect(harness.computer.replied.isCompleted, isTrue);
       await tester.pumpWidget(const SizedBox());
     });
   }

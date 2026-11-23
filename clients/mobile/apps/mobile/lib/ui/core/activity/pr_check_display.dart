@@ -1,3 +1,8 @@
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::activity (display) with its words in cc-app copy::activity;
+/// keep both in step until cleanup C5.
+library;
+
 import 'dart:ui';
 
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';

@@ -5,12 +5,12 @@ import 'package:mobile/config/app_config.dart';
 import 'package:mobile/services/desktop_app/desktop_app_prompt_policy.dart';
 import 'package:mobile/ui/features/auth/view_models/auth_view_model.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/account.dart';
+import 'package:mobile/ui/features/device_link/computer_connect/account_model.dart';
 import 'package:provider/provider.dart';
 
 /// Tells the app-lifetime [DesktopAppPromptController] which account is
 /// signed in and whether it has a computer paired through Computer connect,
-/// from the shell's [AuthViewModel] and [ComputerConnectAccount]. A shell
+/// from the shell's [AuthViewModel] and [ComputerAccountModel]. A shell
 /// without Computer connect, such as a guest's, cannot pair a computer, so it
 /// counts as having none. Leaving the shell (sign-out) clears both. Inert when
 /// no controller is provided.
@@ -28,8 +28,8 @@ class _DesktopAppPromptBindingState extends State<DesktopAppPromptBinding> {
   late final DesktopAppPromptController? _controller = context
       .read<DesktopAppPromptController?>();
   late final AuthViewModel _auth = context.read<AuthViewModel>();
-  late final ComputerConnectAccount? _computers = context
-      .read<ComputerConnectAccount?>();
+  late final ComputerAccountModel? _computers = context
+      .read<ComputerAccountModel?>();
   bool _publishScheduled = false;
 
   @override

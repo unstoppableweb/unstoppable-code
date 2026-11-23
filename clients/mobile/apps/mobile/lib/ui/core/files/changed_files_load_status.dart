@@ -1,3 +1,8 @@
+/// Shared with Remote Control. Computer Connect's load phase comes from
+/// the core (`ActivityView.files_status`, cc-app activity); keep both in
+/// step until cleanup C5.
+library;
+
 /// Shown when a projection request or the read that follows it failed.
 const kChangedFilesLoadFailed = "Couldn't load changed files. Try again.";
 

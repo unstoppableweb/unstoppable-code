@@ -79,7 +79,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('composer capture $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Chat A', model: 'gpt-5-codex')],
           transcripts: {
@@ -119,24 +120,24 @@ void main() {
         draft,
         List.generate(7, (index) => 'Draft line ${index + 1}').join('\n'),
       );
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.textContaining('Draft line 7'), findsOneWidget);
       await capture('seven-lines');
       await tester.enterText(draft, '');
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
 
       await toggleComposerPlan(tester);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       await chooseComposerOption(tester, 'effort');
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       await chooseComposerOption(tester, 'fast');
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       await tester.enterText(
         draft,
         'Review the computer chat input.\nKeep the existing controls.',
       );
-      await tester.pumpAndSettle();
-      final tab = harness.model.composerSettings.tab;
+      await harness.settle(tester);
+      final tab = harness.model.composer.tab;
       expect(tab['planMode'], isTrue);
       await capture('active');
 
@@ -146,12 +147,12 @@ void main() {
         'runtime': fakeRuntime('streaming'),
       });
       await tester.enterText(draft, '');
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
       await capture('stop');
 
       await tester.tap(find.byKey(const ValueKey('composer-model')));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.text('Kimi K3'), findsWidgets);
       await capture('picker', find.byType(MaterialApp));
       await tester.pumpWidget(const SizedBox());

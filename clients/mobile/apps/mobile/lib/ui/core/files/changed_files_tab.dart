@@ -22,18 +22,19 @@ class ChangedFilesTab extends StatelessWidget {
   const ChangedFilesTab({
     super.key,
     required this.onOpenDiff,
-    required this.files,
     required this.status,
     this.onRetry,
+    required this.sections,
   });
 
   final ValueChanged<RemoteChangedFile> onOpenDiff;
-  final List<RemoteChangedFile> files;
   final ChangedFilesLoadStatus status;
 
   /// Starts a fresh load after a failure. Offered only when [status] can
   /// be retried; offline, the message explains how to recover instead.
   final VoidCallback? onRetry;
+
+  final List<ChangedFilesSection> sections;
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +43,7 @@ class ChangedFilesTab extends StatelessWidget {
     final loading =
         status.phase != ChangedFilesLoadPhase.loaded && error == null;
     final retry = status.canRetry ? onRetry : null;
-    if (files.isEmpty) {
+    if (sections.isEmpty) {
       if (loading) return const _ChangedFilesLoading();
       if (error != null) {
         return _ChangedFilesFailed(message: error, onRetry: retry);
@@ -61,25 +62,13 @@ class ChangedFilesTab extends StatelessWidget {
     // per directory so rows show short names instead of repeating a long,
     // truncated prefix. Flattened into one row list so the builder stays
     // lazy — a large refactor can carry hundreds of files.
-    final uncommitted = [
-      for (final file in files)
-        if (!file.committed) file,
-    ];
-    final committed = [
-      for (final file in files)
-        if (file.committed) file,
-    ];
     final rows = <Object>[
-      if (uncommitted.isNotEmpty) ...[
-        _SectionHeader('Uncommitted', summarizeChangedFiles(uncommitted)),
-        for (final group in groupChangedFilesByDirectory(uncommitted)) ...[
-          _DirectoryHeader(group),
-          ...group.files,
-        ],
-      ],
-      if (committed.isNotEmpty) ...[
-        _SectionHeader('Committed', summarizeChangedFiles(committed)),
-        for (final group in groupChangedFilesByDirectory(committed)) ...[
+      for (final section in sections) ...[
+        _SectionHeader(
+          section.committed ? 'Committed' : 'Uncommitted',
+          section.summary,
+        ),
+        for (final group in section.groups) ...[
           _DirectoryHeader(group),
           ...group.files,
         ],

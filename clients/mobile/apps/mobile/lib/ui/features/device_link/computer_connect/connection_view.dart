@@ -12,18 +12,16 @@ import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
 import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
-import 'package:mobile/device_link/desktop/saved_connection.dart';
-import '../desktop_link_model.dart';
-import 'account.dart';
+import 'account_model.dart';
 
 /// Saved and available computers share one list in setup and the switcher.
 /// Relay access comes from the sign-in session through
-/// [ComputerConnectAccount]; this view never asks for a credential.
+/// [ComputerAccountModel]; this view never asks for a credential.
 class ComputerConnectionView extends StatelessWidget {
   const ComputerConnectionView({super.key, required this.account});
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
 
-  Future<void> _forget(BuildContext context, SavedComputer computer) async {
+  Future<void> _forget(BuildContext context, SetupRow computer) async {
     if (await confirmDestructive(
       context,
       title: 'Forget ${computer.name}?',
@@ -31,7 +29,7 @@ class ComputerConnectionView extends StatelessWidget {
           'You will need to approve pairing on this computer to connect again.',
       confirmLabel: 'Forget computer',
     )) {
-      await account.forget(computer.id);
+      await account.forget(computer.computerId);
     }
   }
 
@@ -44,19 +42,9 @@ class ComputerConnectionView extends StatelessWidget {
       if (!account.ready && account.busy) return const SizedBox.shrink();
       final theme = Theme.of(context);
       final colors = AppColors.of(context);
-      final connection = account.engine.selected.chats.connection;
-      final saved = account.computers;
-      final available =
-          account.peers.values
-              .where(
-                (peer) =>
-                    peer.acceptsControl &&
-                    !saved.any((computer) => computer.id == peer.id),
-              )
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
-      final error = account.error ?? connection.error;
-      final hasRows = saved.isNotEmpty || available.isNotEmpty;
+      final rows = account.setupRows;
+      final error = account.notice;
+      final hasRows = rows.isNotEmpty;
       final searched = account.ready && account.discovered && !account.busy;
       return SingleChildScrollView(
         padding:
@@ -88,7 +76,9 @@ class ComputerConnectionView extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  saved.isEmpty ? 'Connect to your computer' : 'Your computers',
+                  account.computers.isEmpty
+                      ? 'Connect to your computer'
+                      : 'Your computers',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.headlineSmall?.copyWith(
                     fontWeight: AppTypography.emphasisWeight,
@@ -97,7 +87,7 @@ class ComputerConnectionView extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  saved.isEmpty
+                  account.computers.isEmpty
                       ? 'Work with your projects and chats from your phone.'
                       : 'Paired computers reconnect on their own while the desktop app is running.',
                   textAlign: TextAlign.center,
@@ -113,84 +103,51 @@ class ComputerConnectionView extends StatelessWidget {
                 if (hasRows) ...[
                   _ComputerList(
                     children: [
-                      for (final computer in saved)
+                      for (final row in rows)
                         _ComputerRow(
                           key: ValueKey(
-                            'computer-connect-saved-${computer.id}',
+                            row.saved
+                                ? 'computer-connect-saved-${row.computerId}'
+                                : 'computer-connect-peer-${row.computerId}',
                           ),
-                          name: computer.name,
-                          status: _status(computer.id),
-                          connection: account
-                              .engine
-                              .sessions[computer.id]
-                              ?.chats
-                              .connection,
-                          onCancel: () => account.disconnect(computer.id),
+                          row: row,
+                          onCancel: () => account.cancelConnect(row.computerId),
                           onTap: account.busy
                               ? null
-                              : () => account.connect(computer.id),
-                          trailing: PopupMenuButton<String>(
-                            tooltip: 'Options for ${computer.name}',
-                            icon: CanopyIcon(
-                              glyph: CanopyGlyph.dotGrid1x3Horizontal,
-                              tint: colors.foregroundSecondary,
-                            ),
-                            onSelected: (value) {
-                              if (value == 'forget') {
-                                unawaited(_forget(context, computer));
-                              }
-                              if (value == 'disconnect') {
-                                unawaited(account.disconnect(computer.id));
-                              }
-                            },
-                            itemBuilder: (_) => [
-                              if (computer.reconnect)
-                                const PopupMenuItem(
-                                  value: 'disconnect',
-                                  child: Text('Disconnect'),
+                              : () => account.connect(row.computerId),
+                          trailing: row.saved
+                              ? PopupMenuButton<String>(
+                                  tooltip: 'Options for ${row.name}',
+                                  icon: CanopyIcon(
+                                    glyph: CanopyGlyph.dotGrid1x3Horizontal,
+                                    tint: colors.foregroundSecondary,
+                                  ),
+                                  onSelected: (value) {
+                                    if (value == 'forget') {
+                                      unawaited(_forget(context, row));
+                                    }
+                                    if (value == 'disconnect') {
+                                      unawaited(
+                                        account.disconnect(row.computerId),
+                                      );
+                                    }
+                                  },
+                                  itemBuilder: (_) => [
+                                    if (row.reconnect)
+                                      const PopupMenuItem(
+                                        value: 'disconnect',
+                                        child: Text('Disconnect'),
+                                      ),
+                                    const PopupMenuItem(
+                                      value: 'forget',
+                                      child: Text('Forget computer'),
+                                    ),
+                                  ],
+                                )
+                              : CanopyIcon(
+                                  glyph: CanopyGlyph.chevronRightMedium,
+                                  tint: colors.foregroundSecondary,
                                 ),
-                              const PopupMenuItem(
-                                value: 'forget',
-                                child: Text('Forget computer'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      for (final peer in available)
-                        _ComputerRow(
-                          key: ValueKey('computer-connect-peer-${peer.id}'),
-                          name: peer.name,
-                          status:
-                              account
-                                      .engine
-                                      .sessions[peer.id]
-                                      ?.chats
-                                      .connection
-                                      .busy ==
-                                  true
-                              ? _status(peer.id)
-                              : const (
-                                  label: 'Ready to pair',
-                                  tone: _Tone.active,
-                                ),
-                          connection: account
-                              .engine
-                              .sessions[peer.id]
-                              ?.chats
-                              .connection,
-                          onCancel: () => account
-                              .engine
-                              .sessions[peer.id]
-                              ?.chats
-                              .connection
-                              .disconnect(),
-                          onTap: account.busy
-                              ? null
-                              : () => account.connect(peer.id),
-                          trailing: CanopyIcon(
-                            glyph: CanopyGlyph.chevronRightMedium,
-                            tint: colors.foregroundSecondary,
-                          ),
                         ),
                     ],
                   ),
@@ -224,44 +181,7 @@ class ComputerConnectionView extends StatelessWidget {
       );
     },
   );
-
-  _Status _status(String id) {
-    final computer = account.saved.computers[id];
-    final connection = account.engine.sessions[id]?.chats.connection;
-    if (connection?.phase == DesktopLinkPhase.connected) {
-      return (label: 'Connected', tone: _Tone.success);
-    }
-    if (connection?.reconnecting == true) {
-      return (label: 'Reconnecting…', tone: _Tone.active);
-    }
-    if (connection?.phase == DesktopLinkPhase.pairing) {
-      return (label: 'Waiting for approval…', tone: _Tone.active);
-    }
-    if (connection?.busy == true) {
-      return (label: 'Connecting…', tone: _Tone.active);
-    }
-    if (computer?.reconnect == false) {
-      return (label: 'Disconnected', tone: _Tone.neutral);
-    }
-    if (account.accessDenied) {
-      return (label: 'Connection needs attention', tone: _Tone.warning);
-    }
-    if (!account.peers.containsKey(id)) {
-      return (label: 'Computer offline', tone: _Tone.neutral);
-    }
-    if (account.peers[id]?.acceptsControl != true) {
-      return (label: 'Remote access is off', tone: _Tone.neutral);
-    }
-    if (connection?.error != null) {
-      return (label: 'Could not connect', tone: _Tone.warning);
-    }
-    return (label: 'Ready to connect', tone: _Tone.active);
-  }
 }
-
-enum _Tone { success, active, warning, neutral }
-
-typedef _Status = ({String label, _Tone tone});
 
 /// A search came back empty: point at Remote Control for people who already
 /// run the desktop app, and at the download for people who don't.
@@ -449,17 +369,13 @@ class _ComputerList extends StatelessWidget {
 class _ComputerRow extends StatelessWidget {
   const _ComputerRow({
     super.key,
-    required this.name,
-    required this.status,
+    required this.row,
     required this.onTap,
     required this.trailing,
-    required this.connection,
     required this.onCancel,
   });
-  final DesktopLinkModel? connection;
+  final SetupRow row;
   final VoidCallback onCancel;
-  final String name;
-  final _Status status;
   final VoidCallback? onTap;
   final Widget trailing;
 
@@ -467,13 +383,13 @@ class _ComputerRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
     final status = StatusColors.of(context);
-    final tone = switch (this.status.tone) {
-      _Tone.success => status.success,
-      _Tone.active => status.active,
-      _Tone.warning => status.warning,
-      _Tone.neutral => status.neutral,
+    final tone = switch (row.tone) {
+      StatusTone.success => status.success,
+      StatusTone.active => status.active,
+      StatusTone.warning => status.warning,
+      StatusTone.neutral => status.neutral,
     };
-    final busy = connection?.busy == true;
+    final busy = row.busy;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -484,7 +400,7 @@ class _ComputerRow extends StatelessWidget {
             tint: colors.foreground,
           ),
           title: Text(
-            name,
+            row.name,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: AppTypography.title.copyWith(color: colors.foreground),
@@ -506,7 +422,7 @@ class _ComputerRow extends StatelessWidget {
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
-                    this.status.label,
+                    row.label,
                     style: AppTypography.bodySmall.copyWith(
                       color: colors.foregroundSecondary,
                     ),
@@ -518,14 +434,14 @@ class _ComputerRow extends StatelessWidget {
           trailing: busy
               ? CanopyButton(
                   label: 'Cancel',
-                  semanticsLabel: 'Cancel connection to $name',
+                  semanticsLabel: 'Cancel connection to ${row.name}',
                   variant: CanopyButtonVariant.inline,
                   onPressed: onCancel,
                 )
               : trailing,
           onTap: busy ? null : onTap,
         ),
-        if (connection?.code case final code?) _PairingCode(code),
+        if (row.pairingCode case final code?) _PairingCode(code),
       ],
     );
   }

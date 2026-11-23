@@ -2,13 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/computer_activity/pipeline_run.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/device_link/pipelines/chat_activity.dart';
-import 'package:mobile/device_link/pipelines/repository.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_run_agent_activity.dart';
+import '../computer_connect/pipelines_model.dart';
 import 'run_screen.dart';
-import 'chat_activity_controller.dart';
 
-/// Binds the shared turn panels to one computer's execution repository.
+/// Binds the shared turn panels to one computer's pipelines.
 class DevicePipelineChatActivity extends StatefulWidget {
   const DevicePipelineChatActivity({
     super.key,
@@ -18,7 +16,7 @@ class DevicePipelineChatActivity extends StatefulWidget {
     required this.online,
     required this.builder,
   });
-  final DevicePipelineRepository repository;
+  final ComputerPipelines repository;
   final DeviceChatRef? ref;
   final List<DeviceChatMessage> messages;
   final bool online;
@@ -31,13 +29,13 @@ class DevicePipelineChatActivity extends StatefulWidget {
 
 class _DevicePipelineChatActivityState
     extends State<DevicePipelineChatActivity> {
-  late DevicePipelineChatActivityController _controller;
+  late ComputerPipelineChatActivity _controller;
   final _expanded = <(String, String), bool>{};
 
   @override
   void initState() {
     super.initState();
-    _controller = DevicePipelineChatActivityController(widget.repository);
+    _controller = widget.repository.chatActivity();
     _sync();
   }
 
@@ -46,7 +44,7 @@ class _DevicePipelineChatActivityState
     super.didUpdateWidget(old);
     if (old.repository != widget.repository) {
       _controller.dispose();
-      _controller = DevicePipelineChatActivityController(widget.repository);
+      _controller = widget.repository.chatActivity();
       _expanded.clear();
     }
     _sync();
@@ -70,17 +68,10 @@ class _DevicePipelineChatActivityState
     builder: (context, _) {
       final ref = widget.ref, repository = widget.repository;
       if (ref == null) return widget.builder(const {});
-      final activity = devicePipelineChatActivity(
-        ref: ref,
-        messages: widget.messages,
-        runs: repository.runs(ref),
-      );
-      final latest = widget.messages
-          .where((m) => activity.containsKey(m.id))
-          .lastOrNull
-          ?.id;
+      final panels = _controller.panels(ref, widget.messages);
+      final latest = panels.latest;
       return widget.builder({
-        for (final entry in activity.entries)
+        for (final entry in panels.turns.entries)
           entry.key: PipelineRunAgentActivityPanel(
             key: ValueKey('agent-activity:${entry.key}'),
             turnKey: entry.key,

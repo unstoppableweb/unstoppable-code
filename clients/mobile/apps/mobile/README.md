@@ -129,21 +129,12 @@ integration test.
 
 ## Shared chat stack
 
-`lib/ui/features/chat/` and `lib/data/models/chat_message.dart` hold the
-transport-neutral chat UI: the transcript feed (`ChatFeed`), composer
-(`ChatInput`, `ComposerToolbar`), tool-call rows, the ask-user
-`PendingQuestionCard`, and the pure turn-grouping, turn-timer, tool-display,
-thinking-level, and voice-dictation logic. Computer Connect
-(`lib/ui/features/device_link/`) builds on it. Flutter has no cloud chat
-client.
-See [Computer Connect](../../docs/mobile-computer-connect.md) for the home
-launcher, protocol choices and selection persistence.
-
-Drafts and unsent sends: `lib/data/models/chat_drafts.dart` (`DraftTarget`,
-`UnsentRecord`, `ChatDraftStore`), `lib/data/services/chat_draft_store.dart`
-(account file store), and
-`lib/ui/features/chat/view_models/composer_draft_binding.dart`. Design:
-`docs/planning/2026-10-03-can-3556-mobile-drafts-and-unsent-sends/design.md`.
+The Flutter transcript and composer widgets live under `lib/ui/core/chat/`.
+Computer Connect in `lib/ui/features/device_link/` renders the Rust core's
+transcript rows and forwards composer actions to it. The Rust core stores
+Home and chat drafts, and Flutter holds text edits while Home's draft loads.
+See [Computer Connect](../../docs/mobile-computer-connect.md) for storage
+and upgrade behavior.
 
 ### Markdown images
 

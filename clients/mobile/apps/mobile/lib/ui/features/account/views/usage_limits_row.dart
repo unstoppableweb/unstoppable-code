@@ -20,15 +20,17 @@ class UsageLimitsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final lines = context.select<ProviderUsageSource, List<UsageSummaryLine>?>(
-      (source) => usageSummaryLines(
-        desktopAvailable: source.isAvailable,
-        projection: source.projection,
-      ),
+    final lines = context.select<ProviderUsageSource?, List<UsageSummaryLine>?>(
+      (source) => source == null
+          ? null
+          : usageSummaryLines(
+              desktopAvailable: source.isAvailable,
+              projection: source.projection,
+            ),
     );
     if (lines == null) return const SizedBox.shrink();
-    final hasOpenCode = context.select<ProviderUsageSource, bool>(
-      (source) => source.projection?.openCodeAccounts != null,
+    final hasOpenCode = context.select<ProviderUsageSource?, bool>(
+      (source) => source?.projection?.openCodeAccounts != null,
     );
     final theme = Theme.of(context);
     // Large text stacks each line so the bar keeps a usable width.
@@ -81,7 +83,8 @@ class UsageLimitsRow extends StatelessWidget {
   }
 
   void _open(BuildContext context) {
-    final source = context.read<ProviderUsageSource>();
+    final source = context.read<ProviderUsageSource?>();
+    if (source == null) return;
     final computerPicker = context.read<ComputerPickerBuilder?>();
     // The root navigator does not see shell-local providers; re-provide the
     // borrowed source without taking ownership of it.

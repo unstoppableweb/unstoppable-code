@@ -1,3 +1,8 @@
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::pipelines::presentation (`content_chunks`); keep both in step
+/// until cleanup C5.
+library;
+
 import 'package:mobile/data/models/computer_activity/pipeline_content.dart';
 
 /// Most lines in one chunk of command output.

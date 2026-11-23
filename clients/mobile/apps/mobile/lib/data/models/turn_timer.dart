@@ -3,6 +3,9 @@
 /// (`packages/ui-shared/src/components/TurnTimer.tsx`): elapsed time excludes
 /// completed and active pause windows, clamps at zero against desktop/phone
 /// clock skew, and a finished turn reads "Worked for 3m 24s".
+///
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::feed::turns; keep both in step until cleanup C5.
 library;
 
 import 'dart:math' as math;

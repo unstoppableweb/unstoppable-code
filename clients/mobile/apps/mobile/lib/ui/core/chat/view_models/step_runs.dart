@@ -1,10 +1,3 @@
-/// Dart port of the desktop clean chat look's step runs
-/// (`packages/ui-shared/src/components/chat/clean-step-runs.ts` and
-/// `step-words.tsx`): every run of agent steps between two replies reads as
-/// one line in words ("Ran 2 commands, read a file") instead of a row per
-/// step. Pure: the transcript projection segments, widgets render.
-library;
-
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/ui/core/chat/view_models/tool_call_display.dart';
 
@@ -24,10 +17,6 @@ enum StepKind {
   other,
 }
 
-/// Newest steps a running turn keeps in view under its run's line (desktop
-/// `RECENT_STEP_COUNT`, the default "Recent" chat detail).
-const int recentStepCount = 3;
-
 /// One step of a run: the part at [index] of [message].
 final class RunStep {
   const RunStep(this.message, this.index);
@@ -45,109 +34,6 @@ final class RunStep {
 
   @override
   int get hashCode => Object.hash(identityHashCode(message), index);
-}
-
-/// What a turn draws, in order: a message (its reply text, and its steps
-/// when [parts]), or a run of steps.
-sealed class TurnSegment {
-  const TurnSegment();
-}
-
-final class MessageSegment extends TurnSegment {
-  const MessageSegment(this.message, {this.parts = true});
-
-  final ChatMessage message;
-
-  /// False when the message's steps joined the run before it.
-  final bool parts;
-}
-
-final class RunSegment extends TurnSegment {
-  const RunSegment(this.key, this.steps, {this.anchorMessageId});
-
-  /// Stable while the run grows: from its first step's message.
-  final String key;
-  final List<RunStep> steps;
-
-  /// The first message whose only row is this run, so the feed can hold the
-  /// reader on it while older history loads. Null when every message also
-  /// draws its words in a reply row, which anchors it instead.
-  final String? anchorMessageId;
-}
-
-/// Tools that end a run: the person reads or answers them where they are.
-const _breakTools = {'AskUserQuestion', 'ExitPlanMode'};
-
-bool _isStep(ChatPart part) => switch (part.kind) {
-  'tool_use' => !_breakTools.contains(part.toolName),
-  'thinking' => (part.thinkingText ?? '').trim().isNotEmpty,
-  'agent' => true,
-  _ => false,
-};
-
-bool _isBreak(ChatPart part) =>
-    part.kind == 'tool_use' && _breakTools.contains(part.toolName);
-
-/// Whether a message has something besides its steps to draw: words,
-/// files, a delivery state or a failure.
-bool _hasBody(ChatMessage message) =>
-    message.text.trim().isNotEmpty ||
-    message.attachments.isNotEmpty ||
-    message.delivery != null ||
-    message.status == ChatMessageStatus.failed ||
-    message.status == ChatMessageStatus.cancelled;
-
-/// Splits a turn's assistant [messages] into replies and runs of steps
-/// (desktop `groupCleanSteps`). A message carrying steps and words gives its
-/// steps to the run and its words to the reply after it. [renderable]
-/// decides whether a message without steps draws at all.
-List<TurnSegment> segmentTurn(
-  List<ChatMessage> messages, {
-  required bool Function(ChatMessage message) renderable,
-}) {
-  final segments = <TurnSegment>[];
-  var run = <RunStep>[];
-  String? anchor;
-  void flush() {
-    if (run.isNotEmpty) {
-      segments.add(
-        RunSegment(
-          'run-${run.first.message.messageId}',
-          run,
-          anchorMessageId: anchor,
-        ),
-      );
-      run = <RunStep>[];
-      anchor = null;
-    }
-  }
-
-  for (final message in messages) {
-    final parts = message.parts;
-    if (parts.any(_isBreak)) {
-      flush();
-      segments.add(MessageSegment(message));
-      continue;
-    }
-    final steps = [
-      for (var index = 0; index < parts.length; index++)
-        if (_isStep(parts[index])) RunStep(message, index),
-    ];
-    if (steps.isEmpty) {
-      if (!renderable(message)) continue;
-      flush();
-      segments.add(MessageSegment(message));
-      continue;
-    }
-    run.addAll(steps);
-    if (!_hasBody(message)) anchor ??= message.messageId;
-    if (_hasBody(message)) {
-      flush();
-      segments.add(MessageSegment(message, parts: false));
-    }
-  }
-  flush();
-  return segments;
 }
 
 /// The kind of step one part counts as (desktop `stepKindOfToolCall`).

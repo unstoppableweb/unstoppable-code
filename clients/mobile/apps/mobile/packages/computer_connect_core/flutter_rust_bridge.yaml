@@ -1,0 +1,19 @@
+# flutter_rust_bridge codegen config. Run from this directory:
+#   flutter_rust_bridge_codegen generate
+# then `cargo fmt` in packages/mobile-core at the repo root and
+# `dart format lib/src/frb` here. The codegen, Rust crate and Dart runtime
+# are pinned to the same version (2.13.0).
+rust_input: crate::api
+rust_root: ../../../../packages/mobile-core/crates/cc-ffi-dart/
+dart_output: lib/src/frb
+dart_entrypoint_class_name: CoreBridge
+# Native only; the build hook owns the native library, so no web/wasm output
+# and no C header for cargokit or Xcode.
+web: false
+# Keep codegen from editing pubspec.yaml or Cargo.toml.
+auto_upgrade_dependency: false
+deps_check: true
+stop_on_error: true
+# `u64` and `i64` are Dart `int`; lists in DTOs compare by content.
+type_64bit_int: true
+dart_collection_deep_equality: true

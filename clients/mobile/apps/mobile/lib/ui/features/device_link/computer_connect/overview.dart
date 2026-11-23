@@ -8,8 +8,8 @@ import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_overview_row.dart';
-import 'package:mobile/device_link/projects/clone_repository.dart';
-import 'package:mobile/device_link/worktrees/repository.dart';
+import 'package:mobile/device_link/projects/clones.dart';
+import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/dimens.dart';
@@ -21,6 +21,7 @@ import 'controller.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/ui/core/widgets/chat_list_notice.dart';
+import 'rust/same_name.dart';
 import '../space_notifications/space_notifications_sheet.dart';
 import '../space_notifications/space_notifications_view_model.dart';
 import 'worktree_archive_row.dart';
@@ -57,11 +58,11 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     final addsProjects = workspaceContext?.isPersonal ?? true;
     final clones = addsProjects && controller.active
         ? controller.clones.clones
-        : const <DeviceProjectClone>[];
+        : const <CloneRowView>[];
     final worktrees = scope.worktrees;
     final projects = scope.projects;
     final colors = AppColors.of(context);
-    final allChats = scope.chats(controller.chats.chats.catalog);
+    final allChats = scope.chats(controller.overview.catalog);
     final coworkProjectIds = {
       for (final project in projects)
         if (project.type == 'cowork') project.id,
@@ -123,13 +124,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
         ProjectCloneRow(
           key: ValueKey('device-project-clone-${clone.jobId}'),
           name: clone.name,
-          status: switch (clone.phase) {
-            DeviceProjectClonePhase.cloning => ProjectCloneStatus.cloning,
-            DeviceProjectClonePhase.awaitingProject =>
-              ProjectCloneStatus.awaitingProject,
-            DeviceProjectClonePhase.failed => ProjectCloneStatus.failed,
-            DeviceProjectClonePhase.unknown => ProjectCloneStatus.unknown,
-          },
+          status: sameName(ProjectCloneStatus.values, clone.phase),
           failure: clone.failure,
           onDismiss: clone.dismissible
               ? () => controller.clones.dismiss(clone.jobId)
@@ -201,7 +196,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
         controller.loading ||
         controller.scopePending;
     if (pending &&
-        !controller.worktrees.hasInventory &&
+        !controller.overview.hasInventory &&
         nothingLoaded &&
         controller.error == null) {
       // Initial loads and invalidated ownership are pending, never known empty.
@@ -216,7 +211,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     } else if (worktrees.isEmpty &&
         standalone.isEmpty &&
         clones.isEmpty &&
-        (!pending || controller.worktrees.hasInventory) &&
+        (!pending || controller.overview.hasInventory) &&
         controller.error == null &&
         !scope.hasUnknownOwners) {
       rows.add(
@@ -263,7 +258,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
       );
       if (!confirmed ||
           !_canAdd(controller) ||
-          !controller.clones.acknowledgeUnknown(unknown.jobId)) {
+          !await controller.clones.acknowledgeUnknown(unknown.jobId)) {
         return;
       }
     }
@@ -291,7 +286,7 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
   Widget _chat(DeviceChatRef chat) {
     final key = ValueKey('device-overview-chat-${chat.id}');
     final notifications = context.read<SpaceNotificationsViewModel?>();
-    final spaceId = widget.controller.recents.workEntryNotificationSpaceId(
+    final spaceId = widget.controller.overview.workEntryNotificationSpaceId(
       chat.id,
     );
     final openNotifications = notifications == null || spaceId == null
@@ -307,8 +302,8 @@ class _DeviceProjectsOverviewState extends State<DeviceProjectsOverview> {
     final tile = ChatOverviewRow(
       key: openNotifications == null ? key : null,
       title: chat.title,
-      unread: widget.controller.overviewChats.unread(chat),
-      working: widget.controller.overviewChats.working(chat),
+      unread: widget.controller.overview.chatUnread(chat),
+      working: widget.controller.overview.chatWorking(chat),
       onTap: () => widget.onOpenChat(chat),
       onLongPress: openNotifications,
     );

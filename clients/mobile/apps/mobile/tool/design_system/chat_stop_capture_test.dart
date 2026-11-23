@@ -33,7 +33,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('composer stop $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Chat A')],
           transcripts: {
@@ -73,7 +74,7 @@ void main() {
         'chatId': 'chat-1',
         'runtime': fakeRuntime('streaming'),
       });
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(stop, findsOneWidget);
       await capture('running-empty');
 
@@ -81,7 +82,7 @@ void main() {
         find.byKey(const ValueKey('composer-draft')),
         'Follow up',
       );
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.text('Follow up'), findsOneWidget);
       await capture('running-draft');
       await tester.pumpWidget(const SizedBox());

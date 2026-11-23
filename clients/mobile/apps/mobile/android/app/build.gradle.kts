@@ -107,7 +107,42 @@ android {
     }
 }
 
+// The rustls-platform-verifier Kotlin component must match the
+// rustls-platform-verifier-android crate the Computer Connect core links.
+abstract class RustlsVersion : ValueSource<String, RustlsVersion.Params> {
+    interface Params : ValueSourceParameters {
+        val lockFile: RegularFileProperty
+    }
+
+    override fun obtain(): String {
+        val lines = parameters.lockFile.get().asFile.readLines()
+        val name = lines.indexOfFirst { it.trim() == "name = \"rustls-platform-verifier-android\"" }
+        return lines.drop(name + 1)
+            .firstOrNull { name >= 0 && it.trimStart().startsWith("version = ") }
+            ?.substringAfter('"')
+            ?.substringBefore('"')
+            ?: error("rustls-platform-verifier-android not found in Cargo.lock")
+    }
+}
+
+val rustlsPlatformVerifierVersion = providers.of(RustlsVersion::class.java) {
+    parameters.lockFile.set(
+        layout.projectDirectory.file("../../../../packages/mobile-core/Cargo.lock"),
+    )
+}
+
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.rustls" && requested.name == "rustls-platform-verifier") {
+            useVersion(rustlsPlatformVerifierVersion.get())
+            because("must equal the rustls-platform-verifier-android crate version")
+        }
+    }
+}
+
 dependencies {
+    // Lets the Computer Connect core verify TLS with the Android trust store.
+    implementation("org.rustls:rustls-platform-verifier")
     // MainActivity queries CustomTabsClient.isAuthTabSupported to decide whether
     // the OAuth callback can be the claimed HTTPS App Link. This arrives
     // transitively through flutter_web_auth_2 too, but the app compiles against

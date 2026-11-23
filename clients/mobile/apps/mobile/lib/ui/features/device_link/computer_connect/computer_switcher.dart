@@ -3,13 +3,11 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
-import 'package:mobile/device_link/desktop/saved_connection.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/dimens.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/widgets/computer_connection_title.dart';
-import 'account.dart';
-import '../desktop_link_model.dart';
+import 'account_model.dart';
 
 /// The app bar title for Computer connect. A tap lists saved computers,
 /// including ones reconnecting in the background, with Manage computers
@@ -22,7 +20,7 @@ class ComputerSwitcher extends StatelessWidget {
     required this.label,
     required this.onManage,
   });
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
   final String title, label;
   final VoidCallback onManage;
 
@@ -34,27 +32,6 @@ class ComputerSwitcher extends StatelessWidget {
 
   /// Space between the checkmark slot and the computer name.
   static const double _labelGap = 12;
-
-  String _name(SavedComputer computer) =>
-      account.engine.sessions[computer.id]?.chats.connection.host?['name']
-          as String? ??
-      computer.name;
-
-  String _status(SavedComputer computer) {
-    final phase = account.engine.sessions[computer.id]?.chats.connection.phase;
-    if (phase == DesktopLinkPhase.connected) return 'Connected';
-    // An absent peer on a live relay is offline even while retries continue.
-    if (account.computerAvailable(computer.id) == false) return 'Offline';
-    return switch (phase) {
-      DesktopLinkPhase.connected => 'Connected',
-      DesktopLinkPhase.connecting => 'Connecting…',
-      DesktopLinkPhase.pairing => 'Waiting for approval',
-      DesktopLinkPhase.reconnecting => 'Reconnecting…',
-      DesktopLinkPhase.disconnected ||
-      DesktopLinkPhase.failed ||
-      null => 'Offline',
-    };
-  }
 
   /// Opens the menu as a route under the title. A route keeps each option in
   /// one semantics parent; the pinned iOS bridge misplaces overlay-portal
@@ -80,7 +57,7 @@ class ComputerSwitcher extends StatelessWidget {
           ),
         )
         .toDouble();
-    final selectedId = account.engine.selectedId;
+    final selectedId = account.sessions.selectedId;
     final labelStyle = theme.textTheme.labelLarge?.copyWith(
       color: colors.foreground,
     );
@@ -133,7 +110,7 @@ class ComputerSwitcher extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          _name(computer),
+                          account.switcherRow(computer).name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: labelStyle,
@@ -141,7 +118,7 @@ class ComputerSwitcher extends StatelessWidget {
                         ListenableBuilder(
                           listenable: account,
                           builder: (context, _) => Text(
-                            _status(computer),
+                            account.switcherRow(computer).status,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(

@@ -1,7 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/changed_file.dart';
-import 'package:mobile/data/models/file_diff.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'unified_diff_lines.dart';
@@ -60,7 +59,6 @@ class FileDiffView extends StatelessWidget {
     super.key,
     required this.padding,
     required this.file,
-    required this.diff,
     required this.lines,
     required this.truncated,
     required this.lineLengthTruncated,
@@ -69,7 +67,6 @@ class FileDiffView extends StatelessWidget {
 
   final EdgeInsets padding;
   final RemoteChangedFile file;
-  final RemoteFileDiff? diff;
   final List<UnifiedDiffLine> lines;
   final bool truncated;
   final bool lineLengthTruncated;
@@ -81,7 +78,6 @@ class FileDiffView extends StatelessWidget {
     final status = StatusColors.of(context);
     final header = _DiffHeader(
       file: file,
-      diff: diff,
       truncated: truncated,
       lineLengthTruncated: lineLengthTruncated,
       cacheNotice: cacheNotice,
@@ -178,14 +174,12 @@ class FileDiffView extends StatelessWidget {
 class _DiffHeader extends StatelessWidget {
   const _DiffHeader({
     required this.file,
-    required this.diff,
     this.truncated = false,
     this.lineLengthTruncated = false,
     this.cacheNotice,
   });
 
   final RemoteChangedFile file;
-  final RemoteFileDiff? diff;
 
   /// Shown up front (not at the end of a lazy list nobody reaches) when the
   /// patch was clipped to [kRemoteFileDiffMaxLines].
@@ -197,13 +191,11 @@ class _DiffHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final status = StatusColors.of(context);
-    final insertions = diff?.insertions ?? file.insertions ?? 0;
-    final deletions = diff?.deletions ?? file.deletions ?? 0;
-    final rangeLabel = diff?.rangeLabel;
+    final insertions = file.insertions ?? 0;
+    final deletions = file.deletions ?? 0;
     final details = [
       if (file.repoName case final repoName? when repoName.isNotEmpty) repoName,
       file.committed ? 'committed' : 'uncommitted',
-      ?rangeLabel,
     ].join(' · ');
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),

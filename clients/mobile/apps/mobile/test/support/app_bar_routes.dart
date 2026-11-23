@@ -39,7 +39,6 @@ import 'package:mobile/ui/features/developer_options/views/fonts_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/typography_screen.dart';
 import 'package:mobile/ui/features/developer_options/views/code_markdown_screen.dart';
 import 'package:mobile/ui/features/device_link/chats_screen.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/search_screen.dart';
 
 import 'device_chat_harness.dart';
@@ -62,17 +61,18 @@ Map<String, AppBarRoute> appBarRoutes() => {
   for (final MapEntry(:key, :value) in _screens().entries)
     key: AppBarRoute(value),
   'search-chats': AppBarRoute.setUp((tester) async {
-    final harness = buildDeviceChatHarness(
+    final harness = await buildDeviceChatHarness(
+      tester,
       computer: FakeDesktopComputer(answers: fakeInventoryAnswers()),
     );
-    final controller = ComputerConnectController(harness.model);
+    final controller = harness.controller;
     addTearDown(harness.dispose);
-    addTearDown(controller.dispose);
+
     await harness.select(tester, 'chat-pkce');
     return DeviceChatSearchScreen(controller: controller);
   }),
   'computer-chat': AppBarRoute.setUp((tester) async {
-    final harness = buildDeviceChatHarness();
+    final harness = await buildDeviceChatHarness(tester);
     addTearDown(harness.dispose);
     await harness.select(tester, 'chat-pkce');
     return DeviceChatScreen(

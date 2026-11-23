@@ -2,6 +2,12 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // Kotlin component of the Computer Connect core's OS trust-store TLS
+        // verifier (rustls-platform-verifier); group org.rustls.
+        maven {
+            url = uri("https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/")
+            content { includeGroup("org.rustls") }
+        }
     }
 }
 

@@ -18,6 +18,7 @@ class PipelineDispatchForm extends StatefulWidget {
     required this.degraded,
     this.dispatchError,
     required this.onRun,
+    required this.formRules,
   });
   final RemotePipelineDispatchForm form;
   final EdgeInsets padding;
@@ -25,6 +26,11 @@ class PipelineDispatchForm extends StatefulWidget {
   final bool submitting, degraded;
   final String? dispatchError;
   final void Function(Map<String, String> inputs) onRun;
+  final PipelineFormRules Function(
+    RemotePipelineDispatchForm form,
+    Map<String, String> values,
+  )
+  formRules;
   @override
   State<PipelineDispatchForm> createState() => _PipelineDispatchFormState();
 }
@@ -33,6 +39,7 @@ class _PipelineDispatchFormState extends State<PipelineDispatchForm> {
   final Map<String, TextEditingController> _controllers = {};
   Map<String, String> _values = {}, _errors = {};
   RemotePipelineDispatchForm? _seededFrom;
+  List<RemotePipelineInputDefinition> _fields = const [];
   @override
   void dispose() {
     for (final controller in _controllers.values) {
@@ -42,14 +49,10 @@ class _PipelineDispatchFormState extends State<PipelineDispatchForm> {
   }
 
   void _runInputs(RemotePipelineDispatchForm form) {
-    final visible = visiblePipelineInputs(form.inputs),
-        errors = validatePipelineInputs(
-          visiblePipelineInputs(form.inputs),
-          _values,
-        );
-    setState(() => _errors = errors);
-    if (errors.isNotEmpty) return;
-    widget.onRun(buildPipelineInputPayload(visible, _values));
+    final rules = widget.formRules(form, _values);
+    setState(() => _errors = rules.errors);
+    if (rules.errors.isNotEmpty) return;
+    widget.onRun(rules.payload);
   }
 
   @override
@@ -66,7 +69,9 @@ class _PipelineDispatchFormState extends State<PipelineDispatchForm> {
   void _seed(RemotePipelineDispatchForm form) {
     if (identical(_seededFrom, form)) return;
     _seededFrom = form;
-    _values = initialPipelineInputValues(form.inputs);
+    final rules = widget.formRules(form, const {});
+    _values = rules.initial;
+    _fields = rules.visible;
     for (final entry in _values.entries) {
       (_controllers[entry.key] ??= TextEditingController()).text = entry.value;
     }
@@ -95,7 +100,6 @@ class _PipelineDispatchFormState extends State<PipelineDispatchForm> {
         ? "This pipeline needs input the phone can't provide. Run it from the "
               'desktop app.'
         : null;
-    final fields = visiblePipelineInputs(form.inputs);
     return Column(
       children: [
         Expanded(
@@ -113,7 +117,7 @@ class _PipelineDispatchFormState extends State<PipelineDispatchForm> {
                   style: theme.textTheme.bodyMedium,
                 )
               else
-                for (final input in fields)
+                for (final input in _fields)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: _InputField(

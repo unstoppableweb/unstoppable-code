@@ -33,6 +33,7 @@ class DeveloperOptionsScreen extends StatelessWidget {
                 ),
               ),
             ),
+            const SizedBox(height: 16),
           ],
         ),
       ),

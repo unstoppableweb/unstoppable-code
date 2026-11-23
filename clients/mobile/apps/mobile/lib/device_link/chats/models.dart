@@ -1,16 +1,6 @@
 import 'package:mobile/data/models/chat_tab_item.dart';
 import '../protocol.dart';
-import '../crypto/identity.dart';
 import '../worktree_ref.dart';
-
-String chatId() {
-  // UUID v4 IDs are accepted by existing desktop validators and receipts.
-  final bytes = linkRandomBytes(16);
-  bytes[6] = (bytes[6] & 15) | 64;
-  bytes[8] = (bytes[8] & 63) | 128;
-  final hex = bytes.map((n) => n.toRadixString(16).padLeft(2, '0')).join();
-  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
-}
 
 final class DeviceChatRef implements ChatTabItem, DeviceWorktreeRef {
   const DeviceChatRef({
@@ -19,14 +9,6 @@ final class DeviceChatRef implements ChatTabItem, DeviceWorktreeRef {
     required this.id,
     required this.title,
   });
-  factory DeviceChatRef.fromCatalog(Map<String, dynamic> json) => DeviceChatRef(
-    projectId: deviceLinkString(json, 'projectId'),
-    worktreeId: deviceLinkString(json, 'worktreeId'),
-    id: deviceLinkString(json, 'chatId'),
-    title: json['title'] is String && (json['title'] as String).isNotEmpty
-        ? json['title'] as String
-        : 'Chat',
-  );
   @override
   final String projectId;
   @override
@@ -45,6 +27,12 @@ final class DeviceChatRef implements ChatTabItem, DeviceWorktreeRef {
   bool matchesScope(Map<String, dynamic> value) =>
       value['projectId'] == projectId && value['worktreeId'] == worktreeId;
 }
+
+/// The search catalog's live chats and the computer's chat workspaces.
+typedef DeviceChatCatalog = ({
+  List<DeviceChatRef> chats,
+  List<DeviceChatWorkspace> workspaces,
+});
 
 final class DeviceChatWorkspace {
   DeviceChatWorkspace(this.id, this.name);

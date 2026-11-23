@@ -20,6 +20,7 @@ import 'package:mobile/ui/core/status_colors.dart';
 import 'package:mobile/ui/core/activity/pipeline_run_display.dart';
 import 'package:mobile/ui/core/activity/pr_check_display.dart';
 import 'package:mobile/ui/core/activity/pr_merge_queue_display.dart';
+import 'package:mobile/ui/core/files/changed_files_grouping.dart';
 import 'package:mobile/ui/core/files/changed_files_tab.dart';
 import 'package:mobile/ui/core/files/changed_files_load_status.dart';
 import 'package:mobile/ui/core/activity/pipeline_run_dot_track.dart';
@@ -51,6 +52,7 @@ class WorktreeActivitySidebar extends StatefulWidget {
     this.onOpenPipelineRun,
     this.pipelineRuns,
     this.notice,
+    this.changedFileSections = const [],
   });
 
   final WorktreeActivityContext worktree;
@@ -82,6 +84,8 @@ class WorktreeActivitySidebar extends StatefulWidget {
   final ValueChanged<RemotePipelineRun>? onOpenPipelineRun;
   final List<RemotePipelineRun>? pipelineRuns;
   final Widget? notice;
+
+  final List<ChangedFilesSection> changedFileSections;
 
   @override
   State<WorktreeActivitySidebar> createState() =>
@@ -142,9 +146,9 @@ class _WorktreeActivitySidebarState extends State<WorktreeActivitySidebar> {
                         ),
                         ChangedFilesTab(
                           onOpenDiff: widget.onOpenDiff,
-                          files: widget.activity.changedFiles,
                           status: widget.changedFilesStatus,
                           onRetry: widget.onRetryChangedFiles,
+                          sections: widget.changedFileSections,
                         ),
                       ],
                     ),

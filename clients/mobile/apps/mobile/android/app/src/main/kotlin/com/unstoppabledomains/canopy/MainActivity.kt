@@ -14,6 +14,8 @@ private const val BROWSER_CAPABILITIES_CHANNEL =
 private const val INSTALL_BEACON_CHANNEL =
     "com.unstoppabledomains.canopy/install_beacon"
 private const val INSTALL_BEACON_MARKER = "install_beacon_reported_v1"
+private const val NO_BACKUP_DIRECTORY_CHANNEL =
+    "com.unstoppabledomains.canopy/no_backup_directory"
 
 class MainActivity : FlutterActivity() {
     private var imeInsetsRecovery: ImeInsetsRecovery? = null
@@ -43,6 +45,9 @@ class MainActivity : FlutterActivity() {
     }
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Before Dart can open the Computer Connect core, so its TLS uses the
+        // Android trust store like dart:io.
+        ComputerConnectTls.init(applicationContext)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -75,6 +80,16 @@ class MainActivity : FlutterActivity() {
                     error.message,
                     null,
                 )
+            }
+        }
+
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            NO_BACKUP_DIRECTORY_CHANNEL,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "path" -> result.success(noBackupFilesDir.absolutePath)
+                else -> result.notImplemented()
             }
         }
     }

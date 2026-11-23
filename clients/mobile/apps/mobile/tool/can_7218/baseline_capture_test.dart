@@ -17,11 +17,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/data/models/space_notification_policy.dart';
 import 'package:mobile/data/repositories/space_notifications_repository.dart';
 import 'package:mobile/data/repositories/turn_feedback_repository.dart';
-import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_feedback_controller.dart';
 import 'package:mobile/ui/core/theme.dart';
 import 'package:mobile/ui/features/device_link/chats_screen.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/worktree_archive_row.dart';
 import 'package:mobile/ui/features/device_link/space_notifications/space_notifications_view_model.dart';
 import 'package:provider/provider.dart';
@@ -93,7 +91,8 @@ void main() {
         repository: MockTurnFeedbackRepository(),
       );
       addTearDown(feedback.dispose);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         wrap: (app) => RepaintBoundary(
           key: _root,
           child: scoped
@@ -105,7 +104,7 @@ void main() {
         ),
       );
       addTearDown(harness.dispose);
-      harness.model.connection.host = {'name': 'Studio Mac'};
+
       await harness.open(
         tester,
         'chat-pkce',
@@ -131,14 +130,23 @@ void main() {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      final harness = buildDeviceChatHarness();
-      final controller = ComputerConnectController(harness.model);
+      final harness = await buildDeviceChatHarness(
+        tester,
+        computer: FakeDesktopComputer(
+          answers: fakeInventoryAnswers(
+            label: 'Auth flow',
+            notificationSpaceId: 'space-wt',
+          ),
+        ),
+      );
+      await tester.runAsync(harness.controller.refresh);
+      final controller = harness.controller;
       final notifications = SpaceNotificationsViewModel(
         repository: _Policies(),
       );
       addTearDown(() async {
         notifications.dispose();
-        controller.dispose();
+
         await harness.dispose();
       });
       final app = MaterialApp(
@@ -150,18 +158,7 @@ void main() {
           body: SafeArea(
             child: DeviceWorktreeArchiveRow(
               controller: controller,
-              worktree: DeviceWorktree(
-                projectId: fakeProjectId,
-                projectName: 'acme-app',
-                id: fakeWorktreeId,
-                name: 'feature/auth',
-                savedStatus: null,
-                projection: const {
-                  'branch': 'feature/auth',
-                  'label': 'Auth flow',
-                  'notificationSpaceId': 'space-wt',
-                },
-              ),
+              worktree: controller.overview.worktrees.single,
               onTap: () {},
             ),
           ),

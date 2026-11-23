@@ -84,7 +84,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('computer chat feed $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Login badge')],
           runtimeByChatId: {'chat-1': fakeRuntime('streaming')},
@@ -92,7 +93,7 @@ void main() {
         ),
       );
       addTearDown(harness.dispose);
-      harness.model.connection.host = {'name': 'Studio Mac'};
+
       await harness.open(
         tester,
         'chat-1',
@@ -119,7 +120,7 @@ void main() {
 
       // Expand the first turn's steps.
       await tester.tap(find.byKey(const ValueKey('turn-steps-u-1')));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.text('Run the auth tests'), findsOneWidget);
       await capture('expanded');
       await tester.pumpWidget(const SizedBox());

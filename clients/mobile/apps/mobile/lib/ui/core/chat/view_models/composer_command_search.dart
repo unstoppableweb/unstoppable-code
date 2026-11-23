@@ -5,6 +5,10 @@
 /// Both implementations assert `test/fixtures/slash-search-vectors.json`, so
 /// a rule change updates the TypeScript contract, those vectors and this port
 /// together.
+///
+/// Shared with Remote Control. Computer Connect also has the Rust port in
+/// cc-domain::composer (search), checked against the same vectors; keep
+/// both in step until cleanup C5.
 library;
 
 /// The searchable fields of one row.

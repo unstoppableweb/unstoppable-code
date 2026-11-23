@@ -2364,6 +2364,23 @@ body {
   }
 }
 
+/* Background work (AgentStateGlyph): a deeper blink than the status
+ * pulse, because in the compact sidebar an idle row shows the same grey dot
+ * at rest. Opacity only, so it stays on the compositor; useContinuousMotion
+ * pauses it offscreen and in hidden windows. Under reduced motion the glyph
+ * draws a ring instead of this dot. */
+@keyframes canopy-background-pulse {
+  50% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .canopy-background-pulse {
+    animation: canopy-background-pulse 2.4s ease-in-out infinite;
+  }
+}
+
 [skullet-loading][data-inline-static] {
   --skullet-animation: none;
 }

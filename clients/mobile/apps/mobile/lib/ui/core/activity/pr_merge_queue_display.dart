@@ -1,3 +1,8 @@
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::activity (display) with its words in cc-app copy::activity;
+/// keep both in step until cleanup C5.
+library;
+
 import 'package:mobile/data/models/computer_activity/pr_merge_queue.dart';
 import 'package:mobile/data/models/computer_activity/pr_status.dart';
 

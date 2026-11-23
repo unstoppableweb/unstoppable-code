@@ -10,7 +10,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/theme.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/screen.dart';
 import '../../test/support/device_chat_harness.dart';
 import '../../test/support/fake_desktop_computer.dart';
@@ -61,13 +60,13 @@ void main() {
       tester.view.devicePixelRatio = 1;
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
       addTearDown(tester.view.reset);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(answers: fakeInventoryAnswers()),
       );
-      final controller = ComputerConnectController(harness.model);
+      final controller = harness.controller;
       addTearDown(harness.dispose);
-      addTearDown(controller.dispose);
-      harness.model.connection.host = {'name': 'Studio Mac'};
+
       await harness.select(tester, 'chat-pkce');
       await tester.pumpWidget(
         MaterialApp(
@@ -77,12 +76,12 @@ void main() {
             openDrawer: () {},
             child: ComputerConnectScreen(
               controller: controller,
-              apiOrigin: 'https://canopy.invalid',
+              account: harness.account,
             ),
           ),
         ),
       );
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       Future<void> capture(Finder subject, String name) async {
         expect(tester.takeException(), isNull);
         await expectLater(
@@ -93,11 +92,11 @@ void main() {
         );
       }
 
-      expect(find.text('Studio Mac'), findsOneWidget);
+      expect(find.text(harness.account.selectedName!), findsOneWidget);
       expect(find.byKey(const ValueKey('home-menu-button')), findsOneWidget);
       await capture(find.byType(ComputerConnectScreen), 'remote');
       await tester.tap(find.byTooltip('Remote options'));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.text('Search chats'), findsOneWidget);
       await capture(find.byType(Navigator), 'menu');
       await tester.pumpWidget(const SizedBox());

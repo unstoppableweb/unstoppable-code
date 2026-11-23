@@ -1,0 +1,17 @@
+[package]
+name = "cc-domain"
+description = "Computer Connect identifiers and pure domain rules."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+icu_collator = "2"
+icu_locale_core = "2"
+icu_properties = "2"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

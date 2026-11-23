@@ -4,6 +4,11 @@
 /// Rows reach the device two ways — the worktree `/state` slices and
 /// `portal.pipeline.event` upserts — and both use the same payload shape, so
 /// one parser serves both.
+///
+/// Shared with Remote Control. Computer Connect parses and merges runs in
+/// the Rust port, cc-domain::pipelines::run (`fromJson`, `mergeWith`,
+/// `comparePipelineRunRecency`), and maps the core's runs into these types;
+/// keep both in step until cleanup C5.
 library;
 
 /// Coarse step counters across every job in a run.
@@ -15,17 +20,6 @@ class RemotePipelineRunProgress {
 
   final int completedSteps;
   final int totalSteps;
-
-  static RemotePipelineRunProgress? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final completed = _intOrNull(value['completedSteps']);
-    final total = _intOrNull(value['totalSteps']);
-    if (completed == null || total == null) return null;
-    return RemotePipelineRunProgress(
-      completedSteps: completed,
-      totalSteps: total,
-    );
-  }
 }
 
 /// One step inside a job or matrix variant.
@@ -51,21 +45,6 @@ class RemotePipelineRunStep {
   /// wire). A larger read is requested with `portal.pipeline.log_request`,
   /// which replaces this value in the next event.
   final String? outputTail;
-
-  static RemotePipelineRunStep? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final stepId = _stringOrNull(value['stepId']);
-    if (stepId == null || stepId.isEmpty) return null;
-    return RemotePipelineRunStep(
-      stepId: stepId,
-      name: _string(value['name'], fallback: stepId),
-      status: _string(value['status']),
-      attempt: _intOrNull(value['attempt']),
-      iteration: _intOrNull(value['iteration']),
-      recovery: _intOrNull(value['recovery']),
-      outputTail: _stringOrNull(value['outputTail']),
-    );
-  }
 
   RemotePipelineRunStep withOutputTail(String? tail) => RemotePipelineRunStep(
     stepId: stepId,
@@ -93,20 +72,6 @@ class RemotePipelineRunVariant {
   final String status;
   final Map<String, dynamic> matrix;
   final List<RemotePipelineRunStep> steps;
-
-  static RemotePipelineRunVariant? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final jobId = _stringOrNull(value['jobId']);
-    if (jobId == null || jobId.isEmpty) return null;
-    final matrix = value['matrix'];
-    return RemotePipelineRunVariant(
-      jobId: jobId,
-      name: _string(value['name'], fallback: jobId),
-      status: _string(value['status']),
-      matrix: matrix is Map<String, dynamic> ? matrix : const {},
-      steps: _steps(value['steps']),
-    );
-  }
 }
 
 /// One job in the run's execution tree.
@@ -136,31 +101,6 @@ class RemotePipelineRunJob {
   /// `pending` | `expanded` | `failure` for a matrix job, else null.
   final String? expansion;
   final String? expansionError;
-
-  static RemotePipelineRunJob? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final jobId = _stringOrNull(value['jobId']);
-    if (jobId == null || jobId.isEmpty) return null;
-    final needs = value['needs'];
-    final variants = value['variants'];
-    return RemotePipelineRunJob(
-      jobId: jobId,
-      name: _string(value['name'], fallback: jobId),
-      status: _string(value['status']),
-      needs: needs is List
-          ? needs.whereType<String>().toList(growable: false)
-          : null,
-      steps: _steps(value['steps']),
-      variants: variants is List
-          ? [
-              for (final row in variants)
-                ?RemotePipelineRunVariant.fromJson(row),
-            ]
-          : const [],
-      expansion: _stringOrNull(value['expansion']),
-      expansionError: _stringOrNull(value['expansionError']),
-    );
-  }
 }
 
 /// Why a run paused or failed, without desktop-only diagnostics.
@@ -178,19 +118,6 @@ class RemotePipelineRunStatusReason {
   final String code;
   final String? provider;
   final String? resetsAt;
-
-  static RemotePipelineRunStatusReason? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final id = _stringOrNull(value['id']);
-    if (id == null || id.isEmpty) return null;
-    return RemotePipelineRunStatusReason(
-      id: id,
-      kind: _string(value['kind']),
-      code: _string(value['code']),
-      provider: _stringOrNull(value['provider']),
-      resetsAt: _stringOrNull(value['resetsAt']),
-    );
-  }
 }
 
 /// A checkpoint the desktop is waiting on, parsed for display only — mobile
@@ -216,32 +143,6 @@ class RemotePipelinePauseCheckpoint {
   /// Labels of the inputs the desktop is asking for, so the phone can say
   /// what is being waited on without rendering an unusable form.
   final List<String> fieldLabels;
-
-  static RemotePipelinePauseCheckpoint? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final id = _stringOrNull(value['id']);
-    if (id == null || id.isEmpty) return null;
-    final request = value['request'];
-    final fields = request is Map<String, dynamic> ? request['fields'] : null;
-    return RemotePipelinePauseCheckpoint(
-      id: id,
-      kind: _string(value['kind']),
-      jobId: _string(value['jobId']),
-      stepId: _string(value['stepId']),
-      title: request is Map<String, dynamic>
-          ? _stringOrNull(request['title'])
-          : null,
-      message: request is Map<String, dynamic>
-          ? _stringOrNull(request['message'])
-          : null,
-      fieldLabels: fields is List
-          ? [
-              for (final field in fields.whereType<Map<String, dynamic>>())
-                _string(field['label'], fallback: _string(field['key'])),
-            ]
-          : const [],
-    );
-  }
 }
 
 /// One chat turn a desktop attributes a run to: the agent started, resumed
@@ -261,25 +162,6 @@ class RemotePipelineRunChatTurn {
 
   /// `launched` | `watching`.
   final String relation;
-
-  static RemotePipelineRunChatTurn? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    final chatId = _stringOrNull(value['chatId']);
-    final userMessageId = _stringOrNull(value['userMessageId']);
-    final relation = _stringOrNull(value['relation']);
-    if (chatId == null ||
-        chatId.isEmpty ||
-        userMessageId == null ||
-        userMessageId.isEmpty ||
-        (relation != 'launched' && relation != 'watching')) {
-      return null;
-    }
-    return RemotePipelineRunChatTurn(
-      chatId: chatId,
-      userMessageId: userMessageId,
-      relation: relation!,
-    );
-  }
 
   @override
   bool operator ==(Object other) =>
@@ -304,14 +186,6 @@ class RemotePipelineRunChatFollowUp {
   final bool reportAvailable;
 
   bool get hasOutput => planAvailable || reportAvailable;
-
-  static RemotePipelineRunChatFollowUp? fromJson(Object? value) {
-    if (value is! Map<String, dynamic>) return null;
-    return RemotePipelineRunChatFollowUp(
-      planAvailable: value['planAvailable'] == true,
-      reportAvailable: value['reportAvailable'] == true,
-    );
-  }
 }
 
 /// [incoming] raw `pipelineRuns` rows, each row that leaves `chatTurns` out
@@ -417,228 +291,4 @@ class RemotePipelineRun {
   bool get isRoot => parentExecutionId == null;
 
   bool get hasDetail => jobs != null;
-
-  static RemotePipelineRun? fromJson(Map<String, dynamic> json) {
-    final localId =
-        _stringOrNull(json['localId']) ?? _stringOrNull(json['runId']);
-    if (localId == null || localId.isEmpty) return null;
-    final jobs = json['jobs'];
-    final reasons = json['statusReasons'];
-    final pauses = json['pendingPauses'];
-    final chatTurns = json['chatTurns'];
-    return RemotePipelineRun(
-      localId: localId,
-      pipelineId: _stringOrNull(json['pipelineId']),
-      pipelineName: _string(
-        json['pipelineName'],
-        fallback: _string(json['name'], fallback: localId),
-      ),
-      workspaceLocalId: _stringOrNull(json['workspaceLocalId']),
-      worktreeLocalId: _stringOrNull(json['worktreeLocalId']),
-      status: _string(json['status']),
-      startedAt: _stringOrNull(json['startedAt']),
-      finishedAt: _stringOrNull(json['finishedAt']),
-      parentExecutionId: _stringOrNull(json['parentExecutionId']),
-      triggerSource: _stringOrNull(json['triggerSource']),
-      hidden: json['hidden'] == true,
-      truncated: json['truncated'] == true,
-      outputTail: _stringOrNull(json['outputTail']),
-      progress: RemotePipelineRunProgress.fromJson(json['progress']),
-      statusReasons: reasons is List
-          ? [
-              for (final row in reasons)
-                ?RemotePipelineRunStatusReason.fromJson(row),
-            ]
-          : const [],
-      pendingPauses: pauses is List
-          ? [
-              for (final row in pauses)
-                ?RemotePipelinePauseCheckpoint.fromJson(row),
-            ]
-          : const [],
-      jobs: jobs is List
-          ? [for (final row in jobs) ?RemotePipelineRunJob.fromJson(row)]
-          : null,
-      chatTurns: chatTurns is List
-          ? List.unmodifiable({
-              for (final row in chatTurns)
-                ?RemotePipelineRunChatTurn.fromJson(row),
-            })
-          : null,
-      chatFollowUp: RemotePipelineRunChatFollowUp.fromJson(
-        json['chatFollowUp'],
-      ),
-    );
-  }
-
-  /// Folds [incoming] onto this row.
-  ///
-  /// Two rules carry the weight:
-  ///
-  /// - **Detail is never lost.** An event with `truncated: true` dropped its
-  ///   detail to fit the transfer budget, and an older desktop may never send
-  ///   `jobs` at all. Either way, dropping back to "no detail" would flap the
-  ///   screen between the tree and the unavailable-details fallback, so
-  ///   [jobs] is only ever replaced by a non-null value, and a step keeps the
-  ///   output tail it already has when an update omits one for the same
-  ///   attempt and iteration (live events carry tails only for the steps
-  ///   streaming in that window). The same applies
-  ///   to a held pending pause: the desktop deliberately re-attaches a
-  ///   `too_large` stub (id/kind/jobId/stepId only, no `request`) when a
-  ///   checkpoint's real detail did not fit the truncated event, and that
-  ///   stub must not clobber a richer checkpoint already held for the same
-  ///   id — see [_mergePendingPauses].
-  /// - **Reasons and pauses clear on a settled update.** A resumed run must
-  ///   stop showing the pause it just cleared, so a non-truncated update is
-  ///   authoritative for them even when empty.
-  /// - **Chat links change only when an update carries them.** An update
-  ///   without `chatTurns` keeps the held links; an explicit list, even an
-  ///   empty one, replaces them. Follow-up availability works the same way.
-  RemotePipelineRun mergeWith(RemotePipelineRun incoming) {
-    return RemotePipelineRun(
-      localId: incoming.localId,
-      pipelineId: incoming.pipelineId ?? pipelineId,
-      pipelineName: incoming.pipelineName == incoming.localId
-          ? pipelineName
-          : incoming.pipelineName,
-      workspaceLocalId: incoming.workspaceLocalId ?? workspaceLocalId,
-      worktreeLocalId: incoming.worktreeLocalId ?? worktreeLocalId,
-      status: incoming.status.isEmpty ? status : incoming.status,
-      startedAt: incoming.startedAt ?? startedAt,
-      finishedAt:
-          incoming.finishedAt ??
-          (incoming.status == 'pending' || incoming.status == 'running'
-              ? null
-              : finishedAt),
-      parentExecutionId: incoming.parentExecutionId ?? parentExecutionId,
-      triggerSource: incoming.triggerSource ?? triggerSource,
-      hidden: incoming.hidden,
-      truncated: incoming.truncated,
-      outputTail: incoming.outputTail ?? outputTail,
-      progress: incoming.progress ?? progress,
-      statusReasons: incoming.truncated && incoming.statusReasons.isEmpty
-          ? statusReasons
-          : incoming.statusReasons,
-      pendingPauses: _mergePendingPauses(pendingPauses, incoming),
-      jobs: incoming.jobs == null ? jobs : _mergeJobs(jobs, incoming.jobs!),
-      chatTurns: incoming.chatTurns ?? chatTurns,
-      chatFollowUp: incoming.chatFollowUp ?? chatFollowUp,
-    );
-  }
-}
-
-/// Merges held pending pauses with [incoming]'s.
-///
-/// A settled (non-truncated) update is fully authoritative, matching the
-/// "reasons and pauses clear on a settled update" rule. A truncated update
-/// is merged by checkpoint id instead of replacing wholesale: the desktop's
-/// `too_large` stub carries only `id`/`kind`/`jobId`/`stepId`, so a held
-/// checkpoint that already carries a `title`/`message`/`fieldLabels` wins
-/// over an incoming entry with the same id that carries none.
-List<RemotePipelinePauseCheckpoint> _mergePendingPauses(
-  List<RemotePipelinePauseCheckpoint> held,
-  RemotePipelineRun incoming,
-) {
-  if (!incoming.truncated) return incoming.pendingPauses;
-  if (incoming.pendingPauses.isEmpty) return held;
-  final heldById = {for (final pause in held) pause.id: pause};
-  return [
-    for (final pause in incoming.pendingPauses)
-      if (heldById[pause.id] case final existing?
-          when !_hasPauseDetail(pause) && _hasPauseDetail(existing))
-        existing
-      else
-        pause,
-  ];
-}
-
-bool _hasPauseDetail(RemotePipelinePauseCheckpoint pause) =>
-    pause.title != null ||
-    pause.message != null ||
-    pause.fieldLabels.isNotEmpty;
-
-List<RemotePipelineRunJob> _mergeJobs(
-  List<RemotePipelineRunJob>? existing,
-  List<RemotePipelineRunJob> incoming,
-) {
-  if (existing == null || existing.isEmpty) return incoming;
-  final previous = {for (final job in existing) job.jobId: job};
-  return [
-    for (final job in incoming)
-      if (previous[job.jobId] case final before?)
-        RemotePipelineRunJob(
-          jobId: job.jobId,
-          name: job.name,
-          status: job.status,
-          needs: job.needs,
-          steps: _mergeSteps(before.steps, job.steps),
-          variants: _mergeVariants(before.variants, job.variants),
-          expansion: job.expansion,
-          expansionError: job.expansionError,
-        )
-      else
-        job,
-  ];
-}
-
-List<RemotePipelineRunVariant> _mergeVariants(
-  List<RemotePipelineRunVariant> existing,
-  List<RemotePipelineRunVariant> incoming,
-) {
-  if (existing.isEmpty) return incoming;
-  final previous = {for (final variant in existing) variant.jobId: variant};
-  return [
-    for (final variant in incoming)
-      if (previous[variant.jobId] case final before?)
-        RemotePipelineRunVariant(
-          jobId: variant.jobId,
-          name: variant.name,
-          status: variant.status,
-          matrix: variant.matrix,
-          steps: _mergeSteps(before.steps, variant.steps),
-        )
-      else
-        variant,
-  ];
-}
-
-List<RemotePipelineRunStep> _mergeSteps(
-  List<RemotePipelineRunStep> existing,
-  List<RemotePipelineRunStep> incoming,
-) {
-  if (existing.isEmpty) return incoming;
-  final previous = {for (final step in existing) step.stepId: step};
-  return [
-    for (final step in incoming)
-      if (previous[step.stepId] case final before?
-          when step.outputTail == null &&
-              step.attempt == before.attempt &&
-              step.iteration == before.iteration &&
-              step.recovery == before.recovery &&
-              before.outputTail != null)
-        step.withOutputTail(before.outputTail)
-      else
-        step,
-  ];
-}
-
-List<RemotePipelineRunStep> _steps(Object? value) => value is List
-    ? [for (final row in value) ?RemotePipelineRunStep.fromJson(row)]
-    : const [];
-
-String? _stringOrNull(Object? value) => value is String ? value : null;
-
-int? _intOrNull(Object? value) => value is num ? value.toInt() : null;
-
-String _string(Object? value, {String fallback = ''}) =>
-    value is String ? value : fallback;
-
-/// Shared newest-first ordering for both remote execution projections.
-int comparePipelineRunRecency(RemotePipelineRun a, RemotePipelineRun b) {
-  final left = DateTime.tryParse(b.startedAt ?? ''),
-      right = DateTime.tryParse(a.startedAt ?? '');
-  if (left == null && right == null) return 0;
-  if (left == null) return -1;
-  if (right == null) return 1;
-  return left.compareTo(right);
 }

@@ -2,11 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:mobile/data/models/composer_work.dart';
-import 'package:mobile/device_link/work_drawer/repository.dart';
 import 'package:mobile/ui/core/action_dialogs.dart';
 import 'package:mobile/ui/core/chat/widgets/composer_work_drawer.dart';
 import '../chats_view_model.dart';
 import '../pipelines/run_screen.dart';
+import 'pipelines_model.dart';
 
 /// Owns work observations for the visible chat, alongside its composer.
 class DeviceWorkComposer extends StatefulWidget {
@@ -22,7 +22,7 @@ class DeviceWorkComposer extends StatefulWidget {
 }
 
 class _DeviceWorkComposerState extends State<DeviceWorkComposer> {
-  late DeviceWorkDrawerRepository _repository;
+  late ComputerWorkDrawer _repository;
   StreamSubscription<void>? _updates;
   @override
   void initState() {
@@ -31,10 +31,7 @@ class _DeviceWorkComposerState extends State<DeviceWorkComposer> {
   }
 
   void _attach() {
-    _repository = DeviceWorkDrawerRepository(
-      widget.model.chats.ipc,
-      widget.model.activity.pipelines,
-    );
+    _repository = widget.model.activity.pipelines.workDrawer();
     _updates = _repository.updates.listen((_) {
       if (mounted) setState(() {});
     });
@@ -74,7 +71,7 @@ class _DeviceWorkComposerState extends State<DeviceWorkComposer> {
     super.dispose();
   }
 
-  Future<void> _action(WorkItem item, WorkAction action) async {
+  Future<void> _action(WorkItemView item, WorkAction action) async {
     final repository = _repository;
     final refKey = widget.model.state?.ref.key;
     bool notifySubscriber = false;
@@ -133,7 +130,7 @@ class _DeviceWorkComposerState extends State<DeviceWorkComposer> {
     );
   }
 
-  Future<void> _open(WorkItem item) async {
+  Future<void> _open(WorkItemView item) async {
     if (item.url case final url?) {
       final opened = await launchUrl(
         Uri.parse(url),

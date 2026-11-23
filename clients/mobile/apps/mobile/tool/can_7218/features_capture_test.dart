@@ -16,7 +16,6 @@ import 'package:mobile/data/models/turn_feedback.dart';
 import 'package:mobile/data/repositories/space_notifications_repository.dart';
 import 'package:mobile/data/repositories/turn_feedback_repository.dart';
 import 'package:mobile/data/services/satisfaction_prompt_store.dart';
-import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/services/analytics/product_analytics.dart';
 import 'package:mobile/services/satisfaction/satisfaction_policy.dart';
 import 'package:mobile/services/store_review_launcher.dart';
@@ -24,7 +23,6 @@ import 'package:mobile/ui/core/chat/view_models/turn_feedback_controller.dart';
 import 'package:mobile/ui/core/theme.dart';
 import 'package:mobile/ui/features/device_link/chats_screen.dart';
 import 'package:mobile/ui/features/device_link/chats_view_model.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/controller.dart';
 import 'package:mobile/ui/features/device_link/computer_connect/worktree_archive_row.dart';
 import 'package:mobile/ui/features/device_link/space_notifications/space_notification_menu.dart';
 import 'package:mobile/ui/features/device_link/space_notifications/space_notifications_view_model.dart';
@@ -111,7 +109,8 @@ void main() {
         repository: MockTurnFeedbackRepository(),
       );
       addTearDown(feedback.dispose);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         wrap: (app) => RepaintBoundary(
           key: _root,
           child: ChangeNotifierProvider<TurnFeedbackController>.value(
@@ -121,7 +120,7 @@ void main() {
         ),
       );
       addTearDown(harness.dispose);
-      harness.model.connection.host = {'name': 'Studio Mac'};
+
       await harness.open(
         tester,
         'chat-pkce',
@@ -162,14 +161,23 @@ void main() {
         tester.view.physicalSize = const Size(390, 844);
         tester.view.devicePixelRatio = 1;
         addTearDown(tester.view.reset);
-        final harness = buildDeviceChatHarness();
-        final controller = ComputerConnectController(harness.model);
+        final harness = await buildDeviceChatHarness(
+          tester,
+          computer: FakeDesktopComputer(
+            answers: fakeInventoryAnswers(
+              label: 'Auth flow',
+              notificationSpaceId: 'space-wt',
+            ),
+          ),
+        );
+        await tester.runAsync(harness.controller.refresh);
+        final controller = harness.controller;
         final notifications = SpaceNotificationsViewModel(
           repository: _Policies(writesEnabled: writable),
         );
         addTearDown(() async {
           notifications.dispose();
-          controller.dispose();
+
           await harness.dispose();
         });
         await tester.pumpWidget(
@@ -186,18 +194,7 @@ void main() {
                   body: SafeArea(
                     child: DeviceWorktreeArchiveRow(
                       controller: controller,
-                      worktree: DeviceWorktree(
-                        projectId: fakeProjectId,
-                        projectName: 'acme-app',
-                        id: fakeWorktreeId,
-                        name: 'feature/auth',
-                        savedStatus: null,
-                        projection: const {
-                          'branch': 'feature/auth',
-                          'label': 'Auth flow',
-                          'notificationSpaceId': 'space-wt',
-                        },
-                      ),
+                      worktree: controller.overview.worktrees.single,
                       onTap: () {},
                     ),
                   ),
@@ -236,7 +233,8 @@ void main() {
         thresholds: () => SatisfactionThresholds.verification,
       );
       addTearDown(prompt.dispose);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         wrap: (app) => RepaintBoundary(
           key: _root,
           child: ChangeNotifierProvider<SatisfactionPromptController>.value(
@@ -246,14 +244,15 @@ void main() {
         ),
       );
       addTearDown(harness.dispose);
-      harness.model.connection.host = {'name': 'Studio Mac'};
+
       await harness.open(
         tester,
         'chat-pkce',
         mode: themeMode,
         screen: chatScreen,
       );
-      await _completeTurn(tester, harness.computer);
+      await _completeTurn(tester, harness);
+      await harness.settle(tester);
       await tester.pumpAndSettle();
 
       expect(find.text('Rotation is wired up.'), findsOneWidget);
@@ -272,8 +271,9 @@ void main() {
 /// the turn's `completed` end record.
 Future<void> _completeTurn(
   WidgetTester tester,
-  FakeDesktopComputer computer,
+  DeviceChatHarness harness,
 ) async {
+  final computer = harness.computer;
   Map<String, dynamic> timer({bool done = false}) => {
     'type': 'turn_timer',
     'turnId': 't-u1',
@@ -295,7 +295,7 @@ Future<void> _completeTurn(
   upsert(fakeMessage('u1', 'user', [fakeText('Rotate the refresh token too')]));
   runtime('streaming');
   upsert(fakeMessage('r1', 'assistant', [timer(), fakeText('Working')]));
-  await tester.pump();
+  await harness.settle(tester);
   upsert(
     fakeMessage('r1', 'assistant', [
       timer(done: true),
@@ -303,7 +303,7 @@ Future<void> _completeTurn(
     ]),
   );
   runtime('idle');
-  await tester.pump();
+  await harness.settle(tester);
   computer.push({
     'type': 'tab.metadata_patched',
     'tabId': 'chat-pkce',
@@ -313,9 +313,11 @@ Future<void> _completeTurn(
       },
     },
   });
+  await harness.settle(tester);
+  // The controller can schedule the quiet delay from a Rust frame on the
+  // real clock, while Flutter's route animations still use the test clock.
   await tester.runAsync(
-    () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    () => Future<void>.delayed(const Duration(milliseconds: 1600)),
   );
-  await tester.pump();
   await tester.pump(const Duration(seconds: 2));
 }

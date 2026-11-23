@@ -2,12 +2,13 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:mobile/app/computer_connect_scope.dart';
+import 'package:mobile/app/computer_connect_transport.dart';
+import 'package:mobile/app/computer_connect_runtime.dart';
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:provider/single_child_widget.dart';
 import 'package:mobile/app/desktop_app_prompt_binding.dart';
@@ -22,11 +23,8 @@ import 'package:mobile/data/models/account_organizations.dart';
 import 'package:mobile/data/models/model_picker_tab_store.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/data/services/model_picker_tab_preference_store.dart';
-import 'package:mobile/data/models/chat_drafts.dart';
 
 import 'package:mobile/data/models/device_registration.dart';
-import 'package:mobile/data/services/chat_draft_store.dart';
-import 'package:mobile/ui/core/chat/chat_draft_store_provider.dart';
 import 'package:mobile/data/repositories/api_keys_repository.dart';
 import 'package:mobile/data/repositories/auth_repository.dart';
 import 'package:mobile/data/repositories/auth_sources_repository.dart';
@@ -65,6 +63,7 @@ import 'package:mobile/services/link_sharer.dart';
 import 'package:mobile/ui/core/external_links.dart';
 import 'package:mobile/ui/features/desktop_app/view_models/desktop_app_prompt_controller.dart';
 import 'package:mobile/data/services/satisfaction_prompt_store.dart';
+import 'package:mobile/data/services/rust_auth_http_client.dart';
 import 'package:mobile/data/services/session_store.dart';
 import 'package:mobile/data/services/stats_api_service.dart';
 import 'package:mobile/data/services/sub_teams_api_service.dart';
@@ -105,7 +104,6 @@ import 'package:mobile/ui/features/feed/view_models/feed_view_model.dart';
 import 'package:mobile/ui/features/home/authenticated_shell.dart';
 import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
-import 'package:mobile/ui/features/chat/views/chat_draft_store_scope.dart';
 import 'package:mobile/ui/features/home/views/home_shell.dart';
 import 'package:mobile/ui/features/members/view_models/incoming_invitations_view_model.dart';
 import 'package:mobile/ui/features/members/view_models/members_view_model.dart';
@@ -113,6 +111,7 @@ import 'package:mobile/ui/features/organizations/view_models/org_settings_view_m
 import 'package:mobile/ui/features/organizations/view_models/org_view_model.dart';
 import 'package:mobile/app/push_tap_binding.dart';
 import 'package:mobile/app/turn_feedback_scope.dart';
+import 'package:mobile/app/sign_out_cleanup.dart';
 import 'package:mobile/ui/features/satisfaction/view_models/satisfaction_prompt_controller.dart';
 import 'package:mobile/ui/features/settings/view_models/notifications_view_model.dart';
 import 'package:mobile/ui/features/stats/view_models/stats_view_model.dart';
@@ -135,12 +134,9 @@ final ApiClient _apiClient = ApiClient.withBaseUrlProvider(
   clientVersionProvider: () => _clientVersion,
 );
 
-/// Builds the real Better Auth-backed [HttpAuthRepository] when an API base
-/// URL is configured, else null for the mock.
-HttpAuthRepository? _buildHttpAuthRepository() {
-  if (!AppConfig.hasAuthApiConfig) return null;
+HttpAuthRepository _buildHttpAuthRepository(RustAuthHttpClient transport) {
   return HttpAuthRepository(
-    service: AuthApiService(apiClient: _apiClient),
+    service: AuthApiService(apiClient: _apiClient.withHttpClient(transport)),
     sessionStore: _sessionStore,
     oauthAuthenticator: const WebAuthOAuthenticator(),
   );
@@ -294,19 +290,6 @@ OrgRepository _buildOrgRepository() {
   }
   return MockOrgRepository();
 }
-
-/// The signed-in account's environment-qualified key, or null while nobody
-/// is signed in. Scopes the account's chat drafts.
-String? _accountScopeOf(AuthViewModel auth) {
-  final userId = auth.status == AuthStatus.authenticated ? auth.user?.id : null;
-  return userId == null ? null : '${AppConfig.environment.name}:$userId';
-}
-
-Future<ChatDraftStore> _openChatDraftStore(String accountScope) async =>
-    FileChatDraftStore.open(
-      directory: await getApplicationSupportDirectory(),
-      accountScope: accountScope,
-    );
 
 /// Builds the [FeedbackReportRepository] backing the app-wide "Send feedback"
 /// sheet (Account tab + Settings). Feedback reports are device/user-scoped
@@ -571,15 +554,14 @@ Future<void> main() async {
     SharedPrefsStartScreenPreferenceStore(),
   );
   await launchMarkReady;
-  runApp(
-    App(
-      startScreenController: startScreenController,
-      themeController: ThemeController(
-        store: themeStore,
-        initialMode: initialThemeMode,
-      ),
+  final app = App(
+    startScreenController: startScreenController,
+    themeController: ThemeController(
+      store: themeStore,
+      initialMode: initialThemeMode,
     ),
   );
+  runApp(ComputerConnectRuntimeScope(child: app));
   // Best-effort and not awaited: removes chat tails an earlier build cached
   // for the retired Remote tab, so they do not outlive it on disk.
   unawaited(deleteRetiredRemoteTranscripts());
@@ -645,7 +627,7 @@ class App extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Rebuild the auth provider whenever reviewer demo mode or the fixed API
-    // environment changes. [_buildAuthRepository] reads the current config at
+    // environment changes. The providers read the current config at
     // creation time, so a fresh AuthViewModel is needed to swap repositories
     // and restore only against the selected origin. The provider stays above
     // MaterialApp so pushed routes can still read it.
@@ -667,71 +649,71 @@ class App extends StatelessWidget {
         valueListenable: AppConfig.environmentListenable,
         builder: (context, apiEnvironment, _) => ValueListenableBuilder<bool>(
           valueListenable: DemoMode.enabled,
-          builder: (context, demoModeEnabled, _) =>
+          builder: (context, demoModeEnabled, _) => MultiProvider(
+            key: ValueKey((demoModeEnabled, apiEnvironment)),
+            providers: [
+              Provider<RustAuthHttpClient?>(
+                create: (_) =>
+                    AppConfig.hasAuthApiConfig ? RustAuthHttpClient() : null,
+                dispose: (_, transport) => transport?.close(),
+              ),
               ChangeNotifierProvider<AuthViewModel>(
-                key: ValueKey((demoModeEnabled, apiEnvironment)),
-                create: (_) {
-                  final live = _buildHttpAuthRepository();
+                create: (context) {
+                  final transport = context.read<RustAuthHttpClient?>();
                   return AuthViewModel(
-                    repository: live ?? MockAuthRepository(),
+                    repository: transport == null
+                        ? MockAuthRepository()
+                        : _buildHttpAuthRepository(transport),
                     loadOrganizations: _loadOrganizations,
                     workspaceContextStore: SharedPrefsWorkspaceContextStore(
                       namespace: apiEnvironment.name,
                     ),
-                    beforeSignOut: () => _pushService.onSignedOut(null),
+                    beforeSignOut: () => cleanUpBeforeSignOut(
+                      token: _sessionStore.currentToken,
+                      transport: context.read<ComputerConnectTransport?>(),
+                      unregisterPush: () => _pushService.onSignedOut(null),
+                    ),
                   )..restore();
                 },
-                child: MultiProvider(
-                  providers: [workspaceContextProvider()],
-                  // Above MaterialApp so routes pushed on the root navigator
-                  // read the same account draft store as the shell.
-                  child: Builder(
-                    builder: (context) => ChatDraftStoreScope(
-                      account: context.read<AuthViewModel>(),
-                      accountScope: () =>
-                          _accountScopeOf(context.read<AuthViewModel>()),
-                      open: _openChatDraftStore,
-                      child: PushLifecycleBinding(
-                        child: Consumer<ThemeController>(
-                          builder: (context, theme, _) => MaterialApp(
-                            title: Brand.displayName,
-                            debugShowCheckedModeBanner: false,
-                            navigatorObservers: [appRouteObserver],
-                            theme: AppTheme.light,
-                            darkTheme: AppTheme.dark,
-                            themeMode: theme.mode,
-                            builder: (context, child) =>
-                                AnnotatedRegion<SystemUiOverlayStyle>(
-                                  value: SystemUiOverlayStyle(
-                                    systemNavigationBarColor: Theme.of(
-                                      context,
-                                    ).scaffoldBackgroundColor,
-                                    systemNavigationBarDividerColor:
-                                        Colors.transparent,
-                                    systemNavigationBarIconBrightness:
-                                        Theme.of(context).brightness ==
-                                            Brightness.dark
-                                        ? Brightness.light
-                                        : Brightness.dark,
-                                    systemNavigationBarContrastEnforced: false,
-                                  ),
-                                  child: IosFoldRegionScope(
-                                    child: ColoredBox(
-                                      color: Theme.of(
-                                        context,
-                                      ).scaffoldBackgroundColor,
-                                      child: FoldSafeArea(child: child!),
-                                    ),
-                                  ),
-                                ),
-                            home: const AuthGate(),
+              ),
+            ],
+            child: MultiProvider(
+              providers: [workspaceContextProvider()],
+              child: PushLifecycleBinding(
+                child: Consumer<ThemeController>(
+                  builder: (context, theme, _) => MaterialApp(
+                    title: Brand.displayName,
+                    debugShowCheckedModeBanner: false,
+                    navigatorObservers: [appRouteObserver],
+                    theme: AppTheme.light,
+                    darkTheme: AppTheme.dark,
+                    themeMode: theme.mode,
+                    builder: (context, child) =>
+                        AnnotatedRegion<SystemUiOverlayStyle>(
+                          value: SystemUiOverlayStyle(
+                            systemNavigationBarColor: Theme.of(
+                              context,
+                            ).scaffoldBackgroundColor,
+                            systemNavigationBarDividerColor: Colors.transparent,
+                            systemNavigationBarIconBrightness:
+                                Theme.of(context).brightness == Brightness.dark
+                                ? Brightness.light
+                                : Brightness.dark,
+                            systemNavigationBarContrastEnforced: false,
+                          ),
+                          child: IosFoldRegionScope(
+                            child: ColoredBox(
+                              color: Theme.of(context).scaffoldBackgroundColor,
+                              child: FoldSafeArea(child: child!),
+                            ),
                           ),
                         ),
-                      ),
-                    ),
+                    home: const AuthGate(),
                   ),
                 ),
               ),
+            ),
+          ),
         ),
       ),
     );
@@ -830,13 +812,7 @@ class AuthGate extends StatelessWidget {
       AuthStatus.unauthenticated ||
       AuthStatus.authenticating => const SignInScreen(),
       AuthStatus.twoFactorPending => const TwoFactorScreen(),
-      // Composers read their drafts synchronously, so the shell waits for
-      // the account's draft store (see [ChatDraftStoreScope]).
-      AuthStatus.authenticated => switch (context
-          .watch<ChatDraftStoreHolder?>()) {
-        ChatDraftStoreHolder(store: null) => const LaunchView(),
-        _ => _authenticatedApp(context, auth),
-      },
+      AuthStatus.authenticated => _authenticatedApp(context, auth),
     };
   }
 

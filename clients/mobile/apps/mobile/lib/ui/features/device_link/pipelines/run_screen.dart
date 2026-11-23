@@ -4,7 +4,7 @@ import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/data/models/computer_activity/pipeline_content.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/device_link/pipelines/repository.dart';
+import '../computer_connect/pipelines_model.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_run_view.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_content_view.dart';
 
@@ -16,7 +16,7 @@ class DevicePipelineRunScreen extends StatefulWidget {
     required this.id,
     required this.name,
   });
-  final DevicePipelineRepository repository;
+  final ComputerPipelines repository;
   final DeviceChatRef ref;
   final String id, name;
   @override
@@ -182,7 +182,7 @@ class _PipelineContentScreen extends StatelessWidget {
     required this.empty,
     required this.source,
   });
-  final DevicePipelineRepository repository;
+  final ComputerPipelines repository;
   final DeviceChatRef ref;
   final String id, title, empty;
   final RemotePipelineContentSource source;

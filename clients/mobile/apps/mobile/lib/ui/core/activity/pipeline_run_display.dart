@@ -1,3 +1,10 @@
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::pipelines::presentation (status words, guards, groups, dot
+/// tiers) with its words in cc-app copy::pipelines; the shared widgets
+/// still draw with these helpers for both apps. Keep both in step until
+/// cleanup C5.
+library;
+
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/computer_activity/pipeline_run.dart';
 import 'package:mobile/ui/core/status_colors.dart';

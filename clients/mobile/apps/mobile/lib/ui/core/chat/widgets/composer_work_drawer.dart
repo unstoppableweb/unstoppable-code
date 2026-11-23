@@ -27,11 +27,11 @@ class ComposerWorkDrawer extends StatefulWidget {
     required this.onOpen,
     this.busy = _notBusy,
   });
-  final WorkDrawerState state;
+  final WorkDrawerView state;
   final bool online;
   final VoidCallback onRefresh;
-  final void Function(WorkItem, WorkAction) onAction;
-  final ValueChanged<WorkItem> onOpen;
+  final void Function(WorkItemView, WorkAction) onAction;
+  final ValueChanged<WorkItemView> onOpen;
   final bool Function(String) busy;
   static bool _notBusy(String _) => false;
   @override
@@ -259,7 +259,7 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
     );
   }
 
-  Widget _row(WorkItem item) {
+  Widget _row(WorkItemView item) {
     final colors = AppColors.of(context), statuses = StatusColors.of(context);
     final open = _open == item.id;
     final tint = switch (item.tone) {
@@ -377,15 +377,15 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final fact in item.details.entries) ...[
+                for (final fact in item.details) ...[
                   Text(
-                    fact.key,
+                    fact.label,
                     style: AppTypography.bodySmall.copyWith(
                       color: colors.foregroundMuted,
                     ),
                   ),
                   SelectableText(
-                    fact.key == 'Last checked'
+                    fact.label == 'Last checked'
                         ? formatRelativeTime(fact.value)
                         : fact.value,
                     style: AppTypography.body.copyWith(
@@ -412,8 +412,7 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
                     ])
                       CanopyButton(
                         label:
-                            item.actionLabels[action] ??
-                            workActionLabel(action),
+                            item.actionLabel(action) ?? workActionLabel(action),
                         variant: CanopyButtonVariant.inline,
                         onPressed: widget.online && !widget.busy(item.id)
                             ? () => widget.onAction(item, action)
@@ -428,7 +427,7 @@ class _ComposerWorkDrawerState extends State<ComposerWorkDrawer> {
     );
   }
 
-  void _completed(BuildContext context, List<WorkItem> items) =>
+  void _completed(BuildContext context, List<WorkItemView> items) =>
       showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(

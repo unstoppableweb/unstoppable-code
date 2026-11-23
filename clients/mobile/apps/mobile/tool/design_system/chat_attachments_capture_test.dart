@@ -63,8 +63,11 @@ void main() {
 
     testWidgets('composer states $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final uploadGate = Completer<Object?>();
-      final harness = buildDeviceChatHarness(
+      final uploadGate = (await tester.runAsync(
+        () async => Completer<Object?>(),
+      ))!;
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           answers: {
             'workspace-items:import-attachments': (args) {
@@ -118,6 +121,7 @@ void main() {
           size: 8,
         ),
       );
+      await harness.settle(tester);
       // The refusal's snack bar would cover the composer's + control.
       ScaffoldMessenger.of(tester.element(composer)).removeCurrentSnackBar();
       await tester.pump();
@@ -127,6 +131,9 @@ void main() {
           mediaType: 'image/png',
           bytes: tinyPngBytes,
         ),
+      );
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 40)),
       );
       // A fixed spinner frame so the uploading ring reads clearly.
       await tester.pump(const Duration(milliseconds: 300));
@@ -149,7 +156,8 @@ void main() {
 
     testWidgets('transcript chips $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-a', 'Chat A')],
           transcripts: {

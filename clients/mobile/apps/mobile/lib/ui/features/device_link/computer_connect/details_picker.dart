@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
-import 'account.dart';
+import 'account_model.dart';
 import 'computer_switcher.dart';
 import 'connection_view.dart';
 
@@ -13,7 +13,7 @@ class ComputerDetailsPicker extends StatelessWidget {
     required this.account,
     required this.title,
   });
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
   final String title;
 
   @override
@@ -23,7 +23,7 @@ class ComputerDetailsPicker extends StatelessWidget {
       account: account,
       title: title,
       label:
-          account.engine.selected.chats.connection.host?['name'] as String? ??
+          account.sessions.selected?.chats.connection.hostName ??
           account.selectedName ??
           'Choose a computer',
       onManage: () => unawaited(showComputerConnections(context, account)),
@@ -34,7 +34,7 @@ class ComputerDetailsPicker extends StatelessWidget {
 /// Home and detail pickers open the same management page on their navigator.
 Future<void> showComputerConnections(
   BuildContext context,
-  ComputerConnectAccount account,
+  ComputerAccountModel account,
 ) => Navigator.of(context).push<void>(
   MaterialPageRoute(
     builder: (_) => CanopyScaffold(

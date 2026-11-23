@@ -5,17 +5,16 @@ import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
-import 'package:mobile/device_link/orchestrator/catalog.dart';
 import 'package:mobile/ui/core/chat/widgets/pending_question_indicator.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/widgets/inline_notice.dart';
 import 'package:mobile/ui/core/status_colors.dart';
 import '../../chats_screen.dart';
-import '../account.dart';
+import '../account_model.dart';
 import '../computer_switcher.dart';
 import '../connection_view.dart';
 import '../details_picker.dart';
-import 'controller.dart';
+import 'model.dart';
 
 class ComputerOrchestratorScreen extends StatefulWidget {
   const ComputerOrchestratorScreen({
@@ -23,7 +22,7 @@ class ComputerOrchestratorScreen extends StatefulWidget {
     required this.account,
     this.isActive = true,
   });
-  final ComputerConnectAccount account;
+  final ComputerAccountModel account;
   final bool isActive;
   @override
   State<ComputerOrchestratorScreen> createState() =>
@@ -32,9 +31,15 @@ class ComputerOrchestratorScreen extends StatefulWidget {
 
 class _ComputerOrchestratorScreenState extends State<ComputerOrchestratorScreen>
     with WidgetsBindingObserver {
-  ComputerOrchestratorController? _controller;
-  bool _opening = false, _foreground = true, _routeVisible = true;
-  ComputerOrchestratorController? _chatController;
+  ComputerOrchestrator? _controller;
+  bool _opening = false, _routeVisible = true;
+  // The observer reports only later changes: a screen opened while the app
+  // is not resumed starts hidden from the desktop.
+  bool _foreground = switch (WidgetsBinding.instance.lifecycleState) {
+    null || AppLifecycleState.resumed => true,
+    _ => false,
+  };
+  ComputerOrchestrator? _chatController;
   bool _visibilityQueued = false;
   @override
   void initState() {
@@ -68,7 +73,7 @@ class _ComputerOrchestratorScreenState extends State<ComputerOrchestratorScreen>
   }
 
   void _sync() {
-    final next = widget.account.engine.orchestrator;
+    final next = widget.account.sessions.orchestrator;
     if (!identical(next, _controller)) {
       _controller?.setVisible(false);
       _controller = next;
@@ -144,10 +149,8 @@ class _ComputerOrchestratorScreenState extends State<ComputerOrchestratorScreen>
           final model = controller?.chats;
           final online = model?.online == true;
           final computerName =
-              model?.connection.host?['name'] as String? ??
-              account.selectedName;
-          final entries =
-              controller?.catalog.entries ?? const <OrchestratorEntry>[];
+              model?.connection.hostName ?? account.selectedName;
+          final entries = controller?.entries ?? const <OrchestratorEntry>[];
           final error = model?.error ?? model?.chats.error;
           final navigation = HomeNavigationScope.maybeOf(context);
           return CanopyScaffold(
@@ -222,7 +225,7 @@ class _ComputerOrchestratorScreenState extends State<ComputerOrchestratorScreen>
                                 spacing: 8,
                                 children: [
                                   if (entry.chats.any(
-                                    (chat) => controller.questions
+                                    (chat) => controller
                                         .pendingFor(chat.id)
                                         .isNotEmpty,
                                   ))

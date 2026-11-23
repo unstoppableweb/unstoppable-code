@@ -1,0 +1,169 @@
+{
+  "about": "Desktop handshakes recorded with the desktop HandshakeInitiator and HandshakeResponder (apps/desktop-app/src/main/remote-control/crypto). The mobile side replays the initiator with its recorded ephemeral secret, nonce and session id. toPhone frames were sealed by the desktop SecureChannel; toDesktop frames are what the initiator seals, and the desktop opened them. Regenerate only on an intended contract change (.playwright/rust-computer-connect/p1/gen-vectors.ts). sameResponder: two control handshakes between one phone identity and one desktop identity, recorded the same way (.playwright/rust-cc-golden-review/gen-same-responder.ts), so only the transcript tells their responder signatures apart.",
+  "transcripts": [
+    {
+      "purpose": "pair",
+      "mobileSeed": "QgT2zHXcBtOfjcw9OKBgFARhq-vSPNatEr_NNjrPpe4",
+      "mobilePublicKey": "blyPR4U-J8FQB4gd4X1YQ1__ETYfHouDVGr1okSDMDk",
+      "desktopDeviceId": "XHd6m88llZkjC5SjsdO-uA",
+      "desktopPublicKey": "VCzl3sinJ4FYoBgTsKRTd1t7DLNGSzaPw24uxHt8-ug",
+      "sessionId": "860b737cb18c8c30fd00552b50e40b69",
+      "ephemeralSecret": "8098654ae8960e765fee10a8f33081339527631ad8a9615a54d6ceb8df7c7b5c",
+      "nonce": "5fcf28940e41fc35698b0d79c1e554d050b05f19826c9a333a1e3a3c55fbe26b",
+      "hello1": {
+        "protocol": "canopy-remote-control/1",
+        "purpose": "pair",
+        "initiatorKey": "blyPR4U-J8FQB4gd4X1YQ1__ETYfHouDVGr1okSDMDk",
+        "commitment": "3hbyNEGfmS4iCAYq_NfG8wt0zjp-5-rAUAgUUMLLgHQ"
+      },
+      "hello2": {
+        "responderKey": "VCzl3sinJ4FYoBgTsKRTd1t7DLNGSzaPw24uxHt8-ug",
+        "ephemeral": "jnqTgyipUhk4ikTwbU--oROju--vKJKeq1US2Vq_xGM",
+        "nonce": "UoDcAHotz1aU7Qi6UCuI1xeAt0ll3uF7P_zqvnHpvjA"
+      },
+      "hello3": {
+        "ephemeral": "MJcq-4p0QuUy_WUZFufgzQkfDkCWuavBW0xo9UaLdSA",
+        "nonce": "X88olA5B_DVpiw15weVU0FCwXxmCbJozOh46PFX74ms",
+        "signature": "ciW3Y7s7a9MwlHJWIMrDSFsuZlAutXnvsBOxm8-5u2Cq1sRxb0yVfwwVtjSzVbJBiYNjgP_cNttuQrD6cfVhDQ"
+      },
+      "hello4": {
+        "signature": "J4vC8qjqOP48e-WqrkXR9HNgzAalfsq05TR2dXzh8YZuyJ4ik9wsnibrWjl3Kni-bJJSXd_5GCdzy9y6GwFQCA"
+      },
+      "pairingCode": "008306",
+      "aad": "20860b737cb18c8c30fd00552b50e40b69",
+      "toPhone": [
+        {
+          "plain": "6669727374206465736b746f70206672616d65",
+          "sealed": "000000000000000046d256eb6f5854c2a3d073a687c16c3f03da6d6438125c0c3379966ae8a0d1ebf841ca"
+        },
+        {
+          "plain": "7365636f6e64206465736b746f70206672616d65",
+          "sealed": "0000000000000001fb3b77d29ef945d6f22329e1ed6f3346a4ec6f13e621fd30065c63be0147c765a38210c1"
+        }
+      ],
+      "toDesktop": [
+        {
+          "plain": "66697273742070686f6e65206672616d65",
+          "sealed": "0000000000000000df331a8754deab5c0d9084ebb3ddeb0af241ac8ed73a0a35ff520f152f8c3691df"
+        },
+        {
+          "plain": "7365636f6e642070686f6e65206672616d65",
+          "sealed": "00000000000000012efb41f1d3473712a1e762e0dc78e018f5a44df57da4727ab719e4dfb9c6b808801d"
+        }
+      ]
+    },
+    {
+      "purpose": "control",
+      "mobileSeed": "8Vcpx12-vFs50lYOXbEviND10KFasz6lsUHSUkh3J2w",
+      "mobilePublicKey": "WvhNZTH_81Wn3MzUdlH3NYUxgKggGxyob5F2lcOQ5zo",
+      "desktopDeviceId": "JzFFrdgtnU_oiHi5c-fbtA",
+      "desktopPublicKey": "rSj4wZ1iN4wmB6qIWVJVJpjJaZ624il9AHJsgEv9Xpo",
+      "sessionId": "b0a13a68d89363e63fc792283ece5cb5",
+      "ephemeralSecret": "50247cebc77121a73b9a5f09cae1f052050c11609b8ef4953bdcf538ad93447c",
+      "nonce": "5213e6d32c3880c931e0e8484a5bce5b038df6dae9b1620b869feed2f2066a03",
+      "hello1": {
+        "protocol": "canopy-remote-control/1",
+        "purpose": "control",
+        "initiatorKey": "WvhNZTH_81Wn3MzUdlH3NYUxgKggGxyob5F2lcOQ5zo",
+        "commitment": "yrPV527zAJMAXRVg5erNlTK6vLi4hPD1BB6zQablef8"
+      },
+      "hello2": {
+        "responderKey": "rSj4wZ1iN4wmB6qIWVJVJpjJaZ624il9AHJsgEv9Xpo",
+        "ephemeral": "AEyOuAMzbyML37RmgVsWShB1gsYlcJavZkAQXuP54nM",
+        "nonce": "c7Vkorp6-hF0fgnbC67Jrk89rtCuegeUrf5MCK7zZac"
+      },
+      "hello3": {
+        "ephemeral": "s4ypVImYpnxi9_wUKD2TyxXGgwKD_6Q0GnBl70Zsf0k",
+        "nonce": "UhPm0yw4gMkx4OhISlvOWwON9trpsWILhp_u0vIGagM",
+        "signature": "Xif1_kOSSg4cc4fswOBCZNAIVyj9ybkK5HcgDB0g_XUwYLDIOq9HbAVtFZhz0Vk7TYY8PfvVhAayJFWCqkqWAA"
+      },
+      "hello4": {
+        "signature": "d_0FQTedkQwquQ0aJ15wFLjIfVG6_kxPRn5-BP38rjqK_2LvEqgvGVy4HI0N7e_6UANYzQU4Q1XOdbyvSfwCAQ"
+      },
+      "pairingCode": "367029",
+      "aad": "20b0a13a68d89363e63fc792283ece5cb5",
+      "toPhone": [
+        {
+          "plain": "6669727374206465736b746f70206672616d65",
+          "sealed": "000000000000000064be1b81f0b166894bdfddc8c1eaca9cbbd0cc5575df582472a9cac8f14aefb17e398f"
+        },
+        {
+          "plain": "7365636f6e64206465736b746f70206672616d65",
+          "sealed": "0000000000000001399bf019c3f19eab87f828974cd01b2aab19715ffd4d3584ed97808d38ac3d660ce8423c"
+        }
+      ],
+      "toDesktop": [
+        {
+          "plain": "66697273742070686f6e65206672616d65",
+          "sealed": "00000000000000004eb45721b10c5c1ad7c6485f173cdd1efc846163110e87544dcc897f35cc726c80"
+        },
+        {
+          "plain": "7365636f6e642070686f6e65206672616d65",
+          "sealed": "000000000000000161fcc0abdef1fc53b4ecf4ac781a928e919f1c867420970ef129811e31c530d5a7de"
+        }
+      ]
+    }
+  ],
+  "sameResponder": [
+    {
+      "purpose": "control",
+      "mobileSeed": "XZ7lbr5SMfvLDtNCfMENfU2MDpe2sq8_4wShyvfBX90",
+      "mobilePublicKey": "swqxP9PhWy7TWcRwKUAtBG1LsUxcZZ06g720wlixQ8I",
+      "desktopDeviceId": "O4nU1Ap2C85BYQ7fJrjBsA",
+      "desktopPublicKey": "5zJCOM1CYimOgERYyS7Ayvr7hTrXRal9h5dzQiw2ALI",
+      "sessionId": "5178d231e8ed43f0ef8a0556e3976f02",
+      "ephemeralSecret": "f01c859807b122be925a398a4c6b1b53d0ad8c708024ffe017df51362054925e",
+      "nonce": "a1530906da21dd025cd0ab64a72c2acdf807c3d29d254f54591d138bbedf1864",
+      "hello1": {
+        "protocol": "canopy-remote-control/1",
+        "purpose": "control",
+        "initiatorKey": "swqxP9PhWy7TWcRwKUAtBG1LsUxcZZ06g720wlixQ8I",
+        "commitment": "YnnaT7pErop52DI8HFSRjnJQN9gDF-20WSVpv4Rip9k"
+      },
+      "hello2": {
+        "responderKey": "5zJCOM1CYimOgERYyS7Ayvr7hTrXRal9h5dzQiw2ALI",
+        "ephemeral": "C5qm_zq1eNF51RwaSWY2roRTAEMHOjpaqC_dvj811HM",
+        "nonce": "Gn9DnVywLh2UPNCS6o6mcpiVweNA-7ha2YSg_HA3n18"
+      },
+      "hello3": {
+        "ephemeral": "Adbv4cz92waSIEbHbc1Pzfa3iPYq5niA0Fa0OtILiGA",
+        "nonce": "oVMJBtoh3QJc0KtkpywqzfgHw9KdJU9UWR0Ti77fGGQ",
+        "signature": "bp0FDyzQ657KIpUkBjLiqDLFKnEQic82Wo7Pgmrma-KCKl14aDKW75qFNf6fc7F_KedqfJzUa_ZmQ0pZcqC9Dw"
+      },
+      "hello4": {
+        "signature": "6fU4mpuo1ghPjchWmal9vm0aEJyXMTn4d5KeNvUlZdeys_yVzZXW98KlgRL7BbtzLzsfh94zUIs9nnKk1T8IDA"
+      },
+      "pairingCode": "605423"
+    },
+    {
+      "purpose": "control",
+      "mobileSeed": "XZ7lbr5SMfvLDtNCfMENfU2MDpe2sq8_4wShyvfBX90",
+      "mobilePublicKey": "swqxP9PhWy7TWcRwKUAtBG1LsUxcZZ06g720wlixQ8I",
+      "desktopDeviceId": "O4nU1Ap2C85BYQ7fJrjBsA",
+      "desktopPublicKey": "5zJCOM1CYimOgERYyS7Ayvr7hTrXRal9h5dzQiw2ALI",
+      "sessionId": "cee967e47d74cf4ef97f5bf87fa54928",
+      "ephemeralSecret": "982dff20ecd923da19e57c72d339284cf02710f119f1124cbbc26d1c82869648",
+      "nonce": "16a815dc44fd7673dc758db94715437963994d73494744a35a232bd0882207d0",
+      "hello1": {
+        "protocol": "canopy-remote-control/1",
+        "purpose": "control",
+        "initiatorKey": "swqxP9PhWy7TWcRwKUAtBG1LsUxcZZ06g720wlixQ8I",
+        "commitment": "jzqj2NvmeBsJE_zhcBH6MTbaCv5M1_siHj6tKpNAa_Q"
+      },
+      "hello2": {
+        "responderKey": "5zJCOM1CYimOgERYyS7Ayvr7hTrXRal9h5dzQiw2ALI",
+        "ephemeral": "lCarRI8frRLb-BMRGxyyhHBBF0imYYTnIaU_lpooGE4",
+        "nonce": "KSX0Oo7wq5rOUQ5C-AZMfTm27qblr-wULic_vJq9mJY"
+      },
+      "hello3": {
+        "ephemeral": "IWraFbmaWVX2bZ6zFmHQzCXOkAB8MbtEbR7BcKTU5W8",
+        "nonce": "FqgV3ET9dnPcdY25RxVDeWOZTXNJR0SjWiMr0IgiB9A",
+        "signature": "d9XMtk2DZkvzMEoBMebF129ingyill9Y0eahsS4UjfFZto95aeekJ0loc1E9yX171_wRbRu1FDmI9G_SGt8RBA"
+      },
+      "hello4": {
+        "signature": "vKRT3UbQfOxCgcr9_BJis3a8vjW6fdT3RknCxoGAJQEnNP23eZnRMmP4iykFcgPgXcidgdFZzhUMce8SZwqPCg"
+      },
+      "pairingCode": "426534"
+    }
+  ]
+}

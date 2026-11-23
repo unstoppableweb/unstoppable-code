@@ -46,7 +46,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('chat tabs $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [
             fakeTab('idle', 'Idle'),

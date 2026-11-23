@@ -42,8 +42,7 @@ class ChatFeed extends StatefulWidget {
     super.key,
     required this.chatId,
     required this.messages,
-    required this.expandedTurns,
-    required this.turnInProgress,
+    required this.rows,
     required this.onToggleTurn,
     this.onLoadOlder,
     this.loadingOlder = false,
@@ -63,13 +62,6 @@ class ChatFeed extends StatefulWidget {
   /// since this widget is only built once a chat has messages to show.
   final String chatId;
   final List<ChatMessage> messages;
-  final Set<String> expandedTurns;
-
-  /// Authoritative liveness for the selected chat. This includes the
-  /// per-chat `turnActive` summary, streamed transcript rows, and the
-  /// post-send bridge before either projection has landed.
-  final bool turnInProgress;
-
   final ValueChanged<String> onToggleTurn;
 
   /// Fired once on entering the oldest-content threshold. The feed rearms on
@@ -119,6 +111,10 @@ class ChatFeed extends StatefulWidget {
 
   final ForkResponse? onForkResponse;
   final bool forkEnabled;
+
+  /// The transcript rows and the keys of turns with a footer.
+  /// of the feed's own. [messages] still drive scrolling and anchoring.
+  final List<TranscriptRow> Function(Set<String> footerTurns) rows;
 
   @override
   State<ChatFeed> createState() => _ChatFeedState();
@@ -176,7 +172,6 @@ class _ChatFeedState extends State<ChatFeed> {
       widget.controller ??
       LatestFirstScrollController(landedSlack: _landedSlack);
   late final bool _ownsController = widget.controller == null;
-  final TranscriptProjection _projection = TranscriptProjection();
   final RowWidgetCache _rowWidgets = RowWidgetCache();
   final FeedItemsCache _items = FeedItemsCache();
   final Map<String, GlobalKey> _messageAnchorKeys = {};
@@ -752,19 +747,19 @@ class _ChatFeedState extends State<ChatFeed> {
           ),
         );
       case TranscriptStepsRow(
-        :final turn,
+        :final turnKey,
         :final counts,
         :final expanded,
         :final timer,
       ):
         Widget build() => _TurnWorkHeader(
-          turn: turn,
+          turnKey: turnKey,
           counts: counts,
           expanded: expanded,
           timer: timer,
           // Reads the callback when tapped, so a reused row never calls a
           // callback from an older build.
-          onTap: () => widget.onToggleTurn(turn.key),
+          onTap: () => widget.onToggleTurn(turnKey),
         );
         return _keyedRow(row, row, build);
       case TranscriptRunRow(
@@ -833,12 +828,7 @@ class _ChatFeedState extends State<ChatFeed> {
           messageId != _prependAnchor.messageId && key.currentContext == null,
     );
     final changed = _items.update(
-      rows: _projection.rows(
-        messages: widget.messages,
-        turnInProgress: widget.turnInProgress,
-        expandedTurns: widget.expandedTurns,
-        footerTurns: widget.turnFooters.keys.toSet(),
-      ),
+      rows: widget.rows(widget.turnFooters.keys.toSet()),
       trailing: widget.trailing,
       loadingOlder: widget.loadingOlder,
       topInset: widget.topContentInset,
@@ -935,14 +925,14 @@ class _ChatFeedState extends State<ChatFeed> {
 /// words and nothing to open.
 class _TurnWorkHeader extends StatelessWidget {
   const _TurnWorkHeader({
-    required this.turn,
+    required this.turnKey,
     required this.counts,
     required this.expanded,
     required this.timer,
     required this.onTap,
   });
 
-  final ChatTurn turn;
+  final String turnKey;
   final List<TurnStepCount> counts;
   final bool expanded;
   final TurnTimer? timer;
@@ -972,7 +962,7 @@ class _TurnWorkHeader extends StatelessWidget {
           ),
           padding: const EdgeInsets.only(bottom: 4),
           child: InkWell(
-            key: ValueKey('turn-steps-${turn.key}'),
+            key: ValueKey('turn-steps-$turnKey'),
             onTap: opens ? onTap : null,
             borderRadius: BorderRadius.circular(AppRadii.sm),
             child: ExcludeSemantics(

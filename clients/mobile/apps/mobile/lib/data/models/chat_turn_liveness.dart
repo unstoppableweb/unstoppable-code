@@ -1,3 +1,7 @@
+/// Shared with Remote Control. Computer Connect uses the Rust port in
+/// cc-domain::feed::turns; keep both in step until cleanup C5.
+library;
+
 import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/data/models/turn_timer.dart';
 

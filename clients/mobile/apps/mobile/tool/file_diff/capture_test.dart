@@ -131,7 +131,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('file diff $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Diff viewer')],
           transcripts: {'chat-1': const []},
@@ -185,9 +186,9 @@ void main() {
       }
 
       await tester.tap(find.byKey(const ValueKey('open-activity')));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       await tester.tap(find.text('Files'));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(
         find.byKey(
           const ValueKey(
@@ -211,10 +212,10 @@ void main() {
             .first,
       );
       await Scrollable.ensureVisible(tester.element(row), alignment: 0.5);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
 
       await tester.tap(row);
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(find.byType(DeviceFileDiffScreen), findsOneWidget);
       expect(find.textContaining('Reads one changed file'), findsOneWidget);
       await capture('diff-screen');

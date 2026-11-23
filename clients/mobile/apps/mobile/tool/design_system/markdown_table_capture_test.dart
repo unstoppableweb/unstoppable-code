@@ -55,7 +55,8 @@ void main() {
     final mode = dark ? 'dark' : 'light';
     testWidgets('markdown table $mode', (tester) async {
       tester.view.padding = const FakeViewPadding(top: 47, bottom: 34);
-      final harness = buildDeviceChatHarness(
+      final harness = await buildDeviceChatHarness(
+        tester,
         computer: FakeDesktopComputer(
           tabs: [fakeTab('chat-1', 'Question shapes')],
           transcripts: {
@@ -101,13 +102,13 @@ void main() {
       );
       expect(wideTable, findsWidgets);
       await tester.drag(wideTable.first, const Offset(-200, 0));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       await capture('feed-scrolled');
 
       // Scroll the feed up so the reply's opening line and the header row of
       // the first table are visible.
       await tester.drag(find.byType(ListView).last, const Offset(0, 260));
-      await tester.pumpAndSettle();
+      await harness.settle(tester);
       expect(
         find.textContaining('Running tally', findRichText: true),
         findsOneWidget,

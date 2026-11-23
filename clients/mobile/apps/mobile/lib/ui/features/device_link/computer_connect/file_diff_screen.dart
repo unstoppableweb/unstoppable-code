@@ -1,12 +1,14 @@
 import 'dart:async';
+import 'package:computer_connect_core/computer_connect_core.dart' as core;
 import 'package:flutter/material.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_app_bar.dart';
 import 'package:mobile/core/design-system/app-bar/canopy_scaffold.dart';
 import 'package:mobile/data/models/changed_file.dart';
-import 'package:mobile/device_link/files/repository.dart';
 import 'package:mobile/device_link/worktree_ref.dart';
 import 'package:mobile/ui/core/files/file_diff_view.dart';
 import 'package:mobile/ui/core/files/unified_diff_lines.dart';
+import 'activity_model.dart';
+import 'rust/same_name.dart';
 
 class DeviceFileDiffScreen extends StatefulWidget {
   const DeviceFileDiffScreen({
@@ -15,7 +17,7 @@ class DeviceFileDiffScreen extends StatefulWidget {
     required this.ref,
     required this.file,
   });
-  final DeviceFileDiffRepository repository;
+  final ComputerFileDiffs repository;
   final DeviceWorktreeRef ref;
   final RemoteChangedFile file;
   @override
@@ -23,7 +25,7 @@ class DeviceFileDiffScreen extends StatefulWidget {
 }
 
 class _DeviceFileDiffScreenState extends State<DeviceFileDiffScreen> {
-  late StreamSubscription<DeviceFileDiffKey> _subscription;
+  late StreamSubscription<ComputerFileDiffKey> _subscription;
   late void Function() _release;
   @override
   void initState() {
@@ -73,67 +75,38 @@ class _DeviceFileDiffScreenState extends State<DeviceFileDiffScreen> {
     body: Builder(
       builder: (context) {
         final padding = CanopyScaffold.contentPaddingOf(context);
-        final state = widget.repository.state(widget.ref, widget.file);
-        final diff = state.diff;
-        if (diff == null && state.refreshing) {
-          return Padding(
+        final view = widget.repository.view(widget.ref, widget.file);
+        return switch (view.phase) {
+          core.DiffPhase_Loading() => Padding(
             padding: padding,
             child: const Center(child: CircularProgressIndicator()),
-          );
-        }
-        if (diff == null && state.error != null) {
-          return FileDiffNotice(
+          ),
+          core.DiffPhase_Failed(:final message) => FileDiffNotice(
             padding: padding,
-            message: state.error!,
+            message: message,
             action: FilledButton.tonal(
               key: const ValueKey('file-diff-retry'),
               onPressed: () =>
                   unawaited(widget.repository.refresh(widget.ref, widget.file)),
               child: const Text('Try again'),
             ),
-          );
-        }
-        final parsed = classifyUnifiedDiffLinesBounded(
-          diff?.patch ?? '',
-          maxLines: kRemoteFileDiffMaxLines,
-        );
-        final lines = stripUnifiedDiffFileHeaders(parsed.lines);
-        final clipped = lines.any(
-          (l) => l.text.length > kRemoteFileDiffMaxCharactersPerLine,
-        );
-        final notices = [
-          if (state.stale && diff != null)
-            'Showing the previously loaded diff.',
-          ?state.error,
-          if (state.truncated)
-            'The computer returned a partial diff. Open it on your computer to see all changes.',
-          // The list counted lines, but the file now matches: its changes
-          // were committed or discarded after the list loaded.
-          if (!state.stale &&
-              diff != null &&
-              diff.patch.isEmpty &&
-              (widget.file.insertions ?? 0) + (widget.file.deletions ?? 0) > 0)
-            widget.file.committed
-                ? 'These changes are no longer on this branch.'
-                : 'These changes were committed or discarded on your computer.',
-        ];
-        return FileDiffView(
-          padding: padding,
-          file: widget.file,
-          diff: diff,
-          lines: [
-            for (final l in lines)
-              UnifiedDiffLine(
-                l.kind,
-                l.text.length > kRemoteFileDiffMaxCharactersPerLine
-                    ? '${l.text.substring(0, kRemoteFileDiffMaxCharactersPerLine - 1)}…'
-                    : l.text,
-              ),
-          ],
-          truncated: parsed.isTruncated,
-          cacheNotice: notices.isEmpty ? null : notices.join(' '),
-          lineLengthTruncated: clipped,
-        );
+          ),
+          // The header's counts are the list's: the diff carries them too.
+          core.DiffPhase_Shown() => FileDiffView(
+            padding: padding,
+            file: widget.file,
+            lines: [
+              for (final line in view.lines)
+                UnifiedDiffLine(
+                  sameName(UnifiedDiffLineKind.values, line.kind),
+                  line.text,
+                ),
+            ],
+            truncated: view.truncated,
+            cacheNotice: view.notice,
+            lineLengthTruncated: view.lineLengthTruncated,
+          ),
+        };
       },
     ),
   );

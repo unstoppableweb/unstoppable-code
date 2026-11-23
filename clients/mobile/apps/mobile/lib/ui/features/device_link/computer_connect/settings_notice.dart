@@ -13,7 +13,7 @@ class DeviceSettingsNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final failure = model.composerSettings.failure;
+    final failure = model.composer.failure;
     final catalogError = model.settingsCatalogError;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

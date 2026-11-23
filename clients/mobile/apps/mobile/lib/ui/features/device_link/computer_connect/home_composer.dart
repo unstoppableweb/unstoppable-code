@@ -6,7 +6,6 @@ import 'package:mobile/core/design-system/icon/canopy_icon.dart';
 import 'package:mobile/core/design-system/spinner/comet_spinner.dart';
 import 'package:mobile/data/models/effort_speed.dart';
 import 'package:mobile/data/models/workspace_context.dart';
-import 'package:mobile/device_link/store.dart';
 import 'package:mobile/device_link/worktrees/models.dart';
 import 'package:mobile/ui/core/chat/view_models/chat_attachment_controller.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_attachment_input.dart';
@@ -70,7 +69,6 @@ class ComputerHomeComposer extends StatefulWidget {
     super.key,
     required this.controller,
     required this.workspaceContext,
-    required this.store,
     required this.draft,
     required this.opening,
     this.pendingDelivery = false,
@@ -81,7 +79,6 @@ class ComputerHomeComposer extends StatefulWidget {
   });
   final ComputerConnectController controller;
   final WorkspaceContext workspaceContext;
-  final DeviceLinkStore store;
   final TextEditingController draft;
   final bool opening, pendingDelivery;
   final VoidCallback? onCheckDelivery;
@@ -105,7 +102,6 @@ class ComputerHomeComposerState extends State<ComputerHomeComposer> {
   late final model = ComputerChatHomeModel(
     widget.controller,
     widget.workspaceContext,
-    widget.store,
   );
 
   ChatAttachmentController get _attachments => widget.attachments;
@@ -346,7 +342,7 @@ class ComputerHomeComposerState extends State<ComputerHomeComposer> {
           !widget.opening &&
           !model.loading &&
           !widget.controller.scopePending;
-      final effort = model.effort;
+      final effortLevels = model.effortLevels;
       final selected = model.selectedModel;
       final files = chatInputAttachmentsFor(_attachments);
       return ChatBody(
@@ -385,11 +381,11 @@ class ComputerHomeComposerState extends State<ComputerHomeComposer> {
             executionHarness: selected?.harness,
             availableModels: model.models,
             providerAvailability: model.providerAvailability,
-            effort: effort.levels.isEmpty
+            effort: effortLevels.isEmpty
                 ? null
                 : EffortControl(
-                    level: effort.level,
-                    levels: effort.levels,
+                    level: model.effortLevel,
+                    levels: effortLevels,
                     onSelect: model.selectEffort,
                   ),
             speed: CanopyEffortSpeed.regular,

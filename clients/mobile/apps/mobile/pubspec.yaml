@@ -28,6 +28,8 @@ environment:
 # the latest version available on pub.dev. To see which dependencies have newer
 # versions available, run `flutter pub outdated`.
 dependencies:
+  computer_connect_core:
+    path: packages/computer_connect_core
   flutter:
     sdk: flutter
 
@@ -71,7 +73,6 @@ dependencies:
   in_app_review: ^2.0.12
   # Native share sheet for the desktop app download link (CAN-4424).
   share_plus: ^13.3.1
-  cryptography: ^2.9.0
   flutter_inappwebview: 6.2.0-beta.3
 
 dev_dependencies:
